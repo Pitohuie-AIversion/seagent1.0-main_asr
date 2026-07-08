@@ -1,0 +1,23 @@
+# 大体积数据
+qwen_model_cache/
+qwen_model_cache.lnk/
+*.zip
+*.rar
+*.tar
+*.gz
+*.7z
+data/raw/
+datasets/
+
+# 运行缓存
+qwen_model_cache.lnk
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+.venv/
+.DS_Store
+.idea/
+.vscode/

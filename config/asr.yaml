@@ -1,0 +1,14 @@
+model_path: /root/autodl-tmp/model/Qwen-asr-0.6B
+device: auto
+language: Chinese
+max_new_tokens: 256
+max_inference_batch_size: 1
+max_upload_mb: 25
+direct_to_llm: false
+allowed_extensions:
+  - wav
+  - mp3
+  - flac
+  - m4a
+  - ogg
+  - webm

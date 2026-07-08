@@ -1,0 +1,290 @@
+# ==============================================================================
+# 作业约束知识库 — 可扩展
+# 每条约束包含：ID、描述、适用任务类型、验证逻辑标识、违反提示
+# ==============================================================================
+
+constraints:
+
+  # ── ROV 类型约束 ─────────────────────────────────────────────────────────────
+
+  - id: "C001"
+    name: "管缆巡检必须使用观察级ROV"
+    applies_to: ["pipeline_inspection"]
+    check_type: "robot_category"
+    required_category: "observation"
+    violation_message: >
+      管缆巡检任务要求使用观察级ROV（Observation-class ROV），
+      当前选择的设备类型不符合要求。请更换为观察级ROV。
+    severity: "hard"   # hard=无法发布; soft=警告但可继续
+
+  - id: "C002"
+    name: "采油树阀门插拔必须使用工作级ROV"
+    applies_to: ["tree_valve_operation"]
+    check_type: "robot_category"
+    required_category: "work"
+    violation_message: >
+      采油树控制面板阀门插拔任务要求使用工作级ROV（Work-class ROV），
+      该任务需要机械臂和液压工具支持，观察级ROV无法完成。请更换为工作级ROV。
+    severity: "hard"
+
+#  - id: "C003"
+#    name: "坐底式ROV仅限硬底海床"
+#    applies_to: ["all"]
+#    check_type: "seabed_compatibility"
+#    robot_category: "bottom_sitting"
+#    required_seabed: ["hard", "rock", "sand"]
+#    forbidden_seabed: ["mud", "silt", "soft"]
+#    violation_message: >
+#      底式ROV（Bottom-Sitting ROV）依托海床支撑工作，仅适用于硬底（岩石/砂石）海床。
+#      当前作业区域为软底/淤泥海床，不支持底式ROV作业，请更换设备或作业位置。
+#    severity: "hard"
+
+#  - id: "C003B"
+#    name: "管缆作业ROV仅限硬底海床"
+#    applies_to: ["all"]
+#    check_type: "seabed_compatibility"
+#    robot_category: "work"
+#    rov_model: "sealien_cable_pipeline"
+#    required_seabed: ["hard", "rock", "sand"]
+#    forbidden_seabed: ["mud", "silt", "soft"]
+#    violation_message: >
+#      Sealien管缆作业ROV（sealien_cable_pipeline）适用于复杂路线和硬底海床，
+#      不适合软泥底质作业。当前区域为软底海床，建议改用Taurus海底拖拉机（支持软至中等土壤）。
+#    severity: "soft"
+#
+#  - id: "C003C"
+#    name: "海底拖拉机不适用于硬底海床"
+#    applies_to: ["all"]
+#    check_type: "seabed_compatibility"
+#    robot_category: "seabed_tractor"
+#    required_seabed: ["soft", "soft_to_medium", "mud", "silt"]
+#    forbidden_seabed: ["hard", "rock"]
+#    violation_message: >
+#      Taurus海底拖拉机设计用于软至中等土壤的管缆埋设，在硬底（岩石）海床无法正常行走和作业。
+#      建议改用Sealien管缆作业ROV，后者适合硬底复杂路线。
+#    severity: "soft"
+
+  # ── 水深约束 ─────────────────────────────────────────────────────────────────
+
+  - id: "C004"
+    name: "ROV最大工作水深约束"
+    applies_to: ["all"]
+    check_type: "depth_vs_rov_limit"
+    violation_message: >
+      任务水深超过所选ROV的最大工作水深限制（{rov_max_depth}m），
+      设备无法到达目标深度。请更换能力更强的ROV或修改任务水深。
+    severity: "hard"
+
+  # ── 时间约束 ─────────────────────────────────────────────────────────────────
+
+  - id: "C030"
+    name: "任务开始时间不能早于当前时间"
+    applies_to: ["all"]
+    check_type: "start_time_not_in_past"
+    violation_message: >
+      任务开始时间 {start_time} 早于当前系统时间 {current_time}，
+      可能表示任务开始时间已过期。请确认是否继续，或将任务开始时间修改为当前时间之后。
+    severity: "soft"
+
+  # ── 环境约束 ─────────────────────────────────────────────────────────────────
+
+#  - id: "C005"
+#    name: "海况适航约束"
+#    applies_to: ["all"]
+#    check_type: "sea_state"
+#    max_wave_height_m: 2.5
+#    max_wind_speed_knots: 25
+#    violation_message: >
+#      当前作业区域海况超出安全作业范围（浪高>{max_wave_height}m 或 风速>{max_wind_speed}节），
+#      建议推迟任务或更换作业窗口期。
+#    severity: "soft"   # 警告，由用户决定是否继续
+
+  # ── 采油树类型约束 ───────────────────────────────────────────────────────────
+
+#  - id: "C006"
+#    name: "卧式采油树需确认ROV接口兼容性"
+#    applies_to: ["tree_valve_operation"]
+#    check_type: "tree_type_compatibility"
+#    tree_type: "horizontal"
+#    violation_message: >
+#      卧式采油树的阀门接口方向与立式不同，请确认所选ROV携带的阀门操作接口工具
+#      与目标卧式采油树型号兼容。
+#    severity: "soft"
+
+  # ── 母船可用性约束 ───────────────────────────────────────────────────────────
+
+  - id: "C007"
+    name: "支持船当前可用性"
+    applies_to: ["all"]
+    check_type: "vessel_availability"
+    violation_message: >
+      所选支持船"{vessel_id}"当前标记为不可用，请选择其他可用的支持船只，
+      或确认船只调度后再发布任务。
+    severity: "hard"
+
+  # ── 静态环境信息约束──────────────────────────────────────────────────────────────
+
+  - id: "C008"
+    name: "禁入区约束"
+    applies_to: ["all"]
+    check_type: "forbidden_area"
+    violation_message: >
+      您指定的任务位置位于禁入区内，无法在该区域执行水下作业。请修改油田位置或管缆位置至非禁入区域。
+    severity: "hard"
+
+  - id: "C009"
+    name: "海床质地约束"
+    applies_to: ["all"]
+    check_type: "seabed_compatibility"
+    violation_message: >
+      {current_rov} 依托海床支撑工作，仅适用于硬底海床,当前作业区域为软底海床，请更换设备或作业位置。
+    severity: "hard"
+
+  - id: "C010"
+    name: "DVL底锁失效高风险"
+    applies_to: ["all"]
+    check_type: "dvl_high_risk"
+    violation_message: >
+      当前区域DVL底锁失效风险高，定位/导航能力可能不稳定。谨慎依赖DVL进行悬浮或精确定位。
+    severity: "soft"
+
+  # ── 动态环境信息约束──────────────────────────────────────────────────────────────
+
+  - id: "C0011"
+    name: "障碍物密集区警示"
+    applies_to: ["all"]
+    check_type: "obstacle_dense"
+    violation_message: >
+      当前区域障碍物密集，局部碰撞风险高。建议降低运动速度，提高避障优先级。
+    severity: "soft"
+
+  - id: "C012"
+    name: "母船远程支援提示"
+    applies_to: ["all"]
+    check_type: "mothership_support"
+    violation_message: >
+      当前作业区域母船支援距离较远，应急保障与协同支撑能力偏弱。请注意作业安全，建议缩短任务半径或调整至支援覆盖范围内。
+    severity: "soft"
+
+  - id: "C013"
+    name: "浑浊度-中等警示"
+    applies_to: ["all"]
+    check_type: "turbidity"
+    violation_message: >
+      当前作业区域水体浑浊度中等（{turbidity}），视觉感知效果略有下降。
+    severity: "soft"
+
+  - id: "C014"
+    name: "浑浊度-高等警示"
+    applies_to: ["all"]
+    check_type: "turbidity"
+    violation_message: >
+      当前作业区域水体浑浊度较高（{turbidity}），视觉感知效果将下降。建议优先使用声呐等声学设备进行探测。
+    severity: "soft"
+
+  - id: "C015"
+    name: "流速状态监测-中"
+    applies_to: ["all"]
+    check_type: "current_velocity"
+    # 等级1：不支持悬浮高精度作业
+    violation_message: >
+      当前流速 {current_velocity} m/s，不支持悬浮高精度作业，可正常航行。
+    severity: "soft"
+
+  - id: "C016"
+    name: "流速状态监测-高"
+    applies_to: [ "all" ]
+    check_type: "current_velocity"
+    # 等级2：不支持高精度作业
+    violation_message: >
+      当前流速 {current_velocity} m/s，不支持高精度作业，仅支持基础航行。
+    severity: "soft"
+
+  - id: "C017"
+    name: "流速状态监测-禁止"
+    applies_to: ["all"]
+    check_type: "current_velocity"
+    # 等级3：超过安全上限（拒绝）
+    violation_message: >
+      当前流速 {current_velocity} m/s，已超过安全上限。强流环境可能导致ROV失控或无法精确定位，任务已禁止执行。建议等待海况改善后重新执行。
+    severity: "hard"
+
+  - id: "C018"
+    name: "环境信息置信度过低"
+    applies_to: ["all"]
+    check_type: "state_confidence"
+    violation_message: >
+      当前环境信息置信度为 {confidence}，数据可靠性不足，作业判断存在风险，请谨慎参考或重新获取环境数据。
+    severity: "soft"
+
+  - id: "C019"
+    name: "环境信息已过期"
+    applies_to: ["all"]
+    check_type: "state_timestamp"
+    violation_message: >
+      环境信息最后更新于 {update_timestamp}，已超出有效时间范围，无法反映实时海况，可能影响作业安全，请更新环境信息后再继续。
+    severity: "soft"
+
+  - id: "C020"
+    name: "机器人总体状态可用性"
+    applies_to: ["all"]
+    check_type: "robot_overall_status"
+    violation_message: >
+      所选机器人{equipment_name}当前总体状态为不可用，无法执行任何水下作业任务。请更换其他可用机器人。
+    severity: "hard"
+
+  - id: "C021"
+    name: "机器人生存状态"
+    applies_to: ["all"]
+    check_type: "robot_survival_status"
+    violation_message: >
+      所选机器人{equipment_name}生存状态异常，可能存在严重故障，建议立即检查设备状态，谨慎使用。
+    severity: "soft"
+
+  - id: "C022"
+    name: "推进器状态"
+    applies_to: ["all"]
+    check_type: "robot_thruster_status"
+    violation_message: >
+      所选机器人{equipment_name}推进器状态异常，机动能力受限，不适合执行高动态机动、复杂区域穿行或高精度贴近任务。
+    severity: "soft"
+
+  - id: "C023"
+    name: "定深能力状态"
+    applies_to: ["all"]
+    check_type: "robot_depth_keeping_status"
+    violation_message: >
+      所选机器人{equipment_name}定深能力异常，深度保持能力下降，不适合执行高精度悬浮作业。建议调整任务方式、降低作业精度要求，或更换机器人后再执行。
+    severity: "soft"
+
+  - id: "C024"
+    name: "声纳状态"
+    applies_to: ["all"]
+    check_type: "robot_sonar_status"
+    violation_message: >
+      所选机器人{equipment_name}声纳状态异常，声学感知能力下降，不建议执行强依赖声纳的任务（如海底地形测绘、障碍物探测）。
+    severity: "soft"
+
+  - id: "C025"
+    name: "视觉系统状态"
+    applies_to: ["all"]
+    check_type: "robot_vision_status"
+    violation_message: >
+      所选机器人{equipment_name}视觉系统状态异常，视觉识别能力下降，不建议执行强依赖视觉识别的任务（如管缆外观巡检、目标识别）。
+    severity: "soft"
+
+  - id: "C026"
+    name: "机械臂或末端执行器状态"
+    applies_to: ["all"]
+    check_type: "robot_manipulator_status"
+    violation_message: >
+      所选机器人{equipment_name}机械臂或末端执行器状态异常，接触式作业能力下降，不适合执行抓取、接触、阀门操作等任务。
+    severity: "soft"
+
+  - id: "C027"
+    name: "通信协同状态"
+    applies_to: ["all"]
+    check_type: "robot_communication_status"
+    violation_message: >
+      所选机器人{equipment_name}通信状态异常：{detail}，远程协同能力受限，可能无法与母船保持可靠通信。
+    severity: "soft"

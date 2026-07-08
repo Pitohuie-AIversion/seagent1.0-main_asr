@@ -1,0 +1,187 @@
+# ==============================================================================
+# 任务配置文件
+#
+# 顶层结构：
+#   task_templates   — 任务模板字典，key 是模板标识（如 pipeline_inspection）
+#
+# 每个模板包含：
+#   code             — 任务编号前缀（PI / CT / ...）
+#   display_name     — 模板中文名（仅供描述，不作为字段值）
+#   task_type_values — 本模板下合法的 task_type 字段值列表（可扩展）
+#                      用户输入的任务类型必须匹配其中之一
+#   robot_category_required — 本模板强制使用的 ROV 类型
+#   output_schema    — 最终 flat JSON 的字段定义（normal / emergency 两套）
+#
+# field type 说明：
+#   auto     — 系统自动生成，永不缺失（task_id）
+#   fixed    — 固定值，来自 fixed_value（单值任务类型用）
+#   tasktype — 取自本模板的 task_type_values，allowed_values 自动注入
+#   datetime — YYYY-MM-DDTHH:MM:SS
+#   number   — 数值（水深等）
+#   coord    — {lat: float, lon: float}，输出中唯一允许的嵌套
+#   string   — 单值字符串，有 allowed_values / allowed_values_ref 时必须从中选择
+#   list     — 字符串列表，有约束时每项必须从合法值中选择
+#   raw      — 原始用户输入，无约束
+# ==============================================================================
+
+task_templates:
+
+  # ── 管缆巡检 ─────────────────────────────────────────────────────────────
+  pipeline_inspection:
+    code: "PI"
+    display_name: "管缆巡检"
+    robot_category_required: "observation"
+    task_type_values:
+      - "管缆巡检"
+
+    output_schema:
+      normal:
+        - key: task_id
+          label: "任务编号"
+          type: auto
+        - key: task_type
+          label: "任务类型"
+          type: tasktype          # allowed_values 由 task_type_values 自动注入
+        - key: start_time
+          label: "任务开始时间"
+          type: datetime
+        - key: end_time
+          label: "任务结束时间"
+          type: datetime
+        - key: cable_type
+          label: "管缆类型"
+          type: string
+          allowed_values: ["海底油气管道", "电力电缆", "光纤通信缆"]
+        - key: start_point
+          label: "起始点经纬度"
+          type: coord
+        - key: end_point
+          label: "结束点经纬度"
+          type: coord
+        - key: water_depth
+          label: "水深（米）"
+          type: number
+        - key: equipment_type
+          label: "作业设备类型"
+          type: string
+          allowed_values_ref: "robot_category_labels"
+        - key: equipment_name
+          label: "作业设备全称"
+          type: string
+          allowed_values_ref: "robot_full_names"
+        - key: payload
+          label: "携带工具"
+          type: list
+          allowed_values_ref: "payload_options.pipeline_inspection"
+        - key: support_vessel
+          label: "支持船编号"
+          type: string
+          allowed_values_ref: "vessel_ids"
+#        - key: priority
+#          label: "优先级 (0最高, 15最低)"
+#          type: number
+
+      emergency:
+        - key: task_id
+          label: "任务编号"
+          type: auto
+        - key: task_type
+          label: "任务类型"
+          type: tasktype
+        - key: start_time
+          label: "任务开始时间"
+          type: datetime
+        - key: start_point
+          label: "起始点经纬度"
+          type: coord
+        - key: end_point
+          label: "结束点经纬度"
+          type: coord
+        - key: water_depth
+          label: "水深（米）"
+          type: number
+        - key: equipment_type
+          label: "作业设备类型"
+          type: string
+          allowed_values_ref: "robot_category_labels"
+
+  # ── 采油树控制面板阀门插拔 ───────────────────────────────────────────────
+  tree_valve_operation:
+    code: "CT"
+    display_name: "采油树控制面板阀门插拔"
+    robot_category_required: "work"
+    task_type_values:
+      - "采油树控制面板插入"
+      - "采油树控制面板拔出"
+
+    output_schema:
+      normal:
+        - key: task_id
+          label: "任务编号"
+          type: auto
+        - key: task_type
+          label: "任务类型（插入/拔出）"
+          type: tasktype          # allowed_values = ["采油树控制面板插入", "采油树控制面板拔出"]
+        - key: start_time
+          label: "任务开始时间"
+          type: datetime
+        - key: end_time
+          label: "任务结束时间"
+          type: datetime
+        - key: water_depth
+          label: "水深（米）"
+          type: number
+        - key: oilfield_name
+          label: "油田名称"
+          type: raw
+        - key: oilfield_coordinates
+          label: "油田经纬度坐标"
+          type: coord
+        - key: wellhead_id
+          label: "井口编号"
+          type: raw
+#        # 采油树不再区分立式/卧式，停用该字段以避免继续询问类型。
+#        - key: tree_type
+#          label: "采油树类型"
+#          type: string
+#          allowed_values: ["立式", "卧式"]
+        - key: equipment_type
+          label: "作业设备类型"
+          type: string
+          allowed_values_ref: "robot_category_labels"
+        - key: equipment_name
+          label: "作业设备全称"
+          type: string
+          allowed_values_ref: "robot_full_names"
+        - key: payload
+          label: "携带工具"
+          type: list
+          allowed_values_ref: "payload_options.tree_valve_operation"
+        - key: support_vessel
+          label: "支持船编号"
+          type: string
+          allowed_values_ref: "vessel_ids"
+#        - key: priority
+#          label: "优先级 (0最高, 15最低)"
+#          type: number
+
+      emergency:
+        - key: task_id
+          label: "任务编号"
+          type: auto
+        - key: task_type
+          label: "任务类型（插入/拔出）"
+          type: tasktype
+        - key: start_time
+          label: "任务开始时间"
+          type: datetime
+        - key: oilfield_coordinates
+          label: "油田经纬度坐标"
+          type: coord
+        - key: water_depth
+          label: "水深（米）"
+          type: number
+        - key: equipment_type
+          label: "作业设备类型"
+          type: string
+          allowed_values_ref: "robot_category_labels"
