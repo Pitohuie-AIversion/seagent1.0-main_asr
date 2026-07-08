@@ -83,6 +83,19 @@ def startup():
     sim_time.start()
     print("⏱️ 模拟时间模块已启动，当前时间:", sim_time.get_current_time().strftime("%Y-%m-%d %H:%M:%S"))
 
+    if os.environ.get("OFFLINE_MOCK") == "1":
+        print("🛠️ OFFLINE_MOCK 模式开启，跳过 vLLM 和 ASR 模型物理加载！")
+        kb = KnowledgeBase()
+        llm_client = LLMClient(None, None)
+        manager = DialogueManager(llm_client, kb)
+        web_backend.init_manager(manager)
+        
+        asr_service = ASRService(ASRConfig(model_path=Path("mock")))
+        asr_service.load()
+        web_backend.init_asr_service(asr_service)
+        print("✅ Mock models loaded successfully (Dry Run Mode)")
+        return
+
     print("Loading tokenizer...")
     tok = AutoTokenizer.from_pretrained(
         LOCAL_MODEL_PATH,
@@ -112,6 +125,7 @@ def startup():
     print(f"ASR model loaded successfully on {asr_service.device}")
 
     print("✅ Model loaded successfully")
+
 
 if __name__ == "__main__":
     startup()

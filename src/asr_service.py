@@ -8,6 +8,7 @@ text-only component.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -34,6 +35,11 @@ class ASRService:
 
     def load(self) -> None:
         if self.model is not None:
+            return
+
+        if os.environ.get("OFFLINE_MOCK") == "1":
+            self.device = "mock"
+            self.model = "mock_model"
             return
 
         model_path = self.config.model_path.resolve()
@@ -84,6 +90,16 @@ class ASRService:
         if self.model is None:
             raise RuntimeError("ASR model is not loaded")
 
+        if os.environ.get("OFFLINE_MOCK") == "1":
+            transcript = "流花油田，水深300米，使用sealien_work_class进行采油树控制面板插入。"
+            return {
+                "text": transcript,
+                "language_hint": language if language else "Chinese",
+                "device": "mock",
+                "elapsed_ms": 120,
+                "segments": [{"text": transcript}],
+            }
+
         audio_path = Path(audio_path).resolve()
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file does not exist: {audio_path}")
@@ -96,6 +112,7 @@ class ASRService:
         with self._lock:
             results = self.model.transcribe(audio=str(audio_path), language=language_hint)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
+
 
         segments = [self._result_to_dict(item) for item in results]
         transcript = "".join(item.get("text", "") for item in segments).strip()

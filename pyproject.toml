@@ -1,0 +1,50 @@
+[project]
+name = "seagent-asr"
+version = "1.0.0"
+description = "水下多智能体任务决策大模型与 ASR 融合接口系统"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Google DeepMind Advanced Agentic Coding Team" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[tool.black]
+line-length = 120
+target-version = ['py310', 'py311', 'py312']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | \.agents
+)/
+'''
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "B"]
+ignore = []
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-first-party = ["src"]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
