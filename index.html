@@ -3,75 +3,1040 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>水下多智能体任务决策大模型</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600&display=swap" rel="stylesheet">
+<title>水下多智能体任务决策系统 - ROV HUD</title>
+<!-- 引入高科技感的 Google 字体 -->
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#0a0c12;font-family:'Inter',sans-serif;color:#eef2ff;height:100vh;overflow:hidden}
-.app{display:flex;flex-direction:column;height:100vh;max-width:1400px;margin:0 auto}
-.chat-container{flex:1;display:flex;flex-direction:column;overflow:hidden}
-.header{padding:1rem 2rem;border-bottom:1px solid #1e2432;background:#0f1119}
-.header h1{font-size:1.5rem;font-weight:500;letter-spacing:-0.3px}
-.header p{font-size:0.85rem;color:#8b93b0;margin-top:4px}
-.main-panel{display:flex;flex:1;overflow:hidden}
-.chat-area{flex:2;display:flex;flex-direction:column;border-right:1px solid #1e2432}
-.messages{flex:1;overflow-y:auto;padding:1.5rem;display:flex;flex-direction:column;gap:1rem}
-.message{display:flex;gap:0.75rem;max-width:85%}
-.message.user{align-self:flex-end;flex-direction:row-reverse}
-.message.bot{align-self:flex-start}
-.message.assistant{align-self:flex-start}
-.bubble{background:#1a1f2e;padding:0.7rem 1rem;border-radius:1rem;font-size:0.9rem;line-height:1.5}
-.user .bubble{background:#2d4ed8;color:white}
-.avatar{width:32px;height:32px;background:#252c3c;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1rem}
-.input-area{padding:1rem;border-top:1px solid #1e2432;display:flex;gap:0.5rem}
-.input-area input{flex:1;background:#11141f;border:1px solid #2a3142;border-radius:2rem;padding:0.7rem 1.2rem;color:#fff;font-size:0.9rem;outline:none}
-.input-area input:focus{border-color:#4f7aff}
-.input-area button{background:#4f7aff;border:none;border-radius:2rem;padding:0 1.5rem;color:white;font-weight:500;cursor:pointer;transition:0.2s}
-.input-area button:hover{background:#6b8eff}
-.input-area .voice-btn{background:#1f2937;border:1px solid #334155;min-width:5rem}
-.input-area .voice-btn.recording{background:#dc2626;border-color:#ef4444}
-.asr-panel{display:none;padding:0 1rem 1rem;border-top:1px solid #1e2432;color:#aeb8d8;font-size:.8rem}
-.asr-panel.visible{display:block}
-.asr-panel strong{color:#fff}
-.sidebar{width:320px;background:#0b0e16;padding:1.2rem;display:flex;flex-direction:column;gap:1rem;overflow-y:auto}
-.info-card{background:#11151f;border-radius:1rem;padding:1rem;border:1px solid #1e2538}
-.info-title{font-size:0.7rem;text-transform:uppercase;color:#7b85a6;letter-spacing:1px;margin-bottom:0.8rem}
-.field-row{display:flex;flex-direction:column;gap:0.2rem;padding:0.4rem 0;border-bottom:1px solid #1a1f2e;font-size:0.85rem}
-.field-label{color:#a4b0d4;font-size:0.8rem}
-.field-value{font-weight:500;color:#fff;word-break:break-all;white-space:pre-wrap;}
-.missing{color:#fb7b5e}
-.badge{display:inline-block;background:#2d2f3e;border-radius:1rem;padding:0.2rem 0.6rem;font-size:0.7rem;margin-left:0.5rem}
-.emergency{background:#ff4d4d;color:white}
-.final-json{background:#0d1117;padding:0.8rem;border-radius:0.8rem;font-family:monospace;font-size:0.75rem;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto}
-.reset-btn{background:#1e2538;border:1px solid #2f3a5c;color:#b9c3f0;padding:0.5rem 1rem;border-radius:2rem;cursor:pointer;text-align:center;margin-top:1rem}
-.reset-btn:hover{background:#2a324b}
-strong{font-weight:600;color:#fff;}
-.time-display{font-size:1.2rem;font-weight:500;margin-bottom:8px;font-family:monospace;letter-spacing:1px}
-.time-control{display:flex;gap:8px;margin-top:8px}
-.time-control input{flex:2;background:#11151f;border:1px solid #2a3142;color:#fff;border-radius:0.5rem;padding:6px;font-size:0.8rem}
-.time-control button{flex:1;background:#4f7aff;border:none;border-radius:0.5rem;padding:6px;cursor:pointer;font-size:0.8rem;font-weight:500}
-.time-control button:hover{background:#6b8eff}
-.time-hint{font-size:0.7rem;color:#7b85a6;margin-top:6px}
-.history-item{transition:background 0.1s;}
-.history-item:hover{background:#1e2538;}
+/* ==================== 科技感全局设计系统 ==================== */
+:root {
+  --bg-deep: #02050f;
+  --bg-dark: #050b18;
+  --bg-card: rgba(6, 12, 30, 0.75);
+  --accent-cyan: #00f0ff;
+  --accent-cyan-glow: rgba(0, 240, 255, 0.4);
+  --accent-green: #00ffc4;
+  --accent-green-glow: rgba(0, 255, 196, 0.3);
+  --accent-amber: #ff9d00;
+  --accent-amber-glow: rgba(255, 157, 0, 0.3);
+  --accent-red: #ff003c;
+  --accent-red-glow: rgba(255, 0, 60, 0.4);
+  --text-primary: #eef2ff;
+  --text-secondary: #7b89b6;
+  --border-cyan: rgba(0, 240, 255, 0.22);
+  --font-tech: 'Orbitron', 'Inter', sans-serif;
+  --font-mono: 'Share Tech Mono', 'Courier New', monospace;
+  --font-sans: 'Inter', -apple-system, sans-serif;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--bg-deep);
+  background-image: 
+    radial-gradient(circle at 50% 30%, rgba(9, 28, 66, 0.45) 0%, rgba(2, 5, 15, 1) 85%),
+    linear-gradient(rgba(0, 240, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 240, 255, 0.02) 1px, transparent 1px);
+  background-size: 100% 100%, 40px 40px, 40px 40px;
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* scanline 扫描线效果 */
+body::before {
+  content: " ";
+  display: block;
+  position: fixed;
+  top: 0; left: 0; bottom: 0; right: 0;
+  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.3) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.04), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.04));
+  z-index: 9999;
+  background-size: 100% 4px, 6px 100%;
+  pointer-events: none;
+  opacity: 0.35;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 1700px;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+
+/* ==================== 顶部状态条 Header ==================== */
+.header {
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border-cyan);
+  background: rgba(4, 9, 22, 0.9);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.5rem;
+  border-radius: 0.5rem 0.5rem 0 0;
+  box-shadow: 0 0 25px rgba(0, 240, 255, 0.12);
+  backdrop-filter: blur(10px);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.status-indicator-light {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent-green);
+  box-shadow: 0 0 10px var(--accent-green);
+  animation: pulse-glow-green 2s infinite;
+}
+
+.header h1 {
+  font-family: var(--font-tech);
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--accent-cyan);
+  text-shadow: 0 0 10px var(--accent-cyan-glow);
+}
+
+.header p {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  letter-spacing: 2px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.nav-telemetry-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.nav-label {
+  font-family: var(--font-tech);
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+  letter-spacing: 1px;
+}
+
+.nav-value {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  color: var(--accent-cyan);
+  text-shadow: 0 0 5px var(--accent-cyan-glow);
+}
+
+.lang-selector select {
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  border: 1px solid var(--accent-cyan);
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-family: var(--font-tech);
+  font-size: 0.75rem;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.3s;
+}
+
+.lang-selector select:hover {
+  background: rgba(0, 240, 255, 0.1);
+  box-shadow: 0 0 10px var(--accent-cyan-glow);
+}
+
+/* ==================== 两栏 主区域 ==================== */
+.main-panel {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 1rem;
+  flex: 1;
+  overflow: hidden;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+/* ==================== 统一的玻璃材质面板 Card ==================== */
+.hud-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-cyan);
+  border-radius: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+}
+
+/* ==================== 科技感 SVG 图标样式 ==================== */
+.tech-icon {
+  width: 16px;
+  height: 16px;
+  stroke: var(--accent-cyan);
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  display: inline-block;
+  vertical-align: middle;
+  filter: drop-shadow(0 0 3px var(--accent-cyan-glow));
+  transition: all 0.3s;
+}
+
+.tech-icon.success {
+  stroke: var(--accent-green);
+  filter: drop-shadow(0 0 3px var(--accent-green-glow));
+}
+
+.tech-icon.warning {
+  stroke: var(--accent-amber);
+  filter: drop-shadow(0 0 3px var(--accent-amber-glow));
+}
+
+.tech-icon.danger {
+  stroke: var(--accent-red);
+  filter: drop-shadow(0 0 3px var(--accent-red-glow));
+}
+
+.card-title .tech-icon, .info-title .tech-icon {
+  margin-right: 8px;
+}
+
+/* 科技感头像 SVG */
+.bot-avatar-svg, .user-avatar-svg {
+  width: 22px;
+  height: 22px;
+  stroke: var(--accent-cyan);
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 4px var(--accent-cyan-glow));
+}
+
+.user-avatar-svg {
+  stroke: #3b82f6;
+  filter: drop-shadow(0 0 4px rgba(59, 130, 246, 0.4));
+}
+
+.visor-glow {
+  fill: var(--accent-cyan);
+  filter: drop-shadow(0 0 5px var(--accent-cyan));
+  animation: visor-pulse 2s infinite alternate;
+}
+
+@keyframes visor-pulse {
+  0% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
+/* ==================== 左侧遥测栏 Telemetry Panel ==================== */
+.telemetry-panel {
+  gap: 1rem;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.telemetry-card {
+  background: rgba(5, 12, 28, 0.6);
+  border: 1px solid rgba(0, 240, 255, 0.15);
+  border-radius: 0.5rem;
+  padding: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.3s;
+}
+
+.telemetry-card:hover {
+  border-color: rgba(0, 240, 255, 0.35);
+}
+
+.card-title {
+  font-family: var(--font-tech);
+  font-size: 0.75rem;
+  color: var(--accent-cyan);
+  letter-spacing: 1px;
+  border-left: 2px solid var(--accent-cyan);
+  padding-left: 6px;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+}
+
+/* 2D 雷达扫描效果 */
+.sonar-container {
+  position: relative;
+  width: 100%;
+  height: 180px;
+  background: radial-gradient(circle, rgba(0, 32, 64, 0.5) 0%, rgba(3, 7, 18, 0.9) 100%);
+  border: 1px solid rgba(0, 240, 255, 0.2);
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.sonar-grid {
+  position: absolute;
+  width: 160px;
+  height: 160px;
+  border-radius: 50%;
+  border: 1px dashed rgba(0, 240, 255, 0.15);
+}
+
+.sonar-grid::before {
+  content: "";
+  position: absolute;
+  top: 20px; left: 20px; right: 20px; bottom: 20px;
+  border-radius: 50%;
+  border: 1px dashed rgba(0, 240, 255, 0.2);
+}
+
+.sonar-grid::after {
+  content: "";
+  position: absolute;
+  top: 50px; left: 50px; right: 50px; bottom: 50px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 240, 255, 0.25);
+}
+
+.sonar-axis-x {
+  position: absolute;
+  width: 100%;
+  height: 1px;
+  background: rgba(0, 240, 255, 0.1);
+}
+
+.sonar-axis-y {
+  position: absolute;
+  width: 1px;
+  height: 100%;
+  background: rgba(0, 240, 255, 0.1);
+}
+
+.sonar-sweep {
+  position: absolute;
+  width: 180px;
+  height: 180px;
+  background: conic-gradient(from 0deg at 50% 50%, rgba(0, 240, 255, 0.2) 0deg, rgba(0, 240, 255, 0) 90deg);
+  border-radius: 50%;
+  animation: sweep 4s linear infinite;
+  pointer-events: none;
+}
+
+.sonar-center {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: var(--accent-cyan);
+  border-radius: 50%;
+  box-shadow: 0 0 8px var(--accent-cyan);
+}
+
+/* 动态声呐目标 */
+.sonar-target {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: var(--accent-green);
+  border-radius: 50%;
+  box-shadow: 0 0 10px var(--accent-green);
+  animation: target-pulse 2s infinite ease-in-out;
+  opacity: 0;
+}
+
+.target-1 { top: 35%; left: 30%; animation-delay: 0.5s; }
+.target-2 { top: 65%; left: 70%; animation-delay: 2s; }
+.target-valve { top: 48%; left: 60%; background: var(--accent-amber); box-shadow: 0 0 10px var(--accent-amber); display: none; }
+
+.sonar-details {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.sonar-detail-row {
+  display: flex;
+  flex-direction: column;
+}
+
+.sonar-detail-row span:first-child {
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+}
+
+.sonar-detail-row .mono-value {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--accent-cyan);
+}
+
+/* 环境深度指示器 */
+.environment-container {
+  display: flex;
+  gap: 15px;
+  align-items: stretch;
+}
+
+.gauge-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.gauge-column.flex-col {
+  gap: 12px;
+}
+
+.gauge-label {
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  display: block;
+}
+
+.depth-bar-container {
+  position: relative;
+  height: 100px;
+  background: rgba(0, 32, 64, 0.4);
+  border: 1px solid rgba(0, 240, 255, 0.2);
+  border-radius: 4px;
+  margin: 4px 0;
+  overflow: hidden;
+}
+
+.depth-bar-fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  background: linear-gradient(to top, rgba(0, 240, 255, 0.8), rgba(0, 80, 255, 0.4));
+  box-shadow: 0 0 10px var(--accent-cyan);
+  transition: height 1s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.depth-marker {
+  position: absolute;
+  right: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: rgba(0, 240, 255, 0.5);
+  pointer-events: none;
+}
+
+.marker-0 { top: 2px; }
+.marker-500 { top: calc(50% - 5px); }
+.marker-1000 { bottom: 2px; }
+
+.mono-value.big-val {
+  font-family: var(--font-mono);
+  font-size: 1.1rem;
+  font-weight: bold;
+  color: var(--text-primary);
+  text-shadow: 0 0 5px rgba(255, 255, 255, 0.2);
+}
+
+.small-gauge-item {
+  background: rgba(0, 32, 64, 0.2);
+  padding: 6px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 240, 255, 0.08);
+}
+
+/* 动力诊断网格 */
+.thrusters-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.thruster-item {
+  background: rgba(255, 0, 60, 0.1);
+  border: 1px solid rgba(255, 0, 60, 0.2);
+  border-radius: 4px;
+  padding: 6px 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: all 0.3s;
+}
+
+.thruster-item.active {
+  background: rgba(0, 255, 196, 0.1);
+  border: 1px solid rgba(0, 255, 196, 0.3);
+}
+
+.thruster-name {
+  font-family: var(--font-tech);
+  font-size: 0.65rem;
+  font-weight: bold;
+  color: var(--text-secondary);
+}
+
+.thruster-item.active .thruster-name {
+  color: var(--accent-green);
+}
+
+.thruster-status {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  color: var(--accent-red);
+}
+
+.thruster-item.active .thruster-status {
+  color: var(--accent-green);
+}
+
+/* 遥测流 */
+.diagnostics-logs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.diag-header {
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+}
+
+.diag-log-container {
+  background: rgba(0, 5, 15, 0.8);
+  border: 1px solid rgba(0, 240, 255, 0.15);
+  border-radius: 4px;
+  height: 85px;
+  padding: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--accent-cyan);
+  overflow-y: auto;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+/* ==================== 中间对话栏 Dialogue Panel ==================== */
+.chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-cyan);
+  background: rgba(5, 11, 26, 0.75);
+  border-radius: 0.5rem;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 语音输入时的科技感波动效果 */
+.audio-waveform-wrapper {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 73px;
+  background: rgba(3, 7, 18, 0.9);
+  z-index: 10;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  border-radius: 0.5rem 0.5rem 0 0;
+}
+
+.waveform-bar {
+  width: 5px;
+  height: 20px;
+  background: var(--accent-cyan);
+  border-radius: 3px;
+  box-shadow: 0 0 10px var(--accent-cyan);
+  animation: pulse-wave 1.2s infinite ease-in-out;
+}
+
+.waveform-bar:nth-child(1) { animation-delay: 0.1s; }
+.waveform-bar:nth-child(2) { animation-delay: 0.2s; }
+.waveform-bar:nth-child(3) { animation-delay: 0.3s; }
+.waveform-bar:nth-child(4) { animation-delay: 0.4s; }
+.waveform-bar:nth-child(5) { animation-delay: 0.3s; }
+.waveform-bar:nth-child(6) { animation-delay: 0.2s; }
+.waveform-bar:nth-child(7) { animation-delay: 0.1s; }
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+}
+
+/* 科技感聊天气泡 */
+.message {
+  display: flex;
+  gap: 0.8rem;
+  max-width: 85%;
+}
+
+.message.user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+.message.bot, .message.assistant {
+  align-self: flex-start;
+}
+
+.avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  background: rgba(0, 240, 255, 0.1);
+  border: 1px solid var(--accent-cyan);
+  box-shadow: 0 0 8px rgba(0, 240, 255, 0.3);
+}
+
+.user .avatar {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: #3b82f6;
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.3);
+}
+
+.bubble-wrapper {
+  display: flex;
+  flex-direction: column;
+}
+
+.bubble {
+  background: rgba(12, 22, 45, 0.8);
+  border: 1px solid rgba(0, 240, 255, 0.15);
+  padding: 0.75rem 1.1rem;
+  border-radius: 0.25rem 1rem 1rem 1rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+  transition: all 0.3s;
+}
+
+.user .bubble {
+  background: rgba(15, 32, 67, 0.95);
+  border-color: rgba(59, 130, 246, 0.5);
+  border-radius: 1rem 0.25rem 1rem 1rem;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
+}
+
+.msg-translate-bar {
+  font-family: var(--font-tech);
+  font-size: 0.7rem !important;
+  color: var(--accent-cyan) !important;
+  margin-top: 4px;
+  cursor: pointer;
+  text-decoration: none !important;
+  display: inline-block;
+  opacity: 0.7;
+  transition: 0.2s;
+}
+
+.msg-translate-bar:hover {
+  opacity: 1;
+  text-shadow: 0 0 5px var(--accent-cyan-glow);
+}
+
+/* 对话输入区域 */
+.input-area {
+  padding: 1rem;
+  border-top: 1px solid var(--border-cyan);
+  display: flex;
+  gap: 0.75rem;
+  background: rgba(3, 7, 18, 0.5);
+}
+
+.input-area input {
+  flex: 1;
+  background: rgba(0, 10, 25, 0.85);
+  border: 1px solid rgba(0, 240, 255, 0.25);
+  border-radius: 4px;
+  padding: 0.75rem 1.2rem;
+  color: #fff;
+  font-size: 0.9rem;
+  font-family: var(--font-sans);
+  outline: none;
+  transition: all 0.3s;
+}
+
+.input-area input:focus {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.2);
+}
+
+.input-area button {
+  background: rgba(0, 240, 255, 0.12);
+  border: 1px solid var(--accent-cyan);
+  color: var(--accent-cyan);
+  border-radius: 4px;
+  padding: 0 1.5rem;
+  font-family: var(--font-tech);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.input-area button:hover:not(:disabled) {
+  background: var(--accent-cyan);
+  color: var(--bg-deep);
+  box-shadow: 0 0 15px var(--accent-cyan-glow);
+}
+
+.input-area button:disabled {
+  border-color: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.2);
+  background: transparent;
+  cursor: not-allowed;
+}
+
+.input-area .voice-btn {
+  border-color: var(--accent-green);
+  color: var(--accent-green);
+  background: rgba(0, 255, 196, 0.1);
+}
+
+.input-area .voice-btn:hover:not(:disabled) {
+  background: var(--accent-green);
+  color: var(--bg-deep);
+  box-shadow: 0 0 15px var(--accent-green-glow);
+}
+
+.input-area .voice-btn.recording {
+  background: var(--accent-red);
+  border-color: var(--accent-red);
+  color: #fff;
+  animation: pulse-glow-red 1s infinite;
+}
+
+/* ASR状态面板 */
+.asr-panel {
+  display: none;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border-cyan);
+  background: rgba(0, 10, 25, 0.9);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  border-radius: 0 0 0.5rem 0.5rem;
+}
+
+.asr-panel.visible {
+  display: block;
+}
+
+.asr-panel strong {
+  color: var(--accent-cyan);
+}
+
+/* ==================== 右侧控制栏 Sidebar Panel ==================== */
+.sidebar {
+  gap: 1rem;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.info-card {
+  background: rgba(5, 12, 28, 0.6);
+  border: 1px solid rgba(0, 240, 255, 0.15);
+  border-radius: 0.5rem;
+  padding: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.3s;
+}
+
+.info-card:hover {
+  border-color: rgba(0, 240, 255, 0.35);
+}
+
+.info-title {
+  font-family: var(--font-tech);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--accent-cyan);
+  letter-spacing: 1.5px;
+  border-left: 2px solid var(--accent-cyan);
+  padding-left: 6px;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+}
+
+.time-display {
+  font-family: var(--font-mono);
+  font-size: 1.3rem;
+  font-weight: bold;
+  letter-spacing: 1px;
+  color: var(--text-primary);
+  text-shadow: 0 0 10px var(--accent-cyan-glow);
+  padding: 4px 0;
+}
+
+.time-control {
+  display: flex;
+  gap: 6px;
+}
+
+.time-control input {
+  flex: 1;
+  background: rgba(0, 10, 25, 0.8);
+  border: 1px solid rgba(0, 240, 255, 0.2);
+  color: #fff;
+  border-radius: 4px;
+  padding: 6px;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  outline: none;
+}
+
+.time-control button {
+  background: rgba(0, 240, 255, 0.12);
+  border: 1px solid var(--accent-cyan);
+  color: var(--accent-cyan);
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-family: var(--font-tech);
+  font-size: 0.75rem;
+  transition: 0.2s;
+}
+
+.time-control button:hover {
+  background: var(--accent-cyan);
+  color: var(--bg-deep);
+  box-shadow: 0 0 10px var(--accent-cyan-glow);
+}
+
+.time-hint {
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+}
+
+/* 列表字段项样式 */
+.field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(0, 240, 255, 0.08);
+  font-size: 0.8rem;
+}
+
+.field-row:last-child {
+  border-bottom: none;
+}
+
+.field-label {
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-family: var(--font-tech);
+}
+
+.field-value {
+  font-weight: 500;
+  color: #fff;
+  word-break: break-all;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+}
+
+.missing {
+  color: var(--accent-amber);
+  animation: pulse-warn 2s infinite ease-in-out;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  padding: 4px 0;
+  display: flex;
+  align-items: center;
+}
+
+.badge {
+  display: inline-block;
+  background: rgba(0, 240, 255, 0.12);
+  border: 1px solid var(--accent-cyan);
+  color: var(--accent-cyan);
+  border-radius: 2px;
+  padding: 2px 6px;
+  font-size: 0.65rem;
+  font-family: var(--font-tech);
+}
+
+.badge.emergency {
+  background: rgba(255, 0, 60, 0.2);
+  border-color: var(--accent-red);
+  color: var(--accent-red);
+  animation: pulse-glow-red-text 1.5s infinite alternate;
+}
+
+/* 最终 JSON codeblock */
+.final-json {
+  background: rgba(0, 5, 15, 0.95);
+  border: 1px solid rgba(0, 240, 255, 0.15);
+  padding: 8px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 250px;
+  overflow: auto;
+  color: #aebfd4;
+}
+
+/* 重新开始按钮 */
+.reset-btn {
+  background: rgba(255, 0, 60, 0.08);
+  border: 1px solid rgba(255, 0, 60, 0.4);
+  color: #ff003c;
+  padding: 0.7rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: center;
+  font-family: var(--font-tech);
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-top: 0.5rem;
+  transition: all 0.3s;
+}
+
+.reset-btn:hover {
+  background: var(--accent-red);
+  color: white;
+  box-shadow: 0 0 12px var(--accent-red-glow);
+}
+
+/* 历史记录按钮与列表 */
+.history-item {
+  transition: background 0.2s;
+  padding: 8px;
+  border-bottom: 1px solid rgba(0, 240, 255, 0.08);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.history-item:hover {
+  background: rgba(0, 240, 255, 0.05);
+}
+
+/* ==================== 统一动画 Keyframes ==================== */
+@keyframes sweep {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes target-pulse {
+  0% { opacity: 0; transform: scale(0.6); }
+  20% { opacity: 1; }
+  80% { opacity: 0.8; }
+  100% { opacity: 0; transform: scale(1.6); }
+}
+
+@keyframes pulse-wave {
+  0%, 100% { transform: scaleY(0.4); }
+  50% { transform: scaleY(1.8); }
+}
+
+@keyframes pulse-glow-green {
+  0%, 100% { box-shadow: 0 0 4px var(--accent-green); }
+  50% { box-shadow: 0 0 12px var(--accent-green); }
+}
+
+@keyframes pulse-glow-red {
+  0%, 100% { box-shadow: 0 0 4px var(--accent-red); }
+  50% { box-shadow: 0 0 15px var(--accent-red); }
+}
+
+@keyframes pulse-glow-red-text {
+  0% { text-shadow: 0 0 2px var(--accent-red-glow); }
+  100% { text-shadow: 0 0 8px var(--accent-red); }
+}
+
+@keyframes pulse-warn {
+  0%, 100% { opacity: 0.75; }
+  50% { opacity: 1; color: #ffb700; }
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.1);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 240, 255, 0.2);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-cyan);
+}
 </style>
 </head>
 <body>
 <div class="app">
-  <div class="header" style="display: flex; justify-content: space-between; align-items: center;">
-    <div>
-      <h1 id="ui-title">水下多智能体任务决策大模型</h1>
-      <p id="ui-subtitle">任务准入｜状态解析｜环境理解｜智能应答</p>
+  <!-- Top Cockpit Header -->
+  <div class="header">
+    <div class="header-left">
+      <div class="status-indicator-light"></div>
+      <div>
+        <h1 id="ui-title">水下多智能体任务决策大模型</h1>
+        <p id="ui-subtitle">任务准入｜状态解析｜环境理解｜智能应答</p>
+      </div>
     </div>
-    <div class="lang-selector">
-      <select id="langSelect" style="background:#1e2538; color:#fff; border:1px solid #2f3a5c; padding:6px 12px; border-radius:2rem; font-size:0.85rem; cursor:pointer; outline:none;">
-        <option value="zh">中文 (ZH)</option>
-        <option value="en">English (EN)</option>
-      </select>
+    <div class="header-right">
+      <div class="lang-selector">
+        <select id="langSelect">
+          <option value="zh">中文 (ZH)</option>
+          <option value="en">English (EN)</option>
+        </select>
+      </div>
     </div>
   </div>
+
   <div class="main-panel">
+
+    <!-- Center Column: Intelligent Interaction Area -->
     <div class="chat-area">
+      <!-- 语音录音时的炫酷动画 -->
+      <div class="audio-waveform-wrapper" id="audioWaveformWrapper" style="display: none;">
+        <div class="waveform-bar"></div>
+        <div class="waveform-bar"></div>
+        <div class="waveform-bar"></div>
+        <div class="waveform-bar"></div>
+        <div class="waveform-bar"></div>
+        <div class="waveform-bar"></div>
+        <div class="waveform-bar"></div>
+      </div>
       <div class="messages" id="messages"></div>
       <div class="input-area">
         <input type="text" id="messageInput" placeholder="描述您的水下任务..." autocomplete="off">
@@ -80,9 +1045,15 @@ strong{font-weight:600;color:#fff;}
       </div>
       <div class="asr-panel" id="asrPanel"></div>
     </div>
+
+    <!-- Right Column: Sidebar / Parameter Verification Center -->
     <div class="sidebar" id="sidebar">
-      <div class="info-card" style="background:#0a0e1a;">
-        <div class="info-title" id="title-simtime">⏱️ 模拟时间</div>
+      <div class="info-card" style="background: rgba(4, 9, 22, 0.9);">
+        <div class="info-title">
+          <!-- simulated time clock SVG -->
+          <svg class="tech-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6h4"/><path d="M12 2v2M2 12h2M12 20v2M20 12h2"/></svg>
+          <span id="title-simtime">模拟时间</span>
+        </div>
         <div id="simulatedTimeDisplay" class="time-display">--:--:--</div>
         <div class="time-control">
           <input type="datetime-local" id="timePicker" step="1">
@@ -90,27 +1061,52 @@ strong{font-weight:600;color:#fff;}
         </div>
         <div class="time-hint" id="hint-simtime">点击设置可自定义基准时间</div>
       </div>
+      
       <div class="info-card">
-        <div class="info-title" id="title-curtask">📋 当前任务</div>
+        <div class="info-title">
+          <!-- Clipboard Task SVG -->
+          <svg class="tech-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12l2 2 4-4M7 7h10M7 17h6"/></svg>
+          <span id="title-curtask">当前任务</span>
+        </div>
         <div id="taskInfo">-</div>
       </div>
+
       <div class="info-card">
-        <div class="info-title" id="title-collected">✅ 已收集字段</div>
+        <div class="info-title">
+          <!-- Hexagon check SVG -->
+          <svg class="tech-icon success" viewBox="0 0 24 24"><path d="M12 2l8.66 5v10L12 22l-8.66-5V7z"/><path d="M9 12l2 2 4-4"/></svg>
+          <span id="title-collected">已收集字段</span>
+        </div>
         <div id="collectedFields">暂无</div>
       </div>
+
       <div class="info-card">
-        <div class="info-title" id="title-missing">❓ 缺失字段</div>
+        <div class="info-title">
+          <!-- Hexagon warn SVG -->
+          <svg class="tech-icon warning" viewBox="0 0 24 24"><path d="M12 2l8.66 5v10L12 22l-8.66-5V7z"/><path d="M12 8v5M12 16h.01"/></svg>
+          <span id="title-missing">缺失字段</span>
+        </div>
         <div id="missingFields">-</div>
       </div>
+
       <div class="info-card" id="resultCard" style="display:none;">
-        <div class="info-title" id="title-finaljson">📄 最终任务JSON</div>
+        <div class="info-title">
+          <!-- File code brackets SVG -->
+          <svg class="tech-icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M8 13c-1.5 0-1.5 2 0 2m8-2c1.5 0 1.5 2 0 2"/></svg>
+          <span id="title-finaljson">最终任务JSON</span>
+        </div>
         <div id="finalJson" class="final-json"></div>
       </div>
+
       <!-- 历史记录区域 -->
-      <div class="info-card" style="margin-top: 8px;">
-        <div class="info-title" id="title-history">📜 历史记录</div>
-        <button id="historyBtn" style="width:100%; background:#1e2538; border:1px solid #2f3a5c; color:#b9c3f0; padding:6px; border-radius:1rem; cursor:pointer;">查看历史</button>
-        <div id="historyList" style="display:none; margin-top:8px; max-height:200px; overflow-y:auto; background:#0b0e16; border-radius:0.8rem; padding:4px;">
+      <div class="info-card">
+        <div class="info-title">
+          <!-- Clock arrow logs SVG -->
+          <svg class="tech-icon" viewBox="0 0 24 24"><path d="M12 20a8 8 0 100-16 8 8 0 00-6.3 3.1"/><path d="M3 6V1.5M3 6h4.5M12 8v4h3"/></svg>
+          <span id="title-history">历史记录</span>
+        </div>
+        <button id="historyBtn" style="width:100%; background:rgba(0, 240, 255, 0.12); border:1px solid var(--accent-cyan); color:var(--accent-cyan); padding:6px; border-radius:4px; cursor:pointer; font-family:var(--font-tech); font-size:0.75rem;">查看历史</button>
+        <div id="historyList" style="display:none; margin-top:8px; max-height:160px; overflow-y:auto; background:rgba(0,5,15,0.95); border:1px solid rgba(0, 240, 255, 0.15); border-radius:4px; padding:4px;">
           <!-- 动态加载历史列表 -->
         </div>
       </div>
@@ -120,9 +1116,18 @@ strong{font-weight:600;color:#fff;}
 </div>
 
 <script>
+// 动态检测 API 基础路径（兼容 Jupyter Proxy 代理访问）
+const API_BASE = (() => {
+  const path = window.location.pathname;
+  // 匹配 /jupyter/proxy/8890/ 或 /proxy/8890/ 等代理路径
+  const proxyMatch = path.match(/^(.*\/proxy\/\d+)\/?/);
+  return proxyMatch ? proxyMatch[1] : '';
+})();
+
 let sessionId = null;
 let isDone = false;
 let timeUpdateInterval = null;
+
 
 const messageContainer = document.getElementById('messages');
 const messageInput = document.getElementById('messageInput');
@@ -145,16 +1150,16 @@ let lastResponseData = null;
 
 const I18N = {
   zh: {
-    title: "水下多智能体任务决策大模型",
+    title: "水下多智能体任务决策系统",
     subtitle: "任务准入｜状态解析｜环境理解｜智能应答",
-    simtime: "⏱️ 模拟时间",
+    simtime: "模拟时间",
     setBtn: "设置",
     simtimeHint: "点击设置可自定义基准时间",
-    curtask: "📋 当前任务",
-    collected: "✅ 已收集字段",
-    missing: "❓ 缺失字段",
-    finaljson: "📄 最终任务JSON",
-    history: "📜 历史记录",
+    curtask: "当前任务",
+    collected: "已收集字段",
+    missing: "缺失字段",
+    finaljson: "最终任务JSON",
+    history: "历史记录",
     historyBtn: "查看历史",
     resetBtn: "⟳ 重新开始",
     inputPlaceholder: "描述您的水下任务...",
@@ -163,11 +1168,13 @@ const I18N = {
     sendBtn: "发送",
     none: "暂无",
     allCollected: "✅ 所有必填字段已齐全",
-    transTranslate: "翻译",
-    transOriginal: "显示原文",
+    transTranslate: "翻译 (Translate)",
+    transOriginal: "显示原文 (Show Original)",
     transTranslating: "正在翻译...",
     transFailed: "翻译失败",
     transNetError: "网络错误",
+    transRetrying: "翻译重试中...",
+    transFallback: "⚠️ 翻译质量不佳，显示原文",
     historyTitle: "历史记录",
     historyNone: "暂无历史记录",
     historyLoadedReadOnly: "📜 已加载历史任务记录（只读模式）。如需创建新任务，请点击\"重新开始\"。",
@@ -198,19 +1205,34 @@ const I18N = {
     restoreFailed: "还原失败: ",
     restoreNetError: "还原失败，请检查网络",
     networkError: "网络错误，请重试。",
-    emergencyBadge: "紧急"
+    emergencyBadge: "紧急",
+    
+    // Telemetry labels
+    labelLink: "通信链强",
+    labelLatency: "信道延迟",
+    labelBattery: "潜器电量",
+    labelSonarRadar: "声呐雷达扫描",
+    labelRange: "扫描半径",
+    labelFreq: "载波频率",
+    labelEnvMonitor: "水下环境监视",
+    labelWaterDepth: "水深",
+    labelCurDepth: "当前深度",
+    labelPressure: "静水压力",
+    labelWaterTemp: "环境水温",
+    labelSystemDiag: "动力分配与诊断",
+    labelTelemetryStream: "系统遥测事件流"
   },
   en: {
-    title: "Underwater Multi-Agent Task Decision System",
-    subtitle: "Task Admission | State Parsing | Environment Understanding | Intelligent Response",
-    simtime: "⏱️ Simulated Time",
+    title: "Underwater Multi-Robot Decision System",
+    subtitle: "Task Admission | State Parsing | Environmental Understanding | Intelligent Response",
+    simtime: "Simulated Time",
     setBtn: "Set",
     simtimeHint: "Click Set to customize baseline time",
-    curtask: "📋 Current Task",
-    collected: "✅ Collected Fields",
-    missing: "❓ Missing Fields",
-    finaljson: "📄 Final Task JSON",
-    history: "📜 History",
+    curtask: "Current Task",
+    collected: "Collected Fields",
+    missing: "Missing Fields",
+    finaljson: "Final Task JSON",
+    history: "History",
     historyBtn: "View History",
     resetBtn: "⟳ Restart",
     inputPlaceholder: "Describe your underwater task...",
@@ -224,6 +1246,8 @@ const I18N = {
     transTranslating: "Translating...",
     transFailed: "Translation failed",
     transNetError: "Network error",
+    transRetrying: "Retrying translation...",
+    transFallback: "⚠️ Low-quality translation, showing original",
     historyTitle: "History",
     historyNone: "No history records",
     historyLoadedReadOnly: "📜 History task loaded (Read-Only). Click 'Restart' to create a new task.",
@@ -254,7 +1278,22 @@ const I18N = {
     restoreFailed: "Restore failed: ",
     restoreNetError: "Restore failed, please check network",
     networkError: "Network error, please try again.",
-    emergencyBadge: "Emergency"
+    emergencyBadge: "Emergency",
+
+    // Telemetry labels
+    labelLink: "LINK STRENGTH",
+    labelLatency: "LATENCY",
+    labelBattery: "ROV BATTERY",
+    labelSonarRadar: "Sonar Radar Sweep",
+    labelRange: "Scan Range",
+    labelFreq: "Frequency",
+    labelEnvMonitor: "Subsea Environment",
+    labelWaterDepth: "Depth",
+    labelCurDepth: "Current Depth",
+    labelPressure: "Hydro Pressure",
+    labelWaterTemp: "Water Temp",
+    labelSystemDiag: "Diagnostics",
+    labelTelemetryStream: "Telemetry stream logs"
   }
 };
 
@@ -281,6 +1320,8 @@ const VALUES = {
   "管缆巡检": { zh: "管缆巡检", en: "Pipeline Inspection" },
   "采油树控制面板插入": { zh: "采油树控制面板插入", en: "Tree Valve Insertion" },
   "采油树控制面板拔出": { zh: "采油树控制面板拔出", en: "Tree Valve Extraction" },
+  "采油树控制面板插拔": { zh: "采油树控制面板插拔", en: "Tree Valve Operation" },
+  "未识别": { zh: "未识别", en: "Unidentified" },
   "海底油气管道": { zh: "海底油气管道", en: "Subsea Oil/Gas Pipeline" },
   "电力电缆": { zh: "电力电缆", en: "Power Cable" },
   "光纤通信缆": { zh: "光纤通信缆", en: "Fiber Optic Cable" },
@@ -341,8 +1382,12 @@ function updateLanguage() {
   }
   document.getElementById('sendBtn').innerText = I18N[currentLang].sendBtn;
   
+
+
   if (lastResponseData) {
     updateSidebar(lastResponseData);
+  } else {
+    document.getElementById('collectedFields').innerHTML = I18N[currentLang].none;
   }
   
   document.querySelectorAll('.message').forEach(msgDiv => {
@@ -373,40 +1418,97 @@ function hasChinese(text) {
   return /[\u4e00-\u9fa5]/.test(text);
 }
 
+/**
+ * 校验翻译结果是否为脏数据，与后端 _is_dirty_translation 逻辑保持一致。
+ */
+function isDirtyTranslation(targetLang, translated) {
+  if (!translated) return true;
+  const t = translated.trim();
+  if (t.startsWith('{') || t.startsWith('[')) return true;
+  if (targetLang === 'English' && /[\u4e00-\u9fa5]/.test(translated)) return true;
+  return false;
+}
+
+/**
+ * 公共翻译函数：带超时、重试、脏数据校验。
+ * @param {string} text - 原文
+ * @param {string} targetLang - 目标语言
+ * @param {number} [retries=1] - 剩余重试次数
+ * @returns {Promise<{translated: string, warning: string|null}>}
+ */
+async function fetchTranslation(text, targetLang, retries = 1) {
+  const TIMEOUT_MS = 30000; // 30s 超时
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  try {
+    const res = await fetch(API_BASE + '/api/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, target_lang: targetLang }),
+      signal: controller.signal
+    });
+    clearTimeout(timerId);
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    if (data.code === 200 && data.translated_text) {
+      // 后端 quality_warning 或前端脏数据校验
+      if (data.quality_warning || isDirtyTranslation(targetLang, data.translated_text)) {
+        return { translated: data.translated_text, warning: 'low_quality' };
+      }
+      return { translated: data.translated_text, warning: null };
+    }
+    throw new Error(data.msg || 'empty translated_text');
+  } catch (err) {
+    clearTimeout(timerId);
+    if (retries > 0) {
+      // 自动重试一次
+      await new Promise(r => setTimeout(r, 1500));
+      return fetchTranslation(text, targetLang, retries - 1);
+    }
+    throw err;
+  }
+}
+
 async function autoTranslateMessage(msgDiv) {
   const originalText = msgDiv.getAttribute('data-original');
   const btn = msgDiv.querySelector('.msg-translate-bar');
   const bubble = msgDiv.querySelector('.bubble');
   if (!originalText || !btn || !bubble) return;
-  
+
+  // 检查前端 DOM 缓存，若为脏数据则清除并重新翻译
   const cache = msgDiv.getAttribute('data-translation-cache');
-  if (cache) {
+  if (cache && !isDirtyTranslation('English', cache)) {
     bubble.innerHTML = renderMarkdown(cache).replace(/\n/g, '<br>');
     btn.innerText = I18N[currentLang].transOriginal;
     btn.setAttribute('data-translated', 'true');
     return;
   }
-  
+  if (cache) {
+    // 清除脏缓存
+    msgDiv.removeAttribute('data-translation-cache');
+  }
+
   btn.innerText = I18N[currentLang].transTranslating;
   try {
-    const res = await fetch('/api/translate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: originalText, target_lang: 'English' })
-    });
-    const data = await res.json();
-    if (data.code === 200 && data.translated_text) {
-      msgDiv.setAttribute('data-translation-cache', data.translated_text);
-      if (currentLang === 'en') {
-        bubble.innerHTML = renderMarkdown(data.translated_text).replace(/\n/g, '<br>');
+    const { translated, warning } = await fetchTranslation(originalText, 'English');
+    msgDiv.setAttribute('data-translation-cache', translated);
+    if (currentLang === 'en') {
+      bubble.innerHTML = renderMarkdown(translated).replace(/\n/g, '<br>');
+      if (warning === 'low_quality') {
+        btn.innerText = I18N[currentLang].transFallback;
+        btn.setAttribute('data-translated', 'warn');
+      } else {
         btn.innerText = I18N[currentLang].transOriginal;
         btn.setAttribute('data-translated', 'true');
       }
-    } else {
-      btn.innerText = I18N[currentLang].transFailed;
     }
   } catch (err) {
-    btn.innerText = I18N[currentLang].transNetError;
+    btn.innerText = err.name === 'AbortError'
+      ? I18N[currentLang].transNetError
+      : I18N[currentLang].transFailed;
   }
 }
 
@@ -415,37 +1517,39 @@ async function toggleMessageTranslation(btn) {
   const bubble = wrapper.querySelector('.bubble');
   const messageDiv = btn.closest('.message');
   const originalText = messageDiv.getAttribute('data-original');
-  
-  if (btn.getAttribute('data-translated') === 'true') {
+  const isTranslated = btn.getAttribute('data-translated');
+
+  if (isTranslated === 'true' || isTranslated === 'warn') {
+    // 显示原文
     bubble.innerHTML = renderMarkdown(originalText).replace(/\n/g, '<br>');
     btn.innerText = I18N[currentLang].transTranslate;
     btn.setAttribute('data-translated', 'false');
   } else {
+    const targetLang = currentLang === 'zh' ? 'Chinese' : 'English';
     const cache = messageDiv.getAttribute('data-translation-cache');
-    if (cache) {
+    // 检查前端 DOM 缓存，若为脏数据则清除并重新翻译
+    if (cache && !isDirtyTranslation(targetLang, cache)) {
       bubble.innerHTML = renderMarkdown(cache).replace(/\n/g, '<br>');
       btn.innerText = I18N[currentLang].transOriginal;
       btn.setAttribute('data-translated', 'true');
     } else {
+      if (cache) messageDiv.removeAttribute('data-translation-cache');
       btn.innerText = I18N[currentLang].transTranslating;
-      const targetLang = currentLang === 'zh' ? 'Chinese' : 'English';
       try {
-        const res = await fetch('/api/translate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: originalText, target_lang: targetLang })
-        });
-        const data = await res.json();
-        if (data.code === 200 && data.translated_text) {
-          messageDiv.setAttribute('data-translation-cache', data.translated_text);
-          bubble.innerHTML = renderMarkdown(data.translated_text).replace(/\n/g, '<br>');
+        const { translated, warning } = await fetchTranslation(originalText, targetLang);
+        messageDiv.setAttribute('data-translation-cache', translated);
+        bubble.innerHTML = renderMarkdown(translated).replace(/\n/g, '<br>');
+        if (warning === 'low_quality') {
+          btn.innerText = I18N[currentLang].transFallback;
+          btn.setAttribute('data-translated', 'warn');
+        } else {
           btn.innerText = I18N[currentLang].transOriginal;
           btn.setAttribute('data-translated', 'true');
-        } else {
-          btn.innerText = I18N[currentLang].transFailed;
         }
       } catch (err) {
-        btn.innerText = I18N[currentLang].transNetError;
+        btn.innerText = err.name === 'AbortError'
+          ? I18N[currentLang].transNetError
+          : I18N[currentLang].transFailed;
       }
     }
   }
@@ -502,12 +1606,25 @@ function translateValue(key, val) {
   return valStr;
 }
 
+// Sleek vector bot/user visors
+const botAvatarSvg = `
+  <svg class="bot-avatar-svg" viewBox="0 0 24 24" width="22" height="22">
+    <rect x="4" y="6" width="16" height="12" rx="3" stroke="currentColor" stroke-width="1.8" fill="none" />
+    <path d="M2 10h2M20 10h2M9 16l3 2 3-2" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" />
+    <rect x="7" y="9" width="10" height="2" rx="1" fill="currentColor" class="visor-glow" />
+  </svg>`;
+const userAvatarSvg = `
+  <svg class="user-avatar-svg" viewBox="0 0 24 24" width="22" height="22">
+    <circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.8" fill="none" />
+    <path d="M4 20c0-4 4-5 8-5s8 1 8 5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" />
+  </svg>`;
+
 function addMessage(role, content) {
   const div = document.createElement('div');
   const displayRole = role === 'assistant' ? 'bot' : role;
   div.className = `message ${displayRole}`;
   const isBot = (role === 'bot' || role === 'assistant');
-  const avatar = isBot ? '<div class="avatar">🤖</div>' : '<div class="avatar">👤</div>';
+  const avatarHtml = isBot ? `<div class="avatar">${botAvatarSvg}</div>` : `<div class="avatar">${userAvatarSvg}</div>`;
   
   div.setAttribute('data-original', content);
   div.setAttribute('data-role', role);
@@ -516,10 +1633,10 @@ function addMessage(role, content) {
   
   let translateBtn = '';
   if (content.trim()) {
-    translateBtn = `<div class="msg-translate-bar" style="font-size:0.75rem; color:#4f7aff; margin-top:4px; cursor:pointer; text-decoration:underline; display:inline-block;" onclick="toggleMessageTranslation(this)">${I18N[currentLang].transTranslate}</div>`;
+    translateBtn = `<div class="msg-translate-bar" onclick="toggleMessageTranslation(this)">${I18N[currentLang].transTranslate}</div>`;
   }
   
-  div.innerHTML = avatar + `<div class="bubble-wrapper" style="display:flex; flex-direction:column; align-items: ${role === 'user' ? 'flex-end' : 'flex-start'};"><div class="bubble">${renderedContent}</div>${translateBtn}</div>`;
+  div.innerHTML = avatarHtml + `<div class="bubble-wrapper" style="display:flex; flex-direction:column; align-items: ${role === 'user' ? 'flex-end' : 'flex-start'};"><div class="bubble">${renderedContent}</div>${translateBtn}</div>`;
   messageContainer.appendChild(div);
   messageContainer.scrollTop = messageContainer.scrollHeight;
   
@@ -530,18 +1647,14 @@ function addMessage(role, content) {
   return div;
 }
 
-function formatValue(value) {
-  if (value === null) return 'null';
-  if (typeof value === 'undefined') return 'undefined';
-  if (typeof value === 'object') {
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch (e) {
-      return String(value);
-    }
-  }
-  return String(value);
-}
+
+
+// inline warning SVG for missing fields
+const svgWarning = `
+  <svg class="tech-icon warning" style="width:12px; height:12px; margin-right:4px;" viewBox="0 0 24 24">
+    <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
+    <path d="M12 8v5M12 16h.01" stroke-width="2" />
+  </svg>`;
 
 function updateSidebar(data) {
   lastResponseData = data;
@@ -576,6 +1689,8 @@ function updateSidebar(data) {
     collectedDiv.innerHTML = html;
   }
 
+
+
   const missing = data.missing || [];
   const missingDiv = document.getElementById('missingFields');
   if (missing.length === 0 && Object.keys(collected).length > 0) {
@@ -584,7 +1699,7 @@ function updateSidebar(data) {
     let html = '';
     for (const m of missing) {
       const label = getFieldLabel(m);
-      html += `<div class="field-row missing">❓ ${label}</div>`;
+      html += `<div class="field-row missing">${svgWarning}${label}</div>`;
     }
     missingDiv.innerHTML = html;
   }
@@ -597,24 +1712,24 @@ function updateSidebar(data) {
   }
 }
 
-async function updateSimulatedTime() {
+async function updateSimulatedTime(isInit = false) {
   try {
-    const res = await fetch('/api/time/current');
+    const res = await fetch(API_BASE + '/api/time/current');
     const data = await res.json();
     if (data.code === 200) {
       const dt = new Date(data.current_time);
       const formatted = dt.toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US', { hour12: false });
       document.getElementById('simulatedTimeDisplay').innerText = formatted;
 
-      const picker = document.getElementById('timePicker');
-      if (document.activeElement !== picker) {
-        const year = dt.getFullYear();
-        const month = String(dt.getMonth() + 1).padStart(2, '0');
-        const day = String(dt.getDate()).padStart(2, '0');
-        const hours = String(dt.getHours()).padStart(2, '0');
-        const minutes = String(dt.getMinutes()).padStart(2, '0');
-        const localValue = `${year}-${month}-${day}T${hours}:${minutes}`;
-        if (picker.value !== localValue) {
+      if (isInit) {
+        const picker = document.getElementById('timePicker');
+        if (picker) {
+          const year = dt.getFullYear();
+          const month = String(dt.getMonth() + 1).padStart(2, '0');
+          const day = String(dt.getDate()).padStart(2, '0');
+          const hours = String(dt.getHours()).padStart(2, '0');
+          const minutes = String(dt.getMinutes()).padStart(2, '0');
+          const localValue = `${year}-${month}-${day}T${hours}:${minutes}`;
           picker.value = localValue;
         }
       }
@@ -635,14 +1750,14 @@ async function setSimulatedTime() {
   }
 
   try {
-    const res = await fetch('/api/time/set', {
+    const res = await fetch(API_BASE + '/api/time/set', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ time: timeValue }),
     });
     const data = await res.json();
     if (data.code === 200) {
-      await updateSimulatedTime();
+      await updateSimulatedTime(true);
       alert(I18N[currentLang].timeSuccess);
     } else {
       console.warn('设置模拟时间失败:', data);
@@ -688,6 +1803,7 @@ function writeString(view, offset, string) {
   }
 }
 
+// Convert float to 16bit PCM
 function floatTo16BitPCM(output, offset, input) {
   for (let i = 0; i < input.length; i++, offset += 2) {
     let s = Math.max(-1, Math.min(1, input[i]));
@@ -695,6 +1811,7 @@ function floatTo16BitPCM(output, offset, input) {
   }
 }
 
+// Merge float32 audio chunks
 function mergeFloat32Chunks(chunks) {
   const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
   const result = new Float32Array(length);
@@ -706,6 +1823,7 @@ function mergeFloat32Chunks(chunks) {
   return result;
 }
 
+// WAV audio encoder
 function encodeWav(samples, sampleRate) {
   const buffer = new ArrayBuffer(44 + samples.length * 2);
   const view = new DataView(buffer);
@@ -733,7 +1851,7 @@ async function uploadAudioForAsr(audioBlob) {
   formData.append('audio', audioBlob, 'voice_input.wav');
   formData.append('language', currentLang === 'zh' ? 'Chinese' : 'English');
 
-  const res = await fetch('/api/asr', {
+  const res = await fetch(API_BASE + '/api/asr', {
     method: 'POST',
     body: formData
   });
@@ -776,12 +1894,18 @@ async function startVoiceRecording() {
   voiceBtn.classList.add('recording');
   voiceBtn.textContent = I18N[currentLang].voiceStop;
   setAsrStatus(I18N[currentLang].voiceRecording);
+  
+  // Show center pulsing visual
+  document.getElementById("audioWaveformWrapper").style.display = "flex";
 }
 
 async function stopVoiceRecording() {
   isRecording = false;
   voiceBtn.classList.remove('recording');
   voiceBtn.textContent = I18N[currentLang].voiceBtn;
+  
+  // Hide center pulsing visual
+  document.getElementById("audioWaveformWrapper").style.display = "none";
 
   if (recorderProcessor) recorderProcessor.disconnect();
   if (recorderSource) recorderSource.disconnect();
@@ -848,20 +1972,20 @@ async function toggleVoiceRecording() {
 // ==================== 历史记录功能 ====================
 async function loadHistoryList() {
   try {
-    const res = await fetch('/api/history/list');
+    const res = await fetch(API_BASE + '/api/history/list');
     const data = await res.json();
     if (data.code !== 200) return;
     const listDiv = document.getElementById('historyList');
     if (data.data.length === 0) {
-      listDiv.innerHTML = `<div style="padding:8px; color:#7b85a6;">${I18N[currentLang].historyNone}</div>`;
+      listDiv.innerHTML = `<div style="padding:8px; color:var(--text-secondary);">${I18N[currentLang].historyNone}</div>`;
     } else {
       let html = '';
       for (const rec of data.data) {
         const localizedType = translateValue('task_type_key', rec.task_type);
         html += `
-          <div class="history-item" data-id="${rec.id}" style="padding:6px; border-bottom:1px solid #1e2538; cursor:pointer; font-size:0.8rem;">
+          <div class="history-item" data-id="${rec.id}" style="padding:6px; border-bottom:1px solid rgba(0, 240, 255, 0.08); cursor:pointer; font-size:0.75rem;">
             <div><strong>${escapeHtml(rec.task_id)}</strong> (${escapeHtml(localizedType)})</div>
-            <div style="font-size:0.7rem; color:#8b93b0;">${new Date(rec.saved_at).toLocaleString()}</div>
+            <div style="font-size:0.65rem; color:var(--text-secondary);">${new Date(rec.saved_at).toLocaleString()}</div>
           </div>
         `;
       }
@@ -891,7 +2015,7 @@ async function restoreHistory(historyId) {
   }
 
   try {
-    const res = await fetch('/api/history/load', {
+    const res = await fetch(API_BASE + '/api/history/load', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ history_id: historyId, session_id: effectiveSessionId })
@@ -946,7 +2070,7 @@ async function sendMessage(msg, options = {}) {
   voiceBtn.disabled = true;
 
   try {
-    const res = await fetch('/api/chat', {
+    const res = await fetch(API_BASE + '/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId, message: msg, source })
@@ -982,7 +2106,7 @@ async function reset() {
 
   if (sessionId) {
     try {
-      await fetch('/api/reset', {
+      await fetch(API_BASE + '/api/reset', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId })
@@ -1005,9 +2129,10 @@ async function reset() {
   messageInput.disabled = false;
   voiceBtn.disabled = false;
   voiceBtn.classList.remove('recording');
-  voiceBtn.textContent = '语音';
+  voiceBtn.textContent = I18N[currentLang].voiceBtn;
   setAsrStatus('', false);
   messageInput.focus();
+
 }
 
 sendBtn.addEventListener('click', () => sendMessage(messageInput.value));
@@ -1017,11 +2142,13 @@ resetBtn.addEventListener('click', reset);
 document.getElementById('setTimeBtn').addEventListener('click', setSimulatedTime);
 document.getElementById('historyBtn').addEventListener('click', loadHistoryList);
 
+
+
 reset();
 
-updateSimulatedTime();
+updateSimulatedTime(true);
 if (timeUpdateInterval) clearInterval(timeUpdateInterval);
-timeUpdateInterval = setInterval(updateSimulatedTime, 1000);
+timeUpdateInterval = setInterval(() => updateSimulatedTime(false), 1000);
 </script>
 </body>
 </html>

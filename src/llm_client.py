@@ -7,6 +7,7 @@ llm_client.py — 本地 vLLM 推理接口封装
 
 import json
 import re
+import threading
 from typing import Any
 
 from vllm import LLM, SamplingParams
@@ -17,6 +18,7 @@ class LLMClient:
     def __init__(self, llm_instance: LLM, tokenizer: Any):
         self.llm = llm_instance
         self.tok = tokenizer
+        self.lock = threading.Lock()
 
     def _build_prompt(self, messages: list[dict], enable_thinking=False) -> str:
         """将 messages 列表转换为模型输入 prompt（使用 chat template）"""
@@ -41,7 +43,8 @@ class LLMClient:
             max_tokens=max_tokens,
             stop=stop or [],
         )
-        outputs = self.llm.generate([prompt], sampling_params)
+        with self.lock:
+            outputs = self.llm.generate([prompt], sampling_params)
         return outputs[0].outputs[0].text.strip()
 
     def extract_json(
