@@ -1,10 +1,10 @@
 robots:
   sealien_work_class:
-    current_velocity: 0.5
-    turbidity: 5
+    current_velocity: 0.3
+    turbidity: 3
     obstacle_density: low
     mothership_support: strong
-    update_timestamp: '2026-06-30T16:00:00+08:00'
+    update_timestamp: '2026-06-04T10:00:00+08:00'
     confidence: 0.95
     overall_status: available
     survival_status: normal
@@ -35,10 +35,10 @@ robots:
     tether_connection_status: normal
   sealien_inspection:
     current_velocity: 0.3
-    turbidity: 3
+    turbidity: 15
     obstacle_density: low
     mothership_support: strong
-    update_timestamp: '2026-07-06T10:40:00+08:00'
+    update_timestamp: '2026-07-10T15:40:00+08:00'
     confidence: 0.95
     overall_status: available
     survival_status: normal
@@ -54,8 +54,8 @@ robots:
     current_velocity: 0.2
     turbidity: 3.5
     obstacle_density: low
-    mothership_support: strong
-    update_timestamp: '2026-04-21T10:00:00+08:00'
+    mothership_support: weak
+    update_timestamp: '2026-06-04T10:00:00+08:00'
     confidence: 0.95
     overall_status: available
     survival_status: normal

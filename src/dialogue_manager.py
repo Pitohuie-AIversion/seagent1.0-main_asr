@@ -240,6 +240,9 @@ class DialogueManager:
             ROV2type=self.kb.ROV2type,
             support_task=self.kb.get_supported_task(),
         )
+        print("DEBUG SYSTEM PROMPT START" + "="*40)
+        print(messages[0]["content"])
+        print("DEBUG SYSTEM PROMPT END" + "="*40)
         reply = self.llm.chat(messages, temperature=0.7, max_tokens=1500)
         reply = self.llm.filter_reply(reply, temperature=0.1, max_tokens=1500)
 
@@ -485,10 +488,27 @@ class DialogueManager:
         if not changed_fields and self.phase not in ("blocked_hard", "blocked_soft"):
             return {"type": "none", "violations": [], "hard_refusal_counts": {}}
 
-        if self.phase == "blocked_hard":
+        if self.phase in ("blocked_hard", "blocked_soft"):
             new_violations = self.validator.validate(self.task_state)
         else:
             new_violations = self.validator.validate_for_fields(self.task_state, changed_fields)
+
+        # 处理soft阻塞解除/升级为hard
+        if self.phase == "blocked_soft":
+            current_soft = [v for v in new_violations
+                            if v.severity == "soft" and not self._is_whitelisted(v)]
+            if not current_soft:
+                self._blocking_violations = []
+                self.phase = "collecting"
+                current_hard = [v for v in new_violations if v.severity == "hard"]
+                if current_hard:
+                    self.phase = "blocked_hard"
+                    self._blocking_violations = current_hard
+                    return {"type": "hard", "violations": current_hard, "hard_refusal_counts": {}}
+                return {"type": "none", "violations": [], "hard_refusal_counts": {}}
+            else:
+                self._blocking_violations = current_soft
+                return {"type": "soft", "violations": current_soft, "hard_refusal_counts": {}}
 
         # 处理hard阻塞解除
         if self.phase == "blocked_hard":

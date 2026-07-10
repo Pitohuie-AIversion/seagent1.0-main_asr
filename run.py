@@ -120,9 +120,20 @@ def startup():
 
     #增加asr模块260611
     print("Loading ASR model...")
-    asr_service = load_asr_service()
-    web_backend.init_asr_service(asr_service)
-    print(f"ASR model loaded successfully on {asr_service.device}")
+    try:
+        asr_service = load_asr_service()
+        web_backend.init_asr_service(asr_service)
+        if asr_service.is_degraded:
+            print(f"⚠️ ASR model unavailable, using mock mode on {asr_service.device}")
+        else:
+            print(f"ASR model loaded successfully on {asr_service.device}")
+    except Exception as exc:
+        print(f"⚠️ ASR initialization failed ({exc}), continuing with mock ASR service")
+        asr_service = ASRService(ASRConfig(model_path=Path("mock")))
+        asr_service.device = "mock"
+        asr_service.model = "mock_model"
+        asr_service.is_degraded = True
+        web_backend.init_asr_service(asr_service)
 
     print("✅ Model loaded successfully")
 

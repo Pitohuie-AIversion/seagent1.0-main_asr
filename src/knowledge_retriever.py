@@ -74,6 +74,36 @@ class KnowledgeBase:
             rov_info = self._get_rov_info(equipment)
             if rov_info:
                 sections.append(f"【当前选定设备详情】\n{rov_info}")
+                state_dict = self.get_robot_state_dict(equipment)
+                if state_dict and isinstance(state_dict, dict):
+                    state_lines = []
+                    label_map = {
+                        "current_velocity": "当前流速",
+                        "turbidity": "浑浊度",
+                        "obstacle_density": "障碍物密度",
+                        "mothership_support": "母船支援",
+                        "update_timestamp": "更新时间",
+                        "confidence": "置信度",
+                        "overall_status": "总体状态",
+                        "survival_status": "生存状态",
+                        "thruster_status": "推进器状态",
+                        "depth_keeping_status": "定深能力",
+                        "sonar_status": "声呐状态",
+                        "vision_status": "视觉系统状态",
+                        "arm_status": "机械臂状态",
+                        "end_effector_status": "末端执行器状态",
+                        "acoustic_comms_status": "水声无线通信状态",
+                        "tether_connection_status": "脐带缆连接状态"
+                    }
+                    for k, v in state_dict.items():
+                        if v is not None and not k.startswith("_"):
+                            label = label_map.get(k, k)
+                            if isinstance(v, float):
+                                state_lines.append(f"  - {label} ({k}): {v:.2f}")
+                            else:
+                                state_lines.append(f"  - {label} ({k}): {v}")
+                    if state_lines:
+                        sections.append("【当前设备实时状态】\n" + "\n".join(state_lines))
         elif equipment_type:
             sections.append(self._rovs_by_category(equipment_type))
 
