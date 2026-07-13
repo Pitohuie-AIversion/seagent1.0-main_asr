@@ -123,8 +123,9 @@ allowed_extensions:
 ```
 cd /root/mzy/seagent1.0-main_asr && TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 /root/miniconda3/envs/seagent/bin/python run.py
 ```
-端口转发：cd /root/mzy/seagent1.0-main_asr && /root/miniconda3/envs/seagent/bin/python port_forward.py 
+端口转发：
+cd /root/mzy/seagent1.0-main_asr && /root/miniconda3/envs/seagent/bin/python port_forward.py 
 测试命令：
 ```
-curl -X POST http://localhost:8890/api/robot/set-state-info -H "Content-Type: application/json" -d '{"robot_name":"sealien_inspection","params":{"current_velocity":1.5,"turbidity":3,"obstacle_density":"low","mothership_support":"strong","update_timestamp":"2026-07-11T10:30:00+08:00","confidence":0.95,"overall_status":"available","survival_status":"normal","thruster_status":"normal","depth_keeping_status":"normal","sonar_status":"normal","vision_status":"normal","arm_status":"normal","end_effector_status":"normal","acoustic_comms_status":"normal","tether_connection_status":"normal"}}'
+curl -X POST http://localhost:8890/api/robot/set-state-info -H "Content-Type: application/json" -d '{"robot_name":"sealien_inspection","params":{"current_velocity":3,"turbidity":3,"obstacle_density":"low","mothership_support":"strong","update_timestamp":"2026-07-13T13:30:00+08:00","confidence":0.95,"overall_status":"available","survival_status":"normal","thruster_status":"normal","depth_keeping_status":"normal","sonar_status":"normal","vision_status":"normal","arm_status":"normal","end_effector_status":"normal","acoustic_comms_status":"normal","tether_connection_status":"normal"}}'
 ```

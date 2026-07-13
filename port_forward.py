@@ -6,6 +6,11 @@ import asyncio
 import sys
 
 LOCAL_PORT = 6006
+if len(sys.argv) > 1:
+    try:
+        LOCAL_PORT = int(sys.argv[1])
+    except ValueError:
+        pass
 TARGET_HOST = "127.0.0.1"
 TARGET_PORT = 8890
 
