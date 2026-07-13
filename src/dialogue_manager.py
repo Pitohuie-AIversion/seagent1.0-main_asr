@@ -99,6 +99,8 @@ class DialogueManager:
     # --------------------------------------------------------------------------
 
     def process(self, user_message: str) -> str:
+        old_phase = self.phase
+
         if self._is_business_identity_query(user_message):
             reply = "我是一个专业的水下多智能体任务决策大模型，可用于辅助水下任务规划、参数收集与可行性验证。请描述您的水下任务需求，我会继续帮您完善任务参数。"
             self.conversation_history.append({"role": "user", "content": user_message})
@@ -220,34 +222,8 @@ class DialogueManager:
         if (self.phase not in ("blocked_hard", "blocked_soft", "confirming") and not missing):
             self.phase = "confirming"
 
-        print('=' * 60)
-        print(self.phase)
-
-        # 知识上下文
-        knowledge_context = self.kb.get_context_for_state(self.task_state)
-
-        # 生成回复
-        messages = build_responder_messages(
-            task_state=self.task_state,
-            built_json=built,
-            missing_fields=missing,
-            mode=self.mode,
-            phase=self.phase,
-            knowledge_context=knowledge_context,
-            constraint_context=constraint_context,
-            conversation_history=self.conversation_history,
-            latest_user_message=user_message,
-            ROV2type=self.kb.ROV2type,
-            support_task=self.kb.get_supported_task(),
-        )
-        print("DEBUG SYSTEM PROMPT START" + "="*40)
-        print(messages[0]["content"])
-        print("DEBUG SYSTEM PROMPT END" + "="*40)
-        reply = self.llm.chat(messages, temperature=0.7, max_tokens=1500)
-        reply = self.llm.filter_reply(reply, temperature=0.1, max_tokens=1500)
-
         # 处理用户确认/取消
-        if self.phase == "confirming" and self._user_confirmed(user_message):
+        if old_phase == "confirming" and self._user_confirmed(user_message):
             all_violations = self.validator.validate(self.task_state)
             if not missing and not self.validator.has_hard_violations(all_violations):
                 self.phase = "done"
@@ -288,6 +264,32 @@ class DialogueManager:
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
+
+        print('=' * 60)
+        print(self.phase)
+
+        # 知识上下文
+        knowledge_context = self.kb.get_context_for_state(self.task_state)
+
+        # 生成回复
+        messages = build_responder_messages(
+            task_state=self.task_state,
+            built_json=built,
+            missing_fields=missing,
+            mode=self.mode,
+            phase=self.phase,
+            knowledge_context=knowledge_context,
+            constraint_context=constraint_context,
+            conversation_history=self.conversation_history,
+            latest_user_message=user_message,
+            ROV2type=self.kb.ROV2type,
+            support_task=self.kb.get_supported_task(),
+        )
+        print("DEBUG SYSTEM PROMPT START" + "="*40)
+        print(messages[0]["content"])
+        print("DEBUG SYSTEM PROMPT END" + "="*40)
+        reply = self.llm.chat(messages, temperature=0.7, max_tokens=1500)
+        reply = self.llm.filter_reply(reply, temperature=0.1, max_tokens=1500)
 
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": reply})
@@ -351,6 +353,17 @@ class DialogueManager:
             self.mode = "emergency"
         if "rov_description" in updates:
             self._handle_rov_description(updates["rov_description"])
+
+        # Auto-synchronize equipment_type when equipment_name is set/updated
+        name = self.task_state.get("equipment_name")
+        if name:
+            rov = self.kb.get_rov(name)
+            if rov:
+                self.task_state["equipment_name"] = rov["full_name"]
+                category = rov.get("category")
+                cats = self.kb.robot_fleet.get("robot_categories", {})
+                if category in cats:
+                    self.task_state["equipment_type"] = cats[category]["label"]
 
     def _resolve_pending_oilfield_confirmation(self, user_message: str) -> str | None:
         if not self.task_state.get("pending_oilfield_name"):

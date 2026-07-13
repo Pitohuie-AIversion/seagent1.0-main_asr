@@ -1659,19 +1659,26 @@ const svgWarning = `
 
 function updateSidebar(data) {
   lastResponseData = data;
-  
-  let taskType = '未识别';
-  if (data.task_type === 'tree_valve_operation') {
-    taskType = '采油树控制面板插拔';
+
+  // 任务类型显示：优先从 collected 里取 task_type 字段（已规范化的中文值）
+  // 若 collected 没有，则用后端返回的 task_type key 做映射
+  const collected = data.collected || {};
+  let taskTypeDisplay = '未识别';
+  if (collected.task_type) {
+    taskTypeDisplay = collected.task_type;
+  } else if (data.task_type === 'tree_valve_operation') {
+    taskTypeDisplay = '采油树控制面板插拔';
   } else if (data.task_type === 'pipeline_inspection') {
-    taskType = '管缆巡检';
+    taskTypeDisplay = '管缆巡检';
+  } else if (data.task_type) {
+    // 其他任务类型 key 直接展示
+    taskTypeDisplay = data.task_type;
   }
-  
-  const localizedTaskType = translateValue('task_type_key', taskType);
+
+  const localizedTaskType = translateValue('task_type', taskTypeDisplay);
   const emergencyBadge = data.emergency ? `<span class="badge emergency">${I18N[currentLang].emergencyBadge}</span>` : '';
   document.getElementById('taskInfo').innerHTML = `<strong>${localizedTaskType}</strong> ${emergencyBadge}`;
 
-  const collected = data.collected || {};
   const collectedDiv = document.getElementById('collectedFields');
   if (Object.keys(collected).length === 0) {
     collectedDiv.innerHTML = I18N[currentLang].none;

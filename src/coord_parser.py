@@ -34,14 +34,14 @@ _VALUE = rf"(?:{_ARABIC_NUM}|{_CHINESE_NUM})"
 _SEP = r"(?:\s*[,，、/]\s*|\s*逗号\s*|\s+)"
 _PAIR_RE = re.compile(rf"[（(]?\s*({_VALUE}){_SEP}({_VALUE})\s*[）)]?")
 _LAT_LON_RE = re.compile(
-    rf"(?:纬度|北纬|lat(?:itude)?)\s*[:：=为是]?\s*({_VALUE})"
-    rf".{{0,12}}?"
+    rf"(?:纬度|北纬|lat(?:itude)?)\s*[:：=为是]?\s*({_VALUE})\s*度?"
+    rf".{{0,30}}?"
     rf"(?:经度|东经|lon(?:gitude)?)\s*[:：=为是]?\s*({_VALUE})",
     re.IGNORECASE,
 )
 _LON_LAT_RE = re.compile(
-    rf"(?:经度|东经|lon(?:gitude)?)\s*[:：=为是]?\s*({_VALUE})"
-    rf".{{0,12}}?"
+    rf"(?:经度|东经|lon(?:gitude)?)\s*[:：=为是]?\s*({_VALUE})\s*度?"
+    rf".{{0,30}}?"
     rf"(?:纬度|北纬|lat(?:itude)?)\s*[:：=为是]?\s*({_VALUE})",
     re.IGNORECASE,
 )
@@ -126,10 +126,11 @@ def parse_coordinate_updates(
         and not is_coord_value(current_state.get(field))
     ]
 
-    if len(unresolved) == 1 and not anchors:
-        coord = _extract_first_coord(text)
-        if coord:
-            results[unresolved[0]] = coord
+    if unresolved and not anchors:
+        # 尝试从文本中提取所有坐标对，按顺序分配给未解决字段
+        all_coords = _extract_all_coords(text)
+        for field, coord in zip(unresolved, all_coords):
+            results[field] = coord
 
     return results
 
@@ -172,6 +173,44 @@ def _extract_first_coord(text: str) -> dict[str, float] | None:
         return _normalize_coord(match.group(1), match.group(2))
 
     return None
+
+
+def _extract_all_coords(text: str) -> list[dict[str, float]]:
+    """Extract ALL coordinate pairs from text in order of appearance."""
+    coords: list[dict[str, float]] = []
+    seen_spans: list[tuple[int, int]] = []
+
+    def _overlaps(start: int, end: int) -> bool:
+        return any(s < end and start < e for s, e in seen_spans)
+
+    # 1. 优先匹配 北纬X度，东经Y度 格式（全文 findall）
+    for match in _LAT_LON_RE.finditer(text):
+        if not _overlaps(match.start(), match.end()):
+            coord = _normalize_coord(match.group(1), match.group(2))
+            if coord:
+                coords.append(coord)
+                seen_spans.append((match.start(), match.end()))
+
+    # 2. 匹配 东经X度，北纬Y度 格式
+    for match in _LON_LAT_RE.finditer(text):
+        if not _overlaps(match.start(), match.end()):
+            coord = _normalize_coord(match.group(2), match.group(1))
+            if coord:
+                coords.append(coord)
+                seen_spans.append((match.start(), match.end()))
+
+    # 3. 若无带标注的格式，回退到纯数字对
+    if not coords:
+        for match in _PAIR_RE.finditer(text):
+            if not _overlaps(match.start(), match.end()):
+                coord = _normalize_coord(match.group(1), match.group(2))
+                if coord:
+                    coords.append(coord)
+                    seen_spans.append((match.start(), match.end()))
+
+    # 按文本出现顺序排序
+    paired = sorted(zip(seen_spans, coords), key=lambda x: x[0][0])
+    return [c for _, c in paired]
 
 
 def _normalize_coord(lat_raw: Any, lon_raw: Any) -> dict[str, float] | None:

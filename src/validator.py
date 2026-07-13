@@ -56,6 +56,23 @@ _CHECK_FIELDS: dict[str, list[str]] = {
     "start_time_not_in_past":      ["start_time"],
 }
 
+_DYNAMIC_CHECKS = {
+    "current_velocity",
+    "turbidity",
+    "obstacle_dense",
+    "mothership_support",
+    "state_confidence",
+    "state_timestamp",
+    "robot_overall_status",
+    "robot_survival_status",
+    "robot_thruster_status",
+    "robot_depth_keeping_status",
+    "robot_sonar_status",
+    "robot_vision_status",
+    "robot_manipulator_status",
+    "robot_communication_status",
+}
+
 
 class TaskValidator:
     def __init__(self, kb: KnowledgeBase):
@@ -128,11 +145,39 @@ class TaskValidator:
 
         return violations
 
+    def _is_task_start_now(self, task_state: dict, time_window_minutes: int = 10) -> bool:
+        try:
+            start_time_str = task_state.get("start_time")
+            if not start_time_str:
+                return False
+
+            # 使用模拟时间代替系统时间
+            from .simulated_time import get_current_datetime
+            now = get_current_datetime()
+            now = now.replace(microsecond=0)
+
+            start_time_str = start_time_str.replace("T", " ").replace("：", ":").strip()
+            if start_time_str.endswith("Z"):
+                start_time_str = start_time_str[:-1] + "+00:00"
+            start_time = datetime.fromisoformat(start_time_str)
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+            else:
+                start_time = start_time.astimezone(ZoneInfo("Asia/Shanghai"))
+
+            delta_seconds = (start_time - now).total_seconds()
+            return 0 <= delta_seconds <= time_window_minutes * 60
+        except Exception:
+            return False
+
     def _check_one(
         self, c: dict, check: str, task_state: dict,
         rov: dict | None, water_depth: Any,
         vessel_id: str | None, tree_type: str | None,
     ) -> Violation | None:
+        if check in _DYNAMIC_CHECKS and not self._is_task_start_now(task_state):
+            return None
+
         rel_fields = _CHECK_FIELDS.get(check, [])
 
         if check == "robot_category" and rov:

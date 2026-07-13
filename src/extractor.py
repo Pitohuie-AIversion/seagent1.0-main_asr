@@ -75,6 +75,7 @@ EXTRACTION_SYSTEM = """\
 14. 只根据所需字段中定义的key提取，不新增字段，不自创字段。
 15. 如果有系统提出的修改建议被用户接受的，同样也需要能够提取出来。
 16. 只输出 JSON，不要任何解释文字。
+17. 【数字选项映射】如果上一条助手消息中以"1."/"2."/"3."等编号形式列出了选项，而用户本轮仅回复了一个数字（如"1"、"2"、"3"），则应将该数字映射为对应编号的选项值进行提取，不得忽略此类回复。
 
 【当前时间】{today}
 
@@ -187,13 +188,14 @@ class ParameterExtractor:
 
     @staticmethod
     def _build_extraction_history(conversation_history: list[dict]) -> list[dict]:
-        """只保留少量历史用户消息，避免助手长回复污染 JSON 抽取器。"""
-        user_messages = [
-            {"role": "user", "content": msg.get("content", "")}
-            for msg in conversation_history
-            if msg.get("role") == "user" and msg.get("content")
-        ]
-        return user_messages[-MAX_EXTRACTION_USER_HISTORY:]
+        """只保留最近几轮的对话历史，同时包含用户和助手消息，以便保留选项上下文。"""
+        recent = []
+        for msg in conversation_history[-6:]:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role in ("user", "assistant") and content:
+                recent.append({"role": role, "content": content})
+        return recent
 
     def resolve_rov_description(
         self,
