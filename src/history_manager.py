@@ -8,12 +8,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
-# 结果输出目录下的 history 文件夹
-HISTORY_DIR = Path("/root/autodl-tmp/result/history")
+def get_history_dir() -> Path:
+    base = os.environ.get("SEAGENT_RESULT_DIR") or os.environ.get("SEAGENT_HISTORY_DIR")
+    if base:
+        p = Path(base) / "history" if not base.endswith("history") else Path(base)
+    else:
+        p = Path("/root/autodl-tmp/result/history")
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
-def _ensure_dir() -> None:
-    """确保 history 目录存在"""
-    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+# For module level compatibility without creating dir on import
+HISTORY_DIR = property(lambda self: get_history_dir())
+
+def _ensure_dir() -> Path:
+    """确保 history 目录存在并返回"""
+    return get_history_dir()
 
 def save_conversation(
     session_id: str,
@@ -29,7 +38,7 @@ def save_conversation(
     保存一次对话快照，返回保存的文件名（不含路径）
     包含全量 slot_store 结构与 snapshot_version: 2。
     """
-    _ensure_dir()
+    history_dir = _ensure_dir()
 
     if intent_id:
         filename = f"history_{intent_id}.json"
@@ -37,7 +46,7 @@ def save_conversation(
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{session_id}_{timestamp}.json"
 
-    filepath = HISTORY_DIR / filename
+    filepath = history_dir / filename
 
     snapshot = {
         "snapshot_version": 2,
@@ -62,9 +71,9 @@ def list_history() -> List[Dict[str, Any]]:
     返回历史记录列表，按保存时间倒序排列
     每条记录包含: id(文件名), saved_at, task_id, task_type, session_id
     """
-    _ensure_dir()
+    history_dir = _ensure_dir()
     records = []
-    for f in HISTORY_DIR.glob("*.json"):
+    for f in history_dir.glob("*.json"):
         try:
             with open(f, "r", encoding="utf-8") as fp:
                 data = json.load(fp)
@@ -85,7 +94,8 @@ def load_history(history_id: str) -> Optional[Dict[str, Any]]:
     """
     根据文件名加载完整的快照数据
     """
-    filepath = HISTORY_DIR / history_id
+    history_dir = _ensure_dir()
+    filepath = history_dir / history_id
     if not filepath.exists():
         return None
     with open(filepath, "r", encoding="utf-8") as f:

@@ -131,30 +131,28 @@ class SlotStore:
             if key not in target_slots:
                 target_slots[key] = Slot(slot_name=key, value_type=vtype)
 
-    def init_task_slots(self, schema_fields: List[Dict[str, Any]]):
-        with self._lock:
-            self._initialize_base_slots()
-            schema_keys = {field["key"] for field in schema_fields}
+    def _init_task_slots_in_transaction(self, target_slots: Dict[str, Slot], schema_fields: List[Dict[str, Any]]):
+        self._initialize_base_slots(target_slots)
+        schema_keys = {field["key"] for field in schema_fields}
 
-            # Clean up dynamic slots from previous tasks
-            to_remove = [
-                k for k in self.slots
-                if k not in BASE_SLOT_TYPES and k not in schema_keys and k not in ALLOWED_INTERNAL_SLOTS
-            ]
-            for k in to_remove:
-                del self.slots[k]
+        to_remove = [
+            k for k in target_slots
+            if k not in BASE_SLOT_TYPES and k not in schema_keys and k not in ALLOWED_INTERNAL_SLOTS
+        ]
+        for k in to_remove:
+            del target_slots[k]
 
-            for field in schema_fields:
-                key = field["key"]
-                ftype = field.get("type", "string")
-                if key not in self.slots:
-                    self.slots[key] = Slot(slot_name=key, value_type=ftype)
-                else:
-                    if self.slots[key].value_type != ftype:
-                        self.slots[key].value_type = ftype
-                        self.slots[key].value = None
-                        self.slots[key].candidate_value = None
-                        self.slots[key].status = "missing"
+        for field in schema_fields:
+            key = field["key"]
+            ftype = field.get("type", "string")
+            if key not in target_slots:
+                target_slots[key] = Slot(slot_name=key, value_type=ftype)
+            else:
+                if target_slots[key].value_type != ftype:
+                    target_slots[key].value_type = ftype
+                    target_slots[key].value = None
+                    target_slots[key].candidate_value = None
+                    target_slots[key].status = "missing"
 
     def get_task_state(self) -> Dict[str, Any]:
         """Returns ONLY status == 'valid' and non-None slots as current facts."""
@@ -208,7 +206,7 @@ class SlotStore:
                 raise SnapshotValidationError("Snapshot must be a dictionary.")
 
             store_ver = snapshot.get("store_version")
-            if store_ver is None or not isinstance(store_ver, int) or store_ver < 0:
+            if store_ver is None or not isinstance(store_ver, int) or isinstance(store_ver, bool) or store_ver < 0:
                 raise SnapshotValidationError("store_version must be a non-negative integer.")
 
             slots_data = snapshot.get("slots")
@@ -222,39 +220,62 @@ class SlotStore:
             VALID_STATUSES = {"missing", "candidate", "valid", "invalid", "conflict", "unresolved"}
             new_slots = {}
             for key, sdict in slots_data.items():
+                if not isinstance(key, str):
+                    raise SnapshotValidationError("Slot key must be a string.")
                 if not isinstance(sdict, (dict, Slot)):
                     raise SnapshotValidationError(f"Slot data for key '{key}' must be a dict or Slot.")
+
                 if isinstance(sdict, dict):
+                    slot_name = sdict.get("slot_name")
+                    if slot_name is not None and slot_name != key:
+                        raise SnapshotValidationError(f"Slot key '{key}' does not match slot_name '{slot_name}'.")
                     st = sdict.get("status")
                     if st not in VALID_STATUSES:
                         raise SnapshotValidationError(f"Invalid status '{st}' for slot '{key}'.")
                     ver = sdict.get("version", 0)
-                    if not isinstance(ver, int) or ver < 0:
+                    if not isinstance(ver, int) or isinstance(ver, bool) or ver < 0:
                         raise SnapshotValidationError(f"Invalid slot version '{ver}' for slot '{key}'.")
                     conf = sdict.get("confidence")
-                    if conf is not None and (not isinstance(conf, (int, float)) or not (0.0 <= conf <= 1.0)):
+                    if conf is not None and (isinstance(conf, bool) or not isinstance(conf, (int, float)) or not (0.0 <= float(conf) <= 1.0)):
                         raise SnapshotValidationError(f"Invalid confidence '{conf}' for slot '{key}'.")
+                    val_type = sdict.get("value_type", "string")
+                    if not isinstance(val_type, str):
+                        raise SnapshotValidationError(f"Invalid value_type for slot '{key}'.")
+                    source = sdict.get("source", "user_input")
+                    if not isinstance(source, str):
+                        raise SnapshotValidationError(f"Invalid source for slot '{key}'.")
+                    updated_at = sdict.get("updated_at")
+                    if updated_at is not None and not isinstance(updated_at, str):
+                        raise SnapshotValidationError(f"Invalid updated_at for slot '{key}'.")
+
+                    val = copy.deepcopy(sdict.get("value"))
+                    if st == "valid" and val is None:
+                        raise SnapshotValidationError(f"Valid slot '{key}' cannot have null value.")
 
                     new_slots[key] = Slot(
                         slot_name=key,
-                        value=copy.deepcopy(sdict.get("value")),
-                        value_type=sdict.get("value_type", "string"),
+                        value=val,
+                        value_type=val_type,
                         status=st,
-                        source=sdict.get("source", "user_input"),
+                        source=source,
                         raw_value=copy.deepcopy(sdict.get("raw_value")),
                         confidence=conf,
                         validation_error=sdict.get("validation_error"),
-                        updated_at=sdict.get("updated_at"),
+                        updated_at=updated_at,
                         version=ver,
                         candidate_value=copy.deepcopy(sdict.get("candidate_value"))
                     )
                 elif isinstance(sdict, Slot):
+                    if sdict.slot_name != key:
+                        raise SnapshotValidationError(f"Slot key '{key}' does not match slot_name '{sdict.slot_name}'.")
                     if sdict.status not in VALID_STATUSES:
                         raise SnapshotValidationError(f"Invalid status '{sdict.status}' for slot '{key}'.")
-                    if not isinstance(sdict.version, int) or sdict.version < 0:
+                    if not isinstance(sdict.version, int) or isinstance(sdict.version, bool) or sdict.version < 0:
                         raise SnapshotValidationError(f"Invalid slot version '{sdict.version}' for slot '{key}'.")
-                    if sdict.confidence is not None and (not isinstance(sdict.confidence, (int, float)) or not (0.0 <= sdict.confidence <= 1.0)):
+                    if sdict.confidence is not None and (isinstance(sdict.confidence, bool) or not isinstance(sdict.confidence, (int, float)) or not (0.0 <= float(sdict.confidence) <= 1.0)):
                         raise SnapshotValidationError(f"Invalid confidence '{sdict.confidence}' for slot '{key}'.")
+                    if sdict.status == "valid" and sdict.value is None:
+                        raise SnapshotValidationError(f"Valid slot '{key}' cannot have null value.")
                     new_slots[key] = sdict.copy()
                     new_slots[key].slot_name = key
 

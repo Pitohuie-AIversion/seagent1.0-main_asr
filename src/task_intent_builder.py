@@ -11,8 +11,17 @@ from .knowledge_retriever import KnowledgeBase
 from .simulated_time import get_current_datetime
 from .id_sequence import next_daily_id
 
-TASK_DIR = Path("/root/autodl-tmp/result/task")
-TASK_DIR.mkdir(parents=True, exist_ok=True)
+def get_task_dir() -> Path:
+    base = os.environ.get("SEAGENT_RESULT_DIR") or os.environ.get("SEAGENT_TASK_DIR")
+    if base:
+        p = Path(base) / "task" if not base.endswith("task") else Path(base)
+    else:
+        p = Path("/root/autodl-tmp/result/task")
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+# For module compatibility
+TASK_DIR = property(lambda self: get_task_dir())
 
 
 class TaskIntentBuilder:
@@ -29,7 +38,8 @@ class TaskIntentBuilder:
         """构建 TaskIntent 对象并写入文件"""
         # 1. intent_id
         today = get_current_datetime().strftime("%Y%m%d")
-        intent_id = next_daily_id("TI", today, 2, [(TASK_DIR, "intent_id")])
+        task_dir = get_task_dir()
+        intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
 
         # 2. priority（不再收集，按模式自动赋值）
         if mode == "emergency":
@@ -121,7 +131,7 @@ class TaskIntentBuilder:
         }
 
         # 写入文件
-        filename = TASK_DIR / f"task_intent_{intent_id}.json"
+        filename = task_dir / f"task_intent_{intent_id}.json"
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(intent, f, ensure_ascii=False, indent=2)
 

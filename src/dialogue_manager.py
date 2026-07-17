@@ -18,6 +18,7 @@ dialogue_manager.py - 对话主控制器
   - 白名单key: (field, str(value), constraint_id)，字段值变化时失效
 """
 
+import copy
 import json
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -289,10 +290,57 @@ class DialogueManager:
                     
         proposed_whitelist = {item for item in self._soft_whitelist if item[0] not in changed_fields}
         
-        # Normalize and validate inside transaction
-        self._normalize_and_validate_in_transaction(new_slots, new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None)
+        # Normalize and validate inside transaction working dict new_slots
+        curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
+        self._normalize_and_validate_in_transaction(new_slots, curr_task_type_key)
         
-        # Atomic commit with optimistic version validation (Failure throws error without mutating DialogueManager outer state)
+        # Auto-generate task_id inside new_slots BEFORE commit
+        if curr_task_type_key:
+            task_id_slot = new_slots.get("task_id")
+            if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None:
+                valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
+                tid = self.builder._generate_task_id(curr_task_type_key, valid_cand_state)
+                if "task_id" not in new_slots:
+                    new_slots["task_id"] = Slot("task_id")
+                new_slots["task_id"].value = tid
+                new_slots["task_id"].status = "valid"
+                new_slots["task_id"].source = "auto"
+
+        proposed_phase = self.phase
+        ti_json_artifact = None
+
+        # Check required missing in working new_slots
+        if curr_task_type_key:
+            req_schema = self.builder.get_schema(curr_task_type_key, proposed_mode)
+            cand_missing = [f for f in req_schema if not new_slots.get(f["key"]) or new_slots[f["key"]].status != "valid" or new_slots[f["key"]].value is None]
+        else:
+            cand_missing = [{"key": "task_type", "label": "任务类型", "type": "string", "allowed_values": self.kb.get_all_task_type_values()}]
+
+        if not cand_missing and proposed_phase not in ("blocked_hard", "blocked_soft", "confirming", "done"):
+            proposed_phase = "confirming"
+
+        if old_phase == "confirming" and self._user_confirmed(user_message):
+            cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
+            cand_built = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
+            all_violations = self.validator.validate(cand_state)
+            if not cand_missing and not self.validator.has_hard_violations(all_violations):
+                proposed_phase = "done"
+                ti_builder = TaskIntentBuilder(self.kb)
+                ti_json = ti_builder.build(
+                    task_state=cand_state,
+                    built_json=cand_built,
+                    mode=proposed_mode,
+                    task_type_key=curr_task_type_key
+                )
+                ti_intent_id = ti_json["intent_id"]
+                if "intent_id" not in new_slots:
+                    new_slots["intent_id"] = Slot("intent_id")
+                new_slots["intent_id"].value = ti_intent_id
+                new_slots["intent_id"].status = "valid"
+                new_slots["intent_id"].source = "auto"
+                ti_json_artifact = ti_json
+
+        # Atomic single commit with optimistic version validation
         self.slot_store.commit_transaction(
             new_slots,
             new_unresolved,
@@ -302,38 +350,22 @@ class DialogueManager:
         
         # Apply proposed instance state AFTER successful commit
         self.mode = proposed_mode
+        self.phase = proposed_phase
         self._soft_whitelist = proposed_whitelist
         self._pending_rov_candidates = proposed_pending_rov
 
-        # Re-derive from slot_store
+        # Re-derive from slot_store (SSOT)
         self.task_state = self.slot_store.get_task_state()
         built = self.slot_store.get_built_json()
+        self._last_built_json = built
         
-        task_type_key = self.task_state.get("task_type_key")
-        if task_type_key:
-            if "task_id" in self.slot_store.slots and (self.slot_store.slots["task_id"].value is None or self.slot_store.slots["task_id"].status != "valid"):
-                tid = self.builder._generate_task_id(task_type_key, self.task_state)
-                snap_slots, snap_unresolved, snap_ver = self.slot_store.snapshot()
-                snap_slots["task_id"].value = tid
-                snap_slots["task_id"].status = "valid"
-                snap_slots["task_id"].source = "auto"
-                self.slot_store.commit_transaction(
-                    snap_slots,
-                    snap_unresolved,
-                    request_id=request_id,
-                    expected_version=snap_ver,
-                )
-                self.task_state = self.slot_store.get_task_state()
-                built = self.slot_store.get_built_json()
-                
-            required_schema = self.builder.get_schema(task_type_key, self.mode)
+        if curr_task_type_key:
+            required_schema = self.builder.get_schema(curr_task_type_key, self.mode)
             missing = self.slot_store.get_missing_slots(required_schema)
-            self._last_built_json = built
             self._last_missing = missing
         else:
-            built, missing = {}, [{"key": "task_type", "label": "任务类型", "type": "string",
-                                    "allowed_values": self.kb.get_all_task_type_values()}]
-            self._last_built_json = built
+            missing = [{"key": "task_type", "label": "任务类型", "type": "string",
+                        "allowed_values": self.kb.get_all_task_type_values()}]
             self._last_missing = missing
 
         self.task_start_now = self.is_start_time_near_now()
@@ -379,58 +411,23 @@ class DialogueManager:
         else:
             constraint_context = self._run_constraint_check(changed_fields)
 
-        if (self.phase not in ("blocked_hard", "blocked_soft", "confirming") and not missing):
-            self.phase = "confirming"
-
-        # 处理用户确认/取消
-        if old_phase == "confirming" and self._user_confirmed(user_message):
-            all_violations = self.validator.validate(self.task_state)
-            if not missing and not self.validator.has_hard_violations(all_violations):
-                self.phase = "done"
-                # 生成 TaskIntent JSON
-                ti_builder = TaskIntentBuilder(self.kb)
-                ti_json = ti_builder.build(
-                    task_state=self.task_state,
-                    built_json=built,
-                    mode=self.mode,
-                    task_type_key=self.task_state.get("task_type_key")
-                )
-                ti_intent_id = ti_json["intent_id"]
-                snap_slots, snap_unresolved, snap_ver = self.slot_store.snapshot()
-                if "intent_id" not in snap_slots:
-                    snap_slots["intent_id"] = Slot("intent_id")
-                snap_slots["intent_id"].value = ti_intent_id
-                snap_slots["intent_id"].status = "valid"
-                snap_slots["intent_id"].source = "auto"
-                snap_slots["intent_id"].raw_value = None
-                snap_slots["intent_id"].candidate_value = None
-                self.slot_store.commit_transaction(
-                    snap_slots, snap_unresolved, request_id=request_id, expected_version=snap_ver
-                )
-                self.task_state = self.slot_store.get_task_state()
-                built = self.slot_store.get_built_json()
-                self._last_built_json = built
-                self.final_result = built
-                
-                # ========== 调试打印：TaskIntent 生成信息 ==========
+        if self.phase == "done":
+            self.final_result = built
+            if ti_json_artifact:
                 print("\n" + "="*60)
                 print("🔔 [DEBUG] TaskIntent 生成成功")
-                print(json.dumps(ti_json, ensure_ascii=False, indent=2))
-                print(f"📁 文件位置: /root/autodl-tmp/result/task/task_intent_{ti_json['intent_id']}.json")
+                print(json.dumps(ti_json_artifact, ensure_ascii=False, indent=2))
+                print(f"📁 文件位置: /root/autodl-tmp/result/task/task_intent_{ti_json_artifact['intent_id']}.json")
                 print("="*60 + "\n")
-                # =================================================
-                if self.task_start_now:
-                    reply = (f"✅ 信息收集完成，当前为【立即执行任务】，任务已生成并下发。\n"
-                             f"{json.dumps(built, ensure_ascii=False, indent=2)}")
-                else:
-                    reply = (f"✅ 信息收集完成，当前为【未来规划任务】，已加入计划池。\n"
-                             f"{json.dumps(built, ensure_ascii=False, indent=2)}")
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
+            if self.task_start_now:
+                reply = (f"✅ 信息收集完成，当前为【立即执行任务】，任务已生成并下发。\n"
+                         f"{json.dumps(built, ensure_ascii=False, indent=2)}")
             else:
-                self.phase = "collecting"
-                self.awaiting_final_confirm = False
+                reply = (f"✅ 信息收集完成，当前为【未来规划任务】，已加入计划池。\n"
+                         f"{json.dumps(built, ensure_ascii=False, indent=2)}")
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
 
         if self._user_cancelled(user_message):
             self.phase = "rejected"
@@ -593,15 +590,15 @@ class DialogueManager:
                 self._handle_task_type_update_in_transaction(k, v, new_slots)
                 continue
             
-            # Check for conflict
+            # Check for conflict or update
             slot = new_slots.get(k)
             if slot and slot.status == "valid" and slot.value is not None and slot.value != v:
-                slot.status = "conflict"
                 slot.candidate_value = v
                 slot.raw_value = raw_v
                 slot.confidence = conf
                 slot.source = src
-                slot.validation_error = f"Conflict: existing value '{slot.value}' vs new value '{v}'"
+                slot.status = "candidate"
+                slot.validation_error = None
             else:
                 if k in new_slots:
                     new_slots[k].candidate_value = v
@@ -694,11 +691,7 @@ class DialogueManager:
                 if fkey not in new_slots:
                     new_slots[fkey] = Slot(slot_name=fkey, value_type=ftype)
                 else:
-                    if new_slots[fkey].value_type != ftype:
-                        new_slots[fkey].value_type = ftype
-                        new_slots[fkey].value = None
-                        new_slots[fkey].candidate_value = None
-                        new_slots[fkey].status = "missing"
+                    new_slots[fkey].value_type = ftype
 
     def _handle_rov_description_in_transaction(self, description: str, new_slots: dict):
         all_rovs = self.kb.get_all_rovs()
@@ -1222,54 +1215,76 @@ class DialogueManager:
     # --------------------------------------------------------------------------
 
     def load_snapshot(self, snapshot: dict) -> None:
-        """从历史快照恢复对话管理器的状态"""
-        self.conversation_history = snapshot.get("conversation_history", [])
-        self.mode = snapshot.get("mode", "normal")
-        self.phase = snapshot.get("phase", "collecting")
+        """从历史快照恢复对话管理器的状态（先构建、后交换原子恢复模式）"""
+        if not isinstance(snapshot, dict):
+            raise SnapshotValidationError("Snapshot must be a dictionary.")
+        
+        conv_hist = snapshot.get("conversation_history")
+        if conv_hist is not None and not isinstance(conv_hist, list):
+            raise SnapshotValidationError("conversation_history must be a list.")
+        conv_hist_copy = copy.deepcopy(conv_hist) if conv_hist is not None else []
 
-        slot_store_snap = snapshot.get("slot_store")
-        if not slot_store_snap and ("slots" in snapshot or "store_version" in snapshot):
+        candidate_mode = snapshot.get("mode", "normal")
+        if candidate_mode not in ("normal", "emergency"):
+            raise SnapshotValidationError(f"Invalid mode '{candidate_mode}'.")
+
+        candidate_phase = snapshot.get("phase", "collecting")
+        VALID_PHASES = {"collecting", "blocked_hard", "blocked_soft", "confirming", "done", "rejected"}
+        if candidate_phase not in VALID_PHASES:
+            raise SnapshotValidationError(f"Invalid phase '{candidate_phase}'.")
+
+        # Resolve slot_store payload
+        if "slot_store" in snapshot and isinstance(snapshot["slot_store"], dict):
+            slot_store_snap = snapshot["slot_store"]
+        elif "slots" in snapshot and "store_version" in snapshot:
             slot_store_snap = snapshot
-
-        if slot_store_snap and isinstance(slot_store_snap, dict):
-            self.slot_store.restore_snapshot(slot_store_snap)
+        elif "task_state" in snapshot and isinstance(snapshot.get("task_state"), dict):
+            task_state = snapshot["task_state"]
+            legacy_slots = {}
+            for k, v in task_state.items():
+                legacy_slots[k] = {
+                    "slot_name": k,
+                    "value": v,
+                    "value_type": "string",
+                    "status": "valid" if v is not None else "missing",
+                    "source": "legacy_import",
+                    "version": 1
+                }
+            slot_store_snap = {
+                "store_version": 1,
+                "slots": legacy_slots,
+                "unresolved": snapshot.get("unresolved", [])
+            }
         else:
-            self.task_state = snapshot.get("task_state", {})
-            self.slot_store = SlotStore(self.kb)
-            task_type_key = self.task_state.get("task_type_key")
-            if task_type_key:
-                required_fields = self.builder.get_schema(task_type_key, self.mode)
-                self.slot_store.init_task_slots(required_fields)
+            raise SnapshotValidationError("Snapshot missing valid slot_store or task_state.")
 
-            new_slots = self.slot_store.clone_slots()
-            for k, v in self.task_state.items():
-                if k in new_slots:
-                    new_slots[k].value = v
-                    new_slots[k].status = "valid"
-                    new_slots[k].source = "legacy_import"
-                else:
-                    new_slots[k] = Slot(slot_name=k, value=v, status="valid", source="legacy_import")
+        # Build candidate SlotStore (raises SnapshotValidationError on failure)
+        candidate_slot_store = SlotStore.from_snapshot(slot_store_snap, self.kb)
 
-            self.slot_store.slots = new_slots
-
-        self.task_state = self.slot_store.get_task_state()
-        built = self.slot_store.get_built_json()
-
-        task_type_key = self.task_state.get("task_type_key")
+        # Derive facts from candidate_slot_store
+        candidate_task_state = candidate_slot_store.get_task_state()
+        candidate_built = candidate_slot_store.get_built_json()
+        task_type_key = candidate_task_state.get("task_type_key")
         if task_type_key:
-            required_schema = self.builder.get_schema(task_type_key, self.mode)
-            missing = self.slot_store.get_missing_slots(required_schema)
-            self._last_built_json = built
-            self._last_missing = missing
+            required_schema = self.builder.get_schema(task_type_key, candidate_mode)
+            candidate_missing = candidate_slot_store.get_missing_slots(required_schema)
         else:
-            self._last_built_json = built
-            self._last_missing = [{"key": "task_type", "label": "任务类型", "type": "string",
-                                    "allowed_values": self.kb.get_all_task_type_values()}]
+            candidate_missing = [{"key": "task_type", "label": "任务类型", "type": "string",
+                                   "allowed_values": self.kb.get_all_task_type_values()}]
 
-        self.final_result = None
+        # ALL STEPS SUCCEEDED - Swap states atomically!
+        self.slot_store = candidate_slot_store
+        self.conversation_history = conv_hist_copy
+        self.mode = candidate_mode
+        self.phase = candidate_phase
+        self.task_state = candidate_task_state
+        self._last_built_json = candidate_built
+        self._last_missing = candidate_missing
+        self.final_result = candidate_built if candidate_phase == "done" else None
         self.awaiting_final_confirm = False
         self.task_start_now = self.is_start_time_near_now()
         self._blocking_violations = []
         self._soft_whitelist = set()
         self._hard_refusal_counts = {}
+        self._pending_rov_candidates = []
         self._pending_rov_candidates = []

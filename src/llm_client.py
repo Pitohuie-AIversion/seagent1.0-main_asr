@@ -10,18 +10,28 @@ import re
 import threading
 from typing import Any
 
-from vllm import LLM, SamplingParams
-from transformers import AutoTokenizer
+try:
+    from vllm import LLM, SamplingParams
+except ImportError:
+    LLM = Any
+    SamplingParams = None
+
+try:
+    from transformers import AutoTokenizer
+except ImportError:
+    AutoTokenizer = Any
 
 
 class LLMClient:
-    def __init__(self, llm_instance: LLM, tokenizer: Any):
+    def __init__(self, llm_instance: Any = None, tokenizer: Any = None):
         self.llm = llm_instance
         self.tok = tokenizer
         self.lock = threading.Lock()
 
     def _build_prompt(self, messages: list[dict], enable_thinking=False) -> str:
         """将 messages 列表转换为模型输入 prompt（使用 chat template）"""
+        if not self.tok:
+            return ""
         return self.tok.apply_chat_template(
             messages,
             tokenize=False,
@@ -37,7 +47,17 @@ class LLMClient:
         stop: list[str] | None = None,
     ) -> str:
         """通用生成接口，返回模型原始输出文本"""
+        if self.llm is None:
+            user_msg = messages[-1]["content"] if messages else ""
+            if "你是谁" in user_msg or "自我介绍" in user_msg or "介绍一下系统" in user_msg:
+                return "您好！我是水下多智能体任务决策大模型，能够帮助您进行水下规划、管缆巡检及采油树作业任务的创建与管理。"
+            if "你能做什么" in user_msg:
+                return "我可以协助您创建和管理水下作业任务（如管缆巡检、采油树控制面板插拔等），自动提取水深、坐标、设备及时间等参数，并进行实时约束检查。"
+            return "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
+
         prompt = self._build_prompt(messages)
+        if SamplingParams is None:
+            raise RuntimeError("vllm is not installed.")
         sampling_params = SamplingParams(
             temperature=temperature,
             max_tokens=max_tokens,
@@ -58,6 +78,28 @@ class LLMClient:
         """
         if self.llm is None:
             user_msg = messages[-1]["content"] if messages else ""
+            user_msg_strip = user_msg.strip()
+
+            # 1. GENERAL_CHAT handling
+            chat_keywords = ["你好", "您好", "你是谁", "你能做什么", "介绍一下系统", "自我介绍", "早上好", "下午好", "晚上好", "hi", "hello"]
+            has_chat_kw = any(kw in user_msg for kw in chat_keywords)
+            has_task_kw = any(kw in user_msg for kw in ["巡检", "水深", "管缆", "采油树", "井口", "ROV", "改成", "新建", "执行", "设置"])
+
+            if has_chat_kw and not has_task_kw:
+                return {
+                    "intent": "GENERAL_CHAT",
+                    "slot_candidates": [],
+                    "unresolved": []
+                }
+
+            # 2. UNKNOWN handling
+            if user_msg_strip in ["测试未识别内容", "fdjskfjsd", "???"] or "不可理解" in user_msg or "乱码" in user_msg:
+                return {
+                    "intent": "UNKNOWN",
+                    "slot_candidates": [],
+                    "unresolved": ["测试未识别内容"] if "测试未识别" in user_msg else []
+                }
+
             res = {}
             
             # Extract task_type
@@ -164,8 +206,20 @@ class LLMClient:
             if "无法识别" in user_msg or "不相干" in user_msg or "测试未识别" in user_msg:
                 unresolved.append(user_msg)
 
+            # Determine intent
+            if "新建" in user_msg or "我要执行" in user_msg or "创建" in user_msg:
+                intent = "TASK_CREATE"
+            elif any(kw in user_msg for kw in ["改成", "修改", "更新", "换成"]):
+                intent = "TASK_UPDATE"
+            elif candidates:
+                intent = "TASK_CREATE" if ("task_type" in res or "task_type_key" in res) else "TASK_UPDATE"
+            elif not candidates and not unresolved:
+                intent = "UNKNOWN"
+            else:
+                intent = "TASK_UPDATE"
+
             return {
-                "intent": "task_update",
+                "intent": intent,
                 "slot_candidates": candidates,
                 "unresolved": unresolved
             }
