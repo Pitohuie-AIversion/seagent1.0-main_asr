@@ -22,13 +22,12 @@ def save_conversation(
     built_json: Dict[str, Any],
     mode: str,
     phase: str,
-    intent_id: Optional[str] = None,   # 新增参数
+    intent_id: Optional[str] = None,
+    slot_store: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     保存一次对话快照，返回保存的文件名（不含路径）
-    文件名格式:
-        - 如果提供 intent_id: history_{intent_id}.json
-        - 否则: {session_id}_{timestamp}.json
+    包含全量 slot_store 结构与 snapshot_version: 2。
     """
     _ensure_dir()
 
@@ -41,16 +40,18 @@ def save_conversation(
     filepath = HISTORY_DIR / filename
 
     snapshot = {
+        "snapshot_version": 2,
         "session_id": session_id,
         "saved_at": datetime.now().isoformat(),
         "conversation_history": conversation_history,
+        "slot_store": slot_store or {},
         "task_state": task_state,
         "built_json": built_json,
         "mode": mode,
         "phase": phase,
         "task_id": built_json.get("task_id", "unknown"),
         "task_type": task_state.get("task_type_key", "unknown"),
-        "intent_id": intent_id,   # 记录intent_id，便于追溯
+        "intent_id": intent_id,
     }
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(snapshot, f, ensure_ascii=False, indent=2)

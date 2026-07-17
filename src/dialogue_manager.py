@@ -128,6 +128,7 @@ class DialogueManager:
         current_state = self.slot_store.get_task_state()
         
         merged_updates = {}
+        merged_updates_meta = {}
         extraction_res = {}
         
         if task_type_key is None:
@@ -138,12 +139,42 @@ class DialogueManager:
                 task_type_map=self.kb.get_task_type_map(),
                 required=None
             )
+            intent = extraction_res.get("intent", "TASK_UPDATE")
+            intent_str = str(intent).upper().strip()
+
+            if intent_str == "GENERAL_CHAT":
+                messages = [
+                    {"role": "system", "content": "你是一个水下多智能体任务规划系统助手。请友好专业地回答用户的问候或一般性问题。"},
+                    *self.conversation_history[-6:],
+                    {"role": "user", "content": user_message}
+                ]
+                reply = self.llm.generate(messages, temperature=0.7)
+                if not reply or reply.strip() in ("", "null"):
+                    reply = "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
+                reply = self.llm.filter_reply(reply)
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
+
+            if intent_str == "UNKNOWN":
+                reply = "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数还是查询系统功能？"
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
+
             stage1_updates = {}
             for candidate in extraction_res.get("slot_candidates", []):
                 k = candidate["canonical_key"]
                 v = candidate["normalized_value"]
-                stage1_updates[k] = v
+                cand_info = {
+                    "value": v,
+                    "raw_value": candidate.get("raw_value"),
+                    "confidence": candidate.get("confidence", 1.0),
+                    "source": "user_input"
+                }
+                stage1_updates[k] = cand_info
                 merged_updates[k] = v
+                merged_updates_meta[k] = cand_info
             self._apply_updates_in_transaction(stage1_updates, new_slots)
             
             task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
@@ -159,6 +190,28 @@ class DialogueManager:
                 required=required,
                 ROV2type=self.kb.ROV2type
             )
+            intent = extraction_res.get("intent", "TASK_UPDATE")
+            intent_str = str(intent).upper().strip()
+
+            if intent_str == "GENERAL_CHAT":
+                messages = [
+                    {"role": "system", "content": "你是一个水下多智能体任务规划系统助手。请友好专业地回答用户的问候或一般性问题。"},
+                    *self.conversation_history[-6:],
+                    {"role": "user", "content": user_message}
+                ]
+                reply = self.llm.generate(messages, temperature=0.7)
+                if not reply or reply.strip() in ("", "null"):
+                    reply = "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
+                reply = self.llm.filter_reply(reply)
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
+
+            if intent_str == "UNKNOWN":
+                reply = "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数还是查询系统功能？"
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
             
             if extraction_res.get("unresolved"):
                 for u in extraction_res["unresolved"]:
@@ -171,15 +224,26 @@ class DialogueManager:
                 v = candidate["normalized_value"]
                 if k == "equipment_name" or k == "equipment_model":
                     k = "equipment_type"
-                stage2_updates[k] = v
+                cand_info = {
+                    "value": v,
+                    "raw_value": candidate.get("raw_value"),
+                    "confidence": candidate.get("confidence", 1.0),
+                    "source": "user_input"
+                }
+                stage2_updates[k] = cand_info
+                merged_updates[k] = v
+                merged_updates_meta[k] = cand_info
+                
+            raw_stage2 = self._merge_coordinate_updates(user_message, {k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, required)
+            for k, v in raw_stage2.items():
+                if k not in stage2_updates:
+                    stage2_updates[k] = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": "user_input"}
                 merged_updates[k] = v
                 
-            stage2_updates = self._merge_coordinate_updates(user_message, stage2_updates, required)
-            for k, v in stage2_updates.items():
-                merged_updates[k] = v
-                
-            stage2_updates = self._link_oilfield_update_in_transaction(stage2_updates, new_slots)
-            for k, v in stage2_updates.items():
+            raw_linked = self._link_oilfield_update_in_transaction({k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, new_slots)
+            for k, v in raw_linked.items():
+                if k not in stage2_updates:
+                    stage2_updates[k] = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": "user_input"}
                 merged_updates[k] = v
                 
             # Conflict resolution check: if user confirmed or cancelled conflict in next turn
@@ -202,6 +266,11 @@ class DialogueManager:
                     if u not in new_unresolved:
                         new_unresolved.append(u)
         
+        # Compute proposed mode change without mutating self.mode before commit
+        proposed_mode = self.mode
+        if merged_updates.get("emergency_mode"):
+            proposed_mode = "emergency"
+
         # Compute changed fields based on proposed updates
         changed_fields = set()
         for k, v in merged_updates.items():
@@ -210,12 +279,12 @@ class DialogueManager:
                 if old_val != v:
                     changed_fields.add(k)
                     
-        self._invalidate_whitelist(changed_fields)
+        proposed_whitelist = {item for item in self._soft_whitelist if item[0] not in changed_fields}
         
         # Normalize and validate inside transaction
         self._normalize_and_validate_in_transaction(new_slots, new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None)
         
-        # Atomic commit with optimistic version validation
+        # Atomic commit with optimistic version validation (Failure throws error without mutating DialogueManager outer state)
         self.slot_store.commit_transaction(
             new_slots,
             new_unresolved,
@@ -223,6 +292,10 @@ class DialogueManager:
             expected_version=expected_version,
         )
         
+        # Apply proposed instance state AFTER successful commit
+        self.mode = proposed_mode
+        self._soft_whitelist = proposed_whitelist
+
         # Re-derive from slot_store
         self.task_state = self.slot_store.get_task_state()
         built = self.slot_store.get_built_json()
@@ -474,9 +547,24 @@ class DialogueManager:
                 new_slots["pending_oilfield_candidates"].status = "missing"
 
         skip = {"emergency_mode", "rov_description", "__clear_oilfield_name", "__clear_pending_oilfield"}
-        for k, v in updates.items():
-            if k in skip or v is None or v == "":
+        for k, item in updates.items():
+            if k in skip or item is None or item == "":
                 continue
+
+            if isinstance(item, dict) and "value" in item:
+                v = item.get("value")
+                raw_v = item.get("raw_value", str(v) if v is not None else None)
+                conf = item.get("confidence", 1.0)
+                src = item.get("source", "user_input")
+            else:
+                v = item
+                raw_v = str(v) if v is not None else None
+                conf = 1.0
+                src = "user_input"
+
+            if v is None or v == "":
+                continue
+
             if k in ("task_type", "task_type_key"):
                 self._handle_task_type_update_in_transaction(k, v, new_slots)
                 continue
@@ -486,19 +574,30 @@ class DialogueManager:
             if slot and slot.status == "valid" and slot.value is not None and slot.value != v:
                 slot.status = "conflict"
                 slot.candidate_value = v
-                slot.raw_value = str(v)
+                slot.raw_value = raw_v
+                slot.confidence = conf
+                slot.source = src
                 slot.validation_error = f"Conflict: existing value '{slot.value}' vs new value '{v}'"
             else:
                 if k in new_slots:
                     new_slots[k].candidate_value = v
-                    new_slots[k].raw_value = str(v)
+                    new_slots[k].raw_value = raw_v
+                    new_slots[k].confidence = conf
+                    new_slots[k].source = src
                     new_slots[k].status = "candidate"
                     new_slots[k].validation_error = None
                 else:
-                    new_slots[k] = Slot(slot_name=k, value=None, candidate_value=v, raw_value=str(v), status="candidate")
+                    new_slots[k] = Slot(
+                        slot_name=k,
+                        value=None,
+                        candidate_value=v,
+                        raw_value=raw_v,
+                        confidence=conf,
+                        source=src,
+                        status="candidate"
+                    )
 
-        if updates.get("emergency_mode") and self.mode != "emergency":
-            self.mode = "emergency"
+        if updates.get("emergency_mode"):
             if "emergency_mode" in new_slots:
                 new_slots["emergency_mode"].value = True
                 new_slots["emergency_mode"].status = "valid"
@@ -670,7 +769,7 @@ class DialogueManager:
                     slot.status = "valid"
                     slot.validation_error = None
 
-        temp_state = {k: s.value for k, s in new_slots.items() if s.value is not None}
+        temp_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
         violations = self.validator.validate(temp_state)
         for v in violations:
             if v.severity == "hard":
@@ -1106,34 +1205,53 @@ class DialogueManager:
 
     def load_snapshot(self, snapshot: dict) -> None:
         """从历史快照恢复对话管理器的状态"""
-        # 恢复基本状态
         self.conversation_history = snapshot.get("conversation_history", [])
-        self.task_state = snapshot.get("task_state", {})
-        self.slot_store = SlotStore(self.kb)
-        
-        task_type_key = self.task_state.get("task_type_key")
-        if task_type_key:
-            required_fields = self.builder.get_schema(task_type_key, snapshot.get("mode", "normal"))
-            self.slot_store.init_task_slots(required_fields)
-
-        new_slots = self.slot_store.clone_slots()
-        for k, v in self.task_state.items():
-            if k in new_slots:
-                new_slots[k].value = v
-                new_slots[k].status = "valid"
-            else:
-                new_slots[k] = Slot(slot_name=k, value=v, status="valid")
-
-        self.slot_store.commit_transaction(new_slots, [])
-        
         self.mode = snapshot.get("mode", "normal")
         self.phase = snapshot.get("phase", "collecting")
+
+        slot_store_snap = snapshot.get("slot_store")
+        if not slot_store_snap and ("slots" in snapshot or "store_version" in snapshot):
+            slot_store_snap = snapshot
+
+        if slot_store_snap and isinstance(slot_store_snap, dict):
+            self.slot_store.restore_snapshot(slot_store_snap)
+        else:
+            self.task_state = snapshot.get("task_state", {})
+            self.slot_store = SlotStore(self.kb)
+            task_type_key = self.task_state.get("task_type_key")
+            if task_type_key:
+                required_fields = self.builder.get_schema(task_type_key, self.mode)
+                self.slot_store.init_task_slots(required_fields)
+
+            new_slots = self.slot_store.clone_slots()
+            for k, v in self.task_state.items():
+                if k in new_slots:
+                    new_slots[k].value = v
+                    new_slots[k].status = "valid"
+                    new_slots[k].source = "legacy_import"
+                else:
+                    new_slots[k] = Slot(slot_name=k, value=v, status="valid", source="legacy_import")
+
+            self.slot_store.slots = new_slots
+
+        self.task_state = self.slot_store.get_task_state()
+        built = self.slot_store.get_built_json()
+
+        task_type_key = self.task_state.get("task_type_key")
+        if task_type_key:
+            required_schema = self.builder.get_schema(task_type_key, self.mode)
+            missing = self.slot_store.get_missing_slots(required_schema)
+            self._last_built_json = built
+            self._last_missing = missing
+        else:
+            self._last_built_json = built
+            self._last_missing = [{"key": "task_type", "label": "任务类型", "type": "string",
+                                    "allowed_values": self.kb.get_all_task_type_values()}]
+
         self.final_result = None
         self.awaiting_final_confirm = False
-        self.task_start_now = False
-        # 清空阻塞与白名单，重新构建缓存
+        self.task_start_now = self.is_start_time_near_now()
         self._blocking_violations = []
         self._soft_whitelist = set()
         self._hard_refusal_counts = {}
         self._pending_rov_candidates = []
-        self._rebuild_cache()

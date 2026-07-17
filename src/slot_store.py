@@ -185,6 +185,50 @@ class SlotStore:
                     missing.append(field)
             return missing
 
+    def export_snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "store_version": self.version,
+                "slots": {
+                    key: slot.to_dict()
+                    for key, slot in self.slots.items()
+                },
+                "unresolved": copy.deepcopy(self.unresolved),
+            }
+
+    def restore_snapshot(self, snapshot: Dict[str, Any]):
+        with self._lock:
+            if not isinstance(snapshot, dict):
+                return
+            self.version = snapshot.get("store_version", 0)
+            slots_data = snapshot.get("slots", {})
+            new_slots = {}
+            for key, sdict in slots_data.items():
+                if isinstance(sdict, dict):
+                    new_slots[key] = Slot(
+                        slot_name=sdict.get("slot_name", key),
+                        value=copy.deepcopy(sdict.get("value")),
+                        value_type=sdict.get("value_type", "string"),
+                        status=sdict.get("status", "missing"),
+                        source=sdict.get("source", "user_input"),
+                        raw_value=copy.deepcopy(sdict.get("raw_value")),
+                        confidence=sdict.get("confidence"),
+                        validation_error=sdict.get("validation_error"),
+                        updated_at=sdict.get("updated_at"),
+                        version=sdict.get("version", 0),
+                        candidate_value=copy.deepcopy(sdict.get("candidate_value"))
+                    )
+                elif isinstance(sdict, Slot):
+                    new_slots[key] = sdict.copy()
+            self.slots = new_slots
+            self.unresolved = copy.deepcopy(snapshot.get("unresolved", []))
+
+    @classmethod
+    def from_snapshot(cls, snapshot: Dict[str, Any], kb=None):
+        store = cls(kb)
+        store.restore_snapshot(snapshot)
+        return store
+
     def clone_slots(self) -> Dict[str, Slot]:
         with self._lock:
             return {k: s.copy() for k, s in self.slots.items()}
@@ -214,6 +258,17 @@ class SlotStore:
             task_id = self.slots.get("task_id").value if (self.slots.get("task_id") and self.slots.get("task_id").value) else "unknown"
 
             slot_changes_detected = False
+
+            # Check deleted slots
+            deleted_keys = set(self.slots.keys()) - set(temp_slots.keys())
+            for key in deleted_keys:
+                old_slot = self.slots[key]
+                slot_changes_detected = True
+                logger.info(
+                    f"[SLOT_DELETE] task_id={task_id} request_id={request_id} "
+                    f"store_version={self.version} slot_name={key} "
+                    f"old_value={old_slot.value} old_status={old_slot.status} action=delete"
+                )
 
             for key, new_slot in temp_slots.items():
                 old_slot = self.slots.get(key)

@@ -308,7 +308,8 @@ def api_chat():
                     built_json=mgr._last_built_json,
                     mode=mgr.mode,
                     phase=mgr.phase,
-                    intent_id=mgr.task_state.get('intent_id'),  
+                    intent_id=mgr.task_state.get('intent_id'),
+                    slot_store=mgr.slot_store.export_snapshot(),
                 )
             except Exception as e:
                 logging.error(f"保存历史快照失败: {e}", exc_info=True)
@@ -338,22 +339,24 @@ def api_chat():
         return jsonify({
             "code": 409,
             "error": "SlotVersionConflict",
-            "msg": f"并发版本冲突: {str(svc)}"
+            "msg": f"并发版本冲突: {str(svc)}",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown"
         }), 409
     except ValueError as ve:
         logging.error(f"Validation error in /api/chat: {ve}", exc_info=True)
         return jsonify({
             "code": 400,
             "error": "ValidationError",
-            "msg": f"槽位校验失败: {str(ve)}"
+            "msg": f"槽位校验失败: {str(ve)}",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown"
         }), 400
     except Exception as exc:
-        import traceback
         logging.error(f"Unhandled exception in /api/chat: {exc}", exc_info=True)
         return jsonify({
             "code": 500,
             "error": "InternalServerError",
-            "msg": f"服务器内部错误: {str(exc)}\n{traceback.format_exc()}"
+            "msg": "服务器内部错误，请稍后重试。",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown"
         }), 500
 
 
