@@ -150,6 +150,7 @@ def build_responder_messages(
     latest_user_message: str,
     ROV2type: dict,
     support_task: list,
+    slot_snapshot: dict = None,
 ) -> list[dict]:
     now = get_current_datetime()
     today_str = now.strftime("%Y年%m月%d日（%A）")
@@ -230,8 +231,17 @@ def build_responder_messages(
         task_type              = task_state.get("task_type", "(未确定)"),
     )
 
-    # print('reply prompt'*10)
-    # print(system_content)
+    if slot_snapshot:
+        status_lines = []
+        for k, info in slot_snapshot.items():
+            st = info.get("status")
+            if st in ("candidate", "invalid", "conflict"):
+                status_lines.append(
+                    f"  - 槽位 [{k}] 状态: {st} | 当前值: {info.get('value')} | 候选值: {info.get('candidate_value')} | 错误: {info.get('validation_error')}"
+                )
+        if status_lines:
+            status_desc = "\n".join(status_lines)
+            system_content += f"\n\n【槽位状态 Snapshot Notice】:\n{status_desc}\n注意：以上状态为 candidate/invalid/conflict 的槽位未算作有效事实，严禁描述为已完成。"
 
     recent_history = conversation_history[-16:] if len(conversation_history) > 16 else conversation_history
     return [

@@ -100,7 +100,7 @@ class DialogueManager:
     # 主入口
     # --------------------------------------------------------------------------
 
-    def process(self, user_message: str) -> str:
+    def process(self, user_message: str, request_id: str = "req_default") -> str:
         old_phase = self.phase
 
         if self._is_business_identity_query(user_message):
@@ -115,16 +115,14 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
-
         pending_reply = self._resolve_pending_oilfield_confirmation(user_message)
         if pending_reply is not None:
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": pending_reply})
             return pending_reply
 
-        # 3. Parameter Extraction & Processing Pipeline (Atomic Transaction)
-        new_slots = self.slot_store.clone_slots()
-        new_unresolved = list(self.slot_store.unresolved)
+        # 3. Parameter Extraction & Processing Pipeline (Atomic Transaction with Optimistic Lock)
+        new_slots, new_unresolved, expected_version = self.slot_store.snapshot()
         
         task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
         current_state = self.slot_store.get_task_state()
@@ -152,7 +150,7 @@ class DialogueManager:
             
         if task_type_key:
             # Stage 2: Extract task parameters
-            current_state = {k: s.value for k, s in new_slots.items() if s.value is not None}
+            current_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
             required = self.builder.get_required(task_type_key, self.mode)
             extraction_res = self.extractor.extract_updates(
                 user_message, self.conversation_history, current_state,
@@ -184,9 +182,8 @@ class DialogueManager:
             for k, v in stage2_updates.items():
                 merged_updates[k] = v
                 
-            # Conflict resolution check: if user confirmed conflict in the next turn
-            # This must run BEFORE applying new updates to avoid self-resolving new conflicts
-            for k, slot in new_slots.items():
+            # Conflict resolution check: if user confirmed or cancelled conflict in next turn
+            for k, slot in list(new_slots.items()):
                 if slot.status == "conflict" and slot.candidate_value is not None:
                     if self._user_confirmed(user_message) or stage2_updates.get(k) == slot.candidate_value:
                         slot.value = slot.candidate_value
@@ -200,7 +197,6 @@ class DialogueManager:
                         
             self._apply_updates_in_transaction(stage2_updates, new_slots)
         else:
-            # No task type key, but unresolved may be populated
             if extraction_res.get("unresolved"):
                 for u in extraction_res["unresolved"]:
                     if u not in new_unresolved:
@@ -219,8 +215,13 @@ class DialogueManager:
         # Normalize and validate inside transaction
         self._normalize_and_validate_in_transaction(new_slots, new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None)
         
-        # Atomic commit
-        self.slot_store.commit_transaction(new_slots, new_unresolved)
+        # Atomic commit with optimistic version validation
+        self.slot_store.commit_transaction(
+            new_slots,
+            new_unresolved,
+            request_id=request_id,
+            expected_version=expected_version,
+        )
         
         # Re-derive from slot_store
         self.task_state = self.slot_store.get_task_state()
@@ -228,12 +229,17 @@ class DialogueManager:
         
         task_type_key = self.task_state.get("task_type_key")
         if task_type_key:
-            if "task_id" in new_slots and (new_slots["task_id"].value is None or new_slots["task_id"].status != "valid"):
+            if "task_id" in self.slot_store.slots and (self.slot_store.slots["task_id"].value is None or self.slot_store.slots["task_id"].status != "valid"):
                 tid = self.builder._generate_task_id(task_type_key, self.task_state)
-                new_slots = self.slot_store.clone_slots()
-                new_slots["task_id"].value = tid
-                new_slots["task_id"].status = "valid"
-                self.slot_store.commit_transaction(new_slots, self.slot_store.unresolved)
+                snap_slots, snap_unresolved, snap_ver = self.slot_store.snapshot()
+                snap_slots["task_id"].value = tid
+                snap_slots["task_id"].status = "valid"
+                self.slot_store.commit_transaction(
+                    snap_slots,
+                    snap_unresolved,
+                    request_id=request_id,
+                    expected_version=snap_ver,
+                )
                 self.task_state = self.slot_store.get_task_state()
                 built = self.slot_store.get_built_json()
                 
@@ -356,6 +362,7 @@ class DialogueManager:
             latest_user_message=user_message,
             ROV2type=self.kb.ROV2type,
             support_task=self.kb.get_supported_task(),
+            slot_snapshot=self.slot_store.get_slot_snapshot(),
         )
         print("DEBUG SYSTEM PROMPT START" + "="*40)
         print(messages[0]["content"])
@@ -483,11 +490,12 @@ class DialogueManager:
                 slot.validation_error = f"Conflict: existing value '{slot.value}' vs new value '{v}'"
             else:
                 if k in new_slots:
-                    new_slots[k].value = v
+                    new_slots[k].candidate_value = v
+                    new_slots[k].raw_value = str(v)
                     new_slots[k].status = "candidate"
                     new_slots[k].validation_error = None
                 else:
-                    new_slots[k] = Slot(slot_name=k, value=v, status="candidate")
+                    new_slots[k] = Slot(slot_name=k, value=None, candidate_value=v, raw_value=str(v), status="candidate")
 
         if updates.get("emergency_mode") and self.mode != "emergency":
             self.mode = "emergency"
@@ -500,7 +508,10 @@ class DialogueManager:
         # Auto-synchronize equipment_type when equipment_name is set/updated
         eq_name_slot = new_slots.get("equipment_name")
         eq_type_slot = new_slots.get("equipment_type")
-        eq_val = (eq_name_slot.value if eq_name_slot else None) or (eq_type_slot.value if eq_type_slot else None)
+        eq_val = (eq_name_slot.value if (eq_name_slot and eq_name_slot.status == "valid") else None) or \
+                 (eq_name_slot.candidate_value if eq_name_slot else None) or \
+                 (eq_type_slot.value if (eq_type_slot and eq_type_slot.status == "valid") else None) or \
+                 (eq_type_slot.candidate_value if eq_type_slot else None)
         if eq_val:
             task_type = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
             rov = self.kb.get_rov_for_task(eq_val, task_type) if task_type else self.kb.get_rov(eq_val)
@@ -509,6 +520,7 @@ class DialogueManager:
                     new_slots["equipment_name"] = Slot("equipment_name")
                 new_slots["equipment_name"].value = rov["full_name"]
                 new_slots["equipment_name"].status = "valid"
+                new_slots["equipment_name"].candidate_value = None
                 
                 category = rov.get("category")
                 cats = self.kb.get_robot_classes()
@@ -519,35 +531,52 @@ class DialogueManager:
                         new_slots["equipment_type"] = Slot("equipment_type")
                     new_slots["equipment_type"].value = target_val
                     new_slots["equipment_type"].status = "valid"
+                    new_slots["equipment_type"].candidate_value = None
 
     def _handle_task_type_update_in_transaction(self, key: str, value: str, new_slots: dict):
         task_type_map = self.kb.get_task_type_map()
         templates = self.kb.task_schemas.get("task_templates", {})
 
+        target_key = None
         if value in task_type_map:
             new_slots["task_type"].value = value
             new_slots["task_type"].status = "valid"
-            new_slots["task_type_key"].value = task_type_map[value]
+            target_key = task_type_map[value]
+            new_slots["task_type_key"].value = target_key
             new_slots["task_type_key"].status = "valid"
-            required_fields = self.builder.get_schema(task_type_map[value], self.mode)
-            self.slot_store.init_task_slots(required_fields)
-            for f in required_fields:
-                fkey = f["key"]
-                if fkey not in new_slots:
-                    new_slots[fkey] = Slot(slot_name=fkey, value_type=f.get("type", "string"))
         elif key == "task_type_key" and value in templates:
+            target_key = value
             new_slots["task_type_key"].value = value
             new_slots["task_type_key"].status = "valid"
             values = templates[value].get("task_type_values", [])
             if len(values) == 1:
                 new_slots["task_type"].value = values[0]
                 new_slots["task_type"].status = "valid"
-            required_fields = self.builder.get_schema(value, self.mode)
-            self.slot_store.init_task_slots(required_fields)
+
+        if target_key:
+            required_fields = self.builder.get_schema(target_key, self.mode)
+            schema_keys = {f["key"] for f in required_fields}
+            
+            # Clean up old dynamic slots in new_slots that do not belong to BASE_SLOT_TYPES, schema_keys, or ALLOWED_INTERNAL_SLOTS
+            from .slot_store import BASE_SLOT_TYPES, ALLOWED_INTERNAL_SLOTS
+            to_remove = [
+                k for k in list(new_slots.keys())
+                if k not in BASE_SLOT_TYPES and k not in schema_keys and k not in ALLOWED_INTERNAL_SLOTS
+            ]
+            for k in to_remove:
+                del new_slots[k]
+
             for f in required_fields:
                 fkey = f["key"]
+                ftype = f.get("type", "string")
                 if fkey not in new_slots:
-                    new_slots[fkey] = Slot(slot_name=fkey, value_type=f.get("type", "string"))
+                    new_slots[fkey] = Slot(slot_name=fkey, value_type=ftype)
+                else:
+                    if new_slots[fkey].value_type != ftype:
+                        new_slots[fkey].value_type = ftype
+                        new_slots[fkey].value = None
+                        new_slots[fkey].candidate_value = None
+                        new_slots[fkey].status = "missing"
 
     def _handle_rov_description_in_transaction(self, description: str, new_slots: dict):
         all_rovs = self.kb.get_all_rovs()
@@ -574,13 +603,17 @@ class DialogueManager:
             key = field_def["key"]
             ftype = field_def["type"]
             slot = new_slots.get(key)
-            if not slot or slot.value is None or slot.status in ("fixed", "auto", "conflict"):
+            if not slot or slot.status in ("fixed", "auto", "conflict"):
                 continue
                 
-            temp_state = {k: s.value for k, s in new_slots.items() if s.value is not None}
+            target_val = slot.candidate_value if slot.candidate_value is not None else slot.value
+            if target_val is None:
+                continue
+
+            temp_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
             allowed = self.builder._resolve_allowed(field_def, task_type_key, temp_state)
             if allowed:
-                raw = slot.value
+                raw = target_val
                 if ftype == "list":
                     normalized = self.normalizer.normalize(key, field_def["label"], raw, allowed, ftype)
                 else:
@@ -588,41 +621,52 @@ class DialogueManager:
                     
                 if normalized is not None:
                     slot.value = normalized
+                    slot.candidate_value = None
                     slot.status = "valid"
                     slot.validation_error = None
                 else:
                     slot.status = "invalid"
+                    slot.candidate_value = raw
                     slot.validation_error = f"Value '{raw}' could not be normalized to allowed options: {allowed}"
             else:
                 if ftype == "datetime":
-                    val_str = str(slot.value)
+                    val_str = str(target_val)
                     import re
                     pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"
                     if re.match(pattern, val_str):
+                        slot.value = val_str
+                        slot.candidate_value = None
                         slot.status = "valid"
                         slot.validation_error = None
                     else:
                         slot.status = "invalid"
+                        slot.candidate_value = target_val
                         slot.validation_error = f"Invalid datetime format: {val_str}. Expected YYYY-MM-DDTHH:MM:SS"
                 elif ftype == "coord":
-                    coord = self.builder._validate_coord(slot.value)
+                    coord = self.builder._validate_coord(target_val)
                     if coord:
                         slot.value = coord
+                        slot.candidate_value = None
                         slot.status = "valid"
                         slot.validation_error = None
                     else:
                         slot.status = "invalid"
-                        slot.validation_error = f"Invalid coordinate format: {slot.value}"
+                        slot.candidate_value = target_val
+                        slot.validation_error = f"Invalid coordinate format: {target_val}"
                 elif ftype == "number":
-                    num = self.builder._validate_number(slot.value)
+                    num = self.builder._validate_number(target_val)
                     if num is not None:
                         slot.value = num
+                        slot.candidate_value = None
                         slot.status = "valid"
                         slot.validation_error = None
                     else:
                         slot.status = "invalid"
-                        slot.validation_error = f"Invalid numeric value: {slot.value}"
+                        slot.candidate_value = target_val
+                        slot.validation_error = f"Invalid numeric value: {target_val}"
                 else:
+                    slot.value = target_val
+                    slot.candidate_value = None
                     slot.status = "valid"
                     slot.validation_error = None
 

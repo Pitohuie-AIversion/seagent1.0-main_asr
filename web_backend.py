@@ -279,47 +279,82 @@ def api_asr():
     except Exception as e:
         return jsonify({"code": 500, "msg": str(e)}), 500
 
+from src.slot_store import SlotVersionConflict
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
-    data = request.json or {}
-    sid = data.get("session_id") or str(uuid.uuid4())
-    msg = data.get("message", "").strip()
-    if not msg:
-        return jsonify({"error": "empty message"}), 400
+    try:
+        data = request.json or {}
+        sid = data.get("session_id") or str(uuid.uuid4())
+        request_id = data.get("request_id") or f"req_{uuid.uuid4().hex[:8]}"
+        msg = data.get("message", "").strip()
+        if not msg:
+            return jsonify({"code": 400, "error": "empty message", "msg": "Message content cannot be empty."}), 400
 
-    mgr = get_or_create_manager(sid)
+        mgr = get_or_create_manager(sid)
 
-    with _sess_lock:
-        if sid not in _sessions:
-            _sessions[sid] = Session(sid)
+        with _sess_lock:
+            if sid not in _sessions:
+                _sessions[sid] = Session(sid)
 
-    reply = mgr.process(msg)
-    print_status(mgr)
-    if mgr.phase == "done":
-        try:
-            save_conversation(
-                session_id=sid,
-                conversation_history=mgr.conversation_history,
-                task_state=mgr.task_state,
-                built_json=mgr._last_built_json,
-                mode=mgr.mode,
-                phase=mgr.phase,
-                intent_id=mgr.task_state.get('intent_id'),  
-            )
-        except Exception as e:
-            print(f"保存历史快照失败: {e}")
+        reply = mgr.process(msg, request_id=request_id)
+        print_status(mgr)
+        if mgr.phase == "done":
+            try:
+                save_conversation(
+                    session_id=sid,
+                    conversation_history=mgr.conversation_history,
+                    task_state=mgr.task_state,
+                    built_json=mgr._last_built_json,
+                    mode=mgr.mode,
+                    phase=mgr.phase,
+                    intent_id=mgr.task_state.get('intent_id'),  
+                )
+            except Exception as e:
+                logging.error(f"保存历史快照失败: {e}", exc_info=True)
 
-    return jsonify({
-        "session_id": sid,
-        "reply": reply,
-        "done": mgr.phase == "done",
-        "rejected": mgr.phase == "rejected",
-        "collected": mgr._last_built_json,
-        "missing": [miss["key"] for miss in mgr._last_missing],
-        "task_type": mgr.task_state.get("task_type_key"),
-        "emergency": mgr.mode == "emergency",
-        "final_json": mgr._last_built_json if mgr.phase == "done" else None
-    })
+        resp_data = {
+            "code": 200,
+            "session_id": sid,
+            "request_id": request_id,
+            "reply": reply,
+            "done": mgr.phase == "done",
+            "rejected": mgr.phase == "rejected",
+            "collected": mgr._last_built_json,
+            "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
+            "task_type": mgr.task_state.get("task_type_key"),
+            "emergency": mgr.mode == "emergency",
+            "final_json": mgr._last_built_json if mgr.phase == "done" else None
+        }
+        for k, v in resp_data.items():
+            try:
+                json.dumps(v)
+            except Exception as e:
+                raise TypeError(f"Field '{k}' is not JSON serializable: {type(v)} -> {v}") from e
+
+        return jsonify(resp_data)
+    except SlotVersionConflict as svc:
+        logging.error(f"Slot version conflict in /api/chat: {svc}", exc_info=True)
+        return jsonify({
+            "code": 409,
+            "error": "SlotVersionConflict",
+            "msg": f"并发版本冲突: {str(svc)}"
+        }), 409
+    except ValueError as ve:
+        logging.error(f"Validation error in /api/chat: {ve}", exc_info=True)
+        return jsonify({
+            "code": 400,
+            "error": "ValidationError",
+            "msg": f"槽位校验失败: {str(ve)}"
+        }), 400
+    except Exception as exc:
+        import traceback
+        logging.error(f"Unhandled exception in /api/chat: {exc}", exc_info=True)
+        return jsonify({
+            "code": 500,
+            "error": "InternalServerError",
+            "msg": f"服务器内部错误: {str(exc)}\n{traceback.format_exc()}"
+        }), 500
 
 
 @app.route("/api/reset", methods=["POST"])
