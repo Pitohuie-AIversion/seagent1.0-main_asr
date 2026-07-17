@@ -2,6 +2,7 @@ import copy
 import logging
 import threading
 from typing import Any, Optional, Dict, List, Tuple
+from datetime import datetime
 from src.simulated_time import get_current_datetime
 
 logger = logging.getLogger("backend.slot_store")
@@ -9,6 +10,11 @@ logger = logging.getLogger("backend.slot_store")
 
 class SlotVersionConflict(RuntimeError):
     """Raised when commit_transaction detects a store version mismatch."""
+    pass
+
+
+class SnapshotValidationError(ValueError):
+    """Raised when a snapshot fails structure validation."""
     pass
 
 
@@ -58,7 +64,7 @@ class Slot:
         self.raw_value = raw_value
         self.confidence = confidence
         self.validation_error = validation_error
-        self.updated_at = updated_at or get_current_datetime().isoformat()
+        self.updated_at = updated_at or datetime.now().isoformat()
         self.version = version
         self.candidate_value = candidate_value
 
@@ -102,28 +108,28 @@ class SlotStore:
         self.version: int = 0
         self._initialize_base_slots()
 
-    def _initialize_base_slots(self):
-        with self._lock:
-            base_keys = {
-                "task_type": "string",
-                "task_type_key": "string",
-                "emergency_mode": "boolean",
-                "task_id": "string",
-                "intent_id": "string",
-                "equipment_name": "string",
-                "equipment_type": "string",
-                "raw_oilfield_name": "string",
-                "oilfield_match_status": "string",
-                "oilfield_match_confidence": "number",
-                "oilfield_match_evidence": "list",
-                "oilfield_match_candidates": "list",
-                "pending_oilfield_name": "string",
-                "pending_oilfield_candidates": "list",
-                "_rov_candidates": "list"
-            }
-            for key, vtype in base_keys.items():
-                if key not in self.slots:
-                    self.slots[key] = Slot(slot_name=key, value_type=vtype)
+    def _initialize_base_slots(self, slots_dict: Dict[str, Slot] = None):
+        target_slots = self.slots if slots_dict is None else slots_dict
+        base_keys = {
+            "task_type": "string",
+            "task_type_key": "string",
+            "emergency_mode": "boolean",
+            "task_id": "string",
+            "intent_id": "string",
+            "equipment_name": "string",
+            "equipment_type": "string",
+            "raw_oilfield_name": "string",
+            "oilfield_match_status": "string",
+            "oilfield_match_confidence": "number",
+            "oilfield_match_evidence": "list",
+            "oilfield_match_candidates": "list",
+            "pending_oilfield_name": "string",
+            "pending_oilfield_candidates": "list",
+            "_rov_candidates": "list"
+        }
+        for key, vtype in base_keys.items():
+            if key not in target_slots:
+                target_slots[key] = Slot(slot_name=key, value_type=vtype)
 
     def init_task_slots(self, schema_fields: List[Dict[str, Any]]):
         with self._lock:
@@ -141,14 +147,14 @@ class SlotStore:
             for field in schema_fields:
                 key = field["key"]
                 ftype = field.get("type", "string")
-                if key in self.slots:
+                if key not in self.slots:
+                    self.slots[key] = Slot(slot_name=key, value_type=ftype)
+                else:
                     if self.slots[key].value_type != ftype:
                         self.slots[key].value_type = ftype
                         self.slots[key].value = None
                         self.slots[key].candidate_value = None
                         self.slots[key].status = "missing"
-                else:
-                    self.slots[key] = Slot(slot_name=key, value_type=ftype)
 
     def get_task_state(self) -> Dict[str, Any]:
         """Returns ONLY status == 'valid' and non-None slots as current facts."""
@@ -199,29 +205,63 @@ class SlotStore:
     def restore_snapshot(self, snapshot: Dict[str, Any]):
         with self._lock:
             if not isinstance(snapshot, dict):
-                return
-            self.version = snapshot.get("store_version", 0)
-            slots_data = snapshot.get("slots", {})
+                raise SnapshotValidationError("Snapshot must be a dictionary.")
+
+            store_ver = snapshot.get("store_version")
+            if store_ver is None or not isinstance(store_ver, int) or store_ver < 0:
+                raise SnapshotValidationError("store_version must be a non-negative integer.")
+
+            slots_data = snapshot.get("slots")
+            if slots_data is None or not isinstance(slots_data, dict):
+                raise SnapshotValidationError("slots must be a dictionary.")
+
+            unresolved_data = snapshot.get("unresolved")
+            if unresolved_data is None or not isinstance(unresolved_data, list):
+                raise SnapshotValidationError("unresolved must be a list.")
+
+            VALID_STATUSES = {"missing", "candidate", "valid", "invalid", "conflict", "unresolved"}
             new_slots = {}
             for key, sdict in slots_data.items():
+                if not isinstance(sdict, (dict, Slot)):
+                    raise SnapshotValidationError(f"Slot data for key '{key}' must be a dict or Slot.")
                 if isinstance(sdict, dict):
+                    st = sdict.get("status")
+                    if st not in VALID_STATUSES:
+                        raise SnapshotValidationError(f"Invalid status '{st}' for slot '{key}'.")
+                    ver = sdict.get("version", 0)
+                    if not isinstance(ver, int) or ver < 0:
+                        raise SnapshotValidationError(f"Invalid slot version '{ver}' for slot '{key}'.")
+                    conf = sdict.get("confidence")
+                    if conf is not None and (not isinstance(conf, (int, float)) or not (0.0 <= conf <= 1.0)):
+                        raise SnapshotValidationError(f"Invalid confidence '{conf}' for slot '{key}'.")
+
                     new_slots[key] = Slot(
-                        slot_name=sdict.get("slot_name", key),
+                        slot_name=key,
                         value=copy.deepcopy(sdict.get("value")),
                         value_type=sdict.get("value_type", "string"),
-                        status=sdict.get("status", "missing"),
+                        status=st,
                         source=sdict.get("source", "user_input"),
                         raw_value=copy.deepcopy(sdict.get("raw_value")),
-                        confidence=sdict.get("confidence"),
+                        confidence=conf,
                         validation_error=sdict.get("validation_error"),
                         updated_at=sdict.get("updated_at"),
-                        version=sdict.get("version", 0),
+                        version=ver,
                         candidate_value=copy.deepcopy(sdict.get("candidate_value"))
                     )
                 elif isinstance(sdict, Slot):
+                    if sdict.status not in VALID_STATUSES:
+                        raise SnapshotValidationError(f"Invalid status '{sdict.status}' for slot '{key}'.")
+                    if not isinstance(sdict.version, int) or sdict.version < 0:
+                        raise SnapshotValidationError(f"Invalid slot version '{sdict.version}' for slot '{key}'.")
+                    if sdict.confidence is not None and (not isinstance(sdict.confidence, (int, float)) or not (0.0 <= sdict.confidence <= 1.0)):
+                        raise SnapshotValidationError(f"Invalid confidence '{sdict.confidence}' for slot '{key}'.")
                     new_slots[key] = sdict.copy()
+                    new_slots[key].slot_name = key
+
+            self._initialize_base_slots(new_slots)
             self.slots = new_slots
-            self.unresolved = copy.deepcopy(snapshot.get("unresolved", []))
+            self.version = store_ver
+            self.unresolved = copy.deepcopy(unresolved_data)
 
     @classmethod
     def from_snapshot(cls, snapshot: Dict[str, Any], kb=None):

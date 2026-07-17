@@ -25,7 +25,7 @@ from datetime import datetime   # ✅ 新增导入
 
 from .llm_client import LLMClient
 from .knowledge_retriever import KnowledgeBase
-from .extractor import ParameterExtractor
+from .extractor import ParameterExtractor, MUTATING_INTENTS, NON_MUTATING_INTENTS, normalize_intent
 from .normalizer import FieldNormalizer
 from .output_builder import OutputBuilder
 from .validator import TaskValidator, Violation
@@ -115,7 +115,7 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
-        pending_reply = self._resolve_pending_oilfield_confirmation(user_message)
+        pending_reply = self._resolve_pending_oilfield_confirmation(user_message, request_id=request_id)
         if pending_reply is not None:
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": pending_reply})
@@ -130,6 +130,7 @@ class DialogueManager:
         merged_updates = {}
         merged_updates_meta = {}
         extraction_res = {}
+        proposed_pending_rov = list(self._pending_rov_candidates)
         
         if task_type_key is None:
             # Stage 1: Extract task type
@@ -139,24 +140,24 @@ class DialogueManager:
                 task_type_map=self.kb.get_task_type_map(),
                 required=None
             )
-            intent = extraction_res.get("intent", "TASK_UPDATE")
-            intent_str = str(intent).upper().strip()
+            intent_str = normalize_intent(extraction_res.get("intent"))
 
-            if intent_str == "GENERAL_CHAT":
-                messages = [
-                    {"role": "system", "content": "你是一个水下多智能体任务规划系统助手。请友好专业地回答用户的问候或一般性问题。"},
-                    *self.conversation_history[-6:],
-                    {"role": "user", "content": user_message}
-                ]
-                reply = self.llm.generate(messages, temperature=0.7)
-                if not reply or reply.strip() in ("", "null"):
-                    reply = "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
-                reply = self.llm.filter_reply(reply)
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
+            if intent_str not in MUTATING_INTENTS:
+                if intent_str == "GENERAL_CHAT":
+                    messages = [
+                        {"role": "system", "content": "你是一个水下多智能体任务规划系统助手。请友好专业地回答用户的问候或一般性问题。"},
+                        *self.conversation_history[-6:],
+                        {"role": "user", "content": user_message}
+                    ]
+                    reply = self.llm.generate(messages, temperature=0.7)
+                    if not reply or reply.strip() in ("", "null"):
+                        reply = "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
+                    reply = self.llm.filter_reply(reply)
+                    self.conversation_history.append({"role": "user", "content": user_message})
+                    self.conversation_history.append({"role": "assistant", "content": reply})
+                    return reply
 
-            if intent_str == "UNKNOWN":
+                # UNKNOWN or any illegal intent fails closed
                 reply = "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数还是查询系统功能？"
                 self.conversation_history.append({"role": "user", "content": user_message})
                 self.conversation_history.append({"role": "assistant", "content": reply})
@@ -190,24 +191,24 @@ class DialogueManager:
                 required=required,
                 ROV2type=self.kb.ROV2type
             )
-            intent = extraction_res.get("intent", "TASK_UPDATE")
-            intent_str = str(intent).upper().strip()
+            intent_str = normalize_intent(extraction_res.get("intent"))
 
-            if intent_str == "GENERAL_CHAT":
-                messages = [
-                    {"role": "system", "content": "你是一个水下多智能体任务规划系统助手。请友好专业地回答用户的问候或一般性问题。"},
-                    *self.conversation_history[-6:],
-                    {"role": "user", "content": user_message}
-                ]
-                reply = self.llm.generate(messages, temperature=0.7)
-                if not reply or reply.strip() in ("", "null"):
-                    reply = "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
-                reply = self.llm.filter_reply(reply)
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
+            if intent_str not in MUTATING_INTENTS:
+                if intent_str == "GENERAL_CHAT":
+                    messages = [
+                        {"role": "system", "content": "你是一个水下多智能体任务规划系统助手。请友好专业地回答用户的问候或一般性问题。"},
+                        *self.conversation_history[-6:],
+                        {"role": "user", "content": user_message}
+                    ]
+                    reply = self.llm.generate(messages, temperature=0.7)
+                    if not reply or reply.strip() in ("", "null"):
+                        reply = "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
+                    reply = self.llm.filter_reply(reply)
+                    self.conversation_history.append({"role": "user", "content": user_message})
+                    self.conversation_history.append({"role": "assistant", "content": reply})
+                    return reply
 
-            if intent_str == "UNKNOWN":
+                # UNKNOWN or any illegal intent fails closed
                 reply = "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数还是查询系统功能？"
                 self.conversation_history.append({"role": "user", "content": user_message})
                 self.conversation_history.append({"role": "assistant", "content": reply})
@@ -237,13 +238,13 @@ class DialogueManager:
             raw_stage2 = self._merge_coordinate_updates(user_message, {k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, required)
             for k, v in raw_stage2.items():
                 if k not in stage2_updates:
-                    stage2_updates[k] = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": "user_input"}
+                    stage2_updates[k] = {"value": v, "raw_value": user_message, "confidence": 1.0, "source": "rule_parser"}
                 merged_updates[k] = v
                 
             raw_linked = self._link_oilfield_update_in_transaction({k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, new_slots)
             for k, v in raw_linked.items():
                 if k not in stage2_updates:
-                    stage2_updates[k] = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": "user_input"}
+                    stage2_updates[k] = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": "entity_linker"}
                 merged_updates[k] = v
                 
             # Conflict resolution check: if user confirmed or cancelled conflict in next turn
@@ -260,6 +261,13 @@ class DialogueManager:
                         slot.validation_error = None
                         
             self._apply_updates_in_transaction(stage2_updates, new_slots)
+            if "rov_description" in stage2_updates:
+                all_rovs = self.kb.get_all_rovs()
+                proposed_pending_rov = self.extractor.resolve_rov_description(
+                    stage2_updates["rov_description"].get("value") if isinstance(stage2_updates["rov_description"], dict) else str(stage2_updates["rov_description"]),
+                    all_rovs,
+                    new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
+                )
         else:
             if extraction_res.get("unresolved"):
                 for u in extraction_res["unresolved"]:
@@ -295,6 +303,7 @@ class DialogueManager:
         # Apply proposed instance state AFTER successful commit
         self.mode = proposed_mode
         self._soft_whitelist = proposed_whitelist
+        self._pending_rov_candidates = proposed_pending_rov
 
         # Re-derive from slot_store
         self.task_state = self.slot_store.get_task_state()
@@ -307,6 +316,7 @@ class DialogueManager:
                 snap_slots, snap_unresolved, snap_ver = self.slot_store.snapshot()
                 snap_slots["task_id"].value = tid
                 snap_slots["task_id"].status = "valid"
+                snap_slots["task_id"].source = "auto"
                 self.slot_store.commit_transaction(
                     snap_slots,
                     snap_unresolved,
@@ -359,7 +369,6 @@ class DialogueManager:
         ALL_FIELDS = {"task_type", "start_time", "end_time", "cable_position", "cable_type", "start_point", "end_point",
                       "water_depth", "equipment_type", "equipment_name", "payload", "support_vessel", "oilfield_name",
                       "oilfield_coordinates", "wellhead_id"}
-                      # 采油树不再区分立式/卧式，约束检查不再跟踪 tree_type。
 
         if not missing and self.phase not in ("blocked_hard", "blocked_soft"):
             constraint_context = self._run_constraint_check(ALL_FIELDS)
@@ -378,7 +387,6 @@ class DialogueManager:
             all_violations = self.validator.validate(self.task_state)
             if not missing and not self.validator.has_hard_violations(all_violations):
                 self.phase = "done"
-                self.final_result = built
                 # 生成 TaskIntent JSON
                 ti_builder = TaskIntentBuilder(self.kb)
                 ti_json = ti_builder.build(
@@ -387,7 +395,23 @@ class DialogueManager:
                     mode=self.mode,
                     task_type_key=self.task_state.get("task_type_key")
                 )
-                self.task_state['intent_id'] = ti_json['intent_id']  # 保存intent_id供历史快照使用
+                ti_intent_id = ti_json["intent_id"]
+                snap_slots, snap_unresolved, snap_ver = self.slot_store.snapshot()
+                if "intent_id" not in snap_slots:
+                    snap_slots["intent_id"] = Slot("intent_id")
+                snap_slots["intent_id"].value = ti_intent_id
+                snap_slots["intent_id"].status = "valid"
+                snap_slots["intent_id"].source = "auto"
+                snap_slots["intent_id"].raw_value = None
+                snap_slots["intent_id"].candidate_value = None
+                self.slot_store.commit_transaction(
+                    snap_slots, snap_unresolved, request_id=request_id, expected_version=snap_ver
+                )
+                self.task_state = self.slot_store.get_task_state()
+                built = self.slot_store.get_built_json()
+                self._last_built_json = built
+                self.final_result = built
+                
                 # ========== 调试打印：TaskIntent 生成信息 ==========
                 print("\n" + "="*60)
                 print("🔔 [DEBUG] TaskIntent 生成成功")
@@ -612,8 +636,8 @@ class DialogueManager:
                  (eq_type_slot.value if (eq_type_slot and eq_type_slot.status == "valid") else None) or \
                  (eq_type_slot.candidate_value if eq_type_slot else None)
         if eq_val:
-            task_type = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
-            rov = self.kb.get_rov_for_task(eq_val, task_type) if task_type else self.kb.get_rov(eq_val)
+            task_type = (new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None) or self.task_state.get("task_type_key")
+            rov = (self.kb.get_rov_for_task(eq_val, task_type) if task_type else None) or self.kb.get_rov(eq_val)
             if rov:
                 if "equipment_name" not in new_slots:
                     new_slots["equipment_name"] = Slot("equipment_name")
@@ -624,11 +648,10 @@ class DialogueManager:
                 category = rov.get("category")
                 cats = self.kb.get_robot_classes()
                 if category in cats:
-                    category_name = cats[category].get("full_name", category)
-                    target_val = rov["full_name"] if self.mode != "emergency" else category_name
+                    category_name = cats[category].get("display_name", cats[category].get("full_name", category))
                     if "equipment_type" not in new_slots:
                         new_slots["equipment_type"] = Slot("equipment_type")
-                    new_slots["equipment_type"].value = target_val
+                    new_slots["equipment_type"].value = category_name
                     new_slots["equipment_type"].status = "valid"
                     new_slots["equipment_type"].candidate_value = None
 
@@ -780,47 +803,61 @@ class DialogueManager:
                         slot.validation_error = v.message
 
     def _apply_updates(self, updates: dict):
-        if updates.get("__clear_oilfield_name"):
-            self.task_state.pop("oilfield_name", None)
-            self.task_state.pop("oilfield_entity_id", None)
-        if updates.get("__clear_pending_oilfield"):
-            self._clear_pending_oilfield()
+        """Deprecated: Compatibility helper routing updates through SlotStore transaction."""
+        snap_slots, snap_unresolved, snap_ver = self.slot_store.snapshot()
+        self._apply_updates_in_transaction(updates, snap_slots)
+        self.slot_store.commit_transaction(snap_slots, snap_unresolved, expected_version=snap_ver)
+        self.task_state = self.slot_store.get_task_state()
+        self._rebuild_cache()
 
-        skip = {"emergency_mode", "rov_description", "__clear_oilfield_name", "__clear_pending_oilfield"}
-        for k, v in updates.items():
-            if k in skip or v is None or v == "":
-                continue
-            if k in ("task_type", "task_type_key"):
-                self._handle_task_type_update(k, v)
-                continue
-            self.task_state[k] = v
+    def _handle_task_type_update(self, key: str, value: str):
+        """Deprecated: Compatibility helper for task type update via SlotStore transaction."""
+        snap_slots, snap_unresolved, snap_ver = self.slot_store.snapshot()
+        self._handle_task_type_update_in_transaction(key, value, snap_slots)
+        self.slot_store.commit_transaction(snap_slots, snap_unresolved, expected_version=snap_ver)
+        self.task_state = self.slot_store.get_task_state()
+        self._rebuild_cache()
 
-        if updates.get("emergency_mode") and self.mode != "emergency":
-            self.mode = "emergency"
-        if "rov_description" in updates:
-            self._handle_rov_description(updates["rov_description"])
+    def _normalize_constrained_fields(self, changed_fields: set[str]):
+        """Deprecated: Compatibility helper for normalizing fields via SlotStore transaction."""
+        task_type_key = self.task_state.get("task_type_key")
+        if not task_type_key:
+            return
+        snap_slots, snap_unresolved, snap_ver = self.slot_store.snapshot()
+        self._normalize_and_validate_in_transaction(snap_slots, task_type_key)
+        self.slot_store.commit_transaction(snap_slots, snap_unresolved, expected_version=snap_ver)
+        self.task_state = self.slot_store.get_task_state()
+        self._rebuild_cache()
 
-        # Auto-synchronize equipment_type when equipment_name is set/updated
-        name = self.task_state.get("equipment_name")
-        if name:
-            task_type = self.task_state.get("task_type_key")
-            rov = self.kb.get_rov_for_task(name, task_type) if task_type else self.kb.get_rov(name)
-            if rov:
-                self.task_state["equipment_name"] = rov["full_name"]
-                category = rov.get("category")
-                cats = self.kb.get_robot_classes()
-                if category in cats:
-                    self.task_state["equipment_type"] = cats[category].get("full_name", category)
+    def _handle_rov_description(self, description: str):
+        """Deprecated: Compatibility helper for ROV description resolution via SlotStore transaction."""
+        snap_slots, snap_unresolved, snap_ver = self.slot_store.snapshot()
+        candidates = self._handle_rov_description_in_transaction(description, snap_slots)
+        self.slot_store.commit_transaction(snap_slots, snap_unresolved, expected_version=snap_ver)
+        self._pending_rov_candidates = candidates
+        self.task_state = self.slot_store.get_task_state()
+        self._rebuild_cache()
 
-    def _resolve_pending_oilfield_confirmation(self, user_message: str) -> str | None:
-        if not self.task_state.get("pending_oilfield_name"):
+    def _resolve_pending_oilfield_confirmation(self, user_message: str, request_id: str = "req_default") -> str | None:
+        pending_slot = self.slot_store.slots.get("pending_oilfield_name")
+        raw_name = pending_slot.value if (pending_slot and pending_slot.status == "valid") else None
+        if not raw_name:
             return None
+
         if self._user_cancelled_oilfield(user_message):
-            self._clear_pending_oilfield()
-            self.task_state.pop("oilfield_name", None)
-            self.task_state.pop("oilfield_entity_id", None)
+            snap_slots, snap_unresolved, snap_ver = self.slot_store.snapshot()
+            for k in ("oilfield_name", "oilfield_entity_id", "pending_oilfield_name", "pending_oilfield_candidates"):
+                if k in snap_slots:
+                    snap_slots[k].value = None
+                    snap_slots[k].status = "missing"
+                    snap_slots[k].raw_value = None
+            self.slot_store.commit_transaction(
+                snap_slots, snap_unresolved, request_id=request_id, expected_version=snap_ver
+            )
+            self.task_state = self.slot_store.get_task_state()
             self._rebuild_cache()
             return "已取消当前待确认油田名称，请提供标准的油田名称（例如：流花11-1油田、陵水17-2油田等），或补充油田坐标。"
+
         if not self._user_confirmed_oilfield(user_message):
             return None
 
@@ -828,19 +865,57 @@ class DialogueManager:
         if not candidate:
             return self._build_pending_oilfield_reply()
 
-        self.task_state["oilfield_name"] = candidate.get("name")
-        self.task_state["oilfield_entity_id"] = candidate.get("id")
-        self.task_state["oilfield_match_status"] = "confirmed"
-        self.task_state["oilfield_match_confidence"] = candidate.get("confidence")
-        self.task_state["oilfield_match_evidence"] = candidate.get("evidence", [])
         confirmed_name = candidate.get("name")
-        self._clear_pending_oilfield()
+        entity_id = candidate.get("id")
+
+        snap_slots, snap_unresolved, snap_ver = self.slot_store.snapshot()
+        for k in ("oilfield_name", "oilfield_entity_id", "oilfield_match_status", "oilfield_match_confidence", "oilfield_match_evidence"):
+            if k not in snap_slots:
+                snap_slots[k] = Slot(k)
+
+        snap_slots["oilfield_name"].value = confirmed_name
+        snap_slots["oilfield_name"].status = "valid"
+        snap_slots["oilfield_name"].source = "entity_linker"
+        snap_slots["oilfield_name"].raw_value = raw_name
+        snap_slots["oilfield_name"].confidence = candidate.get("confidence")
+
+        if "oilfield_entity_id" not in snap_slots:
+            snap_slots["oilfield_entity_id"] = Slot("oilfield_entity_id")
+        snap_slots["oilfield_entity_id"].value = entity_id
+        snap_slots["oilfield_entity_id"].status = "valid"
+        snap_slots["oilfield_entity_id"].source = "entity_linker"
+
+        snap_slots["oilfield_match_status"].value = "confirmed"
+        snap_slots["oilfield_match_status"].status = "valid"
+        snap_slots["oilfield_match_status"].source = "entity_linker"
+
+        snap_slots["oilfield_match_confidence"].value = candidate.get("confidence")
+        snap_slots["oilfield_match_confidence"].status = "valid"
+        snap_slots["oilfield_match_confidence"].source = "entity_linker"
+
+        snap_slots["oilfield_match_evidence"].value = candidate.get("evidence", [])
+        snap_slots["oilfield_match_evidence"].status = "valid"
+        snap_slots["oilfield_match_evidence"].source = "entity_linker"
+
+        for k in ("pending_oilfield_name", "pending_oilfield_candidates"):
+            if k in snap_slots:
+                snap_slots[k].value = None
+                snap_slots[k].status = "missing"
+                snap_slots[k].raw_value = None
+
+        self.slot_store.commit_transaction(
+            snap_slots, snap_unresolved, request_id=request_id, expected_version=snap_ver
+        )
+        self.task_state = self.slot_store.get_task_state()
         self._rebuild_cache()
         return f"已确认油田名称为“{confirmed_name}”，我会按这个标准名称继续收集任务信息。"
 
     def _build_pending_oilfield_reply(self) -> str | None:
-        raw_name = self.task_state.get("pending_oilfield_name")
-        if not raw_name or self.task_state.get("oilfield_name"):
+        pending_slot = self.slot_store.slots.get("pending_oilfield_name")
+        raw_name = pending_slot.value if (pending_slot and pending_slot.status == "valid") else None
+        oil_slot = self.slot_store.slots.get("oilfield_name")
+        has_oilfield = oil_slot.value if (oil_slot and oil_slot.status == "valid") else None
+        if not raw_name or has_oilfield:
             return None
 
         candidate = self._top_pending_oilfield_candidate()
@@ -853,7 +928,8 @@ class DialogueManager:
         )
 
     def _top_pending_oilfield_candidate(self) -> dict | None:
-        candidates = self.task_state.get("pending_oilfield_candidates")
+        cand_slot = self.slot_store.slots.get("pending_oilfield_candidates")
+        candidates = cand_slot.value if (cand_slot and cand_slot.status == "valid") else None
         if isinstance(candidates, list) and candidates:
             candidate = candidates[0]
             if isinstance(candidate, dict) and candidate.get("name"):
@@ -861,8 +937,15 @@ class DialogueManager:
         return None
 
     def _clear_pending_oilfield(self):
+        """Deprecated: Use SlotStore transaction to clear pending oilfield slots."""
+        snap_slots, snap_unresolved, snap_ver = self.slot_store.snapshot()
         for key in ("pending_oilfield_name", "pending_oilfield_candidates"):
-            self.task_state.pop(key, None)
+            if key in snap_slots:
+                snap_slots[key].value = None
+                snap_slots[key].status = "missing"
+        self.slot_store.commit_transaction(snap_slots, snap_unresolved, expected_version=snap_ver)
+        self.task_state = self.slot_store.get_task_state()
+        self._rebuild_cache()
 
     def _user_confirmed_oilfield(self, message: str) -> bool:
         keywords = ["是", "对", "就是", "采用", "确认", "确定", "可以", "好的", "ok"]
@@ -872,72 +955,6 @@ class DialogueManager:
     def _user_cancelled_oilfield(message: str) -> bool:
         keywords = ["不是", "不对", "否", "错了", "重新", "不要"]
         return any(kw in message for kw in keywords)
-
-    def _handle_task_type_update(self, key: str, value: str):
-        """验证任务类型合法性，并设置task_type_key"""
-        task_type_map = self.kb.get_task_type_map()
-        templates = self.kb.task_schemas.get("task_templates", {})
-
-        if value in task_type_map:
-            self.task_state["task_type"] = value
-            self.task_state["task_type_key"] = task_type_map[value]
-        elif key == "task_type_key" and value in templates:
-            self.task_state["task_type_key"] = value
-            values = templates[value].get("task_type_values", [])
-            if len(values) == 1:
-                self.task_state["task_type"] = values[0]
-
-    def _normalize_constrained_fields(self, changed_fields: set[str]):
-        """规范化有allowed_values约束的字段"""
-        task_type_key = self.task_state.get("task_type_key")
-        if not task_type_key:
-            return
-
-        schema = self.builder.get_schema(task_type_key, self.mode)
-        for field_def in schema:
-            key = field_def["key"]
-            ftype = field_def["type"]
-            if ftype not in ("string", "list", "tasktype"):
-                continue
-            if changed_fields and key not in changed_fields:
-                continue
-
-            allowed = self.builder._resolve_allowed(field_def, task_type_key, self.task_state)
-            if not allowed:
-                continue
-
-            raw = self.task_state.get(key)
-            if raw is None:
-                continue
-
-            # 已经是合法值则跳过
-            if ftype in ("string", "tasktype") and raw in allowed:
-                continue
-            if ftype == "list" and isinstance(raw, list) and all(v in allowed for v in raw):
-                continue
-
-            # tasktype不走通用normalizer
-            if ftype == "tasktype":
-                continue
-
-            normalized = self.normalizer.normalize(
-                key, field_def["label"], raw, allowed, ftype
-            )
-            if normalized is not None:
-                self.task_state[key] = normalized
-
-    def _handle_rov_description(self, description: str):
-        all_rovs = self.kb.get_all_rovs()
-        candidates = self.extractor.resolve_rov_description(
-            description, all_rovs, self.task_state.get("task_type_key")
-        )
-        self._pending_rov_candidates = candidates
-        if candidates:
-            self.task_state["_rov_candidates"] = [
-                {"model": r["model"], "full_name": r["full_name"],
-                 "category": r["category"], "available": True}
-                for r in candidates[:3]
-            ]
 
     # --------------------------------------------------------------------------
     # 约束检查（硬解除后检查软）
@@ -1181,16 +1198,17 @@ class DialogueManager:
     # --------------------------------------------------------------------------
 
     def _rebuild_cache(self) -> None:
-        """根据当前 task_state 重新构建 _last_built_json 和 _last_missing"""
+        """根据当前 slot_store 重新构建 task_state, _last_built_json 和 _last_missing"""
+        self.task_state = self.slot_store.get_task_state()
+        built = self.slot_store.get_built_json()
         task_type_key = self.task_state.get("task_type_key")
         if task_type_key:
-            built, missing = self.builder.build(self.task_state, task_type_key, self.mode)
-            if "task_id" in built and not self.task_state.get("task_id"):
-                self.task_state["task_id"] = built["task_id"]
+            required_schema = self.builder.get_schema(task_type_key, self.mode)
+            missing = self.slot_store.get_missing_slots(required_schema)
             self._last_built_json = built
             self._last_missing = missing
         else:
-            self._last_built_json = {}
+            self._last_built_json = built
             self._last_missing = [{
                 "key": "task_type",
                 "label": "任务类型",

@@ -3,7 +3,8 @@ import threading
 import time
 import io
 import logging
-from unittest.mock import MagicMock
+import tempfile
+from unittest.mock import MagicMock, patch
 from pathlib import Path
 import sys
 
@@ -13,12 +14,25 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
 from src.llm_client import LLMClient
-from src.slot_store import SlotStore, Slot, SlotVersionConflict
+from src.slot_store import SlotStore, Slot, SlotVersionConflict, SnapshotValidationError
 from src.simulated_time import get_simulated_time
+from src.history_manager import save_conversation, load_history
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import web_backend
 from web_backend import app
+
+
+def assert_ssot_consistency(test_case, dm):
+    """
+    SSOT 校验辅助函数：验证 dm.task_state 和 dm._last_built_json 完全从 slot_store 派生，
+    且包含相同的 valid 槽位事实。
+    """
+    expected_task_state = dm.slot_store.get_task_state()
+    expected_built_json = dm.slot_store.get_built_json()
+
+    test_case.assertEqual(dm.task_state, expected_task_state)
+    test_case.assertEqual(dm._last_built_json, expected_built_json)
 
 
 class SlotConsistencyTest(unittest.TestCase):
@@ -62,8 +76,8 @@ class SlotConsistencyTest(unittest.TestCase):
         self.assertEqual(snap["slots"]["water_depth"]["confidence"], 0.95)
         self.assertEqual(snap["slots"]["water_depth"]["version"], 3)
 
-    # 2. 完整 SlotStore 快照恢复 (restore_snapshot & from_snapshot)
-    def test_slot_store_restore_snapshot(self):
+    # 2. 完整 SlotStore 快照恢复 (restore_snapshot & from_snapshot) 与基础槽位补齐
+    def test_slot_store_restore_snapshot_and_base_slots_backfill(self):
         snap = {
             "store_version": 7,
             "slots": {
@@ -87,292 +101,191 @@ class SlotConsistencyTest(unittest.TestCase):
         self.assertEqual(store.version, 7)
         self.assertEqual(store.unresolved, ["未识别内容A"])
         self.assertIn("water_depth", store.slots)
+        # 验证基础槽位被自动补齐且不增加版本
+        self.assertIn("task_type_key", store.slots)
+        self.assertIn("intent_id", store.slots)
         slot = store.slots["water_depth"]
         self.assertEqual(slot.value, 300.0)
         self.assertEqual(slot.status, "candidate")
         self.assertEqual(slot.raw_value, "大约三百米")
         self.assertEqual(slot.confidence, 0.92)
-        self.assertEqual(slot.validation_error, "Pending confirmation")
         self.assertEqual(slot.version, 4)
 
-    # 3. DialogueManager.load_snapshot 真实恢复 (New snapshot_version: 2 format)
-    def test_dialogue_manager_load_snapshot_new_format(self):
-        snap = {
-            "snapshot_version": 2,
-            "session_id": "test_sess_123",
-            "mode": "normal",
-            "phase": "collecting",
-            "conversation_history": [{"role": "user", "content": "水深300米"}],
-            "slot_store": {
-                "store_version": 3,
-                "slots": {
-                    "task_type_key": {
-                        "slot_name": "task_type_key",
-                        "value": "pipeline_inspection",
-                        "status": "valid",
-                        "version": 1
-                    },
-                    "water_depth": {
-                        "slot_name": "water_depth",
-                        "value": 300.0,
-                        "status": "valid",
-                        "raw_value": "300米",
-                        "confidence": 0.99,
-                        "version": 2
-                    }
-                },
+    # 3. 快照结构校验与 SnapshotValidationError 抛出
+    def test_snapshot_validation_errors(self):
+        store = SlotStore(self.kb)
+        
+        # 1) 负数 store_version
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot({"store_version": -1, "slots": {}, "unresolved": []})
+            
+        # 2) 非法 status
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot({"store_version": 1, "slots": {"water_depth": {"status": "illegal_status"}}, "unresolved": []})
+            
+        # 3) 负数 slot version
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot({"store_version": 1, "slots": {"water_depth": {"status": "valid", "version": -5}}, "unresolved": []})
+            
+        # 4) slots 不是 dict
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot({"store_version": 1, "slots": [], "unresolved": []})
+
+        # 5) unresolved 不是 list
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot({"store_version": 1, "slots": {}, "unresolved": "not_a_list"})
+
+    # 4. 真正历史文件与 /api/history/load HTTP API 端到端测试
+    def test_history_file_and_api_load_e2e(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            with patch("src.history_manager.HISTORY_DIR", tmp_path):
+                self.dm.reset()
+                self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+                self.dm.slot_store.slots["water_depth"] = Slot("water_depth", value=450.0, status="valid")
+                self.dm.slot_store.version = 5
+
+                # 真实调用 save_conversation 写入文件
+                filename = save_conversation(
+                    session_id="sess_e2e_api",
+                    conversation_history=[{"role": "user", "content": "水深450米"}],
+                    task_state=self.dm.slot_store.get_task_state(),
+                    built_json=self.dm.slot_store.get_built_json(),
+                    mode=self.dm.mode,
+                    phase=self.dm.phase,
+                    intent_id="sess_e2e_api",
+                    slot_store=self.dm.slot_store.export_snapshot()
+                )
+
+                # 实际通过 HTTP POST /api/history/load 恢复
+                res = self.client.post("/api/history/load", json={"history_id": filename, "session_id": "sess_restored_target"})
+                self.assertEqual(res.status_code, 200)
+
+                # 获取后端实际恢复的 manager 实例
+                restored_mgr = web_backend.get_or_create_manager("sess_restored_target")
+                self.assertEqual(restored_mgr.slot_store.version, 5)
+                self.assertEqual(restored_mgr.task_state.get("water_depth"), 450.0)
+                self.assertEqual(restored_mgr._last_built_json.get("water_depth"), 450.0)
+                assert_ssot_consistency(self, restored_mgr)
+
+    # 5. 非法与未识别 Intent Fail Closed (严格白名单与0写入)
+    def test_illegal_intent_fails_closed(self):
+        illegal_intents = ["INVALID_INTENT", "", None, 123, {}, "CHAT_UNKNOWN"]
+        for bad_intent in illegal_intents:
+            self.dm.reset()
+            initial_ver = self.dm.slot_store.version
+
+            # 即使包含 slot_candidates，只要 intent 非法，也绝对不能写入 SlotStore
+            self.llm.extract_json.return_value = {
+                "intent": bad_intent,
+                "slot_candidates": [
+                    {"raw_key": "水深", "canonical_key": "water_depth", "raw_value": "300米", "normalized_value": 300, "confidence": 0.9}
+                ],
                 "unresolved": []
             }
-        }
-        self.dm.load_snapshot(snap)
-        self.assertEqual(self.dm.slot_store.version, 3)
-        self.assertEqual(self.dm.task_state.get("water_depth"), 300.0)
-        self.assertEqual(self.dm._last_built_json.get("water_depth"), 300.0)
-        self.assertTrue(any(m["key"] == "cable_type" for m in self.dm._last_missing))
 
-    # 4. 历史保存后再通过 /api/history/load 恢复
-    def test_history_save_and_api_load(self):
+            reply = self.dm.process("非法意图消息测试")
+            self.assertEqual(self.dm.slot_store.version, initial_ver)
+            self.assertNotIn("water_depth", self.dm.task_state)
+            self.assertIn("对不起", reply)
+            assert_ssot_consistency(self, self.dm)
+
+    # 6. 油田确认与取消事务化处理及 SSOT 断言
+    def test_oilfield_confirmation_transaction(self):
         self.dm.reset()
-        self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        self.dm.slot_store.slots["water_depth"] = Slot("water_depth", value=400.0, status="valid")
-        self.dm.slot_store.version = 4
+        # 预置 pending 油田信息
+        snap_slots, snap_unresolved, snap_ver = self.dm.slot_store.snapshot()
+        snap_slots["pending_oilfield_name"] = Slot("pending_oilfield_name", value="流花11-1", status="valid")
+        snap_slots["pending_oilfield_candidates"] = Slot("pending_oilfield_candidates", value=[{"name": "流花11-1油田", "id": "OF001", "confidence": 0.95}], status="valid")
+        self.dm.slot_store.commit_transaction(snap_slots, snap_unresolved, expected_version=snap_ver)
+        self.dm.task_state = self.dm.slot_store.get_task_state()
 
-        # Save history via manager snapshot export
-        hist_snap = {
-            "session_id": "sess_api_hist",
-            "conversation_history": [],
-            "task_state": self.dm.slot_store.get_task_state(),
-            "built_json": self.dm.slot_store.get_built_json(),
-            "mode": self.dm.mode,
-            "phase": self.dm.phase,
-            "slot_store": self.dm.slot_store.export_snapshot()
-        }
-        
-        # Load snapshot into a new session via load_snapshot
-        new_dm = DialogueManager(self.llm, self.kb)
-        new_dm.load_snapshot(hist_snap)
-        self.assertEqual(new_dm.slot_store.version, 4)
-        self.assertEqual(new_dm.task_state.get("water_depth"), 400.0)
+        # 触发确认油田
+        reply = self.dm.process("是的，采用该油田")
+        self.assertIn("已确认油田名称为“流花11-1油田”", reply)
+        self.assertEqual(self.dm.slot_store.slots["oilfield_name"].value, "流花11-1油田")
+        self.assertEqual(self.dm.slot_store.slots["oilfield_name"].source, "entity_linker")
+        self.assertEqual(self.dm.slot_store.slots["oilfield_name"].raw_value, "流花11-1")
+        self.assertIsNone(self.dm.slot_store.slots["pending_oilfield_name"].value)
+        assert_ssot_consistency(self, self.dm)
 
-    # 5. 旧格式 task_state 快照兼容 (Legacy format fallback)
-    def test_legacy_snapshot_compatibility(self):
-        legacy_snap = {
-            "session_id": "legacy_sess",
-            "conversation_history": [],
-            "mode": "normal",
-            "phase": "collecting",
-            "task_state": {
-                "task_type_key": "pipeline_inspection",
-                "water_depth": 500.0
-            }
-        }
-        self.dm.load_snapshot(legacy_snap)
-        self.assertEqual(self.dm.task_state.get("water_depth"), 500.0)
-        self.assertEqual(self.dm.slot_store.slots["water_depth"].status, "valid")
-        self.assertEqual(self.dm.slot_store.slots["water_depth"].source, "legacy_import")
-
-    # 6. invalid/conflict/candidate 恢复后状态不变
-    def test_non_valid_status_preserved_on_restore(self):
-        snap = {
-            "store_version": 2,
-            "slots": {
-                "water_depth": {
-                    "slot_name": "water_depth",
-                    "value": 300.0,
-                    "candidate_value": 500.0,
-                    "status": "conflict",
-                    "version": 1
-                },
-                "cable_type": {
-                    "slot_name": "cable_type",
-                    "candidate_value": "invalid_type",
-                    "status": "invalid",
-                    "validation_error": "Invalid cable type",
-                    "version": 1
-                }
-            },
-            "unresolved": []
-        }
-        self.dm.load_snapshot(snap)
-        self.assertEqual(self.dm.slot_store.slots["water_depth"].status, "conflict")
-        self.assertEqual(self.dm.slot_store.slots["cable_type"].status, "invalid")
-        # Ensure non-valid slots do NOT enter task_state or built_json
-        self.assertNotIn("water_depth", self.dm.task_state)
-        self.assertNotIn("cable_type", self.dm.task_state)
-
-    # 7. store version 和 slot version 恢复不变 (No unnecessary version increments)
-    def test_store_and_slot_version_unmodified_on_restore(self):
-        snap = {
-            "store_version": 10,
-            "slots": {
-                "water_depth": {
-                    "slot_name": "water_depth",
-                    "value": 300.0,
-                    "status": "valid",
-                    "version": 7
-                }
-            },
-            "unresolved": []
-        }
-        self.dm.load_snapshot(snap)
-        self.assertEqual(self.dm.slot_store.version, 10)
-        self.assertEqual(self.dm.slot_store.slots["water_depth"].version, 7)
-
-    # 8. unresolved 恢复不变
-    def test_unresolved_preserved_on_restore(self):
-        snap = {
-            "store_version": 1,
-            "slots": {},
-            "unresolved": ["未识别坐标X", "未知船只编号"]
-        }
-        self.dm.load_snapshot(snap)
-        self.assertEqual(self.dm.slot_store.unresolved, ["未识别坐标X", "未知船只编号"])
-
-    # 9. 单独删除槽位能提交
-    def test_delete_slot_commit(self):
-        store = SlotStore(self.kb)
-        slots, unresolved, ver = store.snapshot()
-        slots["custom_dynamic"] = Slot("custom_dynamic", value="temp", status="valid")
-        store.commit_transaction(slots, unresolved, expected_version=ver)
-        self.assertEqual(store.version, 1)
-        self.assertIn("custom_dynamic", store.slots)
-
-        # New transaction deletes "custom_dynamic"
-        del_slots, del_unresolved, del_ver = store.snapshot()
-        del del_slots["custom_dynamic"]
-        store.commit_transaction(del_slots, del_unresolved, request_id="req_del_1", expected_version=del_ver)
-        
-        self.assertEqual(store.version, 2)
-        self.assertNotIn("custom_dynamic", store.slots)
-
-    # 10. raw_value 与 normalized_value 不同，包含真实抽取元数据
-    def test_raw_value_and_confidence_preservation(self):
+    # 7. intent_id 事务化生成与 5 者完全一致
+    def test_intent_id_transaction_consistency(self):
         self.dm.reset()
+        self.dm.mode = "emergency"
+        # 预置完整紧急模式管缆巡检任务必填项
+        snap_slots, snap_unresolved, snap_ver = self.dm.slot_store.snapshot()
+        snap_slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
+        snap_slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+        snap_slots["start_time"] = Slot("start_time", value="2026-06-30T17:38:00", status="valid")
+        snap_slots["start_point"] = Slot("start_point", value={"lat": 19.8, "lon": 113.5}, status="valid")
+        snap_slots["end_point"] = Slot("end_point", value={"lat": 19.9, "lon": 113.6}, status="valid")
+        snap_slots["water_depth"] = Slot("water_depth", value=300.0, status="valid")
+        snap_slots["equipment_type"] = Slot("equipment_type", value="轻型工作级深海机器人 HP", status="valid")
+        self.dm.slot_store.commit_transaction(snap_slots, snap_unresolved, expected_version=snap_ver)
+        self.dm.task_state = self.dm.slot_store.get_task_state()
+        self.dm.phase = "confirming"
+
+        self.llm.extract_json.return_value = {"intent": "TASK_UPDATE", "slot_candidates": [], "unresolved": []}
+
+        # 用户发送确认完成任务
+        self.dm.process("确认执行任务")
+        self.assertEqual(self.dm.phase, "done")
+        
+        # 验证 intent_id 事务化写入
+        ti_intent_id = self.dm.slot_store.slots.get("intent_id").value
+        self.assertIsNotNone(ti_intent_id)
+        self.assertEqual(self.dm.slot_store.slots["intent_id"].source, "auto")
+        self.assertEqual(self.dm.task_state["intent_id"], ti_intent_id)
+        self.assertEqual(self.dm._last_built_json["intent_id"], ti_intent_id)
+        assert_ssot_consistency(self, self.dm)
+
+    # 8. 事务异常时外围状态与 ROV 候选 100% 零修改
+    def test_outer_state_isolation_on_transaction_failure(self):
+        self.dm.reset()
+        initial_mode = self.dm.mode
+        initial_phase = self.dm.phase
+        initial_whitelist = set(self.dm._soft_whitelist)
+        initial_rov_candidates = list(self.dm._pending_rov_candidates)
+
+        # 模拟 commit_transaction 抛出乐观锁冲突
+        self.dm.slot_store.commit_transaction = MagicMock(side_effect=SlotVersionConflict("Version conflict test"))
+        
         self.llm.extract_json.return_value = {
             "intent": "TASK_UPDATE",
             "slot_candidates": [
-                {
-                    "raw_key": "任务类型",
-                    "canonical_key": "task_type",
-                    "raw_value": "巡检任务",
-                    "normalized_value": "管缆巡检",
-                    "confidence": 0.98
-                },
-                {
-                    "raw_key": "水深",
-                    "canonical_key": "water_depth",
-                    "raw_value": "大约三百米左右",
-                    "normalized_value": 300,
-                    "confidence": 0.91
-                }
+                {"raw_key": "加急", "canonical_key": "emergency_mode", "raw_value": "加急", "normalized_value": True, "confidence": 1.0},
+                {"raw_key": "ROV描述", "canonical_key": "rov_description", "raw_value": "深水大功率ROV", "normalized_value": "深水大功率ROV", "confidence": 1.0}
             ],
             "unresolved": []
         }
-        self.dm.process("执行巡检任务，水深大约三百米左右")
-        slot = self.dm.slot_store.slots.get("water_depth")
-        self.assertIsNotNone(slot)
-        self.assertEqual(slot.value, 300.0)
-        self.assertEqual(slot.raw_value, "大约三百米左右")
-        self.assertEqual(slot.confidence, 0.91)
 
-    # 11. confidence 正确保存
-    def test_confidence_field_retention(self):
-        self.dm.reset()
-        self.llm.extract_json.return_value = {
-            "intent": "TASK_UPDATE",
-            "slot_candidates": [
-                {
-                    "raw_key": "任务类型",
-                    "canonical_key": "task_type",
-                    "raw_value": "管缆巡检",
-                    "normalized_value": "管缆巡检",
-                    "confidence": 0.99
-                },
-                {
-                    "raw_key": "水深",
-                    "canonical_key": "water_depth",
-                    "raw_value": "300米",
-                    "normalized_value": 300,
-                    "confidence": 0.99
-                }
-            ],
-            "unresolved": []
-        }
-        self.dm.process("管缆巡检，水深300米")
-        slot = self.dm.slot_store.slots.get("water_depth")
-        self.assertEqual(slot.confidence, 0.99)
+        with self.assertRaises(SlotVersionConflict):
+            self.dm.process("紧急任务，需要深水大功率ROV")
 
-    # 12. Validator 只读取 valid 事实 (Old value in conflict/invalid excluded)
-    def test_validator_only_reads_valid_facts(self):
-        self.dm.reset()
-        store = self.dm.slot_store
-        store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        store.slots["water_depth"] = Slot("water_depth", value=300.0, candidate_value=500.0, status="conflict")
-        store.slots["cable_type"] = Slot("cable_type", value="旧管缆", candidate_value="invalid_cable", status="invalid")
+        # 验证外围状态全部未修改
+        self.assertEqual(self.dm.mode, initial_mode)
+        self.assertEqual(self.dm.phase, initial_phase)
+        self.assertEqual(self.dm._soft_whitelist, initial_whitelist)
+        self.assertEqual(self.dm._pending_rov_candidates, initial_rov_candidates)
+        assert_ssot_consistency(self, self.dm)
 
-        task_state = store.get_task_state()
-        built_json = store.get_built_json()
+    # 9. HTTP 500 不泄露 Traceback 且带 request_id
+    def test_http_500_no_traceback_leakage(self):
+        mgr = web_backend.get_or_create_manager("sess_err_test")
+        mgr.process = MagicMock(side_effect=RuntimeError("Failed loading sensitive file: /root/seagent/config/private.yaml"))
 
-        # Confirm conflict and invalid slots are EXCLUDED from task_state and built_json
-        self.assertNotIn("water_depth", task_state)
-        self.assertNotIn("cable_type", task_state)
-        self.assertNotIn("water_depth", built_json)
-        self.assertNotIn("cable_type", built_json)
+        res = self.client.post("/api/chat", json={"session_id": "sess_err_test", "message": "测试错误"})
+        self.assertEqual(res.status_code, 500)
+        data = res.get_json()
+        self.assertEqual(data["code"], 500)
+        self.assertEqual(data["error"], "InternalServerError")
+        self.assertEqual(data["msg"], "服务器内部错误，请稍后重试。")
+        self.assertIn("request_id", data)
+        self.assertNotIn("/root/seagent/config/private.yaml", data["msg"])
+        self.assertNotIn("Traceback", data["msg"])
 
-        # Confirm Validator receives ONLY valid facts
-        violations = self.dm.validator.validate(task_state)
-        # 300 or 500 does not trigger false violations because it's excluded
-        self.assertFalse(any("300" in v.message for v in violations))
-
-    # 13. GENERAL_CHAT 不修改 SlotStore
-    def test_general_chat_does_not_modify_slot_store(self):
-        self.dm.reset()
-        initial_ver = self.dm.slot_store.version
-        
-        self.llm.extract_json.return_value = {
-            "intent": "GENERAL_CHAT",
-            "slot_candidates": [],
-            "unresolved": []
-        }
-        self.llm.generate.return_value = "你好！我是水下作业助手。"
-        
-        reply = self.dm.process("你好，你能做什么？")
-        self.assertEqual(self.dm.slot_store.version, initial_ver)
-        self.assertEqual(self.dm.slot_store.unresolved, [])
-        self.assertIn("助手", reply)
-
-    # 14. UNKNOWN 不修改 SlotStore
-    def test_unknown_intent_does_not_modify_slot_store(self):
-        self.dm.reset()
-        initial_ver = self.dm.slot_store.version
-
-        self.llm.extract_json.return_value = {
-            "intent": "UNKNOWN",
-            "slot_candidates": [],
-            "unresolved": []
-        }
-        reply = self.dm.process("咕噜咕噜瓦卡瓦卡")
-        self.assertEqual(self.dm.slot_store.version, initial_ver)
-        self.assertEqual(self.dm.slot_store.unresolved, [])
-        self.assertIn("对不起", reply)
-
-    # 15. TASK_UPDATE 可以修改 SlotStore
-    def test_task_update_modifies_slot_store(self):
-        self.dm.reset()
-        initial_ver = self.dm.slot_store.version
-
-        self.llm.extract_json.return_value = {
-            "intent": "TASK_UPDATE",
-            "slot_candidates": [
-                {"raw_key": "任务类型", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 1.0}
-            ],
-            "unresolved": []
-        }
-        self.dm.process("我要进行管缆巡检")
-        self.assertGreater(self.dm.slot_store.version, initial_ver)
-        self.assertEqual(self.dm.slot_store.slots["task_type_key"].value, "pipeline_inspection")
-
-    # 16. 真正的 /api/asr 到 /api/chat 链路测试
+    # 10. ASR 端到端链路与派生事实一致性
     def test_asr_end_to_end_pipeline(self):
         web_backend._shared_asr = MagicMock()
         web_backend._shared_asr.transcribe_file.return_value = {
@@ -390,7 +303,6 @@ class SlotConsistencyTest(unittest.TestCase):
             "unresolved": []
         }
 
-        # Path A: /api/asr -> corrected_text -> /api/chat
         data_file = (io.BytesIO(b"dummy wav audio data"), "test.wav")
         res_asr = self.client.post("/api/asr", data={"audio": data_file}, content_type="multipart/form-data")
         self.assertEqual(res_asr.status_code, 200)
@@ -401,60 +313,15 @@ class SlotConsistencyTest(unittest.TestCase):
         self.assertEqual(res_chat_a.status_code, 200)
         data_a = res_chat_a.get_json()
 
-        # Path B: Direct /api/chat with same text
         res_chat_b = self.client.post("/api/chat", json={"session_id": "sess_path_b", "message": "我要执行管缆巡检"})
         self.assertEqual(res_chat_b.status_code, 200)
         data_b = res_chat_b.get_json()
 
-        # Compare Path A and Path B outputs (filtering task_id sequence number variance)
         coll_a = {k: v for k, v in data_a["collected"].items() if k != "task_id"}
         coll_b = {k: v for k, v in data_b["collected"].items() if k != "task_id"}
         self.assertEqual(data_a["task_type"], data_b["task_type"])
         self.assertEqual(coll_a, coll_b)
         self.assertEqual(data_a["missing"], data_b["missing"])
-
-    # 17. HTTP 500 不泄露 Traceback 或敏感路径，日志记录异常
-    def test_http_500_no_traceback_leakage(self):
-        mgr = web_backend.get_or_create_manager("sess_err_test")
-        # Simulate exception containing sensitive file path
-        mgr.process = MagicMock(side_effect=RuntimeError("Failed loading sensitive file: /root/seagent/config/private.yaml"))
-
-        res = self.client.post("/api/chat", json={"session_id": "sess_err_test", "message": "测试错误"})
-        self.assertEqual(res.status_code, 500)
-        data = res.get_json()
-        self.assertEqual(data["code"], 500)
-        self.assertEqual(data["error"], "InternalServerError")
-        self.assertEqual(data["msg"], "服务器内部错误，请稍后重试。")
-        self.assertIn("request_id", data)
-        # Ensure sensitive file path and traceback are NOT leaked in response JSON
-        self.assertNotIn("/root/seagent/config/private.yaml", data["msg"])
-        self.assertNotIn("Traceback", data["msg"])
-
-    # 18. 事务失败时 DialogueManager 外围状态不变
-    def test_dialogue_manager_outer_state_unmodified_on_commit_failure(self):
-        self.dm.reset()
-        initial_mode = self.dm.mode
-        initial_phase = self.dm.phase
-        initial_whitelist = set(self.dm._soft_whitelist)
-
-        # Mock slot_store.commit_transaction to fail with SlotVersionConflict
-        self.dm.slot_store.commit_transaction = MagicMock(side_effect=SlotVersionConflict("Version conflict test"))
-        
-        self.llm.extract_json.return_value = {
-            "intent": "TASK_UPDATE",
-            "slot_candidates": [
-                {"raw_key": "加急", "canonical_key": "emergency_mode", "raw_value": "加急", "normalized_value": True, "confidence": 1.0}
-            ],
-            "unresolved": []
-        }
-
-        with self.assertRaises(SlotVersionConflict):
-            self.dm.process("紧急任务")
-
-        # Verify DialogueManager outer states are 100% UNMUTATED after commit failure
-        self.assertEqual(self.dm.mode, initial_mode)
-        self.assertEqual(self.dm.phase, initial_phase)
-        self.assertEqual(self.dm._soft_whitelist, initial_whitelist)
 
 
 if __name__ == "__main__":

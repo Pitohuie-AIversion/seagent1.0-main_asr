@@ -10,6 +10,19 @@ from typing import Any
 
 from .llm_client import LLMClient
 
+MUTATING_INTENTS = {"TASK_CREATE", "TASK_UPDATE"}
+NON_MUTATING_INTENTS = {"GENERAL_CHAT", "UNKNOWN"}
+
+
+def normalize_intent(value: Any) -> str:
+    if not isinstance(value, str):
+        return "UNKNOWN"
+    normalized = value.strip().upper()
+    if normalized in (MUTATING_INTENTS | NON_MUTATING_INTENTS):
+        return normalized
+    return "UNKNOWN"
+
+
 MAX_EXTRACTION_USER_HISTORY = 6
 
 EXTRACTION_TASK = """\
@@ -180,7 +193,7 @@ class ParameterExtractor:
         print('result in extract update | '*10)
         print(result)
         
-        default_res = {"intent": "task_update", "slot_candidates": [], "unresolved": []}
+        default_res = {"intent": "UNKNOWN", "slot_candidates": [], "unresolved": []}
         if not result or not isinstance(result, dict):
             return default_res
         
@@ -199,10 +212,14 @@ class ParameterExtractor:
                     "confidence": 1.0
                 })
             result = {
-                "intent": result.get("intent", "task_update"),
+                "intent": normalize_intent(result.get("intent")),
                 "slot_candidates": candidates,
-                "unresolved": result.get("unresolved", [])
+                "unresolved": result.get("unresolved", []) if isinstance(result.get("unresolved"), list) else []
             }
+        else:
+            result["intent"] = normalize_intent(result.get("intent"))
+            if not isinstance(result.get("unresolved"), list):
+                result["unresolved"] = []
         return result
 
     @staticmethod

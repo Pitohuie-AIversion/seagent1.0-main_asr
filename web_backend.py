@@ -615,6 +615,55 @@ def admin_reload_translate_cache():
         return jsonify({"code": 500, "msg": str(e)}), 500
 
 
+from src.slot_store import SlotVersionConflict, SnapshotValidationError
+
+@app.route("/api/history/load", methods=["POST"])
+def api_history_load():
+    """加载指定的历史快照，并恢复到当前会话"""
+    data = request.get_json() or {}
+    history_id = data.get("history_id")
+    sid = data.get("session_id")
+    request_id = data.get("request_id") or f"req_{uuid.uuid4().hex[:8]}"
+    if not history_id or not sid:
+        return jsonify({"code": 400, "error": "MissingField", "msg": "缺少 history_id 或 session_id", "request_id": request_id}), 400
+
+    snapshot = load_history(history_id)
+    if not snapshot:
+        return jsonify({"code": 404, "error": "NotFound", "msg": "历史记录不存在", "request_id": request_id}), 404
+
+    mgr = get_or_create_manager(sid)
+    try:
+        mgr.load_snapshot(snapshot)
+    except SnapshotValidationError as sve:
+        logging.error(f"Snapshot validation error in /api/history/load: {sve}", exc_info=True)
+        return jsonify({
+            "code": 400,
+            "error": "SnapshotValidationError",
+            "msg": f"快照结构非法: {str(sve)}",
+            "request_id": request_id
+        }), 400
+    except Exception as exc:
+        logging.error(f"Failed loading snapshot in /api/history/load: {exc}", exc_info=True)
+        return jsonify({
+            "code": 500,
+            "error": "InternalServerError",
+            "msg": "服务器内部错误，请稍后重试。",
+            "request_id": request_id
+        }), 500
+
+    return jsonify({
+        "code": 200,
+        "session_id": sid,
+        "request_id": request_id,
+        "conversation_history": mgr.conversation_history,
+        "built_json": mgr._last_built_json,
+        "missing": [miss["key"] for miss in mgr._last_missing],
+        "task_type": mgr.task_state.get("task_type_key"),
+        "mode": mgr.mode,
+        "phase": mgr.phase
+    })
+
+
 @app.route("/api/admin/translate-cache/stats", methods=["GET"])
 def admin_translate_cache_stats():
     """返回当前内存中翻译缓存的统计信息。"""
@@ -668,30 +717,3 @@ def api_history_list():
     except Exception as e:
         return jsonify({"code": 500, "msg": str(e)}), 500
 
-
-@app.route("/api/history/load", methods=["POST"])
-def api_history_load():
-    """加载指定的历史快照，并恢复到当前会话"""
-    data = request.get_json()
-    history_id = data.get("history_id")
-    sid = data.get("session_id")
-    if not history_id or not sid:
-        return jsonify({"code": 400, "msg": "缺少 history_id 或 session_id"}), 400
-
-    snapshot = load_history(history_id)
-    if not snapshot:
-        return jsonify({"code": 404, "msg": "历史记录不存在"}), 404
-
-    mgr = get_or_create_manager(sid)
-    mgr.load_snapshot(snapshot)
-
-    return jsonify({
-        "code": 200,
-        "session_id": sid,
-        "conversation_history": mgr.conversation_history,
-        "built_json": mgr._last_built_json,
-        "missing": [miss["key"] for miss in mgr._last_missing],
-        "task_type": mgr.task_state.get("task_type_key"),
-        "mode": mgr.mode,
-        "phase": mgr.phase,
-    })
