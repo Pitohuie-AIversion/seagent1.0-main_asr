@@ -188,10 +188,7 @@ class ParameterExtractor:
             {"role": "user", "content": user_message},
         ]
 
-        print('extract prompt | '*10)
         result = self.llm.extract_json(messages, max_tokens=800)
-        print('result in extract update | '*10)
-        print(result)
         
         default_res = {"intent": "UNKNOWN", "slot_candidates": [], "unresolved": []}
         if not result or not isinstance(result, dict):

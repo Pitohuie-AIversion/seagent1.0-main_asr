@@ -8,21 +8,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
-def get_history_dir() -> Path:
-    base = os.environ.get("SEAGENT_RESULT_DIR") or os.environ.get("SEAGENT_HISTORY_DIR")
-    if base:
-        p = Path(base) / "history" if not base.endswith("history") else Path(base)
-    else:
-        p = Path("/root/autodl-tmp/result/history")
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-# For module level compatibility without creating dir on import
-HISTORY_DIR = property(lambda self: get_history_dir())
+from .result_paths import get_history_dir
 
 def _ensure_dir() -> Path:
     """确保 history 目录存在并返回"""
-    return get_history_dir()
+    return get_history_dir(create=True)
 
 def save_conversation(
     session_id: str,
@@ -71,7 +61,9 @@ def list_history() -> List[Dict[str, Any]]:
     返回历史记录列表，按保存时间倒序排列
     每条记录包含: id(文件名), saved_at, task_id, task_type, session_id
     """
-    history_dir = _ensure_dir()
+    history_dir = get_history_dir(create=False)
+    if not history_dir.exists():
+        return []
     records = []
     for f in history_dir.glob("*.json"):
         try:
@@ -94,7 +86,7 @@ def load_history(history_id: str) -> Optional[Dict[str, Any]]:
     """
     根据文件名加载完整的快照数据
     """
-    history_dir = _ensure_dir()
+    history_dir = get_history_dir(create=False)
     filepath = history_dir / history_id
     if not filepath.exists():
         return None

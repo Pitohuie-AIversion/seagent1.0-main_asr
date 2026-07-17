@@ -11,43 +11,31 @@ from .knowledge_retriever import KnowledgeBase
 from .simulated_time import get_current_datetime
 from .id_sequence import next_daily_id
 
-def get_task_dir() -> Path:
-    base = os.environ.get("SEAGENT_RESULT_DIR") or os.environ.get("SEAGENT_TASK_DIR")
-    if base:
-        p = Path(base) / "task" if not base.endswith("task") else Path(base)
-    else:
-        p = Path("/root/autodl-tmp/result/task")
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-# For module compatibility
-TASK_DIR = property(lambda self: get_task_dir())
+import threading
+from .result_paths import get_task_dir
 
 
 class TaskIntentBuilder:
     def __init__(self, kb: KnowledgeBase):
         self.kb = kb
 
-    def build(
+    def prepare(
         self,
         task_state: Dict[str, Any],
         built_json: Dict[str, Any],
         mode: str,
         task_type_key: str,
     ) -> Dict[str, Any]:
-        """构建 TaskIntent 对象并写入文件"""
-        # 1. intent_id
+        """纯内存构建 TaskIntent 字典，无磁盘副作用"""
         today = get_current_datetime().strftime("%Y%m%d")
-        task_dir = get_task_dir()
+        task_dir = get_task_dir(create=False)
         intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
 
-        # 2. priority（不再收集，按模式自动赋值）
         if mode == "emergency":
-            priority = 1  # 紧急任务保持最高优先级
+            priority = 1
         else:
-            priority = 7  # 普通任务默认中等优先级
+            priority = 7
 
-        # 3. time
         start_time = built_json.get("start_time")
         end_time = built_json.get("end_time")
         def ensure_tz(ts: Optional[str]) -> Optional[str]:
@@ -59,7 +47,6 @@ class TaskIntentBuilder:
         start_time = ensure_tz(start_time)
         end_time = ensure_tz(end_time)
 
-        # 4. location
         oilfield_name = None
         water_depth = built_json.get("water_depth")
         coords = (built_json.get("start_point") or
@@ -75,15 +62,13 @@ class TaskIntentBuilder:
         if not oilfield_name:
             oilfield_name = task_state.get("oilfield_name")
 
-        # 5. task details
         details = self._build_details(task_type_key, task_state, built_json)
 
-        # 6. equipment
         equipment_type = built_json.get("equipment_type")
         robot_type_map = {
             "观察级ROV": "observation_rov",
             "工作级ROV": "work_class_rov",
-            "海底拖拉机": "work_class_rov",   # 履带式归为工作级
+            "海底拖拉机": "work_class_rov",
             "调查型AUV": "auv",
         }
         robot_type = robot_type_map.get(equipment_type, "observation_rov")
@@ -93,20 +78,18 @@ class TaskIntentBuilder:
         support_vessel_name = built_json.get("support_vessel")
         support_vessel = {
             "name": support_vessel_name,
-            "latitude": None,   # 暂无法获取，预留接口
+            "latitude": None,
             "longitude": None,
         }
 
-        # 7. conditions（预留，当前无收集）
-        conditions = {}   # 改为空字典，符合 schema
+        conditions = {}
 
-        # 8. 顶层 task_type 映射
         if task_type_key == "pipeline_inspection":
             top_task_type = "pipeline_inspection"
-        else:  # tree_valve_operation
+        else:
             top_task_type = "valve_operation"
 
-        intent = {
+        return {
             "intent_id": intent_id,
             "task_type": top_task_type,
             "priority": priority,
@@ -130,11 +113,43 @@ class TaskIntentBuilder:
             "conditions": conditions,
         }
 
-        # 写入文件
-        filename = task_dir / f"task_intent_{intent_id}.json"
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(intent, f, ensure_ascii=False, indent=2)
+    def persist(self, intent: Dict[str, Any]) -> str:
+        """持久化已构建的 intent 字典，使用同目录临时文件原子替换，幂等写入"""
+        intent_id = intent.get("intent_id", "unknown")
+        task_dir = get_task_dir(create=True)
+        final_file = task_dir / f"task_intent_{intent_id}.json"
 
+        # 幂等检查：目标文件已存在直接返回
+        if final_file.exists():
+            return final_file.name
+
+        temp_file = task_dir / f"task_intent_{intent_id}.tmp_{os.getpid()}_{threading.get_ident()}"
+        try:
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(intent, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_file, final_file)
+        except Exception as e:
+            if temp_file.exists():
+                try:
+                    temp_file.unlink()
+                except Exception:
+                    pass
+            raise RuntimeError(f"TaskIntent persist failed for {intent_id}: {e}") from e
+
+        return final_file.name
+
+    def build(
+        self,
+        task_state: Dict[str, Any],
+        built_json: Dict[str, Any],
+        mode: str,
+        task_type_key: str,
+    ) -> Dict[str, Any]:
+        """兼容接口：先 prepare 构建，再 persist 持久化"""
+        intent = self.prepare(task_state, built_json, mode, task_type_key)
+        self.persist(intent)
         return intent
 
     def _build_details(

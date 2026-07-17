@@ -218,6 +218,7 @@ class SlotStore:
                 raise SnapshotValidationError("unresolved must be a list.")
 
             VALID_STATUSES = {"missing", "candidate", "valid", "invalid", "conflict", "unresolved"}
+            VALID_VALUE_TYPES = {"string", "number", "boolean", "list", "coord", "datetime", "object"}
             new_slots = {}
             for key, sdict in slots_data.items():
                 if not isinstance(key, str):
@@ -239,14 +240,20 @@ class SlotStore:
                     if conf is not None and (isinstance(conf, bool) or not isinstance(conf, (int, float)) or not (0.0 <= float(conf) <= 1.0)):
                         raise SnapshotValidationError(f"Invalid confidence '{conf}' for slot '{key}'.")
                     val_type = sdict.get("value_type", "string")
-                    if not isinstance(val_type, str):
-                        raise SnapshotValidationError(f"Invalid value_type for slot '{key}'.")
+                    if not isinstance(val_type, str) or val_type not in VALID_VALUE_TYPES:
+                        raise SnapshotValidationError(f"Invalid value_type '{val_type}' for slot '{key}'.")
                     source = sdict.get("source", "user_input")
                     if not isinstance(source, str):
                         raise SnapshotValidationError(f"Invalid source for slot '{key}'.")
                     updated_at = sdict.get("updated_at")
-                    if updated_at is not None and not isinstance(updated_at, str):
-                        raise SnapshotValidationError(f"Invalid updated_at for slot '{key}'.")
+                    if updated_at is not None:
+                        if not isinstance(updated_at, str):
+                            raise SnapshotValidationError(f"Invalid updated_at for slot '{key}'.")
+                        try:
+                            clean_dt = updated_at.replace("Z", "+00:00")
+                            datetime.fromisoformat(clean_dt)
+                        except Exception as e:
+                            raise SnapshotValidationError(f"Invalid ISO-8601 updated_at timestamp '{updated_at}' for slot '{key}': {e}")
 
                     val = copy.deepcopy(sdict.get("value"))
                     if st == "valid" and val is None:
@@ -270,10 +277,20 @@ class SlotStore:
                         raise SnapshotValidationError(f"Slot key '{key}' does not match slot_name '{sdict.slot_name}'.")
                     if sdict.status not in VALID_STATUSES:
                         raise SnapshotValidationError(f"Invalid status '{sdict.status}' for slot '{key}'.")
+                    if sdict.value_type not in VALID_VALUE_TYPES:
+                        raise SnapshotValidationError(f"Invalid value_type '{sdict.value_type}' for slot '{key}'.")
                     if not isinstance(sdict.version, int) or isinstance(sdict.version, bool) or sdict.version < 0:
                         raise SnapshotValidationError(f"Invalid slot version '{sdict.version}' for slot '{key}'.")
                     if sdict.confidence is not None and (isinstance(sdict.confidence, bool) or not isinstance(sdict.confidence, (int, float)) or not (0.0 <= float(sdict.confidence) <= 1.0)):
                         raise SnapshotValidationError(f"Invalid confidence '{sdict.confidence}' for slot '{key}'.")
+                    if sdict.updated_at is not None:
+                        if not isinstance(sdict.updated_at, str):
+                            raise SnapshotValidationError(f"Invalid updated_at for slot '{key}'.")
+                        try:
+                            clean_dt = sdict.updated_at.replace("Z", "+00:00")
+                            datetime.fromisoformat(clean_dt)
+                        except Exception as e:
+                            raise SnapshotValidationError(f"Invalid ISO-8601 updated_at timestamp '{sdict.updated_at}' for slot '{key}': {e}")
                     if sdict.status == "valid" and sdict.value is None:
                         raise SnapshotValidationError(f"Valid slot '{key}' cannot have null value.")
                     new_slots[key] = sdict.copy()

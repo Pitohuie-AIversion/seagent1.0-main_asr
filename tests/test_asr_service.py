@@ -4,12 +4,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import torch
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    torch = None
+    HAS_TORCH = False
 
 from src.asr_service import ASRConfig, ASRService
 
 
 class TestASRServiceFallback(unittest.TestCase):
+    @unittest.skipUnless(HAS_TORCH, "torch is not installed")
     def test_load_falls_back_when_model_load_ooms(self):
         class FakeQwen3ASRModel:
             @classmethod

@@ -20,6 +20,7 @@ dialogue_manager.py - 对话主控制器
 
 import copy
 import json
+import threading
 from typing import Any
 from zoneinfo import ZoneInfo
 from datetime import datetime   # ✅ 新增导入
@@ -97,11 +98,18 @@ class DialogueManager:
         self._last_built_json: dict = {}
         self._last_missing: list[dict] = []
 
+        # 会话锁（按 session 隔离并发控制）
+        self._session_lock = threading.RLock()
+
     # --------------------------------------------------------------------------
     # 主入口
     # --------------------------------------------------------------------------
 
     def process(self, user_message: str, request_id: str = "req_default") -> str:
+        with self._session_lock:
+            return self._process_internal(user_message, request_id)
+
+    def _process_internal(self, user_message: str, request_id: str = "req_default") -> str:
         old_phase = self.phase
 
         if self._is_business_identity_query(user_message):
@@ -326,19 +334,18 @@ class DialogueManager:
             if not cand_missing and not self.validator.has_hard_violations(all_violations):
                 proposed_phase = "done"
                 ti_builder = TaskIntentBuilder(self.kb)
-                ti_json = ti_builder.build(
+                ti_json_artifact = ti_builder.prepare(
                     task_state=cand_state,
                     built_json=cand_built,
                     mode=proposed_mode,
                     task_type_key=curr_task_type_key
                 )
-                ti_intent_id = ti_json["intent_id"]
+                ti_intent_id = ti_json_artifact["intent_id"]
                 if "intent_id" not in new_slots:
                     new_slots["intent_id"] = Slot("intent_id")
                 new_slots["intent_id"].value = ti_intent_id
                 new_slots["intent_id"].status = "valid"
                 new_slots["intent_id"].source = "auto"
-                ti_json_artifact = ti_json
 
         # Atomic single commit with optimistic version validation
         self.slot_store.commit_transaction(
@@ -369,10 +376,6 @@ class DialogueManager:
             self._last_missing = missing
 
         self.task_start_now = self.is_start_time_near_now()
-        print('【是否现在开始】')
-        print(self.task_start_now)
-        print('='*60)
-        print(missing)
 
         pending_oilfield_reply = self._build_pending_oilfield_reply()
         if pending_oilfield_reply:
@@ -412,13 +415,21 @@ class DialogueManager:
             constraint_context = self._run_constraint_check(changed_fields)
 
         if self.phase == "done":
-            self.final_result = built
             if ti_json_artifact:
-                print("\n" + "="*60)
-                print("🔔 [DEBUG] TaskIntent 生成成功")
-                print(json.dumps(ti_json_artifact, ensure_ascii=False, indent=2))
-                print(f"📁 文件位置: /root/autodl-tmp/result/task/task_intent_{ti_json_artifact['intent_id']}.json")
-                print("="*60 + "\n")
+                ti_builder = TaskIntentBuilder(self.kb)
+                try:
+                    ti_builder.persist(ti_json_artifact)
+                except Exception as exc:
+                    logging.error(
+                        f"TaskIntent persist failed: request_id={request_id}, "
+                        f"intent_id={ti_json_artifact.get('intent_id')}, stage=persist, err={exc}",
+                        exc_info=True
+                    )
+                    self.phase = old_phase
+                    self.final_result = None
+                    return "服务器内部文件保存失败，任务未能成功下发，请稍后重试。"
+
+            self.final_result = built
             if self.task_start_now:
                 reply = (f"✅ 信息收集完成，当前为【立即执行任务】，任务已生成并下发。\n"
                          f"{json.dumps(built, ensure_ascii=False, indent=2)}")
@@ -436,9 +447,6 @@ class DialogueManager:
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
-
-        print('=' * 60)
-        print(self.phase)
 
         # 知识上下文
         knowledge_context = self.kb.get_context_for_state(self.task_state)
@@ -458,16 +466,11 @@ class DialogueManager:
             support_task=self.kb.get_supported_task(),
             slot_snapshot=self.slot_store.get_slot_snapshot(),
         )
-        print("DEBUG SYSTEM PROMPT START" + "="*40)
-        print(messages[0]["content"])
-        print("DEBUG SYSTEM PROMPT END" + "="*40)
         reply = self.llm.chat(messages, temperature=0.7, max_tokens=1500)
         reply = self.llm.filter_reply(reply, temperature=0.1, max_tokens=1500)
 
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": reply})
-        print('=' * 60)
-        print(self.phase)
         return reply
 
     # --------------------------------------------------------------------------
@@ -1242,10 +1245,26 @@ class DialogueManager:
             task_state = snapshot["task_state"]
             legacy_slots = {}
             for k, v in task_state.items():
+                vtype = "string"
+                if isinstance(v, bool):
+                    vtype = "boolean"
+                elif isinstance(v, (int, float)):
+                    vtype = "number"
+                elif isinstance(v, list):
+                    vtype = "list"
+                elif isinstance(v, dict):
+                    vtype = "coord" if ("lat" in v and "lon" in v) else "object"
+                elif isinstance(v, str) and len(v) >= 19 and "T" in v:
+                    try:
+                        datetime.fromisoformat(v.replace("Z", "+00:00"))
+                        vtype = "datetime"
+                    except Exception:
+                        vtype = "string"
+
                 legacy_slots[k] = {
                     "slot_name": k,
                     "value": v,
-                    "value_type": "string",
+                    "value_type": vtype,
                     "status": "valid" if v is not None else "missing",
                     "source": "legacy_import",
                     "version": 1
@@ -1286,5 +1305,4 @@ class DialogueManager:
         self._blocking_violations = []
         self._soft_whitelist = set()
         self._hard_refusal_counts = {}
-        self._pending_rov_candidates = []
         self._pending_rov_candidates = []

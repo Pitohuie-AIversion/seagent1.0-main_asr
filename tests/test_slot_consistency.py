@@ -14,12 +14,16 @@ from zoneinfo import ZoneInfo
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import os
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
 from src.llm_client import LLMClient
 from src.slot_store import SlotStore, Slot, SlotVersionConflict, SnapshotValidationError
 from src.simulated_time import get_simulated_time
 from src.history_manager import save_conversation, load_history
+from src.task_intent_builder import TaskIntentBuilder
+from src.result_paths import get_task_dir, get_history_dir, get_result_dir
+import src.id_sequence as id_sequence
 import web_backend
 from web_backend import app
 
@@ -412,23 +416,101 @@ class SlotConsistencyTest(unittest.TestCase):
         with self.assertRaises(SlotVersionConflict):
             store.commit_transaction(snap_slots, snap_unresolved, expected_version=snap_ver + 999)
 
-    # 23. 两个线程基于相同 version 提交时，不允许旧数据覆盖新数据 (并发测试)
+    # 23. 两个真实线程基于相同 version 提交时，不允许旧数据覆盖新数据 (真实多线程并发测试)
     def test_23_concurrency_optimistic_lock(self):
         store = SlotStore(self.kb)
         store.slots["water_depth"] = Slot("water_depth", value=None, status="missing")
         snap_slots1, snap_unresolved1, ver1 = store.snapshot()
         snap_slots2, snap_unresolved2, ver2 = store.snapshot()
 
-        snap_slots1["water_depth"].value = 300.0
-        snap_slots1["water_depth"].status = "valid"
-        store.commit_transaction(snap_slots1, snap_unresolved1, expected_version=ver1)
+        barrier = threading.Barrier(2)
+        results = []
+        errors = []
 
-        snap_slots2["water_depth"].value = 999.0
-        snap_slots2["water_depth"].status = "valid"
-        with self.assertRaises(SlotVersionConflict):
-            store.commit_transaction(snap_slots2, snap_unresolved2, expected_version=ver2)
+        def thread_task(snap_slots, snap_unresolved, ver, val, name):
+            snap_slots["water_depth"].value = val
+            snap_slots["water_depth"].status = "valid"
+            barrier.wait()
+            try:
+                store.commit_transaction(snap_slots, snap_unresolved, expected_version=ver)
+                results.append(name)
+            except Exception as e:
+                errors.append(e)
 
-        self.assertEqual(store.slots["water_depth"].value, 300.0)
+        t1 = threading.Thread(target=thread_task, args=(snap_slots1, snap_unresolved1, ver1, 300.0, "t1"))
+        t2 = threading.Thread(target=thread_task, args=(snap_slots2, snap_unresolved2, ver2, 999.0, "t2"))
+
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        self.assertEqual(len(results), 1, f"Expected exactly 1 successful thread, got {len(results)}")
+        self.assertEqual(len(errors), 1, f"Expected exactly 1 conflict error, got {len(errors)}")
+        self.assertIsInstance(errors[0], SlotVersionConflict)
+        self.assertEqual(store.version, ver1 + 1)
+        if results[0] == "t1":
+            self.assertEqual(store.slots["water_depth"].value, 300.0)
+        else:
+            self.assertEqual(store.slots["water_depth"].value, 999.0)
+
+    # 23b. 真实多槽位多线程并发提交，不允许字段混合
+    def test_23b_multi_slot_concurrency_no_field_mixing(self):
+        store = SlotStore(self.kb)
+        store.slots["water_depth"] = Slot("water_depth", value=None, status="missing")
+        store.slots["payload"] = Slot("payload", value=None, status="missing")
+        store.slots["support_vessel"] = Slot("support_vessel", value=None, status="missing")
+
+        snap_slots1, snap_unresolved1, ver1 = store.snapshot()
+        snap_slots2, snap_unresolved2, ver2 = store.snapshot()
+
+        barrier = threading.Barrier(2)
+        results = []
+        errors = []
+
+        def thread_a():
+            snap_slots1["water_depth"].value = 300.0
+            snap_slots1["water_depth"].status = "valid"
+            snap_slots1["payload"].value = ["高清水下摄像机"]
+            snap_slots1["payload"].status = "valid"
+            barrier.wait()
+            try:
+                store.commit_transaction(snap_slots1, snap_unresolved1, expected_version=ver1)
+                results.append("A")
+            except Exception as e:
+                errors.append(e)
+
+        def thread_b():
+            snap_slots2["water_depth"].value = 500.0
+            snap_slots2["water_depth"].status = "valid"
+            snap_slots2["support_vessel"].value = "海洋石油681"
+            snap_slots2["support_vessel"].status = "valid"
+            barrier.wait()
+            try:
+                store.commit_transaction(snap_slots2, snap_unresolved2, expected_version=ver2)
+                results.append("B")
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=thread_a)
+        t2 = threading.Thread(target=thread_b)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], SlotVersionConflict)
+
+        if results[0] == "A":
+            self.assertEqual(store.slots["water_depth"].value, 300.0)
+            self.assertEqual(store.slots["payload"].value, ["高清水下摄像机"])
+            self.assertIsNone(store.slots["support_vessel"].value)
+        else:
+            self.assertEqual(store.slots["water_depth"].value, 500.0)
+            self.assertIsNone(store.slots["payload"].value)
+            self.assertEqual(store.slots["support_vessel"].value, "海洋石油681")
 
     # 24. 历史快照完整恢复
     def test_24_history_snapshot_full_restoration(self):
@@ -586,6 +668,224 @@ class SlotConsistencyTest(unittest.TestCase):
                 self.assertEqual(data["task_type"], "pipeline_inspection")
                 self.assertEqual(data["built_json"]["water_depth"], 350.0)
                 self.assertIsNotNone(data["missing"])
+
+    # 32. commit失败不产生TaskIntent正式文件
+    def test_32_commit_failure_no_final_task_intent_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir) / "task"
+            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+                self.dm.reset()
+                self.dm.phase = "confirming"
+                self.dm.slot_store.commit_transaction = MagicMock(side_effect=SlotVersionConflict("Conflict simulation"))
+                with self.assertRaises(SlotVersionConflict):
+                    self.dm.process("确认开始")
+                
+                final_files = list(tmp_path.glob("task_intent_*.json")) if tmp_path.exists() else []
+                self.assertEqual(len(final_files), 0)
+
+    # 33. commit失败不产生TaskIntent临时文件
+    def test_33_commit_failure_no_temp_task_intent_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir) / "task"
+            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+                self.dm.reset()
+                self.dm.phase = "confirming"
+                self.dm.slot_store.commit_transaction = MagicMock(side_effect=SlotVersionConflict("Conflict simulation"))
+                with self.assertRaises(SlotVersionConflict):
+                    self.dm.process("确认开始")
+
+                tmp_files = list(tmp_path.glob("*.tmp_*")) if tmp_path.exists() else []
+                self.assertEqual(len(tmp_files), 0)
+
+    # 34. TaskIntent prepare 不写文件
+    def test_34_task_intent_prepare_no_disk_write(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir) / "task"
+            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+                builder = TaskIntentBuilder(self.kb)
+                intent = builder.prepare(
+                    task_state={"water_depth": 300.0},
+                    built_json={"water_depth": 300.0},
+                    mode="normal",
+                    task_type_key="pipeline_inspection"
+                )
+                self.assertIn("intent_id", intent)
+                self.assertFalse(tmp_path.exists())
+
+    # 35. TaskIntent persist 使用原子替换
+    def test_35_task_intent_persist_atomic_replace(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir) / "task"
+            tmp_path.mkdir(parents=True, exist_ok=True)
+            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+                builder = TaskIntentBuilder(self.kb)
+                intent = builder.prepare(
+                    task_state={"water_depth": 300.0},
+                    built_json={"water_depth": 300.0},
+                    mode="normal",
+                    task_type_key="pipeline_inspection"
+                )
+                filename = builder.persist(intent)
+                target_file = tmp_path / filename
+                self.assertTrue(target_file.exists())
+                tmp_files = list(tmp_path.glob("*.tmp_*"))
+                self.assertEqual(len(tmp_files), 0)
+
+    # 36. persist 失败不回复“任务已下发”
+    def test_36_persist_failure_no_success_reply(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir) / "task"
+            tmp_path.mkdir(parents=True, exist_ok=True)
+            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
+                 patch.object(TaskIntentBuilder, "persist", side_effect=RuntimeError("IO Error")):
+                self.dm.reset()
+                self.dm.phase = "confirming"
+                reply = self.dm.process("确认开始")
+                self.assertNotIn("已下发", reply)
+                self.assertNotEqual(self.dm.phase, "done")
+
+    # 37. 相同 intent_id 重复 persist 结果幂等
+    def test_37_persist_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir) / "task"
+            tmp_path.mkdir(parents=True, exist_ok=True)
+            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+                builder = TaskIntentBuilder(self.kb)
+                intent = builder.prepare(
+                    task_state={"water_depth": 300.0},
+                    built_json={"water_depth": 300.0},
+                    mode="normal",
+                    task_type_key="pipeline_inspection"
+                )
+                f1 = builder.persist(intent)
+                f2 = builder.persist(intent)
+                self.assertEqual(f1, f2)
+
+    # 38. 自定义 SEAGENT_RESULT_DIR 对所有模块生效
+    def test_38_custom_seagent_result_dir_affects_all_modules(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch.dict(os.environ, {"SEAGENT_RESULT_DIR": tmp_dir}):
+                task_dir = get_task_dir()
+                hist_dir = get_history_dir()
+                self.assertEqual(task_dir, Path(tmp_dir) / "task")
+                self.assertEqual(hist_dir, Path(tmp_dir) / "history")
+
+    # 39. task_id 扫描使用配置后的真实目录
+    def test_39_task_id_scan_uses_configured_real_directory(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_task_dir = Path(tmp_dir) / "task"
+            tmp_task_dir.mkdir(parents=True, exist_ok=True)
+            dummy_file = tmp_task_dir / "task_PI2026063005.json"
+            with open(dummy_file, "w", encoding="utf-8") as f:
+                json.dump({"task_id": "PI2026063005"}, f)
+
+            with patch.dict(os.environ, {"SEAGENT_RESULT_DIR": tmp_dir}):
+                id_sequence._COUNTERS.clear()
+                tid = self.dm.builder._generate_task_id("pipeline_inspection", {})
+                self.assertTrue(tid.endswith("06"))
+
+    # 40. 进程计数器清空后编号仍连续
+    def test_40_id_sequence_continuity_on_process_restart(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_task_dir = Path(tmp_dir) / "task"
+            tmp_task_dir.mkdir(parents=True, exist_ok=True)
+            dummy_file = tmp_task_dir / "task_intent_TI2026063005.json"
+            with open(dummy_file, "w", encoding="utf-8") as f:
+                json.dump({"intent_id": "TI2026063005"}, f)
+
+            id_sequence._COUNTERS.clear()
+            next_id = id_sequence.next_daily_id("TI", "20260630", 2, [(tmp_task_dir, "intent_id")])
+            self.assertEqual(next_id, "TI2026063006")
+
+    # 41. 非法 value_type 快照被拒绝
+    def test_41_invalid_value_type_snapshot_rejected(self):
+        store = SlotStore(self.kb)
+        snap = store.export_snapshot()
+        snap["slots"]["water_depth"] = {
+            "slot_name": "water_depth",
+            "value": 300.0,
+            "value_type": "invalid_type_xyz",
+            "status": "valid",
+            "version": 1
+        }
+        with self.assertRaises(SnapshotValidationError):
+            SlotStore.from_snapshot(snap, self.kb)
+
+    # 42. 非法 updated_at 快照被拒绝
+    def test_42_invalid_updated_at_snapshot_rejected(self):
+        store = SlotStore(self.kb)
+        snap = store.export_snapshot()
+        snap["slots"]["water_depth"] = {
+            "slot_name": "water_depth",
+            "value": 300.0,
+            "value_type": "number",
+            "status": "valid",
+            "updated_at": "2026-99-99T88:00:00",
+            "version": 1
+        }
+        with self.assertRaises(SnapshotValidationError):
+            SlotStore.from_snapshot(snap, self.kb)
+
+    # 43. 带时区 updated_at 快照可以恢复
+    def test_43_timezone_aware_updated_at_snapshot_restored(self):
+        store = SlotStore(self.kb)
+        snap = store.export_snapshot()
+        snap["slots"]["water_depth"] = {
+            "slot_name": "water_depth",
+            "value": 300.0,
+            "value_type": "number",
+            "status": "valid",
+            "updated_at": "2026-06-30T17:38:00+08:00",
+            "version": 1
+        }
+        restored = SlotStore.from_snapshot(snap, self.kb)
+        self.assertEqual(restored.slots["water_depth"].updated_at, "2026-06-30T17:38:00+08:00")
+
+    # 44. legacy snapshot 值类型准确推断
+    def test_44_legacy_snapshot_value_type_inference(self):
+        legacy_snap = {
+            "task_state": {
+                "water_depth": 400.0,
+                "payload": ["高清水下摄像机"],
+                "is_active": True,
+                "start_point": {"lat": 19.5, "lon": 115.2},
+                "start_time": "2026-06-30T17:38:00"
+            },
+            "conversation_history": [],
+            "mode": "normal",
+            "phase": "collecting"
+        }
+        self.dm.load_snapshot(legacy_snap)
+        store = self.dm.slot_store
+        self.assertEqual(store.slots["water_depth"].value_type, "number")
+        self.assertEqual(store.slots["payload"].value_type, "list")
+        self.assertEqual(store.slots["is_active"].value_type, "boolean")
+        self.assertEqual(store.slots["start_point"].value_type, "coord")
+        self.assertEqual(store.slots["start_time"].value_type, "datetime")
+
+    # 45. 默认运行时不打印完整 system prompt
+    def test_45_default_execution_no_system_prompt_print(self):
+        captured_stdout = io.StringIO()
+        with patch("sys.stdout", new=captured_stdout):
+            self.dm.reset()
+            self.dm.process("你好")
+        output = captured_stdout.getvalue()
+        self.assertNotIn("DEBUG SYSTEM PROMPT START", output)
+
+    # 46. 会话锁并发隔离测试
+    def test_46_session_lock_concurrency_isolation(self):
+        dm1 = DialogueManager(self.llm, self.kb)
+        dm2 = DialogueManager(self.llm, self.kb)
+
+        with dm1._session_lock:
+            lock_acquired = dm1._session_lock.acquire(blocking=False)
+            self.assertTrue(lock_acquired)
+            dm1._session_lock.release()
+
+        with dm1._session_lock:
+            dm2_acquired = dm2._session_lock.acquire(blocking=False)
+            self.assertTrue(dm2_acquired)
+            dm2._session_lock.release()
 
 
 if __name__ == "__main__":

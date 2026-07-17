@@ -18,9 +18,7 @@ from .knowledge_retriever import KnowledgeBase
 from .simulated_time import get_current_date
 from .coord_parser import parse_coord_value
 from .id_sequence import next_daily_id
-
-TASK_DIR = Path("/root/autodl-tmp/result/task")
-HISTORY_DIR = Path("/root/autodl-tmp/result/history")
+from .result_paths import get_task_dir, get_history_dir
 
 
 class OutputBuilder:
@@ -90,9 +88,6 @@ class OutputBuilder:
             allowed   = self._resolve_allowed(field_def, task_type_key, task_state)
 
             value = self._extract_field(key, ftype, field_def, task_state, task_type_key)
-            if key == 'support_vessel':
-                print('support_vessel' * 10)
-                print(value)
 
             if value is not None:
                 result[key] = value
@@ -210,7 +205,7 @@ class OutputBuilder:
             code,
             today,
             2,
-            [(TASK_DIR, "task_id"), (HISTORY_DIR, "task_id")],
+            [(get_task_dir(create=False), "task_id"), (get_history_dir(create=False), "task_id")],
         )
 
 
