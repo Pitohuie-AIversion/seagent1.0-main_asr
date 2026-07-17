@@ -9,7 +9,8 @@
 #   display_name     — 模板中文名（仅供描述，不作为字段值）
 #   task_type_values — 本模板下合法的 task_type 字段值列表（可扩展）
 #                      用户输入的任务类型必须匹配其中之一
-#   robot_category_required — 本模板强制使用的 ROV 类型
+#   allowed_robot_classes   — 本模板允许使用的机器人大类，值必须来自 robot_fleet.yaml 的 robot_classes key
+#   required_capabilities   — 本模板要求机器人族具备的工作类型能力，值必须能被 robot_families.capabilities 覆盖
 #   output_schema    — 最终 flat JSON 的字段定义（normal / emergency 两套）
 #
 # field type 说明：
@@ -30,7 +31,8 @@ task_templates:
   pipeline_inspection:
     code: "PI"
     display_name: "管缆巡检"
-    robot_category_required: "observation"
+    allowed_robot_classes: ["observation_rov", "auv"]
+    required_capabilities: ["inspection"]
     task_type_values:
       - "管缆巡检"
 
@@ -62,13 +64,13 @@ task_templates:
           label: "水深（米）"
           type: number
         - key: equipment_type
-          label: "作业设备类型"
-          type: string
-          allowed_values_ref: "robot_category_labels"
-        - key: equipment_name
-          label: "作业设备全称"
+          label: "作业设备型号"
           type: string
           allowed_values_ref: "robot_full_names"
+        - key: equipment_unit_id
+          label: "具体机器人编号"
+          type: string
+          allowed_values_ref: "robot_unit_ids"
         - key: payload
           label: "携带工具"
           type: list
@@ -105,11 +107,92 @@ task_templates:
           type: string
           allowed_values_ref: "robot_category_labels"
 
+  # ── 管缆埋设 ─────────────────────────────────────────────────────────────
+  pipeline_burial:
+    code: "PB"
+    display_name: "管缆埋设"
+    allowed_robot_classes: ["cable_burial_robot"]
+    required_capabilities: ["cable_burial"]
+    task_type_values:
+      - "管缆埋设"
+
+    output_schema:
+      normal:
+        - key: task_id
+          label: "任务编号"
+          type: auto
+        - key: task_type
+          label: "任务类型"
+          type: tasktype          # allowed_values 由 task_type_values 自动注入
+        - key: start_time
+          label: "任务开始时间"
+          type: datetime
+        - key: end_time
+          label: "任务结束时间"
+          type: datetime
+        - key: cable_type
+          label: "管缆类型"
+          type: string
+          allowed_values: ["海底油气管道", "电力电缆", "光纤通信缆"]
+        - key: start_point
+          label: "起始点经纬度"
+          type: coord
+        - key: end_point
+          label: "结束点经纬度"
+          type: coord
+        - key: water_depth
+          label: "水深（米）"
+          type: number
+        - key: equipment_type
+          label: "作业设备型号"
+          type: string
+          allowed_values_ref: "robot_full_names"
+        - key: equipment_unit_id
+          label: "具体机器人编号"
+          type: string
+          allowed_values_ref: "robot_unit_ids"
+        - key: payload
+          label: "携带工具"
+          type: list
+          allowed_values_ref: "payload_options.pipeline_burial"
+        - key: support_vessel
+          label: "支持船编号"
+          type: string
+          allowed_values_ref: "vessel_ids"
+#        - key: priority
+#          label: "优先级 (0最高, 15最低)"
+#          type: number
+
+      emergency:
+        - key: task_id
+          label: "任务编号"
+          type: auto
+        - key: task_type
+          label: "任务类型"
+          type: tasktype
+        - key: start_time
+          label: "任务开始时间"
+          type: datetime
+        - key: start_point
+          label: "起始点经纬度"
+          type: coord
+        - key: end_point
+          label: "结束点经纬度"
+          type: coord
+        - key: water_depth
+          label: "水深（米）"
+          type: number
+        - key: equipment_type
+          label: "作业设备类型"
+          type: string
+          allowed_values_ref: "robot_category_labels"
+
   # ── 采油树控制面板阀门插拔 ───────────────────────────────────────────────
   tree_valve_operation:
     code: "CT"
     display_name: "采油树控制面板阀门插拔"
-    robot_category_required: "work"
+    allowed_robot_classes: ["work_class_rov"]
+    required_capabilities: ["tree_operation"]
     task_type_values:
       - "采油树控制面板插入"
       - "采油树控制面板拔出"
@@ -146,13 +229,13 @@ task_templates:
 #          type: string
 #          allowed_values: ["立式", "卧式"]
         - key: equipment_type
-          label: "作业设备类型"
-          type: string
-          allowed_values_ref: "robot_category_labels"
-        - key: equipment_name
-          label: "作业设备全称"
+          label: "作业设备型号"
           type: string
           allowed_values_ref: "robot_full_names"
+        - key: equipment_unit_id
+          label: "具体机器人编号"
+          type: string
+          allowed_values_ref: "robot_unit_ids"
         - key: payload
           label: "携带工具"
           type: list

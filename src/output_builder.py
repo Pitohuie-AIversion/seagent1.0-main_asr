@@ -87,7 +87,7 @@ class OutputBuilder:
             key       = field_def["key"]
             label     = field_def["label"]
             ftype     = field_def["type"]
-            allowed   = self._resolve_allowed(field_def, task_type_key)
+            allowed   = self._resolve_allowed(field_def, task_type_key, task_state)
 
             value = self._extract_field(key, ftype, field_def, task_state, task_type_key)
             if key == 'support_vessel':
@@ -165,7 +165,7 @@ class OutputBuilder:
         if ftype == "string":
             if raw is None:
                 return None
-            allowed = self._resolve_allowed(field_def)
+            allowed = self._resolve_allowed(field_def, task_type_key, task_state)
             if not allowed:
                 return str(raw)
             # 必须是 allowed_values 中的值，否则视为未规范化（缺失）
@@ -183,7 +183,7 @@ class OutputBuilder:
         if ftype == "list":
             if not raw:
                 return None
-            allowed = self._resolve_allowed(field_def)
+            allowed = self._resolve_allowed(field_def, task_type_key, task_state)
             if not allowed:
                 return raw if isinstance(raw, list) else None
             # 过滤出合法值
@@ -248,7 +248,12 @@ class OutputBuilder:
     # allowed_values 解析
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _resolve_allowed(self, field_def: dict, task_type_key: str = "") -> list[str]:
+    def _resolve_allowed(
+        self,
+        field_def: dict,
+        task_type_key: str = "",
+        task_state: dict | None = None,
+    ) -> list[str]:
         # tasktype：合法值来自本模板的 task_type_values
         if field_def.get("type") == "tasktype":
             return self._get_template_task_type_values(task_type_key)
@@ -261,14 +266,27 @@ class OutputBuilder:
         if not ref:
             return []
 
-        if ref in self._ref_cache:
-            return self._ref_cache[ref]
+        selector = ""
+        if ref == "robot_unit_ids" and task_state:
+            selector = str(task_state.get("equipment_type") or task_state.get("equipment_name") or "")
+        cache_key = (
+            f"{ref}:{task_type_key}:{selector}"
+            if ref in ("robot_full_names", "robot_unit_ids")
+            else ref
+        )
+        if cache_key in self._ref_cache:
+            return self._ref_cache[cache_key]
 
-        result = self._lookup_ref(ref)
-        self._ref_cache[ref] = result
+        result = self._lookup_ref(ref, task_type_key, task_state)
+        self._ref_cache[cache_key] = result
         return result
 
-    def _lookup_ref(self, ref: str) -> list[str]:
+    def _lookup_ref(
+        self,
+        ref: str,
+        task_type_key: str = "",
+        task_state: dict | None = None,
+    ) -> list[str]:
         """
         解析 allowed_values_ref 字符串，从知识库中取对应列表。
         支持：
@@ -279,11 +297,15 @@ class OutputBuilder:
           vessel_ids
         """
         if ref == "robot_category_labels":
-            cats = self.kb.robot_fleet.get("robot_categories", {})
-            return [v["label"] for v in cats.values()]
+            return self.kb.get_robot_class_labels()
 
         if ref == "robot_full_names":
-            return [r["full_name"] for r in self.kb.robot_fleet.get("robot_fleet", [])]
+            if task_type_key:
+                return [r["full_name"] for r in self.kb.get_task_allowed_robot_variants(task_type_key)]
+            return [r["full_name"] for r in self.kb.get_all_rovs()]
+
+        if ref == "robot_unit_ids":
+            return self._get_robot_unit_ids(task_type_key, task_state)
 
         if ref == "vessel_ids":
             return [r['id'] for r in self.kb.assets.get("vessels", [])]
@@ -294,6 +316,35 @@ class OutputBuilder:
             return self.kb.assets.get("payload_options", {}).get(task_key, []).get("common", [])
 
         return []
+
+    def _get_robot_unit_ids(
+        self,
+        task_type_key: str = "",
+        task_state: dict | None = None,
+    ) -> list[str]:
+        selector = ""
+        if task_state:
+            selector = str(task_state.get("equipment_type") or task_state.get("equipment_name") or "")
+
+        if selector:
+            robot = self.kb.get_rov(selector)
+            if not robot or not self.kb.robot_matches_task(robot, task_type_key):
+                return []
+            return list(robot.get("unit_ids", []))
+
+        if task_type_key:
+            robots = self.kb.get_task_allowed_robot_variants(task_type_key)
+        else:
+            robots = self.kb.get_all_rovs()
+
+        unit_ids: list[str] = []
+        seen = set()
+        for robot in robots:
+            for unit_id in robot.get("unit_ids", []):
+                if unit_id and unit_id not in seen:
+                    unit_ids.append(unit_id)
+                    seen.add(unit_id)
+        return unit_ids
 
     # ══════════════════════════════════════════════════════════════════════════
     # Schema 获取

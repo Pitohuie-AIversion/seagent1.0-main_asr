@@ -35,6 +35,7 @@ from .simulated_time import get_current_datetime
 from .time_context import get_time_context, is_standalone_time_query
 from .coord_parser import parse_coordinate_updates
 from .oilfield_linker import OilfieldEntityLinker
+from .slot_store import SlotStore, Slot
 
 HARD_REFUSAL_LIMIT = 4   # 连续拒绝上限
 
@@ -75,7 +76,8 @@ class DialogueManager:
 
         # 对话核心状态
         self.conversation_history: list[dict] = []
-        self.task_state: dict = {}
+        self.slot_store = SlotStore(kb)
+        self.task_state: dict = self.slot_store.get_task_state()
         self.mode: str = "normal"
         self.phase: str = "collecting"
         self.final_result: dict | None = None
@@ -120,53 +122,123 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": pending_reply})
             return pending_reply
 
-        # 提取任务类型
-        task_type_key = self.task_state.get("task_type_key")
+        # 3. Parameter Extraction & Processing Pipeline (Atomic Transaction)
+        new_slots = self.slot_store.clone_slots()
+        new_unresolved = list(self.slot_store.unresolved)
+        
+        task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
+        current_state = self.slot_store.get_task_state()
+        
+        merged_updates = {}
+        extraction_res = {}
+        
         if task_type_key is None:
-            updates = self.extractor.extract_updates(
-                user_message, self.conversation_history, self.task_state,
+            # Stage 1: Extract task type
+            extraction_res = self.extractor.extract_updates(
+                user_message, self.conversation_history, current_state,
                 task_type_key=None,
                 task_type_map=self.kb.get_task_type_map(),
-                required=None,
+                required=None
             )
-            updates = self._link_oilfield_update(updates)
-            changed_fields = self._compute_changed_fields(updates)
-            self._apply_updates(updates)
-            print('task extract | '*10)
-            print(updates)
-
-        # 提取参数更新
-        task_type_key = self.task_state.get("task_type_key")
+            stage1_updates = {}
+            for candidate in extraction_res.get("slot_candidates", []):
+                k = candidate["canonical_key"]
+                v = candidate["normalized_value"]
+                stage1_updates[k] = v
+                merged_updates[k] = v
+            self._apply_updates_in_transaction(stage1_updates, new_slots)
+            
+            task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
+            
         if task_type_key:
+            # Stage 2: Extract task parameters
+            current_state = {k: s.value for k, s in new_slots.items() if s.value is not None}
             required = self.builder.get_required(task_type_key, self.mode)
-            updates = self.extractor.extract_updates(
-                user_message, self.conversation_history, self.task_state,
+            extraction_res = self.extractor.extract_updates(
+                user_message, self.conversation_history, current_state,
                 task_type_key=task_type_key,
                 task_type_map=self.kb.get_task_type_map(),
                 required=required,
                 ROV2type=self.kb.ROV2type
             )
-            updates = self._merge_coordinate_updates(user_message, updates, required)
-            updates = self._link_oilfield_update(updates)
-            changed_fields = self._compute_changed_fields(updates)
-            print('key extract | ' * 10)
-            print(updates)
-
-        # 字段变化 → 使相关soft白名单失效
+            
+            if extraction_res.get("unresolved"):
+                for u in extraction_res["unresolved"]:
+                    if u not in new_unresolved:
+                        new_unresolved.append(u)
+                        
+            stage2_updates = {}
+            for candidate in extraction_res.get("slot_candidates", []):
+                k = candidate["canonical_key"]
+                v = candidate["normalized_value"]
+                if k == "equipment_name" or k == "equipment_model":
+                    k = "equipment_type"
+                stage2_updates[k] = v
+                merged_updates[k] = v
+                
+            stage2_updates = self._merge_coordinate_updates(user_message, stage2_updates, required)
+            for k, v in stage2_updates.items():
+                merged_updates[k] = v
+                
+            stage2_updates = self._link_oilfield_update_in_transaction(stage2_updates, new_slots)
+            for k, v in stage2_updates.items():
+                merged_updates[k] = v
+                
+            # Conflict resolution check: if user confirmed conflict in the next turn
+            # This must run BEFORE applying new updates to avoid self-resolving new conflicts
+            for k, slot in new_slots.items():
+                if slot.status == "conflict" and slot.candidate_value is not None:
+                    if self._user_confirmed(user_message) or stage2_updates.get(k) == slot.candidate_value:
+                        slot.value = slot.candidate_value
+                        slot.status = "valid"
+                        slot.candidate_value = None
+                        slot.validation_error = None
+                    elif self._user_cancelled(user_message):
+                        slot.status = "valid"
+                        slot.candidate_value = None
+                        slot.validation_error = None
+                        
+            self._apply_updates_in_transaction(stage2_updates, new_slots)
+        else:
+            # No task type key, but unresolved may be populated
+            if extraction_res.get("unresolved"):
+                for u in extraction_res["unresolved"]:
+                    if u not in new_unresolved:
+                        new_unresolved.append(u)
+        
+        # Compute changed fields based on proposed updates
+        changed_fields = set()
+        for k, v in merged_updates.items():
+            if k not in ("emergency_mode", "rov_description", "__clear_oilfield_name", "__clear_pending_oilfield") and v is not None and v != "":
+                old_val = self.slot_store.slots.get(k).value if self.slot_store.slots.get(k) else None
+                if old_val != v:
+                    changed_fields.add(k)
+                    
         self._invalidate_whitelist(changed_fields)
-
-        # 应用更新 + 规范化
-        self._apply_updates(updates)
-
-        if changed_fields or not self.task_state.get("task_type_key"):
-            self._normalize_constrained_fields(changed_fields)
-
-        # 构建flat JSON，获取缺失字段
+        
+        # Normalize and validate inside transaction
+        self._normalize_and_validate_in_transaction(new_slots, new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None)
+        
+        # Atomic commit
+        self.slot_store.commit_transaction(new_slots, new_unresolved)
+        
+        # Re-derive from slot_store
+        self.task_state = self.slot_store.get_task_state()
+        built = self.slot_store.get_built_json()
+        
         task_type_key = self.task_state.get("task_type_key")
         if task_type_key:
-            built, missing = self.builder.build(self.task_state, task_type_key, self.mode)
-            if "task_id" in built and not self.task_state.get("task_id"):
-                self.task_state["task_id"] = built["task_id"]
+            if "task_id" in new_slots and (new_slots["task_id"].value is None or new_slots["task_id"].status != "valid"):
+                tid = self.builder._generate_task_id(task_type_key, self.task_state)
+                new_slots = self.slot_store.clone_slots()
+                new_slots["task_id"].value = tid
+                new_slots["task_id"].status = "valid"
+                self.slot_store.commit_transaction(new_slots, self.slot_store.unresolved)
+                self.task_state = self.slot_store.get_task_state()
+                built = self.slot_store.get_built_json()
+                
+            required_schema = self.builder.get_schema(task_type_key, self.mode)
+            missing = self.slot_store.get_missing_slots(required_schema)
             self._last_built_json = built
             self._last_missing = missing
         else:
@@ -333,6 +405,237 @@ class DialogueManager:
             linked["__clear_oilfield_name"] = True
         return linked
 
+    def _link_oilfield_update_in_transaction(self, updates: dict, new_slots: dict) -> dict:
+        raw_name = updates.get("oilfield_name")
+        if not raw_name:
+            return updates
+
+        coords = (
+            updates.get("oilfield_coordinates")
+            or updates.get("start_point")
+            or updates.get("cable_position")
+            or (new_slots.get("oilfield_coordinates").value if new_slots.get("oilfield_coordinates") else None)
+            or (new_slots.get("start_point").value if new_slots.get("start_point") else None)
+            or (new_slots.get("cable_position").value if new_slots.get("cable_position") else None)
+        )
+        match = self.oilfield_linker.link(str(raw_name), coords)
+        linked = dict(updates)
+        
+        for k in ("raw_oilfield_name", "oilfield_match_status", "oilfield_match_confidence", "oilfield_match_evidence", "oilfield_match_candidates"):
+            if k not in new_slots:
+                new_slots[k] = Slot(slot_name=k)
+
+        new_slots["raw_oilfield_name"].value = match.raw
+        new_slots["raw_oilfield_name"].status = "valid"
+        new_slots["oilfield_match_status"].value = match.status
+        new_slots["oilfield_match_status"].status = "valid"
+        new_slots["oilfield_match_confidence"].value = match.confidence
+        new_slots["oilfield_match_confidence"].status = "valid"
+        new_slots["oilfield_match_evidence"].value = match.evidence
+        new_slots["oilfield_match_evidence"].status = "valid"
+        new_slots["oilfield_match_candidates"].value = match.candidates
+        new_slots["oilfield_match_candidates"].status = "valid"
+
+        if match.status == "accepted" and match.standard_name:
+            linked["oilfield_name"] = match.standard_name
+            if "oilfield_entity_id" not in new_slots:
+                new_slots["oilfield_entity_id"] = Slot("oilfield_entity_id")
+            new_slots["oilfield_entity_id"].value = match.entity_id
+            new_slots["oilfield_entity_id"].status = "valid"
+            linked["__clear_pending_oilfield"] = True
+        else:
+            linked.pop("oilfield_name", None)
+            linked["pending_oilfield_name"] = match.raw
+            linked["pending_oilfield_candidates"] = match.candidates
+            linked["__clear_oilfield_name"] = True
+        return linked
+
+    def _apply_updates_in_transaction(self, updates: dict, new_slots: dict):
+        if updates.get("__clear_oilfield_name"):
+            if "oilfield_name" in new_slots:
+                new_slots["oilfield_name"].value = None
+                new_slots["oilfield_name"].status = "missing"
+            if "oilfield_entity_id" in new_slots:
+                new_slots["oilfield_entity_id"].value = None
+                new_slots["oilfield_entity_id"].status = "missing"
+        if updates.get("__clear_pending_oilfield"):
+            if "pending_oilfield_name" in new_slots:
+                new_slots["pending_oilfield_name"].value = None
+                new_slots["pending_oilfield_name"].status = "missing"
+            if "pending_oilfield_candidates" in new_slots:
+                new_slots["pending_oilfield_candidates"].value = None
+                new_slots["pending_oilfield_candidates"].status = "missing"
+
+        skip = {"emergency_mode", "rov_description", "__clear_oilfield_name", "__clear_pending_oilfield"}
+        for k, v in updates.items():
+            if k in skip or v is None or v == "":
+                continue
+            if k in ("task_type", "task_type_key"):
+                self._handle_task_type_update_in_transaction(k, v, new_slots)
+                continue
+            
+            # Check for conflict
+            slot = new_slots.get(k)
+            if slot and slot.status == "valid" and slot.value is not None and slot.value != v:
+                slot.status = "conflict"
+                slot.candidate_value = v
+                slot.raw_value = str(v)
+                slot.validation_error = f"Conflict: existing value '{slot.value}' vs new value '{v}'"
+            else:
+                if k in new_slots:
+                    new_slots[k].value = v
+                    new_slots[k].status = "candidate"
+                    new_slots[k].validation_error = None
+                else:
+                    new_slots[k] = Slot(slot_name=k, value=v, status="candidate")
+
+        if updates.get("emergency_mode") and self.mode != "emergency":
+            self.mode = "emergency"
+            if "emergency_mode" in new_slots:
+                new_slots["emergency_mode"].value = True
+                new_slots["emergency_mode"].status = "valid"
+        if "rov_description" in updates:
+            self._handle_rov_description_in_transaction(updates["rov_description"], new_slots)
+
+        # Auto-synchronize equipment_type when equipment_name is set/updated
+        eq_name_slot = new_slots.get("equipment_name")
+        eq_type_slot = new_slots.get("equipment_type")
+        eq_val = (eq_name_slot.value if eq_name_slot else None) or (eq_type_slot.value if eq_type_slot else None)
+        if eq_val:
+            task_type = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
+            rov = self.kb.get_rov_for_task(eq_val, task_type) if task_type else self.kb.get_rov(eq_val)
+            if rov:
+                if "equipment_name" not in new_slots:
+                    new_slots["equipment_name"] = Slot("equipment_name")
+                new_slots["equipment_name"].value = rov["full_name"]
+                new_slots["equipment_name"].status = "valid"
+                
+                category = rov.get("category")
+                cats = self.kb.get_robot_classes()
+                if category in cats:
+                    category_name = cats[category].get("full_name", category)
+                    target_val = rov["full_name"] if self.mode != "emergency" else category_name
+                    if "equipment_type" not in new_slots:
+                        new_slots["equipment_type"] = Slot("equipment_type")
+                    new_slots["equipment_type"].value = target_val
+                    new_slots["equipment_type"].status = "valid"
+
+    def _handle_task_type_update_in_transaction(self, key: str, value: str, new_slots: dict):
+        task_type_map = self.kb.get_task_type_map()
+        templates = self.kb.task_schemas.get("task_templates", {})
+
+        if value in task_type_map:
+            new_slots["task_type"].value = value
+            new_slots["task_type"].status = "valid"
+            new_slots["task_type_key"].value = task_type_map[value]
+            new_slots["task_type_key"].status = "valid"
+            required_fields = self.builder.get_schema(task_type_map[value], self.mode)
+            self.slot_store.init_task_slots(required_fields)
+            for f in required_fields:
+                fkey = f["key"]
+                if fkey not in new_slots:
+                    new_slots[fkey] = Slot(slot_name=fkey, value_type=f.get("type", "string"))
+        elif key == "task_type_key" and value in templates:
+            new_slots["task_type_key"].value = value
+            new_slots["task_type_key"].status = "valid"
+            values = templates[value].get("task_type_values", [])
+            if len(values) == 1:
+                new_slots["task_type"].value = values[0]
+                new_slots["task_type"].status = "valid"
+            required_fields = self.builder.get_schema(value, self.mode)
+            self.slot_store.init_task_slots(required_fields)
+            for f in required_fields:
+                fkey = f["key"]
+                if fkey not in new_slots:
+                    new_slots[fkey] = Slot(slot_name=fkey, value_type=f.get("type", "string"))
+
+    def _handle_rov_description_in_transaction(self, description: str, new_slots: dict):
+        all_rovs = self.kb.get_all_rovs()
+        task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
+        candidates = self.extractor.resolve_rov_description(
+            description, all_rovs, task_type_key
+        )
+        self._pending_rov_candidates = candidates
+        if candidates:
+            new_slots["_rov_candidates"].value = [
+                {"model": r["model"], "full_name": r["full_name"],
+                 "category": r["category"], "available": True}
+                for r in candidates[:3]
+            ]
+            new_slots["_rov_candidates"].status = "valid"
+
+    def _normalize_and_validate_in_transaction(self, new_slots: dict, task_type_key: str | None):
+        if not task_type_key:
+            return
+            
+        schema = self.builder.get_schema(task_type_key, self.mode)
+        
+        for field_def in schema:
+            key = field_def["key"]
+            ftype = field_def["type"]
+            slot = new_slots.get(key)
+            if not slot or slot.value is None or slot.status in ("fixed", "auto", "conflict"):
+                continue
+                
+            temp_state = {k: s.value for k, s in new_slots.items() if s.value is not None}
+            allowed = self.builder._resolve_allowed(field_def, task_type_key, temp_state)
+            if allowed:
+                raw = slot.value
+                if ftype == "list":
+                    normalized = self.normalizer.normalize(key, field_def["label"], raw, allowed, ftype)
+                else:
+                    normalized = self.normalizer.normalize(key, field_def["label"], str(raw), allowed, ftype)
+                    
+                if normalized is not None:
+                    slot.value = normalized
+                    slot.status = "valid"
+                    slot.validation_error = None
+                else:
+                    slot.status = "invalid"
+                    slot.validation_error = f"Value '{raw}' could not be normalized to allowed options: {allowed}"
+            else:
+                if ftype == "datetime":
+                    val_str = str(slot.value)
+                    import re
+                    pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"
+                    if re.match(pattern, val_str):
+                        slot.status = "valid"
+                        slot.validation_error = None
+                    else:
+                        slot.status = "invalid"
+                        slot.validation_error = f"Invalid datetime format: {val_str}. Expected YYYY-MM-DDTHH:MM:SS"
+                elif ftype == "coord":
+                    coord = self.builder._validate_coord(slot.value)
+                    if coord:
+                        slot.value = coord
+                        slot.status = "valid"
+                        slot.validation_error = None
+                    else:
+                        slot.status = "invalid"
+                        slot.validation_error = f"Invalid coordinate format: {slot.value}"
+                elif ftype == "number":
+                    num = self.builder._validate_number(slot.value)
+                    if num is not None:
+                        slot.value = num
+                        slot.status = "valid"
+                        slot.validation_error = None
+                    else:
+                        slot.status = "invalid"
+                        slot.validation_error = f"Invalid numeric value: {slot.value}"
+                else:
+                    slot.status = "valid"
+                    slot.validation_error = None
+
+        temp_state = {k: s.value for k, s in new_slots.items() if s.value is not None}
+        violations = self.validator.validate(temp_state)
+        for v in violations:
+            if v.severity == "hard":
+                for f in v.related_fields:
+                    slot = new_slots.get(f)
+                    if slot:
+                        slot.status = "invalid"
+                        slot.validation_error = v.message
+
     def _apply_updates(self, updates: dict):
         if updates.get("__clear_oilfield_name"):
             self.task_state.pop("oilfield_name", None)
@@ -357,13 +660,14 @@ class DialogueManager:
         # Auto-synchronize equipment_type when equipment_name is set/updated
         name = self.task_state.get("equipment_name")
         if name:
-            rov = self.kb.get_rov(name)
+            task_type = self.task_state.get("task_type_key")
+            rov = self.kb.get_rov_for_task(name, task_type) if task_type else self.kb.get_rov(name)
             if rov:
                 self.task_state["equipment_name"] = rov["full_name"]
                 category = rov.get("category")
-                cats = self.kb.robot_fleet.get("robot_categories", {})
+                cats = self.kb.get_robot_classes()
                 if category in cats:
-                    self.task_state["equipment_type"] = cats[category]["label"]
+                    self.task_state["equipment_type"] = cats[category].get("full_name", category)
 
     def _resolve_pending_oilfield_confirmation(self, user_message: str) -> str | None:
         if not self.task_state.get("pending_oilfield_name"):
@@ -455,7 +759,7 @@ class DialogueManager:
             if changed_fields and key not in changed_fields:
                 continue
 
-            allowed = self.builder._resolve_allowed(field_def, task_type_key)
+            allowed = self.builder._resolve_allowed(field_def, task_type_key, self.task_state)
             if not allowed:
                 continue
 
@@ -686,7 +990,8 @@ class DialogueManager:
 
     def reset(self):
         self.conversation_history = []
-        self.task_state = {}
+        self.slot_store = SlotStore(self.kb)
+        self.task_state = self.slot_store.get_task_state()
         self.mode = "normal"
         self.phase = "collecting"
         self.final_result = None
@@ -760,6 +1065,23 @@ class DialogueManager:
         # 恢复基本状态
         self.conversation_history = snapshot.get("conversation_history", [])
         self.task_state = snapshot.get("task_state", {})
+        self.slot_store = SlotStore(self.kb)
+        
+        task_type_key = self.task_state.get("task_type_key")
+        if task_type_key:
+            required_fields = self.builder.get_schema(task_type_key, snapshot.get("mode", "normal"))
+            self.slot_store.init_task_slots(required_fields)
+
+        new_slots = self.slot_store.clone_slots()
+        for k, v in self.task_state.items():
+            if k in new_slots:
+                new_slots[k].value = v
+                new_slots[k].status = "valid"
+            else:
+                new_slots[k] = Slot(slot_name=k, value=v, status="valid")
+
+        self.slot_store.commit_transaction(new_slots, [])
+        
         self.mode = snapshot.get("mode", "normal")
         self.phase = snapshot.get("phase", "collecting")
         self.final_result = None

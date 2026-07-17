@@ -1,1551 +1,1654 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>水下多智能体任务决策系统 - ROV HUD</title>
-<!-- 引入高科技感的 Google 字体 -->
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<style>
-/* ==================== 科技感全局设计系统 ==================== */
-:root {
-  --bg-deep: #02050f;
-  --bg-dark: #050b18;
-  --bg-card: rgba(6, 12, 30, 0.75);
-  --accent-cyan: #00f0ff;
-  --accent-cyan-glow: rgba(0, 240, 255, 0.4);
-  --accent-green: #00ffc4;
-  --accent-green-glow: rgba(0, 255, 196, 0.3);
-  --accent-amber: #ff9d00;
-  --accent-amber-glow: rgba(255, 157, 0, 0.3);
-  --accent-red: #ff003c;
-  --accent-red-glow: rgba(255, 0, 60, 0.4);
-  --text-primary: #eef2ff;
-  --text-secondary: #7b89b6;
-  --border-cyan: rgba(0, 240, 255, 0.22);
-  --font-tech: 'Orbitron', 'Inter', sans-serif;
-  --font-mono: 'Share Tech Mono', 'Courier New', monospace;
-  --font-sans: 'Inter', -apple-system, sans-serif;
-}
-
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-body {
-  background: var(--bg-deep);
-  background-image: 
-    radial-gradient(circle at 50% 30%, rgba(9, 28, 66, 0.45) 0%, rgba(2, 5, 15, 1) 85%),
-    linear-gradient(rgba(0, 240, 255, 0.02) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 240, 255, 0.02) 1px, transparent 1px);
-  background-size: 100% 100%, 40px 40px, 40px 40px;
-  font-family: var(--font-sans);
-  color: var(--text-primary);
-  height: 100vh;
-  overflow: hidden;
-}
-
-/* scanline 扫描线效果 */
-body::before {
-  content: " ";
-  display: block;
-  position: fixed;
-  top: 0; left: 0; bottom: 0; right: 0;
-  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.3) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.04), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.04));
-  z-index: 9999;
-  background-size: 100% 4px, 6px 100%;
-  pointer-events: none;
-  opacity: 0.35;
-}
-
-.app {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  max-width: 1700px;
-  margin: 0 auto;
-  padding: 0 1rem;
-}
-
-/* ==================== 顶部状态条 Header ==================== */
-.header {
-  padding: 1rem 1.5rem;
-  border-bottom: 1px solid var(--border-cyan);
-  background: rgba(4, 9, 22, 0.9);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 0.5rem;
-  border-radius: 0.5rem 0.5rem 0 0;
-  box-shadow: 0 0 25px rgba(0, 240, 255, 0.12);
-  backdrop-filter: blur(10px);
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.status-indicator-light {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--accent-green);
-  box-shadow: 0 0 10px var(--accent-green);
-  animation: pulse-glow-green 2s infinite;
-}
-
-.header h1 {
-  font-family: var(--font-tech);
-  font-size: 1.4rem;
-  font-weight: 700;
-  letter-spacing: 1px;
-  color: var(--accent-cyan);
-  text-shadow: 0 0 10px var(--accent-cyan-glow);
-}
-
-.header p {
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  margin-top: 2px;
-  letter-spacing: 2px;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-}
-
-.nav-telemetry-item {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-}
-
-.nav-label {
-  font-family: var(--font-tech);
-  font-size: 0.65rem;
-  color: var(--text-secondary);
-  letter-spacing: 1px;
-}
-
-.nav-value {
-  font-family: var(--font-mono);
-  font-size: 0.95rem;
-  color: var(--accent-cyan);
-  text-shadow: 0 0 5px var(--accent-cyan-glow);
-}
-
-.lang-selector select {
-  background: var(--bg-deep);
-  color: var(--text-primary);
-  border: 1px solid var(--accent-cyan);
-  padding: 6px 12px;
-  border-radius: 4px;
-  font-family: var(--font-tech);
-  font-size: 0.75rem;
-  cursor: pointer;
-  outline: none;
-  transition: all 0.3s;
-}
-
-.lang-selector select:hover {
-  background: rgba(0, 240, 255, 0.1);
-  box-shadow: 0 0 10px var(--accent-cyan-glow);
-}
-
-/* ==================== 两栏 主区域 ==================== */
-.main-panel {
-  display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 1rem;
-  flex: 1;
-  overflow: hidden;
-  margin-top: 0.5rem;
-  margin-bottom: 0.5rem;
-}
-
-/* ==================== 统一的玻璃材质面板 Card ==================== */
-.hud-panel {
-  background: var(--bg-card);
-  border: 1px solid var(--border-cyan);
-  border-radius: 0.5rem;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(12px);
-}
-
-/* ==================== 科技感 SVG 图标样式 ==================== */
-.tech-icon {
-  width: 16px;
-  height: 16px;
-  stroke: var(--accent-cyan);
-  fill: none;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  display: inline-block;
-  vertical-align: middle;
-  filter: drop-shadow(0 0 3px var(--accent-cyan-glow));
-  transition: all 0.3s;
-}
-
-.tech-icon.success {
-  stroke: var(--accent-green);
-  filter: drop-shadow(0 0 3px var(--accent-green-glow));
-}
-
-.tech-icon.warning {
-  stroke: var(--accent-amber);
-  filter: drop-shadow(0 0 3px var(--accent-amber-glow));
-}
-
-.tech-icon.danger {
-  stroke: var(--accent-red);
-  filter: drop-shadow(0 0 3px var(--accent-red-glow));
-}
-
-.card-title .tech-icon, .info-title .tech-icon {
-  margin-right: 8px;
-}
-
-/* 科技感头像 SVG */
-.bot-avatar-svg, .user-avatar-svg {
-  width: 22px;
-  height: 22px;
-  stroke: var(--accent-cyan);
-  fill: none;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  filter: drop-shadow(0 0 4px var(--accent-cyan-glow));
-}
-
-.user-avatar-svg {
-  stroke: #3b82f6;
-  filter: drop-shadow(0 0 4px rgba(59, 130, 246, 0.4));
-}
-
-.visor-glow {
-  fill: var(--accent-cyan);
-  filter: drop-shadow(0 0 5px var(--accent-cyan));
-  animation: visor-pulse 2s infinite alternate;
-}
-
-@keyframes visor-pulse {
-  0% { opacity: 0.5; }
-  100% { opacity: 1; }
-}
-
-/* ==================== 左侧遥测栏 Telemetry Panel ==================== */
-.telemetry-panel {
-  gap: 1rem;
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-}
-
-.telemetry-card {
-  background: rgba(5, 12, 28, 0.6);
-  border: 1px solid rgba(0, 240, 255, 0.15);
-  border-radius: 0.5rem;
-  padding: 0.9rem;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  transition: border-color 0.3s;
-}
-
-.telemetry-card:hover {
-  border-color: rgba(0, 240, 255, 0.35);
-}
-
-.card-title {
-  font-family: var(--font-tech);
-  font-size: 0.75rem;
-  color: var(--accent-cyan);
-  letter-spacing: 1px;
-  border-left: 2px solid var(--accent-cyan);
-  padding-left: 6px;
-  margin-bottom: 4px;
-  display: flex;
-  align-items: center;
-}
-
-/* 2D 雷达扫描效果 */
-.sonar-container {
-  position: relative;
-  width: 100%;
-  height: 180px;
-  background: radial-gradient(circle, rgba(0, 32, 64, 0.5) 0%, rgba(3, 7, 18, 0.9) 100%);
-  border: 1px solid rgba(0, 240, 255, 0.2);
-  border-radius: 6px;
-  overflow: hidden;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-}
-
-.sonar-grid {
-  position: absolute;
-  width: 160px;
-  height: 160px;
-  border-radius: 50%;
-  border: 1px dashed rgba(0, 240, 255, 0.15);
-}
-
-.sonar-grid::before {
-  content: "";
-  position: absolute;
-  top: 20px; left: 20px; right: 20px; bottom: 20px;
-  border-radius: 50%;
-  border: 1px dashed rgba(0, 240, 255, 0.2);
-}
-
-.sonar-grid::after {
-  content: "";
-  position: absolute;
-  top: 50px; left: 50px; right: 50px; bottom: 50px;
-  border-radius: 50%;
-  border: 1px solid rgba(0, 240, 255, 0.25);
-}
-
-.sonar-axis-x {
-  position: absolute;
-  width: 100%;
-  height: 1px;
-  background: rgba(0, 240, 255, 0.1);
-}
-
-.sonar-axis-y {
-  position: absolute;
-  width: 1px;
-  height: 100%;
-  background: rgba(0, 240, 255, 0.1);
-}
-
-.sonar-sweep {
-  position: absolute;
-  width: 180px;
-  height: 180px;
-  background: conic-gradient(from 0deg at 50% 50%, rgba(0, 240, 255, 0.2) 0deg, rgba(0, 240, 255, 0) 90deg);
-  border-radius: 50%;
-  animation: sweep 4s linear infinite;
-  pointer-events: none;
-}
-
-.sonar-center {
-  position: absolute;
-  width: 6px;
-  height: 6px;
-  background: var(--accent-cyan);
-  border-radius: 50%;
-  box-shadow: 0 0 8px var(--accent-cyan);
-}
-
-/* 动态声呐目标 */
-.sonar-target {
-  position: absolute;
-  width: 6px;
-  height: 6px;
-  background: var(--accent-green);
-  border-radius: 50%;
-  box-shadow: 0 0 10px var(--accent-green);
-  animation: target-pulse 2s infinite ease-in-out;
-  opacity: 0;
-}
-
-.target-1 { top: 35%; left: 30%; animation-delay: 0.5s; }
-.target-2 { top: 65%; left: 70%; animation-delay: 2s; }
-.target-valve { top: 48%; left: 60%; background: var(--accent-amber); box-shadow: 0 0 10px var(--accent-amber); display: none; }
-
-.sonar-details {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-top: 4px;
-}
-
-.sonar-detail-row {
-  display: flex;
-  flex-direction: column;
-}
-
-.sonar-detail-row span:first-child {
-  font-size: 0.65rem;
-  color: var(--text-secondary);
-}
-
-.sonar-detail-row .mono-value {
-  font-family: var(--font-mono);
-  font-size: 0.85rem;
-  color: var(--accent-cyan);
-}
-
-/* 环境深度指示器 */
-.environment-container {
-  display: flex;
-  gap: 15px;
-  align-items: stretch;
-}
-
-.gauge-column {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-}
-
-.gauge-column.flex-col {
-  gap: 12px;
-}
-
-.gauge-label {
-  font-size: 0.65rem;
-  color: var(--text-secondary);
-  margin-bottom: 4px;
-  display: block;
-}
-
-.depth-bar-container {
-  position: relative;
-  height: 100px;
-  background: rgba(0, 32, 64, 0.4);
-  border: 1px solid rgba(0, 240, 255, 0.2);
-  border-radius: 4px;
-  margin: 4px 0;
-  overflow: hidden;
-}
-
-.depth-bar-fill {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  width: 100%;
-  background: linear-gradient(to top, rgba(0, 240, 255, 0.8), rgba(0, 80, 255, 0.4));
-  box-shadow: 0 0 10px var(--accent-cyan);
-  transition: height 1s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.depth-marker {
-  position: absolute;
-  right: 4px;
-  font-family: var(--font-mono);
-  font-size: 0.6rem;
-  color: rgba(0, 240, 255, 0.5);
-  pointer-events: none;
-}
-
-.marker-0 { top: 2px; }
-.marker-500 { top: calc(50% - 5px); }
-.marker-1000 { bottom: 2px; }
-
-.mono-value.big-val {
-  font-family: var(--font-mono);
-  font-size: 1.1rem;
-  font-weight: bold;
-  color: var(--text-primary);
-  text-shadow: 0 0 5px rgba(255, 255, 255, 0.2);
-}
-
-.small-gauge-item {
-  background: rgba(0, 32, 64, 0.2);
-  padding: 6px 10px;
-  border-radius: 4px;
-  border: 1px solid rgba(0, 240, 255, 0.08);
-}
-
-/* 动力诊断网格 */
-.thrusters-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
-  margin-top: 4px;
-}
-
-.thruster-item {
-  background: rgba(255, 0, 60, 0.1);
-  border: 1px solid rgba(255, 0, 60, 0.2);
-  border-radius: 4px;
-  padding: 6px 2px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  transition: all 0.3s;
-}
-
-.thruster-item.active {
-  background: rgba(0, 255, 196, 0.1);
-  border: 1px solid rgba(0, 255, 196, 0.3);
-}
-
-.thruster-name {
-  font-family: var(--font-tech);
-  font-size: 0.65rem;
-  font-weight: bold;
-  color: var(--text-secondary);
-}
-
-.thruster-item.active .thruster-name {
-  color: var(--accent-green);
-}
-
-.thruster-status {
-  font-family: var(--font-mono);
-  font-size: 0.55rem;
-  color: var(--accent-red);
-}
-
-.thruster-item.active .thruster-status {
-  color: var(--accent-green);
-}
-
-/* 遥测流 */
-.diagnostics-logs {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 6px;
-}
-
-.diag-header {
-  font-size: 0.65rem;
-  color: var(--text-secondary);
-}
-
-.diag-log-container {
-  background: rgba(0, 5, 15, 0.8);
-  border: 1px solid rgba(0, 240, 255, 0.15);
-  border-radius: 4px;
-  height: 85px;
-  padding: 6px;
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  color: var(--accent-cyan);
-  overflow-y: auto;
-  line-height: 1.4;
-  white-space: pre-wrap;
-}
-
-/* ==================== 中间对话栏 Dialogue Panel ==================== */
-.chat-area {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--border-cyan);
-  background: rgba(5, 11, 26, 0.75);
-  border-radius: 0.5rem;
-  position: relative;
-  min-height: 0;
-  overflow: hidden;
-}
-
-/* 语音输入时的科技感波动效果 */
-.audio-waveform-wrapper {
-  position: absolute;
-  top: 0; left: 0; right: 0; bottom: 73px;
-  background: rgba(3, 7, 18, 0.9);
-  z-index: 10;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 8px;
-  border-radius: 0.5rem 0.5rem 0 0;
-}
-
-.waveform-bar {
-  width: 5px;
-  height: 20px;
-  background: var(--accent-cyan);
-  border-radius: 3px;
-  box-shadow: 0 0 10px var(--accent-cyan);
-  animation: pulse-wave 1.2s infinite ease-in-out;
-}
-
-.waveform-bar:nth-child(1) { animation-delay: 0.1s; }
-.waveform-bar:nth-child(2) { animation-delay: 0.2s; }
-.waveform-bar:nth-child(3) { animation-delay: 0.3s; }
-.waveform-bar:nth-child(4) { animation-delay: 0.4s; }
-.waveform-bar:nth-child(5) { animation-delay: 0.3s; }
-.waveform-bar:nth-child(6) { animation-delay: 0.2s; }
-.waveform-bar:nth-child(7) { animation-delay: 0.1s; }
-
-.messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 1.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1.2rem;
-}
-
-/* 科技感聊天气泡 */
-.message {
-  display: flex;
-  gap: 0.8rem;
-  max-width: 85%;
-}
-
-.message.user {
-  align-self: flex-end;
-  flex-direction: row-reverse;
-}
-
-.message.bot, .message.assistant {
-  align-self: flex-start;
-}
-
-.avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.1rem;
-  background: rgba(0, 240, 255, 0.1);
-  border: 1px solid var(--accent-cyan);
-  box-shadow: 0 0 8px rgba(0, 240, 255, 0.3);
-  flex-shrink: 0;
-}
-
-.user .avatar {
-  background: rgba(59, 130, 246, 0.15);
-  border-color: #3b82f6;
-  box-shadow: 0 0 8px rgba(59, 130, 246, 0.3);
-}
-
-.bubble-wrapper {
-  display: flex;
-  flex-direction: column;
-}
-
-.bubble {
-  background: rgba(12, 22, 45, 0.8);
-  border: 1px solid rgba(0, 240, 255, 0.15);
-  padding: 0.75rem 1.1rem;
-  border-radius: 0.25rem 1rem 1rem 1rem;
-  font-size: 0.9rem;
-  line-height: 1.5;
-  color: var(--text-primary);
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
-  transition: all 0.3s;
-}
-
-.user .bubble {
-  background: rgba(15, 32, 67, 0.95);
-  border-color: rgba(59, 130, 246, 0.5);
-  border-radius: 1rem 0.25rem 1rem 1rem;
-  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
-}
-
-.msg-translate-bar {
-  font-family: var(--font-tech);
-  font-size: 0.7rem !important;
-  color: var(--accent-cyan) !important;
-  margin-top: 4px;
-  cursor: pointer;
-  text-decoration: none !important;
-  display: inline-block;
-  opacity: 0.7;
-  transition: 0.2s;
-}
-
-.msg-translate-bar:hover {
-  opacity: 1;
-  text-shadow: 0 0 5px var(--accent-cyan-glow);
-}
-
-/* 对话输入区域 */
-.input-area {
-  padding: 1rem;
-  border-top: 1px solid var(--border-cyan);
-  display: flex;
-  gap: 0.75rem;
-  background: rgba(3, 7, 18, 0.5);
-}
-
-.input-area input {
-  flex: 1;
-  background: rgba(0, 10, 25, 0.85);
-  border: 1px solid rgba(0, 240, 255, 0.25);
-  border-radius: 4px;
-  padding: 0.75rem 1.2rem;
-  color: #fff;
-  font-size: 0.9rem;
-  font-family: var(--font-sans);
-  outline: none;
-  transition: all 0.3s;
-}
-
-.input-area input:focus {
-  border-color: var(--accent-cyan);
-  box-shadow: 0 0 12px rgba(0, 240, 255, 0.2);
-}
-
-.input-area button {
-  background: rgba(0, 240, 255, 0.12);
-  border: 1px solid var(--accent-cyan);
-  color: var(--accent-cyan);
-  border-radius: 4px;
-  padding: 0 1.5rem;
-  font-family: var(--font-tech);
-  font-size: 0.85rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s;
-}
-
-.input-area button:hover:not(:disabled) {
-  background: var(--accent-cyan);
-  color: var(--bg-deep);
-  box-shadow: 0 0 15px var(--accent-cyan-glow);
-}
-
-.input-area button:disabled {
-  border-color: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.2);
-  background: transparent;
-  cursor: not-allowed;
-}
-
-.input-area .voice-btn {
-  border-color: var(--accent-green);
-  color: var(--accent-green);
-  background: rgba(0, 255, 196, 0.1);
-}
-
-.input-area .voice-btn:hover:not(:disabled) {
-  background: var(--accent-green);
-  color: var(--bg-deep);
-  box-shadow: 0 0 15px var(--accent-green-glow);
-}
-
-.input-area .voice-btn.recording {
-  background: var(--accent-red);
-  border-color: var(--accent-red);
-  color: #fff;
-  animation: pulse-glow-red 1s infinite;
-}
-
-/* ASR状态面板 */
-.asr-panel {
-  display: none;
-  padding: 0.75rem 1rem;
-  border-top: 1px solid var(--border-cyan);
-  background: rgba(0, 10, 25, 0.9);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  line-height: 1.5;
-  border-radius: 0 0 0.5rem 0.5rem;
-}
-
-.asr-panel.visible {
-  display: block;
-}
-
-.asr-panel strong {
-  color: var(--accent-cyan);
-}
-
-/* ==================== 右侧控制栏 Sidebar Panel ==================== */
-.sidebar {
-  gap: 1rem;
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-}
-
-.info-card {
-  background: rgba(5, 12, 28, 0.6);
-  border: 1px solid rgba(0, 240, 255, 0.15);
-  border-radius: 0.5rem;
-  padding: 0.9rem;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  transition: border-color 0.3s;
-}
-
-.info-card:hover {
-  border-color: rgba(0, 240, 255, 0.35);
-}
-
-.info-title {
-  font-family: var(--font-tech);
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  color: var(--accent-cyan);
-  letter-spacing: 1.5px;
-  border-left: 2px solid var(--accent-cyan);
-  padding-left: 6px;
-  margin-bottom: 2px;
-  display: flex;
-  align-items: center;
-}
-
-.time-display {
-  font-family: var(--font-mono);
-  font-size: 1.3rem;
-  font-weight: bold;
-  letter-spacing: 1px;
-  color: var(--text-primary);
-  text-shadow: 0 0 10px var(--accent-cyan-glow);
-  padding: 4px 0;
-}
-
-.time-control {
-  display: flex;
-  gap: 6px;
-}
-
-.time-control input {
-  flex: 1;
-  background: rgba(0, 10, 25, 0.8);
-  border: 1px solid rgba(0, 240, 255, 0.2);
-  color: #fff;
-  border-radius: 4px;
-  padding: 6px;
-  font-size: 0.75rem;
-  font-family: var(--font-mono);
-  outline: none;
-}
-
-.time-control button {
-  background: rgba(0, 240, 255, 0.12);
-  border: 1px solid var(--accent-cyan);
-  color: var(--accent-cyan);
-  border-radius: 4px;
-  padding: 6px 12px;
-  cursor: pointer;
-  font-family: var(--font-tech);
-  font-size: 0.75rem;
-  transition: 0.2s;
-}
-
-.time-control button:hover {
-  background: var(--accent-cyan);
-  color: var(--bg-deep);
-  box-shadow: 0 0 10px var(--accent-cyan-glow);
-}
-
-.time-hint {
-  font-size: 0.65rem;
-  color: var(--text-secondary);
-}
-
-/* 列表字段项样式 */
-.field-row {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px 0;
-  border-bottom: 1px solid rgba(0, 240, 255, 0.08);
-  font-size: 0.8rem;
-}
-
-.field-row:last-child {
-  border-bottom: none;
-}
-
-.field-label {
-  color: var(--text-secondary);
-  font-size: 0.7rem;
-  font-family: var(--font-tech);
-}
-
-.field-value {
-  font-weight: 500;
-  color: #fff;
-  word-break: break-all;
-  white-space: pre-wrap;
-  font-family: var(--font-mono);
-}
-
-.missing {
-  color: var(--accent-amber);
-  animation: pulse-warn 2s infinite ease-in-out;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  padding: 4px 0;
-  display: flex;
-  align-items: center;
-}
-
-.badge {
-  display: inline-block;
-  background: rgba(0, 240, 255, 0.12);
-  border: 1px solid var(--accent-cyan);
-  color: var(--accent-cyan);
-  border-radius: 2px;
-  padding: 2px 6px;
-  font-size: 0.65rem;
-  font-family: var(--font-tech);
-}
-
-.badge.emergency {
-  background: rgba(255, 0, 60, 0.2);
-  border-color: var(--accent-red);
-  color: var(--accent-red);
-  animation: pulse-glow-red-text 1.5s infinite alternate;
-}
-
-/* 最终 JSON codeblock */
-.final-json {
-  background: rgba(0, 5, 15, 0.95);
-  border: 1px solid rgba(0, 240, 255, 0.15);
-  padding: 8px;
-  border-radius: 4px;
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 250px;
-  overflow: auto;
-  color: #aebfd4;
-}
-
-/* 重新开始按钮 */
-.reset-btn {
-  background: rgba(255, 0, 60, 0.08);
-  border: 1px solid rgba(255, 0, 60, 0.4);
-  color: #ff003c;
-  padding: 0.7rem 1rem;
-  border-radius: 4px;
-  cursor: pointer;
-  text-align: center;
-  font-family: var(--font-tech);
-  font-size: 0.8rem;
-  font-weight: 600;
-  margin-top: 0.5rem;
-  transition: all 0.3s;
-}
-
-.reset-btn:hover {
-  background: var(--accent-red);
-  color: white;
-  box-shadow: 0 0 12px var(--accent-red-glow);
-}
-
-/* 历史记录按钮与列表 */
-.history-item {
-  transition: background 0.2s;
-  padding: 8px;
-  border-bottom: 1px solid rgba(0, 240, 255, 0.08);
-  cursor: pointer;
-  border-radius: 4px;
-}
-
-.history-item:hover {
-  background: rgba(0, 240, 255, 0.05);
-}
-
-/* ==================== 统一动画 Keyframes ==================== */
-@keyframes sweep {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-@keyframes target-pulse {
-  0% { opacity: 0; transform: scale(0.6); }
-  20% { opacity: 1; }
-  80% { opacity: 0.8; }
-  100% { opacity: 0; transform: scale(1.6); }
-}
-
-@keyframes pulse-wave {
-  0%, 100% { transform: scaleY(0.4); }
-  50% { transform: scaleY(1.8); }
-}
-
-@keyframes pulse-glow-green {
-  0%, 100% { box-shadow: 0 0 4px var(--accent-green); }
-  50% { box-shadow: 0 0 12px var(--accent-green); }
-}
-
-@keyframes pulse-glow-red {
-  0%, 100% { box-shadow: 0 0 4px var(--accent-red); }
-  50% { box-shadow: 0 0 15px var(--accent-red); }
-}
-
-@keyframes pulse-glow-red-text {
-  0% { text-shadow: 0 0 2px var(--accent-red-glow); }
-  100% { text-shadow: 0 0 8px var(--accent-red); }
-}
-
-@keyframes pulse-warn {
-  0%, 100% { opacity: 0.75; }
-  50% { opacity: 1; color: #ffb700; }
-}
-
-/* 滚动条美化 */
-::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
-}
-::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.1);
-}
-::-webkit-scrollbar-thumb {
-  background: rgba(0, 240, 255, 0.2);
-  border-radius: 2px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: var(--accent-cyan);
-}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>水下多智能体任务决策系统 - ROV HUD</title>
+  <!-- 引入高科技感的 Google 字体 -->
+  <link
+    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&family=Inter:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet">
+  <style>
+    /* ==================== 科技感全局设计系统 ==================== */
+    :root {
+      --bg-deep: #02050f;
+      --bg-dark: #050b18;
+      --bg-card: rgba(6, 12, 30, 0.75);
+      --accent-cyan: #00f0ff;
+      --accent-cyan-glow: rgba(0, 240, 255, 0.4);
+      --accent-green: #00ffc4;
+      --accent-green-glow: rgba(0, 255, 196, 0.3);
+      --accent-amber: #ff9d00;
+      --accent-amber-glow: rgba(255, 157, 0, 0.3);
+      --accent-red: #ff003c;
+      --accent-red-glow: rgba(255, 0, 60, 0.4);
+      --text-primary: #eef2ff;
+      --text-secondary: #7b89b6;
+      --border-cyan: rgba(0, 240, 255, 0.22);
+      --font-tech: 'Orbitron', 'Inter', sans-serif;
+      --font-mono: 'Share Tech Mono', 'Courier New', monospace;
+      --font-sans: 'Inter', -apple-system, sans-serif;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: var(--bg-deep);
+      background-image:
+        radial-gradient(circle at 50% 30%, rgba(9, 28, 66, 0.45) 0%, rgba(2, 5, 15, 1) 85%),
+        linear-gradient(rgba(0, 240, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 240, 255, 0.02) 1px, transparent 1px);
+      background-size: 100% 100%, 40px 40px, 40px 40px;
+      font-family: var(--font-sans);
+      color: var(--text-primary);
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* scanline 扫描线效果 */
+    body::before {
+      content: " ";
+      display: block;
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      right: 0;
+      background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.3) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.04), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.04));
+      z-index: 9999;
+      background-size: 100% 4px, 6px 100%;
+      pointer-events: none;
+      opacity: 0.35;
+    }
+
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      max-width: 1700px;
+      margin: 0 auto;
+      padding: 0 1rem;
+    }
+
+    /* ==================== 顶部状态条 Header ==================== */
+    .header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border-cyan);
+      background: rgba(4, 9, 22, 0.9);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 0.5rem;
+      border-radius: 0.5rem 0.5rem 0 0;
+      box-shadow: 0 0 25px rgba(0, 240, 255, 0.12);
+      backdrop-filter: blur(10px);
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .status-indicator-light {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      box-shadow: 0 0 10px var(--accent-green);
+      animation: pulse-glow-green 2s infinite;
+    }
+
+    .header h1 {
+      font-family: var(--font-tech);
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: 1px;
+      color: var(--accent-cyan);
+      text-shadow: 0 0 10px var(--accent-cyan-glow);
+    }
+
+    .header p {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      margin-top: 2px;
+      letter-spacing: 2px;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .nav-telemetry-item {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+    }
+
+    .nav-label {
+      font-family: var(--font-tech);
+      font-size: 0.65rem;
+      color: var(--text-secondary);
+      letter-spacing: 1px;
+    }
+
+    .nav-value {
+      font-family: var(--font-mono);
+      font-size: 0.95rem;
+      color: var(--accent-cyan);
+      text-shadow: 0 0 5px var(--accent-cyan-glow);
+    }
+
+    .lang-selector select {
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      border: 1px solid var(--accent-cyan);
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-family: var(--font-tech);
+      font-size: 0.75rem;
+      cursor: pointer;
+      outline: none;
+      transition: all 0.3s;
+    }
+
+    .lang-selector select:hover {
+      background: rgba(0, 240, 255, 0.1);
+      box-shadow: 0 0 10px var(--accent-cyan-glow);
+    }
+
+    /* ==================== 两栏 主区域 ==================== */
+    .main-panel {
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: 1rem;
+      flex: 1;
+      overflow: hidden;
+      margin-top: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+
+    /* ==================== 统一的玻璃材质面板 Card ==================== */
+    .hud-panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border-cyan);
+      border-radius: 0.5rem;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(12px);
+    }
+
+    /* ==================== 科技感 SVG 图标样式 ==================== */
+    .tech-icon {
+      width: 16px;
+      height: 16px;
+      stroke: var(--accent-cyan);
+      fill: none;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      display: inline-block;
+      vertical-align: middle;
+      filter: drop-shadow(0 0 3px var(--accent-cyan-glow));
+      transition: all 0.3s;
+    }
+
+    .tech-icon.success {
+      stroke: var(--accent-green);
+      filter: drop-shadow(0 0 3px var(--accent-green-glow));
+    }
+
+    .tech-icon.warning {
+      stroke: var(--accent-amber);
+      filter: drop-shadow(0 0 3px var(--accent-amber-glow));
+    }
+
+    .tech-icon.danger {
+      stroke: var(--accent-red);
+      filter: drop-shadow(0 0 3px var(--accent-red-glow));
+    }
+
+    .card-title .tech-icon,
+    .info-title .tech-icon {
+      margin-right: 8px;
+    }
+
+    /* 科技感头像 SVG */
+    .bot-avatar-svg,
+    .user-avatar-svg {
+      width: 22px;
+      height: 22px;
+      stroke: var(--accent-cyan);
+      fill: none;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      filter: drop-shadow(0 0 4px var(--accent-cyan-glow));
+    }
+
+    .user-avatar-svg {
+      stroke: #3b82f6;
+      filter: drop-shadow(0 0 4px rgba(59, 130, 246, 0.4));
+    }
+
+    .visor-glow {
+      fill: var(--accent-cyan);
+      filter: drop-shadow(0 0 5px var(--accent-cyan));
+      animation: visor-pulse 2s infinite alternate;
+    }
+
+    @keyframes visor-pulse {
+      0% {
+        opacity: 0.5;
+      }
+
+      100% {
+        opacity: 1;
+      }
+    }
+
+    /* ==================== 左侧遥测栏 Telemetry Panel ==================== */
+    .telemetry-panel {
+      gap: 1rem;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .telemetry-card {
+      background: rgba(5, 12, 28, 0.6);
+      border: 1px solid rgba(0, 240, 255, 0.15);
+      border-radius: 0.5rem;
+      padding: 0.9rem;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: border-color 0.3s;
+    }
+
+    .telemetry-card:hover {
+      border-color: rgba(0, 240, 255, 0.35);
+    }
+
+    .card-title {
+      font-family: var(--font-tech);
+      font-size: 0.75rem;
+      color: var(--accent-cyan);
+      letter-spacing: 1px;
+      border-left: 2px solid var(--accent-cyan);
+      padding-left: 6px;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+    }
+
+    /* 2D 雷达扫描效果 */
+    .sonar-container {
+      position: relative;
+      width: 100%;
+      height: 180px;
+      background: radial-gradient(circle, rgba(0, 32, 64, 0.5) 0%, rgba(3, 7, 18, 0.9) 100%);
+      border: 1px solid rgba(0, 240, 255, 0.2);
+      border-radius: 6px;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .sonar-grid {
+      position: absolute;
+      width: 160px;
+      height: 160px;
+      border-radius: 50%;
+      border: 1px dashed rgba(0, 240, 255, 0.15);
+    }
+
+    .sonar-grid::before {
+      content: "";
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      right: 20px;
+      bottom: 20px;
+      border-radius: 50%;
+      border: 1px dashed rgba(0, 240, 255, 0.2);
+    }
+
+    .sonar-grid::after {
+      content: "";
+      position: absolute;
+      top: 50px;
+      left: 50px;
+      right: 50px;
+      bottom: 50px;
+      border-radius: 50%;
+      border: 1px solid rgba(0, 240, 255, 0.25);
+    }
+
+    .sonar-axis-x {
+      position: absolute;
+      width: 100%;
+      height: 1px;
+      background: rgba(0, 240, 255, 0.1);
+    }
+
+    .sonar-axis-y {
+      position: absolute;
+      width: 1px;
+      height: 100%;
+      background: rgba(0, 240, 255, 0.1);
+    }
+
+    .sonar-sweep {
+      position: absolute;
+      width: 180px;
+      height: 180px;
+      background: conic-gradient(from 0deg at 50% 50%, rgba(0, 240, 255, 0.2) 0deg, rgba(0, 240, 255, 0) 90deg);
+      border-radius: 50%;
+      animation: sweep 4s linear infinite;
+      pointer-events: none;
+    }
+
+    .sonar-center {
+      position: absolute;
+      width: 6px;
+      height: 6px;
+      background: var(--accent-cyan);
+      border-radius: 50%;
+      box-shadow: 0 0 8px var(--accent-cyan);
+    }
+
+    /* 动态声呐目标 */
+    .sonar-target {
+      position: absolute;
+      width: 6px;
+      height: 6px;
+      background: var(--accent-green);
+      border-radius: 50%;
+      box-shadow: 0 0 10px var(--accent-green);
+      animation: target-pulse 2s infinite ease-in-out;
+      opacity: 0;
+    }
+
+    .target-1 {
+      top: 35%;
+      left: 30%;
+      animation-delay: 0.5s;
+    }
+
+    .target-2 {
+      top: 65%;
+      left: 70%;
+      animation-delay: 2s;
+    }
+
+    .target-valve {
+      top: 48%;
+      left: 60%;
+      background: var(--accent-amber);
+      box-shadow: 0 0 10px var(--accent-amber);
+      display: none;
+    }
+
+    .sonar-details {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .sonar-detail-row {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sonar-detail-row span:first-child {
+      font-size: 0.65rem;
+      color: var(--text-secondary);
+    }
+
+    .sonar-detail-row .mono-value {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: var(--accent-cyan);
+    }
+
+    /* 环境深度指示器 */
+    .environment-container {
+      display: flex;
+      gap: 15px;
+      align-items: stretch;
+    }
+
+    .gauge-column {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .gauge-column.flex-col {
+      gap: 12px;
+    }
+
+    .gauge-label {
+      font-size: 0.65rem;
+      color: var(--text-secondary);
+      margin-bottom: 4px;
+      display: block;
+    }
+
+    .depth-bar-container {
+      position: relative;
+      height: 100px;
+      background: rgba(0, 32, 64, 0.4);
+      border: 1px solid rgba(0, 240, 255, 0.2);
+      border-radius: 4px;
+      margin: 4px 0;
+      overflow: hidden;
+    }
+
+    .depth-bar-fill {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      background: linear-gradient(to top, rgba(0, 240, 255, 0.8), rgba(0, 80, 255, 0.4));
+      box-shadow: 0 0 10px var(--accent-cyan);
+      transition: height 1s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .depth-marker {
+      position: absolute;
+      right: 4px;
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      color: rgba(0, 240, 255, 0.5);
+      pointer-events: none;
+    }
+
+    .marker-0 {
+      top: 2px;
+    }
+
+    .marker-500 {
+      top: calc(50% - 5px);
+    }
+
+    .marker-1000 {
+      bottom: 2px;
+    }
+
+    .mono-value.big-val {
+      font-family: var(--font-mono);
+      font-size: 1.1rem;
+      font-weight: bold;
+      color: var(--text-primary);
+      text-shadow: 0 0 5px rgba(255, 255, 255, 0.2);
+    }
+
+    .small-gauge-item {
+      background: rgba(0, 32, 64, 0.2);
+      padding: 6px 10px;
+      border-radius: 4px;
+      border: 1px solid rgba(0, 240, 255, 0.08);
+    }
+
+    /* 动力诊断网格 */
+    .thrusters-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      margin-top: 4px;
+    }
+
+    .thruster-item {
+      background: rgba(255, 0, 60, 0.1);
+      border: 1px solid rgba(255, 0, 60, 0.2);
+      border-radius: 4px;
+      padding: 6px 2px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      transition: all 0.3s;
+    }
+
+    .thruster-item.active {
+      background: rgba(0, 255, 196, 0.1);
+      border: 1px solid rgba(0, 255, 196, 0.3);
+    }
+
+    .thruster-name {
+      font-family: var(--font-tech);
+      font-size: 0.65rem;
+      font-weight: bold;
+      color: var(--text-secondary);
+    }
+
+    .thruster-item.active .thruster-name {
+      color: var(--accent-green);
+    }
+
+    .thruster-status {
+      font-family: var(--font-mono);
+      font-size: 0.55rem;
+      color: var(--accent-red);
+    }
+
+    .thruster-item.active .thruster-status {
+      color: var(--accent-green);
+    }
+
+    /* 遥测流 */
+    .diagnostics-logs {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 6px;
+    }
+
+    .diag-header {
+      font-size: 0.65rem;
+      color: var(--text-secondary);
+    }
+
+    .diag-log-container {
+      background: rgba(0, 5, 15, 0.8);
+      border: 1px solid rgba(0, 240, 255, 0.15);
+      border-radius: 4px;
+      height: 85px;
+      padding: 6px;
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      color: var(--accent-cyan);
+      overflow-y: auto;
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+
+    /* ==================== 中间对话栏 Dialogue Panel ==================== */
+    .chat-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--border-cyan);
+      background: rgba(5, 11, 26, 0.75);
+      border-radius: 0.5rem;
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    /* 语音输入时的科技感波动效果 */
+    .audio-waveform-wrapper {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 73px;
+      background: rgba(3, 7, 18, 0.9);
+      z-index: 10;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+      border-radius: 0.5rem 0.5rem 0 0;
+    }
+
+    .waveform-bar {
+      width: 5px;
+      height: 20px;
+      background: var(--accent-cyan);
+      border-radius: 3px;
+      box-shadow: 0 0 10px var(--accent-cyan);
+      animation: pulse-wave 1.2s infinite ease-in-out;
+    }
+
+    .waveform-bar:nth-child(1) {
+      animation-delay: 0.1s;
+    }
+
+    .waveform-bar:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+
+    .waveform-bar:nth-child(3) {
+      animation-delay: 0.3s;
+    }
+
+    .waveform-bar:nth-child(4) {
+      animation-delay: 0.4s;
+    }
+
+    .waveform-bar:nth-child(5) {
+      animation-delay: 0.3s;
+    }
+
+    .waveform-bar:nth-child(6) {
+      animation-delay: 0.2s;
+    }
+
+    .waveform-bar:nth-child(7) {
+      animation-delay: 0.1s;
+    }
+
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.2rem;
+    }
+
+    /* 科技感聊天气泡 */
+    .message {
+      display: flex;
+      gap: 0.8rem;
+      max-width: 85%;
+    }
+
+    .message.user {
+      align-self: flex-end;
+      flex-direction: row-reverse;
+    }
+
+    .message.bot,
+    .message.assistant {
+      align-self: flex-start;
+    }
+
+    .avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      background: rgba(0, 240, 255, 0.1);
+      border: 1px solid var(--accent-cyan);
+      box-shadow: 0 0 8px rgba(0, 240, 255, 0.3);
+      flex-shrink: 0;
+    }
+
+    .user .avatar {
+      background: rgba(59, 130, 246, 0.15);
+      border-color: #3b82f6;
+      box-shadow: 0 0 8px rgba(59, 130, 246, 0.3);
+    }
+
+    .bubble-wrapper {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .bubble {
+      background: rgba(12, 22, 45, 0.8);
+      border: 1px solid rgba(0, 240, 255, 0.15);
+      padding: 0.75rem 1.1rem;
+      border-radius: 0.25rem 1rem 1rem 1rem;
+      font-size: 0.9rem;
+      line-height: 1.5;
+      color: var(--text-primary);
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+      transition: all 0.3s;
+    }
+
+    .user .bubble {
+      background: rgba(15, 32, 67, 0.95);
+      border-color: rgba(59, 130, 246, 0.5);
+      border-radius: 1rem 0.25rem 1rem 1rem;
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
+    }
+
+    .msg-translate-bar {
+      font-family: var(--font-tech);
+      font-size: 0.7rem !important;
+      color: var(--accent-cyan) !important;
+      margin-top: 4px;
+      cursor: pointer;
+      text-decoration: none !important;
+      display: inline-block;
+      opacity: 0.7;
+      transition: 0.2s;
+    }
+
+    .msg-translate-bar:hover {
+      opacity: 1;
+      text-shadow: 0 0 5px var(--accent-cyan-glow);
+    }
+
+    /* 对话输入区域 */
+    .input-area {
+      padding: 1rem;
+      border-top: 1px solid var(--border-cyan);
+      display: flex;
+      gap: 0.75rem;
+      background: rgba(3, 7, 18, 0.5);
+    }
+
+    .input-area input {
+      flex: 1;
+      background: rgba(0, 10, 25, 0.85);
+      border: 1px solid rgba(0, 240, 255, 0.25);
+      border-radius: 4px;
+      padding: 0.75rem 1.2rem;
+      color: #fff;
+      font-size: 0.9rem;
+      font-family: var(--font-sans);
+      outline: none;
+      transition: all 0.3s;
+    }
+
+    .input-area input:focus {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 12px rgba(0, 240, 255, 0.2);
+    }
+
+    .input-area button {
+      background: rgba(0, 240, 255, 0.12);
+      border: 1px solid var(--accent-cyan);
+      color: var(--accent-cyan);
+      border-radius: 4px;
+      padding: 0 1.5rem;
+      font-family: var(--font-tech);
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+
+    .input-area button:hover:not(:disabled) {
+      background: var(--accent-cyan);
+      color: var(--bg-deep);
+      box-shadow: 0 0 15px var(--accent-cyan-glow);
+    }
+
+    .input-area button:disabled {
+      border-color: rgba(255, 255, 255, 0.1);
+      color: rgba(255, 255, 255, 0.2);
+      background: transparent;
+      cursor: not-allowed;
+    }
+
+    .input-area .voice-btn {
+      border-color: var(--accent-green);
+      color: var(--accent-green);
+      background: rgba(0, 255, 196, 0.1);
+    }
+
+    .input-area .voice-btn:hover:not(:disabled) {
+      background: var(--accent-green);
+      color: var(--bg-deep);
+      box-shadow: 0 0 15px var(--accent-green-glow);
+    }
+
+    .input-area .voice-btn.recording {
+      background: var(--accent-red);
+      border-color: var(--accent-red);
+      color: #fff;
+      animation: pulse-glow-red 1s infinite;
+    }
+
+    /* ASR状态面板 */
+    .asr-panel {
+      display: none;
+      padding: 0.75rem 1rem;
+      border-top: 1px solid var(--border-cyan);
+      background: rgba(0, 10, 25, 0.9);
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      line-height: 1.5;
+      border-radius: 0 0 0.5rem 0.5rem;
+    }
+
+    .asr-panel.visible {
+      display: block;
+    }
+
+    .asr-panel strong {
+      color: var(--accent-cyan);
+    }
+
+    /* ==================== 右侧控制栏 Sidebar Panel ==================== */
+    .sidebar {
+      gap: 1rem;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .info-card {
+      background: rgba(5, 12, 28, 0.6);
+      border: 1px solid rgba(0, 240, 255, 0.15);
+      border-radius: 0.5rem;
+      padding: 0.9rem;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: border-color 0.3s;
+    }
+
+    .info-card:hover {
+      border-color: rgba(0, 240, 255, 0.35);
+    }
+
+    .info-title {
+      font-family: var(--font-tech);
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--accent-cyan);
+      letter-spacing: 1.5px;
+      border-left: 2px solid var(--accent-cyan);
+      padding-left: 6px;
+      margin-bottom: 2px;
+      display: flex;
+      align-items: center;
+    }
+
+    .time-display {
+      font-family: var(--font-mono);
+      font-size: 1.3rem;
+      font-weight: bold;
+      letter-spacing: 1px;
+      color: var(--text-primary);
+      text-shadow: 0 0 10px var(--accent-cyan-glow);
+      padding: 4px 0;
+    }
+
+    .time-control {
+      display: flex;
+      gap: 6px;
+    }
+
+    .time-control input {
+      flex: 1;
+      background: rgba(0, 10, 25, 0.8);
+      border: 1px solid rgba(0, 240, 255, 0.2);
+      color: #fff;
+      border-radius: 4px;
+      padding: 6px;
+      font-size: 0.75rem;
+      font-family: var(--font-mono);
+      outline: none;
+    }
+
+    .time-control button {
+      background: rgba(0, 240, 255, 0.12);
+      border: 1px solid var(--accent-cyan);
+      color: var(--accent-cyan);
+      border-radius: 4px;
+      padding: 6px 12px;
+      cursor: pointer;
+      font-family: var(--font-tech);
+      font-size: 0.75rem;
+      transition: 0.2s;
+    }
+
+    .time-control button:hover {
+      background: var(--accent-cyan);
+      color: var(--bg-deep);
+      box-shadow: 0 0 10px var(--accent-cyan-glow);
+    }
+
+    .time-hint {
+      font-size: 0.65rem;
+      color: var(--text-secondary);
+    }
+
+    /* 列表字段项样式 */
+    .field-row {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(0, 240, 255, 0.08);
+      font-size: 0.8rem;
+    }
+
+    .field-row:last-child {
+      border-bottom: none;
+    }
+
+    .field-label {
+      color: var(--text-secondary);
+      font-size: 0.7rem;
+      font-family: var(--font-tech);
+    }
+
+    .field-value {
+      font-weight: 500;
+      color: #fff;
+      word-break: break-all;
+      white-space: pre-wrap;
+      font-family: var(--font-mono);
+    }
+
+    .missing {
+      color: var(--accent-amber);
+      animation: pulse-warn 2s infinite ease-in-out;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      padding: 4px 0;
+      display: flex;
+      align-items: center;
+    }
+
+    .badge {
+      display: inline-block;
+      background: rgba(0, 240, 255, 0.12);
+      border: 1px solid var(--accent-cyan);
+      color: var(--accent-cyan);
+      border-radius: 2px;
+      padding: 2px 6px;
+      font-size: 0.65rem;
+      font-family: var(--font-tech);
+    }
+
+    .badge.emergency {
+      background: rgba(255, 0, 60, 0.2);
+      border-color: var(--accent-red);
+      color: var(--accent-red);
+      animation: pulse-glow-red-text 1.5s infinite alternate;
+    }
+
+    /* 最终 JSON codeblock */
+    .final-json {
+      background: rgba(0, 5, 15, 0.95);
+      border: 1px solid rgba(0, 240, 255, 0.15);
+      padding: 8px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 250px;
+      overflow: auto;
+      color: #aebfd4;
+    }
+
+    /* 重新开始按钮 */
+    .reset-btn {
+      background: rgba(255, 0, 60, 0.08);
+      border: 1px solid rgba(255, 0, 60, 0.4);
+      color: #ff003c;
+      padding: 0.7rem 1rem;
+      border-radius: 4px;
+      cursor: pointer;
+      text-align: center;
+      font-family: var(--font-tech);
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-top: 0.5rem;
+      transition: all 0.3s;
+    }
+
+    .reset-btn:hover {
+      background: var(--accent-red);
+      color: white;
+      box-shadow: 0 0 12px var(--accent-red-glow);
+    }
+
+    /* 历史记录按钮与列表 */
+    .history-item {
+      transition: background 0.2s;
+      padding: 8px;
+      border-bottom: 1px solid rgba(0, 240, 255, 0.08);
+      cursor: pointer;
+      border-radius: 4px;
+    }
+
+    .history-item:hover {
+      background: rgba(0, 240, 255, 0.05);
+    }
+
+    /* ==================== 统一动画 Keyframes ==================== */
+    @keyframes sweep {
+      from {
+        transform: rotate(0deg);
+      }
+
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    @keyframes target-pulse {
+      0% {
+        opacity: 0;
+        transform: scale(0.6);
+      }
+
+      20% {
+        opacity: 1;
+      }
+
+      80% {
+        opacity: 0.8;
+      }
+
+      100% {
+        opacity: 0;
+        transform: scale(1.6);
+      }
+    }
+
+    @keyframes pulse-wave {
+
+      0%,
+      100% {
+        transform: scaleY(0.4);
+      }
+
+      50% {
+        transform: scaleY(1.8);
+      }
+    }
+
+    @keyframes pulse-glow-green {
+
+      0%,
+      100% {
+        box-shadow: 0 0 4px var(--accent-green);
+      }
+
+      50% {
+        box-shadow: 0 0 12px var(--accent-green);
+      }
+    }
+
+    @keyframes pulse-glow-red {
+
+      0%,
+      100% {
+        box-shadow: 0 0 4px var(--accent-red);
+      }
+
+      50% {
+        box-shadow: 0 0 15px var(--accent-red);
+      }
+    }
+
+    @keyframes pulse-glow-red-text {
+      0% {
+        text-shadow: 0 0 2px var(--accent-red-glow);
+      }
+
+      100% {
+        text-shadow: 0 0 8px var(--accent-red);
+      }
+    }
+
+    @keyframes pulse-warn {
+
+      0%,
+      100% {
+        opacity: 0.75;
+      }
+
+      50% {
+        opacity: 1;
+        color: #ffb700;
+      }
+    }
+
+    /* 滚动条美化 */
+    ::-webkit-scrollbar {
+      width: 4px;
+      height: 4px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: rgba(0, 0, 0, 0.1);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: rgba(0, 240, 255, 0.2);
+      border-radius: 2px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--accent-cyan);
+    }
+  </style>
 </head>
+
 <body>
-<div class="app">
-  <!-- Top Cockpit Header -->
-  <div class="header">
-    <div class="header-left">
-      <div class="status-indicator-light"></div>
-      <div>
-        <h1 id="ui-title">水下多智能体任务决策大模型</h1>
-        <p id="ui-subtitle">任务准入｜状态解析｜环境理解｜智能应答</p>
+  <div class="app">
+    <!-- Top Cockpit Header -->
+    <div class="header">
+      <div class="header-left">
+        <div class="status-indicator-light"></div>
+        <div>
+          <h1 id="ui-title">水下多智能体任务决策大模型</h1>
+          <p id="ui-subtitle">任务准入｜状态解析｜环境理解｜智能应答</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="lang-selector">
+          <select id="langSelect">
+            <option value="zh">中文 (ZH)</option>
+            <option value="en">English (EN)</option>
+          </select>
+        </div>
       </div>
     </div>
-    <div class="header-right">
-      <div class="lang-selector">
-        <select id="langSelect">
-          <option value="zh">中文 (ZH)</option>
-          <option value="en">English (EN)</option>
-        </select>
+
+    <div class="main-panel">
+
+      <!-- Center Column: Intelligent Interaction Area -->
+      <div class="chat-area">
+        <!-- 语音录音时的炫酷动画 -->
+        <div class="audio-waveform-wrapper" id="audioWaveformWrapper" style="display: none;">
+          <div class="waveform-bar"></div>
+          <div class="waveform-bar"></div>
+          <div class="waveform-bar"></div>
+          <div class="waveform-bar"></div>
+          <div class="waveform-bar"></div>
+          <div class="waveform-bar"></div>
+          <div class="waveform-bar"></div>
+        </div>
+        <div class="messages" id="messages"></div>
+        <div class="input-area">
+          <input type="text" id="messageInput" placeholder="描述您的水下任务..." autocomplete="off">
+          <button id="voiceBtn">语音</button>
+          <button id="sendBtn">发送</button>
+        </div>
+        <div class="asr-panel" id="asrPanel"></div>
+      </div>
+
+      <!-- Right Column: Sidebar / Parameter Verification Center -->
+      <div class="sidebar" id="sidebar">
+        <div class="info-card" style="background: rgba(4, 9, 22, 0.9);">
+          <div class="info-title">
+            <!-- simulated time clock SVG -->
+            <svg class="tech-icon" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M12 6v6h4" />
+              <path d="M12 2v2M2 12h2M12 20v2M20 12h2" />
+            </svg>
+            <span id="title-simtime">模拟时间</span>
+          </div>
+          <div id="simulatedTimeDisplay" class="time-display">--:--:--</div>
+          <div class="time-control">
+            <input type="datetime-local" id="timePicker" step="1">
+            <button id="setTimeBtn">设置</button>
+          </div>
+          <div class="time-hint" id="hint-simtime">点击设置可自定义基准时间</div>
+        </div>
+
+        <div class="info-card">
+          <div class="info-title">
+            <!-- Clipboard Task SVG -->
+            <svg class="tech-icon" viewBox="0 0 24 24">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <path d="M9 12l2 2 4-4M7 7h10M7 17h6" />
+            </svg>
+            <span id="title-curtask">当前任务</span>
+          </div>
+          <div id="taskInfo">-</div>
+        </div>
+
+        <div class="info-card">
+          <div class="info-title">
+            <!-- Hexagon check SVG -->
+            <svg class="tech-icon success" viewBox="0 0 24 24">
+              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
+              <path d="M9 12l2 2 4-4" />
+            </svg>
+            <span id="title-collected">已收集字段</span>
+          </div>
+          <div id="collectedFields">暂无</div>
+        </div>
+
+        <div class="info-card">
+          <div class="info-title">
+            <!-- Hexagon warn SVG -->
+            <svg class="tech-icon warning" viewBox="0 0 24 24">
+              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
+              <path d="M12 8v5M12 16h.01" />
+            </svg>
+            <span id="title-missing">缺失字段</span>
+          </div>
+          <div id="missingFields">-</div>
+        </div>
+
+        <div class="info-card" id="resultCard" style="display:none;">
+          <div class="info-title">
+            <!-- File code brackets SVG -->
+            <svg class="tech-icon" viewBox="0 0 24 24">
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+              <path d="M14 2v6h6M8 13c-1.5 0-1.5 2 0 2m8-2c1.5 0 1.5 2 0 2" />
+            </svg>
+            <span id="title-finaljson">最终任务JSON</span>
+          </div>
+          <div id="finalJson" class="final-json"></div>
+        </div>
+
+        <!-- 历史记录区域 -->
+        <div class="info-card">
+          <div class="info-title">
+            <!-- Clock arrow logs SVG -->
+            <svg class="tech-icon" viewBox="0 0 24 24">
+              <path d="M12 20a8 8 0 100-16 8 8 0 00-6.3 3.1" />
+              <path d="M3 6V1.5M3 6h4.5M12 8v4h3" />
+            </svg>
+            <span id="title-history">历史记录</span>
+          </div>
+          <button id="historyBtn"
+            style="width:100%; background:rgba(0, 240, 255, 0.12); border:1px solid var(--accent-cyan); color:var(--accent-cyan); padding:6px; border-radius:4px; cursor:pointer; font-family:var(--font-tech); font-size:0.75rem;">查看历史</button>
+          <div id="historyList"
+            style="display:none; margin-top:8px; max-height:160px; overflow-y:auto; background:rgba(0,5,15,0.95); border:1px solid rgba(0, 240, 255, 0.15); border-radius:4px; padding:4px;">
+            <!-- 动态加载历史列表 -->
+          </div>
+        </div>
+        <button class="reset-btn" id="resetBtn">⟳ 重新开始</button>
       </div>
     </div>
   </div>
 
-  <div class="main-panel">
+  <script>
+    // 动态检测 API 基础路径（兼容 Jupyter Proxy 代理访问）
+    const API_BASE = (() => {
+      const path = window.location.pathname;
+      // 匹配 /jupyter/proxy/8890/ 或 /proxy/8890/ 等代理路径
+      const proxyMatch = path.match(/^(.*\/proxy\/\d+)\/?/);
+      return proxyMatch ? proxyMatch[1] : '';
+    })();
 
-    <!-- Center Column: Intelligent Interaction Area -->
-    <div class="chat-area">
-      <!-- 语音录音时的炫酷动画 -->
-      <div class="audio-waveform-wrapper" id="audioWaveformWrapper" style="display: none;">
-        <div class="waveform-bar"></div>
-        <div class="waveform-bar"></div>
-        <div class="waveform-bar"></div>
-        <div class="waveform-bar"></div>
-        <div class="waveform-bar"></div>
-        <div class="waveform-bar"></div>
-        <div class="waveform-bar"></div>
-      </div>
-      <div class="messages" id="messages"></div>
-      <div class="input-area">
-        <input type="text" id="messageInput" placeholder="描述您的水下任务..." autocomplete="off">
-        <button id="voiceBtn">语音</button>
-        <button id="sendBtn">发送</button>
-      </div>
-      <div class="asr-panel" id="asrPanel"></div>
-    </div>
-
-    <!-- Right Column: Sidebar / Parameter Verification Center -->
-    <div class="sidebar" id="sidebar">
-      <div class="info-card" style="background: rgba(4, 9, 22, 0.9);">
-        <div class="info-title">
-          <!-- simulated time clock SVG -->
-          <svg class="tech-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6h4"/><path d="M12 2v2M2 12h2M12 20v2M20 12h2"/></svg>
-          <span id="title-simtime">模拟时间</span>
-        </div>
-        <div id="simulatedTimeDisplay" class="time-display">--:--:--</div>
-        <div class="time-control">
-          <input type="datetime-local" id="timePicker" step="1">
-          <button id="setTimeBtn">设置</button>
-        </div>
-        <div class="time-hint" id="hint-simtime">点击设置可自定义基准时间</div>
-      </div>
-      
-      <div class="info-card">
-        <div class="info-title">
-          <!-- Clipboard Task SVG -->
-          <svg class="tech-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12l2 2 4-4M7 7h10M7 17h6"/></svg>
-          <span id="title-curtask">当前任务</span>
-        </div>
-        <div id="taskInfo">-</div>
-      </div>
-
-      <div class="info-card">
-        <div class="info-title">
-          <!-- Hexagon check SVG -->
-          <svg class="tech-icon success" viewBox="0 0 24 24"><path d="M12 2l8.66 5v10L12 22l-8.66-5V7z"/><path d="M9 12l2 2 4-4"/></svg>
-          <span id="title-collected">已收集字段</span>
-        </div>
-        <div id="collectedFields">暂无</div>
-      </div>
-
-      <div class="info-card">
-        <div class="info-title">
-          <!-- Hexagon warn SVG -->
-          <svg class="tech-icon warning" viewBox="0 0 24 24"><path d="M12 2l8.66 5v10L12 22l-8.66-5V7z"/><path d="M12 8v5M12 16h.01"/></svg>
-          <span id="title-missing">缺失字段</span>
-        </div>
-        <div id="missingFields">-</div>
-      </div>
-
-      <div class="info-card" id="resultCard" style="display:none;">
-        <div class="info-title">
-          <!-- File code brackets SVG -->
-          <svg class="tech-icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M8 13c-1.5 0-1.5 2 0 2m8-2c1.5 0 1.5 2 0 2"/></svg>
-          <span id="title-finaljson">最终任务JSON</span>
-        </div>
-        <div id="finalJson" class="final-json"></div>
-      </div>
-
-      <!-- 历史记录区域 -->
-      <div class="info-card">
-        <div class="info-title">
-          <!-- Clock arrow logs SVG -->
-          <svg class="tech-icon" viewBox="0 0 24 24"><path d="M12 20a8 8 0 100-16 8 8 0 00-6.3 3.1"/><path d="M3 6V1.5M3 6h4.5M12 8v4h3"/></svg>
-          <span id="title-history">历史记录</span>
-        </div>
-        <button id="historyBtn" style="width:100%; background:rgba(0, 240, 255, 0.12); border:1px solid var(--accent-cyan); color:var(--accent-cyan); padding:6px; border-radius:4px; cursor:pointer; font-family:var(--font-tech); font-size:0.75rem;">查看历史</button>
-        <div id="historyList" style="display:none; margin-top:8px; max-height:160px; overflow-y:auto; background:rgba(0,5,15,0.95); border:1px solid rgba(0, 240, 255, 0.15); border-radius:4px; padding:4px;">
-          <!-- 动态加载历史列表 -->
-        </div>
-      </div>
-      <button class="reset-btn" id="resetBtn">⟳ 重新开始</button>
-    </div>
-  </div>
-</div>
-
-<script>
-// 动态检测 API 基础路径（兼容 Jupyter Proxy 代理访问）
-const API_BASE = (() => {
-  const path = window.location.pathname;
-  // 匹配 /jupyter/proxy/8890/ 或 /proxy/8890/ 等代理路径
-  const proxyMatch = path.match(/^(.*\/proxy\/\d+)\/?/);
-  return proxyMatch ? proxyMatch[1] : '';
-})();
-
-let sessionId = null;
-let isDone = false;
-let timeUpdateInterval = null;
+    let sessionId = null;
+    let isDone = false;
+    let timeUpdateInterval = null;
 
 
-const messageContainer = document.getElementById('messages');
-const messageInput = document.getElementById('messageInput');
-const voiceBtn = document.getElementById('voiceBtn');
-const asrPanel = document.getElementById('asrPanel');
-const sendBtn = document.getElementById('sendBtn');
-const resetBtn = document.getElementById('resetBtn');
+    const messageContainer = document.getElementById('messages');
+    const messageInput = document.getElementById('messageInput');
+    const voiceBtn = document.getElementById('voiceBtn');
+    const asrPanel = document.getElementById('asrPanel');
+    const sendBtn = document.getElementById('sendBtn');
+    const resetBtn = document.getElementById('resetBtn');
 
-let mediaStream = null;
-let audioContext = null;
-let recorderSource = null;
-let recorderProcessor = null;
-let recordedChunks = [];
-let recordingSampleRate = 16000;
-let isRecording = false;
+    let mediaStream = null;
+    let audioContext = null;
+    let recorderSource = null;
+    let recorderProcessor = null;
+    let recordedChunks = [];
+    let recordingSampleRate = 16000;
+    let isRecording = false;
 
-// --- i18n configurations ---
-let currentLang = 'zh';
-let lastResponseData = null;
+    // --- i18n configurations ---
+    let currentLang = 'zh';
+    let lastResponseData = null;
 
-const I18N = {
-  zh: {
-    title: "水下多智能体任务决策系统",
-    subtitle: "任务准入｜状态解析｜环境理解｜智能应答",
-    simtime: "模拟时间",
-    setBtn: "设置",
-    simtimeHint: "点击设置可自定义基准时间",
-    curtask: "当前任务",
-    collected: "已收集字段",
-    missing: "缺失字段",
-    finaljson: "最终任务JSON",
-    history: "历史记录",
-    historyBtn: "查看历史",
-    resetBtn: "⟳ 重新开始",
-    inputPlaceholder: "描述您的水下任务...",
-    voiceBtn: "语音",
-    voiceStop: "停止",
-    sendBtn: "发送",
-    none: "暂无",
-    allCollected: "✅ 所有必填字段已齐全",
-    transTranslate: "翻译 (Translate)",
-    transOriginal: "显示原文 (Show Original)",
-    transTranslating: "正在翻译...",
-    transFailed: "翻译失败",
-    transNetError: "网络错误",
-    transRetrying: "翻译重试中...",
-    transFallback: "⚠️ 翻译质量不佳，显示原文",
-    historyTitle: "历史记录",
-    historyNone: "暂无历史记录",
-    historyLoadedReadOnly: "📜 已加载历史任务记录（只读模式）。如需创建新任务，请点击\"重新开始\"。",
-    taskConfirmMsg: "✅ 信息收集完成，当前为【立即执行任务】，任务已生成并下发。",
-    taskPlanMsg: "✅ 信息收集完成，当前为【未来规划任务】，已加入计划池。",
-    taskCancelMsg: "任务已取消。如需重新规划，请重新开始。",
-    taskRejectedMsg: "⚠️ 任务已被拒绝，请修改参数后重新开始。",
-    taskSuccessMsg: "✅ 任务信息已补全并通过约束检查，最终任务描述如下：",
-    welcomeMsg: '您好！请描述您的水下作业任务，例如："流花油田A03井插拔采油树面板，水深300米，使用Triton XLX ROV" 或 "紧急巡检PL-003管线泄漏"。',
-    timeAlert: "请选择要设置的模拟时间",
-    timeSuccess: "模拟时间已更新",
-    timeError: "设置模拟时间失败",
-    timeNetError: "设置模拟时间网络错误，请检查服务是否启动",
-    voiceRecording: "**正在录音...**",
-    voiceStopping: "**正在停止录音...**",
-    voiceTranscribing: "**正在转写...**",
-    voiceNoAudio: "**没有录到音频，请重试。**",
-    voiceEmptyText: "**未识别到有效文本，请重新录音或手动输入。**",
-    voiceError: "**语音转写失败：**",
-    voiceNotSupport: "**当前浏览器不支持麦克风录音**",
-    voiceNotAvailable: "**录音不可用：**",
-    rawTranscript: "原始转写：",
-    correctedTranscript: "纠错后：",
-    replacementList: "替换列表：",
-    warningsLabel: "警告：",
-    autoSentLabel: "已自动发送至对话。",
-    manualConfirmLabel: "请确认或编辑后点击发送。",
-    restoreFailed: "还原失败: ",
-    restoreNetError: "还原失败，请检查网络",
-    networkError: "网络错误，请重试。",
-    emergencyBadge: "紧急",
-    
-    // Telemetry labels
-    labelLink: "通信链强",
-    labelLatency: "信道延迟",
-    labelBattery: "潜器电量",
-    labelSonarRadar: "声呐雷达扫描",
-    labelRange: "扫描半径",
-    labelFreq: "载波频率",
-    labelEnvMonitor: "水下环境监视",
-    labelWaterDepth: "水深",
-    labelCurDepth: "当前深度",
-    labelPressure: "静水压力",
-    labelWaterTemp: "环境水温",
-    labelSystemDiag: "动力分配与诊断",
-    labelTelemetryStream: "系统遥测事件流"
-  },
-  en: {
-    title: "Underwater Multi-Robot Decision System",
-    subtitle: "Task Admission | State Parsing | Environmental Recognition | Intelligent Response",
-    simtime: "Simulated Time",
-    setBtn: "Set",
-    simtimeHint: "Click Set to customize baseline time",
-    curtask: "Current Task",
-    collected: "Collected Fields",
-    missing: "Missing Fields",
-    finaljson: "Final Task JSON",
-    history: "History",
-    historyBtn: "View History",
-    resetBtn: "⟳ Restart",
-    inputPlaceholder: "Describe your underwater task...",
-    voiceBtn: "Voice",
-    voiceStop: "Stop",
-    sendBtn: "Send",
-    none: "None",
-    allCollected: "✅ All required fields collected",
-    transTranslate: "Translate",
-    transOriginal: "Original",
-    transTranslating: "Translating...",
-    transFailed: "Translation failed",
-    transNetError: "Network error",
-    transRetrying: "Retrying translation...",
-    transFallback: "⚠️ Low-quality translation, showing original",
-    historyTitle: "History",
-    historyNone: "No history records",
-    historyLoadedReadOnly: "📜 History task loaded (Read-Only). Click 'Restart' to create a new task.",
-    taskConfirmMsg: "✅ Information collection complete, executing task immediately, task generated and dispatched.",
-    taskPlanMsg: "✅ Information collection complete, task planned for future, added to the planning pool.",
-    taskCancelMsg: "Task cancelled. Click 'Restart' to plan a new one.",
-    taskRejectedMsg: "⚠️ Task rejected. Please modify parameters and restart.",
-    taskSuccessMsg: "✅ Task information completed and verified. Final task description:",
-    welcomeMsg: 'Hello! Please describe your subsea operation, e.g., "Insert subsea Christmas tree valve at Liuhua A03 wellhead, depth 300m, using Triton XLX ROV" or "Emergency pipeline inspection on leak of PL-003 pipeline".',
-    timeAlert: "Please select a time to set",
-    timeSuccess: "Simulated time updated",
-    timeError: "Failed to set simulated time",
-    timeNetError: "Failed to set simulated time, please check if the server is running",
-    voiceRecording: "**Recording...**",
-    voiceStopping: "**Stopping recording...**",
-    voiceTranscribing: "**Transcribing...**",
-    voiceNoAudio: "**No audio captured, please try again.**",
-    voiceEmptyText: "**No valid text transcribed. Re-record or type manually.**",
-    voiceError: "**Speech transcription failed: **",
-    voiceNotSupport: "**Microphone recording not supported by current browser**",
-    voiceNotAvailable: "**Recording unavailable: **",
-    rawTranscript: "Raw Transcript: ",
-    correctedTranscript: "Corrected: ",
-    replacementList: "Replacements: ",
-    warningsLabel: "Warnings: ",
-    autoSentLabel: "Sent to chat automatically.",
-    manualConfirmLabel: "Please confirm/edit and click Send.",
-    restoreFailed: "Restore failed: ",
-    restoreNetError: "Restore failed, please check network",
-    networkError: "Network error, please try again.",
-    emergencyBadge: "Emergency",
+    const I18N = {
+      zh: {
+        title: "水下多智能体任务决策系统",
+        subtitle: "任务准入｜状态解析｜环境理解｜智能应答",
+        simtime: "模拟时间",
+        setBtn: "设置",
+        simtimeHint: "点击设置可自定义基准时间",
+        curtask: "当前任务",
+        collected: "已收集字段",
+        missing: "缺失字段",
+        finaljson: "最终任务JSON",
+        history: "历史记录",
+        historyBtn: "查看历史",
+        resetBtn: "⟳ 重新开始",
+        inputPlaceholder: "描述您的水下任务...",
+        voiceBtn: "语音",
+        voiceStop: "停止",
+        sendBtn: "发送",
+        none: "暂无",
+        allCollected: "✅ 所有必填字段已齐全",
+        transTranslate: "翻译 (Translate)",
+        transOriginal: "显示原文 (Show Original)",
+        transTranslating: "正在翻译...",
+        transFailed: "翻译失败",
+        transNetError: "网络错误",
+        transRetrying: "翻译重试中...",
+        transFallback: "⚠️ 翻译质量不佳，显示原文",
+        historyTitle: "历史记录",
+        historyNone: "暂无历史记录",
+        historyLoadedReadOnly: "📜 已加载历史任务记录（只读模式）。如需创建新任务，请点击\"重新开始\"。",
+        taskConfirmMsg: "✅ 信息收集完成，当前为【立即执行任务】，任务已生成并下发。",
+        taskPlanMsg: "✅ 信息收集完成，当前为【未来规划任务】，已加入计划池。",
+        taskCancelMsg: "任务已取消。如需重新规划，请重新开始。",
+        taskRejectedMsg: "⚠️ 任务已被拒绝，请修改参数后重新开始。",
+        taskSuccessMsg: "✅ 任务信息已补全并通过约束检查，最终任务描述如下：",
+        welcomeMsg: '您好！请描述您的水下作业任务，例如："流花油田A03井插拔采油树面板，水深300米，使用Triton XLX ROV" 或 "紧急巡检PL-003管线泄漏"。',
+        timeAlert: "请选择要设置的模拟时间",
+        timeSuccess: "模拟时间已更新",
+        timeError: "设置模拟时间失败",
+        timeNetError: "设置模拟时间网络错误，请检查服务是否启动",
+        voiceRecording: "**正在录音...**",
+        voiceStopping: "**正在停止录音...**",
+        voiceTranscribing: "**正在转写...**",
+        voiceNoAudio: "**没有录到音频，请重试。**",
+        voiceEmptyText: "**未识别到有效文本，请重新录音或手动输入。**",
+        voiceError: "**语音转写失败：**",
+        voiceNotSupport: "**当前浏览器不支持麦克风录音**",
+        voiceNotAvailable: "**录音不可用：**",
+        rawTranscript: "原始转写：",
+        correctedTranscript: "纠错后：",
+        replacementList: "替换列表：",
+        warningsLabel: "警告：",
+        autoSentLabel: "已自动发送至对话。",
+        manualConfirmLabel: "请确认或编辑后点击发送。",
+        restoreFailed: "还原失败: ",
+        restoreNetError: "还原失败，请检查网络",
+        networkError: "网络错误，请重试。",
+        emergencyBadge: "紧急",
 
-    // Telemetry labels
-    labelLink: "LINK STRENGTH",
-    labelLatency: "LATENCY",
-    labelBattery: "ROV BATTERY",
-    labelSonarRadar: "Sonar Radar Sweep",
-    labelRange: "Scan Range",
-    labelFreq: "Frequency",
-    labelEnvMonitor: "Subsea Environment",
-    labelWaterDepth: "Depth",
-    labelCurDepth: "Current Depth",
-    labelPressure: "Hydro Pressure",
-    labelWaterTemp: "Water Temp",
-    labelSystemDiag: "Diagnostics",
-    labelTelemetryStream: "Telemetry stream logs"
-  }
-};
+        // Telemetry labels
+        labelLink: "通信链强",
+        labelLatency: "信道延迟",
+        labelBattery: "潜器电量",
+        labelSonarRadar: "声呐雷达扫描",
+        labelRange: "扫描半径",
+        labelFreq: "载波频率",
+        labelEnvMonitor: "水下环境监视",
+        labelWaterDepth: "水深",
+        labelCurDepth: "当前深度",
+        labelPressure: "静水压力",
+        labelWaterTemp: "环境水温",
+        labelSystemDiag: "动力分配与诊断",
+        labelTelemetryStream: "系统遥测事件流"
+      },
+      en: {
+        title: "Underwater Multi-Robot Decision System",
+        subtitle: "Task Admission | State Parsing | Environmental Recognition | Intelligent Response",
+        simtime: "Simulated Time",
+        setBtn: "Set",
+        simtimeHint: "Click Set to customize baseline time",
+        curtask: "Current Task",
+        collected: "Collected Fields",
+        missing: "Missing Fields",
+        finaljson: "Final Task JSON",
+        history: "History",
+        historyBtn: "View History",
+        resetBtn: "⟳ Restart",
+        inputPlaceholder: "Describe your underwater task...",
+        voiceBtn: "Voice",
+        voiceStop: "Stop",
+        sendBtn: "Send",
+        none: "None",
+        allCollected: "✅ All required fields collected",
+        transTranslate: "Translate",
+        transOriginal: "Original",
+        transTranslating: "Translating...",
+        transFailed: "Translation failed",
+        transNetError: "Network error",
+        transRetrying: "Retrying translation...",
+        transFallback: "⚠️ Low-quality translation, showing original",
+        historyTitle: "History",
+        historyNone: "No history records",
+        historyLoadedReadOnly: "📜 History task loaded (Read-Only). Click 'Restart' to create a new task.",
+        taskConfirmMsg: "✅ Information collection complete, executing task immediately, task generated and dispatched.",
+        taskPlanMsg: "✅ Information collection complete, task planned for future, added to the planning pool.",
+        taskCancelMsg: "Task cancelled. Click 'Restart' to plan a new one.",
+        taskRejectedMsg: "⚠️ Task rejected. Please modify parameters and restart.",
+        taskSuccessMsg: "✅ Task information completed and verified. Final task description:",
+        welcomeMsg: 'Hello! Please describe your subsea operation, e.g., "Insert subsea Christmas tree valve at Liuhua A03 wellhead, depth 300m, using Triton XLX ROV" or "Emergency pipeline inspection on leak of PL-003 pipeline".',
+        timeAlert: "Please select a time to set",
+        timeSuccess: "Simulated time updated",
+        timeError: "Failed to set simulated time",
+        timeNetError: "Failed to set simulated time, please check if the server is running",
+        voiceRecording: "**Recording...**",
+        voiceStopping: "**Stopping recording...**",
+        voiceTranscribing: "**Transcribing...**",
+        voiceNoAudio: "**No audio captured, please try again.**",
+        voiceEmptyText: "**No valid text transcribed. Re-record or type manually.**",
+        voiceError: "**Speech transcription failed: **",
+        voiceNotSupport: "**Microphone recording not supported by current browser**",
+        voiceNotAvailable: "**Recording unavailable: **",
+        rawTranscript: "Raw Transcript: ",
+        correctedTranscript: "Corrected: ",
+        replacementList: "Replacements: ",
+        warningsLabel: "Warnings: ",
+        autoSentLabel: "Sent to chat automatically.",
+        manualConfirmLabel: "Please confirm/edit and click Send.",
+        restoreFailed: "Restore failed: ",
+        restoreNetError: "Restore failed, please check network",
+        networkError: "Network error, please try again.",
+        emergencyBadge: "Emergency",
 
-const FIELDS = {
-  task_id: { zh: "任务编号", en: "Task ID" },
-  task_type: { zh: "任务类型", en: "Task Type" },
-  start_time: { zh: "开始时间", en: "Start Time" },
-  end_time: { zh: "结束时间", en: "End Time" },
-  cable_position: { zh: "管缆位置", en: "Cable Position" },
-  cable_type: { zh: "管缆类型", en: "Cable Type" },
-  start_point: { zh: "起始点经纬度", en: "Start Coordinates" },
-  end_point: { zh: "结束点经纬度", en: "End Coordinates" },
-  water_depth: { zh: "水深（米）", en: "Water Depth (m)" },
-  equipment_type: { zh: "设备类型", en: "ROV Class" },
-  equipment_name: { zh: "设备全称", en: "ROV Name" },
-  payload: { zh: "携带工具", en: "Payload" },
-  support_vessel: { zh: "支持船编号", en: "Support Vessel ID" },
-  oilfield_name: { zh: "油田名称", en: "Oilfield Name" },
-  oilfield_coordinates: { zh: "油田经纬度", en: "Oilfield Coordinates" },
-  wellhead_id: { zh: "井口编号", en: "Wellhead ID" }
-};
-
-const VALUES = {
-  "管缆巡检": { zh: "管缆巡检", en: "Pipeline Inspection" },
-  "采油树控制面板插入": { zh: "采油树控制面板插入", en: "Tree Valve Insertion" },
-  "采油树控制面板拔出": { zh: "采油树控制面板拔出", en: "Tree Valve Extraction" },
-  "采油树控制面板插拔": { zh: "采油树控制面板插拔", en: "Tree Valve Operation" },
-  "未识别": { zh: "未识别", en: "Unidentified" },
-  "海底油气管道": { zh: "海底油气管道", en: "Subsea Oil/Gas Pipeline" },
-  "电力电缆": { zh: "电力电缆", en: "Power Cable" },
-  "光纤通信缆": { zh: "光纤通信缆", en: "Fiber Optic Cable" },
-  "observation": { zh: "观察级 ROV", en: "Observation Class ROV" },
-  "work": { zh: "作业级 ROV", en: "Work Class ROV" },
-  "seabed_tractor": { zh: "海底拖拉机", en: "Seabed Tractor" },
-  "survey": { zh: "调查型 AUV", en: "Survey AUV" },
-  "观察级": { zh: "观察级 ROV", en: "Observation Class ROV" },
-  "工作级": { zh: "工作级 ROV", en: "Work Class ROV" },
-  "观察级ROV": { zh: "观察级 ROV", en: "Observation Class ROV" },
-  "工作级ROV": { zh: "工作级 ROV", en: "Work Class ROV" },
-  "sealien_work_class": { zh: "sealien_work_class", en: "Sealien Work Class ROV" },
-  "sealien_cable_pipeline": { zh: "sealien_cable_pipeline", en: "Sealien Cable/Pipeline ROV" },
-  "sealien_inspection": { zh: "sealien_inspection", en: "Sealien Inspection ROV" },
-  "taurus_tractor": { zh: "taurus_tractor", en: "Taurus Seabed Tractor" },
-  "sealien_survey_auv": { zh: "sealien_survey_auv", en: "Sealien Survey AUV" },
-  "海洋石油681": { zh: "海洋石油681", en: "Haiyang Shiyou 681" },
-  "海洋石油286": { zh: "海洋石油286", en: "Haiyang Shiyou 286" },
-  "海洋石油708": { zh: "海洋石油708", en: "Haiyang Shiyou 708" },
-  "DSV-Oceanic": { zh: "DSV-Oceanic", en: "DSV-Oceanic" },
-  "高清/4K摄像系统": { zh: "高清/4K摄像系统", en: "HD/4K Camera System" },
-  "CP（阴极保护）探测仪": { zh: "CP（阴极保护）探测仪", en: "CP (Cathodic Protection) Detector" },
-  "管道追踪器": { zh: "管道追踪器", en: "Pipeline Tracker" },
-  "多波束声呐": { zh: "多波束声呐", en: "Multibeam Sonar" },
-  "侧扫声呐": { zh: "侧扫声呐", en: "Side Scan Sonar" },
-  "激光测量尺": { zh: "激光测量尺", en: "Laser Scale" },
-  "液压扭矩工具": { zh: "液压扭矩工具", en: "Hydraulic Torque Tool" },
-  "阀门操作接口工具": { zh: "阀门操作接口工具", en: "Valve Operation Interface Tool" },
-  "机械臂": { zh: "机械臂", en: "Manipulator Arm" },
-  "清洁刷": { zh: "清洁刷", en: "Cleaning Brush" },
-  "防喷工具包": { zh: "防喷工具包", en: "BOP Tool Pack" }
-};
-
-document.getElementById('langSelect').addEventListener('change', (e) => {
-  currentLang = e.target.value;
-  updateLanguage();
-});
-
-function updateLanguage() {
-  document.getElementById('ui-title').innerText = I18N[currentLang].title;
-  document.getElementById('ui-subtitle').innerText = I18N[currentLang].subtitle;
-  document.getElementById('title-simtime').innerText = I18N[currentLang].simtime;
-  document.getElementById('setTimeBtn').innerText = I18N[currentLang].setBtn;
-  document.getElementById('hint-simtime').innerText = I18N[currentLang].simtimeHint;
-  document.getElementById('title-curtask').innerText = I18N[currentLang].curtask;
-  document.getElementById('title-collected').innerText = I18N[currentLang].collected;
-  document.getElementById('title-missing').innerText = I18N[currentLang].missing;
-  document.getElementById('title-finaljson').innerText = I18N[currentLang].finaljson;
-  document.getElementById('title-history').innerText = I18N[currentLang].history;
-  document.getElementById('historyBtn').innerText = I18N[currentLang].historyBtn;
-  document.getElementById('resetBtn').innerText = I18N[currentLang].resetBtn;
-  
-  document.getElementById('messageInput').placeholder = I18N[currentLang].inputPlaceholder;
-  if (!isRecording) {
-    document.getElementById('voiceBtn').innerText = I18N[currentLang].voiceBtn;
-  } else {
-    document.getElementById('voiceBtn').innerText = I18N[currentLang].voiceStop;
-  }
-  document.getElementById('sendBtn').innerText = I18N[currentLang].sendBtn;
-  
-
-
-  if (lastResponseData) {
-    updateSidebar(lastResponseData);
-  } else {
-    document.getElementById('collectedFields').innerHTML = I18N[currentLang].none;
-  }
-  
-  document.querySelectorAll('.message').forEach(msgDiv => {
-    const originalText = msgDiv.getAttribute('data-original');
-    const btn = msgDiv.querySelector('.msg-translate-bar');
-    const bubble = msgDiv.querySelector('.bubble');
-    if (originalText && btn && bubble) {
-      const hasZh = hasChinese(originalText);
-      if (currentLang === 'en' && hasZh) {
-        const cache = msgDiv.getAttribute('data-translation-cache');
-        if (cache) {
-          bubble.innerHTML = renderMarkdown(cache).replace(/\n/g, '<br>');
-          btn.innerText = I18N[currentLang].transOriginal;
-          btn.setAttribute('data-translated', 'true');
-        } else {
-          autoTranslateMessage(msgDiv);
-        }
-      } else {
-        bubble.innerHTML = renderMarkdown(originalText).replace(/\n/g, '<br>');
-        btn.innerText = I18N[currentLang].transTranslate;
-        btn.setAttribute('data-translated', 'false');
+        // Telemetry labels
+        labelLink: "LINK STRENGTH",
+        labelLatency: "LATENCY",
+        labelBattery: "ROV BATTERY",
+        labelSonarRadar: "Sonar Radar Sweep",
+        labelRange: "Scan Range",
+        labelFreq: "Frequency",
+        labelEnvMonitor: "Subsea Environment",
+        labelWaterDepth: "Depth",
+        labelCurDepth: "Current Depth",
+        labelPressure: "Hydro Pressure",
+        labelWaterTemp: "Water Temp",
+        labelSystemDiag: "Diagnostics",
+        labelTelemetryStream: "Telemetry stream logs"
       }
-    }
-  });
-}
+    };
 
-function hasChinese(text) {
-  return /[\u4e00-\u9fa5]/.test(text);
-}
+    const FIELDS = {
+      task_id: { zh: "任务编号", en: "Task ID" },
+      task_type: { zh: "任务类型", en: "Task Type" },
+      start_time: { zh: "开始时间", en: "Start Time" },
+      end_time: { zh: "结束时间", en: "End Time" },
+      cable_position: { zh: "管缆位置", en: "Cable Position" },
+      cable_type: { zh: "管缆类型", en: "Cable Type" },
+      start_point: { zh: "起始点经纬度", en: "Start Coordinates" },
+      end_point: { zh: "结束点经纬度", en: "End Coordinates" },
+      water_depth: { zh: "水深（米）", en: "Water Depth (m)" },
+      equipment_type: { zh: "设备类型", en: "ROV Class" },
+      equipment_name: { zh: "设备全称", en: "ROV Name" },
+      payload: { zh: "携带工具", en: "Payload" },
+      support_vessel: { zh: "支持船编号", en: "Support Vessel ID" },
+      oilfield_name: { zh: "油田名称", en: "Oilfield Name" },
+      oilfield_coordinates: { zh: "油田经纬度", en: "Oilfield Coordinates" },
+      wellhead_id: { zh: "井口编号", en: "Wellhead ID" }
+    };
 
-/**
- * 校验翻译结果是否为脏数据，与后端 _is_dirty_translation 逻辑保持一致。
- */
-function isDirtyTranslation(targetLang, translated) {
-  if (!translated) return true;
-  const t = translated.trim();
-  if (t.startsWith('{') || t.startsWith('[')) return true;
-  if (targetLang === 'English' && /[\u4e00-\u9fa5]/.test(translated)) return true;
-  return false;
-}
+    const VALUES = {
+      "管缆巡检": { zh: "管缆巡检", en: "Pipeline Inspection" },
+      "采油树控制面板插入": { zh: "采油树控制面板插入", en: "Tree Valve Insertion" },
+      "采油树控制面板拔出": { zh: "采油树控制面板拔出", en: "Tree Valve Extraction" },
+      "采油树控制面板插拔": { zh: "采油树控制面板插拔", en: "Tree Valve Operation" },
+      "未识别": { zh: "未识别", en: "Unidentified" },
+      "海底油气管道": { zh: "海底油气管道", en: "Subsea Oil/Gas Pipeline" },
+      "电力电缆": { zh: "电力电缆", en: "Power Cable" },
+      "光纤通信缆": { zh: "光纤通信缆", en: "Fiber Optic Cable" },
+      "observation": { zh: "观察级 ROV", en: "Observation Class ROV" },
+      "work": { zh: "作业级 ROV", en: "Work Class ROV" },
+      "seabed_tractor": { zh: "海底拖拉机", en: "Seabed Tractor" },
+      "survey": { zh: "调查型 AUV", en: "Survey AUV" },
+      "观察级": { zh: "观察级 ROV", en: "Observation Class ROV" },
+      "工作级": { zh: "工作级 ROV", en: "Work Class ROV" },
+      "观察级ROV": { zh: "观察级 ROV", en: "Observation Class ROV" },
+      "工作级ROV": { zh: "工作级 ROV", en: "Work Class ROV" },
+      "sealien_work_class": { zh: "sealien_work_class", en: "Sealien Work Class ROV" },
+      "sealien_cable_pipeline": { zh: "sealien_cable_pipeline", en: "Sealien Cable/Pipeline ROV" },
+      "sealien_inspection": { zh: "sealien_inspection", en: "Sealien Inspection ROV" },
+      "taurus_tractor": { zh: "taurus_tractor", en: "Taurus Seabed Tractor" },
+      "sealien_survey_auv": { zh: "sealien_survey_auv", en: "Sealien Survey AUV" },
+      "海洋石油681": { zh: "海洋石油681", en: "Haiyang Shiyou 681" },
+      "海洋石油286": { zh: "海洋石油286", en: "Haiyang Shiyou 286" },
+      "海洋石油708": { zh: "海洋石油708", en: "Haiyang Shiyou 708" },
+      "DSV-Oceanic": { zh: "DSV-Oceanic", en: "DSV-Oceanic" },
+      "高清/4K摄像系统": { zh: "高清/4K摄像系统", en: "HD/4K Camera System" },
+      "CP（阴极保护）探测仪": { zh: "CP（阴极保护）探测仪", en: "CP (Cathodic Protection) Detector" },
+      "管道追踪器": { zh: "管道追踪器", en: "Pipeline Tracker" },
+      "多波束声呐": { zh: "多波束声呐", en: "Multibeam Sonar" },
+      "侧扫声呐": { zh: "侧扫声呐", en: "Side Scan Sonar" },
+      "激光测量尺": { zh: "激光测量尺", en: "Laser Scale" },
+      "液压扭矩工具": { zh: "液压扭矩工具", en: "Hydraulic Torque Tool" },
+      "阀门操作接口工具": { zh: "阀门操作接口工具", en: "Valve Operation Interface Tool" },
+      "机械臂": { zh: "机械臂", en: "Manipulator Arm" },
+      "清洁刷": { zh: "清洁刷", en: "Cleaning Brush" },
+      "防喷工具包": { zh: "防喷工具包", en: "BOP Tool Pack" }
+    };
 
-/**
- * 公共翻译函数：带超时、重试、脏数据校验。
- * @param {string} text - 原文
- * @param {string} targetLang - 目标语言
- * @param {number} [retries=1] - 剩余重试次数
- * @returns {Promise<{translated: string, warning: string|null}>}
- */
-async function fetchTranslation(text, targetLang, retries = 1) {
-  const TIMEOUT_MS = 30000; // 30s 超时
-  const controller = new AbortController();
-  const timerId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-  try {
-    const res = await fetch(API_BASE + '/api/translate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, target_lang: targetLang }),
-      signal: controller.signal
+    document.getElementById('langSelect').addEventListener('change', (e) => {
+      currentLang = e.target.value;
+      updateLanguage();
     });
-    clearTimeout(timerId);
 
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    function updateLanguage() {
+      document.getElementById('ui-title').innerText = I18N[currentLang].title;
+      document.getElementById('ui-subtitle').innerText = I18N[currentLang].subtitle;
+      document.getElementById('title-simtime').innerText = I18N[currentLang].simtime;
+      document.getElementById('setTimeBtn').innerText = I18N[currentLang].setBtn;
+      document.getElementById('hint-simtime').innerText = I18N[currentLang].simtimeHint;
+      document.getElementById('title-curtask').innerText = I18N[currentLang].curtask;
+      document.getElementById('title-collected').innerText = I18N[currentLang].collected;
+      document.getElementById('title-missing').innerText = I18N[currentLang].missing;
+      document.getElementById('title-finaljson').innerText = I18N[currentLang].finaljson;
+      document.getElementById('title-history').innerText = I18N[currentLang].history;
+      document.getElementById('historyBtn').innerText = I18N[currentLang].historyBtn;
+      document.getElementById('resetBtn').innerText = I18N[currentLang].resetBtn;
 
-    if (data.code === 200 && data.translated_text) {
-      // 后端 quality_warning 或前端脏数据校验
-      if (data.quality_warning || isDirtyTranslation(targetLang, data.translated_text)) {
-        return { translated: data.translated_text, warning: 'low_quality' };
-      }
-      return { translated: data.translated_text, warning: null };
-    }
-    throw new Error(data.msg || 'empty translated_text');
-  } catch (err) {
-    clearTimeout(timerId);
-    if (retries > 0) {
-      // 自动重试一次
-      await new Promise(r => setTimeout(r, 1500));
-      return fetchTranslation(text, targetLang, retries - 1);
-    }
-    throw err;
-  }
-}
-
-async function autoTranslateMessage(msgDiv) {
-  const originalText = msgDiv.getAttribute('data-original');
-  const btn = msgDiv.querySelector('.msg-translate-bar');
-  const bubble = msgDiv.querySelector('.bubble');
-  if (!originalText || !btn || !bubble) return;
-
-  // 检查前端 DOM 缓存，若为脏数据则清除并重新翻译
-  const cache = msgDiv.getAttribute('data-translation-cache');
-  if (cache && !isDirtyTranslation('English', cache)) {
-    bubble.innerHTML = renderMarkdown(cache).replace(/\n/g, '<br>');
-    btn.innerText = I18N[currentLang].transOriginal;
-    btn.setAttribute('data-translated', 'true');
-    return;
-  }
-  if (cache) {
-    // 清除脏缓存
-    msgDiv.removeAttribute('data-translation-cache');
-  }
-
-  btn.innerText = I18N[currentLang].transTranslating;
-  try {
-    const { translated, warning } = await fetchTranslation(originalText, 'English');
-    msgDiv.setAttribute('data-translation-cache', translated);
-    if (currentLang === 'en') {
-      bubble.innerHTML = renderMarkdown(translated).replace(/\n/g, '<br>');
-      if (warning === 'low_quality') {
-        btn.innerText = I18N[currentLang].transFallback;
-        btn.setAttribute('data-translated', 'warn');
+      document.getElementById('messageInput').placeholder = I18N[currentLang].inputPlaceholder;
+      if (!isRecording) {
+        document.getElementById('voiceBtn').innerText = I18N[currentLang].voiceBtn;
       } else {
+        document.getElementById('voiceBtn').innerText = I18N[currentLang].voiceStop;
+      }
+      document.getElementById('sendBtn').innerText = I18N[currentLang].sendBtn;
+
+
+
+      if (lastResponseData) {
+        updateSidebar(lastResponseData);
+      } else {
+        document.getElementById('collectedFields').innerHTML = I18N[currentLang].none;
+      }
+
+      document.querySelectorAll('.message').forEach(msgDiv => {
+        const originalText = msgDiv.getAttribute('data-original');
+        const btn = msgDiv.querySelector('.msg-translate-bar');
+        const bubble = msgDiv.querySelector('.bubble');
+        if (originalText && btn && bubble) {
+          const hasZh = hasChinese(originalText);
+          if (currentLang === 'en' && hasZh) {
+            const cache = msgDiv.getAttribute('data-translation-cache');
+            if (cache) {
+              bubble.innerHTML = renderMarkdown(cache).replace(/\n/g, '<br>');
+              btn.innerText = I18N[currentLang].transOriginal;
+              btn.setAttribute('data-translated', 'true');
+            } else {
+              autoTranslateMessage(msgDiv);
+            }
+          } else {
+            bubble.innerHTML = renderMarkdown(originalText).replace(/\n/g, '<br>');
+            btn.innerText = I18N[currentLang].transTranslate;
+            btn.setAttribute('data-translated', 'false');
+          }
+        }
+      });
+    }
+
+    function hasChinese(text) {
+      return /[\u4e00-\u9fa5]/.test(text);
+    }
+
+    /**
+     * 校验翻译结果是否为脏数据，与后端 _is_dirty_translation 逻辑保持一致。
+     */
+    function isDirtyTranslation(targetLang, translated) {
+      if (!translated) return true;
+      const t = translated.trim();
+      if (t.startsWith('{') || t.startsWith('[')) return true;
+      if (targetLang === 'English' && /[\u4e00-\u9fa5]/.test(translated)) return true;
+      return false;
+    }
+
+    /**
+     * 公共翻译函数：带超时、重试、脏数据校验。
+     * @param {string} text - 原文
+     * @param {string} targetLang - 目标语言
+     * @param {number} [retries=1] - 剩余重试次数
+     * @returns {Promise<{translated: string, warning: string|null}>}
+     */
+    async function fetchTranslation(text, targetLang, retries = 1) {
+      const TIMEOUT_MS = 30000; // 30s 超时
+      const controller = new AbortController();
+      const timerId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+      try {
+        const res = await fetch(API_BASE + '/api/translate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, target_lang: targetLang }),
+          signal: controller.signal
+        });
+        clearTimeout(timerId);
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        if (data.code === 200 && data.translated_text) {
+          // 后端 quality_warning 或前端脏数据校验
+          if (data.quality_warning || isDirtyTranslation(targetLang, data.translated_text)) {
+            return { translated: data.translated_text, warning: 'low_quality' };
+          }
+          return { translated: data.translated_text, warning: null };
+        }
+        throw new Error(data.msg || 'empty translated_text');
+      } catch (err) {
+        clearTimeout(timerId);
+        if (retries > 0) {
+          // 自动重试一次
+          await new Promise(r => setTimeout(r, 1500));
+          return fetchTranslation(text, targetLang, retries - 1);
+        }
+        throw err;
+      }
+    }
+
+    async function autoTranslateMessage(msgDiv) {
+      const originalText = msgDiv.getAttribute('data-original');
+      const btn = msgDiv.querySelector('.msg-translate-bar');
+      const bubble = msgDiv.querySelector('.bubble');
+      if (!originalText || !btn || !bubble) return;
+
+      // 检查前端 DOM 缓存，若为脏数据则清除并重新翻译
+      const cache = msgDiv.getAttribute('data-translation-cache');
+      if (cache && !isDirtyTranslation('English', cache)) {
+        bubble.innerHTML = renderMarkdown(cache).replace(/\n/g, '<br>');
         btn.innerText = I18N[currentLang].transOriginal;
         btn.setAttribute('data-translated', 'true');
+        return;
       }
-    }
-  } catch (err) {
-    btn.innerText = err.name === 'AbortError'
-      ? I18N[currentLang].transNetError
-      : I18N[currentLang].transFailed;
-  }
-}
+      if (cache) {
+        // 清除脏缓存
+        msgDiv.removeAttribute('data-translation-cache');
+      }
 
-async function toggleMessageTranslation(btn) {
-  const wrapper = btn.closest('.bubble-wrapper');
-  const bubble = wrapper.querySelector('.bubble');
-  const messageDiv = btn.closest('.message');
-  const originalText = messageDiv.getAttribute('data-original');
-  const isTranslated = btn.getAttribute('data-translated');
-
-  if (isTranslated === 'true' || isTranslated === 'warn') {
-    // 显示原文
-    bubble.innerHTML = renderMarkdown(originalText).replace(/\n/g, '<br>');
-    btn.innerText = I18N[currentLang].transTranslate;
-    btn.setAttribute('data-translated', 'false');
-  } else {
-    const targetLang = currentLang === 'zh' ? 'Chinese' : 'English';
-    const cache = messageDiv.getAttribute('data-translation-cache');
-    // 检查前端 DOM 缓存，若为脏数据则清除并重新翻译
-    if (cache && !isDirtyTranslation(targetLang, cache)) {
-      bubble.innerHTML = renderMarkdown(cache).replace(/\n/g, '<br>');
-      btn.innerText = I18N[currentLang].transOriginal;
-      btn.setAttribute('data-translated', 'true');
-    } else {
-      if (cache) messageDiv.removeAttribute('data-translation-cache');
       btn.innerText = I18N[currentLang].transTranslating;
       try {
-        const { translated, warning } = await fetchTranslation(originalText, targetLang);
-        messageDiv.setAttribute('data-translation-cache', translated);
-        bubble.innerHTML = renderMarkdown(translated).replace(/\n/g, '<br>');
-        if (warning === 'low_quality') {
-          btn.innerText = I18N[currentLang].transFallback;
-          btn.setAttribute('data-translated', 'warn');
-        } else {
-          btn.innerText = I18N[currentLang].transOriginal;
-          btn.setAttribute('data-translated', 'true');
+        const { translated, warning } = await fetchTranslation(originalText, 'English');
+        msgDiv.setAttribute('data-translation-cache', translated);
+        if (currentLang === 'en') {
+          bubble.innerHTML = renderMarkdown(translated).replace(/\n/g, '<br>');
+          if (warning === 'low_quality') {
+            btn.innerText = I18N[currentLang].transFallback;
+            btn.setAttribute('data-translated', 'warn');
+          } else {
+            btn.innerText = I18N[currentLang].transOriginal;
+            btn.setAttribute('data-translated', 'true');
+          }
         }
       } catch (err) {
         btn.innerText = err.name === 'AbortError'
@@ -1553,610 +1656,661 @@ async function toggleMessageTranslation(btn) {
           : I18N[currentLang].transFailed;
       }
     }
-  }
-}
 
-function escapeHtml(str) {
-  if (typeof str !== 'string') str = String(str);
-  return str.replace(/[&<>]/g, function(m) {
-    if (m === '&') return '&amp;';
-    if (m === '<') return '&lt;';
-    if (m === '>') return '&gt;';
-    return m;
-  });
-}
+    async function toggleMessageTranslation(btn) {
+      const wrapper = btn.closest('.bubble-wrapper');
+      const bubble = wrapper.querySelector('.bubble');
+      const messageDiv = btn.closest('.message');
+      const originalText = messageDiv.getAttribute('data-original');
+      const isTranslated = btn.getAttribute('data-translated');
 
-function renderMarkdown(text) {
-  const escapedText = escapeHtml(text);
-  return escapedText
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>');
-}
-
-function getFieldLabel(key) {
-  if (FIELDS[key]) {
-    return FIELDS[key][currentLang];
-  }
-  return key;
-}
-
-function translateValue(key, val) {
-  if (val === null || val === undefined) return currentLang === 'zh' ? '暂无' : 'None';
-  
-  if (Array.isArray(val)) {
-    return val.map(item => translateValue(key, item)).join(currentLang === 'zh' ? ' / ' : ' / ');
-  }
-  
-  if (typeof val === 'object') {
-    if (val.lat !== undefined && val.lon !== undefined) {
-      if (currentLang === 'zh') {
-        return `北纬${val.lat}度, 东经${val.lon}度`;
+      if (isTranslated === 'true' || isTranslated === 'warn') {
+        // 显示原文
+        bubble.innerHTML = renderMarkdown(originalText).replace(/\n/g, '<br>');
+        btn.innerText = I18N[currentLang].transTranslate;
+        btn.setAttribute('data-translated', 'false');
       } else {
-        const latStr = val.lat >= 0 ? `${val.lat}°N` : `${Math.abs(val.lat)}°S`;
-        const lonStr = val.lon >= 0 ? `${val.lon}°E` : `${Math.abs(val.lon)}°W`;
-        return `${latStr}, ${lonStr}`;
+        const targetLang = currentLang === 'zh' ? 'Chinese' : 'English';
+        const cache = messageDiv.getAttribute('data-translation-cache');
+        // 检查前端 DOM 缓存，若为脏数据则清除并重新翻译
+        if (cache && !isDirtyTranslation(targetLang, cache)) {
+          bubble.innerHTML = renderMarkdown(cache).replace(/\n/g, '<br>');
+          btn.innerText = I18N[currentLang].transOriginal;
+          btn.setAttribute('data-translated', 'true');
+        } else {
+          if (cache) messageDiv.removeAttribute('data-translation-cache');
+          btn.innerText = I18N[currentLang].transTranslating;
+          try {
+            const { translated, warning } = await fetchTranslation(originalText, targetLang);
+            messageDiv.setAttribute('data-translation-cache', translated);
+            bubble.innerHTML = renderMarkdown(translated).replace(/\n/g, '<br>');
+            if (warning === 'low_quality') {
+              btn.innerText = I18N[currentLang].transFallback;
+              btn.setAttribute('data-translated', 'warn');
+            } else {
+              btn.innerText = I18N[currentLang].transOriginal;
+              btn.setAttribute('data-translated', 'true');
+            }
+          } catch (err) {
+            btn.innerText = err.name === 'AbortError'
+              ? I18N[currentLang].transNetError
+              : I18N[currentLang].transFailed;
+          }
+        }
       }
     }
-    return JSON.stringify(val);
-  }
-  
-  const valStr = String(val);
-  if (VALUES[valStr]) {
-    return VALUES[valStr][currentLang];
-  }
-  return valStr;
-}
 
-// Sleek vector bot/user visors
-const botAvatarSvg = `
+    function escapeHtml(str) {
+      if (typeof str !== 'string') str = String(str);
+      return str.replace(/[&<>]/g, function (m) {
+        if (m === '&') return '&amp;';
+        if (m === '<') return '&lt;';
+        if (m === '>') return '&gt;';
+        return m;
+      });
+    }
+
+    function renderMarkdown(text) {
+      const escapedText = escapeHtml(text);
+      return escapedText
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>');
+    }
+
+    function getFieldLabel(key) {
+      if (FIELDS[key]) {
+        return FIELDS[key][currentLang];
+      }
+      return key;
+    }
+
+    function translateValue(key, val) {
+      if (val === null || val === undefined) return currentLang === 'zh' ? '暂无' : 'None';
+
+      if (Array.isArray(val)) {
+        return val.map(item => translateValue(key, item)).join(currentLang === 'zh' ? ' / ' : ' / ');
+      }
+
+      if (typeof val === 'object') {
+        if (val.lat !== undefined && val.lon !== undefined) {
+          if (currentLang === 'zh') {
+            return `北纬${val.lat}度, 东经${val.lon}度`;
+          } else {
+            const latStr = val.lat >= 0 ? `${val.lat}°N` : `${Math.abs(val.lat)}°S`;
+            const lonStr = val.lon >= 0 ? `${val.lon}°E` : `${Math.abs(val.lon)}°W`;
+            return `${latStr}, ${lonStr}`;
+          }
+        }
+        return JSON.stringify(val);
+      }
+
+      const valStr = String(val);
+      if (VALUES[valStr]) {
+        return VALUES[valStr][currentLang];
+      }
+      return valStr;
+    }
+
+    // Sleek vector bot/user visors
+    const botAvatarSvg = `
   <svg class="bot-avatar-svg" viewBox="0 0 24 24" width="22" height="22">
     <rect x="4" y="6" width="16" height="12" rx="3" stroke="currentColor" stroke-width="1.8" fill="none" />
     <path d="M2 10h2M20 10h2M9 16l3 2 3-2" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" />
     <rect x="7" y="9" width="10" height="2" rx="1" fill="currentColor" class="visor-glow" />
   </svg>`;
-const userAvatarSvg = `
+    const userAvatarSvg = `
   <svg class="user-avatar-svg" viewBox="0 0 24 24" width="22" height="22">
     <circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.8" fill="none" />
     <path d="M4 20c0-4 4-5 8-5s8 1 8 5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" />
   </svg>`;
 
-function addMessage(role, content) {
-  const div = document.createElement('div');
-  const displayRole = role === 'assistant' ? 'bot' : role;
-  div.className = `message ${displayRole}`;
-  const isBot = (role === 'bot' || role === 'assistant');
-  const avatarHtml = isBot ? `<div class="avatar">${botAvatarSvg}</div>` : `<div class="avatar">${userAvatarSvg}</div>`;
-  
-  div.setAttribute('data-original', content);
-  div.setAttribute('data-role', role);
-  
-  const renderedContent = renderMarkdown(content).replace(/\n/g, '<br>');
-  
-  let translateBtn = '';
-  if (content.trim()) {
-    translateBtn = `<div class="msg-translate-bar" onclick="toggleMessageTranslation(this)">${I18N[currentLang].transTranslate}</div>`;
-  }
-  
-  div.innerHTML = avatarHtml + `<div class="bubble-wrapper" style="display:flex; flex-direction:column; align-items: ${role === 'user' ? 'flex-end' : 'flex-start'};"><div class="bubble">${renderedContent}</div>${translateBtn}</div>`;
-  messageContainer.appendChild(div);
-  messageContainer.scrollTop = messageContainer.scrollHeight;
-  
-  if (currentLang === 'en' && hasChinese(content)) {
-    autoTranslateMessage(div);
-  }
-  
-  return div;
-}
+    function addMessage(role, content) {
+      const div = document.createElement('div');
+      const displayRole = role === 'assistant' ? 'bot' : role;
+      div.className = `message ${displayRole}`;
+      const isBot = (role === 'bot' || role === 'assistant');
+      const avatarHtml = isBot ? `<div class="avatar">${botAvatarSvg}</div>` : `<div class="avatar">${userAvatarSvg}</div>`;
+
+      div.setAttribute('data-original', content);
+      div.setAttribute('data-role', role);
+
+      const renderedContent = renderMarkdown(content).replace(/\n/g, '<br>');
+
+      let translateBtn = '';
+      if (content.trim()) {
+        translateBtn = `<div class="msg-translate-bar" onclick="toggleMessageTranslation(this)">${I18N[currentLang].transTranslate}</div>`;
+      }
+
+      div.innerHTML = avatarHtml + `<div class="bubble-wrapper" style="display:flex; flex-direction:column; align-items: ${role === 'user' ? 'flex-end' : 'flex-start'};"><div class="bubble">${renderedContent}</div>${translateBtn}</div>`;
+      messageContainer.appendChild(div);
+      messageContainer.scrollTop = messageContainer.scrollHeight;
+
+      if (currentLang === 'en' && hasChinese(content)) {
+        autoTranslateMessage(div);
+      }
+
+      return div;
+    }
 
 
 
-// inline warning SVG for missing fields
-const svgWarning = `
+    // inline warning SVG for missing fields
+    const svgWarning = `
   <svg class="tech-icon warning" style="width:12px; height:12px; margin-right:4px;" viewBox="0 0 24 24">
     <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
     <path d="M12 8v5M12 16h.01" stroke-width="2" />
   </svg>`;
 
-function updateSidebar(data) {
-  lastResponseData = data;
+    function updateSidebar(data) {
+      lastResponseData = data;
 
-  // 任务类型显示：优先从 collected 里取 task_type 字段（已规范化的中文值）
-  // 若 collected 没有，则用后端返回的 task_type key 做映射
-  const collected = data.collected || {};
-  let taskTypeDisplay = '未识别';
-  if (collected.task_type) {
-    taskTypeDisplay = collected.task_type;
-  } else if (data.task_type === 'tree_valve_operation') {
-    taskTypeDisplay = '采油树控制面板插拔';
-  } else if (data.task_type === 'pipeline_inspection') {
-    taskTypeDisplay = '管缆巡检';
-  } else if (data.task_type) {
-    // 其他任务类型 key 直接展示
-    taskTypeDisplay = data.task_type;
-  }
+      // Filter collected fields to exclude equipment_type
+      const collected = {};
+      if (data.collected) {
+        for (const [k, v] of Object.entries(data.collected)) {
+          if (k !== 'equipment_type') {
+            collected[k] = v;
+          }
+        }
+      }
 
-  const localizedTaskType = translateValue('task_type', taskTypeDisplay);
-  const emergencyBadge = data.emergency ? `<span class="badge emergency">${I18N[currentLang].emergencyBadge}</span>` : '';
-  document.getElementById('taskInfo').innerHTML = `<strong>${localizedTaskType}</strong> ${emergencyBadge}`;
+      let taskTypeDisplay = '未识别';
+      if (collected.task_type) {
+        taskTypeDisplay = collected.task_type;
+      } else if (data.task_type === 'tree_valve_operation') {
+        taskTypeDisplay = '采油树控制面板插拔';
+      } else if (data.task_type === 'pipeline_inspection') {
+        taskTypeDisplay = '管缆巡检';
+      } else if (data.task_type) {
+        // 其他任务类型 key 直接展示
+        taskTypeDisplay = data.task_type;
+      }
 
-  const collectedDiv = document.getElementById('collectedFields');
-  if (Object.keys(collected).length === 0) {
-    collectedDiv.innerHTML = I18N[currentLang].none;
-  } else {
-    let html = '';
-    for (const [k, v] of Object.entries(collected)) {
-      const label = getFieldLabel(k);
-      const translatedVal = translateValue(k, v);
-      html += `
+      const localizedTaskType = translateValue('task_type', taskTypeDisplay);
+      const emergencyBadge = data.emergency ? `<span class="badge emergency">${I18N[currentLang].emergencyBadge}</span>` : '';
+      document.getElementById('taskInfo').innerHTML = `<strong>${localizedTaskType}</strong> ${emergencyBadge}`;
+
+      const collectedDiv = document.getElementById('collectedFields');
+      if (Object.keys(collected).length === 0) {
+        collectedDiv.innerHTML = I18N[currentLang].none;
+      } else {
+        let html = '';
+        for (const [k, v] of Object.entries(collected)) {
+          const label = getFieldLabel(k);
+          const translatedVal = translateValue(k, v);
+          html += `
         <div class="field-row">
           <span class="field-label">${label}</span>
           <span class="field-value">${escapeHtml(translatedVal)}</span>
         </div>
       `;
-    }
-    collectedDiv.innerHTML = html;
-  }
-
-
-
-  const missing = data.missing || [];
-  const missingDiv = document.getElementById('missingFields');
-  if (missing.length === 0 && Object.keys(collected).length > 0) {
-    missingDiv.innerHTML = I18N[currentLang].allCollected;
-  } else {
-    let html = '';
-    for (const m of missing) {
-      const label = getFieldLabel(m);
-      html += `<div class="field-row missing">${svgWarning}${label}</div>`;
-    }
-    missingDiv.innerHTML = html;
-  }
-
-  if (data.final_json) {
-    document.getElementById('resultCard').style.display = 'block';
-    document.getElementById('finalJson').innerText = JSON.stringify(data.final_json, null, 2);
-  } else {
-    document.getElementById('resultCard').style.display = 'none';
-  }
-}
-
-async function updateSimulatedTime(isInit = false) {
-  try {
-    const res = await fetch(API_BASE + '/api/time/current');
-    const data = await res.json();
-    if (data.code === 200) {
-      const dt = new Date(data.current_time);
-      const formatted = dt.toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US', { hour12: false });
-      document.getElementById('simulatedTimeDisplay').innerText = formatted;
-
-      if (isInit) {
-        const picker = document.getElementById('timePicker');
-        if (picker) {
-          const year = dt.getFullYear();
-          const month = String(dt.getMonth() + 1).padStart(2, '0');
-          const day = String(dt.getDate()).padStart(2, '0');
-          const hours = String(dt.getHours()).padStart(2, '0');
-          const minutes = String(dt.getMinutes()).padStart(2, '0');
-          const localValue = `${year}-${month}-${day}T${hours}:${minutes}`;
-          picker.value = localValue;
         }
+        collectedDiv.innerHTML = html;
       }
-    } else {
-      console.warn('获取模拟时间失败:', data);
-    }
-  } catch (err) {
-    console.error('获取模拟时间网络错误:', err);
-  }
-}
 
-async function setSimulatedTime() {
-  const picker = document.getElementById('timePicker');
-  const timeValue = picker.value;
-  if (!timeValue) {
-    alert(I18N[currentLang].timeAlert);
-    return;
-  }
 
-  try {
-    const res = await fetch(API_BASE + '/api/time/set', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ time: timeValue }),
-    });
-    const data = await res.json();
-    if (data.code === 200) {
-      await updateSimulatedTime(true);
-      alert(I18N[currentLang].timeSuccess);
-    } else {
-      console.warn('设置模拟时间失败:', data);
-      alert(data.msg || I18N[currentLang].timeError);
-    }
-  } catch (err) {
-    console.error('设置模拟时间网络错误:', err);
-    alert(I18N[currentLang].timeNetError);
-  }
-}
 
-function setAsrStatus(message, visible = true) {
-  asrPanel.classList.toggle('visible', visible);
-  asrPanel.innerHTML = message ? message : '';
-}
+      const missing = (data.missing || []).filter(m => m !== 'equipment_type');
+      const missingDiv = document.getElementById('missingFields');
+      if (missing.length === 0 && Object.keys(collected).length > 0) {
+        missingDiv.innerHTML = I18N[currentLang].allCollected;
+      } else {
+        let html = '';
+        for (const m of missing) {
+          const label = getFieldLabel(m);
+          html += `<div class="field-row missing">${svgWarning}${label}</div>`;
+        }
+        missingDiv.innerHTML = html;
+      }
 
-function renderAsrNormalization(data, autoSent = false) {
-  const rawText = (data.text || data.transcript || '').trim();
-  const correctedText = (data.corrected_text || rawText).trim();
-  const replacements = Array.isArray(data.replacements) ? data.replacements : [];
-  const warnings = Array.isArray(data.warnings) ? data.warnings : [];
-  let html = `<strong>${I18N[currentLang].rawTranscript}</strong>${escapeHtml(rawText)}<br>`;
-  html += `<strong>${I18N[currentLang].correctedTranscript}</strong>${escapeHtml(correctedText)}<br>`;
-  if (replacements.length) {
-    html += `<strong>${I18N[currentLang].replacementList}</strong><br>`;
-    html += replacements.map(item => {
-      const evidence = Array.isArray(item.evidence) ? item.evidence.join('；') : '';
-      return `${escapeHtml(item.source || '')} → ${escapeHtml(item.target || '')}`
-        + (evidence ? ` <span style="color:#8b93b0;">(${escapeHtml(evidence)})</span>` : '');
-    }).join('<br>');
-    html += '<br>';
-  }
-  if (warnings.length) {
-    html += `<strong>${I18N[currentLang].warningsLabel}</strong>${escapeHtml(warnings.join('；'))}<br>`;
-  }
-  html += autoSent ? I18N[currentLang].autoSentLabel : I18N[currentLang].manualConfirmLabel;
-  return html;
-}
-
-function writeString(view, offset, string) {
-  for (let i = 0; i < string.length; i++) {
-    view.setUint8(offset + i, string.charCodeAt(i));
-  }
-}
-
-// Convert float to 16bit PCM
-function floatTo16BitPCM(output, offset, input) {
-  for (let i = 0; i < input.length; i++, offset += 2) {
-    let s = Math.max(-1, Math.min(1, input[i]));
-    output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-  }
-}
-
-// Merge float32 audio chunks
-function mergeFloat32Chunks(chunks) {
-  const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-  const result = new Float32Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return result;
-}
-
-// WAV audio encoder
-function encodeWav(samples, sampleRate) {
-  const buffer = new ArrayBuffer(44 + samples.length * 2);
-  const view = new DataView(buffer);
-
-  writeString(view, 0, 'RIFF');
-  view.setUint32(4, 36 + samples.length * 2, true);
-  writeString(view, 8, 'WAVE');
-  writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeString(view, 36, 'data');
-  view.setUint32(40, samples.length * 2, true);
-  floatTo16BitPCM(view, 44, samples);
-
-  return new Blob([view], { type: 'audio/wav' });
-}
-
-async function uploadAudioForAsr(audioBlob) {
-  const formData = new FormData();
-  formData.append('audio', audioBlob, 'voice_input.wav');
-  formData.append('language', currentLang === 'zh' ? 'Chinese' : 'English');
-
-  const res = await fetch(API_BASE + '/api/asr', {
-    method: 'POST',
-    body: formData
-  });
-
-  const data = await res.json();
-  if (!res.ok || data.code !== 200) {
-    throw new Error(data.msg || 'ASR 转写失败');
-  }
-  return data;
-}
-
-async function startVoiceRecording() {
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    throw new Error(I18N[currentLang].voiceNotSupport);
-  }
-
-  mediaStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true
-    }
-  });
-
-  audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  recordingSampleRate = audioContext.sampleRate;
-  recorderSource = audioContext.createMediaStreamSource(mediaStream);
-  recorderProcessor = audioContext.createScriptProcessor(4096, 1, 1);
-  recordedChunks = [];
-
-  recorderProcessor.onaudioprocess = (event) => {
-    const input = event.inputBuffer.getChannelData(0);
-    recordedChunks.push(new Float32Array(input));
-  };
-
-  recorderSource.connect(recorderProcessor);
-  recorderProcessor.connect(audioContext.destination);
-
-  isRecording = true;
-  voiceBtn.classList.add('recording');
-  voiceBtn.textContent = I18N[currentLang].voiceStop;
-  setAsrStatus(I18N[currentLang].voiceRecording);
-  
-  // Show center pulsing visual
-  document.getElementById("audioWaveformWrapper").style.display = "flex";
-}
-
-async function stopVoiceRecording() {
-  isRecording = false;
-  voiceBtn.classList.remove('recording');
-  voiceBtn.textContent = I18N[currentLang].voiceBtn;
-  
-  // Hide center pulsing visual
-  document.getElementById("audioWaveformWrapper").style.display = "none";
-
-  if (recorderProcessor) recorderProcessor.disconnect();
-  if (recorderSource) recorderSource.disconnect();
-  if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
-  if (audioContext) await audioContext.close();
-
-  recorderProcessor = null;
-  recorderSource = null;
-  mediaStream = null;
-  audioContext = null;
-
-  if (!recordedChunks.length) {
-    setAsrStatus(I18N[currentLang].voiceNoAudio);
-    return;
-  }
-
-  const samples = mergeFloat32Chunks(recordedChunks);
-  const audioBlob = encodeWav(samples, recordingSampleRate);
-
-  setAsrStatus(I18N[currentLang].voiceTranscribing);
-  voiceBtn.disabled = true;
-
-  try {
-    const data = await uploadAudioForAsr(audioBlob);
-    const transcript = (data.corrected_text || data.text || data.transcript || '').trim();
-    const directToLlm = data.direct_to_llm !== false;
-
-    if (!transcript) {
-      setAsrStatus(I18N[currentLang].voiceEmptyText);
-      return;
+      if (data.final_json) {
+        document.getElementById('resultCard').style.display = 'block';
+        const displayJson = { ...data.final_json };
+        delete displayJson.equipment_type;
+        document.getElementById('finalJson').innerText = JSON.stringify(displayJson, null, 2);
+      } else {
+        document.getElementById('resultCard').style.display = 'none';
+      }
     }
 
-    if (directToLlm) {
-      setAsrStatus(renderAsrNormalization(data, true), true);
-      await sendMessage(transcript, { source: 'voice' });
-    } else {
-      messageInput.value = transcript;
-      setAsrStatus(renderAsrNormalization(data, false), true);
-      messageInput.focus();
-    }
-  } catch (err) {
-    setAsrStatus(`${I18N[currentLang].voiceError}${escapeHtml(err.message || err)}`);
-  } finally {
-    if (!isDone) voiceBtn.disabled = false;
-  }
-}
+    async function updateSimulatedTime(isInit = false) {
+      try {
+        const res = await fetch(API_BASE + '/api/time/current');
+        const data = await res.json();
+        if (data.code === 200) {
+          const dt = new Date(data.current_time);
+          const formatted = dt.toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US', { hour12: false });
+          document.getElementById('simulatedTimeDisplay').innerText = formatted;
 
-async function toggleVoiceRecording() {
-  try {
-    if (isRecording) {
-      await stopVoiceRecording();
-    } else {
-      await startVoiceRecording();
+          if (isInit) {
+            const picker = document.getElementById('timePicker');
+            if (picker) {
+              const year = dt.getFullYear();
+              const month = String(dt.getMonth() + 1).padStart(2, '0');
+              const day = String(dt.getDate()).padStart(2, '0');
+              const hours = String(dt.getHours()).padStart(2, '0');
+              const minutes = String(dt.getMinutes()).padStart(2, '0');
+              const localValue = `${year}-${month}-${day}T${hours}:${minutes}`;
+              picker.value = localValue;
+            }
+          }
+        } else {
+          console.warn('获取模拟时间失败:', data);
+        }
+      } catch (err) {
+        console.error('获取模拟时间网络错误:', err);
+      }
     }
-  } catch (err) {
-    isRecording = false;
-    voiceBtn.classList.remove('recording');
-    voiceBtn.textContent = I18N[currentLang].voiceBtn;
-    voiceBtn.disabled = false;
-    setAsrStatus(`${I18N[currentLang].voiceNotAvailable}${escapeHtml(err.message || err)}`);
-  }
-}
 
-// ==================== 历史记录功能 ====================
-async function loadHistoryList() {
-  try {
-    const res = await fetch(API_BASE + '/api/history/list');
-    const data = await res.json();
-    if (data.code !== 200) return;
-    const listDiv = document.getElementById('historyList');
-    if (data.data.length === 0) {
-      listDiv.innerHTML = `<div style="padding:8px; color:var(--text-secondary);">${I18N[currentLang].historyNone}</div>`;
-    } else {
-      let html = '';
-      for (const rec of data.data) {
-        const localizedType = translateValue('task_type_key', rec.task_type);
-        html += `
+    async function setSimulatedTime() {
+      const picker = document.getElementById('timePicker');
+      const timeValue = picker.value;
+      if (!timeValue) {
+        alert(I18N[currentLang].timeAlert);
+        return;
+      }
+
+      try {
+        const res = await fetch(API_BASE + '/api/time/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ time: timeValue }),
+        });
+        const data = await res.json();
+        if (data.code === 200) {
+          await updateSimulatedTime(true);
+          alert(I18N[currentLang].timeSuccess);
+        } else {
+          console.warn('设置模拟时间失败:', data);
+          alert(data.msg || I18N[currentLang].timeError);
+        }
+      } catch (err) {
+        console.error('设置模拟时间网络错误:', err);
+        alert(I18N[currentLang].timeNetError);
+      }
+    }
+
+    function setAsrStatus(message, visible = true) {
+      asrPanel.classList.toggle('visible', visible);
+      asrPanel.innerHTML = message ? message : '';
+    }
+
+    function renderAsrNormalization(data, autoSent = false) {
+      const rawText = (data.text || data.transcript || '').trim();
+      const correctedText = (data.corrected_text || rawText).trim();
+      const replacements = Array.isArray(data.replacements) ? data.replacements : [];
+      const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+      let html = `<strong>${I18N[currentLang].rawTranscript}</strong>${escapeHtml(rawText)}<br>`;
+      html += `<strong>${I18N[currentLang].correctedTranscript}</strong>${escapeHtml(correctedText)}<br>`;
+      // if (replacements.length) {
+      //   html += `<strong>${I18N[currentLang].replacementList}</strong><br>`;
+      //   html += replacements.map(item => {
+      //     const evidence = Array.isArray(item.evidence) ? item.evidence.join('；') : '';
+      //     return `${escapeHtml(item.source || '')} → ${escapeHtml(item.target || '')}`
+      //       + (evidence ? ` <span style="color:#8b93b0;">(${escapeHtml(evidence)})</span>` : '');
+      //   }).join('<br>');
+      //   html += '<br>';
+      // }
+      if (warnings.length) {
+        html += `<strong>${I18N[currentLang].warningsLabel}</strong>${escapeHtml(warnings.join('；'))}<br>`;
+      }
+      html += autoSent ? I18N[currentLang].autoSentLabel : I18N[currentLang].manualConfirmLabel;
+      return html;
+    }
+
+    function writeString(view, offset, string) {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    }
+
+    // Convert float to 16bit PCM
+    function floatTo16BitPCM(output, offset, input) {
+      for (let i = 0; i < input.length; i++, offset += 2) {
+        let s = Math.max(-1, Math.min(1, input[i]));
+        output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+    }
+
+    // Merge float32 audio chunks
+    function mergeFloat32Chunks(chunks) {
+      const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const result = new Float32Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        result.set(chunk, offset);
+        offset += chunk.length;
+      }
+      return result;
+    }
+
+    // WAV audio encoder
+    function encodeWav(samples, sampleRate) {
+      const buffer = new ArrayBuffer(44 + samples.length * 2);
+      const view = new DataView(buffer);
+
+      writeString(view, 0, 'RIFF');
+      view.setUint32(4, 36 + samples.length * 2, true);
+      writeString(view, 8, 'WAVE');
+      writeString(view, 12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeString(view, 36, 'data');
+      view.setUint32(40, samples.length * 2, true);
+      floatTo16BitPCM(view, 44, samples);
+
+      return new Blob([view], { type: 'audio/wav' });
+    }
+
+    async function uploadAudioForAsr(audioBlob) {
+      const formData = new FormData();
+      formData.append('audio', audioBlob, 'voice_input.wav');
+      formData.append('language', currentLang === 'zh' ? 'Chinese' : 'English');
+
+      const res = await fetch(API_BASE + '/api/asr', {
+        method: 'POST',
+        body: formData
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.code !== 200) {
+        throw new Error(data.msg || 'ASR 转写失败');
+      }
+      return data;
+    }
+
+    async function startVoiceRecording() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error(I18N[currentLang].voiceNotSupport);
+      }
+
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      recordingSampleRate = audioContext.sampleRate;
+      recorderSource = audioContext.createMediaStreamSource(mediaStream);
+      recorderProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+      recordedChunks = [];
+
+      recorderProcessor.onaudioprocess = (event) => {
+        const input = event.inputBuffer.getChannelData(0);
+        recordedChunks.push(new Float32Array(input));
+      };
+
+      recorderSource.connect(recorderProcessor);
+      recorderProcessor.connect(audioContext.destination);
+
+      isRecording = true;
+      voiceBtn.classList.add('recording');
+      voiceBtn.textContent = I18N[currentLang].voiceStop;
+      setAsrStatus(I18N[currentLang].voiceRecording);
+
+      // Show center pulsing visual
+      document.getElementById("audioWaveformWrapper").style.display = "flex";
+    }
+
+    async function stopVoiceRecording() {
+      isRecording = false;
+      voiceBtn.classList.remove('recording');
+      voiceBtn.textContent = I18N[currentLang].voiceBtn;
+
+      // Hide center pulsing visual
+      document.getElementById("audioWaveformWrapper").style.display = "none";
+
+      if (recorderProcessor) recorderProcessor.disconnect();
+      if (recorderSource) recorderSource.disconnect();
+      if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
+      if (audioContext) await audioContext.close();
+
+      recorderProcessor = null;
+      recorderSource = null;
+      mediaStream = null;
+      audioContext = null;
+
+      if (!recordedChunks.length) {
+        setAsrStatus(I18N[currentLang].voiceNoAudio);
+        return;
+      }
+
+      const samples = mergeFloat32Chunks(recordedChunks);
+      const audioBlob = encodeWav(samples, recordingSampleRate);
+
+      setAsrStatus(I18N[currentLang].voiceTranscribing);
+      voiceBtn.disabled = true;
+
+      try {
+        const data = await uploadAudioForAsr(audioBlob);
+        const transcript = (data.corrected_text || data.text || data.transcript || '').trim();
+        const directToLlm = data.direct_to_llm !== false;
+
+        if (!transcript) {
+          setAsrStatus(I18N[currentLang].voiceEmptyText);
+          return;
+        }
+
+        if (directToLlm) {
+          setAsrStatus(renderAsrNormalization(data, true), true);
+          await sendMessage(transcript, { source: 'voice' });
+        } else {
+          messageInput.value = transcript;
+          setAsrStatus(renderAsrNormalization(data, false), true);
+          messageInput.focus();
+        }
+      } catch (err) {
+        setAsrStatus(`${I18N[currentLang].voiceError}${escapeHtml(err.message || err)}`);
+      } finally {
+        if (!isDone) voiceBtn.disabled = false;
+      }
+    }
+
+    async function toggleVoiceRecording() {
+      try {
+        if (isRecording) {
+          await stopVoiceRecording();
+        } else {
+          await startVoiceRecording();
+        }
+      } catch (err) {
+        isRecording = false;
+        voiceBtn.classList.remove('recording');
+        voiceBtn.textContent = I18N[currentLang].voiceBtn;
+        voiceBtn.disabled = false;
+        setAsrStatus(`${I18N[currentLang].voiceNotAvailable}${escapeHtml(err.message || err)}`);
+      }
+    }
+
+    // ==================== 历史记录功能 ====================
+    async function loadHistoryList() {
+      try {
+        const res = await fetch(API_BASE + '/api/history/list');
+        const data = await res.json();
+        if (data.code !== 200) return;
+        const listDiv = document.getElementById('historyList');
+        if (data.data.length === 0) {
+          listDiv.innerHTML = `<div style="padding:8px; color:var(--text-secondary);">${I18N[currentLang].historyNone}</div>`;
+        } else {
+          let html = '';
+          for (const rec of data.data) {
+            const localizedType = translateValue('task_type_key', rec.task_type);
+            html += `
           <div class="history-item" data-id="${rec.id}" style="padding:6px; border-bottom:1px solid rgba(0, 240, 255, 0.08); cursor:pointer; font-size:0.75rem;">
             <div><strong>${escapeHtml(rec.task_id)}</strong> (${escapeHtml(localizedType)})</div>
             <div style="font-size:0.65rem; color:var(--text-secondary);">${new Date(rec.saved_at).toLocaleString()}</div>
           </div>
         `;
-      }
-      listDiv.innerHTML = html;
-      document.querySelectorAll('.history-item').forEach(el => {
-        el.addEventListener('click', async (e) => {
-          const hid = el.getAttribute('data-id');
-          await restoreHistory(hid);
+          }
+          listDiv.innerHTML = html;
+          document.querySelectorAll('.history-item').forEach(el => {
+            el.addEventListener('click', async (e) => {
+              const hid = el.getAttribute('data-id');
+              await restoreHistory(hid);
+              listDiv.style.display = 'none';
+            });
+          });
+        }
+        if (listDiv.style.display === 'none') {
+          listDiv.style.display = 'block';
+        } else {
           listDiv.style.display = 'none';
-        });
-      });
-    }
-    if (listDiv.style.display === 'none') {
-      listDiv.style.display = 'block';
-    } else {
-      listDiv.style.display = 'none';
-    }
-  } catch (err) {
-    console.error('加载历史列表失败', err);
-  }
-}
-
-async function restoreHistory(historyId) {
-  let effectiveSessionId = sessionId;
-  if (!effectiveSessionId) {
-    effectiveSessionId = 'temp_' + Date.now();
-  }
-
-  try {
-    const res = await fetch(API_BASE + '/api/history/load', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ history_id: historyId, session_id: effectiveSessionId })
-    });
-    const data = await res.json();
-    if (data.code !== 200) {
-      alert(I18N[currentLang].restoreFailed + (data.msg || 'unknown'));
-      return;
-    }
-    if (data.session_id) sessionId = data.session_id;
-    else sessionId = effectiveSessionId;
-
-    messageContainer.innerHTML = '';
-    for (const msg of data.conversation_history) {
-      addMessage(msg.role, msg.content);
-    }
-
-    const isCompleted = (data.phase === 'done');
-    updateSidebar({
-      task_type: data.task_type,
-      emergency: data.mode === 'emergency',
-      collected: data.built_json,
-      missing: data.missing,
-      final_json: isCompleted ? data.built_json : null
-    });
-
-    if (isCompleted) {
-      document.getElementById('resultCard').style.display = 'block';
-      document.getElementById('finalJson').innerText = JSON.stringify(data.built_json, null, 2);
-      messageInput.disabled = true;
-      sendBtn.disabled = true;
-      addMessage('bot', I18N[currentLang].historyLoadedReadOnly);
-    } else {
-      document.getElementById('resultCard').style.display = 'none';
-      messageInput.disabled = false;
-      sendBtn.disabled = false;
-    }
-
-    document.getElementById('historyList').style.display = 'none';
-  } catch (err) {
-    console.error('还原历史失败', err);
-    alert(I18N[currentLang].restoreNetError);
-  }
-}
-
-async function sendMessage(msg, options = {}) {
-  if (!msg.trim() || isDone) return;
-  const source = options.source || 'text';
-  addMessage('user', msg);
-  messageInput.value = '';
-  sendBtn.disabled = true;
-  voiceBtn.disabled = true;
-
-  try {
-    const res = await fetch(API_BASE + '/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, message: msg, source })
-    });
-    const data = await res.json();
-    if (!sessionId && data.session_id) sessionId = data.session_id;
-
-    if (data.reply) {
-      addMessage('bot', data.reply);
-    }
-    if (data.done) {
-      isDone = true;
-      if (data.rejected) {
-        addMessage('bot', I18N[currentLang].taskRejectedMsg);
-      } else if (data.final_json) {
-        addMessage('bot', I18N[currentLang].taskSuccessMsg);
-        addMessage('bot', '```json\n' + JSON.stringify(data.final_json, null, 2) + '\n```');
+        }
+      } catch (err) {
+        console.error('加载历史列表失败', err);
       }
     }
-    updateSidebar(data);
-  } catch (err) {
-    addMessage('bot', I18N[currentLang].networkError);
-  } finally {
-    sendBtn.disabled = isDone;
-    voiceBtn.disabled = isDone;
-    messageInput.focus();
-  }
-}
 
-async function reset() {
-  sendBtn.disabled = true;
-  messageInput.disabled = true;
+    async function restoreHistory(historyId) {
+      let effectiveSessionId = sessionId;
+      if (!effectiveSessionId) {
+        effectiveSessionId = 'temp_' + Date.now();
+      }
 
-  if (sessionId) {
-    try {
-      await fetch(API_BASE + '/api/reset', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId })
-      });
-    } catch (err) {
-      console.error('Reset failed', err);
+      try {
+        const res = await fetch(API_BASE + '/api/history/load', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ history_id: historyId, session_id: effectiveSessionId })
+        });
+        const data = await res.json();
+        if (data.code !== 200) {
+          alert(I18N[currentLang].restoreFailed + (data.msg || 'unknown'));
+          return;
+        }
+        if (data.session_id) sessionId = data.session_id;
+        else sessionId = effectiveSessionId;
+
+        messageContainer.innerHTML = '';
+        for (const msg of data.conversation_history) {
+          addMessage(msg.role, msg.content);
+        }
+
+        const isCompleted = (data.phase === 'done');
+        updateSidebar({
+          task_type: data.task_type,
+          emergency: data.mode === 'emergency',
+          collected: data.built_json,
+          missing: data.missing,
+          final_json: isCompleted ? data.built_json : null
+        });
+
+        if (isCompleted) {
+          document.getElementById('resultCard').style.display = 'block';
+          document.getElementById('finalJson').innerText = JSON.stringify(data.built_json, null, 2);
+          messageInput.disabled = true;
+          sendBtn.disabled = true;
+          addMessage('bot', I18N[currentLang].historyLoadedReadOnly);
+        } else {
+          document.getElementById('resultCard').style.display = 'none';
+          messageInput.disabled = false;
+          sendBtn.disabled = false;
+        }
+
+        document.getElementById('historyList').style.display = 'none';
+      } catch (err) {
+        console.error('还原历史失败', err);
+        alert(I18N[currentLang].restoreNetError);
+      }
     }
-  }
-  isDone = false;
-  messageContainer.innerHTML = '';
-  addMessage('bot', I18N[currentLang].welcomeMsg);
-  document.getElementById('taskInfo').innerHTML = '-';
-  document.getElementById('collectedFields').innerHTML = I18N[currentLang].none;
-  document.getElementById('missingFields').innerHTML = '-';
-  document.getElementById('resultCard').style.display = 'none';
-  document.getElementById('historyList').style.display = 'none';
-  messageInput.value = '';
 
-  sendBtn.disabled = false;
-  messageInput.disabled = false;
-  voiceBtn.disabled = false;
-  voiceBtn.classList.remove('recording');
-  voiceBtn.textContent = I18N[currentLang].voiceBtn;
-  setAsrStatus('', false);
-  messageInput.focus();
+    async function sendMessage(msg, options = {}) {
+      if (!msg.trim() || isDone) return;
+      const source = options.source || 'text';
+      addMessage('user', msg);
+      messageInput.value = '';
+      sendBtn.disabled = true;
+      voiceBtn.disabled = true;
 
-}
+      try {
+        const res = await fetch(API_BASE + '/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId, message: msg, source })
+        });
+        const data = await res.json();
+        if (!sessionId && data.session_id) sessionId = data.session_id;
 
-sendBtn.addEventListener('click', () => sendMessage(messageInput.value));
-messageInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(messageInput.value); });
-voiceBtn.addEventListener('click', toggleVoiceRecording);
-resetBtn.addEventListener('click', reset);
-document.getElementById('setTimeBtn').addEventListener('click', setSimulatedTime);
-document.getElementById('historyBtn').addEventListener('click', loadHistoryList);
+        if (data.reply) {
+          addMessage('bot', data.reply);
+        }
+        if (data.done) {
+          isDone = true;
+          if (data.rejected) {
+            addMessage('bot', I18N[currentLang].taskRejectedMsg);
+          } else if (data.final_json) {
+            addMessage('bot', I18N[currentLang].taskSuccessMsg);
+            addMessage('bot', '```json\n' + JSON.stringify(data.final_json, null, 2) + '\n```');
+          }
+        }
+        updateSidebar(data);
+      } catch (err) {
+        addMessage('bot', I18N[currentLang].networkError);
+      } finally {
+        sendBtn.disabled = isDone;
+        voiceBtn.disabled = isDone;
+        messageInput.focus();
+      }
+    }
+
+    async function reset() {
+      sendBtn.disabled = true;
+      messageInput.disabled = true;
+
+      if (sessionId) {
+        try {
+          await fetch(API_BASE + '/api/reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId })
+          });
+        } catch (err) {
+          console.error('Reset failed', err);
+        }
+      }
+      isDone = false;
+      messageContainer.innerHTML = '';
+      addMessage('bot', I18N[currentLang].welcomeMsg);
+      document.getElementById('taskInfo').innerHTML = '-';
+      document.getElementById('collectedFields').innerHTML = I18N[currentLang].none;
+      document.getElementById('missingFields').innerHTML = '-';
+      document.getElementById('resultCard').style.display = 'none';
+      document.getElementById('historyList').style.display = 'none';
+      messageInput.value = '';
+
+      sendBtn.disabled = false;
+      messageInput.disabled = false;
+      voiceBtn.disabled = false;
+      voiceBtn.classList.remove('recording');
+      voiceBtn.textContent = I18N[currentLang].voiceBtn;
+      setAsrStatus('', false);
+      messageInput.focus();
+
+    }
+
+    sendBtn.addEventListener('click', () => sendMessage(messageInput.value));
+    messageInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(messageInput.value); });
+    voiceBtn.addEventListener('click', toggleVoiceRecording);
+    resetBtn.addEventListener('click', reset);
+    document.getElementById('setTimeBtn').addEventListener('click', setSimulatedTime);
+    document.getElementById('historyBtn').addEventListener('click', loadHistoryList);
 
 
 
-reset();
+    reset();
 
-updateSimulatedTime(true);
-if (timeUpdateInterval) clearInterval(timeUpdateInterval);
-timeUpdateInterval = setInterval(() => updateSimulatedTime(false), 1000);
-</script>
+    updateSimulatedTime(true);
+    if (timeUpdateInterval) clearInterval(timeUpdateInterval);
+    timeUpdateInterval = setInterval(() => updateSimulatedTime(false), 1000);
+  </script>
 </body>
+
 </html>

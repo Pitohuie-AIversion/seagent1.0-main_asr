@@ -26,7 +26,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         updates = {"equipment_name": "观察级"}
         dm._apply_updates(updates)
 
-        self.assertEqual(dm.task_state.get("equipment_name"), "sealien_inspection")
+        self.assertEqual(dm.task_state.get("equipment_name"), "观察级深海机器人 HP")
         self.assertEqual(dm.task_state.get("equipment_type"), "观察级ROV")
 
     def test_apply_updates_with_rov_alias_work(self):
@@ -37,7 +37,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         updates = {"equipment_name": "工作级"}
         dm._apply_updates(updates)
 
-        self.assertEqual(dm.task_state.get("equipment_name"), "sealien_work_class")
+        self.assertEqual(dm.task_state.get("equipment_name"), "通用工作级深海机器人 250HP")
         self.assertEqual(dm.task_state.get("equipment_type"), "工作级ROV")
 
     def test_apply_updates_with_rov_alias_tractor(self):
@@ -48,8 +48,8 @@ class DialogueManagerROVTest(unittest.TestCase):
         updates = {"equipment_name": "金牛座"}
         dm._apply_updates(updates)
 
-        self.assertEqual(dm.task_state.get("equipment_name"), "taurus_tractor")
-        self.assertEqual(dm.task_state.get("equipment_type"), "海底拖拉机")
+        self.assertEqual(dm.task_state.get("equipment_name"), "履带式海底重载作业机器人 1600HP")
+        self.assertEqual(dm.task_state.get("equipment_type"), "管缆埋设机器人")
 
 
 if __name__ == "__main__":

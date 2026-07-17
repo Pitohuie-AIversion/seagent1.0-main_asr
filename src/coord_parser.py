@@ -15,14 +15,12 @@ from typing import Any
 
 
 COORD_FIELDS = {
-    "cable_position",
     "start_point",
     "end_point",
     "oilfield_coordinates",
 }
 
 FIELD_ALIASES: dict[str, tuple[str, ...]] = {
-    "cable_position": ("管缆位置", "管线位置", "管道位置", "电缆位置", "光缆位置"),
     "start_point": ("起始点", "开始点", "起点", "起始坐标", "开始坐标", "起始位置", "起始端"),
     "end_point": ("结束点", "终止点", "终点", "结束坐标", "终止坐标", "结束位置", "终止端"),
     "oilfield_coordinates": ("油田经纬度坐标", "油田经纬度", "油田坐标", "油田位置"),

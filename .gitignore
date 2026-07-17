@@ -21,3 +21,6 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+# 外部或本地临时目录
+outside/

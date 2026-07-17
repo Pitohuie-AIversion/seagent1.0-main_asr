@@ -29,30 +29,32 @@ class Violation:
 
 
 # check_type → 该约束关注的字段集合
+_EQUIPMENT_FIELDS = ["equipment_unit_id", "equipment_type", "equipment_name"]
+
 _CHECK_FIELDS: dict[str, list[str]] = {
-    "robot_category":                ["equipment_name", "equipment_type"],
-    "depth_vs_rov_limit":          ["equipment_name", "water_depth"],
+    "robot_category":              _EQUIPMENT_FIELDS,
+    "depth_vs_rov_limit":          [*_EQUIPMENT_FIELDS, "water_depth"],
     # "sea_state":                   ["start_point", "oilfield_coordinates"],
     "vessel_availability":         ["support_vessel"],
-    # "tree_type_compatibility":     ["tree_type", "equipment_name"],
+    # "tree_type_compatibility":     ["tree_type", *_EQUIPMENT_FIELDS],
     # 环境约束关联字段
     "forbidden_area":              ["start_point", "end_point", "oilfield_coordinates", "cable_position"],
     "dvl_high_risk":               ["start_point", "oilfield_coordinates", "cable_position"],
-    "seabed_compatibility":        ["equipment_name", "start_point", "oilfield_coordinates"],
-    "obstacle_dense":              ["equipment_name"],
-    "mothership_support":          ["equipment_name"],
-    "turbidity":                   ["equipment_name"],
-    "current_velocity":            ["equipment_name"],
-    "state_confidence":            ["equipment_name"],
-    "state_timestamp":             ["equipment_name"],
-    "robot_overall_status":        ["equipment_name"],
-    "robot_survival_status":       ["equipment_name"],
-    "robot_thruster_status":       ["equipment_name"],
-    "robot_depth_keeping_status":  ["equipment_name"],
-    "robot_sonar_status":          ["equipment_name"],
-    "robot_vision_status":         ["equipment_name"],
-    "robot_manipulator_status":    ["equipment_name"],
-    "robot_communication_status":  ["equipment_name"],
+    "seabed_compatibility":        [*_EQUIPMENT_FIELDS, "start_point", "oilfield_coordinates"],
+    "obstacle_dense":              _EQUIPMENT_FIELDS,
+    "mothership_support":          _EQUIPMENT_FIELDS,
+    "turbidity":                   _EQUIPMENT_FIELDS,
+    "current_velocity":            _EQUIPMENT_FIELDS,
+    "state_confidence":            _EQUIPMENT_FIELDS,
+    "state_timestamp":             _EQUIPMENT_FIELDS,
+    "robot_overall_status":        _EQUIPMENT_FIELDS,
+    "robot_survival_status":       _EQUIPMENT_FIELDS,
+    "robot_thruster_status":       _EQUIPMENT_FIELDS,
+    "robot_depth_keeping_status":  _EQUIPMENT_FIELDS,
+    "robot_sonar_status":          _EQUIPMENT_FIELDS,
+    "robot_vision_status":         _EQUIPMENT_FIELDS,
+    "robot_manipulator_status":    _EQUIPMENT_FIELDS,
+    "robot_communication_status":  _EQUIPMENT_FIELDS,
     "start_time_not_in_past":      ["start_time"],
 }
 
@@ -72,7 +74,6 @@ _DYNAMIC_CHECKS = {
     "robot_manipulator_status",
     "robot_communication_status",
 }
-
 
 class TaskValidator:
     def __init__(self, kb: KnowledgeBase):
@@ -104,7 +105,7 @@ class TaskValidator:
         lines = []
         for v in violations:
             tag = "⛔ 硬性违规" if v.severity == "hard" else "⚠️ 软性警告"
-            lines.append(f"{tag} 作业规范：{v.constraint_name}\n  {v.message}")
+            lines.append(f"{tag} [{v.constraint_id}] {v.constraint_name}\n  {v.message}")
         return "\n\n".join(lines)
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -116,7 +117,11 @@ class TaskValidator:
     ) -> list[Violation]:
         violations = []
         task_type    = task_state.get("task_type_key")
-        equipment    = task_state.get("equipment_name")
+        equipment    = (
+            task_state.get("equipment_unit_id")
+            or task_state.get("equipment_name")
+            or task_state.get("equipment_type")
+        )
         water_depth  = task_state.get("water_depth")
         vessel_id    = task_state.get("support_vessel")
         tree_type    = task_state.get("tree_type")
@@ -130,6 +135,8 @@ class TaskValidator:
                 # 硬约束始终检查，不跳过
                 if c.get("severity") != "hard":
                     watched = set(_CHECK_FIELDS.get(check, []))
+                    if check in _DYNAMIC_CHECKS:
+                        watched.add("start_time")
                     if not watched.intersection(trigger_fields):
                         continue
 
@@ -166,7 +173,7 @@ class TaskValidator:
                 start_time = start_time.astimezone(ZoneInfo("Asia/Shanghai"))
 
             delta_seconds = (start_time - now).total_seconds()
-            return 0 <= delta_seconds <= time_window_minutes * 60
+            return delta_seconds <= time_window_minutes * 60
         except Exception:
             return False
 
@@ -181,8 +188,8 @@ class TaskValidator:
         rel_fields = _CHECK_FIELDS.get(check, [])
 
         if check == "robot_category" and rov:
-            required = c.get("required_category")
-            if rov["category"] != required:
+            task_type = task_state.get("task_type_key")
+            if not self.kb.robot_matches_task(rov, task_type):
                 return Violation(c["id"], c["name"],
                                  c["violation_message"].strip(), c["severity"],
                                  rel_fields)
@@ -243,47 +250,44 @@ class TaskValidator:
 
         # 环境约束检查
         elif check == "forbidden_area":
-            coords = (task_state.get("start_point") or task_state.get("end_point") or
-                      task_state.get("oilfield_coordinates") or task_state.get("cable_position"))
-            if coords:
-                env_info = self.kb.get_environment_info_dict(coords)
-                if env_info.get("forbidden") is True:
-                    return Violation(c["id"], c["name"],
-                                     c["violation_message"].strip(), c["severity"],
-                                     rel_fields)
+            for field_name in ["start_point", "end_point", "oilfield_coordinates", "cable_position"]:
+                coords = task_state.get(field_name)
+                if coords:
+                    env_info = self.kb.get_environment_info_dict(coords)
+                    if env_info.get("forbidden") is True:
+                        return Violation(c["id"], c["name"],
+                                         c["violation_message"].strip(), c["severity"],
+                                         rel_fields)
 
         elif check == "dvl_high_risk":
-            coords = (task_state.get("start_point") or task_state.get("oilfield_coordinates") or
-                      task_state.get("cable_position"))
-            if coords:
-                env_info = self.kb.get_environment_info_dict(coords)
-                if env_info.get("dvl_risk") is True:
-                    return Violation(c["id"], c["name"],
-                                     c["violation_message"].strip(), c["severity"],
-                                     rel_fields)
+            for field_name in ["start_point", "oilfield_coordinates", "cable_position"]:
+                coords = task_state.get(field_name)
+                if coords:
+                    env_info = self.kb.get_environment_info_dict(coords)
+                    if env_info.get("dvl_risk") is True:
+                        return Violation(c["id"], c["name"],
+                                         c["violation_message"].strip(), c["severity"],
+                                         rel_fields)
 
         elif check == "seabed_compatibility" and rov:
-            coords = task_state.get("start_point") or task_state.get("oilfield_coordinates")
-            if coords:
-                env_info = self.kb.get_environment_info_dict(coords)
-                seabed = env_info.get("seabed_type")
-                print('【seabed】')
-                print(seabed)
-                if seabed is None:
-                    return None  # 未知时不触发约束
-                forbidden_raw = rov.get("forbidden_seabed")
-                if forbidden_raw is None:
-                    forbidden = []
-                elif isinstance(forbidden_raw, str):
-                    forbidden = [forbidden_raw]  # 单字符串转为列表
-                else:
-                    forbidden = forbidden_raw
-                print('【forbidden】')
-                print(forbidden)
-                if seabed in forbidden:
-                    rov_name = rov.get("full_name", str(rov))
-                    msg = c["violation_message"].replace("{current_rov}", rov_name)
-                    return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+            for field_name in ["start_point", "oilfield_coordinates"]:
+                coords = task_state.get(field_name)
+                if coords:
+                    env_info = self.kb.get_environment_info_dict(coords)
+                    seabed = env_info.get("seabed_type")
+                    if seabed and seabed != "unknown":
+                        supported_raw = rov.get("supported_seabed")
+                        if not supported_raw:
+                            continue
+                        if isinstance(supported_raw, str):
+                            supported = [supported_raw]
+                        else:
+                            supported = supported_raw
+                        if seabed not in supported:
+                            rov_name = rov.get("full_name", str(rov))
+                            msg = c["violation_message"].replace("{current_rov}", rov_name)
+                            msg = msg.replace("{current_seabed}", str(seabed))
+                            return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
 
         # 状态约束检查
         elif check == "mothership_support":
@@ -332,12 +336,12 @@ class TaskValidator:
                 print(vel)
                 # 按规则ID分别判断
                 if c["id"] == "C015":
-                    if vel > 0.5:
+                    if 0.5 < vel <= 0.8:
                         msg = c["violation_message"].replace("{current_velocity}", f"{vel:.2f}")
                         return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
 
                 elif c["id"] == "C016":
-                    if vel > 0.8:
+                    if 0.8 < vel <= 1.2:
                         msg = c["violation_message"].replace("{current_velocity}", f"{vel:.2f}")
                         return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
 
@@ -456,8 +460,7 @@ class TaskValidator:
                 if not isinstance(state_dict, dict):
                     return None
 
-                # 判断是否为 AUV（根据 model 或 category）
-                is_auv = (rov.get("model") == "sealien_survey_auv" )
+                is_auv = rov.get("robot_class") == "auv"
 
                 details = []
 

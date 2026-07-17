@@ -6,22 +6,19 @@
 constraints:
 
   # ── ROV 类型约束 ─────────────────────────────────────────────────────────────
-
   - id: "C001"
-    name: "管缆巡检必须使用观察级ROV"
+    name: "管缆巡检必须使用观察级ROV或AUV"
     applies_to: ["pipeline_inspection"]
     check_type: "robot_category"
-    required_category: "observation"
     violation_message: >
-      管缆巡检任务要求使用观察级ROV（Observation-class ROV），
-      当前选择的设备类型不符合要求。请更换为观察级ROV。
+      管缆巡检任务要求使用观察级ROV或AUV，
+      当前选择的设备类型或任务能力不符合要求。请更换为具备巡检能力的观察级ROV或AUV。
     severity: "hard"   # hard=无法发布; soft=警告但可继续
 
   - id: "C002"
     name: "采油树阀门插拔必须使用工作级ROV"
     applies_to: ["tree_valve_operation"]
     check_type: "robot_category"
-    required_category: "work"
     violation_message: >
       采油树控制面板阀门插拔任务要求使用工作级ROV（Work-class ROV），
       该任务需要机械臂和液压工具支持，观察级ROV无法完成。请更换为工作级ROV。
@@ -137,7 +134,7 @@ constraints:
     applies_to: ["all"]
     check_type: "seabed_compatibility"
     violation_message: >
-      {current_rov} 依托海床支撑工作，仅适用于硬底海床,当前作业区域为软底海床，请更换设备或作业位置。
+      {current_rov} 不支持当前作业区域的海床底质（{current_seabed}），请更换设备或作业位置。
     severity: "hard"
 
   - id: "C010"

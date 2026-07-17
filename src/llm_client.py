@@ -147,8 +147,28 @@ class LLMClient:
             elif "现在" in user_msg or "立即" in user_msg:
                 from .simulated_time import get_current_datetime
                 res["start_time"] = get_current_datetime().replace(microsecond=0).isoformat()
-                
-            return res
+
+            # Format into canonical structured JSON candidates
+            candidates = []
+            for k, v in res.items():
+                candidates.append({
+                    "raw_key": k,
+                    "canonical_key": k,
+                    "raw_value": str(v),
+                    "normalized_value": v,
+                    "confidence": 1.0
+                })
+            
+            # Extract unresolved info if any
+            unresolved = []
+            if "无法识别" in user_msg or "不相干" in user_msg or "测试未识别" in user_msg:
+                unresolved.append(user_msg)
+
+            return {
+                "intent": "task_update",
+                "slot_candidates": candidates,
+                "unresolved": unresolved
+            }
 
         raw = self.generate(messages, temperature=0.1, max_tokens=max_tokens)
         print('raw in extract_json | '* 10)

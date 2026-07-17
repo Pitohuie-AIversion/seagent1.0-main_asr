@@ -15,7 +15,7 @@ robots:
     arm_status: normal
     end_effector_status: normal
     acoustic_comms_status: normal
-    tether_connection_status: normal
+    tether_connection_status: abnormal
   sealien_cable_pipeline:
     current_velocity: 0.5
     turbidity: 10
@@ -34,11 +34,11 @@ robots:
     acoustic_comms_status: normal
     tether_connection_status: normal
   sealien_inspection:
-    current_velocity: 100
-    turbidity: 3
+    current_velocity: 0.3
+    turbidity: 15
     obstacle_density: low
     mothership_support: strong
-    update_timestamp: '2026-07-13T13:30:00+08:00'
+    update_timestamp: '2026-06-04T10:00:00+08:00'
     confidence: 0.95
     overall_status: available
     survival_status: normal
@@ -67,3 +67,20 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: abnormal
     tether_connection_status: abnormal
+  crawler_heavy_seabed_robot_1600hp:
+    current_velocity: 0.3
+    turbidity: 3
+    obstacle_density: low
+    mothership_support: strong
+    update_timestamp: '2026-06-04T10:00:00+08:00'
+    confidence: 0.95
+    overall_status: available
+    survival_status: normal
+    thruster_status: normal
+    depth_keeping_status: normal
+    sonar_status: normal
+    vision_status: normal
+    arm_status: normal
+    end_effector_status: normal
+    acoustic_comms_status: normal
+    tether_connection_status: normal

@@ -6,6 +6,7 @@ normalizer.py — 字段值规范化器
 
 import json
 import re
+import unicodedata
 from .llm_client import LLMClient
 
 
@@ -36,13 +37,19 @@ class FieldNormalizer:
 
     # ──────────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _match_key(value: str) -> str:
+        text = unicodedata.normalize("NFKC", str(value or ""))
+        text = re.sub(r"[\s\u3000]+", "", text)
+        return text.casefold()
+
     def _normalize_string(
         self, field_key: str, field_label: str, raw: str, allowed: list[str]
     ) -> str | None:
-        # 1. 精确匹配（大小写不敏感）
-        raw_lower = raw.strip().lower()
+        # 1. 确定性格式归一匹配：忽略空白与英文大小写，返回 allowed 中的标准值。
+        raw_key = self._match_key(raw)
         for v in allowed:
-            if v.lower() == raw_lower:
+            if self._match_key(v) == raw_key:
                 return v
 
         # # 2. 子串包含匹配

@@ -1,129 +1,458 @@
 # ==============================================================================
-# ROV 设备知识库 — 可通过新增条目扩展
-# 数据来源: https://sealien.net/products.html
+# 机器人设备知识库草稿
+#
+# 检索分层：
+# 1. robot_classes：机器人大类，作为 task_schemas.allowed_robot_classes 的合法取值。
+# 2. robot_families：机器人族，表示某类机器人是什么、具备什么能力。
+# 3. model_variants：型号规格层，存放不同马力规格下会变化的硬件参数。
+# 4. fleet_units：实体设备层，表示仓库或现场实际存在的某一台设备。
+#
+# 字段说明：
+# - full_name：标准中文名称；robot_families 中是 aliases 映射后的规范名称，model_variants 中是规格标准名称。
+# - robot_class：指向 robot_classes 的 key，用于限定机器人所属大类。
+# - capabilities：机器人族支持的工作类型能力，用于匹配 task_schemas.required_capabilities，例如 inspection / cable_burial / tree_operation。
+# - aliases：用户输入别名映射，用于把口语名称映射到正确的 robot_families key。
+# - family_id：model_variants 反向指向 robot_families 的 key。
+# - hard_params：该规格下的统一硬参数接口；所有机器人保持同一套 key；未知时置为 null，明确不适用时置为 "不适用"，列表型字段未知或不限制时置为 []。
+#   基础边界：
+#   - max_depth_m：最大作业水深，单位 m。
+#   - max_burial_depth_m：最大埋设深度，单位 m；不具备埋设能力时置为 "不适用"；适用但未知时置为 null。
+#   - max_operating_sea_state_level：最大可工作海况等级；适用但未知时置为 null。
+#   - dimensions：设备尺寸，暂时保留字符串。
+#   - diameter_mm：AUV艇体口径/直径，单位 mm；仅AUV适用，其他机器人置为 "不适用"。
+#   - weight_in_air_kg：空气中重量，单位 kg；未知时置为 null。
+#   - power_hp：最大/标称功率；未知时置为 null。AUV 的“节”是速度单位，不写入 power_hp。
+#   环境/载荷边界：
+#   - supported_seabed：可支持作业的海床底质类型，例如 hard / soft；未知时置为空列表。
+#   - supported_payloads：可支持/可搭载的设备或工具；未知或待补充时置为空列表。
+#   - max_payload_weight_kg：最大载荷重量，单位 kg；未知时置为 null。
+#   - structural_lifting_capacity_kg：结构/底盘/框架提升能力，单位 kg；适用但未知时置为 null；不适用时置为 "不适用"。
+#   运动边界：
+#   - min_turning_radius_m：最小转弯半径，单位 m；未知时置为 null。
+#   - max_travel_speed_kn：最大航行/行走速度，单位节；未知时置为 null。
+#   - max_operating_speed_kn：最大作业速度，单位节；未知时置为 null。
+#   续航边界：
+#   - max_range_km：最大航程，单位 km；未知时置为 null；不适用时置为 "不适用"。
+#   - max_endurance_h：最大续航时间，单位 h；未知时置为 null；不适用时置为 "不适用"。
+# - unit_id：实体设备唯一编号，用于调度、状态查询和资源占用。
+# - variant_id：实体设备所属规格，必须指向 model_variants 的 key。
+# - serial_no：同规格下的实体序号，例如 001 / 002 / 003。
+# - display_name：实体设备展示名。
+# - status_ref：外部状态系统的查询 key；没有接入状态系统时可先与 unit_id 相同。
+#
+# 结构原则：
+# 1. robot_families 只放分类、能力、别名等检索语义。
+# 2. model_variants 使用独立规格条目，格式参考 7.md。
+# 3. 每个机器人族先只保留一个马力规格，后续新增马力时复制同结构即可。
+# 4. fleet_units 是可选调度层；如果只推荐机器人类型或规格，可以先不读取它。
+#
+# 检索链路：
+# 1. task_schemas 给出 allowed_robot_classes 和 required_capabilities。
+# 2. 在 robot_families 中筛选：
+#    - robot_class 必须属于 allowed_robot_classes
+#    - capabilities 必须覆盖 required_capabilities
+# 3. 得到 robot_families 的 key 后，用 model_variants[*].family_id 找规格。
+# 4. 使用 hard_params 进行水深、尺寸等硬件约束判断，使用 supported_payloads 判断可搭载设备。
+# 5. 如果需要派发具体设备，再用 model_variants 的 key 匹配 fleet_units[*].variant_id。
 # ==============================================================================
 
-robot_categories:
-  observation:
-    label: "观察级ROV"
-    description: "轻型，主要搭载摄像和传感器，适用于管缆巡检、环境调查等非接触作业"
-  work:
-    label: "工作级ROV"
-    description: "重型，配备机械臂和液压工具，适用于水下干预、阀门操作、安装维修等"
-  seabed_tractor:
-    label: "海底拖拉机"
-    description: "履带式海底行走设备，用于软至中等土壤中的长距离管缆铺设与埋设作业，不依赖脐带缆悬停"
-  survey:
-    label: "调查型AUV"
-    description: "无缆自主水下航行器，搭载导航、探测与环境传感器，适用于大范围海洋调查、测绘与监测作业"
+robot_classes:
+  cable_burial_robot:
+    full_name: "管缆埋设机器人"
 
-robot_fleet:
+  work_class_rov:
+    full_name: "工作级ROV"
 
-  - model: "sealien_work_class"
-    aliases: ["工作级", "作业级", "sealien work", "Sealien工作级", "新一代工作级"]
-    category: "work"
-    category_name: "工作级ROV"
-    full_name: "sealien_work_class"
-    max_depth_m: 4000
-    dimensions: "3.6m×2m×2m"
-    weight_in_air_kg: 4750
-    power_hp: 250
-    lift_capacity_kg: 4000
-    Payload_kg: 350
-    forbidden_seabed: "soft"
-    typical_payload:
-      - "液压扭矩工具"
-      - "阀门操作接口工具"
-      - "机械臂"
-      - "清洁刷"
-      - "防喷工具包"
-    brief: "Sealien新一代工作级ROV，采用全新控制架构和升级硬件，兼容性优异。适用于深水采油树阀门插拔、管线干预等工作级作业，最大工作水深4000m。"
+  observation_rov:
+    full_name: "观察级ROV"
 
-  - model: "sealien_cable_pipeline"
-    aliases: ["管缆ROV", "管道ROV", "电缆ROV", "管缆作业ROV", "Sealien管缆"]
-    category: "work"
-    category_name: "工作级ROV"
-    full_name: "sealien_cable_pipeline"
-    max_depth_m: 2500
-    seabed_requirement: "hard"   # 适用复杂路线和硬海床
-    dimensions: "customizable"
-    weight_in_air_ton: "ROV+Skid Mode≈12.5t ROV+Track Mode≈13.5t"
-    weight_in_seawater_ton: "ROV+Skid Mode≈0.5t ROV+Track Mode≈2t"
-    typical_payload:
-      - "管缆铺设系统"
-      - "管道追踪器"
-      - "埋设犁"
-      - "张力监测系统"
-      - "高清摄像系统"
-    brief: "Sealien管缆作业ROV，专为管缆同步铺设埋设或后埋设设计，支持复杂路线规划，适用于硬海床环境，最大工作水深2500m。"
+  auv:
+    full_name: "AUV"
 
-  - model: "sealien_inspection"
-    aliases: ["观察级", "巡检ROV", "检查ROV", "inspection", "Sealien观察级", "Sealien巡检"]
-    category: "observation"
-    category_name: "观察级ROV"
-    full_name: "sealien_inspection"
-    max_depth_m: 600
-    dimensions: "12m×8.5m×6m"
-    payload_capacity_kg: 16
-    frame_lifting_capacity_kg: 100
-    weight_in_air_kg: 160
-    forbidden_seabed: "soft"
-    typical_payload:
-      - "高清/4K摄像系统"
-      - "CP（阴极保护）探测仪"
-      - "管道追踪器"
-      - "多波束声呐"
-      - "侧扫声呐"
-      - "激光测量尺"
-    brief: "Sealien观察级ROV，用于水下视觉检查、日常监测、损伤评估和海洋科研，搭载多种探测传感器，是管缆巡检任务的标准机型，最大工作水深600m。"
+robot_families:
+  crawler_heavy_seabed_robot:
+    full_name: "履带式海底重载作业机器人"
+    robot_class: "cable_burial_robot"
+    capabilities: ["cable_burial"]
+    aliases: ["履带式", "履带式机器人", "履带式重载机器人", "履带式海底机器人", "履带拖拉机", "海底履带拖拉机", "金牛座", "履带埋缆机器人", "履带式管缆埋设机器人"]
+    brief: |
+      履带式海底重载作业机器人为智能型海底管缆埋设装备，主要适用于大埋深工况及恶劣海况，完成海底管线开沟、掩埋施工。设备配备两条大接地面积履带，依托履带机构在海床行进;主机搭载大功率喷射系统，可切换链锯作业模块，最大开沟深度可达5米，确保光电缆、复合缆按设计深度埋设，为海洋能源管线提供可靠的物理防护。
+      该机器人(简称“金牛座”)额定功率1200kW，是亚洲现阶段功率最大、完全国产自主可控的深海重载作业装备。行走机构采用宽履带低接地比压结构，在深海松软沉积物地层中仍可维持充足牵引力，规避沉陷、打滑问题，满足5级海况下的常态化稳定作业。开沟系统支持高压射流和链锯模块装配，可结合前期地层评估结果匹配破土工艺，适配砂土、黏土、软岩等复杂地层，成型沟槽连续、尺寸均匀。整机动力与信号传输采用全双工光纤方案，将大功率输电与低延迟高清影像回传整合至单根脐带缆，保障长距离大功率作业的供电与通信可靠性。
+      该设备已投入国内近海大容量海上风电送出等标杆工程，胜任复杂海床条件下大埋深、长距离连续埋设作业。后续将深耕深远海应用场景，集成海底原位地质建模与智能决策引擎，实现海底异常体自主避让、开沟速度及能耗动态调控，并持续迭代为无支持母船远程智控装备，成为深远海能源输送基础设施建设的核心自主式海底作业机器人。
 
-  - model: "taurus_tractor"
-    aliases: ["金牛座", "拖拉机", "埋设机", "Taurus", "海底拖拉机", "taurus"]
-    category: "seabed_tractor"
-    category_name: "海底拖拉机"
-    full_name: "taurus_tractor"
-    max_depth_m: 500
-    seabed_requirement: "soft_to_medium"   # 软至中等土壤
-    #working_depth_m: 500
-    dimensions: "18m×6.9m×4.8m"
-    weight_in_air_t: 35
-    wet_weight_t: 28
-    max_cable_diameter_mm: 450
-    max_burial_depth_m: 5
-    max_driving_speed_m_per_hr: 1500
-    operating_speed_m_per_hr: "50-750"
-    adapted_soil_type: ["砂", "粉砂", "硬黏土", "砂砾土"]
-    ground_pressure_kPa: "6-14"
-    whole_system_power_hp: 1600
-    min_turning_radius_m: 25
-    main_lift_point_t: 60
-    bellmouth_desc: "安装于拖拉机前部，用于引导管缆并监测其曲率"
-    min_lifting_height_m: 1
-    main_jetting_configuration: "双射水刀，具备独立升降能力，配备下向、内向及后向喷嘴，搭载独立抑沉装置"
-    trenching_depth_m: 5
-    adaptable_cable_diameter_mm: "140-450"
-    forbidden_seabed: "soft"
-    typical_payload:
-      - "埋设犁"
-      - "射水系统"
-      - "管缆张力监测系统"
-      - "高清摄像系统"
-    brief: "Taurus海底拖拉机，履带式海底拖拉机，用于软至中等土壤中的长距离管缆后埋设或同步铺设埋设，与管缆作业ROV形成互补（硬海床用ROV，软土用拖拉机），最大工作水深500m。"
+  towed_heavy_seabed_robot:
+    full_name: "拖曳式海底重载作业机器人"
+    robot_class: "cable_burial_robot"
+    capabilities: ["cable_burial"]
+    aliases: ["拖曳式", "拖曳式机器人", "拖曳式重载机器人", "拖曳式海底机器人", "拖曳拖拉机", "海底拖曳拖拉机", "御夫座", "拖曳埋缆机器人", "拖曳式管缆埋设机器人"]
+    brief: |
+      拖曳式海底重载作业机器人，是适配海底管缆工程的专用深海装备，主打开沟、埋设、防护一体化施工。设备由作业母船拖曳航行，可完成海底电缆、光缆、脐带缆一站式敷设掩埋作业。依托射流系统在海床精准开槽，并同步沉缆回填，一体化连续作业模式，规避二次施工扰动造成的管缆破损，是海上风电、跨海通信海底管线建设的核心施工装备。
+      该机器人长13米、宽5.4米、高3.2米，整机自重25吨，依托重力压载稳坐海床，适配3-650米深浅全水域作业。设备搭载可变构型高压射流开沟矩阵，可根据海床地质动态调节喷射动能，最大埋设深度可达6米，低扰动开槽有效减少泥沙回淤;搭配多维抗扭框架与双重防腐防护结构，适配泥质、沙质等复杂海床。配套脐带缆智能管控系统，自适应调节张力，削弱海浪颠簸带来的作业影响。
+      目前设备已投入国内风电场工程，作业性能稳定可靠。后续我们将赋能设备海底智能感知、自主纠偏功能，依托地声识别、多波束实时成像技术，打造数字化施工体系，搭建全流程数字孪生系统，逐步迭代升级，最终实现无人值守式自主埋设作业。
 
-  - model: "sealien_survey_auv"
-    aliases: ["调查型AUV", "AUV", "自主水下航行器", "Sealien AUV"]
-    category: "observation"
-    category_name: "观察级ROV"
-    full_name: "sealien_survey_auv"
-    max_depth_m: 1000
-    dimensions: "3.24×3.6m"
-    max_range_km: 500
-    max_speed_knots: 6
-    payload_capacity_kg: 30
-    forbidden_seabed: "soft"
-    typical_payload:
-      - "导航类（光纤INS、DVL、磁力仪、深度计）"
-      - "探测类（前视声呐、侧扫声呐、水听器、合成孔径声呐）"
-      - "环境类（CTD温盐深传感器、溶解氧传感器、浊度传感器）"
-      - "成像类（4K/1080P水下相机）"
-    brief: "Sealien调查型AUV，无缆自主水下航行器，可搭载导航、探测、环境及成像类传感器，适用于大范围海洋调查、测绘与监测作业，最大工作水深1000m，最大续航里程500km。"
+  special_work_class_robot:
+    full_name: "特种工作级深海机器人"
+    robot_class: "cable_burial_robot"
+    capabilities: ["cable_burial"]
+    aliases: ["特种型", "特种工作级机器人", "特种工作级ROV", "特种悬浮式机器人", "特种履带式机器人", "凤凰座", "悬浮履带双模块ROV", "悬浮式管缆埋设机器人", "管缆埋设ROV"]
+    brief: |
+      悬浮式深海作业机器人是面向3000米水深打造的特种悬浮式ROV，集悬浮行进、坐底爬行双重作业模式于一体。开展喷冲埋设作业时，设备可保持悬浮状态沿管缆路径精准跟进，完成管缆后埋设施工;面对复杂地形或精确定位需求时，可坐底切换履带行走模式。该装备摆脱了水面船舶航迹约束，可独立完成路径跟踪与局部修复，是深海光缆、深水脐带缆运维作业的专用设备。
+      该机器人底部行走系统采用模块化设计，可在甲板端提前换装滑橇或履带组件，适配不同施工工况。ROV搭配滑橇时，水中重量仅0.5吨，惯性小、机动性能优异;换装履带模组后，水中重量增至2吨，接地附着能力大幅提升，可在坚硬、凹凸不平的海床稳定开沟。其喷射刀支持倾角调节，最大下探深度3米，系统依托埋深数据形成闭环控制，保障沟槽平整均匀。
+      目前该装备已应用于深水油气管道后埋设、国际海缆抢修等高端工程，可在不损伤在管缆的前提下完成精细化施工。未来设备将升级带电管缆非接触电磁探测导航功能，并联动自动接头盒等工具，打造集搜缆、定深、埋设、检测于一体的全流程自主作业平台，全面升级深海管缆全生命周期运维保障体系。
+
+  general_work_class_rov:
+    full_name: "通用工作级深海机器人"
+    robot_class: "work_class_rov"
+    capabilities: ["tree_operation"]
+    aliases: ["通用型", "通用工作级机器人", "通用工作级ROV", "通用悬浮式ROV", "通用深海机器人", "通用型ROV", "通用悬浮式机器人", "通用水下作业机器人", "sealien_work_class"]
+    brief: |
+      通用工作级深海机器人，属于可覆盖3000米全海深作业的工作级ROV，性能可拓展至6000米水深。设备采用中性浮力设计，能够全域悬浮、六向自由机动，相比坐底式设备作业范围更广、灵活性更强。通过换装多功能作业工具模块，可开展构件安装、阀门操控、样品采集、管线检修等重载精密作业，是深海资源勘探、水下设施运维的移动式核心工作站。
+      机器人搭载全新一代智能控制系统，结合神经网络大模型与多维感知阵列，融合声呐、激光雷达、光学成像及导航数据，实现水下目标半自主识别与路径规划。整机拥有250kg额定载荷与4000kg底盘提升力，搭配大功率电液驱动及环形推进结构，抗扰能力强，可在复杂水流下稳定悬停定位。模块化舱体支持工具快速换装，单次下潜可完成多项作业任务，有效降低作业成本、提升作业效率。
+      目前该机型已广泛应用于深海油气运维、水下生产调试、海洋矿产勘查等领域，熟练完成水下构件对接插拔等高难度作业。未来将迭代升级为常驻式水下智能系统，依托海底充电基站实现长周期无人巡检;依托自主学习认知模型自主研判设施状态并开展运维作业，减少高危人工潜水作业，助推深海工程向无人化、智能化运维方向升级。
+
+  light_work_class_rov:
+    full_name: "轻型工作级深海机器人"
+    robot_class: "observation_rov"
+    capabilities: ["inspection"]
+    aliases: ["轻型", "轻型工作级机器人", "轻型工作级ROV", "轻型悬浮式ROV", "轻型深海机器人", "轻型ROV", "轻型悬浮式机器人", "天鹰座", "轻型巡检ROV", "轻型巡检机器人"]
+    brief: |
+      轻型工作级深海机器人是深海智人专为600米水深场景研发的紧凑型作业级ROV。设备聚焦高频次、快响应的水下勘察与轻量化干预任务，主打高机动、轻量化作业优势，适用于坝体闸门检测、船体专项探伤、海洋牧场巡检及浅水科考采样等精细化场景，充当水下工程的“侦察兵”与“体检师”。
+      该机器人(简称“天鹰座”)自重仅200千克，设计载荷≥16千克，底盘承载提升力可达100千克。依托高度集成的电驱推进模组与轻量化传动结构，设备在小巧体型下，实现超自重半数的提拉力，同级别产品作业性能优势突出。整机高集成化设计，收纳于长1.2米，宽0.85米，高0.6米的流线型机身之中。推进系统融合仿生鳍翼与矢量推力技术，可在狭小复杂的水下结构内完成全姿态悬停与平移作业，有效降低水流扰动。设备标配集成光电舱，融合低照度彩色摄像、激光测距及多波束成像声呐功能，即便在浑浊低能见度水域，也能精准重构水下目标三维点云模型。
+      目前，该机器人已批量投用于海上风电设施检测、水下环境勘测等民用高端场景，支持即投即用，大幅提升浅水作业效率。未来产品将深耕智能化升级，依托水声通信搭建多机编队组网体系，完成大型水下结构立体化同步巡检;同时搭载边缘侧智能诊断模型，自动生成缺陷热力图。以分布式智能感知节点的定位，推动水下作业从人工远程操控，进阶为无人自主值守模式。
+
+  observation_rov:
+    full_name: "观察级深海机器人"
+    robot_class: "observation_rov"
+    capabilities: ["inspection"]
+    aliases: ["观察级", "观察级机器人", "观察级ROV", "观察型ROV", "检查ROV", "深海观察机器人", "巡检机器人", "巡检ROV", "深海巡检ROV", "深海巡检机器人", "深海观察型ROV", "深海观察型机器人", "深海观察级ROV", "深海观察级机器人", "sealien_inspection"]
+    brief: 观察级深海机器人是一类具备水下观察与监测能力的轻量化巡检型ROV，依托灵活机动能力和高清成像系统，可用于海洋环境观察、水下生态研究、海底设施目视检查、潜水员辅助观察和浅海科学探索等场景。该类设备适用于精细化巡检，也可在大范围水下作业前承担环境提前勘探、路径初步识别、目标区域观察和异常点确认等任务，为后续施工、巡检或干预作业提供影像和环境感知信息。观察级深海机器人额定作业水深为600msw，载荷能力≥16kg，框架提升能力100kg，可搭载5自由度机械臂，并具备高推力推进系统以适应较强水流环境；但其定位仍为观察、监测和轻量辅助作业平台，不应承担大功率开沟、重型搬运、复杂机械干预或采油树面板操作等任务。
+
+  autonomous_underwater_vehicle:
+    full_name: "水下无人自主航行器"
+    robot_class: "auv"
+    capabilities: ["inspection"]
+    aliases: ["AUV", "自主型", "水下无人自主航行器", "水下无人自主机器人", "自主水下航行器", "无人潜航器", "自主潜航器", "调查型AUV", "水下巡检航行器", "sealien_survey_auv"]
+    brief: |
+      AUV是面向海洋调查、水下测绘、目标探测与工程巡检任务的自主水下航行器平台。平台采用国际12.75英寸级中型AUV的总体构型理念，结合模块化耐压舱段、低阻力流线型艇体与任务载荷可重构设计，具备在中深水环境下执行长航程、自主化、低干预作业任务的能力。
+      该平台适用于近海深水区、大陆架海域、港口航道、湖库深水区及复杂海底地形环境。系统可根据不同任务剖面配置导航、通信、测绘、探测与环境感知载荷，实现定深航行、定高测绘、航迹跟踪、区域覆盖搜索、目标识别与水下数据采集等功能。搭载VBS可变浮力系统，可自适应完成潜浮、悬停、低速观测与长距离巡航姿态调节;支持十字舵、水平舵双构型切换，兼顾复杂水域机动性能与高精度测线稳定航行。
+      具备光纤直连遥控模式在常规自主作业基础上实现人在回路实时操控，可回传姿态、能源、声呐、视频及系统状态数据，支持推进、舵面、姿态及任务载荷远程调控与紧急接管。可按需求灵活切换作业形态，完美适配复杂结构高精度巡检，大幅提升平台作业容错性与场景适配能力。
+
+model_variants:
+  crawler_heavy_seabed_robot_1600hp:
+    family_id: "crawler_heavy_seabed_robot"
+    full_name: "履带式海底重载作业机器人 1600HP"
+    hard_params:
+      max_depth_m: 500
+      max_burial_depth_m: 5
+      dimensions: "18m×6.9m×4.8m"
+      diameter_mm: "不适用"
+      weight_in_air_kg: 32000
+      power_hp: 1600
+      supported_seabed: ["hard"]
+      supported_payloads:
+        - "高压水射流喷冲埋设模块"
+        - "机械切割开沟模块（可选）"
+        - "海缆压埋/保持装置"
+        - "埋深控制装置"
+        - "海缆保护施工工具"
+        - "TSS管缆跟踪传感器"
+        - "高清水下摄像机"
+        - "云台摄像机（可选）"
+        - "LED水下照明灯"
+        - "激光标尺（可选）"
+        - "前视声呐"
+        - "成像声呐"
+        - "多波束声呐（可选）"
+        - "USBL定位设备"
+        - "水下定位信标（可选）"
+        - "声学应答器（可选）"
+        - "海床地质探测设备（可选）"
+        - "管缆外观检测设备（可选）"
+        - "腐蚀检测设备（可选）"
+        - "温度/压力传感器模块（可选）"
+      max_payload_weight_kg: null
+      structural_lifting_capacity_kg: "不适用"
+      min_turning_radius_m: "不适用"
+      max_travel_speed_kn: 0.81
+      max_operating_speed_kn: 0.40
+      max_endurance_h: "不适用"
+
+  towed_heavy_seabed_robot_1500hp:
+    family_id: "towed_heavy_seabed_robot"
+    full_name: "拖曳式海底重载作业机器人 1500HP"
+    hard_params:
+      max_depth_m: 650
+      max_burial_depth_m: 6
+      dimensions: "13m×5.4m×3.2m"
+      diameter_mm: "不适用"
+      weight_in_air_kg: 25000
+      power_hp: 1500
+      supported_seabed: ["hard"]
+      supported_payloads:
+        - "高压水射流喷冲埋设模块"
+        - "机械切割开沟模块（可选）"
+        - "海缆压埋/保持装置"
+        - "埋深控制装置"
+        - "TSS管缆跟踪传感器"
+        - "高清水下摄像机"
+        - "云台摄像机（可选）"
+        - "LED水下照明灯"
+        - "激光标尺（可选）"
+        - "前视声呐"
+        - "成像声呐"
+        - "多波束声呐（可选）"
+        - "USBL定位设备"
+        - "水下定位信标（可选）"
+        - "声学应答器（可选）"
+        - "海床地质探测设备（可选）"
+        - "管缆外观检测设备（可选）"
+        - "腐蚀检测设备（可选）"
+        - "温度/压力传感器模块（可选）"
+      max_payload_weight_kg: null
+      structural_lifting_capacity_kg: "不适用"
+      min_turning_radius_m: "不适用"
+      max_travel_speed_kn: null
+      max_operating_speed_kn: null
+      max_endurance_h: "不适用"
+
+  special_work_class_robot_hp:
+    family_id: "special_work_class_robot"
+    full_name: "特种工作级深海机器人 600HP"
+    hard_params:
+      max_depth_m: 3000
+      max_burial_depth_m: null
+      dimensions: "6.8m×3.8m×3m"
+      diameter_mm: "不适用"
+      weight_in_air_kg: 13500
+      power_hp: 600
+      supported_seabed: ["hard"]                      #工作场景限制，座底作业
+      supported_payloads:
+        - "高压水射流喷冲埋设模块"
+        - "机械切割开沟模块（可选）"
+        - "海缆压埋/保持装置"
+        - "埋深控制装置"
+        - "TSS管缆跟踪传感器"
+        - "高清水下摄像机"
+        - "云台摄像机"
+        - "LED水下照明灯"
+        - "激光标尺（可选）"
+        - "前视声呐"
+        - "成像声呐"
+        - "多波束声呐（可选）"
+        - "USBL定位设备"
+        - "水下定位信标（可选）"
+        - "声学应答器（可选）"
+        - "海床地质探测设备（可选）"
+        - "管缆外观检测设备"
+        - "腐蚀检测设备（可选）"
+        - "温度/压力传感器模块（可选）"
+        - "多功能机械臂"
+        - "检测探头（可选）"
+        - "滑橇组件"
+        - "履带组件"
+      max_payload_weight_kg: null
+      structural_lifting_capacity_kg: null
+      min_turning_radius_m: null
+      max_travel_speed_kn: null
+      max_operating_speed_kn: null
+      max_endurance_h: "不适用"
+
+  general_work_class_rov_250hp:
+    family_id: "general_work_class_rov"
+    full_name: "通用工作级深海机器人 250HP"
+    hard_params:
+      max_depth_m: 3000
+      max_burial_depth_m: "不适用"
+      dimensions: "3.5m×2m×2m"
+      diameter_mm: "不适用"
+      weight_in_air_kg: 5500
+      power_hp: 250
+      supported_seabed: ["hard", "soft"]
+      supported_payloads:
+        - "多功能液压机械臂"
+        - "电液机械臂"
+        - "高清水下摄像机"
+        - "双目视觉模块（可选）"
+        - "LED照明系统"
+        - "激光标尺"
+        - "三维视觉系统（可选）"
+        - "前视声呐"
+        - "成像声呐（可选）"
+        - "多波束声呐（可选）"
+        - "INS惯性导航系统"
+        - "DVL多普勒测速仪"
+        - "USBL超短基线定位系统"
+        - "深度传感器"
+        - "高度计"
+        - "温度传感器（可选）"
+        - "压力传感器（可选）"
+        - "泄漏检测传感器（可选）"
+        - "水质传感器（可选）"
+      max_payload_weight_kg: 650
+      structural_lifting_capacity_kg: 4000
+      min_turning_radius_m: null
+      max_travel_speed_kn: null
+      max_operating_speed_kn: null
+      max_endurance_h: "不适用"
+
+  light_work_class_rov_hp:
+    family_id: "light_work_class_rov"
+    full_name: "轻型工作级深海机器人 HP"
+    hard_params:
+      max_depth_m: 600
+      max_burial_depth_m: "不适用"
+      dimensions: "1.2m×0.85m×0.6m"
+      diameter_mm: "不适用"
+      weight_in_air_kg: 200
+      power_hp: null
+      supported_seabed: ["hard", "soft"]
+      supported_payloads:
+        - "高清水下摄像机"
+        - "云台摄像机"
+        - "LED水下照明灯"
+        - "激光标尺"
+        - "双目视觉模块（可选）"
+        - "成像声呐"
+        - "前视声呐"
+        - "多波束声呐"
+        - "电磁检测传感器"
+        - "腐蚀检测探头"
+        - "厚度检测传感器"
+        - "INS惯性导航系统"
+        - "DVL多普勒测速仪"
+        - "USBL定位设备"
+        - "深度传感器"
+        - "高度计"
+      max_payload_weight_kg: 16
+      structural_lifting_capacity_kg: 100
+      min_turning_radius_m: null
+      max_travel_speed_kn: null
+      max_operating_speed_kn: null
+      max_endurance_h: "不适用"
+
+  observation_rov_hp:
+    family_id: "observation_rov"
+    full_name: "观察级深海机器人 HP"
+    hard_params:
+      max_depth_m: 600
+      max_burial_depth_m: "不适用"
+      dimensions: "1.2m×0.85m×0.6m"
+      diameter_mm: "不适用"
+      weight_in_air_kg: 160
+      power_hp: null
+      supported_seabed: ["hard", "soft"]
+      supported_payloads:
+        - "高清水下摄像机"
+        - "广角摄像机"
+        - "LED水下照明灯"
+        - "激光标尺"
+        - "成像声呐"
+        - "前视声呐"
+        - "温度传感器"
+        - "水质传感器"
+        - "压力传感器"
+        - "INS惯性导航系统"
+        - "DVL多普勒测速仪"
+        - "USBL定位设备"
+        - "深度传感器"
+        - "高度计"
+      max_payload_weight_kg: 16
+      structural_lifting_capacity_kg: 100
+      min_turning_radius_m: null
+      max_travel_speed_kn: null
+      max_operating_speed_kn: null
+      max_endurance_h: "不适用"
+
+  autonomous_underwater_vehicle_hp:
+    family_id: "autonomous_underwater_vehicle"
+    full_name: "水下无人自主航行器 HP"
+    hard_params:
+      max_depth_m: 1000
+      max_burial_depth_m: "不适用"
+      dimensions: "324mm直径×3600mm长度"
+      diameter_mm: 324
+      weight_in_air_kg: 180
+      power_hp: null
+      supported_seabed: ["hard", "soft"]
+      supported_payloads:
+        - "侧扫声呐"
+        - "前视声呐"
+        - "多波束声呐"
+        - "合成孔径声呐"
+        - "浅地层剖面仪"
+        - "高清水下摄像机"
+        - "LED水下照明灯"
+        - "激光标尺"
+        - "光学测量模块"
+        - "CTD"
+        - "水质传感器"
+        - "溶解氧传感器"
+        - "浊度传感器"
+        - "磁力仪"
+        - "INS惯性导航系统"
+        - "DVL多普勒测速仪"
+        - "USBL定位设备"
+        - "深度传感器"
+      max_payload_weight_kg: 15
+      structural_lifting_capacity_kg: "不适用"
+      min_turning_radius_m: 15
+      max_travel_speed_kn: 6
+      max_operating_speed_kn: 3
+      max_endurance_h: 80
+
+fleet_units:
+  - unit_id: "CRAWLER-1600-001"
+    variant_id: "crawler_heavy_seabed_robot_1600hp"
+    serial_no: "001"
+    display_name: "履带式海底重载作业机器人1600HP-001"
+    status_ref: "CRAWLER-1600-001"
+    aliases: ["001", "一号机", "履带式001", "履带式一号机", "履带式海底重载作业机器人001", "履带式海底重载作业机器人一号机", "金牛座001", "金牛座一号机"]
+
+  - unit_id: "TOWED-1500-001"
+    variant_id: "towed_heavy_seabed_robot_1500hp"
+    serial_no: "001"
+    display_name: "拖曳式海底重载作业机器人1500HP-001"
+    status_ref: "TOWED-1500-001"
+    aliases: ["001", "一号机", "拖曳式001", "拖曳式一号机", "拖曳式海底重载作业机器人001", "拖曳式海底重载作业机器人一号机", "御夫座001", "御夫座一号机"]
+
+  - unit_id: "SPECIAL-600-001"
+    variant_id: "special_work_class_robot_hp"
+    serial_no: "001"
+    display_name: "特种工作级深海机器人600HP-001"
+    status_ref: "SPECIAL-600-001"
+    aliases: ["001", "一号机", "特种型001", "特种型一号机", "特种工作级001", "特种工作级一号机", "凤凰座001", "凤凰座一号机"]
+
+  - unit_id: "WROV-250-001"
+    variant_id: "general_work_class_rov_250hp"
+    serial_no: "001"
+    display_name: "通用工作级深海机器人250HP-001"
+    status_ref: "WROV-250-001"
+    aliases: ["001", "一号机", "通用型001", "通用型一号机", "通用工作级001", "通用工作级一号机", "通用工作级深海机器人001", "通用工作级深海机器人一号机"]
+
+  - unit_id: "LROV-HP-001"
+    variant_id: "light_work_class_rov_hp"
+    serial_no: "001"
+    display_name: "轻型工作级深海机器人HP-001"
+    status_ref: "LROV-HP-001"
+    aliases: ["001", "一号机", "轻型001", "轻型一号机", "轻型工作级001", "轻型工作级一号机", "天鹰座001", "天鹰座一号机"]
+
+  - unit_id: "LROV-HP-002"
+    variant_id: "light_work_class_rov_hp"
+    serial_no: "002"
+    display_name: "轻型工作级深海机器人HP-002"
+    status_ref: "LROV-HP-002"
+    aliases: ["002", "二号机", "轻型002", "轻型二号机", "轻型工作级002", "轻型工作级二号机", "天鹰座002", "天鹰座二号机"]
+
+  - unit_id: "OBSROV-HP-001"
+    variant_id: "observation_rov_hp"
+    serial_no: "001"
+    display_name: "观察级深海机器人HP-001"
+    status_ref: "OBSROV-HP-001"
+    aliases: ["001", "一号机", "观察级001", "观察级一号机", "观察型001", "观察型一号机", "观察级深海机器人001", "观察级深海机器人一号机"]
+
+  - unit_id: "AUV-HP-001"
+    variant_id: "autonomous_underwater_vehicle_hp"
+    serial_no: "001"
+    display_name: "水下无人自主航行器HP-001"
+    status_ref: "AUV-HP-001"
+    aliases: ["001", "一号机", "AUV001", "AUV一号机", "自主型001", "自主型一号机", "水下无人自主航行器001", "水下无人自主航行器一号机"]

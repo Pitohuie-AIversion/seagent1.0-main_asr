@@ -50,7 +50,7 @@ class TestFrontendIntegrity(unittest.TestCase):
     def test_translation_dictionary_structure(self):
         """Verify that the translation configurations contain all required keys and match between ZH and EN."""
         # Extract I18N variable definition block using simple regex
-        i18n_match = re.search(r'const I18N = (\{.*?\n\};)', self.html_content, re.DOTALL)
+        i18n_match = re.search(r'const I18N = (\{.*?\n\s*\};)', self.html_content, re.DOTALL)
         self.assertIsNotNone(i18n_match, "Could not locate I18N translation object inside index.html script!")
         
         i18n_block = i18n_match.group(1)
@@ -75,7 +75,7 @@ class TestFrontendIntegrity(unittest.TestCase):
         forbidden_emojis = ["⏱️", "📋", "✅", "❓", "📄", "📜", "📡", "🌊", "🛠️"]
         
         # Check the translation keys do not contain legacy emojis
-        i18n_match = re.search(r'const I18N = (\{.*?\n\};)', self.html_content, re.DOTALL)
+        i18n_match = re.search(r'const I18N = (\{.*?\n\s*\};)', self.html_content, re.DOTALL)
         if i18n_match:
             i18n_block = i18n_match.group(1)
             # Find specific headers inside ZH and EN

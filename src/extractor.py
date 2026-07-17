@@ -1,7 +1,7 @@
 """
 extractor.py — 参数提取器
 每轮对话后，用 LLM 从最新用户消息中提取或更新任务参数。
-使用低温度、结构化 prompt，只返回 JSON diff（有变化的字段）。
+使用低温度、结构化 prompt，返回严格的结构化候选列表。
 """
 
 import json
@@ -15,67 +15,90 @@ MAX_EXTRACTION_USER_HISTORY = 6
 EXTRACTION_TASK = """\
 你是一个严格的任务识别参数提取器，专门从用户的自然语言中提取任务类型。
 
+【极重要：输出边界】
+你当前不是对话助手，而是结构化候选抽取器。
+- 只允许输出一个 JSON object，不得输出任何自然语言解释。
+- 必须严格遵守以下输出 JSON 结构。
+
+【输出格式】
+{{
+  "intent": "task_update",
+  "slot_candidates": [
+    {{
+      "raw_key": "作业类型",
+      "canonical_key": "task_type",
+      "raw_value": "巡检",
+      "normalized_value": "管缆巡检",
+      "confidence": 0.95
+    }},
+    {{
+      "raw_key": "作业类型标识",
+      "canonical_key": "task_type_key",
+      "raw_value": "巡检",
+      "normalized_value": "pipeline_inspection",
+      "confidence": 0.95
+    }}
+  ],
+  "unresolved": []
+}}
+
 【提取规则】
 1. 对于任务类型：
 {task_type_rules}
-2. 只支持上述提到的任务，如果用户提出其他要求则返回{{}}
-3. 最新用户消息优先：当前任务状态和历史对话只作为参考，不得覆盖最新用户消息中的明确修正。
-4. 如果最新用户消息中对同一字段出现多个候选或多次反悔/修正，以文本中最后出现的候选为准。
-5. 如用户说"上一次是XX，现在要下一步"，结合上文推断当前任务类型和动作。
-6. 如用户明确说任务紧急（"紧急"、"急"、"加急"等），提取 emergency_mode: true。
-7. 只提取任务类型相关信息，补全"task_type"、"task_type_key"、"emergency_mode"字段，不要新增任何其他字段。
-
-【输出格式示例】
-{{
-  "task_type": "管缆巡检",
-  "task_type_key": "pipeline_inspection",
-  "emergency_mode": false
-}}
-
-如无法提取任务类型信息，返回：{{}}
+2. 只支持上述提到的任务，如果不匹配，则返回空的 slot_candidates 列表，并把无法识别/无法匹配的任务输入写入 unresolved。
+3. 如果最新用户消息中对同一字段出现多个候选或多次反悔/修正，以文本中最后出现的候选为准。
+4. 如用户说"上一次是XX，现在要下一步"，结合上文推断当前任务类型和动作。
+5. 如用户明确说任务紧急（"紧急"、"急"、"加急"等），提取 canonical_key: "emergency_mode" 且 normalized_value: true。
+6. 只提取任务类型相关信息，补全 "task_type", "task_type_key", "emergency_mode" 字段。
 """
 
 EXTRACTION_SYSTEM = """\
 你是一个严格的参数提取器，专门从用户的自然语言中提取水下ROV作业任务参数。
 
 【极重要：输出边界】
-你当前不是对话助手，而是字段抽取器。
+你当前不是对话助手，而是结构化候选抽取器。
 - 只允许输出一个 JSON object，不得输出任何自然语言解释。
-- 不得模仿历史助手回复，不得输出"收到"、"已更新"、"任务已发布"、"参数已生效"等对话式文本。
-- 即使当前任务已确认、已发布、已锁定，只要用户本轮明确补充、修改或确认字段，也必须抽取为 JSON diff。
-- 如果用户本轮没有任何字段更新，只输出 {{}}。
+- 即使当前任务已确认、已发布、已锁定，只要用户本轮明确补充、修改或确认字段，也必须抽取为候选列表。
+- 如果用户本轮没有任何字段更新，返回 slot_candidates 为空列表的 JSON。
 
-【错误输出示例】
-收到，已更新任务水深为300米。
-
-【正确输出示例】
-{{"water_depth": 300}}
+【输出格式】
+{{
+  "intent": "task_update",
+  "slot_candidates": [
+    {{
+      "raw_key": "水深",
+      "canonical_key": "water_depth",
+      "raw_value": "300米",
+      "normalized_value": "300",
+      "confidence": 0.95
+    }}
+  ],
+  "unresolved": []
+}}
 
 【提取规则】
 1. 只提取用户明确提供或可以高置信度推断的信息，不猜测。
-2. 只返回本轮对话中有新内容/更新的字段（JSON diff），不重复已知字段。
+2. 每一个提取的字段，必须包含 raw_key（用户所用的词）、canonical_key（规范化字段名）、raw_value（用户说原始值）、normalized_value（转换后的标准化值，例如数字、日期等）和 confidence（置信度）。
 3. 最新用户消息优先：当前任务状态和历史对话只作为参考，不得覆盖最新用户消息中的明确修正。
 4. 如果最新用户消息中对同一字段出现多个候选或多次反悔/修正，以文本中最后出现的候选为准。
    例如用户说"晚上八点开始，不不现在开始，算了还是明天上午开始吧"，start_time 应以最后的"明天上午开始"为准。
 5. 对于时间信息：将口语时间转换为 YYYY-MM-DDTHH:MM:SS 格式，无时间部分时补 T00:00:00；"现在/当前/立即"等表达必须基于【当前时间】换算。
-6. 对于坐标：提取为 {{"lat": float, "lon": float}} 格式，统一十进制度。以下形式都要识别为坐标：
+6. 对于坐标：normalized_value 提取为 {{"lat": float, "lon": float}} 格式，统一十进制度。以下形式都要识别为坐标：
    - (19.8,113.5)、19.8,113.5、19.8，113.5、19.8 113.5
    - 北纬19.8，东经113.5、纬度19.8，经度113.5、lat 19.8 lon 113.5
    - 十九点八，一百一十三点五、北纬十九点八，东经一百一十三点五
    - 未明确标注经纬度时，默认前一个数是 lat，后一个数是 lon。
 7. 对于水深：统一转换为米（m）为单位的数值，例如"1千米"→1000，"500m"→500。
-   用户说"水深300米"、"深度300"、"作业水深是300"、"300米水深"时，输出 {{"water_depth": 300}}。
+   用户说"水深300米"、"深度300"、"作业水深是300"、"300米水深"时，输出 normalized_value: "300"。
 8. 对于任务类型：
 {task_type_rules}
-9. 对于ROV型号：如用户描述模糊（如"深水工作ROV"、"轻型观察"），提取 rov_description 字段，不要强行映射型号名。
+9. 对于ROV型号：如用户描述模糊（如"深水工作ROV"、"轻型观察"），提取 canonical_key: "rov_description" 字段，不要强行映射型号名。
 10. 若确定ROV型号，可自动识别出ROV类型：{ROV2type}
 11. 机器人能力、最大水深、载荷、功率、尺寸、状态、任务阈值和作业限制必须以所需字段、允许值、ROV2type和后续知识库/约束校验为准；不得凭通用知识补全或改写配置中没有的信息。
-12. 如用户明确说任务紧急（"紧急"、"急"、"加急"等），提取 emergency_mode: true。
+12. 如用户明确说任务紧急（"紧急"、"急"、"加急"等），提取 canonical_key: "emergency_mode" 且 normalized_value: true。
 13. 如用户说"上一次是XX，现在要下一步"，结合上文推断当前任务类型和动作。
-14. 只根据所需字段中定义的key提取，不新增字段，不自创字段。
-15. 如果有系统提出的修改建议被用户接受的，同样也需要能够提取出来。
-16. 只输出 JSON，不要任何解释文字。
-17. 【数字选项映射】如果上一条助手消息中以"1."/"2."/"3."等编号形式列出了选项，而用户本轮仅回复了一个数字（如"1"、"2"、"3"），则应将该数字映射为对应编号的选项值进行提取，不得忽略此类回复。
+14. 只根据所需字段中定义的key提取，不新增其他字段。
+15. 无法识别的信息（包括用户提问的其他话题、闲聊、或不相关的数据）必须提取到 "unresolved" 数组中（每个未识别的段落或词作为字符串），不允许丢弃！
 
 【当前时间】{today}
 
@@ -84,26 +107,10 @@ EXTRACTION_SYSTEM = """\
 
 【当前任务状态（已知字段，避免重复提取）】
 {current_state}
-
-【输出格式示例】
-{{
-  "task_type": "管缆巡检",
-  "task_type_key": "pipeline_inspection",
-  "start_time": "2026-04-15T00:00:00",
-  "water_depth": 850,
-  "emergency_mode": false
-}}
-
-如无任何新信息可提取，返回：{{}}
 """
 
 
 def _build_task_type_rules(task_type_map: dict[str, str]) -> str:
-    """
-    根据 task_type_map（{display_value: template_key}）动态生成提取规则文本。
-    按 template_key 分组，让 LLM 知道同一模板的多个值共用同一个 task_type_key。
-    """
-    # 按 template_key 分组
     groups: dict[str, list[str]] = {}
     for display, tkey in task_type_map.items():
         groups.setdefault(tkey, []).append(display)
@@ -139,22 +146,11 @@ class ParameterExtractor:
         required: list[dict] | None = None,
         ROV2type: list[dict] | None = None,
     ) -> dict:
-        """
-        从最新用户消息中提取参数更新，返回 dict（只含有变化的字段）。
-        task_type_map: {display_value: template_key}，由 kb.get_task_type_map() 提供。
-        若无可提取内容返回 {}。
-        """
-        # from datetime import datetime
-        # from zoneinfo import ZoneInfo
-        # now = datetime.now(ZoneInfo("Asia/Shanghai"))
-        # today_str = now.isoformat()
         from .simulated_time import get_current_datetime
-        now = get_current_datetime()  # 使用模拟时间
+        now = get_current_datetime()
         today_str = now.isoformat()
 
-        # 精简 current_state，只传已有值的字段
         known = {k: v for k, v in current_state.items() if v is not None}
-
         task_type_rules = _build_task_type_rules(task_type_map or {})
 
         if task_type_key is None:
@@ -162,7 +158,6 @@ class ParameterExtractor:
                 task_type_rules=task_type_rules,
             )
         else:
-            # 将 required 转为 JSON 字符串，便于 LLM 理解
             required_json = json.dumps(required, ensure_ascii=False, indent=2) if required else "[]"
             system_prompt = EXTRACTION_SYSTEM.format(
                 today=today_str,
@@ -180,15 +175,37 @@ class ParameterExtractor:
         ]
 
         print('extract prompt | '*10)
-        print(messages)
-        result = self.llm.extract_json(messages, max_tokens=500)
+        result = self.llm.extract_json(messages, max_tokens=800)
         print('result in extract update | '*10)
         print(result)
-        return result or {}
+        
+        default_res = {"intent": "task_update", "slot_candidates": [], "unresolved": []}
+        if not result or not isinstance(result, dict):
+            return default_res
+        
+        # Ensure correct structure is returned
+        if "slot_candidates" not in result:
+            # Fallback if LLM output does not match structured format but is a flat JSON dict
+            candidates = []
+            for k, v in result.items():
+                if k in ("intent", "unresolved"):
+                    continue
+                candidates.append({
+                    "raw_key": k,
+                    "canonical_key": k,
+                    "raw_value": str(v),
+                    "normalized_value": v,
+                    "confidence": 1.0
+                })
+            result = {
+                "intent": result.get("intent", "task_update"),
+                "slot_candidates": candidates,
+                "unresolved": result.get("unresolved", [])
+            }
+        return result
 
     @staticmethod
     def _build_extraction_history(conversation_history: list[dict]) -> list[dict]:
-        """只保留最近几轮的对话历史，同时包含用户和助手消息，以便保留选项上下文。"""
         recent = []
         for msg in conversation_history[-6:]:
             role = msg.get("role")
@@ -203,10 +220,6 @@ class ParameterExtractor:
         all_rovs: list[dict],
         task_type_key: str | None,
     ) -> list[dict]:
-        """
-        当用户用模糊描述指代ROV时，用 LLM 从全量ROV列表中匹配最合适的候选。
-        返回按匹配度排序的候选列表（最多3个）。
-        """
         rov_list_text = json.dumps(
             [
                 {
