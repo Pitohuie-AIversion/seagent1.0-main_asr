@@ -40,6 +40,7 @@ from .simulated_time import get_current_datetime
 from .time_context import get_time_context, is_standalone_time_query
 from .coord_parser import parse_coordinate_updates
 from .oilfield_linker import OilfieldEntityLinker
+from .exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
 from .slot_store import SlotStore, Slot
 
 HARD_REFUSAL_LIMIT = 4   # 连续拒绝上限
@@ -154,7 +155,7 @@ class DialogueManager:
             )
             intent_str = normalize_intent(extraction_res.get("intent"))
 
-            if intent_str not in MUTATING_INTENTS:
+            if intent_str not in MUTATING_INTENTS and not (old_phase == "confirming" and self._user_confirmed(user_message)):
                 if intent_str == "GENERAL_CHAT":
                     messages = [
                         {"role": "system", "content": "你是一个水下多智能体任务规划系统助手。请友好专业地回答用户的问候或一般性问题。"},
@@ -205,7 +206,7 @@ class DialogueManager:
             )
             intent_str = normalize_intent(extraction_res.get("intent"))
 
-            if intent_str not in MUTATING_INTENTS:
+            if intent_str not in MUTATING_INTENTS and not (old_phase == "confirming" and self._user_confirmed(user_message)):
                 if intent_str == "GENERAL_CHAT":
                     messages = [
                         {"role": "system", "content": "你是一个水下多智能体任务规划系统助手。请友好专业地回答用户的问候或一般性问题。"},
@@ -331,6 +332,7 @@ class DialogueManager:
             proposed_phase = "confirming"
 
         staging_file = None
+        ti_json_artifact = None
         prev_snap = None
         prev_mode = self.mode
         prev_phase = self.phase
@@ -338,6 +340,10 @@ class DialogueManager:
         prev_built = copy.deepcopy(self._last_built_json)
         prev_missing = copy.deepcopy(self._last_missing)
         prev_hist = list(self.conversation_history)
+        prev_whitelist = copy.deepcopy(self._soft_whitelist)
+        prev_pending_rov = copy.deepcopy(self._pending_rov_candidates)
+        prev_blocking_violations = copy.deepcopy(self._blocking_violations)
+        prev_task_start_now = self.task_start_now
 
         if old_phase == "confirming" and self._user_confirmed(user_message):
             cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
@@ -442,33 +448,63 @@ class DialogueManager:
                 try:
                     ti_builder.publish_staging(staging_file, ti_json_artifact)
                 except Exception as exc:
+                    # 1. Immediately reset phase and final_result so phase NEVER remains "done"
+                    self.phase = prev_phase
+                    self.final_result = None
+
+                    # 2. Clean staging file
                     if staging_file and staging_file.exists():
                         try:
                             staging_file.unlink()
                         except Exception:
                             pass
+
+                    # 3. Restore slot_store
+                    rollback_failed = False
+                    rollback_err = None
                     if prev_snap:
-                        self.slot_store.restore_snapshot(prev_snap)
+                        try:
+                            self.slot_store.restore_snapshot(prev_snap)
+                        except Exception as rb_e:
+                            rollback_failed = True
+                            rollback_err = rb_e
+
+                    # 4 & 5. Re-derive manager state
                     self.mode = prev_mode
-                    self.phase = prev_phase
                     self.task_state = self.slot_store.get_task_state()
                     self._last_built_json = self.slot_store.get_built_json()
-                    self._last_missing = prev_missing
+                    self._soft_whitelist = prev_whitelist
+                    self._pending_rov_candidates = prev_pending_rov
+                    self._blocking_violations = prev_blocking_violations
                     self.conversation_history = prev_hist
-                    self.final_result = None
+                    self.task_start_now = prev_task_start_now
+
+                    if curr_task_type_key:
+                        required_schema = self.builder.get_schema(curr_task_type_key, self.mode)
+                        self._last_missing = self.slot_store.get_missing_slots(required_schema)
+                    else:
+                        self._last_missing = prev_missing
 
                     logger.error(
-                        "TaskIntent publish failed: request_id=%s, task_id=%s, intent_id=%s, store_version=%d, stage=%s, err_type=%s, err=%s",
+                        "TaskIntent publish failed: request_id=%s, task_id=%s, intent_id=%s, store_version=%d, stage=%s, err_type=%s, err=%s, rollback_failed=%s",
                         request_id,
                         built.get("task_id", "unknown"),
-                        ti_json_artifact.get("intent_id", "unknown"),
+                        ti_json_artifact.get("intent_id", "unknown") if ti_json_artifact else "unknown",
                         self.slot_store.version,
                         "publish_staging",
                         type(exc).__name__,
                         exc,
+                        rollback_failed,
                         exc_info=True,
                     )
-                    return "服务器保存任务定义失败，任务未能成功下发，请稍后重试。"
+
+                    if rollback_failed:
+                        raise TaskRollbackError(f"TaskIntent publish failed ({exc}) and rollback error occurred: {rollback_err}") from exc
+
+                    if isinstance(exc, (TaskPersistenceError, IntentIdConflict, IdReservationError)):
+                        raise exc
+                    else:
+                        raise TaskPersistenceError(f"TaskIntent publish failed: {exc}") from exc
 
             self.final_result = built
             if self.task_start_now:

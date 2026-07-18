@@ -8,6 +8,11 @@ class TaskPersistenceError(Exception):
     pass
 
 
+class TaskRollbackError(TaskPersistenceError):
+    """TaskIntent 发布失败后的状态回滚异常"""
+    pass
+
+
 class IntentIdConflict(Exception):
     """Intent ID 冲突或重复写入内容不一致"""
     pass

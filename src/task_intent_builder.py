@@ -136,39 +136,53 @@ class TaskIntentBuilder:
             raise TaskPersistenceError(f"Failed to create staging file for {intent_id}: {e}") from e
 
     def publish_staging(self, staging_file: Path, intent: Dict[str, Any]) -> str:
-        """原子发布 staging 临时文件为正式 JSON 文件；存在同名文件时区分幂等与冲突"""
+        """使用 os.link 原子 no-clobber 发布 staging 临时文件为正式 JSON 文件；处理竞争与幂等"""
         intent_id = intent.get("intent_id", "unknown")
         task_dir = get_task_dir(create=True)
         final_file = task_dir / f"task_intent_{intent_id}.json"
 
         try:
-            if final_file.exists():
+            # os.link 原子创建硬链接，绝不覆盖已有文件
+            os.link(staging_file, final_file)
+
+            # 目录 fsync 保证元数据落地
+            try:
+                dir_fd = os.open(task_dir, os.O_RDONLY)
                 try:
-                    with open(final_file, "r", encoding="utf-8") as f:
-                        existing_data = json.load(f)
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except Exception:
+                pass
+
+            # 删除 staging 临时文件
+            if staging_file and staging_file.exists():
+                try:
+                    staging_file.unlink()
                 except Exception:
-                    existing_data = None
-
-                if existing_data == intent:
-                    # 幂等重试成功：内容一致，删除 staging 并返回
-                    if staging_file and staging_file.exists():
-                        try:
-                            staging_file.unlink()
-                        except Exception:
-                            pass
-                    return final_file.name
-                else:
-                    # 内容不一致：触发 IntentIdConflict 异常
-                    if staging_file and staging_file.exists():
-                        try:
-                            staging_file.unlink()
-                        except Exception:
-                            pass
-                    raise IntentIdConflict(f"Intent ID conflict for {intent_id}: target file exists with different content.")
-
-            # 原子替换
-            os.replace(staging_file, final_file)
+                    pass
             return final_file.name
+        except FileExistsError:
+            # 目标文件已存在：读取已存在的文件内容区分幂等与冲突
+            existing_data = None
+            try:
+                with open(final_file, "r", encoding="utf-8") as f:
+                    existing_data = json.load(f)
+            except Exception:
+                existing_data = None
+
+            if staging_file and staging_file.exists():
+                try:
+                    staging_file.unlink()
+                except Exception:
+                    pass
+
+            if existing_data == intent:
+                # 内容完全一致：幂等重试成功
+                return final_file.name
+            else:
+                # 内容不一致：触发 IntentIdConflict 异常
+                raise IntentIdConflict(f"Intent ID conflict for {intent_id}: target file exists with different content.")
         except IntentIdConflict:
             raise
         except Exception as e:

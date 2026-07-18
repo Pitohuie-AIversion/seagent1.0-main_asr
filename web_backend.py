@@ -280,7 +280,7 @@ def api_asr():
         return jsonify({"code": 500, "msg": str(e)}), 500
 
 from src.slot_store import SlotVersionConflict
-from src.exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError
+from src.exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
@@ -353,7 +353,7 @@ def api_chat():
             "request_id": request_id if 'request_id' in locals() else "req_unknown",
             "retryable": True
         }), 409
-    except (TaskPersistenceError, IdReservationError) as tpe:
+    except (TaskPersistenceError, IdReservationError, TaskRollbackError) as tpe:
         logging.error(f"Task persistence error in /api/chat: {tpe}", exc_info=True)
         return jsonify({
             "ok": False,

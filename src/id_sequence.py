@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 import re
 import threading
 from pathlib import Path
 from typing import Callable, Iterable
 
+from .exceptions import IdReservationError
 from .result_paths import get_result_dir
 
 _LOCK = threading.Lock()
@@ -20,47 +22,71 @@ def _get_lock_file_path() -> Path:
     return base / ".id_sequence.lock"
 
 
+def _get_counter_file_path() -> Path:
+    base = get_result_dir(create=True)
+    return base / ".id_sequences.json"
+
+
 def next_daily_id(
     prefix: str,
     date_text: str,
     width: int,
     scan_specs: Iterable[tuple[Path | Callable[[], Path], str]],
 ) -> str:
-    """Return prefix + date + a monotonically increasing daily sequence with cross-process flock."""
+    """Return prefix + date + a monotonically increasing daily sequence with cross-process flock and persistent counter file."""
+    scan_specs_list = list(scan_specs)
     counter_key = f"{prefix}{date_text}"
     lock_file = _get_lock_file_path()
+    counter_file = _get_counter_file_path()
 
     with _LOCK:
-        # Cross-process lock file
-        with open(lock_file, "a+", encoding="utf-8") as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        with open(lock_file, "a+", encoding="utf-8") as f_lock:
+            fcntl.flock(f_lock.fileno(), fcntl.LOCK_EX)
             try:
-                disk_max = _max_existing_sequence(prefix, date_text, width, scan_specs)
-                mem_curr = _COUNTERS.get(counter_key, 0)
-                next_seq = max(disk_max, mem_curr) + 1
-                _COUNTERS[counter_key] = next_seq
-                res_id = f"{prefix}{date_text}{next_seq:0{width}d}"
+                persistent_counters: dict[str, int] = {}
+                if counter_file.exists():
+                    try:
+                        with open(counter_file, "r", encoding="utf-8") as f_cnt:
+                            data = json.load(f_cnt)
+                            if isinstance(data, dict):
+                                persistent_counters = {str(k): int(v) for k, v in data.items() if str(v).isdigit()}
+                    except Exception:
+                        persistent_counters = {}
 
-                scan_list = list(scan_specs)
-                if scan_list:
-                    primary_entry, _ = scan_list[0]
-                    target_dir = primary_entry() if callable(primary_entry) else primary_entry
-                    if target_dir and target_dir.exists():
-                        res_file = target_dir / f".res_{res_id}"
+                persistent_seq = persistent_counters.get(counter_key, 0)
+                disk_max = _max_existing_sequence(prefix, date_text, width, scan_specs_list)
+                mem_curr = _COUNTERS.get(counter_key, 0)
+
+                next_seq = max(persistent_seq, disk_max, mem_curr) + 1
+                _COUNTERS[counter_key] = next_seq
+                persistent_counters[counter_key] = next_seq
+
+                # Save updated counter dictionary to .id_sequences.json atomically
+                tmp_counter_file = counter_file.parent / f".id_sequences.tmp_{os.getpid()}_{threading.get_ident()}"
+                try:
+                    with open(tmp_counter_file, "w", encoding="utf-8") as f_tmp:
+                        json.dump(persistent_counters, f_tmp, ensure_ascii=False, indent=2)
+                        f_tmp.flush()
+                        os.fsync(f_tmp.fileno())
+                    os.replace(tmp_counter_file, counter_file)
+                except Exception as e:
+                    if tmp_counter_file.exists():
                         try:
-                            res_file.touch(exist_ok=True)
+                            tmp_counter_file.unlink()
                         except Exception:
                             pass
-                return res_id
+                    raise IdReservationError(f"Failed to persist ID sequence counter for {counter_key}: {e}") from e
+
+                return f"{prefix}{date_text}{next_seq:0{width}d}"
             finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(f_lock.fileno(), fcntl.LOCK_UN)
 
 
 def _max_existing_sequence(
     prefix: str,
     date_text: str,
     width: int,
-    scan_specs: Iterable[tuple[Path | Callable[[], Path], str]],
+    scan_specs: list[tuple[Path | Callable[[], Path], str]],
 ) -> int:
     max_seq = 0
     pattern = re.compile(rf"{re.escape(prefix)}{re.escape(date_text)}(\d{{{width},}})")

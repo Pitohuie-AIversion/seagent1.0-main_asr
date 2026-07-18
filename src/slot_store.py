@@ -41,6 +41,56 @@ ALLOWED_INTERNAL_SLOTS = {
 }
 
 
+VALID_VALUE_TYPES = {"string", "number", "boolean", "list", "coord", "datetime", "object"}
+LEGACY_SCHEMA_TYPES = {"tasktype", "auto", "fixed"}
+
+
+def normalize_slot_value_type(schema_type: Optional[str] = None, value: Any = None) -> str:
+    """Map schema behavior types (tasktype, auto, fixed) or Python values to canonical runtime value types."""
+    if schema_type:
+        st = schema_type.lower()
+        if st in VALID_VALUE_TYPES:
+            if st == "string" and value is not None and not isinstance(value, str):
+                pass
+            else:
+                return st
+        if st == "tasktype":
+            return "string"
+        if st == "auto":
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return "number"
+            if isinstance(value, bool):
+                return "boolean"
+            return "string"
+        if st == "fixed":
+            pass
+        if st not in LEGACY_SCHEMA_TYPES:
+            return schema_type
+
+    if value is not None:
+        if isinstance(value, bool):
+            return "boolean"
+        if isinstance(value, (int, float)):
+            return "number"
+        if isinstance(value, list):
+            return "list"
+        if isinstance(value, dict):
+            if "lat" in value and "lon" in value:
+                return "coord"
+            return "object"
+        if isinstance(value, str):
+            if schema_type and schema_type.lower() == "datetime":
+                try:
+                    clean_ts = value.replace("Z", "+00:00")
+                    datetime.fromisoformat(clean_ts)
+                    return "datetime"
+                except Exception:
+                    pass
+            return "string"
+
+    return "string"
+
+
 class Slot:
     def __init__(
         self,
@@ -58,7 +108,7 @@ class Slot:
     ):
         self.slot_name = slot_name
         self.value = value
-        self.value_type = value_type
+        self.value_type = normalize_slot_value_type(value_type, value)
         self.status = status  # missing | candidate | valid | invalid | conflict | unresolved
         self.source = source  # user_input | auto | fixed
         self.raw_value = raw_value
@@ -145,11 +195,12 @@ class SlotStore:
         for field in schema_fields:
             key = field["key"]
             ftype = field.get("type", "string")
+            canonical_type = normalize_slot_value_type(ftype, target_slots[key].value if key in target_slots else None)
             if key not in target_slots:
-                target_slots[key] = Slot(slot_name=key, value_type=ftype)
+                target_slots[key] = Slot(slot_name=key, value_type=canonical_type)
             else:
-                if target_slots[key].value_type != ftype:
-                    target_slots[key].value_type = ftype
+                if target_slots[key].value_type != canonical_type:
+                    target_slots[key].value_type = canonical_type
                     target_slots[key].value = None
                     target_slots[key].candidate_value = None
                     target_slots[key].status = "missing"
@@ -239,9 +290,13 @@ class SlotStore:
                     conf = sdict.get("confidence")
                     if conf is not None and (isinstance(conf, bool) or not isinstance(conf, (int, float)) or not (0.0 <= float(conf) <= 1.0)):
                         raise SnapshotValidationError(f"Invalid confidence '{conf}' for slot '{key}'.")
-                    val_type = sdict.get("value_type", "string")
-                    if not isinstance(val_type, str) or val_type not in VALID_VALUE_TYPES:
-                        raise SnapshotValidationError(f"Invalid value_type '{val_type}' for slot '{key}'.")
+                    raw_val_type = sdict.get("value_type", "string")
+                    val = copy.deepcopy(sdict.get("value"))
+                    if not isinstance(raw_val_type, str):
+                        raise SnapshotValidationError(f"Invalid value_type '{raw_val_type}' for slot '{key}'.")
+                    val_type = normalize_slot_value_type(raw_val_type, val)
+                    if val_type not in VALID_VALUE_TYPES:
+                        raise SnapshotValidationError(f"Invalid value_type '{raw_val_type}' for slot '{key}'.")
                     source = sdict.get("source", "user_input")
                     if not isinstance(source, str):
                         raise SnapshotValidationError(f"Invalid source for slot '{key}'.")
@@ -255,7 +310,6 @@ class SlotStore:
                         except Exception as e:
                             raise SnapshotValidationError(f"Invalid ISO-8601 updated_at timestamp '{updated_at}' for slot '{key}': {e}")
 
-                    val = copy.deepcopy(sdict.get("value"))
                     if st == "valid" and val is None:
                         raise SnapshotValidationError(f"Valid slot '{key}' cannot have null value.")
 
@@ -277,8 +331,10 @@ class SlotStore:
                         raise SnapshotValidationError(f"Slot key '{key}' does not match slot_name '{sdict.slot_name}'.")
                     if sdict.status not in VALID_STATUSES:
                         raise SnapshotValidationError(f"Invalid status '{sdict.status}' for slot '{key}'.")
-                    if sdict.value_type not in VALID_VALUE_TYPES:
+                    val_type = normalize_slot_value_type(sdict.value_type, sdict.value)
+                    if val_type not in VALID_VALUE_TYPES:
                         raise SnapshotValidationError(f"Invalid value_type '{sdict.value_type}' for slot '{key}'.")
+                    sdict.value_type = val_type
                     if not isinstance(sdict.version, int) or isinstance(sdict.version, bool) or sdict.version < 0:
                         raise SnapshotValidationError(f"Invalid slot version '{sdict.version}' for slot '{key}'.")
                     if sdict.confidence is not None and (isinstance(sdict.confidence, bool) or not isinstance(sdict.confidence, (int, float)) or not (0.0 <= float(sdict.confidence) <= 1.0)):

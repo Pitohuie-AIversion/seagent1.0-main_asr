@@ -16,6 +16,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import copy
 import os
+import builtins
 import multiprocessing
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
@@ -32,23 +33,74 @@ import web_backend
 from web_backend import app
 
 
-def _mp_intent_worker(result_dir: str, task_state: dict, built_json: dict, queue: multiprocessing.Queue, barrier: multiprocessing.Barrier):
+def seed_complete_valid_pipeline_task(dm, kb):
+    """Fills all required slots for pipeline_inspection in normal mode with valid KB values."""
+    dm.reset()
+    store = dm.slot_store
+
+    task_type_key = "pipeline_inspection"
+    task_type = "管缆巡检"
+    cable_type = "电力电缆"
+    water_depth = 300.0
+    start_time = "2026-07-19T08:00:00"
+    end_time = "2026-07-19T18:00:00"
+    start_point = {"lat": 19.5, "lon": 115.2}
+    end_point = {"lat": 19.6, "lon": 115.3}
+
+    equipment_type = "观察级深海机器人 HP"
+    equipment_unit_id = "OBSROV-HP-001"
+    payload = ["多波束测深仪", "高清水下摄像机"]
+    support_vessel = "DSV-Oceanic"
+
+    slots_to_seed = {
+        "task_id": ("PI2026071801", "string"),
+        "task_type_key": (task_type_key, "string"),
+        "task_type": (task_type, "string"),
+        "cable_type": (cable_type, "string"),
+        "water_depth": (water_depth, "number"),
+        "start_time": (start_time, "datetime"),
+        "end_time": (end_time, "datetime"),
+        "start_point": (start_point, "coord"),
+        "end_point": (end_point, "coord"),
+        "equipment_type": (equipment_type, "string"),
+        "equipment_unit_id": (equipment_unit_id, "string"),
+        "payload": (payload, "list"),
+        "support_vessel": (support_vessel, "string"),
+    }
+
+    for key, (val, vtype) in slots_to_seed.items():
+        store.slots[key] = Slot(slot_name=key, value=val, value_type=vtype, status="valid", source="user_input")
+
+    dm.phase = "confirming"
+    dm.task_state = store.get_task_state()
+    dm._last_built_json = store.get_built_json()
+
+    req_schema = dm.builder.get_schema(task_type_key, dm.mode)
+    dm._last_missing = store.get_missing_slots(req_schema)
+    return req_schema
+
+
+def _mp_id_two_barrier_worker(result_dir: str, prefix: str, queue: multiprocessing.Queue, b1: multiprocessing.Barrier, b2: multiprocessing.Barrier):
+    os.environ["SEAGENT_RESULT_DIR"] = result_dir
+    b1.wait()
+    gid = id_sequence.next_daily_id(prefix, "20260718", 2, [(Path(result_dir) / "task", "intent_id")])
+    b2.wait()
+    queue.put(gid)
+
+
+def _mp_publish_no_clobber_worker(result_dir: str, intent: dict, queue: multiprocessing.Queue, b1: multiprocessing.Barrier):
     os.environ["SEAGENT_RESULT_DIR"] = result_dir
     kb = KnowledgeBase()
     builder = TaskIntentBuilder(kb)
-    barrier.wait()
-    intent = builder.prepare(task_state, built_json, "normal", "pipeline_inspection")
-    filename = builder.persist(intent)
-    queue.put((intent["intent_id"], filename, intent))
-
-
-def _mp_task_id_worker(result_dir: str, queue: multiprocessing.Queue, barrier: multiprocessing.Barrier):
-    os.environ["SEAGENT_RESULT_DIR"] = result_dir
-    kb = KnowledgeBase()
-    builder = OutputBuilder(kb)
-    barrier.wait()
-    tid = builder._generate_task_id("pipeline_inspection", {})
-    queue.put(tid)
+    staging = builder.create_staging(intent)
+    b1.wait()
+    try:
+        filename = builder.publish_staging(staging, intent)
+        queue.put(("success", filename))
+    except IntentIdConflict as e:
+        queue.put(("conflict", str(e)))
+    except Exception as e:
+        queue.put(("error", str(e)))
 
 
 def assert_ssot_consistency(test_case, dm):
@@ -78,6 +130,7 @@ class SlotConsistencyTest(unittest.TestCase):
         get_simulated_time().set_current_time(
             datetime(2026, 6, 30, 17, 38, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
         )
+        self.llm.extract_json.return_value = {"intent": "TASK_UPDATE", "slot_candidates": [], "unresolved": []}
         self.dm = DialogueManager(self.llm, self.kb)
         self.client = app.test_client()
 
@@ -760,61 +813,52 @@ class SlotConsistencyTest(unittest.TestCase):
             tmp_path = Path(tmp_dir) / "task"
             tmp_path.mkdir(parents=True, exist_ok=True)
 
-            self.dm.reset()
+            seed_complete_valid_pipeline_task(self.dm, self.kb)
+
+            req_schema = self.dm.builder.get_schema("pipeline_inspection", self.dm.mode)
+            missing = self.dm.slot_store.get_missing_slots(req_schema)
+            self.assertEqual(len(missing), 0)
+            all_violations = self.dm.validator.validate(self.dm.task_state)
+            self.assertFalse(self.dm.validator.has_hard_violations(all_violations))
+            self.assertEqual(self.dm.phase, "confirming")
+
             store = self.dm.slot_store
-            store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-            store.slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
-            store.slots["cable_type"] = Slot("cable_type", value="电力电缆", status="valid")
-            store.slots["water_depth"] = Slot("water_depth", value=300.0, status="valid")
-            store.slots["start_time"] = Slot("start_time", value="2026-07-01T08:00:00", status="valid")
-            store.slots["end_time"] = Slot("end_time", value="2026-07-01T18:00:00", status="valid")
-            store.slots["start_point"] = Slot("start_point", value={"lat": 19.5, "lon": 115.2}, status="valid")
-            store.slots["end_point"] = Slot("end_point", value={"lat": 19.6, "lon": 115.3}, status="valid")
-            store.slots["equipment_type"] = Slot("equipment_type", value="观察级深海机器人", status="valid")
-            store.slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV-HP-001", status="valid")
-            store.slots["payload"] = Slot("payload", value=["高清水下摄像机"], status="valid")
-            store.slots["support_vessel"] = Slot("support_vessel", value="DSV-Oceanic", status="valid")
-
-            self.dm.phase = "confirming"
-            self.dm.task_state = store.get_task_state()
-            self.dm._last_built_json = store.get_built_json()
-            self.dm._last_missing = []
-
-            pre_version = store.version
+            pre_snapshot = copy.deepcopy(store.export_snapshot())
+            pre_task_state = copy.deepcopy(self.dm.task_state)
+            pre_built_json = copy.deepcopy(self.dm._last_built_json)
+            pre_missing = copy.deepcopy(self.dm._last_missing)
 
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
-                 patch.object(TaskIntentBuilder, "publish_staging", side_effect=RuntimeError("Simulated disk error")) as mock_pub, \
+                 patch("src.dialogue_manager.TaskIntentBuilder.publish_staging", side_effect=TaskPersistenceError("Simulated disk error")) as mock_pub, \
                  self.assertLogs("src.dialogue_manager", level="ERROR") as cm:
+                with self.assertRaises(TaskPersistenceError):
+                    self.dm.process("确认开始", request_id="req_test_36")
 
-                reply = self.dm.process("确认开始", request_id="req_test_36")
-
-                # 1. Verify mock_pub was called
                 mock_pub.assert_called_once()
 
-                # 2. Reply does NOT contain success statements
-                self.assertNotIn("已下发", reply)
-                self.assertNotIn("已加入计划池", reply)
-
-                # 3. Phase and final_result restored
+                self.assertNotEqual(self.dm.phase, "done")
                 self.assertEqual(self.dm.phase, "confirming")
                 self.assertIsNone(self.dm.final_result)
 
-                # 4. SlotStore and states 100% restored
-                self.assertEqual(self.dm.slot_store.version, pre_version)
-                self.assertNotIn("intent_id", self.dm.slot_store.slots)
-                self.assertEqual(self.dm.slot_store.get_task_state(), store.get_task_state())
+                intent_slot = store.slots.get("intent_id")
+                self.assertIsNotNone(intent_slot)
+                self.assertIsNone(intent_slot.value)
+                self.assertEqual(intent_slot.status, "missing")
 
-                # 5. Disk files: no formal JSON, no temp/staging files
+                self.assertEqual(store.export_snapshot(), pre_snapshot)
+                self.assertEqual(self.dm.task_state, pre_task_state)
+                self.assertEqual(self.dm._last_built_json, pre_built_json)
+                self.assertEqual(self.dm._last_missing, pre_missing)
+
                 final_files = list(tmp_path.glob("task_intent_*.json"))
                 staging_files = list(tmp_path.glob("*.staging_*")) + list(tmp_path.glob("*.tmp_*"))
                 self.assertEqual(len(final_files), 0)
                 self.assertEqual(len(staging_files), 0)
 
-                # 6. Log verification: request_id, intent_id, stage, err_type, no prompt leak
                 log_output = "\n".join(cm.output)
                 self.assertIn("req_test_36", log_output)
                 self.assertIn("publish_staging", log_output)
-                self.assertIn("RuntimeError", log_output)
+                self.assertIn("TaskPersistenceError", log_output)
                 self.assertNotIn("DEBUG SYSTEM PROMPT START", log_output)
 
     # 37. 相同 intent_id 重复 persist 结果幂等
@@ -866,9 +910,10 @@ class SlotConsistencyTest(unittest.TestCase):
             with open(dummy_file, "w", encoding="utf-8") as f:
                 json.dump({"intent_id": "TI2026063005"}, f)
 
-            id_sequence._COUNTERS.clear()
-            next_id = id_sequence.next_daily_id("TI", "20260630", 2, [(tmp_task_dir, "intent_id")])
-            self.assertEqual(next_id, "TI2026063006")
+            with patch.dict(os.environ, {"SEAGENT_RESULT_DIR": tmp_dir}):
+                id_sequence._COUNTERS.clear()
+                next_id = id_sequence.next_daily_id("TI", "20260630", 2, [(tmp_task_dir, "intent_id")])
+                self.assertEqual(next_id, "TI2026063006")
 
     # 41. 非法 value_type 快照被拒绝
     def test_41_invalid_value_type_snapshot_rejected(self):
@@ -981,7 +1026,6 @@ class SlotConsistencyTest(unittest.TestCase):
                 with self.assertRaises(IntentIdConflict):
                     builder.publish_staging(staging2, intent2)
 
-                # Original file content is unchanged
                 with open(tmp_path / filename, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self.assertEqual(data["task_type"], "pipeline_inspection")
@@ -1007,20 +1051,160 @@ class SlotConsistencyTest(unittest.TestCase):
                 final_files = list(tmp_path.glob("task_intent_*.json"))
                 self.assertEqual(len(final_files), 1)
 
-    # 49. 真实多进程 intent_id 并发申请测试
-    def test_49_multiprocess_intent_id_concurrency(self):
+    # 49a. 首次启动（目录不存在）多进程 intent_id 并发申请测试
+    def test_49a_multiprocess_initial_run_intent_id_uniqueness(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            result_dir = Path(tmp_dir) / "non_existent_sub" / "result"
+            ctx = multiprocessing.get_context("spawn")
+            queue = ctx.Queue()
+            b1 = ctx.Barrier(2)
+            b2 = ctx.Barrier(2)
+
+            p1 = ctx.Process(target=_mp_id_two_barrier_worker, args=(str(result_dir), "TI", queue, b1, b2))
+            p2 = ctx.Process(target=_mp_id_two_barrier_worker, args=(str(result_dir), "TI", queue, b1, b2))
+
+            p1.start()
+            p2.start()
+            p1.join(timeout=10)
+            p2.join(timeout=10)
+
+            self.assertEqual(p1.exitcode, 0)
+            self.assertEqual(p2.exitcode, 0)
+
+            id1 = queue.get(timeout=2)
+            id2 = queue.get(timeout=2)
+
+            self.assertNotEqual(id1, id2)
+            self.assertEqual(set([id1, id2]), {"TI2026071801", "TI2026071802"})
+
+            # Check counter file
+            counter_file = result_dir / ".id_sequences.json"
+            self.assertTrue(counter_file.exists())
+            with open(counter_file, "r", encoding="utf-8") as f:
+                cdata = json.load(f)
+            self.assertEqual(cdata.get("TI20260718"), 2)
+
+            # Check zero .res_* files created
+            res_files = list(result_dir.glob(".res_*")) + list((result_dir / "task").glob(".res_*"))
+            self.assertEqual(len(res_files), 0)
+
+    # 49b. 首次启动（目录不存在）多进程 task_id 并发申请测试
+    def test_49b_multiprocess_initial_run_task_id_uniqueness(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            result_dir = Path(tmp_dir) / "fresh_run" / "result"
+            ctx = multiprocessing.get_context("spawn")
+            queue = ctx.Queue()
+            b1 = ctx.Barrier(2)
+            b2 = ctx.Barrier(2)
+
+            p1 = ctx.Process(target=_mp_id_two_barrier_worker, args=(str(result_dir), "PI", queue, b1, b2))
+            p2 = ctx.Process(target=_mp_id_two_barrier_worker, args=(str(result_dir), "PI", queue, b1, b2))
+
+            p1.start()
+            p2.start()
+            p1.join(timeout=10)
+            p2.join(timeout=10)
+
+            self.assertEqual(p1.exitcode, 0)
+            self.assertEqual(p2.exitcode, 0)
+
+            id1 = queue.get(timeout=2)
+            id2 = queue.get(timeout=2)
+
+            self.assertNotEqual(id1, id2)
+            self.assertEqual(set([id1, id2]), {"PI2026071801", "PI2026071802"})
+
+    # 49c. 4进程并发 ID 申请测试
+    def test_49c_multiprocess_four_process_concurrency(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             ctx = multiprocessing.get_context("spawn")
             queue = ctx.Queue()
-            barrier = ctx.Barrier(2)
+            b1 = ctx.Barrier(4)
+            b2 = ctx.Barrier(4)
 
-            state1 = {"water_depth": 300.0}
-            built1 = {"water_depth": 300.0}
-            state2 = {"water_depth": 500.0}
-            built2 = {"water_depth": 500.0}
+            procs = [
+                ctx.Process(target=_mp_id_two_barrier_worker, args=(tmp_dir, "TI", queue, b1, b2))
+                for _ in range(4)
+            ]
+            for p in procs:
+                p.start()
+            for p in procs:
+                p.join(timeout=10)
 
-            p1 = ctx.Process(target=_mp_intent_worker, args=(tmp_dir, state1, built1, queue, barrier))
-            p2 = ctx.Process(target=_mp_intent_worker, args=(tmp_dir, state2, built2, queue, barrier))
+            for p in procs:
+                self.assertEqual(p.exitcode, 0)
+
+            ids = [queue.get(timeout=2) for _ in range(4)]
+            self.assertEqual(len(set(ids)), 4)
+
+    # 49d. 进程重启序列号连续性测试
+    def test_49d_process_restart_sequence_continuity(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch.dict(os.environ, {"SEAGENT_RESULT_DIR": tmp_dir}):
+                id_sequence._COUNTERS.clear()
+                id1 = id_sequence.next_daily_id("TI", "20260718", 2, [])
+                self.assertEqual(id1, "TI2026071801")
+
+                # Clear process memory counter
+                id_sequence._COUNTERS.clear()
+
+                # Next call reads persistent file and returns 02
+                id2 = id_sequence.next_daily_id("TI", "20260718", 2, [])
+                self.assertEqual(id2, "TI2026071802")
+
+    # 49e. 历史磁盘文件编号大于计数器测试
+    def test_49e_historical_disk_file_higher_than_counter(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            task_dir = Path(tmp_dir) / "task"
+            task_dir.mkdir(parents=True, exist_ok=True)
+            disk_file = task_dir / "task_intent_TI2026071899.json"
+            with open(disk_file, "w", encoding="utf-8") as f:
+                json.dump({"intent_id": "TI2026071899"}, f)
+
+            with patch.dict(os.environ, {"SEAGENT_RESULT_DIR": tmp_dir}):
+                id_sequence._COUNTERS.clear()
+                gid = id_sequence.next_daily_id("TI", "20260718", 2, [(task_dir, "intent_id")])
+                self.assertEqual(gid, "TI20260718100")
+
+    # 49f. 计数器写入失败抛出 IdReservationError 测试
+    def test_49f_counter_write_failure_raises_id_reservation_error(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            orig_open = builtins.open
+            def mock_open(file, *args, **kwargs):
+                filepath = str(file)
+                if ".id_sequences" in filepath or ".tmp_counter" in filepath:
+                    raise OSError("Disk write error")
+                return orig_open(file, *args, **kwargs)
+
+            with patch.dict(os.environ, {"SEAGENT_RESULT_DIR": tmp_dir}), \
+                 patch("builtins.open", side_effect=mock_open):
+                id_sequence._COUNTERS.clear()
+                with self.assertRaises(IdReservationError):
+                    id_sequence.next_daily_id("TI", "20260718", 2, [])
+
+    # 50a. 多进程 publish 竞争 testing (no-clobber with barrier)
+    def test_50a_multiprocess_publish_no_clobber_race(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            task_dir = Path(tmp_dir) / "task"
+            task_dir.mkdir(parents=True, exist_ok=True)
+
+            intent1 = {
+                "intent_id": "TI2026071801",
+                "task_type": "type_A_process_1",
+                "created_at": "2026-07-18T10:00:00"
+            }
+            intent2 = {
+                "intent_id": "TI2026071801",
+                "task_type": "type_B_process_2",
+                "created_at": "2026-07-18T10:00:00"
+            }
+
+            ctx = multiprocessing.get_context("spawn")
+            queue = ctx.Queue()
+            b1 = ctx.Barrier(2)
+
+            p1 = ctx.Process(target=_mp_publish_no_clobber_worker, args=(tmp_dir, intent1, queue, b1))
+            p2 = ctx.Process(target=_mp_publish_no_clobber_worker, args=(tmp_dir, intent2, queue, b1))
 
             p1.start()
             p2.start()
@@ -1033,27 +1217,33 @@ class SlotConsistencyTest(unittest.TestCase):
             res1 = queue.get(timeout=2)
             res2 = queue.get(timeout=2)
 
-            intent_id1, file1, intent_data1 = res1
-            intent_id2, file2, intent_data2 = res2
+            statuses = [res1[0], res2[0]]
+            self.assertEqual(sorted(statuses), ["conflict", "success"])
 
-            self.assertNotEqual(intent_id1, intent_id2)
-            self.assertNotEqual(file1, file2)
+            final_file = task_dir / "task_intent_TI2026071801.json"
+            self.assertTrue(final_file.exists())
 
-            task_dir = Path(tmp_dir) / "task"
-            self.assertTrue((task_dir / file1).exists())
-            self.assertTrue((task_dir / file2).exists())
-            staging_files = list(task_dir.glob("*.staging_*"))
+            staging_files = list(task_dir.glob("*.staging_*")) + list(task_dir.glob("*.tmp_*"))
             self.assertEqual(len(staging_files), 0)
 
-    # 50. 真实多进程 task_id 并发生成测试
-    def test_50_multiprocess_task_id_concurrency(self):
+    # 50b. 多进程 publish 相同内容幂等重试成功 testing
+    def test_50b_multiprocess_publish_idempotent_retry(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
+            task_dir = Path(tmp_dir) / "task"
+            task_dir.mkdir(parents=True, exist_ok=True)
+
+            intent1 = {
+                "intent_id": "TI2026071801",
+                "task_type": "identical_content",
+                "created_at": "2026-07-18T10:00:00"
+            }
+
             ctx = multiprocessing.get_context("spawn")
             queue = ctx.Queue()
-            barrier = ctx.Barrier(2)
+            b1 = ctx.Barrier(2)
 
-            p1 = ctx.Process(target=_mp_task_id_worker, args=(tmp_dir, queue, barrier))
-            p2 = ctx.Process(target=_mp_task_id_worker, args=(tmp_dir, queue, barrier))
+            p1 = ctx.Process(target=_mp_publish_no_clobber_worker, args=(tmp_dir, intent1, queue, b1))
+            p2 = ctx.Process(target=_mp_publish_no_clobber_worker, args=(tmp_dir, intent1, queue, b1))
 
             p1.start()
             p2.start()
@@ -1063,12 +1253,32 @@ class SlotConsistencyTest(unittest.TestCase):
             self.assertEqual(p1.exitcode, 0)
             self.assertEqual(p2.exitcode, 0)
 
-            tid1 = queue.get(timeout=2)
-            tid2 = queue.get(timeout=2)
+            res1 = queue.get(timeout=2)
+            res2 = queue.get(timeout=2)
 
-            self.assertNotEqual(tid1, tid2)
-            self.assertTrue(tid1.startswith("PI"))
-            self.assertTrue(tid2.startswith("PI"))
+            self.assertEqual(res1[0], "success")
+            self.assertEqual(res2[0], "success")
+            self.assertEqual(res1[1], res2[1])
+
+            final_files = list(task_dir.glob("task_intent_*.json"))
+            self.assertEqual(len(final_files), 1)
+
+    # 51. 所有任务 schema 的 export -> restore 往返测试
+    def test_51_all_task_schemas_export_restore_roundtrip(self):
+        task_types = self.kb.get_all_task_type_values()
+        self.assertTrue(len(task_types) > 0)
+
+        for tt in task_types:
+            store = SlotStore(self.kb)
+            schema_fields = self.dm.builder.get_schema(tt, "normal")
+            store._init_task_slots_in_transaction(store.slots, schema_fields)
+
+            # Export snapshot
+            snap = store.export_snapshot()
+
+            # Restore snapshot
+            restored = SlotStore.from_snapshot(snap, self.kb)
+            self.assertEqual(store.export_snapshot(), restored.export_snapshot())
 
 
 if __name__ == "__main__":
