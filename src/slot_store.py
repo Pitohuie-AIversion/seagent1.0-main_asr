@@ -42,11 +42,11 @@ ALLOWED_INTERNAL_SLOTS = {
 
 
 VALID_VALUE_TYPES = {"string", "number", "boolean", "list", "coord", "datetime", "object"}
-LEGACY_SCHEMA_TYPES = {"tasktype", "auto", "fixed"}
+LEGACY_SCHEMA_TYPES = {"tasktype", "auto", "fixed", "raw"}
 
 
 def normalize_slot_value_type(schema_type: Optional[str] = None, value: Any = None) -> str:
-    """Map schema behavior types (tasktype, auto, fixed) or Python values to canonical runtime value types."""
+    """Map schema behavior types (tasktype, auto, fixed, raw) or Python values to canonical runtime value types."""
     if schema_type:
         st = schema_type.lower()
         if st in VALID_VALUE_TYPES:
@@ -54,7 +54,7 @@ def normalize_slot_value_type(schema_type: Optional[str] = None, value: Any = No
                 pass
             else:
                 return st
-        if st == "tasktype":
+        if st in ("tasktype", "raw"):
             return "string"
         if st == "auto":
             if isinstance(value, (int, float)) and not isinstance(value, bool):

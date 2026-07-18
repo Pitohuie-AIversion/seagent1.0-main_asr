@@ -705,10 +705,13 @@ class DialogueManager:
         if "rov_description" in updates:
             self._handle_rov_description_in_transaction(updates["rov_description"], new_slots)
 
-        # Auto-synchronize equipment_type when equipment_name is set/updated
+        # Auto-synchronize equipment_type and equipment_name when any equipment slot is set/updated
         eq_name_slot = new_slots.get("equipment_name")
         eq_type_slot = new_slots.get("equipment_type")
-        eq_val = (eq_name_slot.value if (eq_name_slot and eq_name_slot.status == "valid") else None) or \
+        eq_unit_slot = new_slots.get("equipment_unit_id")
+        eq_val = (eq_unit_slot.value if (eq_unit_slot and eq_unit_slot.status == "valid") else None) or \
+                 (eq_unit_slot.candidate_value if eq_unit_slot else None) or \
+                 (eq_name_slot.value if (eq_name_slot and eq_name_slot.status == "valid") else None) or \
                  (eq_name_slot.candidate_value if eq_name_slot else None) or \
                  (eq_type_slot.value if (eq_type_slot and eq_type_slot.status == "valid") else None) or \
                  (eq_type_slot.candidate_value if eq_type_slot else None)
@@ -716,21 +719,34 @@ class DialogueManager:
             task_type = (new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None) or self.task_state.get("task_type_key")
             rov = (self.kb.get_rov_for_task(eq_val, task_type) if task_type else None) or self.kb.get_rov(eq_val)
             if rov:
+                full_name = rov["full_name"]
                 if "equipment_name" not in new_slots:
                     new_slots["equipment_name"] = Slot("equipment_name")
-                new_slots["equipment_name"].value = rov["full_name"]
+                new_slots["equipment_name"].value = full_name
                 new_slots["equipment_name"].status = "valid"
                 new_slots["equipment_name"].candidate_value = None
-                
-                category = rov.get("category")
-                cats = self.kb.get_robot_classes()
-                if category in cats:
-                    category_name = cats[category].get("display_name", cats[category].get("full_name", category))
-                    if "equipment_type" not in new_slots:
-                        new_slots["equipment_type"] = Slot("equipment_type")
-                    new_slots["equipment_type"].value = category_name
-                    new_slots["equipment_type"].status = "valid"
-                    new_slots["equipment_type"].candidate_value = None
+
+                if "equipment_type" not in new_slots:
+                    new_slots["equipment_type"] = Slot("equipment_type")
+                new_slots["equipment_type"].value = full_name
+                new_slots["equipment_type"].status = "valid"
+                new_slots["equipment_type"].candidate_value = None
+
+                unit_ids = rov.get("unit_ids", [])
+                unit_val = (eq_unit_slot.value if (eq_unit_slot and eq_unit_slot.status == "valid") else None) or \
+                           (eq_unit_slot.candidate_value if eq_unit_slot else None)
+                if unit_val and unit_val in unit_ids:
+                    if "equipment_unit_id" not in new_slots:
+                        new_slots["equipment_unit_id"] = Slot("equipment_unit_id")
+                    new_slots["equipment_unit_id"].value = unit_val
+                    new_slots["equipment_unit_id"].status = "valid"
+                    new_slots["equipment_unit_id"].candidate_value = None
+                elif eq_val in unit_ids:
+                    if "equipment_unit_id" not in new_slots:
+                        new_slots["equipment_unit_id"] = Slot("equipment_unit_id")
+                    new_slots["equipment_unit_id"].value = eq_val
+                    new_slots["equipment_unit_id"].status = "valid"
+                    new_slots["equipment_unit_id"].candidate_value = None
 
     def _handle_task_type_update_in_transaction(self, key: str, value: str, new_slots: dict):
         task_type_map = self.kb.get_task_type_map()

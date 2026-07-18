@@ -338,10 +338,12 @@ def api_chat():
     except SlotVersionConflict as svc:
         logging.error(f"Slot version conflict in /api/chat: {svc}", exc_info=True)
         return jsonify({
+            "ok": False,
             "code": 409,
             "error": "SlotVersionConflict",
             "msg": f"并发版本冲突: {str(svc)}",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown"
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": True
         }), 409
     except IntentIdConflict as iic:
         logging.error(f"Intent ID conflict in /api/chat: {iic}", exc_info=True)
@@ -366,18 +368,22 @@ def api_chat():
     except ValueError as ve:
         logging.error(f"Validation error in /api/chat: {ve}", exc_info=True)
         return jsonify({
+            "ok": False,
             "code": 400,
             "error": "ValidationError",
             "msg": f"槽位校验失败: {str(ve)}",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown"
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": False
         }), 400
     except Exception as exc:
         logging.error(f"Unhandled exception in /api/chat: {exc}", exc_info=True)
         return jsonify({
+            "ok": False,
             "code": 500,
             "error": "InternalServerError",
             "msg": "服务器内部错误，请稍后重试。",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown"
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": True
         }), 500
 
 

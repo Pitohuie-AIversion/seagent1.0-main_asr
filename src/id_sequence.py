@@ -27,6 +27,10 @@ def _get_counter_file_path() -> Path:
     return base / ".id_sequences.json"
 
 
+import logging
+logger = logging.getLogger("backend.id_sequence")
+
+
 def next_daily_id(
     prefix: str,
     date_text: str,
@@ -40,46 +44,100 @@ def next_daily_id(
     counter_file = _get_counter_file_path()
 
     with _LOCK:
-        with open(lock_file, "a+", encoding="utf-8") as f_lock:
-            fcntl.flock(f_lock.fileno(), fcntl.LOCK_EX)
+        try:
             try:
-                persistent_counters: dict[str, int] = {}
-                if counter_file.exists():
-                    try:
-                        with open(counter_file, "r", encoding="utf-8") as f_cnt:
-                            data = json.load(f_cnt)
-                            if isinstance(data, dict):
-                                persistent_counters = {str(k): int(v) for k, v in data.items() if str(v).isdigit()}
-                    except Exception:
-                        persistent_counters = {}
+                f_lock = open(lock_file, "a+", encoding="utf-8")
+            except Exception as e:
+                logger.error(f"Failed to open lock file {lock_file}: {e}", exc_info=True)
+                raise IdReservationError(f"Failed to open lock file {lock_file}: {e}") from e
 
-                persistent_seq = persistent_counters.get(counter_key, 0)
-                disk_max = _max_existing_sequence(prefix, date_text, width, scan_specs_list)
-                mem_curr = _COUNTERS.get(counter_key, 0)
-
-                next_seq = max(persistent_seq, disk_max, mem_curr) + 1
-                _COUNTERS[counter_key] = next_seq
-                persistent_counters[counter_key] = next_seq
-
-                # Save updated counter dictionary to .id_sequences.json atomically
-                tmp_counter_file = counter_file.parent / f".id_sequences.tmp_{os.getpid()}_{threading.get_ident()}"
+            try:
                 try:
-                    with open(tmp_counter_file, "w", encoding="utf-8") as f_tmp:
-                        json.dump(persistent_counters, f_tmp, ensure_ascii=False, indent=2)
-                        f_tmp.flush()
-                        os.fsync(f_tmp.fileno())
-                    os.replace(tmp_counter_file, counter_file)
+                    fcntl.flock(f_lock.fileno(), fcntl.LOCK_EX)
                 except Exception as e:
-                    if tmp_counter_file.exists():
+                    logger.error(f"Failed to acquire flock on {lock_file}: {e}", exc_info=True)
+                    raise IdReservationError(f"Failed to acquire flock on {lock_file}: {e}") from e
+
+                try:
+                    persistent_counters: dict[str, int] = {}
+                    if counter_file.exists():
                         try:
-                            tmp_counter_file.unlink()
+                            with open(counter_file, "r", encoding="utf-8") as f_cnt:
+                                data = json.load(f_cnt)
+                        except Exception as e:
+                            logger.error(f"Failed to read counter file {counter_file}: {e}", exc_info=True)
+                            raise IdReservationError(f"Failed to read counter file {counter_file}: {e}") from e
+
+                        if not isinstance(data, dict):
+                            logger.error(f"Counter file {counter_file} is corrupted: top-level is not a dict")
+                            raise IdReservationError(f"Counter file {counter_file} is corrupted: top-level is not a dictionary")
+
+                        for k, v in data.items():
+                            if not isinstance(k, str):
+                                logger.error(f"Counter key in {counter_file} is not a string: {k!r}")
+                                raise IdReservationError(f"Counter key in {counter_file} is not a string: {k!r}")
+                            if isinstance(v, bool):
+                                logger.error(f"Counter value for key '{k}' in {counter_file} is a boolean: {v!r}")
+                                raise IdReservationError(f"Counter value for key '{k}' in {counter_file} is a boolean: {v!r}")
+                            if isinstance(v, int):
+                                if v < 0:
+                                    logger.error(f"Counter value for key '{k}' in {counter_file} is negative: {v}")
+                                    raise IdReservationError(f"Counter value for key '{k}' in {counter_file} is negative: {v}")
+                                persistent_counters[k] = v
+                            elif isinstance(v, str) and v.isdigit():
+                                persistent_counters[k] = int(v)
+                            else:
+                                logger.error(f"Counter value for key '{k}' in {counter_file} is invalid: {v!r}")
+                                raise IdReservationError(f"Counter value for key '{k}' in {counter_file} is invalid: {v!r}")
+
+                    persistent_seq = persistent_counters.get(counter_key, 0)
+                    disk_max = _max_existing_sequence(prefix, date_text, width, scan_specs_list)
+                    mem_curr = _COUNTERS.get(counter_key, 0)
+
+                    next_seq = max(persistent_seq, disk_max, mem_curr) + 1
+                    updated_persistent = dict(persistent_counters)
+                    updated_persistent[counter_key] = next_seq
+
+                    # Save updated counter dictionary to .id_sequences.json atomically
+                    tmp_counter_file = counter_file.parent / f".id_sequences.tmp_{os.getpid()}_{threading.get_ident()}"
+                    try:
+                        with open(tmp_counter_file, "w", encoding="utf-8") as f_tmp:
+                            json.dump(updated_persistent, f_tmp, ensure_ascii=False, indent=2)
+                            f_tmp.flush()
+                            os.fsync(f_tmp.fileno())
+                        os.replace(tmp_counter_file, counter_file)
+                        try:
+                            dir_fd = os.open(counter_file.parent, os.O_RDONLY)
+                            try:
+                                os.fsync(dir_fd)
+                            finally:
+                                os.close(dir_fd)
                         except Exception:
                             pass
-                    raise IdReservationError(f"Failed to persist ID sequence counter for {counter_key}: {e}") from e
+                    except Exception as e:
+                        if tmp_counter_file.exists():
+                            try:
+                                tmp_counter_file.unlink()
+                            except Exception:
+                                pass
+                        logger.error(f"Failed to persist ID sequence counter for {counter_key}: {e}", exc_info=True)
+                        raise IdReservationError(f"Failed to persist ID sequence counter for {counter_key}: {e}") from e
 
-                return f"{prefix}{date_text}{next_seq:0{width}d}"
+                    _COUNTERS[counter_key] = next_seq
+                    return f"{prefix}{date_text}{next_seq:0{width}d}"
+
+                finally:
+                    try:
+                        fcntl.flock(f_lock.fileno(), fcntl.LOCK_UN)
+                    except Exception:
+                        pass
             finally:
-                fcntl.flock(f_lock.fileno(), fcntl.LOCK_UN)
+                f_lock.close()
+        except IdReservationError:
+            raise
+        except Exception as e:
+            logger.error(f"ID reservation failed for {prefix}{date_text}: {e}", exc_info=True)
+            raise IdReservationError(f"ID reservation failed for {prefix}{date_text}: {e}") from e
 
 
 def _max_existing_sequence(

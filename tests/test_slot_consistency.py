@@ -21,36 +21,45 @@ import multiprocessing
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
 from src.llm_client import LLMClient
-from src.slot_store import SlotStore, Slot, SlotVersionConflict, SnapshotValidationError
+from src.exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError, TaskRollbackError
+from src.slot_store import SlotStore, Slot, SlotVersionConflict, SnapshotValidationError, VALID_VALUE_TYPES
 from src.simulated_time import get_simulated_time
 from src.history_manager import save_conversation, load_history
 from src.task_intent_builder import TaskIntentBuilder
 from src.output_builder import OutputBuilder
 from src.result_paths import get_task_dir, get_history_dir, get_result_dir
-from src.exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError
 import src.id_sequence as id_sequence
 import web_backend
 from web_backend import app
 
 
 def seed_complete_valid_pipeline_task(dm, kb):
-    """Fills all required slots for pipeline_inspection in normal mode with valid KB values."""
+    """Fills all required slots for pipeline_inspection in normal mode with dynamically retrieved valid KB values."""
     dm.reset()
     store = dm.slot_store
 
     task_type_key = "pipeline_inspection"
-    task_type = "管缆巡检"
-    cable_type = "电力电缆"
+    task_type = kb.task_schemas.get("task_templates", {}).get(task_type_key, {}).get("task_type_values", ["管缆巡检"])[0]
+
+    cable_types = [t["label"] for t in kb.assets.get("cable_types", [])]
+    cable_type = cable_types[0] if cable_types else "电力电缆"
+
     water_depth = 300.0
     start_time = "2026-07-19T08:00:00"
     end_time = "2026-07-19T18:00:00"
     start_point = {"lat": 19.5, "lon": 115.2}
     end_point = {"lat": 19.6, "lon": 115.3}
 
-    equipment_type = "观察级深海机器人 HP"
-    equipment_unit_id = "OBSROV-HP-001"
-    payload = ["多波束测深仪", "高清水下摄像机"]
-    support_vessel = "DSV-Oceanic"
+    allowed_rovs = kb.get_task_allowed_robot_variants(task_type_key)
+    selected_rov = allowed_rovs[0] if allowed_rovs else kb.get_all_rovs()[0]
+    equipment_type = selected_rov["full_name"]
+    equipment_unit_id = selected_rov.get("unit_ids", ["OBSROV-HP-001"])[0]
+
+    supported_payloads = selected_rov.get("supported_payloads", [])
+    payload = supported_payloads[:2] if supported_payloads else ["多波束测深仪", "高清水下摄像机"]
+
+    vessels = [v["id"] for v in kb.assets.get("vessels", []) if v.get("available", True)]
+    support_vessel = vessels[0] if vessels else "DSV-Oceanic"
 
     slots_to_seed = {
         "task_id": ("PI2026071801", "string"),
@@ -77,7 +86,7 @@ def seed_complete_valid_pipeline_task(dm, kb):
 
     req_schema = dm.builder.get_schema(task_type_key, dm.mode)
     dm._last_missing = store.get_missing_slots(req_schema)
-    return req_schema
+    return selected_rov
 
 
 def _mp_id_two_barrier_worker(result_dir: str, prefix: str, queue: multiprocessing.Queue, b1: multiprocessing.Barrier, b2: multiprocessing.Barrier):
@@ -718,6 +727,29 @@ class SlotConsistencyTest(unittest.TestCase):
         self.assertNotIn("Traceback", data["msg"])
         self.assertNotIn("/root/private", data["msg"])
 
+    # 30b. /api/chat 异常响应结构完整性测试
+    def test_30b_api_chat_specific_exceptions_response_structure(self):
+        cases = [
+            (IdReservationError("ID counter error"), 500, "IdReservationError", True),
+            (TaskPersistenceError("Disk error"), 500, "TaskPersistenceError", True),
+            (TaskRollbackError("Rollback error"), 500, "TaskRollbackError", True),
+            (IntentIdConflict("Conflict"), 409, "IntentIdConflict", True),
+        ]
+        for exc, expected_code, expected_err, expected_retryable in cases:
+            sid = f"sess_err_{expected_err}"
+            mgr = web_backend.get_or_create_manager(sid)
+            mgr.process = MagicMock(side_effect=exc)
+            res = self.client.post("/api/chat", json={"session_id": sid, "message": "test"})
+            self.assertEqual(res.status_code, expected_code)
+            data = res.get_json()
+            self.assertFalse(data["ok"])
+            self.assertEqual(data["code"], expected_code)
+            self.assertEqual(data["error"], expected_err)
+            self.assertIn("request_id", data)
+            self.assertEqual(data["retryable"], expected_retryable)
+            self.assertNotIn("Traceback", data["msg"])
+            self.assertNotIn("/root/", data["msg"])
+
     # 31. 前端刷新/历史恢复后 collected、missing、task_type 一致
     def test_31_frontend_refresh_and_history_load_consistency(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -813,7 +845,7 @@ class SlotConsistencyTest(unittest.TestCase):
             tmp_path = Path(tmp_dir) / "task"
             tmp_path.mkdir(parents=True, exist_ok=True)
 
-            seed_complete_valid_pipeline_task(self.dm, self.kb)
+            selected_rov = seed_complete_valid_pipeline_task(self.dm, self.kb)
 
             req_schema = self.dm.builder.get_schema("pipeline_inspection", self.dm.mode)
             missing = self.dm.slot_store.get_missing_slots(req_schema)
@@ -821,6 +853,9 @@ class SlotConsistencyTest(unittest.TestCase):
             all_violations = self.dm.validator.validate(self.dm.task_state)
             self.assertFalse(self.dm.validator.has_hard_violations(all_violations))
             self.assertEqual(self.dm.phase, "confirming")
+
+            self.assertEqual(self.dm.task_state.get("equipment_type"), selected_rov["full_name"])
+            self.assertIn(self.dm.task_state.get("equipment_unit_id"), selected_rov.get("unit_ids", []))
 
             store = self.dm.slot_store
             pre_snapshot = copy.deepcopy(store.export_snapshot())
@@ -860,6 +895,46 @@ class SlotConsistencyTest(unittest.TestCase):
                 self.assertIn("publish_staging", log_output)
                 self.assertIn("TaskPersistenceError", log_output)
                 self.assertNotIn("DEBUG SYSTEM PROMPT START", log_output)
+
+    # 36b. 完整任务成功发布端到端测试
+    def test_36b_successful_publish_e2e(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir) / "task"
+            tmp_path.mkdir(parents=True, exist_ok=True)
+
+            selected_rov = seed_complete_valid_pipeline_task(self.dm, self.kb)
+
+            req_schema = self.dm.builder.get_schema("pipeline_inspection", self.dm.mode)
+            missing = self.dm.slot_store.get_missing_slots(req_schema)
+            self.assertEqual(len(missing), 0)
+            self.assertEqual(self.dm.phase, "confirming")
+
+            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
+                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+                reply = self.dm.process("确认开始", request_id="req_test_36b")
+
+                self.assertEqual(self.dm.phase, "done")
+                self.assertIsNotNone(self.dm.final_result)
+
+                intent_slot = self.dm.slot_store.slots.get("intent_id")
+                self.assertIsNotNone(intent_slot)
+                self.assertEqual(intent_slot.status, "valid")
+                self.assertIsNotNone(intent_slot.value)
+
+                final_files = list(tmp_path.glob("task_intent_*.json"))
+                staging_files = list(tmp_path.glob("*.staging_*")) + list(tmp_path.glob("*.tmp_*"))
+                self.assertEqual(len(final_files), 1)
+                self.assertEqual(len(staging_files), 0)
+
+                with open(final_files[0], "r", encoding="utf-8") as f:
+                    file_data = json.load(f)
+
+                self.assertEqual(intent_slot.value, file_data.get("intent_id"))
+                self.assertTrue("已下发" in reply or "已加入计划池" in reply)
+
+                self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
+                self.assertEqual(self.dm._last_built_json, self.dm.slot_store.get_built_json())
+                self.assertEqual(self.dm._last_missing, self.dm.slot_store.get_missing_slots(req_schema))
 
     # 37. 相同 intent_id 重复 persist 结果幂等
     def test_37_persist_idempotent(self):
@@ -1265,20 +1340,84 @@ class SlotConsistencyTest(unittest.TestCase):
 
     # 51. 所有任务 schema 的 export -> restore 往返测试
     def test_51_all_task_schemas_export_restore_roundtrip(self):
-        task_types = self.kb.get_all_task_type_values()
-        self.assertTrue(len(task_types) > 0)
+        task_keys = list(self.kb.task_schemas.get("task_templates", {}).keys())
+        self.assertTrue(len(task_keys) > 0)
+        self.assertIn("pipeline_inspection", task_keys)
+        self.assertIn("pipeline_burial", task_keys)
+        self.assertIn("tree_valve_operation", task_keys)
 
-        for tt in task_types:
-            store = SlotStore(self.kb)
-            schema_fields = self.dm.builder.get_schema(tt, "normal")
-            store._init_task_slots_in_transaction(store.slots, schema_fields)
+        modes = ["normal", "emergency"]
+        for key in task_keys:
+            for mode in modes:
+                schema_fields = self.dm.builder.get_schema(key, mode)
+                self.assertTrue(len(schema_fields) > 0, f"Schema for {key} in {mode} mode must be non-empty")
+                store = SlotStore(self.kb)
+                store._init_task_slots_in_transaction(store.slots, schema_fields)
 
-            # Export snapshot
-            snap = store.export_snapshot()
+                snap = store.export_snapshot()
+                restored = SlotStore.from_snapshot(snap, self.kb)
+                self.assertEqual(store.export_snapshot(), restored.export_snapshot())
 
-            # Restore snapshot
-            restored = SlotStore.from_snapshot(snap, self.kb)
-            self.assertEqual(store.export_snapshot(), restored.export_snapshot())
+                for slot in restored.slots.values():
+                    self.assertIn(slot.value_type, VALID_VALUE_TYPES, f"Slot {slot.slot_name} has invalid value_type '{slot.value_type}'")
+
+    # 52. 装备别名解析及 category 保护测试
+    def test_52_equipment_alias_normalization_and_category_protection(self):
+        dm = DialogueManager(self.llm, self.kb)
+        dm.reset()
+        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+        dm.slot_store.slots["equipment_type"] = Slot("equipment_type", candidate_value="观察级ROV", status="candidate")
+
+        dm._apply_updates_in_transaction({"equipment_type": "观察级ROV"}, dm.slot_store.slots)
+        eq_slot = dm.slot_store.slots.get("equipment_type")
+        self.assertIsNotNone(eq_slot)
+        self.assertEqual(eq_slot.value, "观察级深海机器人 HP")
+        self.assertNotEqual(eq_slot.value, "观察级ROV")
+
+        dm._normalize_and_validate_in_transaction(dm.slot_store.slots, "pipeline_inspection")
+        eq_slot_after = dm.slot_store.slots.get("equipment_type")
+        self.assertEqual(eq_slot_after.status, "valid")
+        self.assertEqual(eq_slot_after.value, "观察级深海机器人 HP")
+
+    # 53. 损坏计数器文件 Fail Closed 测试
+    def test_53_corrupted_counter_files_fail_closed(self):
+        invalid_contents = [
+            ("{broken json", "broken JSON"),
+            ("[1, 2, 3]", "top-level list"),
+            ('{"TI20260718": -5}', "negative counter"),
+            ('{"TI20260718": 12.5}', "float counter"),
+            ('{"TI20260718": true}', "bool counter"),
+            ('{"TI20260718": "abc"}', "invalid string counter"),
+        ]
+        for content, desc in invalid_contents:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                cnt_file = Path(tmp_dir) / ".id_sequences.json"
+                with open(cnt_file, "w", encoding="utf-8") as f:
+                    f.write(content)
+
+                with patch.dict(os.environ, {"SEAGENT_RESULT_DIR": tmp_dir}):
+                    id_sequence._COUNTERS.clear()
+                    with self.assertRaises(IdReservationError, msg=f"Should fail closed for {desc}"):
+                        id_sequence.next_daily_id("TI", "20260718", 2, [])
+
+                    # Original file content unchanged
+                    with open(cnt_file, "r", encoding="utf-8") as f:
+                        self.assertEqual(f.read(), content)
+
+                    # Memory counter not polluted
+                    self.assertNotIn("TI20260718", id_sequence._COUNTERS)
+
+    # 54. 数字字符串计数器显式迁移及恢复递增测试
+    def test_54_counter_file_recovery_and_valid_string_migration(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cnt_file = Path(tmp_dir) / ".id_sequences.json"
+            with open(cnt_file, "w", encoding="utf-8") as f:
+                f.write('{"TI20260718": "50"}')
+
+            with patch.dict(os.environ, {"SEAGENT_RESULT_DIR": tmp_dir}):
+                id_sequence._COUNTERS.clear()
+                gid = id_sequence.next_daily_id("TI", "20260718", 2, [])
+                self.assertEqual(gid, "TI2026071851")
 
 
 if __name__ == "__main__":
