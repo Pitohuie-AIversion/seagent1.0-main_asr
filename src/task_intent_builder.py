@@ -12,7 +12,9 @@ from .simulated_time import get_current_datetime
 from .id_sequence import next_daily_id
 
 import threading
+import uuid
 from .result_paths import get_task_dir
+from .exceptions import IntentIdConflict, TaskPersistenceError
 
 
 class TaskIntentBuilder:
@@ -113,32 +115,74 @@ class TaskIntentBuilder:
             "conditions": conditions,
         }
 
-    def persist(self, intent: Dict[str, Any]) -> str:
-        """持久化已构建的 intent 字典，使用同目录临时文件原子替换，幂等写入"""
+    def create_staging(self, intent: Dict[str, Any]) -> Path:
+        """创建临时 staging 任务文件"""
+        intent_id = intent.get("intent_id", "unknown")
+        task_dir = get_task_dir(create=True)
+        unique_suffix = f"{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}"
+        staging_file = task_dir / f"task_intent_{intent_id}.staging_{unique_suffix}"
+        try:
+            with open(staging_file, "w", encoding="utf-8") as f:
+                json.dump(intent, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            return staging_file
+        except Exception as e:
+            if staging_file.exists():
+                try:
+                    staging_file.unlink()
+                except Exception:
+                    pass
+            raise TaskPersistenceError(f"Failed to create staging file for {intent_id}: {e}") from e
+
+    def publish_staging(self, staging_file: Path, intent: Dict[str, Any]) -> str:
+        """原子发布 staging 临时文件为正式 JSON 文件；存在同名文件时区分幂等与冲突"""
         intent_id = intent.get("intent_id", "unknown")
         task_dir = get_task_dir(create=True)
         final_file = task_dir / f"task_intent_{intent_id}.json"
 
-        # 幂等检查：目标文件已存在直接返回
-        if final_file.exists():
-            return final_file.name
-
-        temp_file = task_dir / f"task_intent_{intent_id}.tmp_{os.getpid()}_{threading.get_ident()}"
         try:
-            with open(temp_file, "w", encoding="utf-8") as f:
-                json.dump(intent, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_file, final_file)
-        except Exception as e:
-            if temp_file.exists():
+            if final_file.exists():
                 try:
-                    temp_file.unlink()
+                    with open(final_file, "r", encoding="utf-8") as f:
+                        existing_data = json.load(f)
+                except Exception:
+                    existing_data = None
+
+                if existing_data == intent:
+                    # 幂等重试成功：内容一致，删除 staging 并返回
+                    if staging_file and staging_file.exists():
+                        try:
+                            staging_file.unlink()
+                        except Exception:
+                            pass
+                    return final_file.name
+                else:
+                    # 内容不一致：触发 IntentIdConflict 异常
+                    if staging_file and staging_file.exists():
+                        try:
+                            staging_file.unlink()
+                        except Exception:
+                            pass
+                    raise IntentIdConflict(f"Intent ID conflict for {intent_id}: target file exists with different content.")
+
+            # 原子替换
+            os.replace(staging_file, final_file)
+            return final_file.name
+        except IntentIdConflict:
+            raise
+        except Exception as e:
+            if staging_file and staging_file.exists():
+                try:
+                    staging_file.unlink()
                 except Exception:
                     pass
-            raise RuntimeError(f"TaskIntent persist failed for {intent_id}: {e}") from e
+            raise TaskPersistenceError(f"Failed to publish staging file for {intent_id}: {e}") from e
 
-        return final_file.name
+    def persist(self, intent: Dict[str, Any]) -> str:
+        """持久化已构建的 intent 字典（先建 staging 再 publish）"""
+        staging = self.create_staging(intent)
+        return self.publish_staging(staging, intent)
 
     def build(
         self,

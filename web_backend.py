@@ -280,6 +280,7 @@ def api_asr():
         return jsonify({"code": 500, "msg": str(e)}), 500
 
 from src.slot_store import SlotVersionConflict
+from src.exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
@@ -342,6 +343,26 @@ def api_chat():
             "msg": f"并发版本冲突: {str(svc)}",
             "request_id": request_id if 'request_id' in locals() else "req_unknown"
         }), 409
+    except IntentIdConflict as iic:
+        logging.error(f"Intent ID conflict in /api/chat: {iic}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 409,
+            "error": "IntentIdConflict",
+            "msg": "Intent ID 存在冲突，未覆盖已有任务文件。",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": True
+        }), 409
+    except (TaskPersistenceError, IdReservationError) as tpe:
+        logging.error(f"Task persistence error in /api/chat: {tpe}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "error": type(tpe).__name__,
+            "msg": "任务文件保存失败，任务未能成功下发。",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": True
+        }), 500
     except ValueError as ve:
         logging.error(f"Validation error in /api/chat: {ve}", exc_info=True)
         return jsonify({

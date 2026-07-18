@@ -14,7 +14,9 @@ from zoneinfo import ZoneInfo
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import copy
 import os
+import multiprocessing
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
 from src.llm_client import LLMClient
@@ -22,10 +24,31 @@ from src.slot_store import SlotStore, Slot, SlotVersionConflict, SnapshotValidat
 from src.simulated_time import get_simulated_time
 from src.history_manager import save_conversation, load_history
 from src.task_intent_builder import TaskIntentBuilder
+from src.output_builder import OutputBuilder
 from src.result_paths import get_task_dir, get_history_dir, get_result_dir
+from src.exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError
 import src.id_sequence as id_sequence
 import web_backend
 from web_backend import app
+
+
+def _mp_intent_worker(result_dir: str, task_state: dict, built_json: dict, queue: multiprocessing.Queue, barrier: multiprocessing.Barrier):
+    os.environ["SEAGENT_RESULT_DIR"] = result_dir
+    kb = KnowledgeBase()
+    builder = TaskIntentBuilder(kb)
+    barrier.wait()
+    intent = builder.prepare(task_state, built_json, "normal", "pipeline_inspection")
+    filename = builder.persist(intent)
+    queue.put((intent["intent_id"], filename, intent))
+
+
+def _mp_task_id_worker(result_dir: str, queue: multiprocessing.Queue, barrier: multiprocessing.Barrier):
+    os.environ["SEAGENT_RESULT_DIR"] = result_dir
+    kb = KnowledgeBase()
+    builder = OutputBuilder(kb)
+    barrier.wait()
+    tid = builder._generate_task_id("pipeline_inspection", {})
+    queue.put(tid)
 
 
 def assert_ssot_consistency(test_case, dm):
@@ -731,18 +754,68 @@ class SlotConsistencyTest(unittest.TestCase):
                 tmp_files = list(tmp_path.glob("*.tmp_*"))
                 self.assertEqual(len(tmp_files), 0)
 
-    # 36. persist 失败不回复“任务已下发”
+    # 36. 完整任务触发 publish 失败：日志包含元数据，状态与 SlotStore 100% 恢复
     def test_36_persist_failure_no_success_reply(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
             tmp_path.mkdir(parents=True, exist_ok=True)
+
+            self.dm.reset()
+            store = self.dm.slot_store
+            store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+            store.slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
+            store.slots["cable_type"] = Slot("cable_type", value="电力电缆", status="valid")
+            store.slots["water_depth"] = Slot("water_depth", value=300.0, status="valid")
+            store.slots["start_time"] = Slot("start_time", value="2026-07-01T08:00:00", status="valid")
+            store.slots["end_time"] = Slot("end_time", value="2026-07-01T18:00:00", status="valid")
+            store.slots["start_point"] = Slot("start_point", value={"lat": 19.5, "lon": 115.2}, status="valid")
+            store.slots["end_point"] = Slot("end_point", value={"lat": 19.6, "lon": 115.3}, status="valid")
+            store.slots["equipment_type"] = Slot("equipment_type", value="观察级深海机器人", status="valid")
+            store.slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV-HP-001", status="valid")
+            store.slots["payload"] = Slot("payload", value=["高清水下摄像机"], status="valid")
+            store.slots["support_vessel"] = Slot("support_vessel", value="DSV-Oceanic", status="valid")
+
+            self.dm.phase = "confirming"
+            self.dm.task_state = store.get_task_state()
+            self.dm._last_built_json = store.get_built_json()
+            self.dm._last_missing = []
+
+            pre_version = store.version
+
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
-                 patch.object(TaskIntentBuilder, "persist", side_effect=RuntimeError("IO Error")):
-                self.dm.reset()
-                self.dm.phase = "confirming"
-                reply = self.dm.process("确认开始")
+                 patch.object(TaskIntentBuilder, "publish_staging", side_effect=RuntimeError("Simulated disk error")) as mock_pub, \
+                 self.assertLogs("src.dialogue_manager", level="ERROR") as cm:
+
+                reply = self.dm.process("确认开始", request_id="req_test_36")
+
+                # 1. Verify mock_pub was called
+                mock_pub.assert_called_once()
+
+                # 2. Reply does NOT contain success statements
                 self.assertNotIn("已下发", reply)
-                self.assertNotEqual(self.dm.phase, "done")
+                self.assertNotIn("已加入计划池", reply)
+
+                # 3. Phase and final_result restored
+                self.assertEqual(self.dm.phase, "confirming")
+                self.assertIsNone(self.dm.final_result)
+
+                # 4. SlotStore and states 100% restored
+                self.assertEqual(self.dm.slot_store.version, pre_version)
+                self.assertNotIn("intent_id", self.dm.slot_store.slots)
+                self.assertEqual(self.dm.slot_store.get_task_state(), store.get_task_state())
+
+                # 5. Disk files: no formal JSON, no temp/staging files
+                final_files = list(tmp_path.glob("task_intent_*.json"))
+                staging_files = list(tmp_path.glob("*.staging_*")) + list(tmp_path.glob("*.tmp_*"))
+                self.assertEqual(len(final_files), 0)
+                self.assertEqual(len(staging_files), 0)
+
+                # 6. Log verification: request_id, intent_id, stage, err_type, no prompt leak
+                log_output = "\n".join(cm.output)
+                self.assertIn("req_test_36", log_output)
+                self.assertIn("publish_staging", log_output)
+                self.assertIn("RuntimeError", log_output)
+                self.assertNotIn("DEBUG SYSTEM PROMPT START", log_output)
 
     # 37. 相同 intent_id 重复 persist 结果幂等
     def test_37_persist_idempotent(self):
@@ -886,6 +959,116 @@ class SlotConsistencyTest(unittest.TestCase):
             dm2_acquired = dm2._session_lock.acquire(blocking=False)
             self.assertTrue(dm2_acquired)
             dm2._session_lock.release()
+
+    # 47. 不同内容使用相同 intent_id 触发 IntentIdConflict
+    def test_47_different_content_same_intent_id_raises_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir) / "task"
+            tmp_path.mkdir(parents=True, exist_ok=True)
+            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+                builder = TaskIntentBuilder(self.kb)
+                intent1 = builder.prepare(
+                    task_state={"water_depth": 300.0},
+                    built_json={"water_depth": 300.0},
+                    mode="normal",
+                    task_type_key="pipeline_inspection"
+                )
+                filename = builder.persist(intent1)
+
+                intent2 = copy.deepcopy(intent1)
+                intent2["task_type"] = "different_type_modified"
+                staging2 = builder.create_staging(intent2)
+                with self.assertRaises(IntentIdConflict):
+                    builder.publish_staging(staging2, intent2)
+
+                # Original file content is unchanged
+                with open(tmp_path / filename, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.assertEqual(data["task_type"], "pipeline_inspection")
+
+    # 48. 相同内容使用相同 intent_id 幂等重试成功
+    def test_48_identical_content_same_intent_id_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir) / "task"
+            tmp_path.mkdir(parents=True, exist_ok=True)
+            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+                builder = TaskIntentBuilder(self.kb)
+                intent1 = builder.prepare(
+                    task_state={"water_depth": 300.0},
+                    built_json={"water_depth": 300.0},
+                    mode="normal",
+                    task_type_key="pipeline_inspection"
+                )
+                f1 = builder.persist(intent1)
+                staging2 = builder.create_staging(intent1)
+                f2 = builder.publish_staging(staging2, intent1)
+                self.assertEqual(f1, f2)
+
+                final_files = list(tmp_path.glob("task_intent_*.json"))
+                self.assertEqual(len(final_files), 1)
+
+    # 49. 真实多进程 intent_id 并发申请测试
+    def test_49_multiprocess_intent_id_concurrency(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = multiprocessing.get_context("spawn")
+            queue = ctx.Queue()
+            barrier = ctx.Barrier(2)
+
+            state1 = {"water_depth": 300.0}
+            built1 = {"water_depth": 300.0}
+            state2 = {"water_depth": 500.0}
+            built2 = {"water_depth": 500.0}
+
+            p1 = ctx.Process(target=_mp_intent_worker, args=(tmp_dir, state1, built1, queue, barrier))
+            p2 = ctx.Process(target=_mp_intent_worker, args=(tmp_dir, state2, built2, queue, barrier))
+
+            p1.start()
+            p2.start()
+            p1.join(timeout=10)
+            p2.join(timeout=10)
+
+            self.assertEqual(p1.exitcode, 0)
+            self.assertEqual(p2.exitcode, 0)
+
+            res1 = queue.get(timeout=2)
+            res2 = queue.get(timeout=2)
+
+            intent_id1, file1, intent_data1 = res1
+            intent_id2, file2, intent_data2 = res2
+
+            self.assertNotEqual(intent_id1, intent_id2)
+            self.assertNotEqual(file1, file2)
+
+            task_dir = Path(tmp_dir) / "task"
+            self.assertTrue((task_dir / file1).exists())
+            self.assertTrue((task_dir / file2).exists())
+            staging_files = list(task_dir.glob("*.staging_*"))
+            self.assertEqual(len(staging_files), 0)
+
+    # 50. 真实多进程 task_id 并发生成测试
+    def test_50_multiprocess_task_id_concurrency(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = multiprocessing.get_context("spawn")
+            queue = ctx.Queue()
+            barrier = ctx.Barrier(2)
+
+            p1 = ctx.Process(target=_mp_task_id_worker, args=(tmp_dir, queue, barrier))
+            p2 = ctx.Process(target=_mp_task_id_worker, args=(tmp_dir, queue, barrier))
+
+            p1.start()
+            p2.start()
+            p1.join(timeout=10)
+            p2.join(timeout=10)
+
+            self.assertEqual(p1.exitcode, 0)
+            self.assertEqual(p2.exitcode, 0)
+
+            tid1 = queue.get(timeout=2)
+            tid2 = queue.get(timeout=2)
+
+            self.assertNotEqual(tid1, tid2)
+            self.assertTrue(tid1.startswith("PI"))
+            self.assertTrue(tid2.startswith("PI"))
 
 
 if __name__ == "__main__":

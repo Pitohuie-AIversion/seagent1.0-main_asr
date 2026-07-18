@@ -20,10 +20,13 @@ dialogue_manager.py - 对话主控制器
 
 import copy
 import json
+import logging
 import threading
 from typing import Any
 from zoneinfo import ZoneInfo
-from datetime import datetime   # ✅ 新增导入
+from datetime import datetime
+
+logger = logging.getLogger(__name__)   # ✅ 新增导入
 
 from .llm_client import LLMClient
 from .knowledge_retriever import KnowledgeBase
@@ -320,12 +323,21 @@ class DialogueManager:
         # Check required missing in working new_slots
         if curr_task_type_key:
             req_schema = self.builder.get_schema(curr_task_type_key, proposed_mode)
-            cand_missing = [f for f in req_schema if not new_slots.get(f["key"]) or new_slots[f["key"]].status != "valid" or new_slots[f["key"]].value is None]
+            cand_missing = [f for f in req_schema if f.get("type") not in ("auto", "fixed") and (not new_slots.get(f["key"]) or new_slots[f["key"]].status != "valid" or new_slots[f["key"]].value is None)]
         else:
             cand_missing = [{"key": "task_type", "label": "任务类型", "type": "string", "allowed_values": self.kb.get_all_task_type_values()}]
 
         if not cand_missing and proposed_phase not in ("blocked_hard", "blocked_soft", "confirming", "done"):
             proposed_phase = "confirming"
+
+        staging_file = None
+        prev_snap = None
+        prev_mode = self.mode
+        prev_phase = self.phase
+        prev_task_state = copy.deepcopy(self.task_state)
+        prev_built = copy.deepcopy(self._last_built_json)
+        prev_missing = copy.deepcopy(self._last_missing)
+        prev_hist = list(self.conversation_history)
 
         if old_phase == "confirming" and self._user_confirmed(user_message):
             cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
@@ -333,6 +345,7 @@ class DialogueManager:
             all_violations = self.validator.validate(cand_state)
             if not cand_missing and not self.validator.has_hard_violations(all_violations):
                 proposed_phase = "done"
+                prev_snap = self.slot_store.export_snapshot()
                 ti_builder = TaskIntentBuilder(self.kb)
                 ti_json_artifact = ti_builder.prepare(
                     task_state=cand_state,
@@ -340,6 +353,7 @@ class DialogueManager:
                     mode=proposed_mode,
                     task_type_key=curr_task_type_key
                 )
+                staging_file = ti_builder.create_staging(ti_json_artifact)
                 ti_intent_id = ti_json_artifact["intent_id"]
                 if "intent_id" not in new_slots:
                     new_slots["intent_id"] = Slot("intent_id")
@@ -348,12 +362,20 @@ class DialogueManager:
                 new_slots["intent_id"].source = "auto"
 
         # Atomic single commit with optimistic version validation
-        self.slot_store.commit_transaction(
-            new_slots,
-            new_unresolved,
-            request_id=request_id,
-            expected_version=expected_version,
-        )
+        try:
+            self.slot_store.commit_transaction(
+                new_slots,
+                new_unresolved,
+                request_id=request_id,
+                expected_version=expected_version,
+            )
+        except Exception as commit_exc:
+            if staging_file and staging_file.exists():
+                try:
+                    staging_file.unlink()
+                except Exception:
+                    pass
+            raise commit_exc
         
         # Apply proposed instance state AFTER successful commit
         self.mode = proposed_mode
@@ -415,19 +437,38 @@ class DialogueManager:
             constraint_context = self._run_constraint_check(changed_fields)
 
         if self.phase == "done":
-            if ti_json_artifact:
+            if ti_json_artifact and staging_file:
                 ti_builder = TaskIntentBuilder(self.kb)
                 try:
-                    ti_builder.persist(ti_json_artifact)
+                    ti_builder.publish_staging(staging_file, ti_json_artifact)
                 except Exception as exc:
-                    logging.error(
-                        f"TaskIntent persist failed: request_id={request_id}, "
-                        f"intent_id={ti_json_artifact.get('intent_id')}, stage=persist, err={exc}",
-                        exc_info=True
-                    )
-                    self.phase = old_phase
+                    if staging_file and staging_file.exists():
+                        try:
+                            staging_file.unlink()
+                        except Exception:
+                            pass
+                    if prev_snap:
+                        self.slot_store.restore_snapshot(prev_snap)
+                    self.mode = prev_mode
+                    self.phase = prev_phase
+                    self.task_state = self.slot_store.get_task_state()
+                    self._last_built_json = self.slot_store.get_built_json()
+                    self._last_missing = prev_missing
+                    self.conversation_history = prev_hist
                     self.final_result = None
-                    return "服务器内部文件保存失败，任务未能成功下发，请稍后重试。"
+
+                    logger.error(
+                        "TaskIntent publish failed: request_id=%s, task_id=%s, intent_id=%s, store_version=%d, stage=%s, err_type=%s, err=%s",
+                        request_id,
+                        built.get("task_id", "unknown"),
+                        ti_json_artifact.get("intent_id", "unknown"),
+                        self.slot_store.version,
+                        "publish_staging",
+                        type(exc).__name__,
+                        exc,
+                        exc_info=True,
+                    )
+                    return "服务器保存任务定义失败，任务未能成功下发，请稍后重试。"
 
             self.final_result = built
             if self.task_start_now:
