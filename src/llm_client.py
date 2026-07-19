@@ -252,7 +252,27 @@ class LLMClient:
             # Mock mode chat responder
             system_content = messages[0]["content"] if messages else ""
             user_msg = messages[-1]["content"] if messages else ""
-            
+
+            if "You are a professional translator" in system_content or "Translate the given text" in system_content:
+                if "Chinese" in system_content:
+                    dict_map = {
+                        "Confirm the task.": "确认任务。",
+                        "Confirm the task": "确认任务。",
+                        "Start the task.": "开始任务。",
+                        "Start the task": "开始任务。",
+                        "Hello": "你好",
+                    }
+                    return dict_map.get(user_msg.strip(), f"【翻译】{user_msg.strip()}")
+                elif "English" in system_content:
+                    dict_map = {
+                        "确认任务。": "Confirm the task.",
+                        "确认任务": "Confirm the task",
+                        "创建一个水下巡检任务": "Create a subsea inspection task",
+                        "你好": "Hello",
+                    }
+                    return dict_map.get(user_msg.strip(), f"[Translation] {user_msg.strip()}")
+                return user_msg.strip()
+
             if any(kw in user_msg for kw in ["取消", "放弃", "不要了", "终止", "退出"]):
                 return "任务已取消。如需重新规划，请重新开始。"
             

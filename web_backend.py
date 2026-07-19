@@ -227,19 +227,38 @@ def index():
 
 @app.route("/api/asr", methods=["POST"])
 def api_asr():
+    req_id = f"req_{uuid.uuid4().hex[:8]}"
     if _shared_asr is None:
-        return jsonify({"code": 503, "msg": "ASR service is not initialized"}), 503
+        return jsonify({
+            "ok": False,
+            "code": 503,
+            "error": "service_unavailable",
+            "msg": "ASR service is not initialized",
+            "request_id": req_id,
+            "retryable": True
+        }), 503
 
     audio = request.files.get("audio")
     if audio is None or not audio.filename:
-        return jsonify({"code": 400, "msg": "missing audio file"}), 400
+        return jsonify({
+            "ok": False,
+            "code": 400,
+            "error": "missing_file",
+            "msg": "missing audio file (expected form field: 'audio')",
+            "request_id": req_id,
+            "retryable": False
+        }), 400
 
     filename = secure_filename(audio.filename)
     if not _is_allowed_audio(filename):
         return jsonify({
+            "ok": False,
             "code": 400,
+            "error": "unsupported_format",
             "msg": f"unsupported audio format: {Path(filename).suffix}",
             "allowed_extensions": sorted(_allowed_audio_extensions),
+            "request_id": req_id,
+            "retryable": False
         }), 400
 
     language = (request.form.get("language") or _asr_api_config.get("language") or "Chinese").strip()
@@ -584,9 +603,21 @@ def _translate_text_internal(text: str, target_lang: str) -> str:
 
 @app.route("/api/translate", methods=["POST"])
 def api_translate():
+    req_id = f"req_{uuid.uuid4().hex[:8]}"
     data = request.json or {}
     text = data.get("text", "").strip()
-    target_lang = data.get("target_lang", "English").strip()
+
+    if "target_lang" not in data or data.get("target_lang") is None:
+        return jsonify({
+            "ok": False,
+            "code": 400,
+            "error": "missing_parameter",
+            "msg": "Missing required parameter: target_lang",
+            "request_id": req_id,
+            "retryable": False
+        }), 400
+
+    target_lang = str(data.get("target_lang", "")).strip()
 
     if not text:
         return jsonify({"code": 200, "translated_text": ""})
@@ -594,7 +625,14 @@ def api_translate():
     # 校验 target_lang
     allowed_langs = {"English", "Chinese"}
     if target_lang not in allowed_langs:
-        return jsonify({"code": 400, "msg": f"Unsupported target_lang: {target_lang}. Allowed: {sorted(allowed_langs)}"}), 400
+        return jsonify({
+            "ok": False,
+            "code": 400,
+            "error": "unsupported_language",
+            "msg": f"Unsupported target_lang: {target_lang}. Allowed: {sorted(allowed_langs)}",
+            "request_id": req_id,
+            "retryable": False
+        }), 400
 
     try:
         original_text = text
@@ -614,10 +652,24 @@ def api_translate():
         return jsonify(resp)
 
     except RuntimeError as re_err:
-        return jsonify({"code": 503, "msg": str(re_err)}), 503
+        return jsonify({
+            "ok": False,
+            "code": 503,
+            "error": "model_error",
+            "msg": str(re_err),
+            "request_id": req_id,
+            "retryable": True
+        }), 503
     except Exception as e:
         logging.exception("[translate] Unexpected error in api_translate")
-        return jsonify({"code": 500, "msg": str(e)}), 500
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "error": "internal_error",
+            "msg": "Internal server error during translation",
+            "request_id": req_id,
+            "retryable": True
+        }), 500
 
 
 # ==============================================================================
