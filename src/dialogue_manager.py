@@ -1258,6 +1258,10 @@ class DialogueManager:
         if not is_pending_oil:
             return None
 
+        # 获取当前候选名称（用于动态匹配拒绝/确认）
+        candidate = self._top_pending_oilfield_candidate()
+        candidate_name = candidate.get("name") if candidate else raw_name
+
         # 1. 优先排除全局取消指令，避免局部处理截获全局取消
         msg_clean = user_message.strip().lower()
         if any(c in msg_clean for c in ["取消当前任务", "放弃当前任务", "终止当前任务", "取消任务", "放弃任务", "终止任务"]):
@@ -1270,18 +1274,21 @@ class DialogueManager:
         if has_other_update:
             return None
 
-        if self._user_cancelled_oilfield(user_message):
+        # 3. 结构化解析 oilfield 动作（动态结合候选名称，而非只维护固定短语）
+        action_result = self._parse_oilfield_action(user_message, candidate_name)
+
+        if action_result["action"] == "reject":
             snap_slots, snap_unresolved, snap_ver = self.slot_store.snapshot()
             for k in ("oilfield_name", "oilfield_entity_id", "pending_oilfield_name", "pending_oilfield_candidates"):
                 if k in snap_slots:
                     if k == "oilfield_name":
-                        if snap_slots[k].value is not None:
-                            snap_slots[k].status = "valid"
-                            snap_slots[k].candidate_value = None
-                        else:
-                            snap_slots[k].value = None
+                        # 保留 oilfield_name 的原有 valid 值（若有），仅清除 pending 状态
+                        if snap_slots[k].status == "pending_confirmation":
                             snap_slots[k].status = "missing"
+                            snap_slots[k].value = None
+                            snap_slots[k].candidate_value = None
                             snap_slots[k].raw_value = None
+                        # 若 oilfield_name 有合法值，保持 valid 状态
                     else:
                         snap_slots[k].value = None
                         snap_slots[k].status = "missing"
@@ -1293,7 +1300,7 @@ class DialogueManager:
             self._rebuild_cache()
             return "已取消当前待确认油田名称，请提供标准的油田名称（例如：流花11-1油田、陵水17-2油田等），或补充油田坐标。"
 
-        if not self._user_confirmed_oilfield(user_message):
+        if action_result["action"] != "confirm":
             return None
 
         candidate = self._top_pending_oilfield_candidate()
@@ -1392,12 +1399,87 @@ class DialogueManager:
         return any(kw in msg for kw in keywords)
 
     @staticmethod
+    def _parse_oilfield_action(message: str, candidate_name: str | None) -> dict:
+        """结构化解析 pending oilfield 动作。
+
+        Returns:
+            {"action": "confirm" | "reject" | "none", "target": "pending_oilfield", "matched_name": str | None}
+        """
+        msg = message.strip()
+        msg_lower = msg.lower()
+
+        # 安全防护：绝对不处理全局取消/任务修改表达
+        global_cancel_phrases = ["取消当前任务", "放弃当前任务", "终止当前任务", "取消任务",
+                                 "放弃任务", "终止任务"]
+        if any(p in msg for p in global_cancel_phrases):
+            return {"action": "none", "target": "pending_oilfield", "matched_name": None}
+
+        # 安全防护：包含"不要取消"/"不是要取消"等否定取消表达 → 不是拒绝油田
+        if any(nc in msg for nc in ["不要取消", "不是要取消", "别取消"]):
+            return {"action": "none", "target": "pending_oilfield", "matched_name": None}
+
+        # 安全防护：只是拒绝发布确认 → 不清除 pending oilfield
+        deny_publish_phrases = ["不确认发布", "不要发布", "先别发布", "不发布", "不确认下发", "不要下发"]
+        if any(p in msg for p in deny_publish_phrases):
+            return {"action": "none", "target": "pending_oilfield", "matched_name": None}
+
+        # ── 拒绝信号检测 ──
+        # 1. 静态固定拒绝短语
+        static_rejects = ["取消油田匹配", "重新选择油田", "换一个油田", "这个候选不对", "这个不对"]
+        if any(r in msg for r in static_rejects):
+            return {"action": "reject", "target": "pending_oilfield", "matched_name": candidate_name}
+
+        # 2. 动态候选名称：当候选名出现在消息中且含否定前缀/后缀词
+        if candidate_name:
+            deny_prefixes = ["不是", "不对", "不用", "不要"]
+            deny_suffixes = ["不对", "不行", "不是", "不符合", "错了", "不匹配"]
+            msg_has_candidate = candidate_name in msg
+            if msg_has_candidate:
+                has_deny = (
+                    any(msg.startswith(d) or msg_lower.startswith(d) for d in deny_prefixes) or
+                    any(
+                        candidate_name in part and
+                        any(suf in part for suf in deny_suffixes)
+                        for part in [msg]
+                    ) or
+                    # 格式：不是<候选名> / <候选名>不对 / <候选名>不是
+                    any(f"{d}{candidate_name}" in msg for d in deny_prefixes) or
+                    any(f"{candidate_name}{s}" in msg for s in deny_suffixes)
+                )
+                if has_deny:
+                    return {"action": "reject", "target": "pending_oilfield",
+                            "matched_name": candidate_name}
+
+        # ── 确认信号检测 ──
+        confirm_phrases = ["确认使用", "确认油田", "使用该油田", "就用这个", "确定使用"]
+        confirm_simple = ["是的", "对的", "对", "好", "ok", "确认", "确定", "采用"]
+        negations = ["不", "别", "不要", "不是", "取消"]
+
+        has_negation = any(neg in msg for neg in negations)
+        if not has_negation:
+            if any(p in msg for p in confirm_phrases):
+                return {"action": "confirm", "target": "pending_oilfield",
+                        "matched_name": candidate_name}
+            if msg_lower in confirm_simple or any(kw in msg for kw in ["是", "确认", "好的", "使用"]):
+                # 简单确认词，只有消息很短且无歧义才认为是确认
+                if len(msg) <= 10 or any(p in msg for p in confirm_phrases):
+                    return {"action": "confirm", "target": "pending_oilfield",
+                            "matched_name": candidate_name}
+
+        return {"action": "none", "target": "pending_oilfield", "matched_name": None}
+
+    @staticmethod
     def _user_cancelled_oilfield(message: str) -> bool:
-        msg = message.strip().lower()
-        explicit_rejects = ["这个油田不对", "油田不对", "取消油田匹配", "重新选择油田", "油田不对劲"]
-        if "取消任务" in msg or "取消当前任务" in msg or "不要取消" in msg or "别取消" in msg:
+        """Deprecated: 兼容旧调用，内部委托给 _parse_oilfield_action（无候选名上下文）。"""
+        msg = message.strip()
+        msg_lower = msg.lower()
+        if any(p in msg for p in ["取消当前任务", "放弃当前任务", "终止当前任务", "取消任务",
+                                   "不要取消", "不是要取消", "别取消"]):
             return False
-        return any(er in msg for er in explicit_rejects)
+        static_rejects = ["这个油田不对", "油田不对", "取消油田匹配", "重新选择油田",
+                          "换一个油田", "这个候选不对"]
+        return any(er in msg for er in static_rejects)
+
 
     # --------------------------------------------------------------------------
     # 约束检查（硬解除后检查软）
@@ -1765,19 +1847,33 @@ class DialogueManager:
 
             if not valid_pub_evidence:
                 candidate_phase = "confirming" if not candidate_missing else "collecting"
+                # 发布证据无效：清除旧 done ID（不可复用），强制生成新草稿 ID
                 if "intent_id" in candidate_slot_store.slots:
                     candidate_slot_store.slots["intent_id"].value = None
                     candidate_slot_store.slots["intent_id"].status = "missing"
+                needs_new_id_due_to_downgrade = True
+            else:
+                needs_new_id_due_to_downgrade = False
+        else:
+            needs_new_id_due_to_downgrade = False
 
-        if candidate_phase in ("confirming", "done"):
+        # 仅在确有需要时生成新 intent_id，preserving valid IDs for confirming/done
+        if candidate_phase in ("confirming", "done") or needs_new_id_due_to_downgrade:
             intent_slot = candidate_slot_store.slots.get("intent_id")
-            if candidate_phase != "done" or not intent_slot or intent_slot.status != "valid" or not intent_slot.value:
+            needs_new_intent_id = (
+                needs_new_id_due_to_downgrade
+                or intent_slot is None
+                or intent_slot.status != "valid"
+                or not intent_slot.value
+            )
+            if needs_new_intent_id:
                 today = get_current_datetime().strftime("%Y%m%d")
                 from .task_intent_builder import get_task_dir
                 task_dir = get_task_dir(create=False)
                 from .id_sequence import next_daily_id
                 ti_intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
-                new_intent_slot = Slot("intent_id", value=ti_intent_id, value_type="string", status="valid", source="auto")
+                new_intent_slot = Slot("intent_id", value=ti_intent_id, value_type="string",
+                                      status="valid", source="auto")
                 new_intent_slot.version = (intent_slot.version + 1) if intent_slot else 1
                 candidate_slot_store.slots["intent_id"] = new_intent_slot
                 candidate_slot_store.version += 1

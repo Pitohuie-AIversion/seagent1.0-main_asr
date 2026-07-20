@@ -113,6 +113,7 @@ class IntentRouter:
     def __init__(self, llm: LLMClient, device_terms: set[str] | None = None):
         self.llm = llm
         self.device_terms = device_terms
+        self.ambiguous_device_terms: set[str] | None = None
 
     def route(
         self,
@@ -132,14 +133,17 @@ class IntentRouter:
                 should_update_slots=False,
             )
 
-        # 动态加载知识库设备词汇表（避免写死与数据脱节）
-        if self.device_terms is None:
+        # 动态加载知识库设备词汇表和歧义集合（避免写死与数据脱节）
+        if self.device_terms is None or self.ambiguous_device_terms is None:
             try:
                 from .knowledge_retriever import KnowledgeBase
-                self.device_terms = KnowledgeBase().get_all_device_terms()
+                _kb = KnowledgeBase()
+                self.ambiguous_device_terms = _kb.get_ambiguous_device_terms()
+                self.device_terms = _kb.get_all_device_terms()
             except Exception as e:
                 logger.warning(f"[IntentRouter] Failed to load dynamic device terms: {e}")
                 self.device_terms = set(DEVICE_ENTITIES)
+                self.ambiguous_device_terms = set()
 
         # ── 1. 确定性规则判断 ──────────────────────────────────────────────────
         rule_result = self._try_rule_routing(msg, task_state, phase, expected_slots)
@@ -172,7 +176,7 @@ class IntentRouter:
         has_dev = any(e.lower() in msg.lower() for e in (device_terms | set(DEVICE_ENTITIES)) if len(e) >= 2 and not e.isdigit())
         has_tool = any(e in msg.lower() for e in TOOL_ENTITIES)
 
-        negation_cancel = ["不要取消", "别取消", "不能取消", "不放弃", "不终止"]
+        negation_cancel = ["不要取消", "别取消", "不能取消", "不放弃", "不终止", "不是要取消", "不是取消"]
         negation_confirm = ["不好", "不确认", "不要发布", "先别发布", "不能发布", "不要下发", "不发布", "不是", "不", "别", "不要"]
 
         # ── 1. 控制语义：取消 / 确认 ──
@@ -290,7 +294,25 @@ class IntentRouter:
             )
 
         is_device_cap_pattern = bool(re.search(r"(?:最大水深|作业水深|下潜能力|作业能力|能否作业|深水作业|能在\d+米|在\d+米|能否在)", msg)) or "最大水深" in msg
-        if (has_dev or is_device_cap_pattern) and (is_q or any(kw in msg for kw in ["能在", "作业", "水深", "下潜", "设备", "参数", "能力", "支持", "最大水深"])) and "当前任务有哪些参数" not in msg and not is_modification_request:
+
+        # ── 歧义设备别名检查：命中歧义词时进入 CLARIFICATION ──
+        # 必须先于 DEVICE_CAPABILITY 规则检查，防止对歧义名称做确定性路由
+        ambiguous_terms = self.ambiguous_device_terms or set()
+        hit_ambiguous = any(
+            term in msg for term in ambiguous_terms
+            if len(term) >= 2 and not term.isdigit()
+        )
+        device_cap_keywords = ["能在", "作业", "水深", "下潜", "设备", "参数", "能力", "支持", "最大水深"]
+        if hit_ambiguous and (is_q or any(kw in msg for kw in device_cap_keywords)) and not is_modification_request:
+            return IntentRouteResult(
+                intent="CLARIFICATION",
+                confidence=0.95,
+                reason="设备别名存在歧义（对应多个设备型号），无法确定具体对象，请用户明确指定设备名称",
+                source="rule",
+                should_update_slots=False,
+            )
+
+        if (has_dev or is_device_cap_pattern) and (is_q or any(kw in msg for kw in device_cap_keywords)) and "当前任务有哪些参数" not in msg and not is_modification_request:
             return IntentRouteResult(
                 intent="DEVICE_CAPABILITY",
                 confidence=0.98,

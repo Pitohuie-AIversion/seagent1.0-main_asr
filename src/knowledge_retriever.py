@@ -614,34 +614,70 @@ class KnowledgeBase:
 
     def get_all_device_terms(self) -> set[str]:
         """从知识库配置动态生成只读设备检索词集合（过滤纯数字及歧义通用词）。"""
+        ambiguous = self.get_ambiguous_device_terms()
         terms: set[str] = set()
         all_rovs = self.get_all_rovs()
-        ambiguous_generic = {"一号机", "二号机", "三号机", "1号机", "2号机", "001", "002"}
         for r in all_rovs:
             for field in ["full_name", "family_full_name", "robot_class_name", "model", "category_name"]:
                 val = r.get(field)
                 if val:
                     v_str = str(val).strip()
-                    if not v_str.isdigit() and v_str not in ambiguous_generic:
+                    if not v_str.isdigit() and v_str not in ambiguous:
                         terms.add(v_str)
             for alias in (r.get("aliases") or []):
                 if alias and len(str(alias).strip()) >= 2:
                     a_str = str(alias).strip()
-                    if not a_str.isdigit() and a_str not in ambiguous_generic:
+                    if not a_str.isdigit() and a_str not in ambiguous:
                         terms.add(a_str)
             for unit in (r.get("fleet_units") or []):
                 for u_field in ["unit_id", "display_name", "serial_no"]:
                     val = unit.get(u_field)
                     if val:
                         u_str = str(val).strip()
-                        if not u_str.isdigit() and u_str not in ambiguous_generic:
+                        if not u_str.isdigit() and u_str not in ambiguous:
                             terms.add(u_str)
                 for u_alias in (unit.get("aliases") or []):
                     if u_alias and len(str(u_alias).strip()) >= 2:
                         ua_str = str(u_alias).strip()
-                        if not ua_str.isdigit() and ua_str not in ambiguous_generic:
+                        if not ua_str.isdigit() and ua_str not in ambiguous:
                             terms.add(ua_str)
         return terms
+
+    def get_device_alias_index(self) -> dict:
+        """动态构建别名→设备ID列表的索引（不依赖硬编码黑名单）。
+
+        Returns:
+            dict: {alias_str: [variant_id_or_unit_id, ...]}
+        """
+        index: dict[str, list[str]] = {}
+        all_rovs = self.get_all_rovs()
+        for r in all_rovs:
+            # 顶层机器人家族别名 → 使用 model 或 full_name 作为 variant_id
+            family_id = r.get("model") or r.get("full_name", "unknown_family")
+            for alias in (r.get("aliases") or []):
+                if alias:
+                    a_str = str(alias).strip()
+                    if a_str:
+                        index.setdefault(a_str, [])
+                        if family_id not in index[a_str]:
+                            index[a_str].append(family_id)
+            # 具体机型单元别名 → 使用 unit_id 作为 variant_id
+            for unit in (r.get("fleet_units") or []):
+                unit_id = unit.get("unit_id") or family_id
+                for u_alias in (unit.get("aliases") or []):
+                    if u_alias:
+                        ua_str = str(u_alias).strip()
+                        if ua_str:
+                            index.setdefault(ua_str, [])
+                            if unit_id not in index[ua_str]:
+                                index[ua_str].append(unit_id)
+        return index
+
+    def get_ambiguous_device_terms(self) -> set[str]:
+        """返回对应2个或以上不同设备/机型的歧义别名集合（动态推导，无硬编码黑名单）。"""
+        index = self.get_device_alias_index()
+        return {alias for alias, ids in index.items() if len(ids) > 1}
+
 
     # ──────────────────────────────────────────────────────────────────────────
     # ✅ 专属强类型只读查询接口
