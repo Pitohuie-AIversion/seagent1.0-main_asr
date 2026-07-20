@@ -124,28 +124,25 @@ class IntentRouter:
             logger.warning(f"[IntentRouter] LLM classification error: {exc}")
 
         # ── 3. 兜底回退 ────────────────────────────────────────────────────────
-        if task_state.get("task_type_key"):
-            return IntentRouteResult(
-                intent="TASK_UPDATE",
-                confidence=0.7,
-                reason="极低置信度/解析异常，当前已有活跃任务，回退到任务参数提取",
-                source="fallback",
-                should_update_slots=True,
-            )
-
         return IntentRouteResult(
             intent="CLARIFICATION",
             confidence=0.5,
-            reason="意图未匹配或 LLM 解析异常，降级到澄清",
+            reason="意图未匹配或 LLM 解析异常，安全降级到澄清",
             source="fallback",
             should_update_slots=False,
         )
 
     def _try_rule_routing(self, msg: str, task_state: dict, phase: str) -> IntentRouteResult | None:
-        msg_lower = msg.lower()
+        import re
+        msg_clean = re.sub(r"[。！？,!?. ]+", "", msg.strip()).lower()
 
-        # 取消命令
-        if any(kw in msg for kw in ["取消当前任务", "取消任务", "终止任务", "放弃任务"]):
+        negation_cancel = ["不要取消", "别取消", "不能取消", "不放弃", "不终止"]
+        negation_confirm = ["不好", "不确认", "不要发布", "先别发布", "不能发布", "不要下发", "不发布", "不是"]
+
+        # ── 1. 控制语义：取消 / 确认 ──
+        # 取消命令 (不能带有否定取消语义)
+        explicit_cancel = ["取消当前任务", "放弃当前任务", "终止当前任务", "不要这个任务了", "取消任务", "放弃任务", "终止任务"]
+        if any(p in msg for p in explicit_cancel) and not any(nc in msg for nc in negation_cancel):
             return IntentRouteResult(
                 intent="TASK_CANCEL",
                 confidence=1.0,
@@ -153,7 +150,7 @@ class IntentRouter:
                 source="rule",
                 should_update_slots=False,
             )
-        if phase in ("blocked_hard", "blocked_soft", "confirming", "collecting") and msg in ("取消", "放弃", "不要了", "终止", "退出"):
+        if phase in ("blocked_hard", "blocked_soft", "confirming", "collecting") and msg_clean in ("取消", "放弃", "不要了", "终止", "退出") and not any(nc in msg for nc in negation_cancel):
             return IntentRouteResult(
                 intent="TASK_CANCEL",
                 confidence=1.0,
@@ -162,18 +159,19 @@ class IntentRouter:
                 should_update_slots=False,
             )
 
-        # 确认发布指令 (强结合 phase 判断)
-        if phase == "confirming":
-            if any(kw in msg for kw in ["确认发布", "确认下发", "确认", "发布", "是的", "好", "可以", "确定"]):
+        # 确认发布指令 (只在允许的 phase 中生效，且绝不能带有否定确认语义)
+        explicit_confirm = ["确认发布", "确认下发", "发布任务", "确定发布", "确认继续", "忽略警告", "忽略"]
+        if phase in ("confirming", "blocked_soft"):
+            if (any(kw in msg for kw in explicit_confirm) or msg_clean in ("确认", "确定", "是的", "好", "可以")) and not any(nc in msg for nc in negation_confirm):
                 return IntentRouteResult(
                     intent="TASK_CONFIRM",
                     confidence=1.0,
-                    reason="用户在确认阶段确认发布",
+                    reason="用户在确认/软警告阶段确认发布",
                     source="rule",
                     should_update_slots=False,
                 )
         else:
-            if msg in ("确认", "确定", "好的", "是的") and not task_state.get("task_type_key"):
+            if msg_clean in ("确认", "确定", "好的", "是的") and not task_state.get("task_type_key") and not any(nc in msg for nc in negation_confirm):
                 return IntentRouteResult(
                     intent="CLARIFICATION",
                     confidence=0.9,
@@ -182,9 +180,75 @@ class IntentRouter:
                     should_update_slots=False,
                 )
 
-        # 常规问候 / 自我介绍
-        msg_clean = msg.rstrip("。！？,!?. ").strip()
-        if msg_clean in ("你好", "您好", "你好啊", "哈喽", "hi", "hello"):
+        # ── 2. 状态查询 ──
+        if any(kw in msg for kw in ["当前任务进行到哪一步", "任务进度", "当前任务状态", "任务填到哪了", "进度如何", "进行到哪一步"]):
+            return IntentRouteResult(
+                intent="TASK_STATUS",
+                confidence=0.98,
+                reason="任务阶段进度询问规则命中",
+                source="rule",
+                should_update_slots=False,
+                query_subtype="task_progress",
+            )
+        if any(kw in msg for kw in ["当前机器人状态", "机器人状态怎么样", "设备状态如何", "实时状态", "推进器状态"]):
+            return IntentRouteResult(
+                intent="DEVICE_STATUS",
+                confidence=0.95,
+                reason="设备遥测实时状态询问规则命中",
+                source="rule",
+                should_update_slots=False,
+                query_subtype="telemetry",
+            )
+        if any(kw in msg for kw in ["这里的海况", "海况怎么样", "环境信息", "当前海流", "底质如何"]):
+            return IntentRouteResult(
+                intent="ENVIRONMENT_QUERY",
+                confidence=0.95,
+                reason="海域环境信息询问规则命中",
+                source="rule",
+                should_update_slots=False,
+                query_subtype="environment",
+            )
+
+        # ── 3. 工具、设备能力与业务知识查询 ──
+        if any(kw in msg for kw in ["可以使用哪些工具", "可以用哪些工具", "可以使用的工具", "可用工具", "适合使用什么工具", "使用什么工具", "携带什么工具", "工具列表", "配备什么工具", "搭载什么工具", "支持什么工具"]):
+            return IntentRouteResult(
+                intent="TOOL_QUERY",
+                confidence=0.98,
+                reason="工具列表/负载询问规则命中",
+                source="rule",
+                should_update_slots=False,
+                query_subtype="available_tools",
+            )
+        if any(kw in msg for kw in ["500米级机器人", "深海机器人", "级机器人有哪些", "设备支持什么能力", "最大水深是多少", "有哪些型号", "有哪些机器人", "有哪些rov", "深潜器", "潜器", "支持几米水深", "能够作业深", "作业能力", "功能参数", "型号有哪些", "有哪些参数", "参数"]):
+            return IntentRouteResult(
+                intent="DEVICE_CAPABILITY",
+                confidence=0.98,
+                reason="设备能力/型号查询规则命中",
+                source="rule",
+                should_update_slots=False,
+                query_subtype="device_capabilities",
+            )
+        if any(kw in msg for kw in ["作业规则", "管道分类", "管缆类型", "任务模板"]):
+            return IntentRouteResult(
+                intent="KNOWLEDGE_QA",
+                confidence=0.95,
+                reason="业务知识库查询规则命中",
+                source="rule",
+                should_update_slots=False,
+                query_subtype="knowledge",
+            )
+
+        # ── 4. 普通对话与问候 ──
+        if any(kw in msg_clean for kw in ["谢谢", "多谢", "感谢", "thx", "thanks"]):
+            return IntentRouteResult(
+                intent="GENERAL_CHAT",
+                confidence=1.0,
+                reason="日常致谢语",
+                source="rule",
+                should_update_slots=False,
+                query_subtype="thanks",
+            )
+        if msg_clean in ("你好", "您好", "你好啊", "哈喽", "hi", "hello", "早上好", "下午好", "晚上好"):
             return IntentRouteResult(
                 intent="GENERAL_CHAT",
                 confidence=1.0,
@@ -203,67 +267,33 @@ class IntentRouter:
                 query_subtype="introduction",
             )
 
-        # 工具查询
-        if any(kw in msg for kw in ["有哪些工具", "可用工具", "可以使用哪些工具", "携带什么工具", "工具列表"]):
+        # ── 5. 明确任务创建 ──
+        create_verbs = ["创建", "新建", "开展", "开始", "建立", "执行", "想要", "进行"]
+        explicit_task_nouns = ["巡检", "插拔", "采油树", "面板", "管缆", "水线", "水下任务", "管线巡检", "水深"]
+        if any(v in msg for v in create_verbs) or (not task_state.get("task_type_key") and any(n in msg for n in explicit_task_nouns)):
             return IntentRouteResult(
-                intent="TOOL_QUERY",
-                confidence=0.98,
-                reason="工具列表/负载询问规则命中",
+                intent="TASK_CREATE",
+                confidence=0.95,
+                reason="规则识别到任务创建指令或新任务短语",
                 source="rule",
-                should_update_slots=False,
-                query_subtype="available_tools",
+                should_update_slots=True,
             )
 
-        # 状态查询
-        if any(kw in msg for kw in ["当前任务进行到哪一步", "任务进度", "当前任务状态", "任务填到哪了"]):
+        # ── 6. 明确任务修改 ──
+        update_verbs = ["改成", "修改", "设置", "重置", "换成", "定位在", "更名", "选择", "选用", "使用", "携带", "装载", "配备", "搭载", "带上", "把", "由", "调整"]
+        update_slots = ["水深", "深度", "坐标", "经纬度", "支持船", "船", "工具", "抓手", "模式", "时间", "井口", "油田", "缆线"]
+        has_num = bool(re.search(r"\d+", msg))
+
+        if any(v in msg for v in update_verbs) or (task_state.get("task_type_key") and (any(s in msg for s in update_slots) or has_num)):
             return IntentRouteResult(
-                intent="TASK_STATUS",
-                confidence=0.98,
-                reason="任务阶段进度询问规则命中",
-                source="rule",
-                should_update_slots=False,
-                query_subtype="task_progress",
-            )
-        if any(kw in msg for kw in ["当前机器人状态", "机器人状态怎么样", "设备状态如何", "实时状态"]):
-            return IntentRouteResult(
-                intent="DEVICE_STATUS",
+                intent="TASK_UPDATE",
                 confidence=0.95,
-                reason="设备遥测实时状态询问规则命中",
+                reason="规则识别到具体参数修改或已有任务下的槽位填报",
                 source="rule",
-                should_update_slots=False,
-                query_subtype="telemetry",
-            )
-        if any(kw in msg for kw in ["这里的海况", "海况怎么样", "环境信息", "当前海流"]):
-            return IntentRouteResult(
-                intent="ENVIRONMENT_QUERY",
-                confidence=0.95,
-                reason="海域环境信息询问规则命中",
-                source="rule",
-                should_update_slots=False,
-                query_subtype="environment",
+                should_update_slots=True,
             )
 
-        # 设备能力与知识查询规则
-        if any(kw in msg for kw in ["有哪些机器人", "有哪些rov", "级机器人有哪些", "设备支持什么能力", "最大水深是多少", "有哪些型号"]):
-            return IntentRouteResult(
-                intent="DEVICE_CAPABILITY",
-                confidence=0.98,
-                reason="设备能力/型号查询规则命中",
-                source="rule",
-                should_update_slots=False,
-                query_subtype="device_capabilities",
-            )
-        if any(kw in msg for kw in ["有哪些参数", "作业规则", "管道分类", "管缆类型"]):
-            return IntentRouteResult(
-                intent="KNOWLEDGE_QA",
-                confidence=0.95,
-                reason="业务知识库查询规则命中",
-                source="rule",
-                should_update_slots=False,
-                query_subtype="knowledge",
-            )
-
-        # 澄清指令
+        # ── 7. 意图澄清指令 ──
         if msg_clean in ("帮我处理一下", "处理一下", "处理", "搞一下", "跑一下") or any(kw in msg_clean for kw in ["帮我处理", "处理一下", "搞一下", "跑一下"]):
             return IntentRouteResult(
                 intent="CLARIFICATION",
@@ -271,28 +301,6 @@ class IntentRouter:
                 reason="模糊的通用动词请求，需进行意图澄清",
                 source="rule",
                 should_update_slots=False,
-            )
-
-        # 任务创建 / 参数更新规则
-        task_keywords = ["巡检", "采油树", "面板", "管缆", "水下任务", "水深", "坐标", "经纬度", "插入", "拔出", "携带", "装载", "配备", "搭载", "包含", "设备", "工具", "油田", "井口", "从", "到", "度", "米"]
-        create_verbs = ["创建", "新建", "开展", "开始", "执行", "想要", "进行", "建立"]
-
-        if any(v in msg for v in create_verbs) or (not task_state.get("task_type_key") and any(k in msg for k in task_keywords)):
-            return IntentRouteResult(
-                intent="TASK_CREATE",
-                confidence=0.95,
-                reason="规则识别到任务创建指令或关键字段",
-                source="rule",
-                should_update_slots=True,
-            )
-
-        if task_state.get("task_type_key"):
-            return IntentRouteResult(
-                intent="TASK_UPDATE",
-                confidence=0.95,
-                reason="已有任务收集状态下的输入，引导至任务参数提取",
-                source="rule",
-                should_update_slots=True,
             )
 
         return None
@@ -306,20 +314,6 @@ class IntentRouter:
     ) -> IntentRouteResult | None:
         if self.llm is None:
             return None
-
-        if hasattr(self.llm, "extract_json") and hasattr(self.llm.extract_json, "return_value") and isinstance(self.llm.extract_json.return_value, dict):
-            mock_res = self.llm.extract_json.return_value
-            if "intent" in mock_res:
-                mock_intent = str(mock_res.get("intent", "UNKNOWN")).strip().upper()
-                intent_final = mock_intent if mock_intent in VALID_INTENTS else "TASK_UPDATE"
-                should_up = intent_final in MUTATING_INTENTS
-                return IntentRouteResult(
-                    intent=intent_final,
-                    confidence=1.0,
-                    reason="Mock LLM extract_json return_value override",
-                    source="llm",
-                    should_update_slots=should_up,
-                )
 
         messages = [
             {"role": "system", "content": INTENT_ROUTER_SYSTEM},
@@ -344,9 +338,9 @@ class IntentRouter:
             return None
 
         try:
-            confidence = float(parsed.get("confidence", 0.0))
+            confidence = float(parsed.get("confidence", 1.0))
         except (ValueError, TypeError):
-            confidence = 0.0
+            confidence = 1.0
         confidence = max(0.0, min(1.0, confidence))
 
         reason = str(parsed.get("reason", "LLM意图判断"))

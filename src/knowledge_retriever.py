@@ -665,21 +665,42 @@ class KnowledgeBase:
         if query_type == "DEVICE_CAPABILITY":
             all_rovs = self.get_all_rovs()
             query_norm = user_message.lower().replace(" ", "")
-            matched_rovs = []
-            for r in all_rovs:
-                targets = [r.get("full_name"), r.get("robot_class_name"), r.get("model")] + r.get("aliases", [])
-                if any(t and str(t).lower().replace(" ", "") in query_norm for t in targets):
-                    matched_rovs.append(r)
 
-            if matched_rovs:
-                target_list = matched_rovs
-                found = True
-            elif any(kw in query_norm for kw in ["哪些", "有什么", "推荐", "可以", "型号", "设备", "介绍"]):
-                target_list = all_rovs
-                found = True
-            else:
-                target_list = []
-                found = False
+            import re
+            exact_depth = None
+            min_depth = None
+            max_depth = None
+
+            m_exact = re.search(r"(\d+)\s*米级", user_message)
+            m_min = re.search(r"(?:支持|能够|可|大于|不少于|超过)\s*(\d+)\s*米", user_message)
+            m_max = re.search(r"(?:最大不超过|不超过|小于|低于)\s*(\d+)\s*米", user_message)
+
+            if m_exact:
+                exact_depth = int(m_exact.group(1))
+            elif m_min:
+                min_depth = int(m_min.group(1))
+            elif m_max:
+                max_depth = int(m_max.group(1))
+
+            matched_by_name = []
+            for r in all_rovs:
+                targets = [r.get("full_name"), r.get("robot_class_name"), r.get("model")] + (r.get("aliases") or [])
+                if any(t and str(t).lower().replace(" ", "") in query_norm for t in targets if t):
+                    matched_by_name.append(r)
+
+            filtered = []
+            if exact_depth is not None:
+                filtered = [r for r in all_rovs if r.get("max_depth_m") == exact_depth]
+            elif min_depth is not None:
+                filtered = [r for r in all_rovs if (r.get("max_depth_m") or 0) >= min_depth]
+            elif max_depth is not None:
+                filtered = [r for r in all_rovs if (r.get("max_depth_m") or 0) <= max_depth]
+            elif matched_by_name:
+                filtered = matched_by_name
+            elif any(kw in query_norm for kw in ["所有", "全部", "列表"]):
+                filtered = all_rovs
+
+            found = bool(filtered)
 
             results = [
                 {
@@ -691,7 +712,7 @@ class KnowledgeBase:
                     "supported_payloads": r.get("supported_payloads", []),
                     "fleet_unit_count": len(r.get("fleet_units", [])),
                 }
-                for r in target_list
+                for r in filtered
             ]
             base_resp["results"] = results
             base_resp["found"] = found

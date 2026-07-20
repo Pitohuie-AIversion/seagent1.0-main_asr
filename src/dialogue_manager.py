@@ -175,12 +175,12 @@ class DialogueManager:
 
     def _handle_knowledge_query(self, user_message: str, route: IntentRouteResult) -> str:
         kb_evidence = self.kb.execute_typed_query(route.intent, user_message)
+        if not kb_evidence.get("found"):
+            return "当前知识库未提供该信息。"
         messages = build_knowledge_responder_messages(kb_evidence, self.conversation_history, user_message)
-        reply = self.llm.generate(messages, temperature=0.1)
+        reply = self.llm.chat(messages, temperature=0.1)
         if not reply or not reply.strip():
-            if not kb_evidence.get("found"):
-                return "当前知识库未提供该信息。"
-            return "收到您的知识查询，但知识库中暂未找到匹配的条目。"
+            return "当前知识库未提供该信息。"
         return self.llm.filter_reply(reply)
 
     def _handle_status_query(self, user_message: str, route: IntentRouteResult) -> str:
@@ -196,7 +196,6 @@ class DialogueManager:
             }
         else:
             equipment = self.task_state.get("equipment_name") or self.task_state.get("equipment_type")
-            coords = self.task_state.get("start_point") or self.task_state.get("oilfield_coordinates")
             has_realtime = False
             state_dict = None
             if equipment and route.intent == "DEVICE_STATUS":
@@ -215,14 +214,14 @@ class DialogueManager:
                 return "当前实时状态源尚未建立或暂时不可用，无法确认设备/环境的最新状态。"
 
         messages = build_status_responder_messages(status_evidence, self.conversation_history, user_message)
-        reply = self.llm.generate(messages, temperature=0.1)
+        reply = self.llm.chat(messages, temperature=0.1)
         if not reply or not reply.strip():
             return f"当前任务处于【{self.phase}】阶段，已收集 {len(self._last_built_json)} 个字段。"
         return self.llm.filter_reply(reply)
 
     def _handle_general_chat(self, user_message: str, route: IntentRouteResult) -> str:
         messages = build_general_chat_messages(self.conversation_history, user_message)
-        reply = self.llm.generate(messages, temperature=0.7)
+        reply = self.llm.chat(messages, temperature=0.7)
         if not reply or not reply.strip():
             reply = "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
         return self.llm.filter_reply(reply)

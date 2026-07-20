@@ -24,4 +24,4 @@ venv/
 
 # 外部或本地临时目录
 outside/
-*.png
+/chrome_e2e_screenshot.png

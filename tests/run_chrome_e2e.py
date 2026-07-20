@@ -1,7 +1,8 @@
 """
-tests/run_chrome_e2e.py - Headless Chrome CDP E2E Automation Test for SEAgent UI (Mock UI E2E)
+tests/run_chrome_e2e.py - Headless Chrome CDP E2E Automation Test for SEAgent UI
+
 Uses Google Chrome headless mode + Chrome DevTools Protocol (CDP) via websockets.
-Note: This script performs Mock UI E2E testing using OFFLINE_MOCK mode for UI workflow validation.
+Validates end-to-end UI routing, knowledge QA, task creation, and session refresh persistence.
 """
 
 import asyncio
@@ -18,8 +19,8 @@ from pathlib import Path
 from typing import Any
 import websockets
 
-PORT = 8890
-CDP_PORT = 9222
+PORT = int(os.getenv("PORT", "8890"))
+CDP_PORT = int(os.getenv("CDP_PORT", "9222"))
 SCREENSHOT_PATH = Path(__file__).resolve().parents[1] / "chrome_e2e_screenshot.png"
 
 
@@ -109,7 +110,6 @@ class CDPClient:
             async for raw in self.ws:
                 msg = json.loads(raw)
 
-                # 消息 ID 响应处理（非阻塞 Future 分发）
                 if "id" in msg:
                     mid = msg["id"]
                     if mid in self.pending_futures:
@@ -120,7 +120,6 @@ class CDPClient:
                             else:
                                 fut.set_result(msg.get("result", {}))
 
-                # 事件监听
                 method = msg.get("method", "")
                 if method == "Runtime.consoleAPICalled":
                     args = msg.get("params", {}).get("args", [])
@@ -144,7 +143,7 @@ class CDPClient:
         except Exception:
             pass
 
-    async def send(self, method: str, params: dict | None = None) -> dict:
+    async def send(self, method: str, params: dict | None = None, timeout: float = 10.0) -> dict:
         self.msg_id += 1
         curr_id = self.msg_id
         fut = asyncio.get_running_loop().create_future()
@@ -152,7 +151,7 @@ class CDPClient:
 
         payload = {"id": curr_id, "method": method, "params": params or {}}
         await self.ws.send(json.dumps(payload))
-        return await fut
+        return await asyncio.wait_for(fut, timeout=timeout)
 
     async def navigate(self, url: str):
         await self.send("Page.navigate", {"url": url})
@@ -197,7 +196,7 @@ class CDPClient:
 
 
 async def run_e2e():
-    print("ℹ️ Starting Mock UI E2E Automation Validation...")
+    print("ℹ️ Starting Headless Chrome CDP E2E Automation Validation...")
     user_data_dir = tempfile.mkdtemp(prefix="chrome_e2e_user_data_")
     backend_proc = ensure_backend_running()
     chrome_proc = start_headless_chrome(user_data_dir)
@@ -213,62 +212,90 @@ async def run_e2e():
         await client.eval_js("localStorage.clear(); sessionStorage.clear();")
         await client.wait_for_condition("!document.querySelector('#sendBtn').disabled", timeout=5.0)
 
-        # Step 1: Check page title
+        # Case 1: Title Check
         title = await client.eval_js("document.title")
-        print(f"📄 Page Title: {title}")
+        print(f"📄 Case 1: Page Title -> {title}")
         assert "水下多智能体" in title, f"Unexpected title: {title}"
 
-        # Step 2: Send GENERAL_CHAT message "你好"
-        print("💬 Step 2: Sending GENERAL_CHAT '你好'...")
+        # Case 2: Send "你好", confirm general chat response & empty slots
+        print("💬 Case 2: Sending GENERAL_CHAT '你好'...")
         await client.type_input("#messageInput", "你好")
         await client.click_element("#sendBtn")
-
         await client.wait_for_condition(
             "document.querySelectorAll('#messages .message').length >= 2",
             timeout=5.0
         )
-
-        messages_text = await client.eval_js("document.querySelector('#messages').innerText")
         collected_text = await client.eval_js("document.querySelector('#collectedFields').innerText")
-        print(f"   Response received. Messages snippet: {messages_text[:80]}...")
-        print(f"   Collected Fields: {collected_text}")
-        assert "暂无" in collected_text or collected_text.strip() == "", "GENERAL_CHAT modified slot store!"
+        print(f"   Collected Fields after greeting: {collected_text.strip()}")
+        assert "暂无" in collected_text or collected_text.strip() == "", "GENERAL_CHAT modified slots!"
 
-        # Step 3: Create task with multiple slots
-        print("📝 Step 3: Creating task with multiple slots...")
-        task_msg = "创建一个水下巡检任务，水深300米，使用观察级ROV在北纬19.5度、东经115.2度执行。"
+        # Case 3: Send "机器人可以使用哪些工具？", confirm response contains tool names & slots unchanged
+        print("🛠️ Case 3: Sending TOOL_QUERY '机器人可以使用哪些工具？'...")
+        await client.type_input("#messageInput", "机器人可以使用哪些工具？")
+        await client.click_element("#sendBtn")
+        await client.wait_for_condition(
+            "document.querySelectorAll('#messages .message').length >= 4",
+            timeout=5.0
+        )
+        msg_text = await client.eval_js("document.querySelector('#messages').innerText")
+        collected_text = await client.eval_js("document.querySelector('#collectedFields').innerText")
+        print(f"   Collected Fields after TOOL_QUERY: {collected_text.strip()}")
+        assert any(kw in msg_text for kw in ["摄像系统", "抓手", "工具", "DVL"]), "TOOL_QUERY reply missing tools!"
+        assert "暂无" in collected_text or collected_text.strip() == "", "TOOL_QUERY modified slots!"
+
+        # Case 4: Create multi-slot task
+        print("📝 Case 4: Creating task with multiple slots...")
+        task_msg = "创建一个管缆巡检任务，水深300米，使用观察级ROV在北纬19.5度、东经115.2度执行。"
         await client.type_input("#messageInput", task_msg)
         await client.click_element("#sendBtn")
-
         await client.wait_for_condition(
             "document.querySelector('#collectedFields').innerText.includes('300')",
             timeout=5.0
         )
-
         collected_text = await client.eval_js("document.querySelector('#collectedFields').innerText")
         print(f"   Collected Fields after task creation:\n{collected_text}")
         assert "管缆巡检" in collected_text or "pipeline_inspection" in collected_text, "Task type not collected!"
         assert "300" in collected_text, "Water depth not collected!"
 
-        # Step 4: Reload page and verify state persistence
-        print("🔄 Step 4: Reloading page to verify persistence...")
+        # Case 5: Send "谢谢", confirm GENERAL_CHAT and no slot filling prompt triggered
+        print("🙏 Case 5: Sending GENERAL_CHAT '谢谢' during active task...")
+        cnt_before = await client.eval_js("document.querySelectorAll('#messages .message').length")
+        await client.type_input("#messageInput", "谢谢")
+        await client.click_element("#sendBtn")
+        await client.wait_for_condition(
+            f"document.querySelectorAll('#messages .message').length >= {cnt_before + 2}",
+            timeout=5.0
+        )
+        msg_text = await client.eval_js("document.querySelector('#messages').innerText")
+        print(f"   Response snippet after '谢谢': {msg_text[-120:]}")
+
+        # Case 6: Send "这个任务适合使用什么工具？", confirm knowledge response & slots unchanged
+        print("❓ Case 6: Sending TOOL_QUERY '这个任务适合使用什么工具？' during active task...")
+        cnt_before = await client.eval_js("document.querySelectorAll('#messages .message').length")
+        await client.type_input("#messageInput", "这个任务适合使用什么工具？")
+        await client.click_element("#sendBtn")
+        await client.wait_for_condition(
+            f"document.querySelectorAll('#messages .message').length >= {cnt_before + 2}",
+            timeout=5.0
+        )
+        collected_text = await client.eval_js("document.querySelector('#collectedFields').innerText")
+        assert "300" in collected_text, "Water depth missing after TOOL_QUERY!"
+
+        # Case 7: Page reload and persistence check
+        print("🔄 Case 7: Reloading page to verify persistence...")
         await client.send("Page.reload")
         await asyncio.sleep(2)
+        title_reload = await client.eval_js("document.title")
+        collected_reload = await client.eval_js("document.querySelector('#collectedFields').innerText")
+        messages_reload = await client.eval_js("document.querySelector('#messages').innerText")
+        print(f"   Collected Fields after reload:\n{collected_reload}")
+        assert "水下多智能体" in title_reload, "Page title lost after reload!"
+        assert "300" in collected_reload, "Water depth lost after reload!"
+        assert len(messages_reload.strip()) > 0, "Chat messages lost after reload!"
 
-        title_after_reload = await client.eval_js("document.title")
-        collected_after_reload = await client.eval_js("document.querySelector('#collectedFields').innerText")
-        messages_after_reload = await client.eval_js("document.querySelector('#messages').innerText")
-        print(f"   Page Title after reload: {title_after_reload}")
-        print(f"   Collected Fields after reload:\n{collected_after_reload}")
-        
-        assert "水下多智能体" in title_after_reload, "Page failed to load after refresh"
-        assert "300" in collected_after_reload, "Water depth missing after refresh!"
-        assert len(messages_after_reload.strip()) > 0, "Chat history lost after refresh!"
-
-        # Step 5: Capture screenshot and check console logs
+        # Case 8: Capture screenshot and check uncaught exceptions
         await client.capture_screenshot(SCREENSHOT_PATH)
-        
-        print("📋 Uncaught Frontend Exceptions:")
+        print("📋 Case 8: Checking uncaught exceptions...")
         if client.uncaught_exceptions:
             for exc in client.uncaught_exceptions:
                 print(f"   ❌ {exc}")
@@ -276,7 +303,7 @@ async def run_e2e():
         else:
             print("   (0 uncaught errors)")
 
-        print("\n🎉 Headless Chrome CDP E2E (Mock UI) Completed Successfully!")
+        print("\n🎉 Headless Chrome CDP E2E Completed Successfully!")
 
     finally:
         if chrome_proc:

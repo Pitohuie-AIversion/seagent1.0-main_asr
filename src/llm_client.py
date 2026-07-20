@@ -77,7 +77,11 @@ class LLMClient:
         鲁棒性处理：去除 markdown 代码块标记后再解析。
         """
         if self.llm is None:
-            user_msg = messages[-1]["content"] if messages else ""
+            raw_content = messages[-1]["content"] if messages else ""
+            if "【最新用户输入】:" in raw_content:
+                user_msg = raw_content.split("【最新用户输入】:")[1].strip().strip('"')
+            else:
+                user_msg = raw_content
             user_msg_strip = user_msg.strip()
 
             # 1. GENERAL_CHAT handling
@@ -273,17 +277,48 @@ class LLMClient:
                     return dict_map.get(user_msg.strip(), f"[Translation] {user_msg.strip()}")
                 return user_msg.strip()
 
-            if "【知识库强类型检索证据】" in system_content:
-                parts = system_content.split("【知识库强类型检索证据】")
-                evidence_snippet = parts[1].strip() if len(parts) > 1 else ""
-                return f"根据知识库提供的证据信息：\n{evidence_snippet[:300]}"
+            if "【知识库强类型检索证据】\n" in system_content:
+                evidence_block = system_content.split("【知识库强类型检索证据】\n")[1].split("【")[0].strip()
+                try:
+                    ev_json = json.loads(evidence_block)
+                    if not ev_json.get("found"):
+                        return "当前知识库未提供该信息。"
+                    qtype = ev_json.get("query_type")
+                    results = ev_json.get("results", [])
+                    if qtype == "TOOL_QUERY":
+                        tools = []
+                        for res in results:
+                            if res.get("category") == "all_supported_tools":
+                                tools = res.get("tools", [])
+                                break
+                        if tools:
+                            return f"机器人当前支持的搭载工具与负荷包括：{', '.join(tools)}。"
+                        return "当前系统暂未配置可用工具。"
+                    elif qtype == "DEVICE_CAPABILITY":
+                        names = [r.get("full_name") for r in results if r.get("full_name")]
+                        if names:
+                            return f"符合条件的设备如下：{', '.join(names)}。"
+                        return "当前知识库未提供该信息。"
+                except Exception:
+                    pass
+                return f"根据知识库提供的证据信息：\n{evidence_block[:300]}"
 
-            if "【权威状态证据】" in system_content:
-                parts = system_content.split("【权威状态证据】")
-                evidence_snippet = parts[1].strip() if len(parts) > 1 else ""
-                return f"根据当前权威状态证据：\n{evidence_snippet[:300]}"
+            if "【权威状态证据】\n" in system_content:
+                evidence_block = system_content.split("【权威状态证据】\n")[1].split("【")[0].strip()
+                try:
+                    ev_json = json.loads(evidence_block)
+                    if ev_json.get("query_type") == "TASK_STATUS":
+                        phase = ev_json.get("phase", "collecting")
+                        collected = ev_json.get("collected_slots", {})
+                        missing = ev_json.get("missing_slots", [])
+                        return f"当前任务处于【{phase}】阶段，已收集 {len(collected)} 个字段（{', '.join(collected.keys()) if collected else '暂无'}），尚缺字段：{', '.join(missing) if missing else '无'}。"
+                except Exception:
+                    pass
+                return f"根据当前权威状态证据：\n{evidence_block[:300]}"
 
             if "专业的水下多智能体任务规划与决策系统助手" in system_content:
+                if any(kw in user_msg for kw in ["谢谢", "多谢", "感谢", "thx", "thanks"]):
+                    return "不客气！如果您在水下作业规划中需要帮助，随时告诉我。"
                 return "您好！我是水下多智能体任务决策大模型。我可以协助您规划水下作业任务、查询设备能力与工具、并进行可行性校验。"
 
             if any(kw in user_msg for kw in ["取消", "放弃", "不要了", "终止", "退出"]):
