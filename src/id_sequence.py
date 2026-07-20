@@ -17,6 +17,25 @@ _LOCK = threading.Lock()
 _COUNTERS: dict[str, int] = {}
 
 
+def validate_intent_id(intent_id: Any) -> bool:
+    """
+    验证 intent_id 格式及路径安全性。
+    规则：
+    1. 必须是 str 类型（bool/int/list/dict 均非法）
+    2. strip() 后不能为空且与原串一致
+    3. 不能包含 '/', '\\', '..'
+    4. 必须完整匹配 ^TI[0-9]{10,}$
+    """
+    if type(intent_id) is not str:
+        return False
+    if not intent_id or intent_id.strip() != intent_id:
+        return False
+    if "/" in intent_id or "\\" in intent_id or ".." in intent_id:
+        return False
+    return bool(re.match(r"^TI\d{10,}$", intent_id))
+
+
+
 def _get_lock_file_path() -> Path:
     base = get_result_dir(create=True)
     return base / ".id_sequence.lock"

@@ -46,6 +46,7 @@ from .time_context import get_time_context, is_standalone_time_query
 from .coord_parser import parse_coordinate_updates
 from .oilfield_linker import OilfieldEntityLinker
 from .exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
+from .id_sequence import validate_intent_id
 from .slot_store import SlotStore, Slot
 from .intent_router import IntentRouter, IntentRouteResult
 
@@ -394,7 +395,7 @@ class DialogueManager:
         # 检查 intent_id 是否在 SlotStore/built_json 中有效存在 (Fail Closed)
         intent_id = cand_built.get("intent_id") or cand_state.get("intent_id")
         intent_slot = self.slot_store.slots.get("intent_id")
-        if not intent_id or not intent_slot or intent_slot.status != "valid" or not intent_slot.value:
+        if not intent_id or not intent_slot or intent_slot.status != "valid" or not validate_intent_id(intent_slot.value):
             reply = "当前任务缺少唯一任务标识(intent_id)，无法完成确认发布。"
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
@@ -1429,26 +1430,26 @@ class DialogueManager:
         if any(r in msg for r in static_rejects):
             return {"action": "reject", "target": "pending_oilfield", "matched_name": candidate_name}
 
-        # 2. 动态候选名称：当候选名出现在消息中且含否定前缀/后缀词
+        # 2. 动态候选名称及其受控变体（包含全称与去掉末尾"油田"的简称）
         if candidate_name:
+            variants = [candidate_name]
+            if candidate_name.endswith("油田") and len(candidate_name) > 2:
+                variants.append(candidate_name[:-2])
+
             deny_prefixes = ["不是", "不对", "不用", "不要"]
             deny_suffixes = ["不对", "不行", "不是", "不符合", "错了", "不匹配"]
-            msg_has_candidate = candidate_name in msg
-            if msg_has_candidate:
-                has_deny = (
-                    any(msg.startswith(d) or msg_lower.startswith(d) for d in deny_prefixes) or
-                    any(
-                        candidate_name in part and
-                        any(suf in part for suf in deny_suffixes)
-                        for part in [msg]
-                    ) or
-                    # 格式：不是<候选名> / <候选名>不对 / <候选名>不是
-                    any(f"{d}{candidate_name}" in msg for d in deny_prefixes) or
-                    any(f"{candidate_name}{s}" in msg for s in deny_suffixes)
-                )
-                if has_deny:
-                    return {"action": "reject", "target": "pending_oilfield",
-                            "matched_name": candidate_name}
+
+            for var in variants:
+                if var in msg:
+                    has_deny = (
+                        any(f"{d}{var}" in msg for d in deny_prefixes) or
+                        any(f"{var}{s}" in msg for s in deny_suffixes) or
+                        any(msg.startswith(f"{d}{var}") for d in deny_prefixes) or
+                        any(msg.endswith(f"{var}{s}") for s in deny_suffixes)
+                    )
+                    if has_deny:
+                        return {"action": "reject", "target": "pending_oilfield",
+                                "matched_name": candidate_name}
 
         # ── 确认信号检测 ──
         confirm_phrases = ["确认使用", "确认油田", "使用该油田", "就用这个", "确定使用"]
@@ -1831,7 +1832,7 @@ class DialogueManager:
         if candidate_phase == "done":
             intent_slot = candidate_slot_store.slots.get("intent_id")
             valid_pub_evidence = False
-            if intent_slot and intent_slot.status == "valid" and intent_slot.value:
+            if intent_slot and intent_slot.status == "valid" and validate_intent_id(intent_slot.value):
                 cur_id = str(intent_slot.value)
                 from .task_intent_builder import get_task_dir
                 task_dir = get_task_dir(create=False)
@@ -1864,7 +1865,7 @@ class DialogueManager:
                 needs_new_id_due_to_downgrade
                 or intent_slot is None
                 or intent_slot.status != "valid"
-                or not intent_slot.value
+                or not validate_intent_id(intent_slot.value)
             )
             if needs_new_intent_id:
                 today = get_current_datetime().strftime("%Y%m%d")

@@ -643,35 +643,44 @@ class KnowledgeBase:
                             terms.add(ua_str)
         return terms
 
-    def get_device_alias_index(self) -> dict:
+    def get_device_alias_index(self) -> dict[str, list[str]]:
         """动态构建别名→设备ID列表的索引（不依赖硬编码黑名单）。
+
+        涵盖: aliases, unit aliases, unit_id, display_name, serial_no, model, full_name
 
         Returns:
             dict: {alias_str: [variant_id_or_unit_id, ...]}
         """
-        index: dict[str, list[str]] = {}
+        index: dict[str, set[str]] = {}
         all_rovs = self.get_all_rovs()
         for r in all_rovs:
-            # 顶层机器人家族别名 → 使用 model 或 full_name 作为 variant_id
-            family_id = r.get("model") or r.get("full_name", "unknown_family")
+            family_id = r.get("family_id") or r.get("model") or "unknown_family"
+            for field in ["full_name", "family_full_name", "model"]:
+                val = r.get(field)
+                if val:
+                    v_str = str(val).strip()
+                    if v_str:
+                        index.setdefault(v_str, set()).add(family_id)
             for alias in (r.get("aliases") or []):
                 if alias:
                     a_str = str(alias).strip()
                     if a_str:
-                        index.setdefault(a_str, [])
-                        if family_id not in index[a_str]:
-                            index[a_str].append(family_id)
-            # 具体机型单元别名 → 使用 unit_id 作为 variant_id
+                        index.setdefault(a_str, set()).add(family_id)
             for unit in (r.get("fleet_units") or []):
-                unit_id = unit.get("unit_id") or family_id
+                u_id = unit.get("unit_id") or "unknown_unit"
+                full_unit_id = f"{family_id}_{u_id}"
+                for u_field in ["unit_id", "display_name", "serial_no"]:
+                    val = unit.get(u_field)
+                    if val:
+                        u_str = str(val).strip()
+                        if u_str:
+                            index.setdefault(u_str, set()).add(full_unit_id)
                 for u_alias in (unit.get("aliases") or []):
                     if u_alias:
                         ua_str = str(u_alias).strip()
                         if ua_str:
-                            index.setdefault(ua_str, [])
-                            if unit_id not in index[ua_str]:
-                                index[ua_str].append(unit_id)
-        return index
+                            index.setdefault(ua_str, set()).add(full_unit_id)
+        return {k: sorted(list(v)) for k, v in index.items()}
 
     def get_ambiguous_device_terms(self) -> set[str]:
         """返回对应2个或以上不同设备/机型的歧义别名集合（动态推导，无硬编码黑名单）。"""

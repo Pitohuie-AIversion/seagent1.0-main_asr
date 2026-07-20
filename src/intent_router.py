@@ -114,6 +114,7 @@ class IntentRouter:
         self.llm = llm
         self.device_terms = device_terms
         self.ambiguous_device_terms: set[str] | None = None
+        self.device_alias_index: dict[str, list[str]] | None = None
 
     def route(
         self,
@@ -133,17 +134,19 @@ class IntentRouter:
                 should_update_slots=False,
             )
 
-        # 动态加载知识库设备词汇表和歧义集合（避免写死与数据脱节）
-        if self.device_terms is None or self.ambiguous_device_terms is None:
+        # 动态加载知识库设备词汇表、歧义集合和别名索引（避免写死与数据脱节）
+        if self.device_terms is None or self.ambiguous_device_terms is None or self.device_alias_index is None:
             try:
                 from .knowledge_retriever import KnowledgeBase
                 _kb = KnowledgeBase()
+                self.device_alias_index = _kb.get_device_alias_index()
                 self.ambiguous_device_terms = _kb.get_ambiguous_device_terms()
                 self.device_terms = _kb.get_all_device_terms()
             except Exception as e:
                 logger.warning(f"[IntentRouter] Failed to load dynamic device terms: {e}")
                 self.device_terms = set(DEVICE_ENTITIES)
                 self.ambiguous_device_terms = set()
+                self.device_alias_index = {}
 
         # ── 1. 确定性规则判断 ──────────────────────────────────────────────────
         rule_result = self._try_rule_routing(msg, task_state, phase, expected_slots)
@@ -294,25 +297,46 @@ class IntentRouter:
             )
 
         is_device_cap_pattern = bool(re.search(r"(?:最大水深|作业水深|下潜能力|作业能力|能否作业|深水作业|能在\d+米|在\d+米|能否在)", msg)) or "最大水深" in msg
-
-        # ── 歧义设备别名检查：命中歧义词时进入 CLARIFICATION ──
-        # 必须先于 DEVICE_CAPABILITY 规则检查，防止对歧义名称做确定性路由
-        ambiguous_terms = self.ambiguous_device_terms or set()
-        hit_ambiguous = any(
-            term in msg for term in ambiguous_terms
-            if len(term) >= 2 and not term.isdigit()
-        )
         device_cap_keywords = ["能在", "作业", "水深", "下潜", "设备", "参数", "能力", "支持", "最大水深"]
-        if hit_ambiguous and (is_q or any(kw in msg for kw in device_cap_keywords)) and not is_modification_request:
-            return IntentRouteResult(
-                intent="CLARIFICATION",
-                confidence=0.95,
-                reason="设备别名存在歧义（对应多个设备型号），无法确定具体对象，请用户明确指定设备名称",
-                source="rule",
-                should_update_slots=False,
-            )
+        has_cap_kw = is_q or any(kw in msg for kw in device_cap_keywords) or is_device_cap_pattern
+        is_device_cap_context = has_cap_kw and "当前任务有哪些参数" not in msg and not is_modification_request
 
-        if (has_dev or is_device_cap_pattern) and (is_q or any(kw in msg for kw in device_cap_keywords)) and "当前任务有哪些参数" not in msg and not is_modification_request:
+        # ── 动态设备别名最长匹配优先路由 ──
+        if is_device_cap_context and self.device_alias_index:
+            matched_aliases = []
+            for alias, dev_ids in self.device_alias_index.items():
+                if not alias:
+                    continue
+                # 纯数字别名（如 "001"）仅在有明确设备能力语境时参与匹配
+                if alias.isdigit() and not is_device_cap_context:
+                    continue
+                if alias in msg or alias.lower() in msg.lower():
+                    matched_aliases.append((alias, dev_ids))
+
+            if matched_aliases:
+                # 按别名长度降序排列（最长匹配优先）
+                matched_aliases.sort(key=lambda item: len(item[0]), reverse=True)
+                longest_alias, longest_ids = matched_aliases[0]
+
+                if len(longest_ids) >= 2:
+                    return IntentRouteResult(
+                        intent="CLARIFICATION",
+                        confidence=0.95,
+                        reason=f"设备别名'{longest_alias}'存在歧义（对应多个设备: {longest_ids}），无法确定具体对象",
+                        source="rule",
+                        should_update_slots=False,
+                    )
+                else:
+                    return IntentRouteResult(
+                        intent="DEVICE_CAPABILITY",
+                        confidence=0.98,
+                        reason=f"最长匹配设备别名'{longest_alias}'确定匹配到设备 model/unit={longest_ids[0]}",
+                        source="rule",
+                        should_update_slots=False,
+                        query_subtype="device_capabilities",
+                    )
+
+        if (has_dev or is_device_cap_pattern) and is_device_cap_context:
             return IntentRouteResult(
                 intent="DEVICE_CAPABILITY",
                 confidence=0.98,

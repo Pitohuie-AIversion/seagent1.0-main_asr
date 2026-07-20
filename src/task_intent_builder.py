@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 from .knowledge_retriever import KnowledgeBase
 from .simulated_time import get_current_datetime
-from .id_sequence import next_daily_id
+from .id_sequence import next_daily_id, validate_intent_id
 
 import threading
 import uuid
@@ -30,11 +30,20 @@ class TaskIntentBuilder:
         intent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """纯内存构建 TaskIntent 字典，无磁盘副作用"""
-        effective_intent_id = intent_id or built_json.get("intent_id") or task_state.get("intent_id")
-        if not effective_intent_id:
-            today = get_current_datetime().strftime("%Y%m%d")
-            task_dir = get_task_dir(create=False)
-            effective_intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
+        if intent_id is not None:
+            if not validate_intent_id(intent_id):
+                raise TaskPersistenceError(f"Invalid intent_id parameter: {intent_id}")
+            effective_intent_id = intent_id
+        else:
+            cand_id = built_json.get("intent_id") or task_state.get("intent_id")
+            if cand_id:
+                if not validate_intent_id(cand_id):
+                    raise TaskPersistenceError(f"Invalid intent_id in task_state/built_json: {cand_id}")
+                effective_intent_id = cand_id
+            else:
+                today = get_current_datetime().strftime("%Y%m%d")
+                task_dir = get_task_dir(create=False)
+                effective_intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
         intent_id = effective_intent_id
 
         if mode == "emergency":
@@ -121,10 +130,14 @@ class TaskIntentBuilder:
 
     def create_staging(self, intent: Dict[str, Any]) -> Path:
         """创建临时 staging 任务文件"""
-        intent_id = intent.get("intent_id", "unknown")
+        intent_id = intent.get("intent_id")
+        if not validate_intent_id(intent_id):
+            raise TaskPersistenceError(f"Invalid intent_id for create_staging: {intent_id}")
         task_dir = get_task_dir(create=True)
         unique_suffix = f"{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}"
         staging_file = task_dir / f"task_intent_{intent_id}.staging_{unique_suffix}"
+        if task_dir.resolve() not in staging_file.resolve().parents:
+            raise TaskPersistenceError(f"Path traversal detected for staging file: {staging_file}")
         try:
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f, ensure_ascii=False, indent=2)
@@ -141,9 +154,13 @@ class TaskIntentBuilder:
 
     def publish_staging(self, staging_file: Path, intent: Dict[str, Any]) -> str:
         """使用 os.link 原子 no-clobber 发布 staging 临时文件为正式 JSON 文件；处理竞争与幂等"""
-        intent_id = intent.get("intent_id", "unknown")
+        intent_id = intent.get("intent_id")
+        if not validate_intent_id(intent_id):
+            raise TaskPersistenceError(f"Invalid intent_id for publish_staging: {intent_id}")
         task_dir = get_task_dir(create=True)
         final_file = task_dir / f"task_intent_{intent_id}.json"
+        if task_dir.resolve() not in final_file.resolve().parents:
+            raise TaskPersistenceError(f"Path traversal detected for final file: {final_file}")
 
         try:
             # os.link 原子创建硬链接，绝不覆盖已有文件
@@ -198,9 +215,12 @@ class TaskIntentBuilder:
             raise TaskPersistenceError(f"Failed to publish staging file for {intent_id}: {e}") from e
 
     def persist(self, intent: Dict[str, Any]) -> str:
-        """持久化已构建的 intent 字典（先建 staging 再 publish）"""
-        staging = self.create_staging(intent)
-        return self.publish_staging(staging, intent)
+        """从 dict 生成 staging 临时文件并原子发布为 TaskIntent 文件"""
+        intent_id = intent.get("intent_id")
+        if not validate_intent_id(intent_id):
+            raise TaskPersistenceError(f"Invalid intent_id for persist: {intent_id}")
+        staging_file = self.create_staging(intent)
+        return self.publish_staging(staging_file, intent)
 
     def build(
         self,
