@@ -169,20 +169,11 @@ class IntentRouter:
         msg_clean = re.sub(r"[。！？,!?. ]+", "", msg.strip()).lower()
         is_q = any(q in msg for q in QUESTION_WORDS)
         device_terms = self.device_terms or set(DEVICE_ENTITIES)
-        has_dev = any(e.lower() in msg.lower() for e in (device_terms | set(DEVICE_ENTITIES)) if len(e) >= 2)
+        has_dev = any(e.lower() in msg.lower() for e in (device_terms | set(DEVICE_ENTITIES)) if len(e) >= 2 and not e.isdigit())
         has_tool = any(e in msg.lower() for e in TOOL_ENTITIES)
 
         negation_cancel = ["不要取消", "别取消", "不能取消", "不放弃", "不终止"]
         negation_confirm = ["不好", "不确认", "不要发布", "先别发布", "不能发布", "不要下发", "不发布", "不是", "不", "别", "不要"]
-
-        # ── 检查是否为显式修改表达 ──
-        update_verbs = ["改成", "改为", "变转换为", "修改", "设置", "重置", "换成", "更名", "选择", "选用", "使用", "携带", "装载", "配备", "搭载", "带上", "把", "调整", "为", "由", "从", "到"]
-        slot_keywords = ["水深", "深度", "坐标", "经纬度", "支持船", "船", "工具", "抓手", "模式", "时间", "井口", "油田", "缆线", "摄像机", "声呐", "开线", "设备", "定位"]
-
-        has_explicit_upd = any(p in msg for p in EXPLICIT_UPDATE_PHRASES)
-        has_verb_and_slot = any(v in msg for v in update_verbs) and any(s in msg for s in slot_keywords)
-        has_num_slot = bool(re.search(r"(?:水深|深度|坐标|时间)?\s*\d+(?:\.\d+)?\s*(?:米|m)?", msg, re.IGNORECASE)) and any(v in msg for v in update_verbs)
-        is_modification_request = has_explicit_upd or has_verb_and_slot or has_num_slot
 
         # ── 1. 控制语义：取消 / 确认 ──
         explicit_cancel = ["取消当前任务", "放弃当前任务", "终止当前任务", "不要这个任务了", "取消任务", "放弃任务", "终止任务"]
@@ -194,6 +185,16 @@ class IntentRouter:
                 source="rule",
                 should_update_slots=False,
             )
+
+        # ── 检查是否为显式修改表达 ──
+        update_verbs = ["改成", "改为", "变更为", "修改", "设置", "重置", "换成", "更名", "选择", "选用", "使用", "携带", "装载", "配备", "搭载", "带上", "把", "调整", "为", "由", "从", "到"]
+        slot_keywords = ["水深", "深度", "坐标", "经纬度", "支持船", "船", "工具", "抓手", "载荷", "模式", "时间", "井口", "油田", "缆线", "摄像机", "声呐", "开线", "设备", "定位"]
+
+        has_explicit_upd = any(p in msg for p in EXPLICIT_UPDATE_PHRASES)
+        has_verb_and_slot = any(v in msg for v in update_verbs) and any(s in msg for s in slot_keywords)
+        has_num_slot = bool(re.search(r"(?:水深|深度|坐标|时间)?\s*\d+(?:\.\d+)?\s*(?:米|m)?", msg, re.IGNORECASE)) and any(v in msg for v in update_verbs)
+        has_cancel_slot = "取消" in msg and any(s in msg for s in slot_keywords)
+        is_modification_request = has_explicit_upd or has_verb_and_slot or has_num_slot or has_cancel_slot
         if phase in ("blocked_hard", "blocked_soft", "confirming", "collecting") and msg_clean in ("取消", "放弃", "不要了", "终止", "退出") and not any(nc in msg for nc in negation_cancel):
             return IntentRouteResult(
                 intent="TASK_CANCEL",
@@ -288,8 +289,8 @@ class IntentRouter:
                 query_subtype="available_tools",
             )
 
-        is_device_cap_pattern = bool(re.search(r"^([^能支持有包含哪些多少]+)(?:能|在|支持|可以|有).*?(?:水深|作业|下潜|能力|米|吗|几米)", msg)) or "最大水深" in msg
-        if (has_dev or is_device_cap_pattern) and (is_q or any(kw in msg for kw in ["能在", "作业", "水深", "下潜", "有哪些", "设备", "参数", "能力", "支持", "最大水深"])) and "当前任务有哪些参数" not in msg and not is_modification_request:
+        is_device_cap_pattern = bool(re.search(r"(?:最大水深|作业水深|下潜能力|作业能力|能否作业|深水作业|能在\d+米|在\d+米|能否在)", msg)) or "最大水深" in msg
+        if (has_dev or is_device_cap_pattern) and (is_q or any(kw in msg for kw in ["能在", "作业", "水深", "下潜", "设备", "参数", "能力", "支持", "最大水深"])) and "当前任务有哪些参数" not in msg and not is_modification_request:
             return IntentRouteResult(
                 intent="DEVICE_CAPABILITY",
                 confidence=0.98,

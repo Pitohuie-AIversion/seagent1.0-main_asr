@@ -132,13 +132,6 @@ class DialogueManager:
         initial_mode = self.mode
         initial_rov_candidates = copy.deepcopy(self._pending_rov_candidates)
 
-        if route.intent == "TASK_CANCEL":
-            self.phase = "rejected"
-            reply = "收到指令，已为您取消当前水下作业任务。如需开启新任务，请随时告诉我。"
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.conversation_history.append({"role": "assistant", "content": reply})
-            return reply
-
         if route.intent in ("TOOL_QUERY", "DEVICE_CAPABILITY", "KNOWLEDGE_QA"):
             reply = self._handle_knowledge_query(user_message, route)
         elif route.intent in ("TASK_STATUS", "DEVICE_STATUS", "ENVIRONMENT_QUERY"):
@@ -662,41 +655,53 @@ class DialogueManager:
                 "equipment_type": ["设备", "机器人", "rov", "auv"],
                 "water_depth": ["水深", "深度"],
                 "cable_type": ["管缆类型", "缆线", "电缆"],
+                "payload": ["载荷", "工具", "传感器", "抓手", "配备"],
+                "oilfield_name": ["油田", "油田名称"],
             }
-            has_negation_confirm = any(nc in user_message for nc in ["不确认", "不修改", "不要修改", "先不", "取消"])
+            has_negation_confirm = any(nc in user_message for nc in ["不确认", "不修改", "不要修改", "先不确认"])
             has_explicit_upd = bool(stage2_updates)
 
-            for k, slot in list(new_slots.items()):
-                if slot.status == "conflict" and slot.candidate_value is not None:
-                    # 1. 显式输入与 candidate_value 完全一致
-                    if stage2_updates.get(k) == slot.candidate_value:
-                        slot.value = slot.candidate_value
-                        slot.status = "valid"
-                        slot.candidate_value = None
-                        slot.validation_error = None
-                        continue
+            conflict_slots = [k for k, s in new_slots.items() if s.status == "conflict" and s.candidate_value is not None]
+            is_ambiguous_global_confirm = (
+                len(conflict_slots) >= 2
+                and user_message.strip() in ("确认这个修改", "确认修改", "好的", "确认", "确定修改")
+                and not has_explicit_upd
+            )
 
-                    # 2. 如果包含其他新槽位修改（如"水深改成500米"），不得顺带确认本冲突槽位
-                    if has_explicit_upd and k not in stage2_updates and not any(alias in user_message for alias in slot_name_aliases.get(k, [k])):
-                        continue
-
-                    # 3. 检查针对具体槽位 k 的定向确认/取消
-                    k_aliases = slot_name_aliases.get(k, [k])
-                    msg_targets_k = any(alias in user_message for alias in k_aliases) or (slot.candidate_value and str(slot.candidate_value) in user_message)
-
-                    if msg_targets_k:
-                        is_cancel_k = any(c_kw in user_message for c_kw in ["取消", "放弃", "不要", "不修改", "不用"])
-                        is_confirm_k = any(c_kw in user_message for c_kw in ["确认", "确定", "好的", "可以", "使用", "改为"]) and not is_cancel_k
-
-                        if is_confirm_k and not has_negation_confirm:
+            if not is_ambiguous_global_confirm:
+                for k, slot in list(new_slots.items()):
+                    if slot.status == "conflict" and slot.candidate_value is not None:
+                        raw_ext = stage2_updates.get(k)
+                        extracted_cand_v = raw_ext.get("value") if isinstance(raw_ext, dict) else raw_ext
+                        # 1. 显式输入与 candidate_value 完全一致
+                        if extracted_cand_v is not None and extracted_cand_v == slot.candidate_value:
                             slot.value = slot.candidate_value
                             slot.status = "valid"
                             slot.candidate_value = None
                             slot.validation_error = None
-                        elif is_cancel_k:
-                            slot.status = "valid"
-                            slot.candidate_value = None
-                            slot.validation_error = None
+                            continue
+
+                        # 2. 如果包含其他新槽位修改（如"水深改成500米"），不得顺带确认本冲突槽位
+                        if has_explicit_upd and k not in stage2_updates and not any(alias in user_message for alias in slot_name_aliases.get(k, [k])):
+                            continue
+
+                        # 3. 检查针对具体槽位 k 的定向确认/取消
+                        k_aliases = slot_name_aliases.get(k, [k])
+                        msg_targets_k = any(alias in user_message for alias in k_aliases) or (slot.candidate_value and str(slot.candidate_value) in user_message)
+
+                        if msg_targets_k:
+                            is_cancel_k = any(c_kw in user_message for c_kw in ["取消", "放弃", "不要", "不修改", "不用"])
+                            is_confirm_k = any(c_kw in user_message for c_kw in ["确认", "确定", "好的", "可以", "使用", "改为"]) and not is_cancel_k
+
+                            if is_confirm_k and not has_negation_confirm:
+                                slot.value = slot.candidate_value
+                                slot.status = "valid"
+                                slot.candidate_value = None
+                                slot.validation_error = None
+                            elif is_cancel_k:
+                                slot.status = "valid"
+                                slot.candidate_value = None
+                                slot.validation_error = None
 
             self._apply_updates_in_transaction(stage2_updates, new_slots)
             if "rov_description" in stage2_updates:
@@ -752,8 +757,8 @@ class DialogueManager:
         else:
             cand_missing = [{"key": "task_type", "label": "任务类型", "type": "string", "allowed_values": self.kb.get_all_task_type_values()}]
 
-        # Auto-generate intent_id inside new_slots BEFORE commit when all required slots are present
-        if curr_task_type_key and not cand_missing:
+        # Auto-generate intent_id inside new_slots BEFORE commit when all required slots are present or when revising a done task
+        if old_phase == "done" or (curr_task_type_key and not cand_missing):
             intent_id_slot = new_slots.get("intent_id")
             if old_phase == "done" or not intent_id_slot or intent_id_slot.status != "valid" or not intent_id_slot.value:
                 today = get_current_datetime().strftime("%Y%m%d")
@@ -1248,16 +1253,39 @@ class DialogueManager:
     def _resolve_pending_oilfield_confirmation(self, user_message: str, request_id: str = "req_default") -> str | None:
         pending_slot = self.slot_store.slots.get("pending_oilfield_name")
         raw_name = pending_slot.value if (pending_slot and pending_slot.status == "valid") else None
-        if not raw_name:
+        oil_slot = self.slot_store.slots.get("oilfield_name")
+        is_pending_oil = (raw_name is not None) or (oil_slot and oil_slot.status == "pending_confirmation")
+        if not is_pending_oil:
+            return None
+
+        # 1. 优先排除全局取消指令，避免局部处理截获全局取消
+        msg_clean = user_message.strip().lower()
+        if any(c in msg_clean for c in ["取消当前任务", "放弃当前任务", "终止当前任务", "取消任务", "放弃任务", "终止任务"]):
+            return None
+
+        # 2. 如果包含显式的其他槽位修改表达（如"不要取消任务，水深改成500米"），避免局部误处理
+        update_verbs = ["改成", "改为", "变更为", "修改", "设置", "重置", "换成", "定位在"]
+        slot_keywords = ["水深", "深度", "坐标", "经纬度", "支持船", "模式", "时间"]
+        has_other_update = any(v in user_message for v in update_verbs) and any(s in user_message for s in slot_keywords)
+        if has_other_update:
             return None
 
         if self._user_cancelled_oilfield(user_message):
             snap_slots, snap_unresolved, snap_ver = self.slot_store.snapshot()
             for k in ("oilfield_name", "oilfield_entity_id", "pending_oilfield_name", "pending_oilfield_candidates"):
                 if k in snap_slots:
-                    snap_slots[k].value = None
-                    snap_slots[k].status = "missing"
-                    snap_slots[k].raw_value = None
+                    if k == "oilfield_name":
+                        if snap_slots[k].value is not None:
+                            snap_slots[k].status = "valid"
+                            snap_slots[k].candidate_value = None
+                        else:
+                            snap_slots[k].value = None
+                            snap_slots[k].status = "missing"
+                            snap_slots[k].raw_value = None
+                    else:
+                        snap_slots[k].value = None
+                        snap_slots[k].status = "missing"
+                        snap_slots[k].raw_value = None
             self.slot_store.commit_transaction(
                 snap_slots, snap_unresolved, request_id=request_id, expected_version=snap_ver
             )
@@ -1284,6 +1312,7 @@ class DialogueManager:
         snap_slots["oilfield_name"].status = "valid"
         snap_slots["oilfield_name"].source = "entity_linker"
         snap_slots["oilfield_name"].raw_value = raw_name
+        snap_slots["oilfield_name"].candidate_value = None
         snap_slots["oilfield_name"].confidence = candidate.get("confidence")
 
         if "oilfield_entity_id" not in snap_slots:
@@ -1355,13 +1384,20 @@ class DialogueManager:
         self._rebuild_cache()
 
     def _user_confirmed_oilfield(self, message: str) -> bool:
-        keywords = ["是", "对", "就是", "采用", "确认", "确定", "可以", "好的", "ok"]
-        return self._user_confirmed(message) or any(kw in message.lower() for kw in keywords)
+        keywords = ["是", "对", "就是", "采用", "确认", "确定", "可以", "好的", "ok", "使用"]
+        negations = ["不", "别", "不要", "不是", "取消"]
+        msg = message.strip().lower()
+        if any(neg in msg for neg in negations):
+            return False
+        return any(kw in msg for kw in keywords)
 
     @staticmethod
     def _user_cancelled_oilfield(message: str) -> bool:
-        keywords = ["不是", "不对", "否", "错了", "重新", "不要"]
-        return any(kw in message for kw in keywords)
+        msg = message.strip().lower()
+        explicit_rejects = ["这个油田不对", "油田不对", "取消油田匹配", "重新选择油田", "油田不对劲"]
+        if "取消任务" in msg or "取消当前任务" in msg or "不要取消" in msg or "别取消" in msg:
+            return False
+        return any(er in msg for er in explicit_rejects)
 
     # --------------------------------------------------------------------------
     # 约束检查（硬解除后检查软）
@@ -1710,17 +1746,41 @@ class DialogueManager:
             candidate_missing = [{"key": "task_type", "label": "任务类型", "type": "string",
                                    "allowed_values": self.kb.get_all_task_type_values()}]
 
+        if candidate_phase == "done":
+            intent_slot = candidate_slot_store.slots.get("intent_id")
+            valid_pub_evidence = False
+            if intent_slot and intent_slot.status == "valid" and intent_slot.value:
+                cur_id = str(intent_slot.value)
+                from .task_intent_builder import get_task_dir
+                task_dir = get_task_dir(create=False)
+                pub_file = task_dir / f"task_intent_{cur_id}.json"
+                if pub_file.exists() and pub_file.is_file():
+                    try:
+                        with open(pub_file, "r", encoding="utf-8") as pf:
+                            f_data = json.load(pf)
+                        if isinstance(f_data, dict) and f_data.get("intent_id") == cur_id:
+                            valid_pub_evidence = True
+                    except Exception:
+                        valid_pub_evidence = False
+
+            if not valid_pub_evidence:
+                candidate_phase = "confirming" if not candidate_missing else "collecting"
+                if "intent_id" in candidate_slot_store.slots:
+                    candidate_slot_store.slots["intent_id"].value = None
+                    candidate_slot_store.slots["intent_id"].status = "missing"
+
         if candidate_phase in ("confirming", "done"):
             intent_slot = candidate_slot_store.slots.get("intent_id")
-            if not intent_slot or intent_slot.status != "valid" or not intent_slot.value:
-                if candidate_phase == "done":
-                    candidate_phase = "confirming" if not candidate_missing else "collecting"
+            if candidate_phase != "done" or not intent_slot or intent_slot.status != "valid" or not intent_slot.value:
                 today = get_current_datetime().strftime("%Y%m%d")
                 from .task_intent_builder import get_task_dir
                 task_dir = get_task_dir(create=False)
                 from .id_sequence import next_daily_id
                 ti_intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
-                candidate_slot_store.slots["intent_id"] = Slot("intent_id", value=ti_intent_id, value_type="string", status="valid", source="auto")
+                new_intent_slot = Slot("intent_id", value=ti_intent_id, value_type="string", status="valid", source="auto")
+                new_intent_slot.version = (intent_slot.version + 1) if intent_slot else 1
+                candidate_slot_store.slots["intent_id"] = new_intent_slot
+                candidate_slot_store.version += 1
                 candidate_task_state = candidate_slot_store.get_task_state()
                 candidate_built = candidate_slot_store.get_built_json()
 

@@ -613,25 +613,34 @@ class KnowledgeBase:
         return empty_state
 
     def get_all_device_terms(self) -> set[str]:
-        """从知识库配置动态生成只读设备检索词集合。"""
+        """从知识库配置动态生成只读设备检索词集合（过滤纯数字及歧义通用词）。"""
         terms: set[str] = set()
         all_rovs = self.get_all_rovs()
+        ambiguous_generic = {"一号机", "二号机", "三号机", "1号机", "2号机", "001", "002"}
         for r in all_rovs:
             for field in ["full_name", "family_full_name", "robot_class_name", "model", "category_name"]:
                 val = r.get(field)
                 if val:
-                    terms.add(str(val).strip())
+                    v_str = str(val).strip()
+                    if not v_str.isdigit() and v_str not in ambiguous_generic:
+                        terms.add(v_str)
             for alias in (r.get("aliases") or []):
-                if alias and len(alias) >= 2:
-                    terms.add(str(alias).strip())
+                if alias and len(str(alias).strip()) >= 2:
+                    a_str = str(alias).strip()
+                    if not a_str.isdigit() and a_str not in ambiguous_generic:
+                        terms.add(a_str)
             for unit in (r.get("fleet_units") or []):
                 for u_field in ["unit_id", "display_name", "serial_no"]:
                     val = unit.get(u_field)
                     if val:
-                        terms.add(str(val).strip())
+                        u_str = str(val).strip()
+                        if not u_str.isdigit() and u_str not in ambiguous_generic:
+                            terms.add(u_str)
                 for u_alias in (unit.get("aliases") or []):
-                    if u_alias and len(u_alias) >= 2:
-                        terms.add(str(u_alias).strip())
+                    if u_alias and len(str(u_alias).strip()) >= 2:
+                        ua_str = str(u_alias).strip()
+                        if not ua_str.isdigit() and ua_str not in ambiguous_generic:
+                            terms.add(ua_str)
         return terms
 
     # ──────────────────────────────────────────────────────────────────────────
