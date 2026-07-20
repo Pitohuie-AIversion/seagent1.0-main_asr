@@ -1,6 +1,6 @@
 import datetime
 import logging
-from typing import Any, Optional, Dict, List
+from typing import Any, Callable, Optional, Dict, List
 
 logger = logging.getLogger("backend.slot_store")
 
@@ -110,22 +110,43 @@ class SlotStore:
                 state[key] = slot.value
         return state
 
-    def get_built_json(self) -> Dict[str, Any]:
-        # built_json must only contain valid slots.
+    def get_built_json(
+        self,
+        output_schema: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """返回有效槽位；提供输出 schema 时仅投影正式任务字段。"""
         built = {}
-        for key, slot in self.slots.items():
+        keys = (
+            [field["key"] for field in output_schema]
+            if output_schema is not None
+            else self.slots.keys()
+        )
+        for key in keys:
+            slot = self.slots.get(key)
+            if slot is None:
+                continue
             if slot.value is not None and slot.status == "valid":
                 built[key] = slot.value
         return built
 
-    def get_missing_slots(self, required_schema: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        # required slots are those not having valid values in slot store.
+    def get_missing_slots(
+        self,
+        required_schema: List[Dict[str, Any]],
+        allowed_values_resolver: Optional[Callable[[Dict[str, Any]], List[str]]] = None,
+    ) -> List[Dict[str, Any]]:
+        """返回缺失字段，并按需补充与当前任务状态相关的合法候选值。"""
         missing = []
         for field in required_schema:
             key = field["key"]
             slot = self.slots.get(key)
             if not slot or slot.status != "valid" or slot.value is None:
-                missing.append(field)
+                # Schema 是知识库中的共享配置，不能在收集过程中原地修改。
+                missing_field = dict(field)
+                if allowed_values_resolver is not None:
+                    missing_field["allowed_values"] = list(
+                        allowed_values_resolver(field) or []
+                    )
+                missing.append(missing_field)
         return missing
 
     def clone_slots(self) -> Dict[str, Slot]:

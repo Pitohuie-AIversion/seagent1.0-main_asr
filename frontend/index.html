@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>水下多智能体任务决策系统 - ROV HUD</title>
+  <!-- 引入高科技感的 Google 字体 -->
+  <link
+    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&family=Inter:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="static/css/index.css">
+</head>
+
+<body>
+  <div class="app">
+    <!-- Top Cockpit Header -->
+    <div class="header">
+      <div class="header-left">
+        <div class="status-indicator-light"></div>
+        <div>
+          <h1 id="ui-title">水下多智能体任务决策大模型</h1>
+          <p id="ui-subtitle">任务准入｜状态解析｜环境理解｜智能应答</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="lang-selector">
+          <select id="langSelect">
+            <option value="zh">中文 (ZH)</option>
+            <option value="en">English (EN)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="main-panel">
+
+      <!-- Center Column: Intelligent Interaction Area -->
+      <div class="chat-area">
+        <!-- 语音录音时的炫酷动画 -->
+        <div class="audio-waveform-wrapper" id="audioWaveformWrapper" style="display: none;">
+          <div class="waveform-bar"></div>
+          <div class="waveform-bar"></div>
+          <div class="waveform-bar"></div>
+          <div class="waveform-bar"></div>
+          <div class="waveform-bar"></div>
+          <div class="waveform-bar"></div>
+          <div class="waveform-bar"></div>
+        </div>
+        <div class="messages" id="messages"></div>
+        <div class="input-area">
+          <input type="text" id="messageInput" placeholder="描述您的水下任务..." autocomplete="off">
+          <button id="voiceBtn">语音</button>
+          <button id="sendBtn">发送</button>
+        </div>
+        <div class="asr-panel" id="asrPanel"></div>
+      </div>
+
+      <!-- Right Column: Sidebar / Parameter Verification Center -->
+      <div class="sidebar" id="sidebar">
+        <div class="info-card" style="background: rgba(4, 9, 22, 0.9);">
+          <div class="info-title">
+            <!-- simulated time clock SVG -->
+            <svg class="tech-icon" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M12 6v6h4" />
+              <path d="M12 2v2M2 12h2M12 20v2M20 12h2" />
+            </svg>
+            <span id="title-simtime">模拟时间</span>
+          </div>
+          <div id="simulatedTimeDisplay" class="time-display">--:--:--</div>
+          <div class="time-control">
+            <input type="datetime-local" id="timePicker" step="1">
+            <button id="setTimeBtn">设置</button>
+          </div>
+          <div class="time-hint" id="hint-simtime">点击设置可自定义基准时间</div>
+        </div>
+
+        <div class="info-card">
+          <div class="info-title">
+            <!-- Clipboard Task SVG -->
+            <svg class="tech-icon" viewBox="0 0 24 24">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <path d="M9 12l2 2 4-4M7 7h10M7 17h6" />
+            </svg>
+            <span id="title-curtask">当前任务</span>
+          </div>
+          <div id="taskInfo">-</div>
+        </div>
+
+        <div class="info-card">
+          <div class="info-title">
+            <!-- Hexagon check SVG -->
+            <svg class="tech-icon success" viewBox="0 0 24 24">
+              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
+              <path d="M9 12l2 2 4-4" />
+            </svg>
+            <span id="title-collected">已收集字段</span>
+          </div>
+          <div id="collectedFields">暂无</div>
+        </div>
+
+        <div class="info-card">
+          <div class="info-title">
+            <!-- Hexagon warn SVG -->
+            <svg class="tech-icon warning" viewBox="0 0 24 24">
+              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
+              <path d="M12 8v5M12 16h.01" />
+            </svg>
+            <span id="title-missing">缺失字段</span>
+          </div>
+          <div id="missingFields">-</div>
+        </div>
+
+        <div class="info-card" id="resultCard" style="display:none;">
+          <div class="info-title">
+            <!-- File code brackets SVG -->
+            <svg class="tech-icon" viewBox="0 0 24 24">
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+              <path d="M14 2v6h6M8 13c-1.5 0-1.5 2 0 2m8-2c1.5 0 1.5 2 0 2" />
+            </svg>
+            <span id="title-finaljson">最终任务JSON</span>
+          </div>
+          <div id="finalJson" class="final-json"></div>
+        </div>
+
+        <!-- 历史记录区域 -->
+        <div class="info-card">
+          <div class="info-title">
+            <!-- Clock arrow logs SVG -->
+            <svg class="tech-icon" viewBox="0 0 24 24">
+              <path d="M12 20a8 8 0 100-16 8 8 0 00-6.3 3.1" />
+              <path d="M3 6V1.5M3 6h4.5M12 8v4h3" />
+            </svg>
+            <span id="title-history">历史记录</span>
+          </div>
+          <button id="historyBtn"
+            style="width:100%; background:rgba(0, 240, 255, 0.12); border:1px solid var(--accent-cyan); color:var(--accent-cyan); padding:6px; border-radius:4px; cursor:pointer; font-family:var(--font-tech); font-size:0.75rem;">查看历史</button>
+          <div id="historyList"
+            style="display:none; margin-top:8px; max-height:160px; overflow-y:auto; background:rgba(0,5,15,0.95); border:1px solid rgba(0, 240, 255, 0.15); border-radius:4px; padding:4px;">
+            <!-- 动态加载历史列表 -->
+          </div>
+        </div>
+        <button class="reset-btn" id="resetBtn">⟳ 重新开始</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="static/js/index.js" defer></script>
+</body>
+
+</html>

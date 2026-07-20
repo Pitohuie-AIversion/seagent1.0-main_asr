@@ -1,1266 +1,8 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>水下多智能体任务决策系统 - ROV HUD</title>
-  <!-- 引入高科技感的 Google 字体 -->
-  <link
-    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&family=Inter:wght@300;400;500;600;700&display=swap"
-    rel="stylesheet">
-  <style>
-    /* ==================== 科技感全局设计系统 ==================== */
-    :root {
-      --bg-deep: #02050f;
-      --bg-dark: #050b18;
-      --bg-card: rgba(6, 12, 30, 0.75);
-      --accent-cyan: #00f0ff;
-      --accent-cyan-glow: rgba(0, 240, 255, 0.4);
-      --accent-green: #00ffc4;
-      --accent-green-glow: rgba(0, 255, 196, 0.3);
-      --accent-amber: #ff9d00;
-      --accent-amber-glow: rgba(255, 157, 0, 0.3);
-      --accent-red: #ff003c;
-      --accent-red-glow: rgba(255, 0, 60, 0.4);
-      --text-primary: #eef2ff;
-      --text-secondary: #7b89b6;
-      --border-cyan: rgba(0, 240, 255, 0.22);
-      --font-tech: 'Orbitron', 'Inter', sans-serif;
-      --font-mono: 'Share Tech Mono', 'Courier New', monospace;
-      --font-sans: 'Inter', -apple-system, sans-serif;
-    }
-
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
-    body {
-      background: var(--bg-deep);
-      background-image:
-        radial-gradient(circle at 50% 30%, rgba(9, 28, 66, 0.45) 0%, rgba(2, 5, 15, 1) 85%),
-        linear-gradient(rgba(0, 240, 255, 0.02) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0, 240, 255, 0.02) 1px, transparent 1px);
-      background-size: 100% 100%, 40px 40px, 40px 40px;
-      font-family: var(--font-sans);
-      color: var(--text-primary);
-      height: 100vh;
-      overflow: hidden;
-    }
-
-    /* scanline 扫描线效果 */
-    body::before {
-      content: " ";
-      display: block;
-      position: fixed;
-      top: 0;
-      left: 0;
-      bottom: 0;
-      right: 0;
-      background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.3) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.04), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.04));
-      z-index: 9999;
-      background-size: 100% 4px, 6px 100%;
-      pointer-events: none;
-      opacity: 0.35;
-    }
-
-    .app {
-      display: flex;
-      flex-direction: column;
-      height: 100vh;
-      max-width: 1700px;
-      margin: 0 auto;
-      padding: 0 1rem;
-    }
-
-    /* ==================== 顶部状态条 Header ==================== */
-    .header {
-      padding: 1rem 1.5rem;
-      border-bottom: 1px solid var(--border-cyan);
-      background: rgba(4, 9, 22, 0.9);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-top: 0.5rem;
-      border-radius: 0.5rem 0.5rem 0 0;
-      box-shadow: 0 0 25px rgba(0, 240, 255, 0.12);
-      backdrop-filter: blur(10px);
-    }
-
-    .header-left {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    .status-indicator-light {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: var(--accent-green);
-      box-shadow: 0 0 10px var(--accent-green);
-      animation: pulse-glow-green 2s infinite;
-    }
-
-    .header h1 {
-      font-family: var(--font-tech);
-      font-size: 1.4rem;
-      font-weight: 700;
-      letter-spacing: 1px;
-      color: var(--accent-cyan);
-      text-shadow: 0 0 10px var(--accent-cyan-glow);
-    }
-
-    .header p {
-      font-size: 0.8rem;
-      color: var(--text-secondary);
-      margin-top: 2px;
-      letter-spacing: 2px;
-    }
-
-    .header-right {
-      display: flex;
-      align-items: center;
-      gap: 20px;
-    }
-
-    .nav-telemetry-item {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-    }
-
-    .nav-label {
-      font-family: var(--font-tech);
-      font-size: 0.65rem;
-      color: var(--text-secondary);
-      letter-spacing: 1px;
-    }
-
-    .nav-value {
-      font-family: var(--font-mono);
-      font-size: 0.95rem;
-      color: var(--accent-cyan);
-      text-shadow: 0 0 5px var(--accent-cyan-glow);
-    }
-
-    .lang-selector select {
-      background: var(--bg-deep);
-      color: var(--text-primary);
-      border: 1px solid var(--accent-cyan);
-      padding: 6px 12px;
-      border-radius: 4px;
-      font-family: var(--font-tech);
-      font-size: 0.75rem;
-      cursor: pointer;
-      outline: none;
-      transition: all 0.3s;
-    }
-
-    .lang-selector select:hover {
-      background: rgba(0, 240, 255, 0.1);
-      box-shadow: 0 0 10px var(--accent-cyan-glow);
-    }
-
-    /* ==================== 两栏 主区域 ==================== */
-    .main-panel {
-      display: grid;
-      grid-template-columns: 1fr 320px;
-      gap: 1rem;
-      flex: 1;
-      overflow: hidden;
-      margin-top: 0.5rem;
-      margin-bottom: 0.5rem;
-    }
-
-    /* ==================== 统一的玻璃材质面板 Card ==================== */
-    .hud-panel {
-      background: var(--bg-card);
-      border: 1px solid var(--border-cyan);
-      border-radius: 0.5rem;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-      backdrop-filter: blur(12px);
-    }
-
-    /* ==================== 科技感 SVG 图标样式 ==================== */
-    .tech-icon {
-      width: 16px;
-      height: 16px;
-      stroke: var(--accent-cyan);
-      fill: none;
-      stroke-width: 1.8;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-      display: inline-block;
-      vertical-align: middle;
-      filter: drop-shadow(0 0 3px var(--accent-cyan-glow));
-      transition: all 0.3s;
-    }
-
-    .tech-icon.success {
-      stroke: var(--accent-green);
-      filter: drop-shadow(0 0 3px var(--accent-green-glow));
-    }
-
-    .tech-icon.warning {
-      stroke: var(--accent-amber);
-      filter: drop-shadow(0 0 3px var(--accent-amber-glow));
-    }
-
-    .tech-icon.danger {
-      stroke: var(--accent-red);
-      filter: drop-shadow(0 0 3px var(--accent-red-glow));
-    }
-
-    .card-title .tech-icon,
-    .info-title .tech-icon {
-      margin-right: 8px;
-    }
-
-    /* 科技感头像 SVG */
-    .bot-avatar-svg,
-    .user-avatar-svg {
-      width: 22px;
-      height: 22px;
-      stroke: var(--accent-cyan);
-      fill: none;
-      stroke-width: 1.8;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-      filter: drop-shadow(0 0 4px var(--accent-cyan-glow));
-    }
-
-    .user-avatar-svg {
-      stroke: #3b82f6;
-      filter: drop-shadow(0 0 4px rgba(59, 130, 246, 0.4));
-    }
-
-    .visor-glow {
-      fill: var(--accent-cyan);
-      filter: drop-shadow(0 0 5px var(--accent-cyan));
-      animation: visor-pulse 2s infinite alternate;
-    }
-
-    @keyframes visor-pulse {
-      0% {
-        opacity: 0.5;
-      }
-
-      100% {
-        opacity: 1;
-      }
-    }
-
-    /* ==================== 左侧遥测栏 Telemetry Panel ==================== */
-    .telemetry-panel {
-      gap: 1rem;
-      display: flex;
-      flex-direction: column;
-      overflow-y: auto;
-    }
-
-    .telemetry-card {
-      background: rgba(5, 12, 28, 0.6);
-      border: 1px solid rgba(0, 240, 255, 0.15);
-      border-radius: 0.5rem;
-      padding: 0.9rem;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      transition: border-color 0.3s;
-    }
-
-    .telemetry-card:hover {
-      border-color: rgba(0, 240, 255, 0.35);
-    }
-
-    .card-title {
-      font-family: var(--font-tech);
-      font-size: 0.75rem;
-      color: var(--accent-cyan);
-      letter-spacing: 1px;
-      border-left: 2px solid var(--accent-cyan);
-      padding-left: 6px;
-      margin-bottom: 4px;
-      display: flex;
-      align-items: center;
-    }
-
-    /* 2D 雷达扫描效果 */
-    .sonar-container {
-      position: relative;
-      width: 100%;
-      height: 180px;
-      background: radial-gradient(circle, rgba(0, 32, 64, 0.5) 0%, rgba(3, 7, 18, 0.9) 100%);
-      border: 1px solid rgba(0, 240, 255, 0.2);
-      border-radius: 6px;
-      overflow: hidden;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-    }
-
-    .sonar-grid {
-      position: absolute;
-      width: 160px;
-      height: 160px;
-      border-radius: 50%;
-      border: 1px dashed rgba(0, 240, 255, 0.15);
-    }
-
-    .sonar-grid::before {
-      content: "";
-      position: absolute;
-      top: 20px;
-      left: 20px;
-      right: 20px;
-      bottom: 20px;
-      border-radius: 50%;
-      border: 1px dashed rgba(0, 240, 255, 0.2);
-    }
-
-    .sonar-grid::after {
-      content: "";
-      position: absolute;
-      top: 50px;
-      left: 50px;
-      right: 50px;
-      bottom: 50px;
-      border-radius: 50%;
-      border: 1px solid rgba(0, 240, 255, 0.25);
-    }
-
-    .sonar-axis-x {
-      position: absolute;
-      width: 100%;
-      height: 1px;
-      background: rgba(0, 240, 255, 0.1);
-    }
-
-    .sonar-axis-y {
-      position: absolute;
-      width: 1px;
-      height: 100%;
-      background: rgba(0, 240, 255, 0.1);
-    }
-
-    .sonar-sweep {
-      position: absolute;
-      width: 180px;
-      height: 180px;
-      background: conic-gradient(from 0deg at 50% 50%, rgba(0, 240, 255, 0.2) 0deg, rgba(0, 240, 255, 0) 90deg);
-      border-radius: 50%;
-      animation: sweep 4s linear infinite;
-      pointer-events: none;
-    }
-
-    .sonar-center {
-      position: absolute;
-      width: 6px;
-      height: 6px;
-      background: var(--accent-cyan);
-      border-radius: 50%;
-      box-shadow: 0 0 8px var(--accent-cyan);
-    }
-
-    /* 动态声呐目标 */
-    .sonar-target {
-      position: absolute;
-      width: 6px;
-      height: 6px;
-      background: var(--accent-green);
-      border-radius: 50%;
-      box-shadow: 0 0 10px var(--accent-green);
-      animation: target-pulse 2s infinite ease-in-out;
-      opacity: 0;
-    }
-
-    .target-1 {
-      top: 35%;
-      left: 30%;
-      animation-delay: 0.5s;
-    }
-
-    .target-2 {
-      top: 65%;
-      left: 70%;
-      animation-delay: 2s;
-    }
-
-    .target-valve {
-      top: 48%;
-      left: 60%;
-      background: var(--accent-amber);
-      box-shadow: 0 0 10px var(--accent-amber);
-      display: none;
-    }
-
-    .sonar-details {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin-top: 4px;
-    }
-
-    .sonar-detail-row {
-      display: flex;
-      flex-direction: column;
-    }
-
-    .sonar-detail-row span:first-child {
-      font-size: 0.65rem;
-      color: var(--text-secondary);
-    }
-
-    .sonar-detail-row .mono-value {
-      font-family: var(--font-mono);
-      font-size: 0.85rem;
-      color: var(--accent-cyan);
-    }
-
-    /* 环境深度指示器 */
-    .environment-container {
-      display: flex;
-      gap: 15px;
-      align-items: stretch;
-    }
-
-    .gauge-column {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-    }
-
-    .gauge-column.flex-col {
-      gap: 12px;
-    }
-
-    .gauge-label {
-      font-size: 0.65rem;
-      color: var(--text-secondary);
-      margin-bottom: 4px;
-      display: block;
-    }
-
-    .depth-bar-container {
-      position: relative;
-      height: 100px;
-      background: rgba(0, 32, 64, 0.4);
-      border: 1px solid rgba(0, 240, 255, 0.2);
-      border-radius: 4px;
-      margin: 4px 0;
-      overflow: hidden;
-    }
-
-    .depth-bar-fill {
-      position: absolute;
-      bottom: 0;
-      left: 0;
-      width: 100%;
-      background: linear-gradient(to top, rgba(0, 240, 255, 0.8), rgba(0, 80, 255, 0.4));
-      box-shadow: 0 0 10px var(--accent-cyan);
-      transition: height 1s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-
-    .depth-marker {
-      position: absolute;
-      right: 4px;
-      font-family: var(--font-mono);
-      font-size: 0.6rem;
-      color: rgba(0, 240, 255, 0.5);
-      pointer-events: none;
-    }
-
-    .marker-0 {
-      top: 2px;
-    }
-
-    .marker-500 {
-      top: calc(50% - 5px);
-    }
-
-    .marker-1000 {
-      bottom: 2px;
-    }
-
-    .mono-value.big-val {
-      font-family: var(--font-mono);
-      font-size: 1.1rem;
-      font-weight: bold;
-      color: var(--text-primary);
-      text-shadow: 0 0 5px rgba(255, 255, 255, 0.2);
-    }
-
-    .small-gauge-item {
-      background: rgba(0, 32, 64, 0.2);
-      padding: 6px 10px;
-      border-radius: 4px;
-      border: 1px solid rgba(0, 240, 255, 0.08);
-    }
-
-    /* 动力诊断网格 */
-    .thrusters-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 6px;
-      margin-top: 4px;
-    }
-
-    .thruster-item {
-      background: rgba(255, 0, 60, 0.1);
-      border: 1px solid rgba(255, 0, 60, 0.2);
-      border-radius: 4px;
-      padding: 6px 2px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      transition: all 0.3s;
-    }
-
-    .thruster-item.active {
-      background: rgba(0, 255, 196, 0.1);
-      border: 1px solid rgba(0, 255, 196, 0.3);
-    }
-
-    .thruster-name {
-      font-family: var(--font-tech);
-      font-size: 0.65rem;
-      font-weight: bold;
-      color: var(--text-secondary);
-    }
-
-    .thruster-item.active .thruster-name {
-      color: var(--accent-green);
-    }
-
-    .thruster-status {
-      font-family: var(--font-mono);
-      font-size: 0.55rem;
-      color: var(--accent-red);
-    }
-
-    .thruster-item.active .thruster-status {
-      color: var(--accent-green);
-    }
-
-    /* 遥测流 */
-    .diagnostics-logs {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      margin-top: 6px;
-    }
-
-    .diag-header {
-      font-size: 0.65rem;
-      color: var(--text-secondary);
-    }
-
-    .diag-log-container {
-      background: rgba(0, 5, 15, 0.8);
-      border: 1px solid rgba(0, 240, 255, 0.15);
-      border-radius: 4px;
-      height: 85px;
-      padding: 6px;
-      font-family: var(--font-mono);
-      font-size: 0.65rem;
-      color: var(--accent-cyan);
-      overflow-y: auto;
-      line-height: 1.4;
-      white-space: pre-wrap;
-    }
-
-    /* ==================== 中间对话栏 Dialogue Panel ==================== */
-    .chat-area {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      border: 1px solid var(--border-cyan);
-      background: rgba(5, 11, 26, 0.75);
-      border-radius: 0.5rem;
-      position: relative;
-      min-height: 0;
-      overflow: hidden;
-    }
-
-    /* 语音输入时的科技感波动效果 */
-    .audio-waveform-wrapper {
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 73px;
-      background: rgba(3, 7, 18, 0.9);
-      z-index: 10;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      gap: 8px;
-      border-radius: 0.5rem 0.5rem 0 0;
-    }
-
-    .waveform-bar {
-      width: 5px;
-      height: 20px;
-      background: var(--accent-cyan);
-      border-radius: 3px;
-      box-shadow: 0 0 10px var(--accent-cyan);
-      animation: pulse-wave 1.2s infinite ease-in-out;
-    }
-
-    .waveform-bar:nth-child(1) {
-      animation-delay: 0.1s;
-    }
-
-    .waveform-bar:nth-child(2) {
-      animation-delay: 0.2s;
-    }
-
-    .waveform-bar:nth-child(3) {
-      animation-delay: 0.3s;
-    }
-
-    .waveform-bar:nth-child(4) {
-      animation-delay: 0.4s;
-    }
-
-    .waveform-bar:nth-child(5) {
-      animation-delay: 0.3s;
-    }
-
-    .waveform-bar:nth-child(6) {
-      animation-delay: 0.2s;
-    }
-
-    .waveform-bar:nth-child(7) {
-      animation-delay: 0.1s;
-    }
-
-    .messages {
-      flex: 1;
-      overflow-y: auto;
-      padding: 1.5rem;
-      display: flex;
-      flex-direction: column;
-      gap: 1.2rem;
-    }
-
-    /* 科技感聊天气泡 */
-    .message {
-      display: flex;
-      gap: 0.8rem;
-      max-width: 85%;
-    }
-
-    .message.user {
-      align-self: flex-end;
-      flex-direction: row-reverse;
-    }
-
-    .message.bot,
-    .message.assistant {
-      align-self: flex-start;
-    }
-
-    .avatar {
-      width: 36px;
-      height: 36px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 1.1rem;
-      background: rgba(0, 240, 255, 0.1);
-      border: 1px solid var(--accent-cyan);
-      box-shadow: 0 0 8px rgba(0, 240, 255, 0.3);
-      flex-shrink: 0;
-    }
-
-    .user .avatar {
-      background: rgba(59, 130, 246, 0.15);
-      border-color: #3b82f6;
-      box-shadow: 0 0 8px rgba(59, 130, 246, 0.3);
-    }
-
-    .bubble-wrapper {
-      display: flex;
-      flex-direction: column;
-    }
-
-    .bubble {
-      background: rgba(12, 22, 45, 0.8);
-      border: 1px solid rgba(0, 240, 255, 0.15);
-      padding: 0.75rem 1.1rem;
-      border-radius: 0.25rem 1rem 1rem 1rem;
-      font-size: 0.9rem;
-      line-height: 1.5;
-      color: var(--text-primary);
-      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
-      transition: all 0.3s;
-    }
-
-    .user .bubble {
-      background: rgba(15, 32, 67, 0.95);
-      border-color: rgba(59, 130, 246, 0.5);
-      border-radius: 1rem 0.25rem 1rem 1rem;
-      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
-    }
-
-    .msg-translate-bar {
-      font-family: var(--font-tech);
-      font-size: 0.7rem !important;
-      color: var(--accent-cyan) !important;
-      margin-top: 4px;
-      cursor: pointer;
-      text-decoration: none !important;
-      display: inline-block;
-      opacity: 0.7;
-      transition: 0.2s;
-    }
-
-    .msg-translate-bar:hover {
-      opacity: 1;
-      text-shadow: 0 0 5px var(--accent-cyan-glow);
-    }
-
-    /* 对话输入区域 */
-    .input-area {
-      padding: 1rem;
-      border-top: 1px solid var(--border-cyan);
-      display: flex;
-      gap: 0.75rem;
-      background: rgba(3, 7, 18, 0.5);
-    }
-
-    .input-area input {
-      flex: 1;
-      background: rgba(0, 10, 25, 0.85);
-      border: 1px solid rgba(0, 240, 255, 0.25);
-      border-radius: 4px;
-      padding: 0.75rem 1.2rem;
-      color: #fff;
-      font-size: 0.9rem;
-      font-family: var(--font-sans);
-      outline: none;
-      transition: all 0.3s;
-    }
-
-    .input-area input:focus {
-      border-color: var(--accent-cyan);
-      box-shadow: 0 0 12px rgba(0, 240, 255, 0.2);
-    }
-
-    .input-area button {
-      background: rgba(0, 240, 255, 0.12);
-      border: 1px solid var(--accent-cyan);
-      color: var(--accent-cyan);
-      border-radius: 4px;
-      padding: 0 1.5rem;
-      font-family: var(--font-tech);
-      font-size: 0.85rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.3s;
-    }
-
-    .input-area button:hover:not(:disabled) {
-      background: var(--accent-cyan);
-      color: var(--bg-deep);
-      box-shadow: 0 0 15px var(--accent-cyan-glow);
-    }
-
-    .input-area button:disabled {
-      border-color: rgba(255, 255, 255, 0.1);
-      color: rgba(255, 255, 255, 0.2);
-      background: transparent;
-      cursor: not-allowed;
-    }
-
-    .input-area .voice-btn {
-      border-color: var(--accent-green);
-      color: var(--accent-green);
-      background: rgba(0, 255, 196, 0.1);
-    }
-
-    .input-area .voice-btn:hover:not(:disabled) {
-      background: var(--accent-green);
-      color: var(--bg-deep);
-      box-shadow: 0 0 15px var(--accent-green-glow);
-    }
-
-    .input-area .voice-btn.recording {
-      background: var(--accent-red);
-      border-color: var(--accent-red);
-      color: #fff;
-      animation: pulse-glow-red 1s infinite;
-    }
-
-    /* ASR状态面板 */
-    .asr-panel {
-      display: none;
-      padding: 0.75rem 1rem;
-      border-top: 1px solid var(--border-cyan);
-      background: rgba(0, 10, 25, 0.9);
-      color: var(--text-secondary);
-      font-family: var(--font-mono);
-      font-size: 0.75rem;
-      line-height: 1.5;
-      border-radius: 0 0 0.5rem 0.5rem;
-    }
-
-    .asr-panel.visible {
-      display: block;
-    }
-
-    .asr-panel strong {
-      color: var(--accent-cyan);
-    }
-
-    /* ==================== 右侧控制栏 Sidebar Panel ==================== */
-    .sidebar {
-      gap: 1rem;
-      display: flex;
-      flex-direction: column;
-      overflow-y: auto;
-    }
-
-    .info-card {
-      background: rgba(5, 12, 28, 0.6);
-      border: 1px solid rgba(0, 240, 255, 0.15);
-      border-radius: 0.5rem;
-      padding: 0.9rem;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      transition: border-color 0.3s;
-    }
-
-    .info-card:hover {
-      border-color: rgba(0, 240, 255, 0.35);
-    }
-
-    .info-title {
-      font-family: var(--font-tech);
-      font-size: 0.75rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      color: var(--accent-cyan);
-      letter-spacing: 1.5px;
-      border-left: 2px solid var(--accent-cyan);
-      padding-left: 6px;
-      margin-bottom: 2px;
-      display: flex;
-      align-items: center;
-    }
-
-    .time-display {
-      font-family: var(--font-mono);
-      font-size: 1.3rem;
-      font-weight: bold;
-      letter-spacing: 1px;
-      color: var(--text-primary);
-      text-shadow: 0 0 10px var(--accent-cyan-glow);
-      padding: 4px 0;
-    }
-
-    .time-control {
-      display: flex;
-      gap: 6px;
-    }
-
-    .time-control input {
-      flex: 1;
-      background: rgba(0, 10, 25, 0.8);
-      border: 1px solid rgba(0, 240, 255, 0.2);
-      color: #fff;
-      border-radius: 4px;
-      padding: 6px;
-      font-size: 0.75rem;
-      font-family: var(--font-mono);
-      outline: none;
-    }
-
-    .time-control button {
-      background: rgba(0, 240, 255, 0.12);
-      border: 1px solid var(--accent-cyan);
-      color: var(--accent-cyan);
-      border-radius: 4px;
-      padding: 6px 12px;
-      cursor: pointer;
-      font-family: var(--font-tech);
-      font-size: 0.75rem;
-      transition: 0.2s;
-    }
-
-    .time-control button:hover {
-      background: var(--accent-cyan);
-      color: var(--bg-deep);
-      box-shadow: 0 0 10px var(--accent-cyan-glow);
-    }
-
-    .time-hint {
-      font-size: 0.65rem;
-      color: var(--text-secondary);
-    }
-
-    /* 列表字段项样式 */
-    .field-row {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      padding: 6px 0;
-      border-bottom: 1px solid rgba(0, 240, 255, 0.08);
-      font-size: 0.8rem;
-    }
-
-    .field-row:last-child {
-      border-bottom: none;
-    }
-
-    .field-label {
-      color: var(--text-secondary);
-      font-size: 0.7rem;
-      font-family: var(--font-tech);
-    }
-
-    .field-value {
-      font-weight: 500;
-      color: #fff;
-      word-break: break-all;
-      white-space: pre-wrap;
-      font-family: var(--font-mono);
-    }
-
-    .missing {
-      color: var(--accent-amber);
-      animation: pulse-warn 2s infinite ease-in-out;
-      font-family: var(--font-mono);
-      font-size: 0.75rem;
-      padding: 4px 0;
-      display: flex;
-      align-items: center;
-    }
-
-    .badge {
-      display: inline-block;
-      background: rgba(0, 240, 255, 0.12);
-      border: 1px solid var(--accent-cyan);
-      color: var(--accent-cyan);
-      border-radius: 2px;
-      padding: 2px 6px;
-      font-size: 0.65rem;
-      font-family: var(--font-tech);
-    }
-
-    .badge.emergency {
-      background: rgba(255, 0, 60, 0.2);
-      border-color: var(--accent-red);
-      color: var(--accent-red);
-      animation: pulse-glow-red-text 1.5s infinite alternate;
-    }
-
-    /* 最终 JSON codeblock */
-    .final-json {
-      background: rgba(0, 5, 15, 0.95);
-      border: 1px solid rgba(0, 240, 255, 0.15);
-      padding: 8px;
-      border-radius: 4px;
-      font-family: var(--font-mono);
-      font-size: 0.7rem;
-      white-space: pre-wrap;
-      word-break: break-all;
-      max-height: 250px;
-      overflow: auto;
-      color: #aebfd4;
-    }
-
-    /* 重新开始按钮 */
-    .reset-btn {
-      background: rgba(255, 0, 60, 0.08);
-      border: 1px solid rgba(255, 0, 60, 0.4);
-      color: #ff003c;
-      padding: 0.7rem 1rem;
-      border-radius: 4px;
-      cursor: pointer;
-      text-align: center;
-      font-family: var(--font-tech);
-      font-size: 0.8rem;
-      font-weight: 600;
-      margin-top: 0.5rem;
-      transition: all 0.3s;
-    }
-
-    .reset-btn:hover {
-      background: var(--accent-red);
-      color: white;
-      box-shadow: 0 0 12px var(--accent-red-glow);
-    }
-
-    /* 历史记录按钮与列表 */
-    .history-item {
-      transition: background 0.2s;
-      padding: 8px;
-      border-bottom: 1px solid rgba(0, 240, 255, 0.08);
-      cursor: pointer;
-      border-radius: 4px;
-    }
-
-    .history-item:hover {
-      background: rgba(0, 240, 255, 0.05);
-    }
-
-    /* ==================== 统一动画 Keyframes ==================== */
-    @keyframes sweep {
-      from {
-        transform: rotate(0deg);
-      }
-
-      to {
-        transform: rotate(360deg);
-      }
-    }
-
-    @keyframes target-pulse {
-      0% {
-        opacity: 0;
-        transform: scale(0.6);
-      }
-
-      20% {
-        opacity: 1;
-      }
-
-      80% {
-        opacity: 0.8;
-      }
-
-      100% {
-        opacity: 0;
-        transform: scale(1.6);
-      }
-    }
-
-    @keyframes pulse-wave {
-
-      0%,
-      100% {
-        transform: scaleY(0.4);
-      }
-
-      50% {
-        transform: scaleY(1.8);
-      }
-    }
-
-    @keyframes pulse-glow-green {
-
-      0%,
-      100% {
-        box-shadow: 0 0 4px var(--accent-green);
-      }
-
-      50% {
-        box-shadow: 0 0 12px var(--accent-green);
-      }
-    }
-
-    @keyframes pulse-glow-red {
-
-      0%,
-      100% {
-        box-shadow: 0 0 4px var(--accent-red);
-      }
-
-      50% {
-        box-shadow: 0 0 15px var(--accent-red);
-      }
-    }
-
-    @keyframes pulse-glow-red-text {
-      0% {
-        text-shadow: 0 0 2px var(--accent-red-glow);
-      }
-
-      100% {
-        text-shadow: 0 0 8px var(--accent-red);
-      }
-    }
-
-    @keyframes pulse-warn {
-
-      0%,
-      100% {
-        opacity: 0.75;
-      }
-
-      50% {
-        opacity: 1;
-        color: #ffb700;
-      }
-    }
-
-    /* 滚动条美化 */
-    ::-webkit-scrollbar {
-      width: 4px;
-      height: 4px;
-    }
-
-    ::-webkit-scrollbar-track {
-      background: rgba(0, 0, 0, 0.1);
-    }
-
-    ::-webkit-scrollbar-thumb {
-      background: rgba(0, 240, 255, 0.2);
-      border-radius: 2px;
-    }
-
-    ::-webkit-scrollbar-thumb:hover {
-      background: var(--accent-cyan);
-    }
-  </style>
-</head>
-
-<body>
-  <div class="app">
-    <!-- Top Cockpit Header -->
-    <div class="header">
-      <div class="header-left">
-        <div class="status-indicator-light"></div>
-        <div>
-          <h1 id="ui-title">水下多智能体任务决策大模型</h1>
-          <p id="ui-subtitle">任务准入｜状态解析｜环境理解｜智能应答</p>
-        </div>
-      </div>
-      <div class="header-right">
-        <div class="lang-selector">
-          <select id="langSelect">
-            <option value="zh">中文 (ZH)</option>
-            <option value="en">English (EN)</option>
-          </select>
-        </div>
-      </div>
-    </div>
-
-    <div class="main-panel">
-
-      <!-- Center Column: Intelligent Interaction Area -->
-      <div class="chat-area">
-        <!-- 语音录音时的炫酷动画 -->
-        <div class="audio-waveform-wrapper" id="audioWaveformWrapper" style="display: none;">
-          <div class="waveform-bar"></div>
-          <div class="waveform-bar"></div>
-          <div class="waveform-bar"></div>
-          <div class="waveform-bar"></div>
-          <div class="waveform-bar"></div>
-          <div class="waveform-bar"></div>
-          <div class="waveform-bar"></div>
-        </div>
-        <div class="messages" id="messages"></div>
-        <div class="input-area">
-          <input type="text" id="messageInput" placeholder="描述您的水下任务..." autocomplete="off">
-          <button id="voiceBtn">语音</button>
-          <button id="sendBtn">发送</button>
-        </div>
-        <div class="asr-panel" id="asrPanel"></div>
-      </div>
-
-      <!-- Right Column: Sidebar / Parameter Verification Center -->
-      <div class="sidebar" id="sidebar">
-        <div class="info-card" style="background: rgba(4, 9, 22, 0.9);">
-          <div class="info-title">
-            <!-- simulated time clock SVG -->
-            <svg class="tech-icon" viewBox="0 0 24 24">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M12 6v6h4" />
-              <path d="M12 2v2M2 12h2M12 20v2M20 12h2" />
-            </svg>
-            <span id="title-simtime">模拟时间</span>
-          </div>
-          <div id="simulatedTimeDisplay" class="time-display">--:--:--</div>
-          <div class="time-control">
-            <input type="datetime-local" id="timePicker" step="1">
-            <button id="setTimeBtn">设置</button>
-          </div>
-          <div class="time-hint" id="hint-simtime">点击设置可自定义基准时间</div>
-        </div>
-
-        <div class="info-card">
-          <div class="info-title">
-            <!-- Clipboard Task SVG -->
-            <svg class="tech-icon" viewBox="0 0 24 24">
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-              <path d="M9 12l2 2 4-4M7 7h10M7 17h6" />
-            </svg>
-            <span id="title-curtask">当前任务</span>
-          </div>
-          <div id="taskInfo">-</div>
-        </div>
-
-        <div class="info-card">
-          <div class="info-title">
-            <!-- Hexagon check SVG -->
-            <svg class="tech-icon success" viewBox="0 0 24 24">
-              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
-              <path d="M9 12l2 2 4-4" />
-            </svg>
-            <span id="title-collected">已收集字段</span>
-          </div>
-          <div id="collectedFields">暂无</div>
-        </div>
-
-        <div class="info-card">
-          <div class="info-title">
-            <!-- Hexagon warn SVG -->
-            <svg class="tech-icon warning" viewBox="0 0 24 24">
-              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
-              <path d="M12 8v5M12 16h.01" />
-            </svg>
-            <span id="title-missing">缺失字段</span>
-          </div>
-          <div id="missingFields">-</div>
-        </div>
-
-        <div class="info-card" id="resultCard" style="display:none;">
-          <div class="info-title">
-            <!-- File code brackets SVG -->
-            <svg class="tech-icon" viewBox="0 0 24 24">
-              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
-              <path d="M14 2v6h6M8 13c-1.5 0-1.5 2 0 2m8-2c1.5 0 1.5 2 0 2" />
-            </svg>
-            <span id="title-finaljson">最终任务JSON</span>
-          </div>
-          <div id="finalJson" class="final-json"></div>
-        </div>
-
-        <!-- 历史记录区域 -->
-        <div class="info-card">
-          <div class="info-title">
-            <!-- Clock arrow logs SVG -->
-            <svg class="tech-icon" viewBox="0 0 24 24">
-              <path d="M12 20a8 8 0 100-16 8 8 0 00-6.3 3.1" />
-              <path d="M3 6V1.5M3 6h4.5M12 8v4h3" />
-            </svg>
-            <span id="title-history">历史记录</span>
-          </div>
-          <button id="historyBtn"
-            style="width:100%; background:rgba(0, 240, 255, 0.12); border:1px solid var(--accent-cyan); color:var(--accent-cyan); padding:6px; border-radius:4px; cursor:pointer; font-family:var(--font-tech); font-size:0.75rem;">查看历史</button>
-          <div id="historyList"
-            style="display:none; margin-top:8px; max-height:160px; overflow-y:auto; background:rgba(0,5,15,0.95); border:1px solid rgba(0, 240, 255, 0.15); border-radius:4px; padding:4px;">
-            <!-- 动态加载历史列表 -->
-          </div>
-        </div>
-        <button class="reset-btn" id="resetBtn">⟳ 重新开始</button>
-      </div>
-    </div>
-  </div>
-
-  <script>
+(function () {
+  if (window.__seagentFrontendInitialized) return;
+  window.__seagentFrontendInitialized = true;
+
+  function initFrontend() {
     // 动态检测 API 基础路径（兼容 Jupyter Proxy 代理访问）
     const API_BASE = (() => {
       const path = window.location.pathname;
@@ -1272,6 +14,7 @@
     let sessionId = null;
     let isDone = false;
     let timeUpdateInterval = null;
+    let isTimePickerEditing = false;
 
 
     const messageContainer = document.getElementById('messages');
@@ -1445,59 +188,121 @@
     const FIELDS = {
       task_id: { zh: "任务编号", en: "Task ID" },
       task_type: { zh: "任务类型", en: "Task Type" },
-      start_time: { zh: "开始时间", en: "Start Time" },
-      end_time: { zh: "结束时间", en: "End Time" },
+      start_time: { zh: "任务开始时间", en: "Task Start Time" },
+      end_time: { zh: "任务结束时间", en: "Task End Time" },
       cable_position: { zh: "管缆位置", en: "Cable Position" },
       cable_type: { zh: "管缆类型", en: "Cable Type" },
       start_point: { zh: "起始点经纬度", en: "Start Coordinates" },
       end_point: { zh: "结束点经纬度", en: "End Coordinates" },
       water_depth: { zh: "水深（米）", en: "Water Depth (m)" },
-      equipment_type: { zh: "设备类型", en: "ROV Class" },
+      equipment_type: { zh: "作业设备型号", en: "Equipment Model" },
+      equipment_unit_id: { zh: "具体机器人编号", en: "Robot Unit ID" },
       equipment_name: { zh: "设备全称", en: "ROV Name" },
       payload: { zh: "携带工具", en: "Payload" },
       support_vessel: { zh: "支持船编号", en: "Support Vessel ID" },
       oilfield_name: { zh: "油田名称", en: "Oilfield Name" },
-      oilfield_coordinates: { zh: "油田经纬度", en: "Oilfield Coordinates" },
+      oilfield_coordinates: { zh: "油田经纬度坐标", en: "Oilfield Coordinates" },
       wellhead_id: { zh: "井口编号", en: "Wellhead ID" }
     };
 
     const VALUES = {
+      // 任务模板键与规范任务类型（来源：task_schemas.yaml）
+      "pipeline_inspection": { zh: "管缆巡检", en: "Pipeline Inspection" },
+      "pipeline_burial": { zh: "管缆埋设", en: "Pipeline Burial" },
+      "tree_valve_operation": { zh: "采油树控制面板阀门插拔", en: "Tree Valve Operation" },
       "管缆巡检": { zh: "管缆巡检", en: "Pipeline Inspection" },
+      "管缆埋设": { zh: "管缆埋设", en: "Pipeline Burial" },
       "采油树控制面板插入": { zh: "采油树控制面板插入", en: "Tree Valve Insertion" },
       "采油树控制面板拔出": { zh: "采油树控制面板拔出", en: "Tree Valve Extraction" },
       "采油树控制面板插拔": { zh: "采油树控制面板插拔", en: "Tree Valve Operation" },
       "未识别": { zh: "未识别", en: "Unidentified" },
+
+      // 管缆类型（来源：assets.yaml）
       "海底油气管道": { zh: "海底油气管道", en: "Subsea Oil/Gas Pipeline" },
       "电力电缆": { zh: "电力电缆", en: "Power Cable" },
       "光纤通信缆": { zh: "光纤通信缆", en: "Fiber Optic Cable" },
-      "observation": { zh: "观察级 ROV", en: "Observation Class ROV" },
-      "work": { zh: "作业级 ROV", en: "Work Class ROV" },
-      "seabed_tractor": { zh: "海底拖拉机", en: "Seabed Tractor" },
-      "survey": { zh: "调查型 AUV", en: "Survey AUV" },
-      "观察级": { zh: "观察级 ROV", en: "Observation Class ROV" },
-      "工作级": { zh: "工作级 ROV", en: "Work Class ROV" },
-      "观察级ROV": { zh: "观察级 ROV", en: "Observation Class ROV" },
-      "工作级ROV": { zh: "工作级 ROV", en: "Work Class ROV" },
-      "sealien_work_class": { zh: "sealien_work_class", en: "Sealien Work Class ROV" },
-      "sealien_cable_pipeline": { zh: "sealien_cable_pipeline", en: "Sealien Cable/Pipeline ROV" },
-      "sealien_inspection": { zh: "sealien_inspection", en: "Sealien Inspection ROV" },
-      "taurus_tractor": { zh: "taurus_tractor", en: "Taurus Seabed Tractor" },
-      "sealien_survey_auv": { zh: "sealien_survey_auv", en: "Sealien Survey AUV" },
+
+      // 机器人大类、机器人族与标准型号（来源：robot_fleet.yaml）
+      "管缆埋设机器人": { zh: "管缆埋设机器人", en: "Cable Burial Robot" },
+      "工作级ROV": { zh: "工作级 ROV", en: "Work-Class ROV" },
+      "观察级ROV": { zh: "观察级 ROV", en: "Observation-Class ROV" },
+      "AUV": { zh: "AUV", en: "Autonomous Underwater Vehicle (AUV)" },
+      "履带式海底重载作业机器人": { zh: "履带式海底重载作业机器人", en: "Crawler-Type Heavy-Duty Seabed Robot" },
+      "拖曳式海底重载作业机器人": { zh: "拖曳式海底重载作业机器人", en: "Towed Heavy-Duty Seabed Robot" },
+      "特种工作级深海机器人": { zh: "特种工作级深海机器人", en: "Special Work-Class Deep-Sea Robot" },
+      "通用工作级深海机器人": { zh: "通用工作级深海机器人", en: "General Work-Class Deep-Sea ROV" },
+      "轻型工作级深海机器人": { zh: "轻型工作级深海机器人", en: "Light Work-Class Deep-Sea ROV" },
+      "观察级深海机器人": { zh: "观察级深海机器人", en: "Observation-Class Deep-Sea ROV" },
+      "水下无人自主航行器": { zh: "水下无人自主航行器", en: "Autonomous Underwater Vehicle" },
+      "履带式海底重载作业机器人 1600HP": { zh: "履带式海底重载作业机器人 1600HP", en: "Crawler-Type Heavy-Duty Seabed Robot 1600HP" },
+      "拖曳式海底重载作业机器人 1500HP": { zh: "拖曳式海底重载作业机器人 1500HP", en: "Towed Heavy-Duty Seabed Robot 1500HP" },
+      "特种工作级深海机器人 600HP": { zh: "特种工作级深海机器人 600HP", en: "Special Work-Class Deep-Sea Robot 600HP" },
+      "通用工作级深海机器人 250HP": { zh: "通用工作级深海机器人 250HP", en: "General Work-Class Deep-Sea ROV 250HP" },
+      "轻型工作级深海机器人 HP": { zh: "轻型工作级深海机器人 HP", en: "Light Work-Class Deep-Sea ROV HP" },
+      "观察级深海机器人 HP": { zh: "观察级深海机器人 HP", en: "Observation-Class Deep-Sea ROV HP" },
+      "水下无人自主航行器 HP": { zh: "水下无人自主航行器 HP", en: "Autonomous Underwater Vehicle HP" },
+
+      // 实体机器人编号与展示名称（来源：robot_fleet.yaml）
+      "CRAWLER-1600-001": { zh: "CRAWLER-1600-001", en: "CRAWLER-1600-001" },
+      "TOWED-1500-001": { zh: "TOWED-1500-001", en: "TOWED-1500-001" },
+      "SPECIAL-600-001": { zh: "SPECIAL-600-001", en: "SPECIAL-600-001" },
+      "WROV-250-001": { zh: "WROV-250-001", en: "WROV-250-001" },
+      "LROV-HP-001": { zh: "LROV-HP-001", en: "LROV-HP-001" },
+      "LROV-HP-002": { zh: "LROV-HP-002", en: "LROV-HP-002" },
+      "OBSROV-HP-001": { zh: "OBSROV-HP-001", en: "OBSROV-HP-001" },
+      "AUV-HP-001": { zh: "AUV-HP-001", en: "AUV-HP-001" },
+      "履带式海底重载作业机器人1600HP-001": { zh: "履带式海底重载作业机器人1600HP-001", en: "Crawler-Type Heavy-Duty Seabed Robot 1600HP-001" },
+      "拖曳式海底重载作业机器人1500HP-001": { zh: "拖曳式海底重载作业机器人1500HP-001", en: "Towed Heavy-Duty Seabed Robot 1500HP-001" },
+      "特种工作级深海机器人600HP-001": { zh: "特种工作级深海机器人600HP-001", en: "Special Work-Class Deep-Sea Robot 600HP-001" },
+      "通用工作级深海机器人250HP-001": { zh: "通用工作级深海机器人250HP-001", en: "General Work-Class Deep-Sea ROV 250HP-001" },
+      "轻型工作级深海机器人HP-001": { zh: "轻型工作级深海机器人HP-001", en: "Light Work-Class Deep-Sea ROV HP-001" },
+      "轻型工作级深海机器人HP-002": { zh: "轻型工作级深海机器人HP-002", en: "Light Work-Class Deep-Sea ROV HP-002" },
+      "观察级深海机器人HP-001": { zh: "观察级深海机器人HP-001", en: "Observation-Class Deep-Sea ROV HP-001" },
+      "水下无人自主航行器HP-001": { zh: "水下无人自主航行器HP-001", en: "Autonomous Underwater Vehicle HP-001" },
+
+      // 支持船（来源：assets.yaml）
       "海洋石油681": { zh: "海洋石油681", en: "Haiyang Shiyou 681" },
       "海洋石油286": { zh: "海洋石油286", en: "Haiyang Shiyou 286" },
       "海洋石油708": { zh: "海洋石油708", en: "Haiyang Shiyou 708" },
       "DSV-Oceanic": { zh: "DSV-Oceanic", en: "DSV-Oceanic" },
-      "高清/4K摄像系统": { zh: "高清/4K摄像系统", en: "HD/4K Camera System" },
-      "CP（阴极保护）探测仪": { zh: "CP（阴极保护）探测仪", en: "CP (Cathodic Protection) Detector" },
-      "管道追踪器": { zh: "管道追踪器", en: "Pipeline Tracker" },
-      "多波束声呐": { zh: "多波束声呐", en: "Multibeam Sonar" },
-      "侧扫声呐": { zh: "侧扫声呐", en: "Side Scan Sonar" },
-      "激光测量尺": { zh: "激光测量尺", en: "Laser Scale" },
-      "液压扭矩工具": { zh: "液压扭矩工具", en: "Hydraulic Torque Tool" },
-      "阀门操作接口工具": { zh: "阀门操作接口工具", en: "Valve Operation Interface Tool" },
-      "机械臂": { zh: "机械臂", en: "Manipulator Arm" },
-      "清洁刷": { zh: "清洁刷", en: "Cleaning Brush" },
-      "防喷工具包": { zh: "防喷工具包", en: "BOP Tool Pack" }
+
+      // 合法任务载荷（来源：assets.yaml）
+      "高清水下摄像机": { zh: "高清水下摄像机", en: "HD Underwater Camera" },
+      "LED水下照明灯": { zh: "LED水下照明灯", en: "LED Underwater Light" },
+      "激光标尺": { zh: "激光标尺", en: "Laser Scale" },
+      "前视声呐": { zh: "前视声呐", en: "Forward-Looking Sonar" },
+      "INS惯性导航系统": { zh: "INS惯性导航系统", en: "INS Inertial Navigation System" },
+      "DVL多普勒测速仪": { zh: "DVL多普勒测速仪", en: "DVL Doppler Velocity Log" },
+      "USBL定位设备": { zh: "USBL定位设备", en: "USBL Positioning Equipment" },
+      "深度传感器": { zh: "深度传感器", en: "Depth Sensor" },
+      "高压水射流喷冲埋设模块": { zh: "高压水射流喷冲埋设模块", en: "High-Pressure Water-Jet Burial Module" },
+      "机械切割开沟模块（可选）": { zh: "机械切割开沟模块（可选）", en: "Mechanical Cutting and Trenching Module (Optional)" },
+      "海缆压埋/保持装置": { zh: "海缆压埋/保持装置", en: "Subsea Cable Burial/Hold-Down Device" },
+      "埋深控制装置": { zh: "埋深控制装置", en: "Burial Depth Control Device" },
+      "TSS管缆跟踪传感器": { zh: "TSS管缆跟踪传感器", en: "TSS Cable/Pipeline Tracking Sensor" },
+      "激光标尺（可选）": { zh: "激光标尺（可选）", en: "Laser Scale (Optional)" },
+      "成像声呐": { zh: "成像声呐", en: "Imaging Sonar" },
+      "多波束声呐（可选）": { zh: "多波束声呐（可选）", en: "Multibeam Sonar (Optional)" },
+      "水下定位信标（可选）": { zh: "水下定位信标（可选）", en: "Underwater Positioning Beacon (Optional)" },
+      "声学应答器（可选）": { zh: "声学应答器（可选）", en: "Acoustic Transponder (Optional)" },
+      "海床地质探测设备（可选）": { zh: "海床地质探测设备（可选）", en: "Seabed Geological Survey Equipment (Optional)" },
+      "腐蚀检测设备（可选）": { zh: "腐蚀检测设备（可选）", en: "Corrosion Inspection Equipment (Optional)" },
+      "温度/压力传感器模块（可选）": { zh: "温度/压力传感器模块（可选）", en: "Temperature/Pressure Sensor Module (Optional)" },
+      "多功能液压机械臂": { zh: "多功能液压机械臂", en: "Multifunctional Hydraulic Manipulator" },
+      "电液机械臂": { zh: "电液机械臂", en: "Electro-Hydraulic Manipulator" },
+      "双目视觉模块（可选）": { zh: "双目视觉模块（可选）", en: "Stereo Vision Module (Optional)" },
+      "LED照明系统": { zh: "LED照明系统", en: "LED Lighting System" },
+      "三维视觉系统（可选）": { zh: "三维视觉系统（可选）", en: "3D Vision System (Optional)" },
+      "成像声呐（可选）": { zh: "成像声呐（可选）", en: "Imaging Sonar (Optional)" },
+      "USBL超短基线定位系统": { zh: "USBL超短基线定位系统", en: "USBL Positioning System" },
+      "高度计": { zh: "高度计", en: "Altimeter" },
+      "泄漏检测传感器（可选）": { zh: "泄漏检测传感器（可选）", en: "Leak Detection Sensor (Optional)" },
+
+      // 标准油田名称（来源：environment.yaml）
+      "流花11-1油田": { zh: "流花11-1油田", en: "Liuhua 11-1 Oilfield" },
+      "陵水17-2油田": { zh: "陵水17-2油田", en: "Lingshui 17-2 Oilfield" },
+      "蓬莱19-3油田": { zh: "蓬莱19-3油田", en: "Penglai 19-3 Oilfield" },
+      "春晓26-1油田": { zh: "春晓26-1油田", en: "Chunxiao 26-1 Oilfield" }
     };
 
     document.getElementById('langSelect').addEventListener('change', (e) => {
@@ -1542,14 +347,7 @@
         if (originalText && btn && bubble) {
           const hasZh = hasChinese(originalText);
           if (currentLang === 'en' && hasZh) {
-            const cache = msgDiv.getAttribute('data-translation-cache');
-            if (cache) {
-              bubble.innerHTML = renderMarkdown(cache).replace(/\n/g, '<br>');
-              btn.innerText = I18N[currentLang].transOriginal;
-              btn.setAttribute('data-translated', 'true');
-            } else {
-              autoTranslateMessage(msgDiv);
-            }
+            autoTranslateMessage(msgDiv);
           } else {
             bubble.innerHTML = renderMarkdown(originalText).replace(/\n/g, '<br>');
             btn.innerText = I18N[currentLang].transTranslate;
@@ -1623,19 +421,6 @@
       const bubble = msgDiv.querySelector('.bubble');
       if (!originalText || !btn || !bubble) return;
 
-      // 检查前端 DOM 缓存，若为脏数据则清除并重新翻译
-      const cache = msgDiv.getAttribute('data-translation-cache');
-      if (cache && !isDirtyTranslation('English', cache)) {
-        bubble.innerHTML = renderMarkdown(cache).replace(/\n/g, '<br>');
-        btn.innerText = I18N[currentLang].transOriginal;
-        btn.setAttribute('data-translated', 'true');
-        return;
-      }
-      if (cache) {
-        // 清除脏缓存
-        msgDiv.removeAttribute('data-translation-cache');
-      }
-
       btn.innerText = I18N[currentLang].transTranslating;
       try {
         const { translated, warning } = await fetchTranslation(originalText, 'English');
@@ -1670,32 +455,23 @@
         btn.innerText = I18N[currentLang].transTranslate;
         btn.setAttribute('data-translated', 'false');
       } else {
-        const targetLang = currentLang === 'zh' ? 'Chinese' : 'English';
-        const cache = messageDiv.getAttribute('data-translation-cache');
-        // 检查前端 DOM 缓存，若为脏数据则清除并重新翻译
-        if (cache && !isDirtyTranslation(targetLang, cache)) {
-          bubble.innerHTML = renderMarkdown(cache).replace(/\n/g, '<br>');
-          btn.innerText = I18N[currentLang].transOriginal;
-          btn.setAttribute('data-translated', 'true');
-        } else {
-          if (cache) messageDiv.removeAttribute('data-translation-cache');
-          btn.innerText = I18N[currentLang].transTranslating;
-          try {
-            const { translated, warning } = await fetchTranslation(originalText, targetLang);
-            messageDiv.setAttribute('data-translation-cache', translated);
-            bubble.innerHTML = renderMarkdown(translated).replace(/\n/g, '<br>');
-            if (warning === 'low_quality') {
-              btn.innerText = I18N[currentLang].transFallback;
-              btn.setAttribute('data-translated', 'warn');
-            } else {
-              btn.innerText = I18N[currentLang].transOriginal;
-              btn.setAttribute('data-translated', 'true');
-            }
-          } catch (err) {
-            btn.innerText = err.name === 'AbortError'
-              ? I18N[currentLang].transNetError
-              : I18N[currentLang].transFailed;
+        const targetLang = hasChinese(originalText) ? 'English' : 'Chinese';
+        btn.innerText = I18N[currentLang].transTranslating;
+        try {
+          const { translated, warning } = await fetchTranslation(originalText, targetLang);
+          messageDiv.setAttribute('data-translation-cache', translated);
+          bubble.innerHTML = renderMarkdown(translated).replace(/\n/g, '<br>');
+          if (warning === 'low_quality') {
+            btn.innerText = I18N[currentLang].transFallback;
+            btn.setAttribute('data-translated', 'warn');
+          } else {
+            btn.innerText = I18N[currentLang].transOriginal;
+            btn.setAttribute('data-translated', 'true');
           }
+        } catch (err) {
+          btn.innerText = err.name === 'AbortError'
+            ? I18N[currentLang].transNetError
+            : I18N[currentLang].transFailed;
         }
       }
     }
@@ -1778,7 +554,7 @@
 
       let translateBtn = '';
       if (content.trim()) {
-        translateBtn = `<div class="msg-translate-bar" onclick="toggleMessageTranslation(this)">${I18N[currentLang].transTranslate}</div>`;
+        translateBtn = `<div class="msg-translate-bar" data-action="translate-message">${I18N[currentLang].transTranslate}</div>`;
       }
 
       div.innerHTML = avatarHtml + `<div class="bubble-wrapper" style="display:flex; flex-direction:column; align-items: ${role === 'user' ? 'flex-end' : 'flex-start'};"><div class="bubble">${renderedContent}</div>${translateBtn}</div>`;
@@ -1804,16 +580,9 @@
     function updateSidebar(data) {
       lastResponseData = data;
 
-      // Filter collected fields to exclude equipment_type
-      const collected = {};
-      if (data.collected) {
-        for (const [k, v] of Object.entries(data.collected)) {
-          if (k !== 'equipment_type') {
-            collected[k] = v;
-          }
-        }
-      }
-
+      // 任务类型显示：优先从 collected 里取 task_type 字段（已规范化的中文值）
+      // 若 collected 没有，则用后端返回的 task_type key 做映射
+      const collected = data.collected || {};
       let taskTypeDisplay = '未识别';
       if (collected.task_type) {
         taskTypeDisplay = collected.task_type;
@@ -1850,7 +619,7 @@
 
 
 
-      const missing = (data.missing || []).filter(m => m !== 'equipment_type');
+      const missing = data.missing || [];
       const missingDiv = document.getElementById('missingFields');
       if (missing.length === 0 && Object.keys(collected).length > 0) {
         missingDiv.innerHTML = I18N[currentLang].allCollected;
@@ -1865,9 +634,7 @@
 
       if (data.final_json) {
         document.getElementById('resultCard').style.display = 'block';
-        const displayJson = { ...data.final_json };
-        delete displayJson.equipment_type;
-        document.getElementById('finalJson').innerText = JSON.stringify(displayJson, null, 2);
+        document.getElementById('finalJson').innerText = JSON.stringify(data.final_json, null, 2);
       } else {
         document.getElementById('resultCard').style.display = 'none';
       }
@@ -1882,15 +649,15 @@
           const formatted = dt.toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US', { hour12: false });
           document.getElementById('simulatedTimeDisplay').innerText = formatted;
 
-          if (isInit) {
-            const picker = document.getElementById('timePicker');
-            if (picker) {
-              const year = dt.getFullYear();
-              const month = String(dt.getMonth() + 1).padStart(2, '0');
-              const day = String(dt.getDate()).padStart(2, '0');
-              const hours = String(dt.getHours()).padStart(2, '0');
-              const minutes = String(dt.getMinutes()).padStart(2, '0');
-              const localValue = `${year}-${month}-${day}T${hours}:${minutes}`;
+          const picker = document.getElementById('timePicker');
+          if (picker && (isInit || !isTimePickerEditing)) {
+            const year = dt.getFullYear();
+            const month = String(dt.getMonth() + 1).padStart(2, '0');
+            const day = String(dt.getDate()).padStart(2, '0');
+            const hours = String(dt.getHours()).padStart(2, '0');
+            const minutes = String(dt.getMinutes()).padStart(2, '0');
+            const localValue = `${year}-${month}-${day}T${hours}:${minutes}`;
+            if (picker.value !== localValue) {
               picker.value = localValue;
             }
           }
@@ -1918,6 +685,7 @@
         });
         const data = await res.json();
         if (data.code === 200) {
+          isTimePickerEditing = false;
           await updateSimulatedTime(true);
           alert(I18N[currentLang].timeSuccess);
         } else {
@@ -1938,7 +706,7 @@
     function renderAsrNormalization(data, autoSent = false) {
       const rawText = (data.text || data.transcript || '').trim();
       const correctedText = (data.corrected_text || rawText).trim();
-      const replacements = Array.isArray(data.replacements) ? data.replacements : [];
+      // const replacements = Array.isArray(data.replacements) ? data.replacements : [];
       const warnings = Array.isArray(data.warnings) ? data.warnings : [];
       let html = `<strong>${I18N[currentLang].rawTranscript}</strong>${escapeHtml(rawText)}<br>`;
       html += `<strong>${I18N[currentLang].correctedTranscript}</strong>${escapeHtml(correctedText)}<br>`;
@@ -2300,7 +1068,23 @@
     messageInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(messageInput.value); });
     voiceBtn.addEventListener('click', toggleVoiceRecording);
     resetBtn.addEventListener('click', reset);
-    document.getElementById('setTimeBtn').addEventListener('click', setSimulatedTime);
+    messageContainer.addEventListener('click', (event) => {
+      const translateButton = event.target.closest('[data-action="translate-message"]');
+      if (translateButton && messageContainer.contains(translateButton)) {
+        toggleMessageTranslation(translateButton);
+      }
+    });
+    const timePicker = document.getElementById('timePicker');
+    const setTimeBtn = document.getElementById('setTimeBtn');
+    timePicker.addEventListener('focus', () => {
+      isTimePickerEditing = true;
+    });
+    timePicker.addEventListener('blur', (event) => {
+      if (event.relatedTarget !== setTimeBtn) {
+        isTimePickerEditing = false;
+      }
+    });
+    setTimeBtn.addEventListener('click', setSimulatedTime);
     document.getElementById('historyBtn').addEventListener('click', loadHistoryList);
 
 
@@ -2310,7 +1094,11 @@
     updateSimulatedTime(true);
     if (timeUpdateInterval) clearInterval(timeUpdateInterval);
     timeUpdateInterval = setInterval(() => updateSimulatedTime(false), 1000);
-  </script>
-</body>
+  }
 
-</html>
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initFrontend);
+  } else {
+    initFrontend();
+  }
+})();

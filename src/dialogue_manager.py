@@ -19,6 +19,7 @@ dialogue_manager.py - 对话主控制器
 """
 
 import json
+import re
 from typing import Any
 from zoneinfo import ZoneInfo
 from datetime import datetime   # ✅ 新增导入
@@ -49,7 +50,7 @@ FIELD_LABELS = {
     "start_point":         "起始点经纬度",
     "end_point":           "结束点经纬度",
     "water_depth":         "水深（米）",
-    "equipment_type":      "设备类型",
+    "equipment_type":      "设备型号",
     "equipment_name":      "设备全称",
     "payload":             "携带工具",
     "support_vessel":      "支持船编号",
@@ -69,7 +70,7 @@ class DialogueManager:
         self.llm = llm
         self.kb = kb
         self.extractor = ParameterExtractor(llm)
-        self.normalizer = FieldNormalizer(llm)
+        self.normalizer = FieldNormalizer()
         self.builder = OutputBuilder(kb)
         self.validator = TaskValidator(kb)
         self.oilfield_linker = OilfieldEntityLinker(kb.environment)
@@ -81,7 +82,6 @@ class DialogueManager:
         self.mode: str = "normal"
         self.phase: str = "collecting"
         self.final_result: dict | None = None
-        self.awaiting_final_confirm = False
         self.task_start_now = False
 
         # 约束管理状态
@@ -128,11 +128,16 @@ class DialogueManager:
         
         task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
         current_state = self.slot_store.get_task_state()
+        explicit_modification = self._user_requested_modification(user_message)
+        confirmation_only = (
+            old_phase == "confirming"
+            and self._is_confirmation_only(user_message)
+        )
         
         merged_updates = {}
         extraction_res = {}
         
-        if task_type_key is None:
+        if task_type_key is None and not confirmation_only:
             # Stage 1: Extract task type
             extraction_res = self.extractor.extract_updates(
                 user_message, self.conversation_history, current_state,
@@ -150,10 +155,14 @@ class DialogueManager:
             
             task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
             
-        if task_type_key:
+        if task_type_key and not confirmation_only:
             # Stage 2: Extract task parameters
             current_state = {k: s.value for k, s in new_slots.items() if s.value is not None}
-            required = self.builder.get_required(task_type_key, self.mode)
+            required = self.builder.get_required(
+                task_type_key,
+                self.mode,
+                current_state,
+            )
             extraction_res = self.extractor.extract_updates(
                 user_message, self.conversation_history, current_state,
                 task_type_key=task_type_key,
@@ -198,8 +207,12 @@ class DialogueManager:
                         slot.candidate_value = None
                         slot.validation_error = None
                         
-            self._apply_updates_in_transaction(stage2_updates, new_slots)
-        else:
+            self._apply_updates_in_transaction(
+                stage2_updates,
+                new_slots,
+                allow_overwrite=explicit_modification,
+            )
+        elif not task_type_key:
             # No task type key, but unresolved may be populated
             if extraction_res.get("unresolved"):
                 for u in extraction_res["unresolved"]:
@@ -224,10 +237,10 @@ class DialogueManager:
         
         # Re-derive from slot_store
         self.task_state = self.slot_store.get_task_state()
-        built = self.slot_store.get_built_json()
-        
         task_type_key = self.task_state.get("task_type_key")
         if task_type_key:
+            required_schema = self.builder.get_schema(task_type_key, self.mode)
+            built = self.slot_store.get_built_json(required_schema)
             if "task_id" in new_slots and (new_slots["task_id"].value is None or new_slots["task_id"].status != "valid"):
                 tid = self.builder._generate_task_id(task_type_key, self.task_state)
                 new_slots = self.slot_store.clone_slots()
@@ -235,15 +248,21 @@ class DialogueManager:
                 new_slots["task_id"].status = "valid"
                 self.slot_store.commit_transaction(new_slots, self.slot_store.unresolved)
                 self.task_state = self.slot_store.get_task_state()
-                built = self.slot_store.get_built_json()
+                built = self.slot_store.get_built_json(required_schema)
                 
-            required_schema = self.builder.get_schema(task_type_key, self.mode)
-            missing = self.slot_store.get_missing_slots(required_schema)
+            missing = self.slot_store.get_missing_slots(
+                required_schema,
+                allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
+                    field,
+                    task_type_key,
+                    self.task_state,
+                ),
+            )
             self._last_built_json = built
             self._last_missing = missing
         else:
             built, missing = {}, [{"key": "task_type", "label": "任务类型", "type": "string",
-                                    "allowed_values": self.kb.get_all_task_type_values()}]
+                                   "allowed_values": self.kb.get_all_task_type_values()}]
             self._last_built_json = built
             self._last_missing = missing
 
@@ -327,7 +346,6 @@ class DialogueManager:
                 return reply
             else:
                 self.phase = "collecting"
-                self.awaiting_final_confirm = False
 
         if self._user_cancelled(user_message):
             self.phase = "rejected"
@@ -372,38 +390,6 @@ class DialogueManager:
     # --------------------------------------------------------------------------
     # 参数更新与规范化
     # --------------------------------------------------------------------------
-
-    def _link_oilfield_update(self, updates: dict) -> dict:
-        raw_name = updates.get("oilfield_name")
-        if not raw_name:
-            return updates
-
-        coords = (
-            updates.get("oilfield_coordinates")
-            or updates.get("start_point")
-            or updates.get("cable_position")
-            or self.task_state.get("oilfield_coordinates")
-            or self.task_state.get("start_point")
-            or self.task_state.get("cable_position")
-        )
-        match = self.oilfield_linker.link(str(raw_name), coords)
-        linked = dict(updates)
-        linked["raw_oilfield_name"] = match.raw
-        linked["oilfield_match_status"] = match.status
-        linked["oilfield_match_confidence"] = match.confidence
-        linked["oilfield_match_evidence"] = match.evidence
-        linked["oilfield_match_candidates"] = match.candidates
-
-        if match.status == "accepted" and match.standard_name:
-            linked["oilfield_name"] = match.standard_name
-            linked["oilfield_entity_id"] = match.entity_id
-            linked["__clear_pending_oilfield"] = True
-        else:
-            linked.pop("oilfield_name", None)
-            linked["pending_oilfield_name"] = match.raw
-            linked["pending_oilfield_candidates"] = match.candidates
-            linked["__clear_oilfield_name"] = True
-        return linked
 
     def _link_oilfield_update_in_transaction(self, updates: dict, new_slots: dict) -> dict:
         raw_name = updates.get("oilfield_name")
@@ -450,7 +436,12 @@ class DialogueManager:
             linked["__clear_oilfield_name"] = True
         return linked
 
-    def _apply_updates_in_transaction(self, updates: dict, new_slots: dict):
+    def _apply_updates_in_transaction(
+        self,
+        updates: dict,
+        new_slots: dict,
+        allow_overwrite: bool = False,
+    ):
         if updates.get("__clear_oilfield_name"):
             if "oilfield_name" in new_slots:
                 new_slots["oilfield_name"].value = None
@@ -477,14 +468,23 @@ class DialogueManager:
             # Check for conflict
             slot = new_slots.get(k)
             if slot and slot.status == "valid" and slot.value is not None and slot.value != v:
-                slot.status = "conflict"
-                slot.candidate_value = v
-                slot.raw_value = str(v)
-                slot.validation_error = f"Conflict: existing value '{slot.value}' vs new value '{v}'"
+                if allow_overwrite:
+                    # 用户明确要求修改时，新值仍需经过后续规范化与约束校验。
+                    slot.value = v
+                    slot.status = "candidate"
+                    slot.candidate_value = None
+                    slot.raw_value = str(v)
+                    slot.validation_error = None
+                else:
+                    slot.status = "conflict"
+                    slot.candidate_value = v
+                    slot.raw_value = str(v)
+                    slot.validation_error = f"Conflict: existing value '{slot.value}' vs new value '{v}'"
             else:
                 if k in new_slots:
                     new_slots[k].value = v
                     new_slots[k].status = "candidate"
+                    new_slots[k].candidate_value = None
                     new_slots[k].validation_error = None
                 else:
                     new_slots[k] = Slot(slot_name=k, value=v, status="candidate")
@@ -500,8 +500,18 @@ class DialogueManager:
         # Auto-synchronize equipment_type when equipment_name is set/updated
         eq_name_slot = new_slots.get("equipment_name")
         eq_type_slot = new_slots.get("equipment_type")
-        eq_val = (eq_name_slot.value if eq_name_slot else None) or (eq_type_slot.value if eq_type_slot else None)
-        if eq_val:
+        equipment_update = updates.get("equipment_type") or updates.get("equipment_name")
+        has_pending_equipment_conflict = bool(
+            equipment_update
+            and eq_type_slot
+            and eq_type_slot.status == "conflict"
+        )
+        eq_val = (
+            equipment_update
+            or (eq_type_slot.value if eq_type_slot else None)
+            or (eq_name_slot.value if eq_name_slot else None)
+        )
+        if eq_val and not has_pending_equipment_conflict:
             task_type = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
             rov = self.kb.get_rov_for_task(eq_val, task_type) if task_type else self.kb.get_rov(eq_val)
             if rov:
@@ -509,6 +519,8 @@ class DialogueManager:
                     new_slots["equipment_name"] = Slot("equipment_name")
                 new_slots["equipment_name"].value = rov["full_name"]
                 new_slots["equipment_name"].status = "valid"
+                new_slots["equipment_name"].candidate_value = None
+                new_slots["equipment_name"].validation_error = None
                 
                 category = rov.get("category")
                 cats = self.kb.get_robot_classes()
@@ -519,6 +531,8 @@ class DialogueManager:
                         new_slots["equipment_type"] = Slot("equipment_type")
                     new_slots["equipment_type"].value = target_val
                     new_slots["equipment_type"].status = "valid"
+                    new_slots["equipment_type"].candidate_value = None
+                    new_slots["equipment_type"].validation_error = None
 
     def _handle_task_type_update_in_transaction(self, key: str, value: str, new_slots: dict):
         task_type_map = self.kb.get_task_type_map()
@@ -582,9 +596,9 @@ class DialogueManager:
             if allowed:
                 raw = slot.value
                 if ftype == "list":
-                    normalized = self.normalizer.normalize(key, field_def["label"], raw, allowed, ftype)
+                    normalized = self.normalizer.normalize(raw, allowed, ftype)
                 else:
-                    normalized = self.normalizer.normalize(key, field_def["label"], str(raw), allowed, ftype)
+                    normalized = self.normalizer.normalize(str(raw), allowed, ftype)
                     
                 if normalized is not None:
                     slot.value = normalized
@@ -596,7 +610,6 @@ class DialogueManager:
             else:
                 if ftype == "datetime":
                     val_str = str(slot.value)
-                    import re
                     pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"
                     if re.match(pattern, val_str):
                         slot.status = "valid"
@@ -626,15 +639,10 @@ class DialogueManager:
                     slot.status = "valid"
                     slot.validation_error = None
 
-        temp_state = {k: s.value for k, s in new_slots.items() if s.value is not None}
-        violations = self.validator.validate(temp_state)
-        for v in violations:
-            if v.severity == "hard":
-                for f in v.related_fields:
-                    slot = new_slots.get(f)
-                    if slot:
-                        slot.status = "invalid"
-                        slot.validation_error = v.message
+        # 字段自身的格式/候选合法性与任务组合约束是两类状态：
+        # 例如“水深 600m”和“最大水深 500m 的设备”均可被正确录入，
+        # 但二者组合会触发硬约束。硬约束由对话阶段 blocked_hard 管理，
+        # 不能把已合法录入的关联字段重新标记为 invalid，否则前端会误报缺失。
 
     def _apply_updates(self, updates: dict):
         if updates.get("__clear_oilfield_name"):
@@ -744,45 +752,6 @@ class DialogueManager:
             if len(values) == 1:
                 self.task_state["task_type"] = values[0]
 
-    def _normalize_constrained_fields(self, changed_fields: set[str]):
-        """规范化有allowed_values约束的字段"""
-        task_type_key = self.task_state.get("task_type_key")
-        if not task_type_key:
-            return
-
-        schema = self.builder.get_schema(task_type_key, self.mode)
-        for field_def in schema:
-            key = field_def["key"]
-            ftype = field_def["type"]
-            if ftype not in ("string", "list", "tasktype"):
-                continue
-            if changed_fields and key not in changed_fields:
-                continue
-
-            allowed = self.builder._resolve_allowed(field_def, task_type_key, self.task_state)
-            if not allowed:
-                continue
-
-            raw = self.task_state.get(key)
-            if raw is None:
-                continue
-
-            # 已经是合法值则跳过
-            if ftype in ("string", "tasktype") and raw in allowed:
-                continue
-            if ftype == "list" and isinstance(raw, list) and all(v in allowed for v in raw):
-                continue
-
-            # tasktype不走通用normalizer
-            if ftype == "tasktype":
-                continue
-
-            normalized = self.normalizer.normalize(
-                key, field_def["label"], raw, allowed, ftype
-            )
-            if normalized is not None:
-                self.task_state[key] = normalized
-
     def _handle_rov_description(self, description: str):
         all_rovs = self.kb.get_all_rovs()
         candidates = self.extractor.resolve_rov_description(
@@ -891,18 +860,6 @@ class DialogueManager:
     # 工具方法
     # --------------------------------------------------------------------------
 
-    def _compute_changed_fields(self, updates: dict) -> set[str]:
-        changed = set()
-        skip = {"emergency_mode", "rov_description", "__clear_oilfield_name", "__clear_pending_oilfield"}
-        if updates.get("__clear_oilfield_name") and self.task_state.get("oilfield_name"):
-            changed.add("oilfield_name")
-        for k, v in updates.items():
-            if k in skip or v is None or v == "":
-                continue
-            if self.task_state.get(k) != v:
-                changed.add(k)
-        return changed
-
     def _merge_coordinate_updates(
         self,
         user_message: str,
@@ -952,9 +909,54 @@ class DialogueManager:
         return any(kw in message.lower() for kw in keywords)
 
     @staticmethod
+    def _is_confirmation_only(message: str) -> bool:
+        """仅识别不携带参数更新的独立确认/发布指令。"""
+        text = re.sub(r"[\s，,。.!！?？、；;：:]+", "", message).lower()
+        return text in {
+            "确认",
+            "确认无误",
+            "确认发布",
+            "确认并发布",
+            "确认发布任务",
+            "发布",
+            "发布任务",
+            "立即发布",
+            "现在发布",
+            "提交",
+            "提交任务",
+            "确认提交",
+            "确认并提交",
+            "确定",
+            "没问题",
+            "好的",
+            "可以",
+            "ok",
+        }
+
+    @staticmethod
     def _user_cancelled(message: str) -> bool:
         keywords = ["取消", "放弃", "不要了", "终止", "退出"]
         return any(kw in message for kw in keywords)
+
+    @staticmethod
+    def _user_requested_modification(message: str) -> bool:
+        """判断用户是否明确要求覆盖已经录入的参数。"""
+        keywords = (
+            "修改",
+            "改成",
+            "改为",
+            "改到",
+            "更改",
+            "更换",
+            "换成",
+            "换为",
+            "调整",
+            "重新设置",
+            "设置为",
+            "设为",
+            "替换",
+        )
+        return any(keyword in message for keyword in keywords)
 
     # --------------------------------------------------------------------------
     # 状态查询与重置
@@ -995,7 +997,6 @@ class DialogueManager:
         self.mode = "normal"
         self.phase = "collecting"
         self.final_result = None
-        self.awaiting_final_confirm = False
         self.task_start_now = False
         self._blocking_violations = []
         self._soft_whitelist = set()
@@ -1085,7 +1086,6 @@ class DialogueManager:
         self.mode = snapshot.get("mode", "normal")
         self.phase = snapshot.get("phase", "collecting")
         self.final_result = None
-        self.awaiting_final_confirm = False
         self.task_start_now = False
         # 清空阻塞与白名单，重新构建缓存
         self._blocking_violations = []

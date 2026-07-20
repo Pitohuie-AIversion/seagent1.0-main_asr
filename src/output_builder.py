@@ -37,6 +37,7 @@ class OutputBuilder:
             self,
             task_type_key: str,
             mode: str = "normal",
+            task_state: dict | None = None,
     ) -> list[dict]:
         """
         获取当前任务模板下所需字段（含 allowed_values）
@@ -54,7 +55,11 @@ class OutputBuilder:
             ftype = field_def["type"]
             if ftype not in ("auto", "fixed"):
                 item = {"key": key, "label": label, "type": ftype}
-                allowed = self._resolve_allowed(field_def, task_type_key)
+                allowed = self.resolve_allowed_values(
+                    field_def,
+                    task_type_key,
+                    task_state,
+                )
                 if allowed:
                     item["allowed_values"] = allowed
                 required.append(item)
@@ -247,6 +252,15 @@ class OutputBuilder:
     # ══════════════════════════════════════════════════════════════════════════
     # allowed_values 解析
     # ══════════════════════════════════════════════════════════════════════════
+
+    def resolve_allowed_values(
+        self,
+        field_def: dict,
+        task_type_key: str = "",
+        task_state: dict | None = None,
+    ) -> list[str]:
+        """解析字段在当前任务状态下的合法候选值。"""
+        return self._resolve_allowed(field_def, task_type_key, task_state)
 
     def _resolve_allowed(
         self,

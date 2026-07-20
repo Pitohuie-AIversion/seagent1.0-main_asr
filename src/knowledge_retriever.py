@@ -240,7 +240,11 @@ class KnowledgeBase:
         return [res[t]["task_type_values"] for t in res]
 
     def get_context_for_state(self, task_state: dict) -> str:
-        task_type = task_state.get("task_type_key")
+        """
+        根据当前任务状态，返回最相关的专业知识文本（供注入 system prompt）。
+        分段组装，只选取与当前阶段相关的内容。
+        """
+        task_type = task_state.get("task_type_key")  # e.g. "pipeline_inspection"
         equipment = task_state.get("equipment_name")
         equipment_type = task_state.get("equipment_type")
         coords = task_state.get("start_point") or task_state.get("oilfield_coordinates")
@@ -261,7 +265,7 @@ class KnowledgeBase:
             rov_info = self._get_rov_info(equipment_selector)
             if rov_info:
                 sections.append(f"【当前选定设备详情】\n{rov_info}")
-                state_dict = self.get_robot_state_dict(equipment_selector)
+                state_dict = self.get_robot_state_dict(equipment)
                 if state_dict and isinstance(state_dict, dict):
                     state_lines = []
                     label_map = {
@@ -291,7 +295,7 @@ class KnowledgeBase:
                                 state_lines.append(f"  - {label} ({k}): {v}")
                     if state_lines:
                         sections.append("【当前设备实时状态】\n" + "\n".join(state_lines))
-        elif equipment_type:
+            elif equipment_type:
                 sections.append(self._rovs_by_category(equipment_type, task_type))
         elif task_type:
             sections.append(self._rovs_for_task(task_type))
@@ -318,7 +322,7 @@ class KnowledgeBase:
         # 8. 适用约束规则摘要
         sections.append(self._relevant_constraints(task_type, equipment_type, depth))
 
-        return "\n\n".join(s for s in sections if s.strip())
+        return "\n\n".join(s for s in sections if s and s.strip())
 
     # ──────────────────────────────────────────────────────────────────────────
     # 内部片段构建方法
@@ -352,7 +356,7 @@ class KnowledgeBase:
             if r.get("robot_class") == class_key and self.robot_matches_task(r, task_type)
         ]
         if not rovs:
-            return f"【{cat_label}】当前无可用设备。"
+            return f"【{cat_label}】当前无符合任务条件的设备。"
         lines = [f"【{cat_label}设备列表】"]
         for r in rovs:
             lines.append(f"- {r['full_name']} | 最大水深:{r.get('max_depth_m')}m\n  {r.get('brief', '')}")
@@ -468,7 +472,7 @@ class KnowledgeBase:
         return "\n".join(lines)
 
     # ──────────────────────────────────────────────────────────────────────────
-    # 直接查询接口（供 validator 使用）
+    # 直接查询接口（供 validator / builder 使用）
     # ──────────────────────────────────────────────────────────────────────────
 
     def get_rov(self, model_name: str) -> dict | None:
@@ -481,14 +485,17 @@ class KnowledgeBase:
         if not needle:
             return None
         allowed_variants = self.get_task_allowed_robot_variants(task_type)
-        for r in allowed_variants:
-            targets = [target for target in r.get("_lookup_targets", []) if target]
-            if any(needle == _norm(t) for t in targets):
-                return r
-        for r in allowed_variants:
-            targets = [target for target in r.get("_lookup_targets", []) if target]
-            if any(needle in _norm(t) or _norm(t) in needle for t in targets):
-                return r
+        for rov in allowed_variants:
+            targets = [target for target in rov.get("_lookup_targets", []) if target]
+            if any(needle == _norm(target) for target in targets):
+                return rov
+        for rov in allowed_variants:
+            targets = [target for target in rov.get("_lookup_targets", []) if target]
+            if any(
+                needle in _norm(target) or _norm(target) in needle
+                for target in targets
+            ):
+                return rov
         return self.get_rov(model_name)
 
     def get_vessel(self, vessel_id: str) -> dict | None:
@@ -592,7 +599,6 @@ class KnowledgeBase:
         lookup_keys: list[str] = [equipment_name]
         rov = self._find_rov(equipment_name)
         if rov:
-            lookup_keys.extend(rov.get("_lookup_targets", []))
             for unit in rov.get("fleet_units", []):
                 lookup_keys.extend([
                     unit.get("status_ref", ""),
