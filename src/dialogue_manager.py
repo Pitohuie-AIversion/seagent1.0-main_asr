@@ -233,6 +233,218 @@ class DialogueManager:
     def _handle_unknown_intent(self, user_message: str, route: IntentRouteResult) -> str:
         return "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数，还是查询设备工具与系统功能？"
 
+    # --------------------------------------------------------------------------
+    # TASK_CONFIRM 独立控制指令处理（彻底隔离于槽位抽取流水线）
+    # --------------------------------------------------------------------------
+
+    def _handle_task_confirm(self, user_message: str, request_id: str = "req_default") -> str:
+        """处理 TASK_CONFIRM 控制指令。
+
+        不得调用 extractor.extract_updates / slot normalization /
+        _apply_updates_in_transaction / slot_store.commit_transaction。
+        只修改控制状态（phase / _soft_whitelist / _blocking_violations）。
+        """
+        if self.phase == "blocked_soft":
+            return self._handle_soft_warning_confirmation(user_message, request_id)
+        elif self.phase == "confirming":
+            return self._handle_final_publish_confirmation(user_message, request_id)
+        else:
+            # 非 confirming/blocked_soft 阶段出现确认指令 → 澄清
+            reply = "当前没有待确认的任务。请先创建或补充任务参数。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+    def _handle_soft_warning_confirmation(self, user_message: str, request_id: str) -> str:
+        """blocked_soft 阶段的确认/忽略处理。
+
+        将已确认忽略的软警告加入白名单，清除 _blocking_violations，
+        然后根据缺失槽位决定进入 collecting 或 confirming。
+        不触碰 slot_store 或 extractor。
+        """
+        # 加入白名单
+        if self._blocking_violations:
+            for v in self._blocking_violations:
+                for f in v.related_fields:
+                    val = self.task_state.get(f)
+                    if val is not None:
+                        self._soft_whitelist.add((f, str(val), v.constraint_id))
+            self._blocking_violations = []
+
+        # 重新检查约束（使用白名单过滤后的结果）
+        all_violations = self.validator.validate(self.task_state)
+        remaining_soft = [v for v in all_violations
+                          if v.severity == "soft" and not self._is_whitelisted(v)]
+        remaining_hard = [v for v in all_violations if v.severity == "hard"]
+
+        if remaining_hard:
+            self.phase = "blocked_hard"
+            self._blocking_violations = remaining_hard
+        elif remaining_soft:
+            self.phase = "blocked_soft"
+            self._blocking_violations = remaining_soft
+        else:
+            # 检查是否有缺失槽位
+            task_type_key = self.task_state.get("task_type_key")
+            if task_type_key:
+                req_schema = self.builder.get_schema(task_type_key, self.mode)
+                missing = self.slot_store.get_missing_slots(req_schema)
+                self._last_missing = missing
+                if not missing:
+                    self.phase = "confirming"
+                else:
+                    self.phase = "collecting"
+            else:
+                self.phase = "collecting"
+
+        # 生成回复
+        knowledge_context = self.kb.get_context_for_state(self.task_state)
+        built = self._last_built_json
+        missing = self._last_missing
+        constraint_context = {"type": "none", "violations": [], "hard_refusal_counts": {}}
+        if remaining_hard:
+            constraint_context = {"type": "hard", "violations": remaining_hard, "hard_refusal_counts": {}}
+        elif remaining_soft:
+            constraint_context = {"type": "soft", "violations": remaining_soft, "hard_refusal_counts": {}}
+
+        messages = build_responder_messages(
+            task_state=self.task_state,
+            built_json=built,
+            missing_fields=missing,
+            mode=self.mode,
+            phase=self.phase,
+            knowledge_context=knowledge_context,
+            constraint_context=constraint_context,
+            conversation_history=self.conversation_history,
+            latest_user_message=user_message,
+            ROV2type=self.kb.ROV2type,
+            support_task=self.kb.get_supported_task(),
+            slot_snapshot=self.slot_store.get_slot_snapshot(),
+        )
+        reply = self.llm.chat(messages, temperature=0.7, max_tokens=1500)
+        reply = self.llm.filter_reply(reply)
+
+        self.conversation_history.append({"role": "user", "content": user_message})
+        self.conversation_history.append({"role": "assistant", "content": reply})
+        return reply
+
+    def _handle_final_publish_confirmation(self, user_message: str, request_id: str) -> str:
+        """confirming 阶段的确认发布处理。
+
+        使用现有已验证 built_json 发布，不重新抽取或修改槽位。
+        发布失败保持原有回滚和错误处理。
+        """
+        prev_phase = self.phase
+        prev_snap = self.slot_store.export_snapshot()
+        prev_whitelist = copy.deepcopy(self._soft_whitelist)
+        prev_pending_rov = copy.deepcopy(self._pending_rov_candidates)
+        prev_blocking_violations = copy.deepcopy(self._blocking_violations)
+        prev_hist = list(self.conversation_history)
+        prev_task_start_now = self.task_start_now
+
+        task_type_key = self.task_state.get("task_type_key")
+        cand_state = copy.deepcopy(self.task_state)
+        cand_built = copy.deepcopy(self._last_built_json)
+
+        # 最终约束全量检查
+        all_violations = self.validator.validate(cand_state)
+        has_hard = self.validator.has_hard_violations(all_violations)
+
+        # 检查缺失
+        if task_type_key:
+            req_schema = self.builder.get_schema(task_type_key, self.mode)
+            missing = self.slot_store.get_missing_slots(req_schema)
+        else:
+            missing = [{"key": "task_type", "label": "任务类型"}]
+
+        if missing or has_hard:
+            # 不能发布，回到 collecting 或 blocked
+            if has_hard:
+                self.phase = "blocked_hard"
+                self._blocking_violations = [v for v in all_violations if v.severity == "hard"]
+            else:
+                self.phase = "collecting"
+            reply = "当前任务参数不满足发布条件，请补充或修正参数。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        # 准备发布
+        ti_builder = TaskIntentBuilder(self.kb)
+        ti_json_artifact = ti_builder.prepare(
+            task_state=cand_state,
+            built_json=cand_built,
+            mode=self.mode,
+            task_type_key=task_type_key,
+        )
+        staging_file = ti_builder.create_staging(ti_json_artifact)
+
+        try:
+            ti_builder.publish_staging(staging_file, ti_json_artifact)
+        except Exception as exc:
+            # 回滚：保持原有回滚和错误处理
+            self.phase = prev_phase
+            self.final_result = None
+
+            if staging_file and staging_file.exists():
+                try:
+                    staging_file.unlink()
+                except Exception:
+                    pass
+
+            rollback_failed = False
+            rollback_err = None
+            if prev_snap:
+                try:
+                    self.slot_store.restore_snapshot(prev_snap)
+                except Exception as rb_e:
+                    rollback_failed = True
+                    rollback_err = rb_e
+
+            self.task_state = self.slot_store.get_task_state()
+            self._last_built_json = self.slot_store.get_built_json()
+            self._soft_whitelist = prev_whitelist
+            self._pending_rov_candidates = prev_pending_rov
+            self._blocking_violations = prev_blocking_violations
+            self.conversation_history = prev_hist
+            self.task_start_now = prev_task_start_now
+
+            if task_type_key:
+                required_schema = self.builder.get_schema(task_type_key, self.mode)
+                self._last_missing = self.slot_store.get_missing_slots(required_schema)
+
+            logger.error(
+                "TaskIntent publish failed: request_id=%s, task_id=%s, intent_id=%s, err_type=%s, err=%s, rollback_failed=%s",
+                request_id,
+                cand_built.get("task_id", "unknown"),
+                ti_json_artifact.get("intent_id", "unknown") if ti_json_artifact else "unknown",
+                type(exc).__name__,
+                exc,
+                rollback_failed,
+                exc_info=True,
+            )
+
+            if rollback_failed:
+                raise TaskRollbackError(f"TaskIntent publish failed ({exc}) and rollback error occurred: {rollback_err}") from exc
+            if isinstance(exc, (TaskPersistenceError, IntentIdConflict, IdReservationError)):
+                raise exc
+            else:
+                raise TaskPersistenceError(f"TaskIntent publish failed: {exc}") from exc
+
+        # 发布成功
+        self.phase = "done"
+        self.final_result = cand_built
+        self.task_start_now = self.is_start_time_near_now()
+        if self.task_start_now:
+            reply = (f"✅ 信息收集完成，当前为【立即执行任务】，任务已生成并下发。\n"
+                     f"{json.dumps(cand_built, ensure_ascii=False, indent=2)}")
+        else:
+            reply = (f"✅ 信息收集完成，当前为【未来规划任务】，已加入计划池。\n"
+                     f"{json.dumps(cand_built, ensure_ascii=False, indent=2)}")
+        self.conversation_history.append({"role": "user", "content": user_message})
+        self.conversation_history.append({"role": "assistant", "content": reply})
+        return reply
+
     def _process_internal(self, user_message: str, request_id: str = "req_default") -> str:
         old_phase = self.phase
 
@@ -264,21 +476,24 @@ class DialogueManager:
             expected_slots=expected_slots,
         )
 
+        # ── TASK_CONFIRM 独立控制指令分流（在抽取流水线之前拦截）──
+        if route.intent == "TASK_CONFIRM":
+            return self._handle_task_confirm(user_message, request_id)
+
         if not route.should_update_slots and route.intent not in ("TASK_CREATE", "TASK_UPDATE"):
-            if not (route.intent == "TASK_CONFIRM" and self.phase in ("confirming", "blocked_soft")):
-                return self._handle_non_task_route(user_message, route, request_id)
+            return self._handle_non_task_route(user_message, route, request_id)
 
         # 3. Parameter Extraction & Processing Pipeline (Atomic Transaction with Optimistic Lock)
         new_slots, new_unresolved, expected_version = self.slot_store.snapshot()
-        
+
         task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
         current_state = self.slot_store.get_task_state()
-        
+
         merged_updates = {}
         merged_updates_meta = {}
         extraction_res = {}
         proposed_pending_rov = list(self._pending_rov_candidates)
-        
+
         if task_type_key is None:
             # Stage 1: Extract task type
             extraction_res = self.extractor.extract_updates(
@@ -289,7 +504,7 @@ class DialogueManager:
             )
             intent_str = normalize_intent(extraction_res.get("intent"))
 
-            if intent_str not in MUTATING_INTENTS and not (old_phase in ("confirming", "blocked_soft") and (self._user_confirmed(user_message) or (old_phase == "blocked_soft" and any(kw in user_message.lower() for kw in SOFT_IGNORE_KEYWORDS)))):
+            if intent_str not in MUTATING_INTENTS:
                 if intent_str == "GENERAL_CHAT":
                     messages = [
                         {"role": "system", "content": "你是一个水下多智能体任务规划系统助手。请友好专业地回答用户的问候或一般性问题。"},
@@ -324,9 +539,9 @@ class DialogueManager:
                 merged_updates[k] = v
                 merged_updates_meta[k] = cand_info
             self._apply_updates_in_transaction(stage1_updates, new_slots)
-            
+
             task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
-            
+
         if task_type_key:
             # Stage 2: Extract task parameters
             current_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
@@ -340,7 +555,7 @@ class DialogueManager:
             )
             intent_str = normalize_intent(extraction_res.get("intent"))
 
-            if intent_str not in MUTATING_INTENTS and not (old_phase in ("confirming", "blocked_soft") and (self._user_confirmed(user_message) or (old_phase == "blocked_soft" and any(kw in user_message.lower() for kw in SOFT_IGNORE_KEYWORDS)))):
+            if intent_str not in MUTATING_INTENTS:
                 if intent_str == "GENERAL_CHAT":
                     messages = [
                         {"role": "system", "content": "你是一个水下多智能体任务规划系统助手。请友好专业地回答用户的问候或一般性问题。"},
@@ -360,12 +575,12 @@ class DialogueManager:
                 self.conversation_history.append({"role": "user", "content": user_message})
                 self.conversation_history.append({"role": "assistant", "content": reply})
                 return reply
-            
+
             if extraction_res.get("unresolved"):
                 for u in extraction_res["unresolved"]:
                     if u not in new_unresolved:
                         new_unresolved.append(u)
-                        
+
             stage2_updates = {}
             for candidate in extraction_res.get("slot_candidates", []):
                 k = candidate["canonical_key"]
@@ -381,19 +596,19 @@ class DialogueManager:
                 stage2_updates[k] = cand_info
                 merged_updates[k] = v
                 merged_updates_meta[k] = cand_info
-                
+
             raw_stage2 = self._merge_coordinate_updates(user_message, {k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, required)
             for k, v in raw_stage2.items():
                 if k not in stage2_updates:
                     stage2_updates[k] = {"value": v, "raw_value": user_message, "confidence": 1.0, "source": "rule_parser"}
                 merged_updates[k] = v
-                
+
             raw_linked = self._link_oilfield_update_in_transaction({k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, new_slots)
             for k, v in raw_linked.items():
                 if k not in stage2_updates:
                     stage2_updates[k] = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": "entity_linker"}
                 merged_updates[k] = v
-                
+
             # Conflict resolution check: if user confirmed or cancelled conflict in next turn
             for k, slot in list(new_slots.items()):
                 if slot.status == "conflict" and slot.candidate_value is not None:
@@ -406,7 +621,7 @@ class DialogueManager:
                         slot.status = "valid"
                         slot.candidate_value = None
                         slot.validation_error = None
-                        
+
             self._apply_updates_in_transaction(stage2_updates, new_slots)
             if "rov_description" in stage2_updates:
                 all_rovs = self.kb.get_all_rovs()
@@ -420,7 +635,7 @@ class DialogueManager:
                 for u in extraction_res["unresolved"]:
                     if u not in new_unresolved:
                         new_unresolved.append(u)
-        
+
         # Compute proposed mode change without mutating self.mode before commit
         proposed_mode = self.mode
         if merged_updates.get("emergency_mode"):
@@ -433,13 +648,13 @@ class DialogueManager:
                 old_val = self.slot_store.slots.get(k).value if self.slot_store.slots.get(k) else None
                 if old_val != v:
                     changed_fields.add(k)
-                    
+
         proposed_whitelist = {item for item in self._soft_whitelist if item[0] not in changed_fields}
-        
+
         # Normalize and validate inside transaction working dict new_slots
         curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
         self._normalize_and_validate_in_transaction(new_slots, curr_task_type_key)
-        
+
         # Auto-generate task_id inside new_slots BEFORE commit
         if curr_task_type_key:
             task_id_slot = new_slots.get("task_id")
@@ -516,7 +731,7 @@ class DialogueManager:
                 except Exception:
                     pass
             raise commit_exc
-        
+
         # Apply proposed instance state AFTER successful commit
         self.mode = proposed_mode
         self.phase = proposed_phase
@@ -527,7 +742,7 @@ class DialogueManager:
         self.task_state = self.slot_store.get_task_state()
         built = self.slot_store.get_built_json()
         self._last_built_json = built
-        
+
         if curr_task_type_key:
             required_schema = self.builder.get_schema(curr_task_type_key, self.mode)
             missing = self.slot_store.get_missing_slots(required_schema)
@@ -735,7 +950,7 @@ class DialogueManager:
         )
         match = self.oilfield_linker.link(str(raw_name), coords)
         linked = dict(updates)
-        
+
         for k in ("raw_oilfield_name", "oilfield_match_status", "oilfield_match_confidence", "oilfield_match_evidence", "oilfield_match_candidates"):
             if k not in new_slots:
                 new_slots[k] = Slot(slot_name=k)
@@ -803,7 +1018,7 @@ class DialogueManager:
             if k in ("task_type", "task_type_key"):
                 self._handle_task_type_update_in_transaction(k, v, new_slots)
                 continue
-            
+
             # Check for conflict or update
             slot = new_slots.get(k)
             if slot and slot.status == "valid" and slot.value is not None and slot.value != v:
@@ -905,7 +1120,7 @@ class DialogueManager:
         if target_key:
             required_fields = self.builder.get_schema(target_key, self.mode)
             schema_keys = {f["key"] for f in required_fields}
-            
+
             # Clean up old dynamic slots in new_slots that do not belong to BASE_SLOT_TYPES, schema_keys, or ALLOWED_INTERNAL_SLOTS
             from .slot_store import BASE_SLOT_TYPES, ALLOWED_INTERNAL_SLOTS
             to_remove = [
@@ -941,16 +1156,16 @@ class DialogueManager:
     def _normalize_and_validate_in_transaction(self, new_slots: dict, task_type_key: str | None):
         if not task_type_key:
             return
-            
+
         schema = self.builder.get_schema(task_type_key, self.mode)
-        
+
         for field_def in schema:
             key = field_def["key"]
             ftype = field_def["type"]
             slot = new_slots.get(key)
             if not slot or slot.status in ("fixed", "auto", "conflict"):
                 continue
-                
+
             target_val = slot.candidate_value if slot.candidate_value is not None else slot.value
             if target_val is None:
                 continue
@@ -963,7 +1178,7 @@ class DialogueManager:
                     normalized = self.normalizer.normalize(key, field_def["label"], raw, allowed, ftype)
                 else:
                     normalized = self.normalizer.normalize(key, field_def["label"], str(raw), allowed, ftype)
-                    
+
                 if normalized is not None:
                     slot.value = normalized
                     slot.candidate_value = None
@@ -1448,7 +1663,7 @@ class DialogueManager:
         """从历史快照恢复对话管理器的状态（先构建、后交换原子恢复模式）"""
         if not isinstance(snapshot, dict):
             raise SnapshotValidationError("Snapshot must be a dictionary.")
-        
+
         conv_hist = snapshot.get("conversation_history")
         if conv_hist is not None and not isinstance(conv_hist, list):
             raise SnapshotValidationError("conversation_history must be a list.")

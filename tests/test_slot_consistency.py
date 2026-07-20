@@ -142,6 +142,14 @@ class SlotConsistencyTest(unittest.TestCase):
         self.llm.extract_json.return_value = {"intent": "TASK_UPDATE", "slot_candidates": [], "unresolved": []}
         self.dm = DialogueManager(self.llm, self.kb)
         self.client = app.test_client()
+        # 隔离意图路由：slot consistency 测试聚焦于槽位行为，不测试路由
+        from src.intent_router import IntentRouteResult
+        self._default_route = IntentRouteResult(
+            intent="TASK_UPDATE", confidence=1.0, reason="test",
+            source="rule", should_update_slots=True
+        )
+        self._orig_route = self.dm.intent_router.route
+        self.dm.intent_router.route = lambda *a, **kw: self._default_route
 
     # 1. 单条消息同时写入三个槽位
     def test_01_single_message_three_slots(self):
@@ -253,7 +261,7 @@ class SlotConsistencyTest(unittest.TestCase):
     def test_06_conflict_value_and_candidate_value(self):
         store = SlotStore(self.kb)
         store.slots["water_depth"] = Slot("water_depth", value=300.0, status="valid", version=1)
-        
+
         snap_slots, snap_unresolved, snap_ver = store.snapshot()
         # 写入冲突候选
         snap_slots["water_depth"].candidate_value = 600.0
@@ -787,7 +795,7 @@ class SlotConsistencyTest(unittest.TestCase):
                 self.dm.slot_store.commit_transaction = MagicMock(side_effect=SlotVersionConflict("Conflict simulation"))
                 with self.assertRaises(SlotVersionConflict):
                     self.dm.process("确认开始")
-                
+
                 final_files = list(tmp_path.glob("task_intent_*.json")) if tmp_path.exists() else []
                 self.assertEqual(len(final_files), 0)
 

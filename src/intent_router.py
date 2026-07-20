@@ -185,7 +185,7 @@ class IntentRouter:
 
         explicit_confirm = ["确认发布", "确认下发", "发布任务", "确定发布", "确认继续", "确定继续", "忽略警告", "忽略", "确认开始", "确定开始"]
         if phase in ("confirming", "blocked_soft"):
-            if (any(kw in msg for kw in explicit_confirm) or msg_clean in ("确认", "确定", "是的", "好", "可以")) and not any(nc in msg for nc in negation_confirm):
+            if (any(kw in msg for kw in explicit_confirm) or msg_clean in ("确认", "确定", "是的", "好", "可以", "继续")) and not any(nc in msg for nc in negation_confirm):
                 return IntentRouteResult(
                     intent="TASK_CONFIRM",
                     confidence=1.0,
@@ -400,8 +400,6 @@ class IntentRouter:
                 intent="CLARIFICATION", confidence=0.0, reason="LLM解析JSON失败", source="llm", should_update_slots=False
             )
 
-        is_extractor_mock = isinstance(parsed, dict) and "slot_candidates" in parsed
-
         intent_raw = str(parsed.get("intent", "")).strip().upper()
         if not intent_raw or intent_raw not in VALID_INTENTS:
             logger.warning(f"[IntentRouter] Invalid or missing intent string from LLM: '{intent_raw}'")
@@ -409,36 +407,33 @@ class IntentRouter:
                 intent="CLARIFICATION", confidence=0.0, reason="LLM返回意图非法或缺失", source="llm", should_update_slots=False
             )
 
-        if is_extractor_mock:
-            c_float = float(parsed.get("confidence", 1.0))
-            reason = str(parsed.get("reason", "Mock extractor response"))
-        else:
-            if "confidence" not in parsed or parsed["confidence"] is None:
-                logger.warning("[IntentRouter] Missing confidence field in LLM response")
-                return IntentRouteResult(
-                    intent="CLARIFICATION", confidence=0.0, reason="LLM缺少confidence字段", source="llm", should_update_slots=False
-                )
+        # ── 严格统一的 confidence 校验（无任何 mock 绕过）──
+        if "confidence" not in parsed or parsed["confidence"] is None:
+            logger.warning("[IntentRouter] Missing confidence field in LLM response")
+            return IntentRouteResult(
+                intent="CLARIFICATION", confidence=0.0, reason="LLM缺少confidence字段", source="llm", should_update_slots=False
+            )
 
-            c_val = parsed["confidence"]
-            if isinstance(c_val, bool) or not isinstance(c_val, (int, float)):
-                logger.warning(f"[IntentRouter] Invalid type for confidence: {type(c_val)}")
-                return IntentRouteResult(
-                    intent="CLARIFICATION", confidence=0.0, reason="LLM confidence类型非法", source="llm", should_update_slots=False
-                )
+        c_val = parsed["confidence"]
+        if isinstance(c_val, bool) or not isinstance(c_val, (int, float)):
+            logger.warning(f"[IntentRouter] Invalid type for confidence: {type(c_val)}")
+            return IntentRouteResult(
+                intent="CLARIFICATION", confidence=0.0, reason="LLM confidence类型非法", source="llm", should_update_slots=False
+            )
 
-            c_float = float(c_val)
-            if not math.isfinite(c_float) or c_float < 0.0 or c_float > 1.0:
-                logger.warning(f"[IntentRouter] Out of bounds or non-finite confidence: {c_float}")
-                return IntentRouteResult(
-                    intent="CLARIFICATION", confidence=0.0, reason="LLM confidence数值越界或非有限值", source="llm", should_update_slots=False
-                )
+        c_float = float(c_val)
+        if not math.isfinite(c_float) or c_float < 0.0 or c_float > 1.0:
+            logger.warning(f"[IntentRouter] Out of bounds or non-finite confidence: {c_float}")
+            return IntentRouteResult(
+                intent="CLARIFICATION", confidence=0.0, reason="LLM confidence数值越界或非有限值", source="llm", should_update_slots=False
+            )
 
-            reason = parsed.get("reason")
-            if not isinstance(reason, str) or not reason.strip():
-                logger.warning("[IntentRouter] Missing or empty reason field in LLM response")
-                return IntentRouteResult(
-                    intent="CLARIFICATION", confidence=0.0, reason="LLM缺少reason或为空", source="llm", should_update_slots=False
-                )
+        reason = parsed.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            logger.warning("[IntentRouter] Missing or empty reason field in LLM response")
+            return IntentRouteResult(
+                intent="CLARIFICATION", confidence=0.0, reason="LLM缺少reason或为空", source="llm", should_update_slots=False
+            )
 
         query_subtype = parsed.get("query_subtype")
 

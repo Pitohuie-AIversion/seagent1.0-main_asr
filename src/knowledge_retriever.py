@@ -314,7 +314,7 @@ class KnowledgeBase:
             env_info = self._get_environment(coords)
             if env_info:
                 sections.append(f"【作业区域环境状态】\n{env_info}")
-        
+
         # 8. 适用约束规则摘要
         sections.append(self._relevant_constraints(task_type, equipment_type, depth))
 
@@ -667,40 +667,75 @@ class KnowledgeBase:
             query_norm = user_message.lower().replace(" ", "")
 
             import re
-            exact_depth = None
-            min_depth = None
-            max_depth = None
 
+            # ── 解析深度条件为结构化 {operator, depth_m} ──
+            depth_condition = None  # {"operator": "eq|gte|gt|lte|lt", "depth_m": int}
+
+            # 精确级别（X米级）
             m_exact = re.search(r"(\d+)\s*米级", user_message)
-            m_min = re.search(r"(?:支持|能够|可|大于|不少于|超过)\s*(\d+)\s*米", user_message)
-            m_max = re.search(r"(?:最大不超过|不超过|小于|低于)\s*(\d+)\s*米", user_message)
+
+            # 否定/上限表达必须优先匹配（防止"不超过"被"超过"子串抢占）
+            m_lte = re.search(r"(?:不超过|至多|最大|不大于|最多)\s*(\d+)\s*(?:米|m)", user_message, re.IGNORECASE)
+            m_lt = re.search(r"(?:低于|小于|不到)\s*(\d+)\s*(?:米|m)", user_message, re.IGNORECASE)
+            m_gte = re.search(r"(?:不少于|不低于|至少)\s*(\d+)\s*(?:米|m)", user_message, re.IGNORECASE)
+            m_gt = re.search(r"(?:超过|大于)\s*(\d+)\s*(?:米|m)", user_message, re.IGNORECASE)
+            # 能力/支持型表达 → gte
+            m_cap = re.search(r"(?:支持|能够|能|可以?|可下潜到?|在)\s*(\d+)\s*(?:米|m)", user_message, re.IGNORECASE)
 
             if m_exact:
-                exact_depth = int(m_exact.group(1))
-            elif m_min:
-                min_depth = int(m_min.group(1))
-            elif m_max:
-                max_depth = int(m_max.group(1))
+                depth_condition = {"operator": "eq", "depth_m": int(m_exact.group(1))}
+            elif m_lte:
+                depth_condition = {"operator": "lte", "depth_m": int(m_lte.group(1))}
+            elif m_lt:
+                depth_condition = {"operator": "lt", "depth_m": int(m_lt.group(1))}
+            elif m_gte:
+                depth_condition = {"operator": "gte", "depth_m": int(m_gte.group(1))}
+            elif m_gt:
+                # 确保不是"不超过"被"超过"子串匹配
+                gt_start = m_gt.start()
+                prefix = user_message[max(0, gt_start - 1):gt_start]
+                if prefix == "不":
+                    depth_condition = {"operator": "lte", "depth_m": int(m_gt.group(1))}
+                else:
+                    depth_condition = {"operator": "gt", "depth_m": int(m_gt.group(1))}
+            elif m_cap:
+                depth_condition = {"operator": "gte", "depth_m": int(m_cap.group(1))}
 
+            # 按名称匹配设备
             matched_by_name = []
             for r in all_rovs:
                 targets = [r.get("full_name"), r.get("robot_class_name"), r.get("model")] + (r.get("aliases") or [])
                 if any(t and str(t).lower().replace(" ", "") in query_norm for t in targets if t):
                     matched_by_name.append(r)
 
+            # 按条件过滤
             filtered = []
-            if exact_depth is not None:
-                filtered = [r for r in all_rovs if r.get("max_depth_m") == exact_depth]
-            elif min_depth is not None:
-                filtered = [r for r in all_rovs if (r.get("max_depth_m") or 0) >= min_depth]
-            elif max_depth is not None:
-                filtered = [r for r in all_rovs if (r.get("max_depth_m") or 0) <= max_depth]
+            if depth_condition is not None:
+                op = depth_condition["operator"]
+                d = depth_condition["depth_m"]
+                for r in all_rovs:
+                    md = r.get("max_depth_m") or 0
+                    if op == "eq" and md == d:
+                        filtered.append(r)
+                    elif op == "gte" and md >= d:
+                        filtered.append(r)
+                    elif op == "gt" and md > d:
+                        filtered.append(r)
+                    elif op == "lte" and md <= d:
+                        filtered.append(r)
+                    elif op == "lt" and md < d:
+                        filtered.append(r)
             elif matched_by_name:
                 filtered = matched_by_name
             elif any(kw in query_norm for kw in ["所有", "全部", "列表", "有哪些机器人", "有哪些rov", "有哪些潜器", "有哪些设备", "有哪些型号"]) or ("机器人" in query_norm and "有哪些" in query_norm):
                 filtered = all_rovs
             else:
-                filtered = []
+                # 查询包含数字但未解析出条件 → 不退化成返回全部
+                has_depth_num = re.search(r"\d+\s*(?:米|m)", user_message, re.IGNORECASE)
+                if has_depth_num:
+                    filtered = []  # 解析失败不返回全部
+                else:
+                    filtered = []
 
             found = bool(filtered)
 
