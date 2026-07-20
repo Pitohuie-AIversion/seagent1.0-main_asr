@@ -287,10 +287,15 @@ class LLMClient:
                     results = ev_json.get("results", [])
                     if qtype == "TOOL_QUERY":
                         tools = []
+                        task_sugg = []
+                        task_key = ev_json.get("used_task_type_key")
                         for res in results:
                             if res.get("category") == "all_supported_tools":
                                 tools = res.get("tools", [])
-                                break
+                            elif res.get("category") == "task_payload_suggestions":
+                                task_sugg = res.get("current_task_suggestions", [])
+                        if task_key and task_sugg:
+                            return f"针对当前任务【{task_key}】，推荐搭载工具包括：{', '.join(task_sugg)}。机器人当前全量支持工具负荷包括：{', '.join(tools)}。"
                         if tools:
                             return f"机器人当前支持的搭载工具与负荷包括：{', '.join(tools)}。"
                         return "当前系统暂未配置可用工具。"

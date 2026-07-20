@@ -616,17 +616,10 @@ class KnowledgeBase:
     # ✅ 专属强类型只读查询接口
     # ──────────────────────────────────────────────────────────────────────────
 
-    def execute_typed_query(self, query_type: str, user_message: str) -> dict[str, Any]:
+    def execute_typed_query(self, query_type: str, user_message: str, context: dict | None = None) -> dict:
         """
-        返回标准强类型查询结果字典：
-        {
-          "query_type": "DEVICE_CAPABILITY",
-          "results": [...],
-          "found": True/False,
-          "source": "knowledge_base",
-          "version": "kb_version_1.0",
-          "updated_at": "ISO-8601"
-        }
+        强类型知识库查询入口。
+        返回包含 found, query_type, results, source, version, updated_at 的标准化 dict。
         """
         from datetime import datetime, timezone
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -653,10 +646,17 @@ class KnowledgeBase:
                     "supported_payloads": payloads,
                 })
             task_payloads = self.assets.get("payload_options", {})
+
+            task_type_key = context.get("task_type_key") if context else None
+            task_suggestions = []
+            if task_type_key:
+                task_suggestions = task_payloads.get(task_type_key, [])
+                base_resp["used_task_type_key"] = task_type_key
+
             results = [
                 {"category": "all_supported_tools", "tools": sorted(tool_set)},
                 {"category": "equipment_payload_mapping", "mappings": rov_tool_map},
-                {"category": "task_payload_suggestions", "task_suggestions": task_payloads},
+                {"category": "task_payload_suggestions", "task_suggestions": task_payloads, "current_task_suggestions": task_suggestions},
             ]
             base_resp["results"] = results
             base_resp["found"] = bool(tool_set or task_payloads)
@@ -697,8 +697,10 @@ class KnowledgeBase:
                 filtered = [r for r in all_rovs if (r.get("max_depth_m") or 0) <= max_depth]
             elif matched_by_name:
                 filtered = matched_by_name
-            elif any(kw in query_norm for kw in ["所有", "全部", "列表"]):
+            elif any(kw in query_norm for kw in ["所有", "全部", "列表", "有哪些机器人", "有哪些rov", "有哪些潜器", "有哪些设备", "有哪些型号"]) or ("机器人" in query_norm and "有哪些" in query_norm):
                 filtered = all_rovs
+            else:
+                filtered = []
 
             found = bool(filtered)
 

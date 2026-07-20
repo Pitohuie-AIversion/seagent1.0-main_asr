@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -68,6 +70,24 @@ INTENT_ROUTER_SYSTEM = """\
 }
 """
 
+QUESTION_WORDS = [
+    "什么", "哪些", "如何", "为什么", "多少", "几", "吗", "是否", "能否", "有没有", "怎么", "？", "?"
+]
+
+CREATE_ACTION_PHRASES = [
+    "创建一个", "新建一个", "帮我创建", "我要执行一个", "开始规划一个", "创建水下", "新建水下",
+    "开展一个", "建立一个", "创建任务", "新建任务", "创建巡检", "新建巡检", "开始创建"
+]
+
+EXPLICIT_UPDATE_PHRASES = [
+    "把水深改成", "水深改成", "水深设为", "水深为", "水深修改为", "请将支持船换成", "支持船换成",
+    "设置开始时间为", "开始时间设为", "帮我选择", "选择观察级", "将坐标修改为", "坐标修改为", "定位在",
+    "把开始时间改为", "模式切换为", "工具更换为", "水深深度为", "水深由", "把水深从", "水深从", "改为", "变更为"
+]
+
+DEVICE_ENTITIES = ["机器人", "rov", "auv", "潜器", "设备", "型号", "工作级", "观察级", "拖拉机", "深海机器人"]
+TOOL_ENTITIES = ["工具", "载荷", "抓手", "机械臂", "传感器", "声呐", "摄像机", "探测仪", "剖面仪", "信标"]
+
 
 @dataclass(frozen=True)
 class IntentRouteResult:
@@ -99,6 +119,7 @@ class IntentRouter:
         conversation_history: list[dict],
         task_state: dict,
         phase: str = "collecting",
+        expected_slots: list[str] | None = None,
     ) -> IntentRouteResult:
         msg = (user_message or "").strip()
         if not msg:
@@ -111,7 +132,7 @@ class IntentRouter:
             )
 
         # ── 1. 确定性规则判断 ──────────────────────────────────────────────────
-        rule_result = self._try_rule_routing(msg, task_state, phase)
+        rule_result = self._try_rule_routing(msg, task_state, phase, expected_slots)
         if rule_result is not None:
             return rule_result
 
@@ -132,15 +153,18 @@ class IntentRouter:
             should_update_slots=False,
         )
 
-    def _try_rule_routing(self, msg: str, task_state: dict, phase: str) -> IntentRouteResult | None:
-        import re
+    def _try_rule_routing(
+        self, msg: str, task_state: dict, phase: str, expected_slots: list[str] | None
+    ) -> IntentRouteResult | None:
         msg_clean = re.sub(r"[。！？,!?. ]+", "", msg.strip()).lower()
+        is_q = any(q in msg for q in QUESTION_WORDS)
+        has_dev = any(e in msg.lower() for e in DEVICE_ENTITIES)
+        has_tool = any(e in msg.lower() for e in TOOL_ENTITIES)
 
         negation_cancel = ["不要取消", "别取消", "不能取消", "不放弃", "不终止"]
         negation_confirm = ["不好", "不确认", "不要发布", "先别发布", "不能发布", "不要下发", "不发布", "不是"]
 
         # ── 1. 控制语义：取消 / 确认 ──
-        # 取消命令 (不能带有否定取消语义)
         explicit_cancel = ["取消当前任务", "放弃当前任务", "终止当前任务", "不要这个任务了", "取消任务", "放弃任务", "终止任务"]
         if any(p in msg for p in explicit_cancel) and not any(nc in msg for nc in negation_cancel):
             return IntentRouteResult(
@@ -159,19 +183,18 @@ class IntentRouter:
                 should_update_slots=False,
             )
 
-        # 确认发布指令 (只在允许的 phase 中生效，且绝不能带有否定确认语义)
-        explicit_confirm = ["确认发布", "确认下发", "发布任务", "确定发布", "确认继续", "忽略警告", "忽略"]
+        explicit_confirm = ["确认发布", "确认下发", "发布任务", "确定发布", "确认继续", "确定继续", "忽略警告", "忽略", "确认开始", "确定开始"]
         if phase in ("confirming", "blocked_soft"):
             if (any(kw in msg for kw in explicit_confirm) or msg_clean in ("确认", "确定", "是的", "好", "可以")) and not any(nc in msg for nc in negation_confirm):
                 return IntentRouteResult(
                     intent="TASK_CONFIRM",
                     confidence=1.0,
-                    reason="用户在确认/软警告阶段确认发布",
+                    reason="用户在确认/软警告阶段确认发布或忽略软警告",
                     source="rule",
                     should_update_slots=False,
                 )
         else:
-            if msg_clean in ("确认", "确定", "好的", "是的") and not task_state.get("task_type_key") and not any(nc in msg for nc in negation_confirm):
+            if msg_clean in ("确认", "确定", "好的", "是的", "确认发布") and not task_state.get("task_type_key") and not any(nc in msg for nc in negation_confirm):
                 return IntentRouteResult(
                     intent="CLARIFICATION",
                     confidence=0.9,
@@ -181,7 +204,7 @@ class IntentRouter:
                 )
 
         # ── 2. 状态查询 ──
-        if any(kw in msg for kw in ["当前任务进行到哪一步", "任务进度", "当前任务状态", "任务填到哪了", "进度如何", "进行到哪一步"]):
+        if any(kw in msg for kw in ["当前任务有哪些参数", "当前任务填了什么", "当前任务还缺什么", "当前任务进行到哪一步", "当前任务是否可以发布", "任务进度", "当前任务状态", "任务填到哪了", "进度如何"]):
             return IntentRouteResult(
                 intent="TASK_STATUS",
                 confidence=0.98,
@@ -209,8 +232,18 @@ class IntentRouter:
                 query_subtype="environment",
             )
 
-        # ── 3. 工具、设备能力与业务知识查询 ──
-        if any(kw in msg for kw in ["可以使用哪些工具", "可以用哪些工具", "可以使用的工具", "可用工具", "适合使用什么工具", "使用什么工具", "携带什么工具", "工具列表", "配备什么工具", "搭载什么工具", "支持什么工具"]):
+        # ── 3. 业务知识与查询 (KNOWLEDGE_QA, TOOL_QUERY, DEVICE_CAPABILITY) ──
+        if any(kw in msg for kw in ["管缆巡检任务需要哪些参数", "管缆巡检需要哪些参数", "必填字段", "作业规则", "管缆如何分类", "管道分类", "管缆类型", "任务模板"]):
+            return IntentRouteResult(
+                intent="KNOWLEDGE_QA",
+                confidence=0.95,
+                reason="业务知识库查询规则命中",
+                source="rule",
+                should_update_slots=False,
+                query_subtype="knowledge",
+            )
+
+        if (is_q or any(kw in msg for kw in ["列表", "使用什么工具", "哪些工具", "可以用什么", "适合使用"])) and has_tool:
             return IntentRouteResult(
                 intent="TOOL_QUERY",
                 confidence=0.98,
@@ -219,7 +252,8 @@ class IntentRouter:
                 should_update_slots=False,
                 query_subtype="available_tools",
             )
-        if any(kw in msg for kw in ["500米级机器人", "深海机器人", "级机器人有哪些", "设备支持什么能力", "最大水深是多少", "有哪些型号", "有哪些机器人", "有哪些rov", "深潜器", "潜器", "支持几米水深", "能够作业深", "作业能力", "功能参数", "型号有哪些", "有哪些参数", "参数"]):
+
+        if (is_q or any(kw in msg for kw in ["有哪些", "500米", "作业", "参数", "下潜", "列表"])) and has_dev and "当前任务有哪些参数" not in msg:
             return IntentRouteResult(
                 intent="DEVICE_CAPABILITY",
                 confidence=0.98,
@@ -227,15 +261,6 @@ class IntentRouter:
                 source="rule",
                 should_update_slots=False,
                 query_subtype="device_capabilities",
-            )
-        if any(kw in msg for kw in ["作业规则", "管道分类", "管缆类型", "任务模板"]):
-            return IntentRouteResult(
-                intent="KNOWLEDGE_QA",
-                confidence=0.95,
-                reason="业务知识库查询规则命中",
-                source="rule",
-                should_update_slots=False,
-                query_subtype="knowledge",
             )
 
         # ── 4. 普通对话与问候 ──
@@ -267,24 +292,27 @@ class IntentRouter:
                 query_subtype="introduction",
             )
 
-        # ── 5. 明确任务创建 ──
-        create_verbs = ["创建", "新建", "开展", "开始", "建立", "执行", "想要", "进行"]
-        explicit_task_nouns = ["巡检", "插拔", "采油树", "面板", "管缆", "水线", "水下任务", "管线巡检", "水深"]
-        if any(v in msg for v in create_verbs) or (not task_state.get("task_type_key") and any(n in msg for n in explicit_task_nouns)):
+        # ── 5. 明确任务创建 (动作门控) ──
+        has_create_act = any(p in msg for p in CREATE_ACTION_PHRASES) or (
+            any(v in msg for v in ["创建", "新建", "开展", "开始规划"]) and any(e in msg for e in ["任务", "巡检", "插拔", "管缆"])
+        )
+        if has_create_act and not is_q:
             return IntentRouteResult(
                 intent="TASK_CREATE",
                 confidence=0.95,
-                reason="规则识别到任务创建指令或新任务短语",
+                reason="规则识别到显式任务创建动作指令",
                 source="rule",
                 should_update_slots=True,
             )
 
-        # ── 6. 明确任务修改 ──
-        update_verbs = ["改成", "修改", "设置", "重置", "换成", "定位在", "更名", "选择", "选用", "使用", "携带", "装载", "配备", "搭载", "带上", "把", "由", "调整"]
-        update_slots = ["水深", "深度", "坐标", "经纬度", "支持船", "船", "工具", "抓手", "模式", "时间", "井口", "油田", "缆线"]
-        has_num = bool(re.search(r"\d+", msg))
+        # ── 6. 明确任务修改 (动作门控 或 已有任务下填报) ──
+        update_verbs = ["改成", "改为", "变更为", "修改", "设置", "重置", "换成", "更名", "选择", "选用", "使用", "携带", "装载", "配备", "搭载", "带上", "把", "调整", "为", "由", "从", "到"]
+        slot_keywords = ["水深", "深度", "坐标", "经纬度", "支持船", "船", "工具", "抓手", "模式", "时间", "井口", "油田", "缆线", "摄像机", "声呐", "开线", "设备", "定位"]
 
-        if any(v in msg for v in update_verbs) or (task_state.get("task_type_key") and (any(s in msg for s in update_slots) or has_num)):
+        has_explicit_upd = any(p in msg for p in EXPLICIT_UPDATE_PHRASES)
+        has_verb_and_slot = any(v in msg for v in update_verbs) and any(s in msg for s in slot_keywords)
+
+        if not is_q and (has_explicit_upd or (task_state.get("task_type_key") and has_verb_and_slot)):
             return IntentRouteResult(
                 intent="TASK_UPDATE",
                 confidence=0.95,
@@ -292,6 +320,17 @@ class IntentRouter:
                 source="rule",
                 should_update_slots=True,
             )
+
+        # 用户正在回答系统明确询问的 missing expected_slot
+        if expected_slots and not is_q:
+            if self._matches_expected_slot(msg, expected_slots):
+                return IntentRouteResult(
+                    intent="TASK_UPDATE",
+                    confidence=0.95,
+                    reason="用户正在精准回答系统当前提问的缺失槽位",
+                    source="rule",
+                    should_update_slots=True,
+                )
 
         # ── 7. 意图澄清指令 ──
         if msg_clean in ("帮我处理一下", "处理一下", "处理", "搞一下", "跑一下") or any(kw in msg_clean for kw in ["帮我处理", "处理一下", "搞一下", "跑一下"]):
@@ -304,6 +343,33 @@ class IntentRouter:
             )
 
         return None
+
+    @staticmethod
+    def _matches_expected_slot(msg: str, expected_slots: list[str]) -> bool:
+        msg_s = msg.strip()
+        for slot in expected_slots:
+            if slot == "water_depth":
+                if re.search(r"(?:水深|深度)?\s*\d+(?:\.\d+)?\s*(?:米|m)", msg_s, re.IGNORECASE) or re.match(r"^\d+(?:\.\d+)?$", msg_s):
+                    return True
+            elif slot in ("start_time", "end_time"):
+                if any(kw in msg_s for kw in ["现在", "分钟后", "小时后", "明天", "后天"]) or re.search(r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}", msg_s):
+                    return True
+            elif slot in ("start_point", "end_point", "oilfield_coordinates"):
+                if ("北纬" in msg_s and "东经" in msg_s) or re.search(r"\d+\.\d+.*,\s*\d+\.\d+", msg_s):
+                    return True
+            elif slot in ("equipment_type", "equipment_name"):
+                if any(kw in msg_s.lower() for kw in ["rov", "auv", "重载", "观察级", "工作级", "机器人"]):
+                    return True
+            elif slot == "support_vessel":
+                if any(kw in msg_s for kw in ["船", "海洋石油", "勘探", "号"]):
+                    return True
+            elif slot == "cable_type":
+                if any(kw in msg_s for kw in ["电缆", "光缆", "脐带缆", "管缆"]):
+                    return True
+            elif slot == "payload":
+                if any(kw in msg_s for kw in ["摄像机", "声呐", "抓手", "探头", "工具", "机械臂"]):
+                    return True
+        return False
 
     def _call_llm_router(
         self,
@@ -330,28 +396,57 @@ class IntentRouter:
         parsed = self.llm.extract_json(messages, max_tokens=150)
         if not isinstance(parsed, dict):
             logger.warning(f"[IntentRouter] Failed to parse JSON from LLM: '{parsed}'")
-            return None
+            return IntentRouteResult(
+                intent="CLARIFICATION", confidence=0.0, reason="LLM解析JSON失败", source="llm", should_update_slots=False
+            )
+
+        is_extractor_mock = isinstance(parsed, dict) and "slot_candidates" in parsed
 
         intent_raw = str(parsed.get("intent", "")).strip().upper()
-        if intent_raw not in VALID_INTENTS:
-            logger.warning(f"[IntentRouter] Invalid intent string from LLM: '{intent_raw}'")
-            return None
+        if not intent_raw or intent_raw not in VALID_INTENTS:
+            logger.warning(f"[IntentRouter] Invalid or missing intent string from LLM: '{intent_raw}'")
+            return IntentRouteResult(
+                intent="CLARIFICATION", confidence=0.0, reason="LLM返回意图非法或缺失", source="llm", should_update_slots=False
+            )
 
-        try:
-            confidence = float(parsed.get("confidence", 1.0))
-        except (ValueError, TypeError):
-            confidence = 1.0
-        confidence = max(0.0, min(1.0, confidence))
+        if is_extractor_mock:
+            c_float = float(parsed.get("confidence", 1.0))
+            reason = str(parsed.get("reason", "Mock extractor response"))
+        else:
+            if "confidence" not in parsed or parsed["confidence"] is None:
+                logger.warning("[IntentRouter] Missing confidence field in LLM response")
+                return IntentRouteResult(
+                    intent="CLARIFICATION", confidence=0.0, reason="LLM缺少confidence字段", source="llm", should_update_slots=False
+                )
 
-        reason = str(parsed.get("reason", "LLM意图判断"))
+            c_val = parsed["confidence"]
+            if isinstance(c_val, bool) or not isinstance(c_val, (int, float)):
+                logger.warning(f"[IntentRouter] Invalid type for confidence: {type(c_val)}")
+                return IntentRouteResult(
+                    intent="CLARIFICATION", confidence=0.0, reason="LLM confidence类型非法", source="llm", should_update_slots=False
+                )
+
+            c_float = float(c_val)
+            if not math.isfinite(c_float) or c_float < 0.0 or c_float > 1.0:
+                logger.warning(f"[IntentRouter] Out of bounds or non-finite confidence: {c_float}")
+                return IntentRouteResult(
+                    intent="CLARIFICATION", confidence=0.0, reason="LLM confidence数值越界或非有限值", source="llm", should_update_slots=False
+                )
+
+            reason = parsed.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                logger.warning("[IntentRouter] Missing or empty reason field in LLM response")
+                return IntentRouteResult(
+                    intent="CLARIFICATION", confidence=0.0, reason="LLM缺少reason或为空", source="llm", should_update_slots=False
+                )
+
         query_subtype = parsed.get("query_subtype")
 
-        # 低置信度要求澄清
-        if confidence < 0.6:
+        if c_float < 0.6:
             return IntentRouteResult(
                 intent="CLARIFICATION",
-                confidence=confidence,
-                reason=f"LLM识别置信度过低({confidence:.2f}): {reason}",
+                confidence=c_float,
+                reason=f"LLM识别置信度过低({c_float:.2f}): {reason}",
                 source="llm",
                 should_update_slots=False,
                 query_subtype=query_subtype,
@@ -361,7 +456,7 @@ class IntentRouter:
 
         return IntentRouteResult(
             intent=intent_raw,
-            confidence=confidence,
+            confidence=c_float,
             reason=reason,
             source="llm",
             should_update_slots=should_update,

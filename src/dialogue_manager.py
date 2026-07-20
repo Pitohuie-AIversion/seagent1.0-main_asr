@@ -174,7 +174,11 @@ class DialogueManager:
         return reply
 
     def _handle_knowledge_query(self, user_message: str, route: IntentRouteResult) -> str:
-        kb_evidence = self.kb.execute_typed_query(route.intent, user_message)
+        context = {
+            "task_type_key": self.task_state.get("task_type_key"),
+            "equipment_type": self.task_state.get("equipment_type") or self.task_state.get("equipment_name"),
+        }
+        kb_evidence = self.kb.execute_typed_query(route.intent, user_message, context=context)
         if not kb_evidence.get("found"):
             return "当前知识库未提供该信息。"
         messages = build_knowledge_responder_messages(kb_evidence, self.conversation_history, user_message)
@@ -251,15 +255,17 @@ class DialogueManager:
             return pending_reply
 
         # ── 独立意图路由分流阶段 ──
+        expected_slots = [m["key"] for m in self._last_missing if isinstance(m, dict) and "key" in m]
         route = self.intent_router.route(
             user_message=user_message,
             conversation_history=self.conversation_history,
             task_state=self.task_state,
             phase=self.phase,
+            expected_slots=expected_slots,
         )
 
         if not route.should_update_slots and route.intent not in ("TASK_CREATE", "TASK_UPDATE"):
-            if not (route.intent == "TASK_CONFIRM" and self.phase == "confirming"):
+            if not (route.intent == "TASK_CONFIRM" and self.phase in ("confirming", "blocked_soft")):
                 return self._handle_non_task_route(user_message, route, request_id)
 
         # 3. Parameter Extraction & Processing Pipeline (Atomic Transaction with Optimistic Lock)
@@ -283,7 +289,7 @@ class DialogueManager:
             )
             intent_str = normalize_intent(extraction_res.get("intent"))
 
-            if intent_str not in MUTATING_INTENTS and not (old_phase == "confirming" and self._user_confirmed(user_message)):
+            if intent_str not in MUTATING_INTENTS and not (old_phase in ("confirming", "blocked_soft") and (self._user_confirmed(user_message) or (old_phase == "blocked_soft" and any(kw in user_message.lower() for kw in SOFT_IGNORE_KEYWORDS)))):
                 if intent_str == "GENERAL_CHAT":
                     messages = [
                         {"role": "system", "content": "你是一个水下多智能体任务规划系统助手。请友好专业地回答用户的问候或一般性问题。"},
@@ -334,7 +340,7 @@ class DialogueManager:
             )
             intent_str = normalize_intent(extraction_res.get("intent"))
 
-            if intent_str not in MUTATING_INTENTS and not (old_phase == "confirming" and self._user_confirmed(user_message)):
+            if intent_str not in MUTATING_INTENTS and not (old_phase in ("confirming", "blocked_soft") and (self._user_confirmed(user_message) or (old_phase == "blocked_soft" and any(kw in user_message.lower() for kw in SOFT_IGNORE_KEYWORDS)))):
                 if intent_str == "GENERAL_CHAT":
                     messages = [
                         {"role": "system", "content": "你是一个水下多智能体任务规划系统助手。请友好专业地回答用户的问候或一般性问题。"},
