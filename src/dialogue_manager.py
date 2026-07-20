@@ -85,7 +85,7 @@ class DialogueManager:
         self.builder = OutputBuilder(kb)
         self.validator = TaskValidator(kb)
         self.oilfield_linker = OilfieldEntityLinker(kb.environment)
-        self.intent_router = IntentRouter(llm)
+        self.intent_router = IntentRouter(llm, device_terms=kb.get_all_device_terms())
 
         # 对话核心状态
         self.conversation_history: list[dict] = []
@@ -181,9 +181,29 @@ class DialogueManager:
         kb_evidence = self.kb.execute_typed_query(route.intent, user_message, context=context)
         if not kb_evidence.get("found"):
             return "当前知识库未提供该信息。"
+
+        if route.intent == "DEVICE_CAPABILITY" and kb_evidence.get("query_mode") == "device_check":
+            results = kb_evidence.get("results", [])
+            depth_cond = kb_evidence.get("depth_condition", {})
+            target_depth = depth_cond.get("depth_m")
+            unmet_devices = [r for r in results if r.get("matches_depth_condition") is False]
+            if unmet_devices and target_depth:
+                dev = unmet_devices[0]
+                dev_name = dev.get("robot_class_name") or dev.get("full_name") or "目标设备"
+                max_d = dev.get("max_depth_m")
+                return f"已识别设备【{dev_name}】，其最大作业水深为 {max_d}米，无法满足您询问的 {target_depth}米 作业要求。"
+
         messages = build_knowledge_responder_messages(kb_evidence, self.conversation_history, user_message)
         reply = self.llm.chat(messages, temperature=0.1)
-        if not reply or not reply.strip():
+        if not reply or not reply.strip() or ("符合条件" in reply and any(r.get("matches_depth_condition") is False for r in kb_evidence.get("results", []))):
+            if route.intent == "DEVICE_CAPABILITY" and kb_evidence.get("query_mode") == "device_check":
+                results = kb_evidence.get("results", [])
+                if results and results[0].get("matches_depth_condition") is False:
+                    dev = results[0]
+                    dev_name = dev.get("robot_class_name") or dev.get("full_name") or "目标设备"
+                    max_d = dev.get("max_depth_m")
+                    target_d = kb_evidence.get("depth_condition", {}).get("depth_m")
+                    return f"已识别设备【{dev_name}】，其最大作业水深为 {max_d}米，无法满足您询问的 {target_d}米 作业要求。"
             return "当前知识库未提供该信息。"
         return self.llm.filter_reply(reply)
 
@@ -495,9 +515,17 @@ class DialogueManager:
             expected_slots=expected_slots,
         )
 
-        # ── TASK_CONFIRM 独立控制指令分流（在抽取流水线之前拦截）──
+        # ── TASK_CONFIRM / TASK_CANCEL 独立控制指令分流（在抽取流水线之前拦截）──
         if route.intent == "TASK_CONFIRM":
             return self._handle_task_confirm(user_message, request_id)
+
+        if route.intent == "TASK_CANCEL":
+            self.phase = "rejected"
+            self.final_result = None
+            reply = "任务已取消。如需重新规划，请重新开始。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
 
         if not route.should_update_slots and route.intent not in ("TASK_CREATE", "TASK_UPDATE"):
             return self._handle_non_task_route(user_message, route, request_id)
@@ -628,18 +656,47 @@ class DialogueManager:
                     stage2_updates[k] = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": "entity_linker"}
                 merged_updates[k] = v
 
-            # Conflict resolution check: if user confirmed or cancelled conflict in next turn
+            # Scoped & Negation-Safe Conflict resolution check
+            slot_name_aliases = {
+                "support_vessel": ["支持船", "船", "工作船", "母船"],
+                "equipment_type": ["设备", "机器人", "rov", "auv"],
+                "water_depth": ["水深", "深度"],
+                "cable_type": ["管缆类型", "缆线", "电缆"],
+            }
+            has_negation_confirm = any(nc in user_message for nc in ["不确认", "不修改", "不要修改", "先不", "取消"])
+            has_explicit_upd = bool(stage2_updates)
+
             for k, slot in list(new_slots.items()):
                 if slot.status == "conflict" and slot.candidate_value is not None:
-                    if self._user_confirmed(user_message) or stage2_updates.get(k) == slot.candidate_value:
+                    # 1. 显式输入与 candidate_value 完全一致
+                    if stage2_updates.get(k) == slot.candidate_value:
                         slot.value = slot.candidate_value
                         slot.status = "valid"
                         slot.candidate_value = None
                         slot.validation_error = None
-                    elif self._user_cancelled(user_message):
-                        slot.status = "valid"
-                        slot.candidate_value = None
-                        slot.validation_error = None
+                        continue
+
+                    # 2. 如果包含其他新槽位修改（如"水深改成500米"），不得顺带确认本冲突槽位
+                    if has_explicit_upd and k not in stage2_updates and not any(alias in user_message for alias in slot_name_aliases.get(k, [k])):
+                        continue
+
+                    # 3. 检查针对具体槽位 k 的定向确认/取消
+                    k_aliases = slot_name_aliases.get(k, [k])
+                    msg_targets_k = any(alias in user_message for alias in k_aliases) or (slot.candidate_value and str(slot.candidate_value) in user_message)
+
+                    if msg_targets_k:
+                        is_cancel_k = any(c_kw in user_message for c_kw in ["取消", "放弃", "不要", "不修改", "不用"])
+                        is_confirm_k = any(c_kw in user_message for c_kw in ["确认", "确定", "好的", "可以", "使用", "改为"]) and not is_cancel_k
+
+                        if is_confirm_k and not has_negation_confirm:
+                            slot.value = slot.candidate_value
+                            slot.status = "valid"
+                            slot.candidate_value = None
+                            slot.validation_error = None
+                        elif is_cancel_k:
+                            slot.status = "valid"
+                            slot.candidate_value = None
+                            slot.validation_error = None
 
             self._apply_updates_in_transaction(stage2_updates, new_slots)
             if "rov_description" in stage2_updates:
@@ -698,8 +755,9 @@ class DialogueManager:
         # Auto-generate intent_id inside new_slots BEFORE commit when all required slots are present
         if curr_task_type_key and not cand_missing:
             intent_id_slot = new_slots.get("intent_id")
-            if not intent_id_slot or intent_id_slot.status != "valid" or not intent_id_slot.value:
+            if old_phase == "done" or not intent_id_slot or intent_id_slot.status != "valid" or not intent_id_slot.value:
                 today = get_current_datetime().strftime("%Y%m%d")
+                from .task_intent_builder import get_task_dir
                 task_dir = get_task_dir(create=False)
                 from .id_sequence import next_daily_id
                 ti_intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
@@ -710,7 +768,9 @@ class DialogueManager:
                 new_slots["intent_id"].source = "auto"
                 new_slots["intent_id"].raw_value = None
 
-        if not cand_missing and proposed_phase not in ("blocked_hard", "blocked_soft", "confirming", "done"):
+        if old_phase == "done":
+            proposed_phase = "confirming" if not cand_missing else "collecting"
+        elif not cand_missing and proposed_phase not in ("blocked_hard", "blocked_soft", "confirming", "done"):
             proposed_phase = "confirming"
 
         # Atomic single commit with optimistic version validation
@@ -720,6 +780,9 @@ class DialogueManager:
             request_id=request_id,
             expected_version=expected_version,
         )
+
+        if old_phase == "done":
+            self.final_result = None
 
         # Apply proposed instance state AFTER successful commit
         self.mode = proposed_mode
@@ -779,14 +842,6 @@ class DialogueManager:
             constraint_context = self._run_constraint_check(ALL_FIELDS)
         else:
             constraint_context = self._run_constraint_check(changed_fields)
-
-        if self._user_cancelled(user_message):
-            self.phase = "rejected"
-            self.final_result = None
-            reply = "任务已取消。如需重新规划，请重新开始。"
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.conversation_history.append({"role": "assistant", "content": reply})
-            return reply
 
         # 知识上下文
         knowledge_context = self.kb.get_context_for_state(self.task_state)
@@ -1594,9 +1649,17 @@ class DialogueManager:
 
         # Resolve slot_store payload
         if "slot_store" in snapshot and isinstance(snapshot["slot_store"], dict):
-            slot_store_snap = snapshot["slot_store"]
-        elif "slots" in snapshot and "store_version" in snapshot:
-            slot_store_snap = snapshot
+            slot_store_snap = dict(snapshot["slot_store"])
+            if "store_version" not in slot_store_snap:
+                slot_store_snap["store_version"] = 1
+            if "unresolved" not in slot_store_snap or slot_store_snap["unresolved"] is None:
+                slot_store_snap["unresolved"] = []
+        elif "slots" in snapshot:
+            slot_store_snap = {
+                "store_version": snapshot.get("store_version", 1),
+                "slots": snapshot["slots"],
+                "unresolved": snapshot.get("unresolved", [])
+            }
         elif "task_state" in snapshot and isinstance(snapshot.get("task_state"), dict):
             task_state = snapshot["task_state"]
             legacy_slots = {}
@@ -1650,7 +1713,10 @@ class DialogueManager:
         if candidate_phase in ("confirming", "done"):
             intent_slot = candidate_slot_store.slots.get("intent_id")
             if not intent_slot or intent_slot.status != "valid" or not intent_slot.value:
+                if candidate_phase == "done":
+                    candidate_phase = "confirming" if not candidate_missing else "collecting"
                 today = get_current_datetime().strftime("%Y%m%d")
+                from .task_intent_builder import get_task_dir
                 task_dir = get_task_dir(create=False)
                 from .id_sequence import next_daily_id
                 ti_intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])

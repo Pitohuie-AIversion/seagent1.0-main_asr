@@ -110,8 +110,9 @@ class IntentRouteResult:
 
 
 class IntentRouter:
-    def __init__(self, llm: LLMClient):
+    def __init__(self, llm: LLMClient, device_terms: set[str] | None = None):
         self.llm = llm
+        self.device_terms = device_terms
 
     def route(
         self,
@@ -130,6 +131,15 @@ class IntentRouter:
                 source="rule",
                 should_update_slots=False,
             )
+
+        # 动态加载知识库设备词汇表（避免写死与数据脱节）
+        if self.device_terms is None:
+            try:
+                from .knowledge_retriever import KnowledgeBase
+                self.device_terms = KnowledgeBase().get_all_device_terms()
+            except Exception as e:
+                logger.warning(f"[IntentRouter] Failed to load dynamic device terms: {e}")
+                self.device_terms = set(DEVICE_ENTITIES)
 
         # ── 1. 确定性规则判断 ──────────────────────────────────────────────────
         rule_result = self._try_rule_routing(msg, task_state, phase, expected_slots)
@@ -158,14 +168,15 @@ class IntentRouter:
     ) -> IntentRouteResult | None:
         msg_clean = re.sub(r"[。！？,!?. ]+", "", msg.strip()).lower()
         is_q = any(q in msg for q in QUESTION_WORDS)
-        has_dev = any(e in msg.lower() for e in DEVICE_ENTITIES)
+        device_terms = self.device_terms or set(DEVICE_ENTITIES)
+        has_dev = any(e.lower() in msg.lower() for e in (device_terms | set(DEVICE_ENTITIES)) if len(e) >= 2)
         has_tool = any(e in msg.lower() for e in TOOL_ENTITIES)
 
         negation_cancel = ["不要取消", "别取消", "不能取消", "不放弃", "不终止"]
         negation_confirm = ["不好", "不确认", "不要发布", "先别发布", "不能发布", "不要下发", "不发布", "不是", "不", "别", "不要"]
 
         # ── 检查是否为显式修改表达 ──
-        update_verbs = ["改成", "改为", "变更为", "修改", "设置", "重置", "换成", "更名", "选择", "选用", "使用", "携带", "装载", "配备", "搭载", "带上", "把", "调整", "为", "由", "从", "到"]
+        update_verbs = ["改成", "改为", "变转换为", "修改", "设置", "重置", "换成", "更名", "选择", "选用", "使用", "携带", "装载", "配备", "搭载", "带上", "把", "调整", "为", "由", "从", "到"]
         slot_keywords = ["水深", "深度", "坐标", "经纬度", "支持船", "船", "工具", "抓手", "模式", "时间", "井口", "油田", "缆线", "摄像机", "声呐", "开线", "设备", "定位"]
 
         has_explicit_upd = any(p in msg for p in EXPLICIT_UPDATE_PHRASES)
@@ -277,7 +288,8 @@ class IntentRouter:
                 query_subtype="available_tools",
             )
 
-        if (is_q or any(kw in msg for kw in ["有哪些", "500米", "1000米", "作业", "参数", "下潜", "列表"])) and (has_dev or "机器人" in msg or "rov" in msg.lower() or "潜器" in msg) and "当前任务有哪些参数" not in msg:
+        is_device_cap_pattern = bool(re.search(r"^([^能支持有包含哪些多少]+)(?:能|在|支持|可以|有).*?(?:水深|作业|下潜|能力|米|吗|几米)", msg)) or "最大水深" in msg
+        if (has_dev or is_device_cap_pattern) and (is_q or any(kw in msg for kw in ["能在", "作业", "水深", "下潜", "有哪些", "设备", "参数", "能力", "支持", "最大水深"])) and "当前任务有哪些参数" not in msg and not is_modification_request:
             return IntentRouteResult(
                 intent="DEVICE_CAPABILITY",
                 confidence=0.98,

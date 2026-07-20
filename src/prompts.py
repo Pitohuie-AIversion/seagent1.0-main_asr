@@ -273,6 +273,7 @@ KNOWLEDGE_RESPONDER_SYSTEM = """\
 2. 严禁编造或补全知识库中不存在的设备、工具、最大水深或能力信息。
 3. 如果 `found` 为 `false` 或 `results` 为空，必须明确回答：“当前知识库未提供该信息。”，决不能使用训练常识进行猜测或补全。
 4. **严禁修改任何任务槽位，严禁向用户询问任务缺失参数**。
+5. 当 query_mode 为 device_check 且 matches_depth_condition 为 false 时，必须明确说明已识别设备、最大作业水深，并明确指出无法满足用户询问的目标水深，绝对不能将该设备描述为"符合条件"。
 """
 
 STATUS_RESPONDER_SYSTEM = """\

@@ -612,6 +612,28 @@ class KnowledgeBase:
                 return state
         return empty_state
 
+    def get_all_device_terms(self) -> set[str]:
+        """从知识库配置动态生成只读设备检索词集合。"""
+        terms: set[str] = set()
+        all_rovs = self.get_all_rovs()
+        for r in all_rovs:
+            for field in ["full_name", "family_full_name", "robot_class_name", "model", "category_name"]:
+                val = r.get(field)
+                if val:
+                    terms.add(str(val).strip())
+            for alias in (r.get("aliases") or []):
+                if alias and len(alias) >= 2:
+                    terms.add(str(alias).strip())
+            for unit in (r.get("fleet_units") or []):
+                for u_field in ["unit_id", "display_name", "serial_no"]:
+                    val = unit.get(u_field)
+                    if val:
+                        terms.add(str(val).strip())
+                for u_alias in (unit.get("aliases") or []):
+                    if u_alias and len(u_alias) >= 2:
+                        terms.add(str(u_alias).strip())
+        return terms
+
     # ──────────────────────────────────────────────────────────────────────────
     # ✅ 专属强类型只读查询接口
     # ──────────────────────────────────────────────────────────────────────────
