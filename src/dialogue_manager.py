@@ -329,11 +329,17 @@ class DialogueManager:
         return reply
 
     def _handle_final_publish_confirmation(self, user_message: str, request_id: str) -> str:
-        """confirming 阶段的确认发布处理。
+        """confirming 阶段的唯一正式确认发布处理。
 
-        使用现有已验证 built_json 发布，不重新抽取或修改槽位。
-        发布失败保持原有回滚和错误处理。
+        使用已有 SlotStore 内的 valid intent_id 关联并发布文件。
+        不重新调用 extractor，不修改 SlotStore。
         """
+        if self.phase != "confirming":
+            reply = "当前没有处于等待确认状态的任务。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
         prev_phase = self.phase
         prev_snap = self.slot_store.export_snapshot()
         prev_whitelist = copy.deepcopy(self._soft_whitelist)
@@ -349,6 +355,7 @@ class DialogueManager:
         # 最终约束全量检查
         all_violations = self.validator.validate(cand_state)
         has_hard = self.validator.has_hard_violations(all_violations)
+        unwhitelisted_soft = [v for v in all_violations if v.severity == "soft" and not self._is_whitelisted(v)]
 
         # 检查缺失
         if task_type_key:
@@ -357,14 +364,25 @@ class DialogueManager:
         else:
             missing = [{"key": "task_type", "label": "任务类型"}]
 
-        if missing or has_hard:
-            # 不能发布，回到 collecting 或 blocked
+        if missing or has_hard or unwhitelisted_soft:
             if has_hard:
                 self.phase = "blocked_hard"
                 self._blocking_violations = [v for v in all_violations if v.severity == "hard"]
+            elif unwhitelisted_soft:
+                self.phase = "blocked_soft"
+                self._blocking_violations = unwhitelisted_soft
             else:
                 self.phase = "collecting"
             reply = "当前任务参数不满足发布条件，请补充或修正参数。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        # 检查 intent_id 是否在 SlotStore/built_json 中有效存在 (Fail Closed)
+        intent_id = cand_built.get("intent_id") or cand_state.get("intent_id")
+        intent_slot = self.slot_store.slots.get("intent_id")
+        if not intent_id or not intent_slot or intent_slot.status != "valid" or not intent_slot.value:
+            reply = "当前任务缺少唯一任务标识(intent_id)，无法完成确认发布。"
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
@@ -376,6 +394,7 @@ class DialogueManager:
             built_json=cand_built,
             mode=self.mode,
             task_type_key=task_type_key,
+            intent_id=intent_id,
         )
         staging_file = ti_builder.create_staging(ti_json_artifact)
 
@@ -417,7 +436,7 @@ class DialogueManager:
                 "TaskIntent publish failed: request_id=%s, task_id=%s, intent_id=%s, err_type=%s, err=%s, rollback_failed=%s",
                 request_id,
                 cand_built.get("task_id", "unknown"),
-                ti_json_artifact.get("intent_id", "unknown") if ti_json_artifact else "unknown",
+                intent_id,
                 type(exc).__name__,
                 exc,
                 rollback_failed,
@@ -668,7 +687,6 @@ class DialogueManager:
                 new_slots["task_id"].source = "auto"
 
         proposed_phase = self.phase
-        ti_json_artifact = None
 
         # Check required missing in working new_slots
         if curr_task_type_key:
@@ -677,60 +695,31 @@ class DialogueManager:
         else:
             cand_missing = [{"key": "task_type", "label": "任务类型", "type": "string", "allowed_values": self.kb.get_all_task_type_values()}]
 
-        if not cand_missing and proposed_phase not in ("blocked_hard", "blocked_soft", "confirming", "done"):
-            proposed_phase = "confirming"
-
-        staging_file = None
-        ti_json_artifact = None
-        prev_snap = None
-        prev_mode = self.mode
-        prev_phase = self.phase
-        prev_task_state = copy.deepcopy(self.task_state)
-        prev_built = copy.deepcopy(self._last_built_json)
-        prev_missing = copy.deepcopy(self._last_missing)
-        prev_hist = list(self.conversation_history)
-        prev_whitelist = copy.deepcopy(self._soft_whitelist)
-        prev_pending_rov = copy.deepcopy(self._pending_rov_candidates)
-        prev_blocking_violations = copy.deepcopy(self._blocking_violations)
-        prev_task_start_now = self.task_start_now
-
-        if old_phase == "confirming" and self._user_confirmed(user_message):
-            cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
-            cand_built = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
-            all_violations = self.validator.validate(cand_state)
-            if not cand_missing and not self.validator.has_hard_violations(all_violations):
-                proposed_phase = "done"
-                prev_snap = self.slot_store.export_snapshot()
-                ti_builder = TaskIntentBuilder(self.kb)
-                ti_json_artifact = ti_builder.prepare(
-                    task_state=cand_state,
-                    built_json=cand_built,
-                    mode=proposed_mode,
-                    task_type_key=curr_task_type_key
-                )
-                staging_file = ti_builder.create_staging(ti_json_artifact)
-                ti_intent_id = ti_json_artifact["intent_id"]
+        # Auto-generate intent_id inside new_slots BEFORE commit when all required slots are present
+        if curr_task_type_key and not cand_missing:
+            intent_id_slot = new_slots.get("intent_id")
+            if not intent_id_slot or intent_id_slot.status != "valid" or not intent_id_slot.value:
+                today = get_current_datetime().strftime("%Y%m%d")
+                task_dir = get_task_dir(create=False)
+                from .id_sequence import next_daily_id
+                ti_intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
                 if "intent_id" not in new_slots:
                     new_slots["intent_id"] = Slot("intent_id")
                 new_slots["intent_id"].value = ti_intent_id
                 new_slots["intent_id"].status = "valid"
                 new_slots["intent_id"].source = "auto"
+                new_slots["intent_id"].raw_value = None
+
+        if not cand_missing and proposed_phase not in ("blocked_hard", "blocked_soft", "confirming", "done"):
+            proposed_phase = "confirming"
 
         # Atomic single commit with optimistic version validation
-        try:
-            self.slot_store.commit_transaction(
-                new_slots,
-                new_unresolved,
-                request_id=request_id,
-                expected_version=expected_version,
-            )
-        except Exception as commit_exc:
-            if staging_file and staging_file.exists():
-                try:
-                    staging_file.unlink()
-                except Exception:
-                    pass
-            raise commit_exc
+        self.slot_store.commit_transaction(
+            new_slots,
+            new_unresolved,
+            request_id=request_id,
+            expected_version=expected_version,
+        )
 
         # Apply proposed instance state AFTER successful commit
         self.mode = proposed_mode
@@ -790,81 +779,6 @@ class DialogueManager:
             constraint_context = self._run_constraint_check(ALL_FIELDS)
         else:
             constraint_context = self._run_constraint_check(changed_fields)
-
-        if self.phase == "done":
-            if ti_json_artifact and staging_file:
-                ti_builder = TaskIntentBuilder(self.kb)
-                try:
-                    ti_builder.publish_staging(staging_file, ti_json_artifact)
-                except Exception as exc:
-                    # 1. Immediately reset phase and final_result so phase NEVER remains "done"
-                    self.phase = prev_phase
-                    self.final_result = None
-
-                    # 2. Clean staging file
-                    if staging_file and staging_file.exists():
-                        try:
-                            staging_file.unlink()
-                        except Exception:
-                            pass
-
-                    # 3. Restore slot_store
-                    rollback_failed = False
-                    rollback_err = None
-                    if prev_snap:
-                        try:
-                            self.slot_store.restore_snapshot(prev_snap)
-                        except Exception as rb_e:
-                            rollback_failed = True
-                            rollback_err = rb_e
-
-                    # 4 & 5. Re-derive manager state
-                    self.mode = prev_mode
-                    self.task_state = self.slot_store.get_task_state()
-                    self._last_built_json = self.slot_store.get_built_json()
-                    self._soft_whitelist = prev_whitelist
-                    self._pending_rov_candidates = prev_pending_rov
-                    self._blocking_violations = prev_blocking_violations
-                    self.conversation_history = prev_hist
-                    self.task_start_now = prev_task_start_now
-
-                    if curr_task_type_key:
-                        required_schema = self.builder.get_schema(curr_task_type_key, self.mode)
-                        self._last_missing = self.slot_store.get_missing_slots(required_schema)
-                    else:
-                        self._last_missing = prev_missing
-
-                    logger.error(
-                        "TaskIntent publish failed: request_id=%s, task_id=%s, intent_id=%s, store_version=%d, stage=%s, err_type=%s, err=%s, rollback_failed=%s",
-                        request_id,
-                        built.get("task_id", "unknown"),
-                        ti_json_artifact.get("intent_id", "unknown") if ti_json_artifact else "unknown",
-                        self.slot_store.version,
-                        "publish_staging",
-                        type(exc).__name__,
-                        exc,
-                        rollback_failed,
-                        exc_info=True,
-                    )
-
-                    if rollback_failed:
-                        raise TaskRollbackError(f"TaskIntent publish failed ({exc}) and rollback error occurred: {rollback_err}") from exc
-
-                    if isinstance(exc, (TaskPersistenceError, IntentIdConflict, IdReservationError)):
-                        raise exc
-                    else:
-                        raise TaskPersistenceError(f"TaskIntent publish failed: {exc}") from exc
-
-            self.final_result = built
-            if self.task_start_now:
-                reply = (f"✅ 信息收集完成，当前为【立即执行任务】，任务已生成并下发。\n"
-                         f"{json.dumps(built, ensure_ascii=False, indent=2)}")
-            else:
-                reply = (f"✅ 信息收集完成，当前为【未来规划任务】，已加入计划池。\n"
-                         f"{json.dumps(built, ensure_ascii=False, indent=2)}")
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.conversation_history.append({"role": "assistant", "content": reply})
-            return reply
 
         if self._user_cancelled(user_message):
             self.phase = "rejected"
@@ -1732,6 +1646,17 @@ class DialogueManager:
         else:
             candidate_missing = [{"key": "task_type", "label": "任务类型", "type": "string",
                                    "allowed_values": self.kb.get_all_task_type_values()}]
+
+        if candidate_phase in ("confirming", "done"):
+            intent_slot = candidate_slot_store.slots.get("intent_id")
+            if not intent_slot or intent_slot.status != "valid" or not intent_slot.value:
+                today = get_current_datetime().strftime("%Y%m%d")
+                task_dir = get_task_dir(create=False)
+                from .id_sequence import next_daily_id
+                ti_intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
+                candidate_slot_store.slots["intent_id"] = Slot("intent_id", value=ti_intent_id, value_type="string", status="valid", source="auto")
+                candidate_task_state = candidate_slot_store.get_task_state()
+                candidate_built = candidate_slot_store.get_built_json()
 
         # ALL STEPS SUCCEEDED - Swap states atomically!
         self.slot_store = candidate_slot_store

@@ -75,6 +75,7 @@ def seed_complete_valid_pipeline_task(dm, kb):
         "equipment_unit_id": (equipment_unit_id, "string"),
         "payload": (payload, "list"),
         "support_vessel": (support_vessel, "string"),
+        "intent_id": ("TI2026063001", "string"),
     }
 
     for key, (val, vtype) in slots_to_seed.items():
@@ -83,6 +84,14 @@ def seed_complete_valid_pipeline_task(dm, kb):
     dm.phase = "confirming"
     dm.task_state = store.get_task_state()
     dm._last_built_json = store.get_built_json()
+
+    all_v = dm.validator.validate(dm.task_state)
+    for v in all_v:
+        if v.severity == "soft":
+            for f in v.related_fields:
+                val = dm.task_state.get(f)
+                if val is not None:
+                    dm._soft_whitelist.add((f, str(val), v.constraint_id))
 
     req_schema = dm.builder.get_schema(task_type_key, dm.mode)
     dm._last_missing = store.get_missing_slots(req_schema)
@@ -118,9 +127,8 @@ def assert_ssot_consistency(test_case, dm):
     且包含相同的 valid 槽位事实。
     """
     expected_task_state = dm.slot_store.get_task_state()
-    expected_built_json = dm.slot_store.get_built_json()
-
     test_case.assertEqual(dm.task_state, expected_task_state)
+    expected_built_json = dm.slot_store.get_built_json()
     test_case.assertEqual(dm._last_built_json, expected_built_json)
 
 
@@ -131,7 +139,7 @@ class SlotConsistencyTest(unittest.TestCase):
         cls.llm = MagicMock(spec=LLMClient)
         cls.llm.generate.return_value = "已接收到您的任务输入"
         cls.llm.filter_reply.side_effect = lambda text, *args, **kwargs: text if isinstance(text, str) else "已接收到您的任务输入"
-        cls.llm.extract_json.return_value = {"intent": "TASK_UPDATE", "slot_candidates": [], "unresolved": []}
+        cls.llm.extract_json.return_value = {"intent": "TASK_UPDATE", "confidence": 1.0, "reason": "test", "slot_candidates": [], "unresolved": []}
         app.testing = True
         web_backend.init_manager(DialogueManager(cls.llm, cls.kb))
 
@@ -139,10 +147,10 @@ class SlotConsistencyTest(unittest.TestCase):
         get_simulated_time().set_current_time(
             datetime(2026, 6, 30, 17, 38, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
         )
-        self.llm.extract_json.return_value = {"intent": "TASK_UPDATE", "slot_candidates": [], "unresolved": []}
+        self.llm.extract_json.return_value = {"intent": "TASK_UPDATE", "confidence": 1.0, "reason": "test", "slot_candidates": [], "unresolved": []}
         self.dm = DialogueManager(self.llm, self.kb)
         self.client = app.test_client()
-        # 隔离意图路由：slot consistency 测试聚焦于槽位行为，不测试路由
+        # 隔离意图路由：slot consistency 槽位单元测试聚焦于 SlotStore / 事务行为
         from src.intent_router import IntentRouteResult
         self._default_route = IntentRouteResult(
             intent="TASK_UPDATE", confidence=1.0, reason="test",
@@ -785,32 +793,34 @@ class SlotConsistencyTest(unittest.TestCase):
                 self.assertEqual(data["built_json"]["water_depth"], 350.0)
                 self.assertIsNotNone(data["missing"])
 
-    # 32. commit失败不产生TaskIntent正式文件
+    # 32. publish失败不产生TaskIntent正式文件
     def test_32_commit_failure_no_final_task_intent_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
-                self.dm.reset()
-                self.dm.phase = "confirming"
-                self.dm.slot_store.commit_transaction = MagicMock(side_effect=SlotVersionConflict("Conflict simulation"))
-                with self.assertRaises(SlotVersionConflict):
-                    self.dm.process("确认开始")
+            tmp_path.mkdir(parents=True, exist_ok=True)
+            seed_complete_valid_pipeline_task(self.dm, self.kb)
+            self.dm.intent_router.route = self._orig_route
+            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
+                 patch("src.dialogue_manager.TaskIntentBuilder.publish_staging", side_effect=TaskPersistenceError("Simulated disk error")):
+                with self.assertRaises(TaskPersistenceError):
+                    self.dm.process("确认发布")
 
                 final_files = list(tmp_path.glob("task_intent_*.json")) if tmp_path.exists() else []
                 self.assertEqual(len(final_files), 0)
 
-    # 33. commit失败不产生TaskIntent临时文件
+    # 33. publish失败不产生TaskIntent临时文件
     def test_33_commit_failure_no_temp_task_intent_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
-                self.dm.reset()
-                self.dm.phase = "confirming"
-                self.dm.slot_store.commit_transaction = MagicMock(side_effect=SlotVersionConflict("Conflict simulation"))
-                with self.assertRaises(SlotVersionConflict):
-                    self.dm.process("确认开始")
+            tmp_path.mkdir(parents=True, exist_ok=True)
+            seed_complete_valid_pipeline_task(self.dm, self.kb)
+            self.dm.intent_router.route = self._orig_route
+            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
+                 patch("src.dialogue_manager.TaskIntentBuilder.publish_staging", side_effect=TaskPersistenceError("Simulated disk error")):
+                with self.assertRaises(TaskPersistenceError):
+                    self.dm.process("确认发布")
 
-                tmp_files = list(tmp_path.glob("*.tmp_*")) if tmp_path.exists() else []
+                tmp_files = (list(tmp_path.glob("*.staging_*")) + list(tmp_path.glob("*.tmp_*"))) if tmp_path.exists() else []
                 self.assertEqual(len(tmp_files), 0)
 
     # 34. TaskIntent prepare 不写文件
@@ -854,6 +864,7 @@ class SlotConsistencyTest(unittest.TestCase):
             tmp_path.mkdir(parents=True, exist_ok=True)
 
             selected_rov = seed_complete_valid_pipeline_task(self.dm, self.kb)
+            self.dm.intent_router.route = self._orig_route
 
             req_schema = self.dm.builder.get_schema("pipeline_inspection", self.dm.mode)
             missing = self.dm.slot_store.get_missing_slots(req_schema)
@@ -875,7 +886,7 @@ class SlotConsistencyTest(unittest.TestCase):
                  patch("src.dialogue_manager.TaskIntentBuilder.publish_staging", side_effect=TaskPersistenceError("Simulated disk error")) as mock_pub, \
                  self.assertLogs("src.dialogue_manager", level="ERROR") as cm:
                 with self.assertRaises(TaskPersistenceError):
-                    self.dm.process("确认开始", request_id="req_test_36")
+                    self.dm.process("确认发布", request_id="req_test_36")
 
                 mock_pub.assert_called_once()
 
@@ -885,8 +896,8 @@ class SlotConsistencyTest(unittest.TestCase):
 
                 intent_slot = store.slots.get("intent_id")
                 self.assertIsNotNone(intent_slot)
-                self.assertIsNone(intent_slot.value)
-                self.assertEqual(intent_slot.status, "missing")
+                self.assertEqual(intent_slot.value, "TI2026063001")
+                self.assertEqual(intent_slot.status, "valid")
 
                 self.assertEqual(store.export_snapshot(), pre_snapshot)
                 self.assertEqual(self.dm.task_state, pre_task_state)
@@ -911,6 +922,7 @@ class SlotConsistencyTest(unittest.TestCase):
             tmp_path.mkdir(parents=True, exist_ok=True)
 
             selected_rov = seed_complete_valid_pipeline_task(self.dm, self.kb)
+            self.dm.intent_router.route = self._orig_route
 
             req_schema = self.dm.builder.get_schema("pipeline_inspection", self.dm.mode)
             missing = self.dm.slot_store.get_missing_slots(req_schema)

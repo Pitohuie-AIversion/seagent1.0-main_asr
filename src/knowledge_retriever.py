@@ -668,91 +668,164 @@ class KnowledgeBase:
 
             import re
 
-            # ── 解析深度条件为结构化 {operator, depth_m} ──
-            depth_condition = None  # {"operator": "eq|gte|gt|lte|lt", "depth_m": int}
+            # ── 1. 结构化深度条件解析 ──
+            has_depth_num = bool(re.search(r"\d+\s*(?:米|m)?", user_message, re.IGNORECASE)) and any(
+                kw in user_message for kw in ["米", "m", "深度", "下潜", "作业", "水深", "能力", "支持", "能够", "可在"]
+            )
 
-            # 精确级别（X米级）
+            depth_condition = {
+                "operator": None,
+                "depth_m": None,
+                "has_depth_expression": has_depth_num,
+                "parse_status": "absent" if not has_depth_num else "invalid",
+            }
+
             m_exact = re.search(r"(\d+)\s*米级", user_message)
-
-            # 否定/上限表达必须优先匹配（防止"不超过"被"超过"子串抢占）
-            m_lte = re.search(r"(?:不超过|至多|最大|不大于|最多)\s*(\d+)\s*(?:米|m)", user_message, re.IGNORECASE)
+            m_max = re.search(r"(?:最大(?:下潜|作业)?深度(?:为|是)?|下潜极限(?:为|是)?)\s*(\d+)\s*(?:米|m)", user_message, re.IGNORECASE)
+            m_lte = re.search(r"(?:不超过|至多|最大不超过|不大于|最多)\s*(\d+)\s*(?:米|m)", user_message, re.IGNORECASE)
             m_lt = re.search(r"(?:低于|小于|不到)\s*(\d+)\s*(?:米|m)", user_message, re.IGNORECASE)
             m_gte = re.search(r"(?:不少于|不低于|至少)\s*(\d+)\s*(?:米|m)", user_message, re.IGNORECASE)
             m_gt = re.search(r"(?:超过|大于)\s*(\d+)\s*(?:米|m)", user_message, re.IGNORECASE)
-            # 能力/支持型表达 → gte
-            m_cap = re.search(r"(?:支持|能够|能|可以?|可下潜到?|在)\s*(\d+)\s*(?:米|m)", user_message, re.IGNORECASE)
+            m_cap = re.search(r"(?:支持在?|能够下潜至|能够下潜到|能够在?|能下潜到?|可在?|在)\s*(\d+)\s*(?:米|m)", user_message, re.IGNORECASE)
 
             if m_exact:
-                depth_condition = {"operator": "eq", "depth_m": int(m_exact.group(1))}
+                depth_condition.update({"operator": "eq", "depth_m": int(m_exact.group(1)), "parse_status": "valid"})
+            elif m_max:
+                depth_condition.update({"operator": "lte", "depth_m": int(m_max.group(1)), "parse_status": "valid"})
             elif m_lte:
-                depth_condition = {"operator": "lte", "depth_m": int(m_lte.group(1))}
+                depth_condition.update({"operator": "lte", "depth_m": int(m_lte.group(1)), "parse_status": "valid"})
             elif m_lt:
-                depth_condition = {"operator": "lt", "depth_m": int(m_lt.group(1))}
+                depth_condition.update({"operator": "lt", "depth_m": int(m_lt.group(1)), "parse_status": "valid"})
             elif m_gte:
-                depth_condition = {"operator": "gte", "depth_m": int(m_gte.group(1))}
+                depth_condition.update({"operator": "gte", "depth_m": int(m_gte.group(1)), "parse_status": "valid"})
             elif m_gt:
-                # 确保不是"不超过"被"超过"子串匹配
                 gt_start = m_gt.start()
                 prefix = user_message[max(0, gt_start - 1):gt_start]
                 if prefix == "不":
-                    depth_condition = {"operator": "lte", "depth_m": int(m_gt.group(1))}
+                    depth_condition.update({"operator": "lte", "depth_m": int(m_gt.group(1)), "parse_status": "valid"})
                 else:
-                    depth_condition = {"operator": "gt", "depth_m": int(m_gt.group(1))}
+                    depth_condition.update({"operator": "gt", "depth_m": int(m_gt.group(1)), "parse_status": "valid"})
             elif m_cap:
-                depth_condition = {"operator": "gte", "depth_m": int(m_cap.group(1))}
+                depth_condition.update({"operator": "gte", "depth_m": int(m_cap.group(1)), "parse_status": "valid"})
 
-            # 按名称匹配设备
+            # ── 2. 设备名称匹配 ──
+            generic_query_words = {"作业", "巡检", "水深", "深度", "机器人", "潜器", "设备", "型号", "能力", "参数", "下潜", "米", "1000", "500", "300", "工具"}
             matched_by_name = []
             for r in all_rovs:
                 targets = [r.get("full_name"), r.get("robot_class_name"), r.get("model")] + (r.get("aliases") or [])
-                if any(t and str(t).lower().replace(" ", "") in query_norm for t in targets if t):
-                    matched_by_name.append(r)
+                for t in targets:
+                    if not t:
+                        continue
+                    t_clean = str(t).lower().replace(" ", "")
+                    if t_clean in generic_query_words:
+                        continue
+                    if t_clean in query_norm:
+                        matched_by_name.append(r)
+                        break
 
-            # 按条件过滤
-            filtered = []
-            if depth_condition is not None:
+            # 检查问句是否指向特定未知设备（如"金牛座"）
+            known_device_terms = ["观察级", "工作级", "重载级", "拖拉机", "auv", "rov", "潜器", "机器人", "设备", "型号"]
+            has_unknown_device_name = False
+            if not matched_by_name:
+                m_dev_q = re.search(r"^([^能支持有包含哪些多少]+)(?:能|在|支持|可以|有)", query_norm)
+                if m_dev_q:
+                    prefix_term = m_dev_q.group(1)
+                    if not any(k in prefix_term for k in known_device_terms) and len(prefix_term) >= 2:
+                        has_unknown_device_name = True
+
+            # ── 3. 组合逻辑判断与结果构建 ──
+            results = []
+            list_keywords = ["哪些", "列表", "所有", "有哪些", "分类", "推荐", "选择"]
+            is_list_query = any(k in query_norm for k in list_keywords)
+
+            if matched_by_name:
+                query_mode = "device_check"
+            elif is_list_query:
+                query_mode = "device_list"
+            else:
+                query_mode = "device_check"
+                has_unknown_device_name = True
+
+            if query_mode == "device_check":
+                if has_unknown_device_name or not matched_by_name:
+                    base_resp["found"] = False
+                    base_resp["query_mode"] = "device_check"
+                    base_resp["depth_condition"] = depth_condition
+                    base_resp["results"] = []
+                    return base_resp
+
+                for r in matched_by_name:
+                    r_copy = dict(r)
+                    matches = True
+                    if depth_condition["parse_status"] == "valid":
+                        op = depth_condition["operator"]
+                        d = depth_condition["depth_m"]
+                        md = r.get("max_depth_m") or 0
+                        if op == "eq":
+                            matches = (md == d)
+                        elif op == "gte":
+                            matches = (md >= d)
+                        elif op == "gt":
+                            matches = (md > d)
+                        elif op == "lte":
+                            matches = (md <= d)
+                        elif op == "lt":
+                            matches = (md < d)
+                    r_copy["matches_depth_condition"] = matches
+                    results.append(r_copy)
+
+                base_resp["found"] = True
+                base_resp["query_mode"] = "device_check"
+                base_resp["depth_condition"] = depth_condition
+                base_resp["results"] = results
+                return base_resp
+
+            # query_mode == "device_list"
+            if depth_condition["has_depth_expression"] and depth_condition["parse_status"] == "invalid":
+                base_resp["found"] = False
+                base_resp["query_mode"] = "device_list"
+                base_resp["depth_condition"] = depth_condition
+                base_resp["results"] = []
+                return base_resp
+
+            if depth_condition["parse_status"] == "valid":
                 op = depth_condition["operator"]
                 d = depth_condition["depth_m"]
                 for r in all_rovs:
+                    r_copy = dict(r)
                     md = r.get("max_depth_m") or 0
+                    matches = False
                     if op == "eq" and md == d:
-                        filtered.append(r)
+                        matches = True
                     elif op == "gte" and md >= d:
-                        filtered.append(r)
+                        matches = True
                     elif op == "gt" and md > d:
-                        filtered.append(r)
+                        matches = True
                     elif op == "lte" and md <= d:
-                        filtered.append(r)
+                        matches = True
                     elif op == "lt" and md < d:
-                        filtered.append(r)
-            elif matched_by_name:
-                filtered = matched_by_name
-            elif any(kw in query_norm for kw in ["所有", "全部", "列表", "有哪些机器人", "有哪些rov", "有哪些潜器", "有哪些设备", "有哪些型号"]) or ("机器人" in query_norm and "有哪些" in query_norm):
-                filtered = all_rovs
-            else:
-                # 查询包含数字但未解析出条件 → 不退化成返回全部
-                has_depth_num = re.search(r"\d+\s*(?:米|m)", user_message, re.IGNORECASE)
-                if has_depth_num:
-                    filtered = []  # 解析失败不返回全部
-                else:
-                    filtered = []
+                        matches = True
 
-            found = bool(filtered)
+                    if matches:
+                        r_copy["matches_depth_condition"] = True
+                        results.append(r_copy)
 
-            results = [
-                {
-                    "full_name": r.get("full_name"),
-                    "robot_class": r.get("robot_class_name"),
-                    "max_depth_m": r.get("max_depth_m"),
-                    "capabilities": r.get("capabilities", []),
-                    "brief": r.get("brief", ""),
-                    "supported_payloads": r.get("supported_payloads", []),
-                    "fleet_unit_count": len(r.get("fleet_units", [])),
-                }
-                for r in filtered
-            ]
+                base_resp["found"] = bool(results)
+                base_resp["query_mode"] = "device_list"
+                base_resp["depth_condition"] = depth_condition
+                base_resp["results"] = results
+                return base_resp
+
+            # 没有深度表达 -> 返回全部
+            for r in all_rovs:
+                r_copy = dict(r)
+                r_copy["matches_depth_condition"] = True
+                results.append(r_copy)
+
+            base_resp["found"] = True
+            base_resp["query_mode"] = "device_list"
+            base_resp["depth_condition"] = depth_condition
             base_resp["results"] = results
-            base_resp["found"] = found
             return base_resp
 
         if query_type == "KNOWLEDGE_QA":

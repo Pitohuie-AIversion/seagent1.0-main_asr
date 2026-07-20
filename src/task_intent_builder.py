@@ -27,11 +27,15 @@ class TaskIntentBuilder:
         built_json: Dict[str, Any],
         mode: str,
         task_type_key: str,
+        intent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """纯内存构建 TaskIntent 字典，无磁盘副作用"""
-        today = get_current_datetime().strftime("%Y%m%d")
-        task_dir = get_task_dir(create=False)
-        intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
+        effective_intent_id = intent_id or built_json.get("intent_id") or task_state.get("intent_id")
+        if not effective_intent_id:
+            today = get_current_datetime().strftime("%Y%m%d")
+            task_dir = get_task_dir(create=False)
+            effective_intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
+        intent_id = effective_intent_id
 
         if mode == "emergency":
             priority = 1

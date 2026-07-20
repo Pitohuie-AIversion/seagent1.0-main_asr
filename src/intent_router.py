@@ -162,7 +162,16 @@ class IntentRouter:
         has_tool = any(e in msg.lower() for e in TOOL_ENTITIES)
 
         negation_cancel = ["不要取消", "别取消", "不能取消", "不放弃", "不终止"]
-        negation_confirm = ["不好", "不确认", "不要发布", "先别发布", "不能发布", "不要下发", "不发布", "不是"]
+        negation_confirm = ["不好", "不确认", "不要发布", "先别发布", "不能发布", "不要下发", "不发布", "不是", "不", "别", "不要"]
+
+        # ── 检查是否为显式修改表达 ──
+        update_verbs = ["改成", "改为", "变更为", "修改", "设置", "重置", "换成", "更名", "选择", "选用", "使用", "携带", "装载", "配备", "搭载", "带上", "把", "调整", "为", "由", "从", "到"]
+        slot_keywords = ["水深", "深度", "坐标", "经纬度", "支持船", "船", "工具", "抓手", "模式", "时间", "井口", "油田", "缆线", "摄像机", "声呐", "开线", "设备", "定位"]
+
+        has_explicit_upd = any(p in msg for p in EXPLICIT_UPDATE_PHRASES)
+        has_verb_and_slot = any(v in msg for v in update_verbs) and any(s in msg for s in slot_keywords)
+        has_num_slot = bool(re.search(r"(?:水深|深度|坐标|时间)?\s*\d+(?:\.\d+)?\s*(?:米|m)?", msg, re.IGNORECASE)) and any(v in msg for v in update_verbs)
+        is_modification_request = has_explicit_upd or has_verb_and_slot or has_num_slot
 
         # ── 1. 控制语义：取消 / 确认 ──
         explicit_cancel = ["取消当前任务", "放弃当前任务", "终止当前任务", "不要这个任务了", "取消任务", "放弃任务", "终止任务"]
@@ -183,18 +192,33 @@ class IntentRouter:
                 should_update_slots=False,
             )
 
-        explicit_confirm = ["确认发布", "确认下发", "发布任务", "确定发布", "确认继续", "确定继续", "忽略警告", "忽略", "确认开始", "确定开始"]
-        if phase in ("confirming", "blocked_soft"):
-            if (any(kw in msg for kw in explicit_confirm) or msg_clean in ("确认", "确定", "是的", "好", "可以", "继续")) and not any(nc in msg for nc in negation_confirm):
-                return IntentRouteResult(
-                    intent="TASK_CONFIRM",
-                    confidence=1.0,
-                    reason="用户在确认/软警告阶段确认发布或忽略软警告",
-                    source="rule",
-                    should_update_slots=False,
-                )
-        else:
-            if msg_clean in ("确认", "确定", "好的", "是的", "确认发布") and not task_state.get("task_type_key") and not any(nc in msg for nc in negation_confirm):
+        # 检查否定词逻辑（否定词 + 确认动词，或者以“不/别”开头的确认短语）
+        has_negation_on_confirm = any(nc in msg for nc in negation_confirm) or bool(re.search(r"(?:不|别|不要|不能|先别).*(?:发布|确认|下发|开始|继续|忽略)", msg))
+
+        # 如果包含参数修改动作，优先走修改/槽位处理，绝不判定为 TASK_CONFIRM
+        if not is_modification_request and not has_negation_on_confirm:
+            if phase == "blocked_soft":
+                blocked_soft_confirms = ["确认继续", "确定继续", "忽略警告", "忽略", "继续", "可以继续"]
+                if any(kw in msg for kw in blocked_soft_confirms) or msg_clean in ("确认", "确定", "继续", "忽略", "是的", "好", "可以"):
+                    return IntentRouteResult(
+                        intent="TASK_CONFIRM",
+                        confidence=1.0,
+                        reason="用户在软警告阶段选择忽略警告或继续",
+                        source="rule",
+                        should_update_slots=False,
+                    )
+            elif phase == "confirming":
+                confirming_confirms = ["确认发布", "确认下发", "确定发布", "确认开始", "确定开始"]
+                if any(kw in msg for kw in confirming_confirms) or msg_clean in ("确认", "确定", "确认发布", "确定发布"):
+                    return IntentRouteResult(
+                        intent="TASK_CONFIRM",
+                        confidence=1.0,
+                        reason="用户在确认阶段明确确认发布任务",
+                        source="rule",
+                        should_update_slots=False,
+                    )
+        if not phase in ("confirming", "blocked_soft"):
+            if msg_clean in ("确认", "确定", "好的", "是的", "确认发布") and not task_state.get("task_type_key") and not has_negation_on_confirm:
                 return IntentRouteResult(
                     intent="CLARIFICATION",
                     confidence=0.9,
@@ -253,7 +277,7 @@ class IntentRouter:
                 query_subtype="available_tools",
             )
 
-        if (is_q or any(kw in msg for kw in ["有哪些", "500米", "作业", "参数", "下潜", "列表"])) and has_dev and "当前任务有哪些参数" not in msg:
+        if (is_q or any(kw in msg for kw in ["有哪些", "500米", "1000米", "作业", "参数", "下潜", "列表"])) and (has_dev or "机器人" in msg or "rov" in msg.lower() or "潜器" in msg) and "当前任务有哪些参数" not in msg:
             return IntentRouteResult(
                 intent="DEVICE_CAPABILITY",
                 confidence=0.98,
@@ -306,13 +330,7 @@ class IntentRouter:
             )
 
         # ── 6. 明确任务修改 (动作门控 或 已有任务下填报) ──
-        update_verbs = ["改成", "改为", "变更为", "修改", "设置", "重置", "换成", "更名", "选择", "选用", "使用", "携带", "装载", "配备", "搭载", "带上", "把", "调整", "为", "由", "从", "到"]
-        slot_keywords = ["水深", "深度", "坐标", "经纬度", "支持船", "船", "工具", "抓手", "模式", "时间", "井口", "油田", "缆线", "摄像机", "声呐", "开线", "设备", "定位"]
-
-        has_explicit_upd = any(p in msg for p in EXPLICIT_UPDATE_PHRASES)
-        has_verb_and_slot = any(v in msg for v in update_verbs) and any(s in msg for s in slot_keywords)
-
-        if not is_q and (has_explicit_upd or (task_state.get("task_type_key") and has_verb_and_slot)):
+        if not is_q and (has_explicit_upd or (task_state.get("task_type_key") and (has_verb_and_slot or is_modification_request))):
             return IntentRouteResult(
                 intent="TASK_UPDATE",
                 confidence=0.95,
@@ -436,6 +454,15 @@ class IntentRouter:
             )
 
         query_subtype = parsed.get("query_subtype")
+        if query_subtype is not None:
+            if not isinstance(query_subtype, str):
+                logger.warning(f"[IntentRouter] Invalid type for query_subtype: {type(query_subtype)}")
+                return IntentRouteResult(
+                    intent="CLARIFICATION", confidence=0.0, reason="LLM query_subtype类型非法", source="llm", should_update_slots=False
+                )
+            query_subtype = query_subtype.strip()
+            if not query_subtype:
+                query_subtype = None
 
         if c_float < 0.6:
             return IntentRouteResult(

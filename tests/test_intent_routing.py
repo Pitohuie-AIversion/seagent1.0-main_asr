@@ -149,7 +149,7 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
             self.assertEqual(r.get("max_depth_m"), 500)
 
     def test_r15_kb_not_found_no_hallucination(self):
-        res = self.kb.execute_typed_query("DEVICE_CAPABILITY", "超光速神潜器9000")
+        res = self.kb.execute_typed_query("DEVICE_CAPABILITY", "超光速神潜器9000能在1000米作业吗？")
         self.assertFalse(res["found"])
         self.assertEqual(len(res["results"]), 0)
 
@@ -408,6 +408,14 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
             tmp_path.mkdir(parents=True, exist_ok=True)
             seed_complete_valid_pipeline_task(self.dm, self.kb)
             self.dm.phase = "confirming"
+
+            all_v = self.dm.validator.validate(self.dm.task_state)
+            for v in all_v:
+                if v.severity == "soft":
+                    for f in v.related_fields:
+                        val = self.dm.task_state.get(f)
+                        if val is not None:
+                            self.dm._soft_whitelist.add((f, str(val), v.constraint_id))
 
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
                  patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)), \
