@@ -296,7 +296,15 @@ def api_asr():
             "segments": result["segments"],
         })
     except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
+        logging.error(f"ASR processing exception: {e}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "error": "ASRProcessingError",
+            "msg": "语音识别服务异常，请稍后重试。",
+            "request_id": req_id,
+            "retryable": True
+        }), 500
 
 from src.slot_store import SlotVersionConflict
 from src.exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
@@ -309,7 +317,14 @@ def api_chat():
         request_id = data.get("request_id") or f"req_{uuid.uuid4().hex[:8]}"
         msg = data.get("message", "").strip()
         if not msg:
-            return jsonify({"code": 400, "error": "empty message", "msg": "Message content cannot be empty."}), 400
+            return jsonify({
+                "ok": False,
+                "code": 400,
+                "error": "EmptyMessage",
+                "msg": "消息内容不能为空。",
+                "request_id": request_id,
+                "retryable": False
+            }), 400
 
         mgr = get_or_create_manager(sid)
 

@@ -34,7 +34,12 @@ from .extractor import ParameterExtractor, MUTATING_INTENTS, NON_MUTATING_INTENT
 from .normalizer import FieldNormalizer
 from .output_builder import OutputBuilder
 from .validator import TaskValidator, Violation
-from .prompts import build_responder_messages
+from .prompts import (
+    build_responder_messages,
+    build_general_chat_messages,
+    build_knowledge_responder_messages,
+    build_status_responder_messages,
+)
 from .task_intent_builder import TaskIntentBuilder
 from .simulated_time import get_current_datetime
 from .time_context import get_time_context, is_standalone_time_query
@@ -42,6 +47,7 @@ from .coord_parser import parse_coordinate_updates
 from .oilfield_linker import OilfieldEntityLinker
 from .exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
 from .slot_store import SlotStore, Slot
+from .intent_router import IntentRouter, IntentRouteResult
 
 HARD_REFUSAL_LIMIT = 4   # 连续拒绝上限
 
@@ -79,6 +85,7 @@ class DialogueManager:
         self.builder = OutputBuilder(kb)
         self.validator = TaskValidator(kb)
         self.oilfield_linker = OilfieldEntityLinker(kb.environment)
+        self.intent_router = IntentRouter(llm)
 
         # 对话核心状态
         self.conversation_history: list[dict] = []
@@ -113,6 +120,116 @@ class DialogueManager:
         with self._session_lock:
             return self._process_internal(user_message, request_id)
 
+    def _handle_non_task_route(self, user_message: str, route: IntentRouteResult, request_id: str) -> str:
+        # 1. 记录前置快照镜像（用于严格的只读状态不变性断言）
+        initial_version = self.slot_store.version
+        initial_snapshot = copy.deepcopy(self.slot_store.export_snapshot())
+        initial_unresolved = list(self.slot_store.unresolved)
+        initial_task_state = copy.deepcopy(self.task_state)
+        initial_built_json = copy.deepcopy(self._last_built_json)
+        initial_missing = copy.deepcopy(self._last_missing)
+        initial_phase = self.phase
+        initial_mode = self.mode
+        initial_rov_candidates = copy.deepcopy(self._pending_rov_candidates)
+
+        if route.intent == "TASK_CANCEL":
+            self.phase = "rejected"
+            reply = "收到指令，已为您取消当前水下作业任务。如需开启新任务，请随时告诉我。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        if route.intent in ("TOOL_QUERY", "DEVICE_CAPABILITY", "KNOWLEDGE_QA"):
+            reply = self._handle_knowledge_query(user_message, route)
+        elif route.intent in ("TASK_STATUS", "DEVICE_STATUS", "ENVIRONMENT_QUERY"):
+            reply = self._handle_status_query(user_message, route)
+        elif route.intent == "GENERAL_CHAT":
+            reply = self._handle_general_chat(user_message, route)
+        elif route.intent in ("CLARIFICATION", "UNKNOWN"):
+            reply = self._handle_unknown_intent(user_message, route)
+        else:
+            reply = self._handle_unknown_intent(user_message, route)
+
+        self.conversation_history.append({"role": "user", "content": user_message})
+        self.conversation_history.append({"role": "assistant", "content": reply})
+
+        # 2. 状态不变性断言与校验
+        v_ok = (self.slot_store.version == initial_version)
+        s_ok = (self.slot_store.export_snapshot() == initial_snapshot)
+        u_ok = (self.slot_store.unresolved == initial_unresolved)
+        t_ok = (self.task_state == initial_task_state)
+        b_ok = (self._last_built_json == initial_built_json)
+        m_ok = (self._last_missing == initial_missing)
+        p_ok = (self.phase == initial_phase)
+        mo_ok = (self.mode == initial_mode)
+        r_ok = (self._pending_rov_candidates == initial_rov_candidates)
+
+        if not (v_ok and s_ok and u_ok and t_ok and b_ok and m_ok and p_ok and mo_ok and r_ok):
+            logger.critical(
+                f"[CRITICAL] State invariance violation in non-task route '{route.intent}'! "
+                f"ver_ok={v_ok}, snap_ok={s_ok}, unres_ok={u_ok}, state_ok={t_ok}, built_ok={b_ok}, miss_ok={m_ok}"
+            )
+            raise RuntimeError(f"State invariance violation in non-task route {route.intent}")
+
+        return reply
+
+    def _handle_knowledge_query(self, user_message: str, route: IntentRouteResult) -> str:
+        kb_evidence = self.kb.execute_typed_query(route.intent, user_message)
+        messages = build_knowledge_responder_messages(kb_evidence, self.conversation_history, user_message)
+        reply = self.llm.generate(messages, temperature=0.1)
+        if not reply or not reply.strip():
+            if not kb_evidence.get("found"):
+                return "当前知识库未提供该信息。"
+            return "收到您的知识查询，但知识库中暂未找到匹配的条目。"
+        return self.llm.filter_reply(reply)
+
+    def _handle_status_query(self, user_message: str, route: IntentRouteResult) -> str:
+        if route.intent == "TASK_STATUS":
+            status_evidence = {
+                "query_type": "TASK_STATUS",
+                "phase": self.phase,
+                "mode": self.mode,
+                "task_type": self.task_state.get("task_type", "(未确定)"),
+                "collected_slots": self._last_built_json,
+                "missing_slots": [m.get("label") for m in self._last_missing if isinstance(m, dict)],
+                "found": True,
+            }
+        else:
+            equipment = self.task_state.get("equipment_name") or self.task_state.get("equipment_type")
+            coords = self.task_state.get("start_point") or self.task_state.get("oilfield_coordinates")
+            has_realtime = False
+            state_dict = None
+            if equipment and route.intent == "DEVICE_STATUS":
+                state_dict = self.kb.get_robot_state_dict(equipment)
+                if state_dict and any(v is not None for v in state_dict.values()):
+                    has_realtime = True
+
+            if has_realtime:
+                status_evidence = {
+                    "query_type": route.intent,
+                    "target": equipment,
+                    "state_data": state_dict,
+                    "found": True,
+                }
+            else:
+                return "当前实时状态源尚未建立或暂时不可用，无法确认设备/环境的最新状态。"
+
+        messages = build_status_responder_messages(status_evidence, self.conversation_history, user_message)
+        reply = self.llm.generate(messages, temperature=0.1)
+        if not reply or not reply.strip():
+            return f"当前任务处于【{self.phase}】阶段，已收集 {len(self._last_built_json)} 个字段。"
+        return self.llm.filter_reply(reply)
+
+    def _handle_general_chat(self, user_message: str, route: IntentRouteResult) -> str:
+        messages = build_general_chat_messages(self.conversation_history, user_message)
+        reply = self.llm.generate(messages, temperature=0.7)
+        if not reply or not reply.strip():
+            reply = "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
+        return self.llm.filter_reply(reply)
+
+    def _handle_unknown_intent(self, user_message: str, route: IntentRouteResult) -> str:
+        return "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数，还是查询设备工具与系统功能？"
+
     def _process_internal(self, user_message: str, request_id: str = "req_default") -> str:
         old_phase = self.phase
 
@@ -133,6 +250,18 @@ class DialogueManager:
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": pending_reply})
             return pending_reply
+
+        # ── 独立意图路由分流阶段 ──
+        route = self.intent_router.route(
+            user_message=user_message,
+            conversation_history=self.conversation_history,
+            task_state=self.task_state,
+            phase=self.phase,
+        )
+
+        if not route.should_update_slots and route.intent not in ("TASK_CREATE", "TASK_UPDATE"):
+            if not (route.intent == "TASK_CONFIRM" and self.phase == "confirming"):
+                return self._handle_non_task_route(user_message, route, request_id)
 
         # 3. Parameter Extraction & Processing Pipeline (Atomic Transaction with Optimistic Lock)
         new_slots, new_unresolved, expected_version = self.slot_store.snapshot()

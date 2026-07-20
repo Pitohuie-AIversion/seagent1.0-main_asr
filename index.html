@@ -2236,7 +2236,31 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ session_id: sessionId, message: msg, source })
         });
-        const data = await res.json();
+
+        let rawText = '';
+        try {
+          rawText = await res.text();
+        } catch (e) {
+          addMessage('bot', `响应读取失败 (HTTP ${res.status})`);
+          return;
+        }
+
+        let data = {};
+        try {
+          data = JSON.parse(rawText);
+        } catch (e) {
+          addMessage('bot', `服务响应非标准格式 (HTTP ${res.status})`);
+          return;
+        }
+
+        if (!res.ok || data.ok === false || (data.code && data.code !== 200)) {
+          const errMsg = data.msg || data.message || '请求处理异常';
+          const reqId = data.request_id ? ` [request_id: ${data.request_id}]` : '';
+          const retryHint = data.retryable ? ' (可尝试重试)' : '';
+          addMessage('bot', `⛔ 错误 (${data.error || 'ServerErr'}): ${errMsg}${reqId}${retryHint}`);
+          return;
+        }
+
         if (!sessionId && data.session_id) sessionId = data.session_id;
 
         if (data.reply) {

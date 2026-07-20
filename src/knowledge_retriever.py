@@ -611,3 +611,92 @@ class KnowledgeBase:
             if isinstance(state, dict):
                 return state
         return empty_state
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # ✅ 专属强类型只读查询接口
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def execute_typed_query(self, query_type: str, user_message: str) -> dict[str, Any]:
+        """
+        返回标准强类型查询结果字典：
+        {
+          "query_type": "DEVICE_CAPABILITY",
+          "results": [...],
+          "found": True/False,
+          "source": "knowledge_base",
+          "version": "kb_version_1.0",
+          "updated_at": "ISO-8601"
+        }
+        """
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        base_resp = {
+            "query_type": query_type,
+            "results": [],
+            "found": False,
+            "source": "knowledge_base",
+            "version": "kb_1.0",
+            "updated_at": now_iso,
+        }
+
+        if query_type == "TOOL_QUERY":
+            all_rovs = self.get_all_rovs()
+            tool_set: set[str] = set()
+            rov_tool_map: list[dict] = []
+            for r in all_rovs:
+                payloads = r.get("supported_payloads", [])
+                for p in payloads:
+                    tool_set.add(p)
+                rov_tool_map.append({
+                    "equipment_type": r.get("full_name"),
+                    "robot_class": r.get("robot_class_name"),
+                    "supported_payloads": payloads,
+                })
+            task_payloads = self.assets.get("payload_options", {})
+            results = [
+                {"category": "all_supported_tools", "tools": sorted(tool_set)},
+                {"category": "equipment_payload_mapping", "mappings": rov_tool_map},
+                {"category": "task_payload_suggestions", "task_suggestions": task_payloads},
+            ]
+            base_resp["results"] = results
+            base_resp["found"] = bool(tool_set or task_payloads)
+            return base_resp
+
+        if query_type == "DEVICE_CAPABILITY":
+            all_rovs = self.get_all_rovs()
+            query_norm = user_message.lower().replace(" ", "")
+            matched_rovs = []
+            for r in all_rovs:
+                targets = [r.get("full_name"), r.get("robot_class_name"), r.get("model")] + r.get("aliases", [])
+                if any(t and str(t).lower().replace(" ", "") in query_norm for t in targets):
+                    matched_rovs.append(r)
+
+            # 如果没有特别指定某种型号，返回全部型号概览
+            target_list = matched_rovs if matched_rovs else all_rovs
+            results = [
+                {
+                    "full_name": r.get("full_name"),
+                    "robot_class": r.get("robot_class_name"),
+                    "max_depth_m": r.get("max_depth_m"),
+                    "capabilities": r.get("capabilities", []),
+                    "brief": r.get("brief", ""),
+                    "supported_payloads": r.get("supported_payloads", []),
+                    "fleet_unit_count": len(r.get("fleet_units", [])),
+                }
+                for r in target_list
+            ]
+            base_resp["results"] = results
+            base_resp["found"] = bool(results)
+            return base_resp
+
+        if query_type == "KNOWLEDGE_QA":
+            results = [
+                {"category": "task_templates", "templates": self.task_schemas.get("task_templates", {})},
+                {"category": "cable_types", "cable_types": self.assets.get("cable_types", [])},
+                {"category": "vessels", "vessels": self.assets.get("vessels", [])},
+            ]
+            base_resp["results"] = results
+            base_resp["found"] = True
+            return base_resp
+
+        return base_resp
