@@ -17,6 +17,7 @@ import web_backend
 
 class DummyLLM(LLMClient):
     def __init__(self, default_reply: str = "默认LLM测试回复"):
+        self.llm = None
         self.default_reply = default_reply
         self.called_chats = []
 
@@ -59,7 +60,8 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
         reply = self.dm.process("500米级机器人有哪些？")
         v_after = self.dm.slot_store.version
         self.assertEqual(v_before, v_after)
-        self.assertIsNone(self.dm.slot_store.get_slot_value("water_depth"))
+        wd_slot = self.dm.slot_store.slots.get("water_depth")
+        self.assertTrue(wd_slot is None or wd_slot.value is None)
 
     # 5. “当前机器人状态怎么样？” → DEVICE_STATUS
     def test_05_device_status_routing(self):
@@ -167,7 +169,7 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
     # 23. /api/chat 异常结构正确
     def test_23_api_chat_exception_structured_response(self):
         client = web_backend.app.test_client()
-        with patch.object(web_backend._sessions_manager, 'get', side_effect=RuntimeError("Test crash")):
+        with patch.object(web_backend, 'get_or_create_manager', side_effect=RuntimeError("Test crash")):
             res = client.post("/api/chat", json={"session_id": "err_sess", "message": "创建一个巡检任务"})
             self.assertEqual(res.status_code, 500)
             data = res.get_json()

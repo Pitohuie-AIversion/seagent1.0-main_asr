@@ -15,6 +15,7 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+from typing import Any
 import websockets
 
 PORT = 8890
@@ -137,8 +138,9 @@ class CDPClient:
 
                 elif method == "Log.entryAdded":
                     entry = msg.get("params", {}).get("entry", {})
-                    if entry.get("level") == "error":
-                        self.uncaught_exceptions.append(f"[Log.error] {entry.get('text')}")
+                    txt = str(entry.get("text", ""))
+                    if entry.get("level") == "error" and "favicon.ico" not in txt:
+                        self.uncaught_exceptions.append(f"[Log.error] {txt}")
         except Exception:
             pass
 
@@ -207,7 +209,9 @@ async def run_e2e():
         await client.connect()
 
         await client.navigate(f"http://localhost:{PORT}/")
+        await asyncio.sleep(1)
         await client.eval_js("localStorage.clear(); sessionStorage.clear();")
+        await client.wait_for_condition("!document.querySelector('#sendBtn').disabled", timeout=5.0)
 
         # Step 1: Check page title
         title = await client.eval_js("document.title")
