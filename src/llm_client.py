@@ -93,11 +93,11 @@ class LLMClient:
                 }
 
             # 2. UNKNOWN handling
-            if user_msg_strip in ["测试未识别内容", "fdjskfjsd", "???"] or "不可理解" in user_msg or "乱码" in user_msg:
+            if user_msg_strip in ["测试未识别内容", "fdjskfjsd", "???"] or "不可理解" in user_msg or "无法理解" in user_msg or "乱码" in user_msg:
                 return {
                     "intent": "UNKNOWN",
                     "slot_candidates": [],
-                    "unresolved": ["测试未识别内容"] if "测试未识别" in user_msg else []
+                    "unresolved": [user_msg_strip]
                 }
 
             res = {}
@@ -272,6 +272,19 @@ class LLMClient:
                     }
                     return dict_map.get(user_msg.strip(), f"[Translation] {user_msg.strip()}")
                 return user_msg.strip()
+
+            if "【知识库强类型检索证据】" in system_content:
+                parts = system_content.split("【知识库强类型检索证据】")
+                evidence_snippet = parts[1].strip() if len(parts) > 1 else ""
+                return f"根据知识库提供的证据信息：\n{evidence_snippet[:300]}"
+
+            if "【权威状态证据】" in system_content:
+                parts = system_content.split("【权威状态证据】")
+                evidence_snippet = parts[1].strip() if len(parts) > 1 else ""
+                return f"根据当前权威状态证据：\n{evidence_snippet[:300]}"
+
+            if "专业的水下多智能体任务规划与决策系统助手" in system_content:
+                return "您好！我是水下多智能体任务决策大模型。我可以协助您规划水下作业任务、查询设备能力与工具、并进行可行性校验。"
 
             if any(kw in user_msg for kw in ["取消", "放弃", "不要了", "终止", "退出"]):
                 return "任务已取消。如需重新规划，请重新开始。"

@@ -225,6 +225,11 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/favicon.ico")
+def favicon():
+    return "", 204
+
+
 @app.route("/api/asr", methods=["POST"])
 def api_asr():
     req_id = f"req_{uuid.uuid4().hex[:8]}"
@@ -432,6 +437,34 @@ def api_reset():
         with _sess_lock:
             _sessions.pop(sid, None)
     return jsonify({"ok": True})
+
+
+@app.route("/api/session/state", methods=["GET"])
+def get_session_state():
+    sid = request.args.get("session_id")
+    if not sid:
+        return jsonify({"ok": False, "code": 400, "error": "MissingSessionId", "msg": "session_id 不能为空", "retryable": False}), 400
+
+    with _sessions_lock:
+        mgr = _sessions_manager.get(sid)
+
+    if not mgr:
+        return jsonify({"ok": True, "code": 200, "exists": False}), 200
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "exists": True,
+        "session_id": sid,
+        "done": mgr.phase == "done",
+        "rejected": mgr.phase == "rejected",
+        "collected": mgr._last_built_json,
+        "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
+        "task_type": mgr.task_state.get("task_type_key"),
+        "emergency": mgr.mode == "emergency",
+        "history": mgr.conversation_history,
+        "final_json": mgr._last_built_json if mgr.phase == "done" else None
+    })
 
 
 import re as _re_module

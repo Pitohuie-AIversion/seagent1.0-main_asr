@@ -671,8 +671,16 @@ class KnowledgeBase:
                 if any(t and str(t).lower().replace(" ", "") in query_norm for t in targets):
                     matched_rovs.append(r)
 
-            # 如果没有特别指定某种型号，返回全部型号概览
-            target_list = matched_rovs if matched_rovs else all_rovs
+            if matched_rovs:
+                target_list = matched_rovs
+                found = True
+            elif any(kw in query_norm for kw in ["哪些", "有什么", "推荐", "可以", "型号", "设备", "介绍"]):
+                target_list = all_rovs
+                found = True
+            else:
+                target_list = []
+                found = False
+
             results = [
                 {
                     "full_name": r.get("full_name"),
@@ -686,7 +694,7 @@ class KnowledgeBase:
                 for r in target_list
             ]
             base_resp["results"] = results
-            base_resp["found"] = bool(results)
+            base_resp["found"] = found
             return base_resp
 
         if query_type == "KNOWLEDGE_QA":

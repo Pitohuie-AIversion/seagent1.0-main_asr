@@ -673,7 +673,7 @@ class DialogueManager:
             slot_snapshot=self.slot_store.get_slot_snapshot(),
         )
         reply = self.llm.chat(messages, temperature=0.7, max_tokens=1500)
-        reply = self.llm.filter_reply(reply, temperature=0.1, max_tokens=1500)
+        reply = self.llm.filter_reply(reply)
 
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": reply})
