@@ -80,9 +80,9 @@ CREATE_ACTION_PHRASES = [
 ]
 
 EXPLICIT_UPDATE_PHRASES = [
-    "把水深改成", "水深改成", "水深设为", "水深为", "水深修改为", "请将支持船换成", "支持船换成",
+    "把水深改成", "水深改成", "水深设为", "水深修改为", "请将支持船换成", "支持船换成",
     "设置开始时间为", "开始时间设为", "帮我选择", "选择观察级", "将坐标修改为", "坐标修改为", "定位在",
-    "把开始时间改为", "模式切换为", "工具更换为", "水深深度为", "水深由", "把水深从", "水深从", "改为", "变更为"
+    "把开始时间改为", "模式切换为", "工具更换为", "水深深度为", "把水深从", "改为", "变更为"
 ]
 
 DEVICE_ENTITIES = ["机器人", "rov", "auv", "潜器", "设备", "型号", "工作级", "观察级", "拖拉机", "深海机器人"]
@@ -110,11 +110,28 @@ class IntentRouteResult:
 
 
 class IntentRouter:
-    def __init__(self, llm: LLMClient, device_terms: set[str] | None = None):
+    def __init__(self, llm: LLMClient, device_terms: set[str] | Any | None = None):
         self.llm = llm
-        self.device_terms = device_terms
-        self.ambiguous_device_terms: set[str] | None = None
-        self.device_alias_index: dict[str, list[str]] | None = None
+        if hasattr(device_terms, "get_device_alias_index"):
+            try:
+                self.device_alias_index = device_terms.get_device_alias_index()
+                self.ambiguous_device_terms = device_terms.get_ambiguous_device_terms()
+                self.device_terms = device_terms.get_all_device_terms()
+            except Exception:
+                self.device_terms = None
+                self.ambiguous_device_terms = None
+                self.device_alias_index = None
+        else:
+            try:
+                from .knowledge_retriever import KnowledgeBase
+                _kb = KnowledgeBase()
+                self.device_alias_index = _kb.get_device_alias_index()
+                self.ambiguous_device_terms = _kb.get_ambiguous_device_terms()
+                self.device_terms = _kb.get_all_device_terms()
+            except Exception:
+                self.device_terms = device_terms if isinstance(device_terms, set) else None
+                self.ambiguous_device_terms = set()
+                self.device_alias_index = {}
 
     def route(
         self,
@@ -193,13 +210,13 @@ class IntentRouter:
                 should_update_slots=False,
             )
 
-        # ── 检查是否为显式修改表达 ──
-        update_verbs = ["改成", "改为", "变更为", "修改", "设置", "重置", "换成", "更换", "更换为", "换", "更名", "选择", "选用", "使用", "携带", "装载", "配备", "搭载", "带上", "把", "调整", "为", "由", "从", "到"]
+        # ── 检查是否为显式修改表达（禁止以“为、由、从、到”单字子串直接断定修改）──
+        update_verbs = ["改成", "改为", "变更为", "修改", "设置", "设定", "重置", "换成", "更换", "更换为", "换", "更名", "选择", "选用", "使用", "携带", "装载", "配备", "搭载", "带上", "把", "调整", "更新", "变更", "替换"]
         slot_keywords = ["水深", "深度", "坐标", "经纬度", "支持船", "船", "工具", "抓手", "载荷", "模式", "时间", "井口", "油田", "缆线", "摄像机", "声呐", "开线", "设备", "定位", "机器人"]
 
-        has_explicit_upd = any(p in msg for p in EXPLICIT_UPDATE_PHRASES)
+        has_explicit_upd = any(p in msg for p in EXPLICIT_UPDATE_PHRASES) or bool(re.search(r"(?:调整到|改到|变更为|设置为|修改为|从\d+.*改到\d+)", msg)) or (bool(re.search(r"(?:确认)?(?:水深|支持船|坐标|模式|时间|载荷|机器人|设备)\s*(?:为|是(?![:：]?\s*(?:多少|什么|哪|几))|设为|改成|改为|改到)", msg)) and "为什么" not in msg)
         has_verb_and_slot = any(v in msg for v in update_verbs) and any(s in msg for s in slot_keywords)
-        has_num_slot = bool(re.search(r"(?:水深|深度|坐标|时间)?\s*\d+(?:\.\d+)?\s*(?:米|m)?", msg, re.IGNORECASE)) and any(v in msg for v in update_verbs)
+        has_num_slot = bool(re.search(r"(?:水深|深度|坐标|时间)?\s*\d+(?:\.\d+)?\s*(?:米|m)?", msg, re.IGNORECASE)) and any(v in msg for v in ["改成", "改为", "变更为", "修改", "设置", "设定", "重置", "换成", "更换", "更换为", "调整到", "改到", "设置为"])
         has_cancel_slot = "取消" in msg and any(s in msg for s in slot_keywords)
         is_modification_request = has_explicit_upd or has_verb_and_slot or has_num_slot or has_cancel_slot
 
