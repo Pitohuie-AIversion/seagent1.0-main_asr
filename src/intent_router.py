@@ -194,14 +194,19 @@ class IntentRouter:
             )
 
         # ── 检查是否为显式修改表达 ──
-        update_verbs = ["改成", "改为", "变更为", "修改", "设置", "重置", "换成", "更名", "选择", "选用", "使用", "携带", "装载", "配备", "搭载", "带上", "把", "调整", "为", "由", "从", "到"]
-        slot_keywords = ["水深", "深度", "坐标", "经纬度", "支持船", "船", "工具", "抓手", "载荷", "模式", "时间", "井口", "油田", "缆线", "摄像机", "声呐", "开线", "设备", "定位"]
+        update_verbs = ["改成", "改为", "变更为", "修改", "设置", "重置", "换成", "更换", "更换为", "换", "更名", "选择", "选用", "使用", "携带", "装载", "配备", "搭载", "带上", "把", "调整", "为", "由", "从", "到"]
+        slot_keywords = ["水深", "深度", "坐标", "经纬度", "支持船", "船", "工具", "抓手", "载荷", "模式", "时间", "井口", "油田", "缆线", "摄像机", "声呐", "开线", "设备", "定位", "机器人"]
 
         has_explicit_upd = any(p in msg for p in EXPLICIT_UPDATE_PHRASES)
         has_verb_and_slot = any(v in msg for v in update_verbs) and any(s in msg for s in slot_keywords)
         has_num_slot = bool(re.search(r"(?:水深|深度|坐标|时间)?\s*\d+(?:\.\d+)?\s*(?:米|m)?", msg, re.IGNORECASE)) and any(v in msg for v in update_verbs)
         has_cancel_slot = "取消" in msg and any(s in msg for s in slot_keywords)
         is_modification_request = has_explicit_upd or has_verb_and_slot or has_num_slot or has_cancel_slot
+
+        has_create_act = any(p in msg for p in CREATE_ACTION_PHRASES) or (
+            any(v in msg for v in ["创建", "新建", "开展", "开始规划", "执行"]) and any(e in msg for e in ["任务", "巡检", "插拔", "管缆"])
+        )
+
         if phase in ("blocked_hard", "blocked_soft", "confirming", "collecting") and msg_clean in ("取消", "放弃", "不要了", "终止", "退出") and not any(nc in msg for nc in negation_cancel):
             return IntentRouteResult(
                 intent="TASK_CANCEL",
@@ -246,7 +251,38 @@ class IntentRouter:
                     should_update_slots=False,
                 )
 
-        # ── 2. 状态查询 ──
+        # ── 2. 明确任务创建 (优先于别名查询) ──
+        if has_create_act and not is_q:
+            return IntentRouteResult(
+                intent="TASK_CREATE",
+                confidence=0.95,
+                reason="规则识别到显式任务创建动作指令",
+                source="rule",
+                should_update_slots=True,
+            )
+
+        # ── 3. 明确任务修改 (优先于别名查询) ──
+        if not is_q and (has_explicit_upd or is_modification_request or (task_state.get("task_type_key") and has_verb_and_slot)):
+            return IntentRouteResult(
+                intent="TASK_UPDATE",
+                confidence=0.95,
+                reason="规则识别到具体参数修改或已有任务下的槽位填报",
+                source="rule",
+                should_update_slots=True,
+            )
+
+        # 用户正在回答系统明确询问的 missing expected_slot
+        if expected_slots and not is_q:
+            if self._matches_expected_slot(msg, expected_slots):
+                return IntentRouteResult(
+                    intent="TASK_UPDATE",
+                    confidence=0.95,
+                    reason="用户正在精准回答系统当前提问的缺失槽位",
+                    source="rule",
+                    should_update_slots=True,
+                )
+
+        # ── 4. 状态查询 ──
         if any(kw in msg for kw in ["当前任务有哪些参数", "当前任务填了什么", "当前任务还缺什么", "当前任务进行到哪一步", "当前任务是否可以发布", "任务进度", "当前任务状态", "任务填到哪了", "进度如何"]):
             return IntentRouteResult(
                 intent="TASK_STATUS",
@@ -275,7 +311,7 @@ class IntentRouter:
                 query_subtype="environment",
             )
 
-        # ── 3. 业务知识与查询 (KNOWLEDGE_QA, TOOL_QUERY, DEVICE_CAPABILITY) ──
+        # ── 5. 业务知识与查询 (KNOWLEDGE_QA, TOOL_QUERY, DEVICE_CAPABILITY) ──
         if any(kw in msg for kw in ["管缆巡检任务需要哪些参数", "管缆巡检需要哪些参数", "必填字段", "作业规则", "管缆如何分类", "管道分类", "管缆类型", "任务模板"]):
             return IntentRouteResult(
                 intent="KNOWLEDGE_QA",
@@ -305,10 +341,10 @@ class IntentRouter:
         )
         device_cap_keywords = ["能在", "作业", "水深", "下潜", "设备", "参数", "能力", "支持", "最大水深"]
         has_cap_kw = is_q or any(kw in msg for kw in device_cap_keywords) or is_device_cap_pattern
-        is_device_cap_context = has_cap_kw and "当前任务有哪些参数" not in msg and not is_modification_request
+        is_device_cap_context = has_cap_kw and "当前任务有哪些参数" not in msg and not is_modification_request and not has_create_act
 
-        # ── 动态设备别名最长匹配优先路由 ──
-        if self.device_alias_index:
+        # ── 6. 动态设备别名最长匹配优先路由 (仅在设备能力查询语境且非修改/创建指令时触发) ──
+        if is_device_cap_context and not is_modification_request and not has_create_act and self.device_alias_index:
             matched_aliases = []
             for alias, dev_ids in self.device_alias_index.items():
                 if not alias:
@@ -342,7 +378,7 @@ class IntentRouter:
                         query_subtype="device_capabilities",
                     )
 
-        if (has_dev or is_device_cap_pattern) and is_device_cap_context:
+        if (has_dev or is_device_cap_pattern) and is_device_cap_context and not is_modification_request and not has_create_act:
             return IntentRouteResult(
                 intent="DEVICE_CAPABILITY",
                 confidence=0.98,
@@ -352,7 +388,19 @@ class IntentRouter:
                 query_subtype="device_capabilities",
             )
 
-        # ── 4. 普通对话与问候 ──
+        # ── 7. 无任务上下文时独立输入设备别名 → 澄清 ──
+        if self.device_alias_index and not is_modification_request and not has_create_act and not is_q and not expected_slots and not task_state.get("task_type_key"):
+            for alias in self.device_alias_index:
+                if alias and alias.lower() in msg_clean:
+                    return IntentRouteResult(
+                        intent="CLARIFICATION",
+                        confidence=0.9,
+                        reason=f"独立输入设备别名'{alias}'，无任务上下文或具体动词，引导用户说明具体操作",
+                        source="rule",
+                        should_update_slots=False,
+                    )
+
+        # ── 8. 普通对话与问候 ──
         if any(kw in msg_clean for kw in ["谢谢", "多谢", "感谢", "thx", "thanks"]):
             return IntentRouteResult(
                 intent="GENERAL_CHAT",
@@ -406,7 +454,7 @@ class IntentRouter:
 
         # 用户正在回答系统明确询问的 missing expected_slot
         if expected_slots and not is_q:
-            if self._matches_expected_slot(msg, expected_slots):
+            if self._matches_expected_slot(msg, expected_slots, self.device_alias_index):
                 return IntentRouteResult(
                     intent="TASK_UPDATE",
                     confidence=0.95,
@@ -428,7 +476,7 @@ class IntentRouter:
         return None
 
     @staticmethod
-    def _matches_expected_slot(msg: str, expected_slots: list[str]) -> bool:
+    def _matches_expected_slot(msg: str, expected_slots: list[str], device_alias_index: dict | None = None) -> bool:
         msg_s = msg.strip()
         for slot in expected_slots:
             if slot == "water_depth":
@@ -440,9 +488,13 @@ class IntentRouter:
             elif slot in ("start_point", "end_point", "oilfield_coordinates"):
                 if ("北纬" in msg_s and "东经" in msg_s) or re.search(r"\d+\.\d+.*,\s*\d+\.\d+", msg_s):
                     return True
-            elif slot in ("equipment_type", "equipment_name"):
-                if any(kw in msg_s.lower() for kw in ["rov", "auv", "重载", "观察级", "工作级", "机器人"]):
+            elif slot in ("equipment_type", "equipment_name", "robot_id", "robot", "equipment"):
+                if any(kw in msg_s.lower() for kw in ["rov", "auv", "重载", "观察级", "工作级", "机器人", "金牛座", "天鹰座", "御夫座", "凤凰座", "crawler", "wrov"]):
                     return True
+                if device_alias_index:
+                    for alias in device_alias_index:
+                        if alias and alias.lower() in msg_s.lower():
+                            return True
             elif slot == "support_vessel":
                 if any(kw in msg_s for kw in ["船", "海洋石油", "勘探", "号"]):
                     return True

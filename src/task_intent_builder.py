@@ -3,6 +3,7 @@ task_intent_builder.py — 生成符合 TaskIntent 规范的 JSON 文件
 """
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -153,7 +154,7 @@ class TaskIntentBuilder:
             raise TaskPersistenceError(f"Failed to create staging file for {intent_id}: {e}") from e
 
     def publish_staging(self, staging_file: Path | str, intent: Dict[str, Any]) -> str:
-        """使用 os.link 原子 no-clobber 发布 staging 临时文件为正式 JSON 文件；验证来源与防冒充"""
+        """使用 os.link 原子 no-clobber 发布 staging 临时文件为正式 JSON 文件；验证来源、文件名与内容防冒充"""
         if not isinstance(intent, dict):
             raise TaskPersistenceError("intent must be a dictionary")
         intent_id = intent.get("intent_id")
@@ -193,12 +194,50 @@ class TaskIntentBuilder:
                 f"Staging file {resolved_staging} is not located directly inside task_dir {resolved_task_dir}"
             )
 
-        # 5. 验证文件名符合 task_intent_{intent_id}.staging_<suffix> 模式
-        expected_prefix = f"task_intent_{intent_id}.staging_"
-        if not staging_path.name.startswith(expected_prefix):
+        # 5. 验证文件名精确符合 ^task_intent_{re.escape(intent_id)}\.staging_[0-9]+_[0-9]+_[0-9a-f]{8}$ 正则格式
+        expected_pattern = rf"^task_intent_{re.escape(intent_id)}\.staging_[0-9]+_[0-9]+_[0-9a-f]{{8}}$"
+        if not re.fullmatch(expected_pattern, staging_path.name):
             raise TaskPersistenceError(
-                f"Staging filename '{staging_path.name}' does not match expected prefix '{expected_prefix}' for intent_id '{intent_id}'"
+                f"Staging filename '{staging_path.name}' does not match controlled format pattern for intent_id '{intent_id}'"
             )
+
+        # 6. 读取与验证 staging JSON 内容
+        try:
+            st_before = staging_path.stat()
+        except Exception as e:
+            raise TaskPersistenceError(f"Failed to stat staging file: {e}") from e
+
+        try:
+            with open(resolved_staging, "r", encoding="utf-8") as f:
+                staging_data = json.load(f)
+        except Exception as e:
+            raise TaskPersistenceError(f"Failed to parse staging JSON file: {e}") from e
+
+        if not isinstance(staging_data, dict):
+            raise TaskPersistenceError("Staging JSON top-level must be a dictionary")
+
+        st_intent_id = staging_data.get("intent_id")
+        if not validate_intent_id(st_intent_id):
+            raise TaskPersistenceError(f"Invalid intent_id inside staging JSON: {st_intent_id}")
+
+        if st_intent_id != intent_id:
+            raise TaskPersistenceError(
+                f"Staging JSON intent_id '{st_intent_id}' does not match expected intent_id '{intent_id}'"
+            )
+
+        if staging_data != intent:
+            raise TaskPersistenceError("Staging JSON content does not match expected intent data")
+
+        try:
+            st_after = staging_path.stat()
+        except Exception as e:
+            raise TaskPersistenceError(f"Failed to re-stat staging file: {e}") from e
+
+        if (st_before.st_dev != st_after.st_dev or
+            st_before.st_ino != st_after.st_ino or
+            st_before.st_size != st_after.st_size or
+            st_before.st_mtime_ns != st_after.st_mtime_ns):
+            raise TaskPersistenceError("Staging file was modified during verification")
 
         final_file = task_dir / f"task_intent_{intent_id}.json"
         if resolved_task_dir not in final_file.resolve().parents:
@@ -218,7 +257,7 @@ class TaskIntentBuilder:
             except Exception:
                 pass
 
-            # 删除符合来源验证的 staging 临时文件
+            # 删除符合来源与内容验证的 staging 临时文件
             if staging_path.exists():
                 try:
                     staging_path.unlink()
