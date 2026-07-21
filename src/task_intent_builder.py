@@ -1,22 +1,68 @@
 """
 task_intent_builder.py — 生成符合 TaskIntent 规范的 JSON 文件
 """
+import fcntl
 import json
 import os
 import re
 import stat
+import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .knowledge_retriever import KnowledgeBase
-from .simulated_time import get_current_datetime
-from .id_sequence import next_daily_id, validate_intent_id
-
-import threading
-import uuid
-from .result_paths import get_task_dir
 from .exceptions import IntentIdConflict, TaskPersistenceError
+from .id_sequence import next_daily_id, validate_intent_id
+from .knowledge_retriever import KnowledgeBase
+from .result_paths import get_task_dir
+from .simulated_time import get_current_datetime
+
+
+class TaskPublishLock:
+    """进程间与线程间任务发布排他锁"""
+    def __init__(self, task_dir: Path):
+        self.lock_path = task_dir / ".task_intent_publish.lock"
+        self._fd = None
+
+    def __enter__(self):
+        try:
+            self._fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            fcntl.flock(self._fd, fcntl.LOCK_EX)
+        except Exception as e:
+            if self._fd is not None:
+                try:
+                    os.close(self._fd)
+                except Exception:
+                    pass
+            raise TaskPersistenceError(f"Failed to acquire publish lock: {e}") from e
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._fd is not None:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+                os.close(self._fd)
+            except Exception:
+                pass
+            self._fd = None
+
+
+def _atomic_commit_noreplace(temp_file: Path, final_file: Path) -> None:
+    """原子提交临时文件为正式文件，已存在时拒绝覆盖"""
+    if final_file.exists():
+        raise FileExistsError(f"Final file already exists: {final_file}")
+
+    try:
+        os.link(temp_file, final_file)
+        try:
+            temp_file.unlink()
+        except Exception:
+            pass
+    except FileExistsError:
+        raise
+    except Exception as e:
+        raise TaskPersistenceError(f"Atomic commit failed: {e}") from e
 
 
 class TaskIntentBuilder:
@@ -155,7 +201,7 @@ class TaskIntentBuilder:
             raise TaskPersistenceError(f"Failed to create staging file for {intent_id}: {e}") from e
 
     def publish_staging(self, staging_file: Path | str, intent: Dict[str, Any]) -> str:
-        """使用 os.link 原子 no-clobber 发布 staging 临时文件为正式 JSON 文件；后置强验证及防替换安全回滚"""
+        """使用跨进程排他锁、认领隔离与内存可信原子提交发布 staging 为正式 JSON"""
         if not isinstance(intent, dict):
             raise TaskPersistenceError("intent must be a dictionary")
         intent_id = intent.get("intent_id")
@@ -167,19 +213,17 @@ class TaskIntentBuilder:
         except Exception as e:
             raise TaskPersistenceError(f"Invalid staging_file path: {e}") from e
 
-        # 1. 验证 staging_file 存在且非符号链接
+        task_dir = get_task_dir(create=True)
+        resolved_task_dir = task_dir.resolve()
+
+        # 1. 优先校验 staging 路径合法性与文件名格式
         if not staging_path.exists():
             raise TaskPersistenceError(f"Staging file does not exist: {staging_path}")
-
         if staging_path.is_symlink():
             raise TaskPersistenceError(f"Staging file cannot be a symlink: {staging_path}")
-
         if not staging_path.is_file():
             raise TaskPersistenceError(f"Staging file is not a regular file: {staging_path}")
 
-        # 2. 验证严格解析后位于 task_dir 内部且直属 parent 等于 task_dir
-        task_dir = get_task_dir(create=True)
-        resolved_task_dir = task_dir.resolve()
         try:
             resolved_staging = staging_path.resolve(strict=True)
         except Exception as e:
@@ -193,134 +237,159 @@ class TaskIntentBuilder:
                 f"Staging file {resolved_staging} is not located directly inside task_dir {resolved_task_dir}"
             )
 
-        # 3. 验证文件名精确符合正则格式
         expected_pattern = rf"^task_intent_{re.escape(intent_id)}\.staging_[0-9]+_[0-9]+_[0-9a-f]{{8}}$"
         if not re.fullmatch(expected_pattern, staging_path.name):
             raise TaskPersistenceError(
                 f"Staging filename '{staging_path.name}' does not match controlled format pattern for intent_id '{intent_id}'"
             )
 
-        # 4. 读取 JSON 内容并记录被验证文件的 fd stat (st_dev, st_ino)
-        try:
-            st_before = staging_path.stat()
-        except Exception as e:
-            raise TaskPersistenceError(f"Failed to stat staging file: {e}") from e
+        with TaskPublishLock(task_dir):
+            final_file = task_dir / f"task_intent_{intent_id}.json"
+            if resolved_task_dir not in final_file.resolve().parents:
+                raise TaskPersistenceError(f"Path traversal detected for final file: {final_file}")
 
-        try:
-            with open(resolved_staging, "r", encoding="utf-8") as f:
-                f_fd = f.fileno()
-                validated_stat = os.fstat(f_fd)
-                if not stat.S_ISREG(validated_stat.st_mode):
-                    raise TaskPersistenceError("Staging file descriptor is not a regular file")
-                staging_data = json.load(f)
-        except TaskPersistenceError:
-            raise
-        except Exception as e:
-            raise TaskPersistenceError(f"Failed to parse staging JSON content: {e}") from e
-
-        try:
-            st_after = staging_path.stat()
-        except Exception as e:
-            raise TaskPersistenceError(f"Failed to re-stat staging file: {e}") from e
-
-        if (st_before.st_dev != st_after.st_dev or
-            st_before.st_ino != st_after.st_ino or
-            st_before.st_size != st_after.st_size or
-            st_before.st_mtime_ns != st_after.st_mtime_ns):
-            raise TaskPersistenceError("Staging file was modified during verification")
-
-        if not isinstance(staging_data, dict):
-            raise TaskPersistenceError("Staging JSON top-level must be a dictionary")
-
-        st_intent_id = staging_data.get("intent_id")
-        if not validate_intent_id(st_intent_id):
-            raise TaskPersistenceError(f"Invalid intent_id inside staging JSON: {st_intent_id}")
-
-        if st_intent_id != intent_id:
-            raise TaskPersistenceError(
-                f"Staging JSON intent_id '{st_intent_id}' does not match expected intent_id '{intent_id}'"
-            )
-
-        if staging_data != intent:
-            raise TaskPersistenceError("Staging JSON content does not match expected intent data")
-
-        final_file = task_dir / f"task_intent_{intent_id}.json"
-        if resolved_task_dir not in final_file.resolve().parents:
-            raise TaskPersistenceError(f"Path traversal detected for final file: {final_file}")
-
-        # 5. 原子链接与后置强验证 (若发生 TOCTOU 竞态替换则回滚 final_file 且保护替代文件)
-        created_final = False
-        try:
-            os.link(staging_path, final_file)
-            created_final = True
-
-            # 目录 fsync 保证元数据落地
+            # 2. 读取并验证 staging JSON 内容与 fd stat
             try:
-                dir_fd = os.open(task_dir, os.O_RDONLY)
+                st_before = staging_path.stat()
+            except Exception as e:
+                raise TaskPersistenceError(f"Failed to stat staging file: {e}") from e
+
+            try:
+                with open(resolved_staging, "r", encoding="utf-8") as f:
+                    f_fd = f.fileno()
+                    validated_stat = os.fstat(f_fd)
+                    if not stat.S_ISREG(validated_stat.st_mode):
+                        raise TaskPersistenceError("Staging file descriptor is not a regular file")
+                    staging_data = json.load(f)
+            except TaskPersistenceError:
+                raise
+            except Exception as e:
+                raise TaskPersistenceError(f"Failed to parse staging JSON content: {e}") from e
+
+            try:
+                st_after = staging_path.stat()
+            except Exception as e:
+                raise TaskPersistenceError(f"Failed to re-stat staging file: {e}") from e
+
+            if (st_before.st_dev != st_after.st_dev or
+                st_before.st_ino != st_after.st_ino or
+                st_before.st_size != st_after.st_size or
+                st_before.st_mtime_ns != st_after.st_mtime_ns):
+                raise TaskPersistenceError("Staging file was modified during verification")
+
+            if not isinstance(staging_data, dict):
+                raise TaskPersistenceError("Staging JSON top-level must be a dictionary")
+
+            st_intent_id = staging_data.get("intent_id")
+            if not validate_intent_id(st_intent_id):
+                raise TaskPersistenceError(f"Invalid intent_id inside staging JSON: {st_intent_id}")
+
+            if st_intent_id != intent_id or staging_data != intent:
+                raise TaskPersistenceError("Staging JSON content does not match expected intent data")
+
+            # 3. 如果 final_file 已存在：判断内容一致性并安全清理当前 verified staging
+            if final_file.exists():
                 try:
-                    os.fsync(dir_fd)
+                    with open(final_file, "r", encoding="utf-8") as f:
+                        existing_data = json.load(f)
+                    if existing_data == intent:
+                        if staging_path.exists() and not staging_path.is_symlink():
+                            try:
+                                cur_stat = staging_path.stat()
+                                if cur_stat.st_dev == validated_stat.st_dev and cur_stat.st_ino == validated_stat.st_ino:
+                                    staging_path.unlink()
+                            except Exception:
+                                pass
+                        return final_file.name
+                    else:
+                        if staging_path.exists() and not staging_path.is_symlink():
+                            try:
+                                cur_stat = staging_path.stat()
+                                if cur_stat.st_dev == validated_stat.st_dev and cur_stat.st_ino == validated_stat.st_ino:
+                                    staging_path.unlink()
+                            except Exception:
+                                pass
+                        raise IntentIdConflict(f"Intent ID conflict for {intent_id}: target file exists with different content.")
+                except IntentIdConflict:
+                    raise
+                except Exception:
+                    raise IntentIdConflict(f"Intent ID conflict for {intent_id}: target file exists.")
+
+            # 4. 安全认领 Staging (Claiming)
+            claim_file = task_dir / f".claimed_{intent_id}_{uuid.uuid4().hex}"
+            claimed_owned = False
+            try:
+                os.rename(staging_path, claim_file)
+                claimed_owned = True
+                claimed_stat = os.stat(claim_file)
+                if claimed_stat.st_dev != validated_stat.st_dev or claimed_stat.st_ino != validated_stat.st_ino:
+                    raise TaskPersistenceError("Staging file inode mismatch upon claim")
+            except Exception as e:
+                if claimed_owned and claim_file.exists():
+                    try:
+                        claim_file.unlink()
+                    except Exception:
+                        pass
+                raise TaskPersistenceError(f"Failed to claim staging file for {intent_id}: {e}") from e
+
+            # 5. 从受信任内存 intent 原子创建私有临时文件并写入
+            tmp_file = task_dir / f".tmp_publish_{intent_id}_{uuid.uuid4().hex}"
+            tmp_owned = False
+            try:
+                tmp_fd = os.open(tmp_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                tmp_owned = True
+                try:
+                    content_bytes = json.dumps(intent, ensure_ascii=False, indent=2).encode("utf-8")
+                    os.write(tmp_fd, content_bytes)
+                    os.fsync(tmp_fd)
                 finally:
-                    os.close(dir_fd)
-            except Exception:
-                pass
+                    os.close(tmp_fd)
 
-            # 6. 后置检查：强校验 final_file 的 inode、格式与内容
-            if not final_file.exists() or final_file.is_symlink():
-                raise TaskPersistenceError("Post-publish verification failed: final file invalid or symlink")
+                with open(tmp_file, "r", encoding="utf-8") as f:
+                    written_data = json.load(f)
+                if written_data != intent:
+                    raise TaskPersistenceError("Temp file written content mismatch")
 
-            final_stat = os.stat(final_file)
-            if final_stat.st_dev != validated_stat.st_dev or final_stat.st_ino != validated_stat.st_ino:
-                raise TaskPersistenceError("Post-publish verification failed: final file inode does not match verified staging file")
+                # 6. 原子且 no-overwrite 提交正式文件
+                _atomic_commit_noreplace(tmp_file, final_file)
+                tmp_owned = False
 
-            with open(final_file, "r", encoding="utf-8") as f:
-                final_data = json.load(f)
+                # 7. 成功清理被认领的 staging 文件
+                if claimed_owned and claim_file.exists():
+                    try:
+                        claim_file.unlink()
+                    except Exception:
+                        pass
+                    claimed_owned = False
 
-            if not isinstance(final_data, dict) or final_data != intent or final_data.get("intent_id") != intent_id:
-                raise TaskPersistenceError("Post-publish verification failed: final file content does not match intent")
-
-            # 7. 安全清理原始 staging 文件（仅当 staging 路径仍指向同一 inode 时才 unlink，绝不删除替换文件）
-            if staging_path.exists() and not staging_path.is_symlink():
-                try:
-                    cur_stat = staging_path.stat()
-                    if cur_stat.st_dev == validated_stat.st_dev and cur_stat.st_ino == validated_stat.st_ino:
-                        staging_path.unlink()
-                except Exception:
-                    pass
-
-            return final_file.name
-
-        except FileExistsError:
-            # 目标文件预存在处理
-            existing_data = None
-            try:
-                with open(final_file, "r", encoding="utf-8") as f:
-                    existing_data = json.load(f)
-            except Exception:
-                existing_data = None
-
-            # 仅当 staging 依然为原始 inode 时清理
-            if staging_path.exists() and not staging_path.is_symlink():
-                try:
-                    cur_stat = staging_path.stat()
-                    if cur_stat.st_dev == validated_stat.st_dev and cur_stat.st_ino == validated_stat.st_ino:
-                        staging_path.unlink()
-                except Exception:
-                    pass
-
-            if existing_data == intent:
                 return final_file.name
-            else:
-                raise IntentIdConflict(f"Intent ID conflict for {intent_id}: target file exists with different content.")
-        except IntentIdConflict:
-            raise
-        except Exception as e:
-            # 发生任何后置验证失败或其他异常，回滚删除由本次调用创建的 final_file
-            if created_final and final_file.exists():
-                try:
-                    final_file.unlink()
-                except Exception:
-                    pass
-            raise TaskPersistenceError(f"Failed to publish staging file for {intent_id}: {e}") from e
+
+            except FileExistsError:
+                if claimed_owned and claim_file.exists():
+                    try:
+                        claim_file.unlink()
+                    except Exception:
+                        pass
+                raise IntentIdConflict(f"Intent ID conflict for {intent_id}: target file exists.")
+            except IntentIdConflict:
+                if claimed_owned and claim_file.exists():
+                    try:
+                        claim_file.unlink()
+                    except Exception:
+                        pass
+                raise
+            except Exception as e:
+                if tmp_owned and tmp_file.exists():
+                    try:
+                        tmp_file.unlink()
+                    except Exception:
+                        pass
+                if claimed_owned and claim_file.exists():
+                    try:
+                        claim_file.unlink()
+                    except Exception:
+                        pass
+                raise TaskPersistenceError(f"Failed to publish staging file for {intent_id}: {e}") from e
 
     def persist(self, intent: Dict[str, Any]) -> str:
         """从 dict 生成 staging 临时文件并原子发布为 TaskIntent 文件"""

@@ -211,14 +211,18 @@ class IntentRouter:
             )
 
         # ── 检查是否为显式修改表达（禁止以“为、由、从、到”单字子串直接断定修改）──
-        update_verbs = ["改成", "改为", "变更为", "修改", "设置", "设定", "重置", "换成", "更换", "更换为", "换", "更名", "选择", "选用", "使用", "携带", "装载", "配备", "搭载", "带上", "把", "调整", "更新", "变更", "替换"]
+        update_verbs = ["改成", "改为", "变更为", "修改", "设置", "设定", "重置", "换成", "更换", "更换为", "换", "更名", "选择", "选用", "携带", "装载", "配备", "搭载", "带上", "把", "调整", "更新", "变更", "替换"]
         slot_keywords = ["水深", "深度", "坐标", "经纬度", "支持船", "船", "工具", "抓手", "载荷", "模式", "时间", "井口", "油田", "缆线", "摄像机", "声呐", "开线", "设备", "定位", "机器人"]
 
-        has_explicit_upd = any(p in msg for p in EXPLICIT_UPDATE_PHRASES) or bool(re.search(r"(?:调整到|改到|变更为|设置为|修改为|从\d+.*改到\d+)", msg)) or (bool(re.search(r"(?:确认)?(?:水深|支持船|坐标|模式|时间|载荷|机器人|设备)\s*(?:为|是(?![:：]?\s*(?:多少|什么|哪|几))|设为|改成|改为|改到)", msg)) and "为什么" not in msg)
-        has_verb_and_slot = any(v in msg for v in update_verbs) and any(s in msg for s in slot_keywords)
+        has_explicit_upd = (
+            any(p in msg for p in EXPLICIT_UPDATE_PHRASES)
+            or bool(re.search(r"(?:调整到|改到|变更为|设置为|修改为|从\d+.*改到\d+)", msg))
+            or (bool(re.search(r"(?:确认)?(?:水深|支持船|坐标|模式|时间|载荷|机器人|设备)\s*(?:为|是(?![:：]?\s*(?:多少|什么|哪|几))|设为|改成|改为|改到)", msg)) and not is_q and "为什么" not in msg)
+        )
+        has_verb_and_slot = (any(v in msg for v in update_verbs) and any(s in msg for s in slot_keywords)) and not (is_q and bool(re.search(r"使用(?:什么|哪些|何种)", msg)))
         has_num_slot = bool(re.search(r"(?:水深|深度|坐标|时间)?\s*\d+(?:\.\d+)?\s*(?:米|m)?", msg, re.IGNORECASE)) and any(v in msg for v in ["改成", "改为", "变更为", "修改", "设置", "设定", "重置", "换成", "更换", "更换为", "调整到", "改到", "设置为"])
         has_cancel_slot = "取消" in msg and any(s in msg for s in slot_keywords)
-        is_modification_request = has_explicit_upd or has_verb_and_slot or has_num_slot or has_cancel_slot
+        is_modification_request = (has_explicit_upd or has_verb_and_slot or has_num_slot or has_cancel_slot) and not (is_q and not any(mv in msg for mv in ["改为", "改成", "修改", "调整到", "更换为", "设置"] if mv in msg))
 
         has_create_act = any(p in msg for p in CREATE_ACTION_PHRASES) or (
             any(v in msg for v in ["创建", "新建", "开展", "开始规划", "执行"]) and any(e in msg for e in ["任务", "巡检", "插拔", "管缆"])

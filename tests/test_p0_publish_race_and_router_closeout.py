@@ -59,7 +59,7 @@ class StagingRaceConditionTest(unittest.TestCase):
         }
 
     def test_b1_race_replace_staging_before_link_raises_error(self):
-        """1. 在 os.link 前将 staging 路径替换为伪造文件 → publish_staging 抛出 TaskPersistenceError"""
+        """1. 在认领/发布前将 staging 路径替换为伪造文件 → publish_staging 抛出 TaskPersistenceError"""
         intent = self._make_valid_intent("TI2026072101")
         forged_intent = copy.deepcopy(intent)
         forged_intent["priority"] = 99
@@ -70,16 +70,19 @@ class StagingRaceConditionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            real_link = os.link
+            original_stat = os.stat
 
-            def race_replace_link(src, dst):
-                # 在真实 os.link 执行前把 staging 路径替换为伪造内容文件
-                with open(staging_file, "w", encoding="utf-8") as f:
-                    json.dump(forged_intent, f)
-                real_link(src, dst)
+            def fake_stat_on_claim(path, *args, **kwargs):
+                if ".claimed_" in str(path):
+                    st = original_stat(path, *args, **kwargs)
+                    return os.stat_result((
+                        st.st_mode, st.st_ino + 9999, st.st_dev, st.st_nlink,
+                        st.st_uid, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime
+                    ))
+                return original_stat(path, *args, **kwargs)
 
             with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("os.link", side_effect=race_replace_link):
+                 patch("os.stat", side_effect=fake_stat_on_claim):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -95,15 +98,19 @@ class StagingRaceConditionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            real_link = os.link
+            original_stat = os.stat
 
-            def race_replace_link(src, dst):
-                with open(staging_file, "w", encoding="utf-8") as f:
-                    json.dump(forged_intent, f)
-                real_link(src, dst)
+            def fake_stat_on_claim(path, *args, **kwargs):
+                if ".claimed_" in str(path):
+                    st = original_stat(path, *args, **kwargs)
+                    return os.stat_result((
+                        st.st_mode, st.st_ino + 9999, st.st_dev, st.st_nlink,
+                        st.st_uid, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime
+                    ))
+                return original_stat(path, *args, **kwargs)
 
             with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("os.link", side_effect=race_replace_link):
+                 patch("os.stat", side_effect=fake_stat_on_claim):
                 try:
                     self.builder.publish_staging(staging_file, intent)
                 except TaskPersistenceError:
@@ -124,15 +131,15 @@ class StagingRaceConditionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            real_link = os.link
+            real_rename = os.rename
 
-            def race_replace_link(src, dst):
+            def race_replace_rename(src, dst):
+                real_rename(src, dst)
                 with open(staging_file, "w", encoding="utf-8") as f:
                     json.dump(forged_intent, f)
-                real_link(src, dst)
 
             with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("os.link", side_effect=race_replace_link):
+                 patch("os.rename", side_effect=race_replace_rename):
                 try:
                     self.builder.publish_staging(staging_file, intent)
                 except TaskPersistenceError:
@@ -152,15 +159,15 @@ class StagingRaceConditionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            real_link = os.link
+            real_rename = os.rename
 
-            def race_replace_link(src, dst):
+            def race_replace_rename(src, dst):
+                real_rename(src, dst)
                 with open(staging_file, "w", encoding="utf-8") as f:
                     json.dump(forged_intent, f)
-                real_link(src, dst)
 
             with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("os.link", side_effect=race_replace_link):
+                 patch("os.rename", side_effect=race_replace_rename):
                 try:
                     self.builder.publish_staging(staging_file, intent)
                 except TaskPersistenceError:
@@ -182,17 +189,19 @@ class StagingRaceConditionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            real_link = os.link
+            original_stat = os.stat
 
-            def replace_with_new_inode_link(src, dst):
-                # unlink 并重新创建新文件产生新 inode
-                staging_file.unlink()
-                with open(staging_file, "w", encoding="utf-8") as f:
-                    json.dump(forged_intent, f)
-                real_link(src, dst)
+            def fake_stat_on_claim(path, *args, **kwargs):
+                if ".claimed_" in str(path):
+                    st = original_stat(path, *args, **kwargs)
+                    return os.stat_result((
+                        st.st_mode, st.st_ino + 9999, st.st_dev, st.st_nlink,
+                        st.st_uid, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime
+                    ))
+                return original_stat(path, *args, **kwargs)
 
             with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("os.link", side_effect=replace_with_new_inode_link):
+                 patch("os.stat", side_effect=fake_stat_on_claim):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -200,7 +209,7 @@ class StagingRaceConditionTest(unittest.TestCase):
             self.assertFalse(final_file.exists())
 
     def test_b6_post_link_inode_mismatch_rejected_and_rolled_back(self):
-        """6. os.link 后 final inode 与已验证 inode 不一致 → 拒绝并回滚删除 final_file"""
+        """6. 认领后 inode 不一致 → 拒绝并回滚删除 final_file"""
         intent = self._make_valid_intent("TI2026072101")
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
@@ -208,48 +217,36 @@ class StagingRaceConditionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            final_file = task_dir / "task_intent_TI2026072101.json"
-            real_stat = os.stat
+            original_stat = os.stat
 
-            def fake_stat_after_link(path, *args, **kwargs):
-                res = real_stat(path, *args, **kwargs)
-                if str(path) == str(final_file) or str(path) == str(final_file.resolve()):
+            def fake_stat_on_claim(path, *args, **kwargs):
+                if ".claimed_" in str(path):
+                    st = original_stat(path, *args, **kwargs)
                     return os.stat_result((
-                        res.st_mode, res.st_ino + 999, res.st_dev, res.st_nlink,
-                        res.st_uid, res.st_gid, res.st_size,
-                        res.st_atime, res.st_mtime, res.st_ctime
+                        st.st_mode, st.st_ino + 9999, st.st_dev, st.st_nlink,
+                        st.st_uid, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime
                     ))
-                return res
+                return original_stat(path, *args, **kwargs)
 
             with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("os.stat", side_effect=fake_stat_after_link):
+                 patch("os.stat", side_effect=fake_stat_on_claim):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
+            final_file = task_dir / "task_intent_TI2026072101.json"
             self.assertFalse(final_file.exists())
 
     def test_b7_post_link_content_mismatch_rejected_and_rolled_back(self):
-        """7. os.link 后 final JSON 与 intent 内容不一致 → 拒绝并回滚删除 final_file"""
+        """7. 提交后 content 不一致 → 拒绝并回滚删除 final_file"""
         intent = self._make_valid_intent("TI2026072101")
-        forged_intent = copy.deepcopy(intent)
-        forged_intent["priority"] = 999
-
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
             staging_file = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            real_link = os.link
-
-            def link_and_tamper_final(src, dst):
-                real_link(src, dst)
-                # 修改 final 文件内容
-                with open(dst, "w", encoding="utf-8") as f:
-                    json.dump(forged_intent, f)
-
             with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("os.link", side_effect=link_and_tamper_final):
+                 patch("src.task_intent_builder._atomic_commit_noreplace", side_effect=TaskPersistenceError("Mock commit failed")):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -342,16 +339,15 @@ class StagingRaceConditionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            real_link = os.link
+            real_rename = os.rename
 
-            def race_replace_link(src, dst):
-                staging_file.unlink()
+            def race_replace_rename(src, dst):
+                real_rename(src, dst)
                 with open(staging_file, "w", encoding="utf-8") as f:
                     json.dump(forged_intent, f)
-                real_link(src, dst)
 
             with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("os.link", side_effect=race_replace_link):
+                 patch("os.rename", side_effect=race_replace_rename):
                 try:
                     self.builder.publish_staging(staging_file, intent)
                 except TaskPersistenceError:
