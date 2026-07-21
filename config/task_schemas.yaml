@@ -63,10 +63,14 @@ task_templates:
         - key: water_depth
           label: "水深（米）"
           type: number
+        - key: equipment_family
+          label: "作业机器人系列"
+          type: string
+          allowed_values_ref: "robot_family_full_names"
         - key: equipment_type
           label: "作业设备型号"
           type: string
-          allowed_values_ref: "robot_full_names"
+          allowed_values_ref: "robot_variant_full_names"
         - key: equipment_unit_id
           label: "具体机器人编号"
           type: string
@@ -143,10 +147,14 @@ task_templates:
         - key: water_depth
           label: "水深（米）"
           type: number
+        - key: equipment_family
+          label: "作业机器人系列"
+          type: string
+          allowed_values_ref: "robot_family_full_names"
         - key: equipment_type
           label: "作业设备型号"
           type: string
-          allowed_values_ref: "robot_full_names"
+          allowed_values_ref: "robot_variant_full_names"
         - key: equipment_unit_id
           label: "具体机器人编号"
           type: string
@@ -228,10 +236,14 @@ task_templates:
 #          label: "采油树类型"
 #          type: string
 #          allowed_values: ["立式", "卧式"]
+        - key: equipment_family
+          label: "作业机器人系列"
+          type: string
+          allowed_values_ref: "robot_family_full_names"
         - key: equipment_type
           label: "作业设备型号"
           type: string
-          allowed_values_ref: "robot_full_names"
+          allowed_values_ref: "robot_variant_full_names"
         - key: equipment_unit_id
           label: "具体机器人编号"
           type: string

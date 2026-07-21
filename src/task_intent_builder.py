@@ -69,14 +69,9 @@ class TaskIntentBuilder:
         details = self._build_details(task_type_key, task_state, built_json)
 
         # 6. equipment
-        equipment_type = built_json.get("equipment_type")
-        robot_type_map = {
-            "观察级ROV": "observation_rov",
-            "工作级ROV": "work_class_rov",
-            "海底拖拉机": "work_class_rov",   # 履带式归为工作级
-            "调查型AUV": "auv",
-        }
-        robot_type = robot_type_map.get(equipment_type, "observation_rov")
+        # equipment_type 在普通模式中保存 model_variants.full_name，不能再用
+        # 旧的机器人大类中文名做硬编码映射。
+        robot_type = self._resolve_robot_type(built_json, task_state)
         payload = built_json.get("payload", [])
         if not isinstance(payload, list):
             payload = [payload] if payload else []
@@ -126,6 +121,57 @@ class TaskIntentBuilder:
             json.dump(intent, f, ensure_ascii=False, indent=2)
 
         return intent
+
+    def _resolve_robot_type(
+        self,
+        built_json: Dict[str, Any],
+        task_state: Dict[str, Any],
+    ) -> str:
+        """由已选型号的知识库 robot_class 生成 TaskIntent robot_type。"""
+        unit_selector = built_json.get("equipment_unit_id")
+        variant_selector = (
+            built_json.get("equipment_type")
+            or task_state.get("equipment_type")
+        )
+        resolved_unit = (
+            self.kb.resolve_robot_unit(
+                str(unit_selector),
+                task_state.get("task_type_key"),
+                str(variant_selector) if variant_selector else None,
+            )
+            if unit_selector
+            else None
+        )
+        rov = (
+            resolved_unit.get("robot")
+            if resolved_unit
+            else (
+                self.kb.get_rov(str(variant_selector))
+                if variant_selector
+                else None
+            )
+        )
+        if rov:
+            class_map = {
+                "observation_rov": "observation_rov",
+                "work_class_rov": "work_class_rov",
+                "cable_burial_robot": "work_class_rov",
+                "auv": "auv",
+            }
+            robot_type = class_map.get(rov.get("robot_class"))
+            if robot_type:
+                return robot_type
+
+        # 兼容紧急模式和旧快照中仍保存机器人大类中文名的情况。
+        legacy_map = {
+            "观察级ROV": "observation_rov",
+            "工作级ROV": "work_class_rov",
+            "管缆埋设机器人": "work_class_rov",
+            "海底拖拉机": "work_class_rov",
+            "AUV": "auv",
+            "调查型AUV": "auv",
+        }
+        return legacy_map.get(str(variant_selector), "observation_rov")
 
     def _build_details(
         self,

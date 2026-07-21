@@ -195,6 +195,7 @@
       start_point: { zh: "起始点经纬度", en: "Start Coordinates" },
       end_point: { zh: "结束点经纬度", en: "End Coordinates" },
       water_depth: { zh: "水深（米）", en: "Water Depth (m)" },
+      equipment_family: { zh: "作业机器人系列", en: "Robot Family" },
       equipment_type: { zh: "作业设备型号", en: "Equipment Model" },
       equipment_unit_id: { zh: "具体机器人编号", en: "Robot Unit ID" },
       equipment_name: { zh: "设备全称", en: "ROV Name" },

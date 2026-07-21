@@ -13,7 +13,7 @@ import re
 import unicodedata
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
-from typing import Any
+from typing import Any, Callable
 
 from .coord_parser import parse_coord_value
 
@@ -56,6 +56,39 @@ class FieldNormalizer:
             return raw_value
 
         return None
+
+    def normalize_updates(
+        self,
+        updates: dict[str, Any],
+        field_definitions: list[dict[str, Any]],
+        current_state: dict[str, Any],
+        allowed_values_resolver: Callable[
+            [dict[str, Any], dict[str, Any]],
+            list[Any] | None,
+        ],
+    ) -> dict[str, Any]:
+        """按字段定义规范化本轮候选值，无法规范化时保留原值供后续校验。"""
+        normalized_updates = dict(updates)
+        temp_state = dict(current_state)
+
+        for field_def in field_definitions:
+            key = field_def["key"]
+            if key not in updates or updates[key] in (None, ""):
+                continue
+
+            allowed = allowed_values_resolver(field_def, temp_state)
+            normalized = self.normalize(
+                updates[key],
+                allowed,
+                field_def["type"],
+            )
+            if normalized is None:
+                continue
+
+            normalized_updates[key] = normalized
+            temp_state[key] = normalized
+
+        return normalized_updates
 
     # ──────────────────────────────────────────────────────────────────────────
 

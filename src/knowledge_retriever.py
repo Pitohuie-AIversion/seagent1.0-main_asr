@@ -92,17 +92,52 @@ class KnowledgeBase:
             self.get_task_required_capabilities(task_type_key),
         )
 
+    def get_task_allowed_robot_family_names(self, task_type_key: str | None) -> list[str]:
+        """返回当前任务允许询问的机器人族标准名称。"""
+        return [
+            family.get("full_name", family_id)
+            for family_id, family in self.get_robot_families_for_task(task_type_key)
+        ]
+
+    def resolve_robot_family_id(
+        self,
+        family_selector: str,
+        task_type_key: str | None = None,
+    ) -> str | None:
+        """把机器人族 ID、标准名称或别名解析为 family_id。"""
+        needle = _norm(family_selector)
+        if not needle:
+            return None
+        families = (
+            self.get_robot_families_for_task(task_type_key)
+            if task_type_key
+            else list(self.robot_fleet.get("robot_families", {}).items())
+        )
+        for family_id, family in families:
+            targets = [family_id, family.get("full_name", ""), *family.get("aliases", [])]
+            if any(needle == _norm(target) for target in targets if target):
+                return family_id
+        return None
+
+    def resolve_robot_family(
+        self,
+        family_selector: str,
+        task_type_key: str | None = None,
+    ) -> dict | None:
+        """按系列层解析 ID、标准名称或 aliases，并返回标准系列数据。"""
+        family_id = self.resolve_robot_family_id(family_selector, task_type_key)
+        if not family_id:
+            return None
+        family = self.robot_fleet.get("robot_families", {}).get(family_id)
+        if not family:
+            return None
+        return {"family_id": family_id, **family}
+
     def get_model_variants_for_family(self, family_id: str) -> list[tuple[str, dict]]:
         result: list[tuple[str, dict]] = []
         for variant_id, variant in self.robot_fleet.get("model_variants", {}).items():
             if variant.get("family_id") == family_id:
                 result.append((variant_id, variant))
-        return result
-
-    def get_model_variants_for_task(self, task_type_key: str | None) -> list[tuple[str, dict]]:
-        result: list[tuple[str, dict]] = []
-        for family_id, _family in self.get_robot_families_for_task(task_type_key):
-            result.extend(self.get_model_variants_for_family(family_id))
         return result
 
     def get_fleet_units_for_variant(self, variant_id: str) -> list[dict]:
@@ -125,27 +160,14 @@ class KnowledgeBase:
         hard_params = variant.get("hard_params", {}) or {}
         units = self.get_fleet_units_for_variant(variant_id)
 
-        # aliases is intentionally only the natural-language mapping list
-        # supplied for the robot family. It is shown to the LLM so user terms
-        # can be classified to this variant's full_name.
-        aliases: list[str] = list(family.get("aliases", []))
-
-        # Fleet-unit aliases identify physical units, not the model variant
-        # full_name. Keep them on fleet_units; use private lookup targets only
-        # for backend retrieval.
+        # 型号索引只能包含 model_variants 自身的标识与别名。系列和单机
+        # 分别由独立解析接口处理，避免同一个 alias 跨层命中。
+        aliases: list[str] = list(variant.get("aliases", []))
         lookup_targets: list[str] = [
             variant.get("full_name", ""),
-            family.get("full_name", ""),
             variant_id,
-            family_id,
         ]
         lookup_targets.extend(aliases)
-        for unit in units:
-            lookup_targets.extend([
-                unit.get("unit_id", ""),
-                unit.get("display_name", ""),
-                *unit.get("aliases", []),
-            ])
 
         deduped_aliases: list[str] = []
         seen_aliases = set()
@@ -212,21 +234,22 @@ class KnowledgeBase:
             self._robot_variants_cache = self._build_robot_variant_index()
         return list(self._robot_variants_cache)
 
-    def get_task_allowed_robot_variants(self, task_type_key: str | None) -> list[dict]:
-        robot_classes = self.get_robot_classes()
-        robots: list[dict] = []
-        for family_id, family in self.get_robot_families_for_task(task_type_key):
-            for variant_id, variant in self.get_model_variants_for_family(family_id):
-                robots.append(
-                    self._build_robot_variant(
-                        robot_classes,
-                        family_id,
-                        family,
-                        variant_id,
-                        variant,
-                    )
-                )
-        return robots
+    def get_task_allowed_robot_variants(
+        self,
+        task_type_key: str | None,
+        family_selector: str | None = None,
+    ) -> list[dict]:
+        robots = [
+            robot
+            for robot in self.get_all_rovs()
+            if self.robot_matches_task(robot, task_type_key)
+        ]
+        if not family_selector:
+            return robots
+        family_id = self.resolve_robot_family_id(family_selector, task_type_key)
+        if not family_id:
+            return []
+        return [robot for robot in robots if robot.get("family_id") == family_id]
 
     def get_ROV2type(self) -> dict:
         return {r["full_name"]: r.get("robot_class_name") for r in self.get_all_rovs()}
@@ -236,8 +259,7 @@ class KnowledgeBase:
     # ──────────────────────────────────────────────────────────────────────────
 
     def get_supported_task(self) -> list:
-        res = self.task_schemas.get("task_templates", {})
-        return [res[t]["task_type_values"] for t in res]
+        return self.get_all_task_type_values()
 
     def get_context_for_state(self, task_state: dict) -> str:
         """
@@ -245,27 +267,39 @@ class KnowledgeBase:
         分段组装，只选取与当前阶段相关的内容。
         """
         task_type = task_state.get("task_type_key")  # e.g. "pipeline_inspection"
-        equipment = task_state.get("equipment_name")
         equipment_type = task_state.get("equipment_type")
         coords = task_state.get("start_point") or task_state.get("oilfield_coordinates")
-        depth = task_state.get("water_depth")
-
         sections = [self._robot_category_overview()]
 
         # 2. 与当前任务类型相关的 ROV 约束
         if task_type:
             sections.append(self._task_rov_constraint(task_type))
 
-        equipment_selector = (
-            task_state.get("equipment_unit_id")
-            or task_state.get("equipment_name")
-            or equipment_type
+        unit_selector = task_state.get("equipment_unit_id")
+        resolved_unit = (
+            self.resolve_robot_unit(
+                str(unit_selector),
+                task_type,
+                str(equipment_type) if equipment_type else None,
+            )
+            if unit_selector
+            else None
         )
-        if equipment_selector:
-            rov_info = self._get_rov_info(equipment_selector)
+        selected_robot = (
+            resolved_unit.get("robot")
+            if resolved_unit
+            else (self.get_rov(str(equipment_type)) if equipment_type else None)
+        )
+        if selected_robot:
+            rov_info = self._get_rov_info(selected_robot.get("full_name"))
             if rov_info:
                 sections.append(f"【当前选定设备详情】\n{rov_info}")
-                state_dict = self.get_robot_state_dict(equipment)
+                state_selector = (
+                    resolved_unit.get("unit_id")
+                    if resolved_unit
+                    else selected_robot.get("full_name")
+                )
+                state_dict = self.get_robot_state_dict(state_selector)
                 if state_dict and isinstance(state_dict, dict):
                     state_lines = []
                     label_map = {
@@ -295,8 +329,6 @@ class KnowledgeBase:
                                 state_lines.append(f"  - {label} ({k}): {v}")
                     if state_lines:
                         sections.append("【当前设备实时状态】\n" + "\n".join(state_lines))
-            elif equipment_type:
-                sections.append(self._rovs_by_category(equipment_type, task_type))
         elif task_type:
             sections.append(self._rovs_for_task(task_type))
 
@@ -320,7 +352,7 @@ class KnowledgeBase:
                 sections.append(f"【作业区域环境状态】\n{env_info}")
         
         # 8. 适用约束规则摘要
-        sections.append(self._relevant_constraints(task_type, equipment_type, depth))
+        sections.append(self._relevant_constraints(task_type))
 
         return "\n\n".join(s for s in sections if s and s.strip())
 
@@ -388,25 +420,92 @@ class KnowledgeBase:
         )
 
     def _find_rov(self, name: str) -> dict | None:
-        needle = _norm(name)
+        """只在 model_variants 层解析型号，不接受系列或单机 aliases。"""
+        return self._match_robot_variants(self.get_all_rovs(), name)
+
+    @staticmethod
+    def _match_robot_variants(
+        robots: list[dict],
+        selector: str,
+    ) -> dict | None:
+        """在限定型号集合内匹配唯一结果，避免别名碰撞时取第一个。"""
+        needle = _norm(selector)
         if not needle:
             return None
 
-        candidates: list[tuple[dict, list[str]]] = []
-        for robot in self.get_all_rovs():
-            targets = [target for target in robot.get("_lookup_targets", []) if target]
-            candidates.append((robot, targets))
+        exact = [
+            robot
+            for robot in robots
+            if any(
+                needle == _norm(target)
+                for target in robot.get("_lookup_targets", [])
+                if target
+            )
+        ]
+        if exact:
+            return exact[0] if len(exact) == 1 else None
 
-        # Prefer exact normalized matches so broad aliases like "001" do not
-        # capture a specific identifier such as "WROV-250-001".
-        for robot, targets in candidates:
-            if any(needle == _norm(target) for target in targets):
-                return robot
+        partial = [
+            robot
+            for robot in robots
+            if any(
+                needle in _norm(target) or _norm(target) in needle
+                for target in robot.get("_lookup_targets", [])
+                if target
+            )
+        ]
+        return partial[0] if len(partial) == 1 else None
 
-        for robot, targets in candidates:
-            if any(needle in _norm(target) or _norm(target) in needle for target in targets):
-                return robot
-        return None
+    def resolve_robot_unit(
+        self,
+        unit_selector: str,
+        task_type_key: str | None = None,
+        variant_selector: str | None = None,
+    ) -> dict | None:
+        """按单机层解析 unit_id、display_name 或 aliases；歧义时返回 None。"""
+        needle = _norm(unit_selector)
+        if not needle:
+            return None
+
+        variant = None
+        if variant_selector:
+            variant = self.get_rov_for_task(variant_selector, task_type_key)
+            if not variant:
+                return None
+
+        def matching_units(contains: bool) -> list[dict]:
+            matches: list[dict] = []
+            variants = {r["variant_id"]: r for r in self.get_all_rovs()}
+            for unit in self.robot_fleet.get("fleet_units", []):
+                if variant and unit.get("variant_id") != variant.get("variant_id"):
+                    continue
+                unit_variant = variants.get(unit.get("variant_id"))
+                if not unit_variant or not self.robot_matches_task(unit_variant, task_type_key):
+                    continue
+                targets = [
+                    unit.get("unit_id", ""),
+                    unit.get("display_name", ""),
+                    *unit.get("aliases", []),
+                ]
+                if contains:
+                    matched = any(
+                        needle in _norm(target) or _norm(target) in needle
+                        for target in targets
+                        if target
+                    )
+                else:
+                    matched = any(
+                        needle == _norm(target) for target in targets if target
+                    )
+                if matched:
+                    matches.append({**unit, "robot": unit_variant})
+            return matches
+
+        exact = matching_units(False)
+        if exact:
+            return exact[0] if len(exact) == 1 else None
+        partial = matching_units(True)
+        return partial[0] if len(partial) == 1 else None
 
     def find_rov_by_description(self, description: str) -> list[dict]:
         return self.get_all_rovs()
@@ -441,26 +540,16 @@ class KnowledgeBase:
         return "\n".join(lines)
 
     def _get_environment(self, coords: dict) -> str | None:
-        if not isinstance(coords, dict):
+        oil_field = self.get_environment_for_coords(coords)
+        if not oil_field:
             return None
-        lat = coords.get("lat")
-        lon = coords.get("lon")
-        if lat is None or lon is None:
-            return None
-        for oil_field in self.environment["oil_fields"]:
-            lat_ok = oil_field["lat_range"][0] <= lat <= oil_field["lat_range"][1]
-            lon_ok = oil_field["lon_range"][0] <= lon <= oil_field["lon_range"][1]
-            if lat_ok and lon_ok:
-                return (
-                    f"{oil_field['name']} \n"
-                    f"海底底质: {oil_field['seabed_type']}\n"
-                    f"备注: {oil_field['notes']}"
-                )
-        return None
+        return (
+            f"{oil_field['name']} \n"
+            f"海底底质: {oil_field['seabed_type']}\n"
+            f"备注: {oil_field['notes']}"
+        )
 
-    def _relevant_constraints(
-        self, task_type: str | None, equipment_type: str | None, depth: float | None
-    ) -> str:
+    def _relevant_constraints(self, task_type: str | None) -> str:
         lines = ["【相关作业约束规则】"]
         for c in self.constraints:
             applies = c["applies_to"]
@@ -478,25 +567,17 @@ class KnowledgeBase:
     def get_rov(self, model_name: str) -> dict | None:
         return self._find_rov(model_name)
 
-    def get_rov_for_task(self, model_name: str, task_type: str | None) -> dict | None:
-        if not task_type:
-            return self.get_rov(model_name)
-        needle = _norm(model_name)
-        if not needle:
-            return None
-        allowed_variants = self.get_task_allowed_robot_variants(task_type)
-        for rov in allowed_variants:
-            targets = [target for target in rov.get("_lookup_targets", []) if target]
-            if any(needle == _norm(target) for target in targets):
-                return rov
-        for rov in allowed_variants:
-            targets = [target for target in rov.get("_lookup_targets", []) if target]
-            if any(
-                needle in _norm(target) or _norm(target) in needle
-                for target in targets
-            ):
-                return rov
-        return self.get_rov(model_name)
+    def get_rov_for_task(
+        self,
+        model_name: str,
+        task_type: str | None,
+        family_selector: str | None = None,
+    ) -> dict | None:
+        allowed_variants = self.get_task_allowed_robot_variants(
+            task_type,
+            family_selector,
+        )
+        return self._match_robot_variants(allowed_variants, model_name)
 
     def get_vessel(self, vessel_id: str) -> dict | None:
         vid_lower = vessel_id.lower().replace(" ", "")
@@ -505,10 +586,6 @@ class KnowledgeBase:
             if any(vid_lower in t or t in vid_lower for t in targets):
                 return v
         return None
-
-    def get_task_schema(self, template_key: str) -> dict:
-        """返回指定模板的完整配置（以 task_templates key 查找）"""
-        return self.task_schemas["task_templates"].get(template_key, {})
 
     def get_task_type_map(self) -> dict[str, str]:
         """
@@ -547,29 +624,23 @@ class KnowledgeBase:
 
     def get_environment_info_dict(self, coords: dict) -> dict:
         """根据坐标返回动态环境信息（随机 + 未知）"""
-        if not coords or not isinstance(coords, dict):
-            return {
-                "forbidden": None,
-                "seabed_type": None,
-                "obstacle_density": None,
-                "acoustic_signal": None,
-                "dvl_risk": None,
-                "mothership_support": None
-            }
+        empty_info = {
+            "forbidden": None,
+            "seabed_type": None,
+            "obstacle_density": None,
+            "acoustic_signal": None,
+            "dvl_risk": None,
+            "mothership_support": None,
+        }
+        if not isinstance(coords, dict):
+            return empty_info
         lat = coords.get("lat")
         lon = coords.get("lon")
         if lat is None or lon is None:
-            return {
-                "forbidden": None,
-                "seabed_type": None,
-                "obstacle_density": None,
-                "acoustic_signal": None,
-                "dvl_risk": None,
-                "mothership_support": None
-            }
+            return empty_info
         return self.env_info.get_all_info(lat, lon)
 
-    def get_robot_state_dict(self, equipment_name: str) -> dict:
+    def get_robot_state_dict(self, equipment_selector: str) -> dict:
         empty_state = {
             "current_velocity": None,
             "turbidity": None,
@@ -593,12 +664,20 @@ class KnowledgeBase:
             "acoustic_comms_status": None,
             "tether_connection_status": None,
         }
-        if not equipment_name or not isinstance(equipment_name, str):
+        if not equipment_selector or not isinstance(equipment_selector, str):
             return empty_state
 
-        lookup_keys: list[str] = [equipment_name]
-        rov = self._find_rov(equipment_name)
-        if rov:
+        lookup_keys: list[str] = [equipment_selector]
+        resolved_unit = self.resolve_robot_unit(equipment_selector)
+        if resolved_unit:
+            lookup_keys.extend([
+                resolved_unit.get("status_ref", ""),
+                resolved_unit.get("unit_id", ""),
+            ])
+            rov = resolved_unit.get("robot")
+        else:
+            rov = self._find_rov(equipment_selector)
+        if rov and not resolved_unit:
             for unit in rov.get("fleet_units", []):
                 lookup_keys.extend([
                     unit.get("status_ref", ""),

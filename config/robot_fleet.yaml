@@ -141,6 +141,7 @@ model_variants:
   crawler_heavy_seabed_robot_1600hp:
     family_id: "crawler_heavy_seabed_robot"
     full_name: "履带式海底重载作业机器人 1600HP"
+    aliases: ["履带式海底重载作业机器人1600HP", "履带式重载机器人1600HP", "履带式1600HP", "1600HP履带式机器人", "金牛座1600HP"]
     hard_params:
       max_depth_m: 500
       max_burial_depth_m: 5
@@ -180,6 +181,7 @@ model_variants:
   towed_heavy_seabed_robot_1500hp:
     family_id: "towed_heavy_seabed_robot"
     full_name: "拖曳式海底重载作业机器人 1500HP"
+    aliases: ["拖曳式海底重载作业机器人1500HP", "拖曳式重载机器人1500HP", "拖曳式1500HP", "1500HP拖曳式机器人", "御夫座1500HP"]
     hard_params:
       max_depth_m: 650
       max_burial_depth_m: 6
@@ -218,6 +220,7 @@ model_variants:
   special_work_class_robot_hp:
     family_id: "special_work_class_robot"
     full_name: "特种工作级深海机器人 600HP"
+    aliases: ["特种工作级深海机器人600HP", "特种工作级ROV 600HP", "特种型600HP", "600HP特种工作级机器人", "凤凰座600HP"]
     hard_params:
       max_depth_m: 3000
       max_burial_depth_m: null
@@ -260,6 +263,7 @@ model_variants:
   general_work_class_rov_250hp:
     family_id: "general_work_class_rov"
     full_name: "通用工作级深海机器人 250HP"
+    aliases: ["通用工作级深海机器人250HP", "通用工作级ROV 250HP", "通用型250HP", "250HP通用工作级机器人", "奇点250HP"]
     hard_params:
       max_depth_m: 3000
       max_burial_depth_m: "不适用"
@@ -298,6 +302,7 @@ model_variants:
   light_work_class_rov_hp:
     family_id: "light_work_class_rov"
     full_name: "轻型工作级深海机器人 HP"
+    aliases: ["轻型工作级深海机器人HP", "轻型工作级ROV HP", "轻型ROV HP", "轻型HP", "天鹰座HP"]
     hard_params:
       max_depth_m: 600
       max_burial_depth_m: "不适用"
@@ -333,6 +338,7 @@ model_variants:
   observation_rov_hp:
     family_id: "observation_rov"
     full_name: "观察级深海机器人 HP"
+    aliases: ["观察级深海机器人HP", "观察级ROV HP", "观察型ROV HP", "观察级HP", "巡检ROV HP"]
     hard_params:
       max_depth_m: 600
       max_burial_depth_m: "不适用"
@@ -366,6 +372,7 @@ model_variants:
   autonomous_underwater_vehicle_hp:
     family_id: "autonomous_underwater_vehicle"
     full_name: "水下无人自主航行器 HP"
+    aliases: ["水下无人自主航行器HP", "自主水下航行器HP", "水下无人自主机器人HP", "自主型HP", "AUV HP"]
     hard_params:
       max_depth_m: 1000
       max_burial_depth_m: "不适用"
