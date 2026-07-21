@@ -297,18 +297,24 @@ class IntentRouter:
             )
 
         is_device_cap_pattern = bool(re.search(r"(?:最大水深|作业水深|下潜能力|作业能力|能否作业|深水作业|能在\d+米|在\d+米|能否在)", msg)) or "最大水深" in msg
+        explicit_device_capability_keywords = ["最大水深", "作业水深", "下潜能力", "作业能力", "能否作业", "深水作业", "设备参数", "设备能力"]
+        has_explicit_device_capability_semantics = (
+            is_device_cap_pattern
+            or any(kw in msg for kw in explicit_device_capability_keywords)
+            or bool(re.search(r"(?:能在|在)\d+米", msg))
+        )
         device_cap_keywords = ["能在", "作业", "水深", "下潜", "设备", "参数", "能力", "支持", "最大水深"]
         has_cap_kw = is_q or any(kw in msg for kw in device_cap_keywords) or is_device_cap_pattern
         is_device_cap_context = has_cap_kw and "当前任务有哪些参数" not in msg and not is_modification_request
 
         # ── 动态设备别名最长匹配优先路由 ──
-        if is_device_cap_context and self.device_alias_index:
+        if self.device_alias_index:
             matched_aliases = []
             for alias, dev_ids in self.device_alias_index.items():
                 if not alias:
                     continue
-                # 纯数字别名（如 "001"）仅在有明确设备能力语境时参与匹配
-                if alias.isdigit() and not is_device_cap_context:
+                # 纯数字别名（如 "001"）仅在有明确设备能力语义时参与匹配（普通疑问句不激活）
+                if alias.isdigit() and not has_explicit_device_capability_semantics:
                     continue
                 if alias in msg or alias.lower() in msg.lower():
                     matched_aliases.append((alias, dev_ids))

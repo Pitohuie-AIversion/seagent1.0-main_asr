@@ -8,7 +8,7 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 from .exceptions import IdReservationError
 from .result_paths import get_result_dir
@@ -24,7 +24,7 @@ def validate_intent_id(intent_id: Any) -> bool:
     1. 必须是 str 类型（bool/int/list/dict 均非法）
     2. strip() 后不能为空且与原串一致
     3. 不能包含 '/', '\\', '..'
-    4. 必须完整匹配 ^TI[0-9]{10,}$
+    4. 必须使用 re.fullmatch 严格匹配 ASCII 数字：r"TI[0-9]{10,}"
     """
     if type(intent_id) is not str:
         return False
@@ -32,7 +32,7 @@ def validate_intent_id(intent_id: Any) -> bool:
         return False
     if "/" in intent_id or "\\" in intent_id or ".." in intent_id:
         return False
-    return bool(re.match(r"^TI\d{10,}$", intent_id))
+    return bool(re.fullmatch(r"TI[0-9]{10,}", intent_id))
 
 
 

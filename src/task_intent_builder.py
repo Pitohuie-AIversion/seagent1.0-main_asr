@@ -152,19 +152,61 @@ class TaskIntentBuilder:
                     pass
             raise TaskPersistenceError(f"Failed to create staging file for {intent_id}: {e}") from e
 
-    def publish_staging(self, staging_file: Path, intent: Dict[str, Any]) -> str:
-        """使用 os.link 原子 no-clobber 发布 staging 临时文件为正式 JSON 文件；处理竞争与幂等"""
+    def publish_staging(self, staging_file: Path | str, intent: Dict[str, Any]) -> str:
+        """使用 os.link 原子 no-clobber 发布 staging 临时文件为正式 JSON 文件；验证来源与防冒充"""
+        if not isinstance(intent, dict):
+            raise TaskPersistenceError("intent must be a dictionary")
         intent_id = intent.get("intent_id")
         if not validate_intent_id(intent_id):
             raise TaskPersistenceError(f"Invalid intent_id for publish_staging: {intent_id}")
+
+        try:
+            staging_path = Path(staging_file)
+        except Exception as e:
+            raise TaskPersistenceError(f"Invalid staging_file path: {e}") from e
+
+        # 1. 验证 staging_file 存在
+        if not staging_path.exists():
+            raise TaskPersistenceError(f"Staging file does not exist: {staging_path}")
+
+        # 2. 验证 staging_path 不是符号链接 (检查未 resolve 之前)
+        if staging_path.is_symlink():
+            raise TaskPersistenceError(f"Staging file cannot be a symlink: {staging_path}")
+
+        # 3. 验证是普通文件且不是目录
+        if not staging_path.is_file():
+            raise TaskPersistenceError(f"Staging file is not a regular file: {staging_path}")
+
+        # 4. 验证严格解析后位于 task_dir 内部且直属 parent 等于 task_dir
         task_dir = get_task_dir(create=True)
+        resolved_task_dir = task_dir.resolve()
+        try:
+            resolved_staging = staging_path.resolve(strict=True)
+        except Exception as e:
+            raise TaskPersistenceError(f"Failed to resolve staging file path: {e}") from e
+
+        if resolved_staging.is_symlink():
+            raise TaskPersistenceError(f"Resolved staging path cannot be a symlink: {resolved_staging}")
+
+        if resolved_staging.parent != resolved_task_dir:
+            raise TaskPersistenceError(
+                f"Staging file {resolved_staging} is not located directly inside task_dir {resolved_task_dir}"
+            )
+
+        # 5. 验证文件名符合 task_intent_{intent_id}.staging_<suffix> 模式
+        expected_prefix = f"task_intent_{intent_id}.staging_"
+        if not staging_path.name.startswith(expected_prefix):
+            raise TaskPersistenceError(
+                f"Staging filename '{staging_path.name}' does not match expected prefix '{expected_prefix}' for intent_id '{intent_id}'"
+            )
+
         final_file = task_dir / f"task_intent_{intent_id}.json"
-        if task_dir.resolve() not in final_file.resolve().parents:
+        if resolved_task_dir not in final_file.resolve().parents:
             raise TaskPersistenceError(f"Path traversal detected for final file: {final_file}")
 
         try:
             # os.link 原子创建硬链接，绝不覆盖已有文件
-            os.link(staging_file, final_file)
+            os.link(staging_path, final_file)
 
             # 目录 fsync 保证元数据落地
             try:
@@ -176,10 +218,10 @@ class TaskIntentBuilder:
             except Exception:
                 pass
 
-            # 删除 staging 临时文件
-            if staging_file and staging_file.exists():
+            # 删除符合来源验证的 staging 临时文件
+            if staging_path.exists():
                 try:
-                    staging_file.unlink()
+                    staging_path.unlink()
                 except Exception:
                     pass
             return final_file.name
@@ -192,9 +234,9 @@ class TaskIntentBuilder:
             except Exception:
                 existing_data = None
 
-            if staging_file and staging_file.exists():
+            if staging_path.exists():
                 try:
-                    staging_file.unlink()
+                    staging_path.unlink()
                 except Exception:
                     pass
 
@@ -207,9 +249,9 @@ class TaskIntentBuilder:
         except IntentIdConflict:
             raise
         except Exception as e:
-            if staging_file and staging_file.exists():
+            if staging_path.exists():
                 try:
-                    staging_file.unlink()
+                    staging_path.unlink()
                 except Exception:
                     pass
             raise TaskPersistenceError(f"Failed to publish staging file for {intent_id}: {e}") from e
