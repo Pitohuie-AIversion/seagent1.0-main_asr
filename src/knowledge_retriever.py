@@ -5,7 +5,9 @@ knowledge_retriever.py — 知识库加载与按需检索
 """
 
 import yaml
+from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import Any
 from .environment_info import EnvironmentInfo
 from .state_info import RobotStateInfo
@@ -140,6 +142,13 @@ class KnowledgeBase:
                 result.append((variant_id, variant))
         return result
 
+    def get_model_variants_for_task(self, task_type_key: str | None) -> list[tuple[str, dict]]:
+        """兼容 main 接口，返回当前任务允许的型号原始配置。"""
+        result: list[tuple[str, dict]] = []
+        for family_id, _family in self.get_robot_families_for_task(task_type_key):
+            result.extend(self.get_model_variants_for_family(family_id))
+        return result
+
     def get_fleet_units_for_variant(self, variant_id: str) -> list[dict]:
         return [
             unit
@@ -268,6 +277,7 @@ class KnowledgeBase:
         """
         task_type = task_state.get("task_type_key")  # e.g. "pipeline_inspection"
         equipment_type = task_state.get("equipment_type")
+        legacy_equipment = task_state.get("equipment_name")
         coords = task_state.get("start_point") or task_state.get("oilfield_coordinates")
         sections = [self._robot_category_overview()]
 
@@ -285,10 +295,23 @@ class KnowledgeBase:
             if unit_selector
             else None
         )
+        if not resolved_unit and legacy_equipment:
+            resolved_unit = self.resolve_robot_unit(
+                str(legacy_equipment),
+                task_type,
+                str(equipment_type) if equipment_type else None,
+            )
         selected_robot = (
             resolved_unit.get("robot")
             if resolved_unit
-            else (self.get_rov(str(equipment_type)) if equipment_type else None)
+            else (
+                self.get_rov_for_task(
+                    str(equipment_type or legacy_equipment),
+                    task_type,
+                )
+                if equipment_type or legacy_equipment
+                else None
+            )
         )
         if selected_robot:
             rov_info = self._get_rov_info(selected_robot.get("full_name"))
@@ -587,6 +610,10 @@ class KnowledgeBase:
                 return v
         return None
 
+    def get_task_schema(self, template_key: str) -> dict:
+        """返回指定任务模板，兼容 main 的公开查询接口。"""
+        return self.task_schemas.get("task_templates", {}).get(template_key, {})
+
     def get_task_type_map(self) -> dict[str, str]:
         """
         从 task_schemas.yaml 动态构建 {task_type_value: template_key} 反查字典。
@@ -696,3 +723,389 @@ class KnowledgeBase:
             if isinstance(state, dict):
                 return state
         return empty_state
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 动态设备词表与强类型只读查询
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def get_device_alias_index(self) -> dict[str, list[str]]:
+        """按类别、系列、型号、单机分层构建设备别名索引。
+
+        索引值带有实体层级前缀，只用于只读路由和歧义判断，避免同名 ID
+        在不同层级之间被误认为同一个实体。
+        """
+        index: dict[str, set[str]] = {}
+        display_aliases: dict[str, str] = {}
+
+        def add(alias: Any, target: str) -> None:
+            if not isinstance(alias, str):
+                return
+            display = alias.strip()
+            normalized = _norm(display)
+            if not normalized:
+                return
+            canonical = display_aliases.setdefault(normalized, display)
+            index.setdefault(canonical, set()).add(target)
+
+        for family_id, family in self.robot_fleet.get("robot_families", {}).items():
+            target = f"family:{family_id}"
+            add(family_id, target)
+            add(family.get("full_name"), target)
+            for alias in family.get("aliases", []):
+                add(alias, target)
+
+        for variant_id, variant in self.robot_fleet.get("model_variants", {}).items():
+            target = f"variant:{variant_id}"
+            add(variant_id, target)
+            add(variant.get("full_name"), target)
+            for alias in variant.get("aliases", []):
+                add(alias, target)
+
+        for unit in self.robot_fleet.get("fleet_units", []):
+            unit_id = unit.get("unit_id")
+            if not unit_id:
+                continue
+            target = f"unit:{unit_id}"
+            for field in ("unit_id", "display_name", "serial_no", "status_ref"):
+                add(unit.get(field), target)
+            for alias in unit.get("aliases", []):
+                add(alias, target)
+
+        return {alias: sorted(targets) for alias, targets in index.items()}
+
+    def get_ambiguous_device_terms(self) -> set[str]:
+        """返回映射到多个分层实体的设备别名。"""
+        return {
+            alias
+            for alias, targets in self.get_device_alias_index().items()
+            if len(targets) > 1
+        }
+
+    def get_all_device_terms(self) -> set[str]:
+        """返回可安全用于意图路由的非歧义设备词集合。"""
+        alias_index = self.get_device_alias_index()
+        ambiguous = {
+            alias for alias, targets in alias_index.items() if len(targets) > 1
+        }
+        terms = {
+            alias
+            for alias in alias_index
+            if alias not in ambiguous
+            and len(alias.strip()) >= 2
+            and not alias.strip().isdigit()
+        }
+        for class_id, robot_class in self.get_robot_classes().items():
+            terms.add(class_id)
+            full_name = robot_class.get("full_name")
+            if isinstance(full_name, str) and full_name.strip():
+                terms.add(full_name.strip())
+        return terms
+
+    def execute_typed_query(
+        self,
+        query_type: str,
+        user_message: str,
+        context: dict | None = None,
+    ) -> dict:
+        """执行强类型只读知识查询，并返回稳定的结构化证据。"""
+        context = context if isinstance(context, dict) else {}
+        response = {
+            "query_type": query_type,
+            "results": [],
+            "found": False,
+            "source": "knowledge_base",
+            "version": "kb_1.1_hierarchical",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        if query_type == "TOOL_QUERY":
+            task_type_key = context.get("task_type_key")
+            robots = (
+                self.get_task_allowed_robot_variants(task_type_key)
+                if task_type_key
+                else self.get_all_rovs()
+            )
+            tool_set: set[str] = set()
+            equipment_mappings: list[dict] = []
+            for robot in robots:
+                payloads = list(robot.get("supported_payloads", []))
+                tool_set.update(payloads)
+                equipment_mappings.append({
+                    "equipment_type": robot.get("full_name"),
+                    "variant_id": robot.get("variant_id"),
+                    "family_id": robot.get("family_id"),
+                    "robot_class": robot.get("robot_class_name"),
+                    "supported_payloads": payloads,
+                })
+
+            task_payloads = self.assets.get("payload_options", {})
+            current_suggestions = (
+                task_payloads.get(task_type_key, {}) if task_type_key else {}
+            )
+            response["results"] = [
+                {"category": "all_supported_tools", "tools": sorted(tool_set)},
+                {
+                    "category": "equipment_payload_mapping",
+                    "mappings": equipment_mappings,
+                },
+                {
+                    "category": "task_payload_suggestions",
+                    "task_suggestions": task_payloads,
+                    "current_task_suggestions": current_suggestions,
+                },
+            ]
+            response["found"] = bool(tool_set or task_payloads)
+            if task_type_key:
+                response["used_task_type_key"] = task_type_key
+            return response
+
+        if query_type == "DEVICE_CAPABILITY":
+            return self._execute_device_capability_query(
+                user_message,
+                context,
+                response,
+            )
+
+        if query_type == "KNOWLEDGE_QA":
+            response["results"] = [
+                {
+                    "category": "task_templates",
+                    "templates": self.task_schemas.get("task_templates", {}),
+                },
+                {
+                    "category": "cable_types",
+                    "cable_types": self.assets.get("cable_types", []),
+                },
+                {
+                    "category": "vessels",
+                    "vessels": self.assets.get("vessels", []),
+                },
+            ]
+            response["found"] = True
+            return response
+
+        response["reason"] = "unsupported_query_type"
+        return response
+
+    def _execute_device_capability_query(
+        self,
+        user_message: str,
+        context: dict,
+        response: dict,
+    ) -> dict:
+        task_type_key = context.get("task_type_key")
+        depth_condition = self._parse_depth_condition(user_message)
+        response["depth_condition"] = depth_condition
+
+        matched_alias, entity_targets = self._find_query_entity_targets(user_message)
+        if not entity_targets:
+            context_selector = context.get("equipment_type")
+            if context_selector:
+                entity_targets = self._resolve_context_entity_targets(
+                    str(context_selector),
+                    task_type_key,
+                )
+                if entity_targets:
+                    matched_alias = str(context_selector)
+
+        if entity_targets and len(entity_targets) > 1:
+            response["reason"] = "ambiguous_device_alias"
+            response["matched_alias"] = matched_alias
+            response["candidate_entities"] = entity_targets
+            response["query_mode"] = "device_check"
+            return response
+
+        list_keywords = ("哪些", "列表", "所有", "有哪些", "推荐", "选择", "可用", "什么型号")
+        is_list_query = any(keyword in user_message for keyword in list_keywords)
+        if entity_targets:
+            entity_target = entity_targets[0]
+            entity_kind, robots = self._robots_for_entity_target(
+                entity_target,
+                task_type_key,
+            )
+            response["matched_alias"] = matched_alias
+            response["matched_entity"] = entity_target
+            query_mode = (
+                "device_list"
+                if entity_kind == "class" or (entity_kind == "family" and is_list_query)
+                else "device_check"
+            )
+        elif is_list_query:
+            robots = (
+                self.get_task_allowed_robot_variants(task_type_key)
+                if task_type_key
+                else self.get_all_rovs()
+            )
+            query_mode = "device_list"
+        else:
+            response["reason"] = "device_not_resolved"
+            response["query_mode"] = "device_check"
+            return response
+
+        response["query_mode"] = query_mode
+        if depth_condition["has_depth_expression"] and depth_condition["parse_status"] == "invalid":
+            response["reason"] = "invalid_depth_expression"
+            return response
+
+        results: list[dict] = []
+        for robot in robots:
+            item = dict(robot)
+            matches_depth = self._matches_depth_condition(
+                robot.get("max_depth_m"),
+                depth_condition,
+            )
+            item["matches_depth_condition"] = matches_depth
+            if query_mode == "device_check" or matches_depth:
+                results.append(item)
+
+        response["results"] = results
+        response["found"] = bool(results)
+        if not results:
+            response["reason"] = "no_matching_device"
+        return response
+
+    def _find_query_entity_targets(self, user_message: str) -> tuple[str | None, list[str]]:
+        message_norm = _norm(user_message)
+        if not message_norm:
+            return None, []
+        matches = [
+            (alias, targets)
+            for alias, targets in self.get_device_alias_index().items()
+            if _norm(alias) and _norm(alias) in message_norm
+        ]
+        if not matches:
+            class_matches = []
+            for class_id, robot_class in self.get_robot_classes().items():
+                label = robot_class.get("full_name") or class_id
+                if _norm(label) and _norm(label) in message_norm:
+                    class_matches.append((label, [f"class:{class_id}"]))
+            if not class_matches:
+                return None, []
+            class_matches.sort(key=lambda item: len(_norm(item[0])), reverse=True)
+            return class_matches[0]
+        matches.sort(key=lambda item: len(_norm(item[0])), reverse=True)
+        return matches[0]
+
+    def _resolve_context_entity_targets(
+        self,
+        selector: str,
+        task_type_key: str | None,
+    ) -> list[str]:
+        unit = self.resolve_robot_unit(selector, task_type_key)
+        if unit:
+            return [f"unit:{unit.get('unit_id')}"]
+        variant = self.get_rov_for_task(selector, task_type_key)
+        if variant:
+            return [f"variant:{variant.get('variant_id')}"]
+        family_id = self.resolve_robot_family_id(selector, task_type_key)
+        if family_id:
+            return [f"family:{family_id}"]
+        return []
+
+    def _robots_for_entity_target(
+        self,
+        entity_target: str,
+        task_type_key: str | None,
+    ) -> tuple[str | None, list[dict]]:
+        if ":" not in entity_target:
+            return None, []
+        entity_kind, entity_id = entity_target.split(":", 1)
+        allowed_robots = (
+            self.get_task_allowed_robot_variants(task_type_key)
+            if task_type_key
+            else self.get_all_rovs()
+        )
+
+        if entity_kind == "class":
+            return entity_kind, [
+                robot
+                for robot in allowed_robots
+                if robot.get("robot_class") == entity_id
+            ]
+        if entity_kind == "family":
+            return entity_kind, [
+                robot
+                for robot in allowed_robots
+                if robot.get("family_id") == entity_id
+            ]
+        if entity_kind == "variant":
+            return entity_kind, [
+                robot
+                for robot in allowed_robots
+                if robot.get("variant_id") == entity_id
+            ]
+        if entity_kind == "unit":
+            units = [
+                unit
+                for unit in self.robot_fleet.get("fleet_units", [])
+                if unit.get("unit_id") == entity_id
+            ]
+            if len(units) != 1:
+                return entity_kind, []
+            unit = units[0]
+            robots = [
+                robot
+                for robot in allowed_robots
+                if robot.get("variant_id") == unit.get("variant_id")
+            ]
+            if len(robots) != 1:
+                return entity_kind, []
+            robot = dict(robots[0])
+            robot["selected_unit"] = dict(unit)
+            return entity_kind, [robot]
+        return None, []
+
+    @staticmethod
+    def _parse_depth_condition(user_message: str) -> dict:
+        has_depth_expression = bool(
+            re.search(r"\d+\s*(?:米|m)?", user_message, re.IGNORECASE)
+            and any(
+                keyword in user_message.lower()
+                for keyword in ("米", "m", "深度", "下潜", "水深", "能力", "支持", "可在")
+            )
+        )
+        condition = {
+            "operator": None,
+            "depth_m": None,
+            "has_depth_expression": has_depth_expression,
+            "parse_status": "invalid" if has_depth_expression else "absent",
+        }
+        patterns = (
+            ("eq", r"(\d+)\s*米级"),
+            ("lte", r"(?:最大(?:下潜|作业)?深度(?:为|是)?|下潜极限(?:为|是)?)\s*(\d+)\s*(?:米|m)"),
+            ("lte", r"(?:不超过|至多|最大不超过|不大于|最多)\s*(\d+)\s*(?:米|m)"),
+            ("lt", r"(?:低于|小于|不到)\s*(\d+)\s*(?:米|m)"),
+            ("gte", r"(?:不少于|不低于|至少)\s*(\d+)\s*(?:米|m)"),
+            ("gt", r"(?<!不)(?:超过|大于)\s*(\d+)\s*(?:米|m)"),
+            ("gte", r"(?:支持在?|能够下潜至|能够下潜到|能够在?|能下潜到?|可在?|在)\s*(\d+)\s*(?:米|m)"),
+        )
+        for operator, pattern in patterns:
+            match = re.search(pattern, user_message, re.IGNORECASE)
+            if match:
+                condition.update({
+                    "operator": operator,
+                    "depth_m": int(match.group(1)),
+                    "parse_status": "valid",
+                })
+                break
+        return condition
+
+    @staticmethod
+    def _matches_depth_condition(max_depth: Any, condition: dict) -> bool:
+        if condition.get("parse_status") != "valid":
+            return True
+        if isinstance(max_depth, bool) or not isinstance(max_depth, (int, float)):
+            return False
+        target = condition.get("depth_m")
+        operator = condition.get("operator")
+        if operator == "eq":
+            return max_depth == target
+        if operator == "gte":
+            return max_depth >= target
+        if operator == "gt":
+            return max_depth > target
+        if operator == "lte":
+            return max_depth <= target
+        if operator == "lt":
+            return max_depth < target
+        return False

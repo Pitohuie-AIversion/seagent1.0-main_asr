@@ -7,12 +7,16 @@ extractor.py — 参数提取器
 import json
 import re
 from datetime import date
-from typing import Any
 
 from .llm_client import LLMClient
 
+MUTATING_INTENTS = {"TASK_CREATE", "TASK_UPDATE"}
+
+
+MAX_EXTRACTION_USER_HISTORY = 6
+
 EXTRACTION_TASK = """\
-你是一个严格的任务识别参数提取器，专门从用户的自然语言中提取任务类型。
+你是一个严格的任务参数候选抽取器。
 
 【极重要：输出边界】
 你当前不是对话助手，而是结构化候选抽取器。
@@ -22,7 +26,6 @@ EXTRACTION_TASK = """\
 
 【输出格式】
 {{
-  "intent": "task_update",
   "slot_candidates": [
     {{
       "raw_key": "作业类型",
@@ -45,15 +48,16 @@ EXTRACTION_TASK = """\
 【提取规则】
 1. 对于任务类型：
 {task_type_rules}
-2. 只支持上述提到的任务，如果不匹配，则返回空的 slot_candidates 列表，并把无法识别/无法匹配的任务输入写入 unresolved。
-3. 如果最新用户消息中对同一字段出现多个候选或多次反悔/修正，以文本中最后出现的候选为准。
-4. 最新用户消息使用“第一个”“第二个”“选2”等编号选择时，只能根据最近历史中明确列出的选项映射。
-5. 如用户明确说任务紧急（"紧急"、"急"、"加急"等），提取 canonical_key: "emergency_mode" 且 normalized_value: true。
-6. 只提取任务类型相关信息，补全 "task_type", "task_type_key", "emergency_mode" 字段。
+2. 如果无法识别任何任务字段，slot_candidates 和 unresolved 都返回空列表。
+3. 只支持上述任务；用户明确描述了不支持的任务时，不提取 task_type，并把任务描述写入 unresolved。
+4. 如果最新用户消息中对同一字段多次修正，以最后出现的候选为准。
+5. 最新用户消息使用“第一个”“第二个”“选2”等编号选择时，只能根据最近历史中明确列出的选项映射。
+6. 如用户明确说任务紧急（"紧急"、"急"、"加急"等），提取 canonical_key: "emergency_mode" 且 normalized_value: true。
+7. 本阶段只允许输出 task_type、task_type_key、emergency_mode。
 """
 
 EXTRACTION_SYSTEM = """\
-你是一个严格的参数提取器，专门从用户的自然语言中提取水下ROV作业任务参数。
+你是一个严格的参数候选抽取器，专门从用户的自然语言中提取水下ROV作业任务参数。
 
 【极重要：输出边界】
 你当前不是对话助手，而是结构化候选抽取器。
@@ -64,7 +68,6 @@ EXTRACTION_SYSTEM = """\
 
 【输出格式】
 {{
-  "intent": "task_update",
   "slot_candidates": [
     {{
       "raw_key": "水深",
@@ -100,7 +103,7 @@ EXTRACTION_SYSTEM = """\
 13. 如用户明确说任务紧急（"紧急"、"急"、"加急"等），提取 canonical_key: "emergency_mode" 且 normalized_value: true。
 14. 最新用户消息使用“第一个”“第二个”“选2”等编号选择时，只能根据最近历史中明确列出的选项映射。
 15. 只根据所需字段中定义的key提取，不新增其他字段。
-16. 无法识别的信息（包括用户提问的其他话题、闲聊、或不相关的数据）必须提取到 "unresolved" 数组中（每个未识别的段落或词作为字符串），不允许丢弃！
+16. 任务维度中无法识别或无法映射的片段写入 unresolved；普通寒暄不写入 unresolved。无法识别任何字段时返回空 slot_candidates。
 
 【当前时间】{today}
 
@@ -180,35 +183,108 @@ class ParameterExtractor:
             {"role": "user", "content": user_message},
         ]
 
-        print('extract prompt | '*10)
         result = self.llm.extract_json(messages, max_tokens=800)
-        print('result in extract update | '*10)
-        print(result)
-        
-        default_res = {"intent": "task_update", "slot_candidates": [], "unresolved": []}
+
+        default_res = {"slot_candidates": [], "unresolved": []}
         if not result or not isinstance(result, dict):
             return default_res
-        
-        # Ensure correct structure is returned
-        if "slot_candidates" not in result:
-            # Fallback if LLM output does not match structured format but is a flat JSON dict
-            candidates = []
-            for k, v in result.items():
-                if k in ("intent", "unresolved"):
-                    continue
-                candidates.append({
-                    "raw_key": k,
-                    "canonical_key": k,
-                    "raw_value": str(v),
-                    "normalized_value": v,
-                    "confidence": 1.0
-                })
-            result = {
-                "intent": result.get("intent", "task_update"),
-                "slot_candidates": candidates,
-                "unresolved": result.get("unresolved", [])
+
+        allowed_keys = self._allowed_candidate_keys(task_type_key, required)
+        raw_candidates = result.get("slot_candidates")
+        if not isinstance(raw_candidates, list):
+            # 兼容模型偶尔返回的扁平 JSON，但仍执行字段白名单检查。
+            raw_candidates = [
+                {
+                    "raw_key": key,
+                    "canonical_key": key,
+                    "raw_value": value,
+                    "normalized_value": value,
+                    "confidence": 1.0,
+                }
+                for key, value in result.items()
+                if key not in ("intent", "unresolved", "slot_candidates")
+            ]
+
+        unresolved = result.get("unresolved")
+        if not isinstance(unresolved, list):
+            unresolved = []
+
+        return {
+            "slot_candidates": self._normalize_candidates(
+                raw_candidates,
+                allowed_keys,
+            ),
+            "unresolved": [
+                str(item).strip()
+                for item in unresolved
+                if str(item).strip()
+            ],
+        }
+
+    @staticmethod
+    def _allowed_candidate_keys(
+        task_type_key: str | None,
+        required: list[dict] | None,
+    ) -> set[str]:
+        """根据当前抽取阶段生成字段白名单。"""
+        if task_type_key is None:
+            return {"task_type", "task_type_key", "emergency_mode"}
+
+        keys = {
+            str(field.get("key"))
+            for field in required or []
+            if field.get("key")
+        }
+        # 这些是收集流程使用的控制/中间字段，不一定直接出现在输出 schema 中。
+        keys.update(
+            {
+                "task_type",
+                "task_type_key",
+                "emergency_mode",
+                "rov_description",
+                "equipment_name",
             }
-        return result
+        )
+        return keys
+
+    @staticmethod
+    def _normalize_candidates(
+        candidates: list,
+        allowed_keys: set[str],
+    ) -> list[dict]:
+        """校验候选结构；同一字段多次出现时保留最后一次修正。"""
+        aliases = {"equipment_model": "equipment_type"}
+        normalized_by_key: dict[str, dict] = {}
+
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+
+            key = str(candidate.get("canonical_key") or "").strip()
+            key = aliases.get(key, key)
+            if not key or key not in allowed_keys:
+                continue
+
+            value = candidate.get("normalized_value")
+            if value is None or value == "":
+                continue
+
+            try:
+                confidence = float(candidate.get("confidence", 1.0))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            confidence = min(1.0, max(0.0, confidence))
+
+            raw_value = candidate.get("raw_value", value)
+            normalized_by_key[key] = {
+                "raw_key": str(candidate.get("raw_key") or key),
+                "canonical_key": key,
+                "raw_value": raw_value,
+                "normalized_value": value,
+                "confidence": confidence,
+            }
+
+        return list(normalized_by_key.values())
 
     def _select_extraction_history(
         self,
@@ -216,12 +292,12 @@ class ParameterExtractor:
         required: list[dict] | None,
         conversation_history: list[dict] | None,
     ) -> list[dict]:
-        """仅在当前指令依赖上下文时提供最近六条历史消息。"""
+        """仅在当前指令依赖上下文时提供有限的最近历史消息。"""
         if not self._needs_history_context(user_message, required):
             return []
 
         recent = []
-        for message in (conversation_history or [])[-6:]:
+        for message in (conversation_history or [])[-MAX_EXTRACTION_USER_HISTORY:]:
             role = message.get("role")
             content = str(message.get("content") or "").strip()
             if role in ("user", "assistant") and content:

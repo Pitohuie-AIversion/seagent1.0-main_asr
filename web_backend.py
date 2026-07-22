@@ -285,10 +285,11 @@ def api_chat():
                 built_json=mgr._last_built_json,
                 mode=mgr.mode,
                 phase=mgr.phase,
-                intent_id=mgr.task_state.get('intent_id'),  
+                intent_id=mgr.task_state.get('intent_id'),
+                slot_store=mgr.slot_store,
             )
         except Exception as e:
-            print(f"保存历史快照失败: {e}")
+            logging.error("保存历史快照失败: %s", e, exc_info=True)
 
     return jsonify({
         "session_id": sid,
@@ -559,18 +560,33 @@ def api_history_list():
 @app.route("/api/history/load", methods=["POST"])
 def api_history_load():
     """加载指定的历史快照，并恢复到当前会话"""
-    data = request.get_json()
+    data = request.get_json() or {}
     history_id = data.get("history_id")
     sid = data.get("session_id")
     if not history_id or not sid:
         return jsonify({"code": 400, "msg": "缺少 history_id 或 session_id"}), 400
 
-    snapshot = load_history(history_id)
+    try:
+        snapshot = load_history(history_id)
+    except ValueError as exc:
+        logging.warning("拒绝非法历史快照请求: history_id=%r, error=%s", history_id, exc)
+        return jsonify({"code": 400, "msg": f"历史记录参数或内容非法: {exc}"}), 400
+    except OSError as exc:
+        logging.error("读取历史快照失败: history_id=%r", history_id, exc_info=True)
+        return jsonify({"code": 500, "msg": f"读取历史记录失败: {exc}"}), 500
+
     if not snapshot:
         return jsonify({"code": 404, "msg": "历史记录不存在"}), 404
 
     mgr = get_or_create_manager(sid)
-    mgr.load_snapshot(snapshot)
+    try:
+        mgr.load_snapshot(snapshot)
+    except (TypeError, ValueError) as exc:
+        logging.warning("历史快照结构校验失败: history_id=%r, error=%s", history_id, exc)
+        return jsonify({"code": 400, "msg": f"历史快照结构非法: {exc}"}), 400
+    except Exception as exc:
+        logging.error("恢复历史快照失败: history_id=%r", history_id, exc_info=True)
+        return jsonify({"code": 500, "msg": f"恢复历史记录失败: {exc}"}), 500
 
     return jsonify({
         "code": 200,

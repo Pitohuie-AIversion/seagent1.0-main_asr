@@ -383,18 +383,25 @@ class TaskValidator:
                 if timestamp_str is not None:
                     try:
                         if isinstance(timestamp_str, str):
-                            # 解析 ISO 8601 格式，兼容 +08:00 等时区后缀
-                            clean = timestamp_str.replace('+00:00', '').replace('Z', '')
-                            if '+' in clean:
-                                clean = clean.split('+')[0]
-                            if clean.endswith('Z'):
-                                clean = clean[:-1]
-                            dt = datetime.fromisoformat(clean)
-                            timestamp = dt.timestamp()
+                            clean_ts = timestamp_str.replace("Z", "+00:00")
+                            dt = datetime.fromisoformat(clean_ts)
+                        elif isinstance(timestamp_str, (int, float)):
+                            dt = datetime.fromtimestamp(timestamp_str, tz=ZoneInfo("Asia/Shanghai"))
                         else:
-                            timestamp = float(timestamp_str)
-                        current_ts = get_current_timestamp()  
-                        if (current_ts - timestamp) > 3600:
+                            return None
+
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+                        else:
+                            dt = dt.astimezone(ZoneInfo("Asia/Shanghai"))
+
+                        now_sim = get_current_datetime()
+                        if now_sim.tzinfo is None:
+                            now_sim = now_sim.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+                        else:
+                            now_sim = now_sim.astimezone(ZoneInfo("Asia/Shanghai"))
+
+                        if (now_sim - dt).total_seconds() > 3600:
                             msg = c["violation_message"].replace("{update_timestamp}", str(timestamp_str))
                             return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
                     except Exception:

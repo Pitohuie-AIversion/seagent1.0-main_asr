@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import timedelta
 import sys
 import unittest
 from unittest.mock import MagicMock
@@ -12,6 +13,8 @@ from src.llm_client import LLMClient
 from src.output_builder import OutputBuilder
 from src.prompts import build_responder_messages
 from src.task_intent_builder import TaskIntentBuilder
+from src.intent_router import IntentRouter
+from src.simulated_time import get_current_datetime
 
 
 class DialogueManagerROVTest(unittest.TestCase):
@@ -20,6 +23,107 @@ class DialogueManagerROVTest(unittest.TestCase):
         cls.kb = KnowledgeBase()
         cls.llm = MagicMock(spec=LLMClient)
         cls.llm.generate.return_value = "null"
+
+    def test_interaction_router_prioritizes_write_over_entity_keyword_query(self):
+        router = IntentRouter(LLMClient(None, None), device_terms=self.kb)
+        route = router.route(
+            "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆类型海底油气管道",
+            conversation_history=[],
+            task_state={},
+            phase="collecting",
+            expected_slots=[],
+        )
+
+        self.assertEqual(route.interaction_type, "WRITE")
+        self.assertEqual(route.write_action, "CREATE")
+        self.assertEqual(route.intent, "TASK_CREATE")
+        self.assertTrue(route.should_update_slots)
+
+    def test_interaction_router_keeps_real_cable_type_question_as_query(self):
+        router = IntentRouter(LLMClient(None, None), device_terms=self.kb)
+        route = router.route(
+            "管缆类型有哪些？",
+            conversation_history=[],
+            task_state={},
+            phase="collecting",
+            expected_slots=[],
+        )
+
+        self.assertEqual(route.interaction_type, "QUERY")
+        self.assertEqual(route.query_intent, "KNOWLEDGE_QA")
+        self.assertEqual(route.intent, "KNOWLEDGE_QA")
+        self.assertFalse(route.should_update_slots)
+
+    def test_interaction_router_treats_expected_slot_answer_as_write(self):
+        router = IntentRouter(LLMClient(None, None), device_terms=self.kb)
+        route = router.route(
+            "海底油气管道",
+            conversation_history=[],
+            task_state={"task_type_key": "pipeline_inspection"},
+            phase="collecting",
+            expected_slots=["cable_type"],
+        )
+
+        self.assertEqual(route.interaction_type, "WRITE")
+        self.assertEqual(route.write_action, "UPDATE")
+        self.assertEqual(route.intent, "TASK_UPDATE")
+        self.assertTrue(route.should_update_slots)
+
+    def test_dialogue_manager_writes_compound_create_message_slots(self):
+        class CompoundExtractor:
+            def __init__(self):
+                self.start_time = get_current_datetime().replace(microsecond=0)
+                self.end_time = self.start_time + timedelta(hours=5)
+
+            @staticmethod
+            def _candidate(key, value, raw):
+                return {
+                    "canonical_key": key,
+                    "normalized_value": value,
+                    "raw_value": raw,
+                    "confidence": 1.0,
+                }
+
+            def extract_updates(self, user_message, current_state, **kwargs):
+                return {
+                    "slot_candidates": [
+                        self._candidate("task_type", "管缆巡检", user_message),
+                        self._candidate("task_type_key", "pipeline_inspection", user_message),
+                        self._candidate("start_time", self.start_time.strftime("%Y-%m-%dT%H:%M:%S"), user_message),
+                        self._candidate("end_time", self.end_time.strftime("%Y-%m-%dT%H:%M:%S"), user_message),
+                        self._candidate("cable_type", "海底油气管道", user_message),
+                    ],
+                    "unresolved": [],
+                }
+
+        dm = DialogueManager(LLMClient(None, None), self.kb)
+        dm.extractor = CompoundExtractor()
+        dm.process(
+            "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆类型海底油气管道",
+            request_id="compound_create_test",
+        )
+
+        state = dm.slot_store.get_task_state()
+        self.assertEqual(state.get("task_type"), "管缆巡检")
+        self.assertEqual(state.get("task_type_key"), "pipeline_inspection")
+        self.assertEqual(state.get("start_time"), dm.extractor.start_time.strftime("%Y-%m-%dT%H:%M:%S"))
+        self.assertEqual(state.get("end_time"), dm.extractor.end_time.strftime("%Y-%m-%dT%H:%M:%S"))
+        self.assertEqual(state.get("cable_type"), "海底油气管道")
+
+    def test_write_route_without_extracted_candidates_does_not_mutate_slots(self):
+        class EmptyExtractor:
+            def extract_updates(self, user_message, current_state, **kwargs):
+                return {"slot_candidates": [], "unresolved": []}
+
+        dm = DialogueManager(LLMClient(None, None), self.kb)
+        dm.extractor = EmptyExtractor()
+        before_version = dm.slot_store.version
+        reply = dm.process("请规划一个巡检作业", request_id="empty_write_test")
+
+        state = dm.slot_store.get_task_state()
+        self.assertEqual(dm.slot_store.version, before_version)
+        self.assertIsNone(state.get("task_type"))
+        self.assertIn("没有提取到可写入的合法字段", reply)
 
     def _commit_equipment_update(
         self,
@@ -190,6 +294,44 @@ class DialogueManagerROVTest(unittest.TestCase):
         )[0]["content"]
         self.assertIn("本轮只询问作业设备型号", system)
         self.assertIn("不得询问具体机器人编号", system)
+
+    def test_prompt_requires_allowed_values_to_be_rendered_verbatim_for_all_fields(self):
+        messages = build_responder_messages(
+            task_state={"equipment_family": "轻型工作级深海机器人"},
+            built_json={"equipment_family": "轻型工作级深海机器人"},
+            missing_fields=[
+                {
+                    "key": "cable_type",
+                    "label": "管缆类型",
+                    "type": "string",
+                    "allowed_values": ["海底油气管道", "电力电缆"],
+                },
+                {
+                    "key": "support_vessel",
+                    "label": "支持船编号",
+                    "type": "string",
+                    "allowed_values": ["海洋石油681"],
+                },
+            ],
+            mode="normal",
+            phase="collecting",
+            knowledge_context="",
+            constraint_context={"type": "none"},
+            conversation_history=[],
+            latest_user_message="继续",
+            ROV2type={},
+            support_task=["管缆巡检"],
+        )
+
+        system = messages[0]["content"]
+        self.assertIn("海底油气管道", system)
+        self.assertIn("电力电缆", system)
+        self.assertIn("海洋石油681", system)
+        self.assertIn("任意待收集字段包含 allowed_values", system)
+        self.assertIn("逐字原样复制 allowed_values", system)
+        self.assertIn("用户看到的每一个候选项", system)
+        self.assertIn("完全字符串匹配", system)
+        self.assertIn("不得把其他字段的已收集值", system)
 
     def test_responder_uses_committed_update_instead_of_raw_alias(self):
         messages = build_responder_messages(
