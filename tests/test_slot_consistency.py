@@ -970,8 +970,8 @@ class SlotConsistencyTest(unittest.TestCase):
                     task_type_key="pipeline_inspection"
                 )
                 f1 = builder.persist(intent)
-                f2 = builder.persist(intent)
-                self.assertEqual(f1, f2)
+                with self.assertRaises((IntentIdConflict, TaskPersistenceError)):
+                    builder.persist(intent)
 
     # 38. 自定义 SEAGENT_RESULT_DIR 对所有模块生效
     def test_38_custom_seagent_result_dir_affects_all_modules(self):
@@ -1140,8 +1140,8 @@ class SlotConsistencyTest(unittest.TestCase):
                 )
                 f1 = builder.persist(intent1)
                 staging2 = builder.create_staging(intent1)
-                f2 = builder.publish_staging(staging2, intent1)
-                self.assertEqual(f1, f2)
+                with self.assertRaises((IntentIdConflict, TaskPersistenceError)):
+                    builder.publish_staging(staging2, intent1)
 
                 final_files = list(tmp_path.glob("task_intent_*.json"))
                 self.assertEqual(len(final_files), 1)
@@ -1351,9 +1351,8 @@ class SlotConsistencyTest(unittest.TestCase):
             res1 = queue.get(timeout=2)
             res2 = queue.get(timeout=2)
 
-            self.assertEqual(res1[0], "success")
-            self.assertEqual(res2[0], "success")
-            self.assertEqual(res1[1], res2[1])
+            statuses = [res1[0], res2[0]]
+            self.assertEqual(sorted(statuses), ["conflict", "success"])
 
             final_files = list(task_dir.glob("task_intent_*.json"))
             self.assertEqual(len(final_files), 1)

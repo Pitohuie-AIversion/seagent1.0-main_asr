@@ -13,7 +13,7 @@ class TaskRollbackError(TaskPersistenceError):
     pass
 
 
-class IntentIdConflict(Exception):
+class IntentIdConflict(TaskPersistenceError):
     """Intent ID 冲突或重复写入内容不一致"""
     pass
 

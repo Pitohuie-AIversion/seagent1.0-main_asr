@@ -186,19 +186,20 @@ class TaskIntentBuilder:
         staging_file = task_dir / f"task_intent_{intent_id}.staging_{unique_suffix}"
         if task_dir.resolve() not in staging_file.resolve().parents:
             raise TaskPersistenceError(f"Path traversal detected for staging file: {staging_file}")
-        try:
-            with open(staging_file, "w", encoding="utf-8") as f:
-                json.dump(intent, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            return staging_file
-        except Exception as e:
-            if staging_file.exists():
+
+        with TaskPublishLock(task_dir):
+            try:
+                flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0)
+                fd = os.open(staging_file, flags, 0o600)
                 try:
-                    staging_file.unlink()
-                except Exception:
-                    pass
-            raise TaskPersistenceError(f"Failed to create staging file for {intent_id}: {e}") from e
+                    content_bytes = json.dumps(intent, ensure_ascii=False, indent=2).encode("utf-8")
+                    os.write(fd, content_bytes)
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                return staging_file
+            except Exception as e:
+                raise TaskPersistenceError(f"Failed to create staging file for {intent_id}: {e}") from e
 
     def publish_staging(self, staging_file: Path | str, intent: Dict[str, Any]) -> str:
         """使用跨进程排他锁、认领隔离与内存可信原子提交发布 staging 为正式 JSON"""
@@ -243,39 +244,51 @@ class TaskIntentBuilder:
                 f"Staging filename '{staging_path.name}' does not match controlled format pattern for intent_id '{intent_id}'"
             )
 
+        txid = uuid.uuid4().hex
+
         with TaskPublishLock(task_dir):
             final_file = task_dir / f"task_intent_{intent_id}.json"
             if resolved_task_dir not in final_file.resolve().parents:
                 raise TaskPersistenceError(f"Path traversal detected for final file: {final_file}")
 
-            # 2. 读取并验证 staging JSON 内容与 fd stat
+            # 2. 如果 final_file 已存在：无条件拒绝发布！同一 intent_id 只能成功发布一次
+            if final_file.exists() or final_file.is_symlink():
+                if resolved_staging.exists():
+                    try:
+                        os.unlink(resolved_staging)
+                    except Exception:
+                        pass
+                raise IntentIdConflict(f"Target official file already exists: {final_file.name}")
+
+            # 3. 打开 staging 文件描述符 (O_NOFOLLOW + O_RDONLY)，用 fstat 强绑定 inode
             try:
-                st_before = staging_path.stat()
+                stat_before = resolved_staging.stat()
+                try:
+                    with open(resolved_staging, "r", encoding="utf-8") as _chk_f:
+                        pass
+                except Exception:
+                    pass
+                open_flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                st_fd = os.open(resolved_staging, open_flags)
             except Exception as e:
-                raise TaskPersistenceError(f"Failed to stat staging file: {e}") from e
+                raise TaskPersistenceError(f"Failed to open staging file descriptor safely: {e}") from e
 
             try:
-                with open(resolved_staging, "r", encoding="utf-8") as f:
-                    f_fd = f.fileno()
-                    validated_stat = os.fstat(f_fd)
-                    if not stat.S_ISREG(validated_stat.st_mode):
-                        raise TaskPersistenceError("Staging file descriptor is not a regular file")
+                validated_stat = os.fstat(st_fd)
+                if not stat.S_ISREG(validated_stat.st_mode):
+                    raise TaskPersistenceError("Staging file descriptor is not a regular file")
+                if (stat_before.st_dev != validated_stat.st_dev or
+                    stat_before.st_ino != validated_stat.st_ino or
+                    stat_before.st_size != validated_stat.st_size or
+                    stat_before.st_mtime != validated_stat.st_mtime):
+                    raise TaskPersistenceError("Staging file modified during verification")
+
+                with os.fdopen(st_fd, "r", encoding="utf-8", closefd=True) as f:
                     staging_data = json.load(f)
             except TaskPersistenceError:
                 raise
             except Exception as e:
                 raise TaskPersistenceError(f"Failed to parse staging JSON content: {e}") from e
-
-            try:
-                st_after = staging_path.stat()
-            except Exception as e:
-                raise TaskPersistenceError(f"Failed to re-stat staging file: {e}") from e
-
-            if (st_before.st_dev != st_after.st_dev or
-                st_before.st_ino != st_after.st_ino or
-                st_before.st_size != st_after.st_size or
-                st_before.st_mtime_ns != st_after.st_mtime_ns):
-                raise TaskPersistenceError("Staging file was modified during verification")
 
             if not isinstance(staging_data, dict):
                 raise TaskPersistenceError("Staging JSON top-level must be a dictionary")
@@ -287,106 +300,135 @@ class TaskIntentBuilder:
             if st_intent_id != intent_id or staging_data != intent:
                 raise TaskPersistenceError("Staging JSON content does not match expected intent data")
 
-            # 3. 如果 final_file 已存在：判断内容一致性并安全清理当前 verified staging
-            if final_file.exists():
-                try:
-                    with open(final_file, "r", encoding="utf-8") as f:
-                        existing_data = json.load(f)
-                    if existing_data == intent:
-                        if staging_path.exists() and not staging_path.is_symlink():
-                            try:
-                                cur_stat = staging_path.stat()
-                                if cur_stat.st_dev == validated_stat.st_dev and cur_stat.st_ino == validated_stat.st_ino:
-                                    staging_path.unlink()
-                            except Exception:
-                                pass
-                        return final_file.name
-                    else:
-                        if staging_path.exists() and not staging_path.is_symlink():
-                            try:
-                                cur_stat = staging_path.stat()
-                                if cur_stat.st_dev == validated_stat.st_dev and cur_stat.st_ino == validated_stat.st_ino:
-                                    staging_path.unlink()
-                            except Exception:
-                                pass
-                        raise IntentIdConflict(f"Intent ID conflict for {intent_id}: target file exists with different content.")
-                except IntentIdConflict:
-                    raise
-                except Exception:
-                    raise IntentIdConflict(f"Intent ID conflict for {intent_id}: target file exists.")
-
-            # 4. 安全认领 Staging (Claiming)
-            claim_file = task_dir / f".claimed_{intent_id}_{uuid.uuid4().hex}"
-            claimed_owned = False
+            # 4. 安全认领 Staging (Claiming) 到专用隔离路径
+            claim_file = task_dir / f".claimed_{intent_id}_{txid}"
+            claimed_stat = None
             try:
                 os.rename(staging_path, claim_file)
-                claimed_owned = True
-                claimed_stat = os.stat(claim_file)
-                if claimed_stat.st_dev != validated_stat.st_dev or claimed_stat.st_ino != validated_stat.st_ino:
+                cur_claim_stat = claim_file.stat()
+                if cur_claim_stat.st_dev != validated_stat.st_dev or cur_claim_stat.st_ino != validated_stat.st_ino:
                     raise TaskPersistenceError("Staging file inode mismatch upon claim")
+                claimed_stat = cur_claim_stat
             except Exception as e:
-                if claimed_owned and claim_file.exists():
+                if claim_file.exists():
                     try:
-                        claim_file.unlink()
+                        c_st = claim_file.stat()
+                        if (claimed_stat and c_st.st_dev == claimed_stat.st_dev and c_st.st_ino == claimed_stat.st_ino):
+                            claim_file.unlink()
                     except Exception:
                         pass
                 raise TaskPersistenceError(f"Failed to claim staging file for {intent_id}: {e}") from e
 
-            # 5. 从受信任内存 intent 原子创建私有临时文件并写入
-            tmp_file = task_dir / f".tmp_publish_{intent_id}_{uuid.uuid4().hex}"
-            tmp_owned = False
+            # 5. 从受信任内存 intent 原子创建私有 0600 临时文件并写入
+            tmp_file = task_dir / f".tmp_publish_{intent_id}_{txid}"
+            tmp_stat = None
             try:
-                tmp_fd = os.open(tmp_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                tmp_owned = True
+                tmp_flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0)
+                tmp_fd = os.open(tmp_file, tmp_flags, 0o600)
                 try:
+                    tmp_stat = os.fstat(tmp_fd)
                     content_bytes = json.dumps(intent, ensure_ascii=False, indent=2).encode("utf-8")
                     os.write(tmp_fd, content_bytes)
                     os.fsync(tmp_fd)
                 finally:
                     os.close(tmp_fd)
 
-                with open(tmp_file, "r", encoding="utf-8") as f:
-                    written_data = json.load(f)
+                read_flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                t_fd = os.open(tmp_file, read_flags)
+                try:
+                    with os.fdopen(t_fd, "r", encoding="utf-8", closefd=True) as f:
+                        written_data = json.load(f)
+                except Exception as e:
+                    raise TaskPersistenceError(f"Failed to read back written temp file: {e}") from e
+
                 if written_data != intent:
                     raise TaskPersistenceError("Temp file written content mismatch")
 
-                # 6. 原子且 no-overwrite 提交正式文件
+                # 6. 原子 no-overwrite 提交正式文件
                 _atomic_commit_noreplace(tmp_file, final_file)
-                tmp_owned = False
 
-                # 7. 成功清理被认领的 staging 文件
-                if claimed_owned and claim_file.exists():
+                try:
+                    f_fd = os.open(final_file, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
                     try:
-                        claim_file.unlink()
+                        os.fsync(f_fd)
+                    finally:
+                        os.close(f_fd)
+                except Exception:
+                    pass
+
+                try:
+                    d_fd = os.open(task_dir, os.O_RDONLY)
+                    try:
+                        os.fsync(d_fd)
+                    finally:
+                        os.close(d_fd)
+                except Exception:
+                    pass
+
+                if tmp_file.exists():
+                    try:
+                        st = tmp_file.stat()
+                        if tmp_stat and st.st_dev == tmp_stat.st_dev and st.st_ino == tmp_stat.st_ino:
+                            tmp_file.unlink()
                     except Exception:
                         pass
-                    claimed_owned = False
+
+                # 7. 成功清理被认领的 claim 文件
+                if claim_file.exists():
+                    try:
+                        st = claim_file.stat()
+                        if claimed_stat and st.st_dev == claimed_stat.st_dev and st.st_ino == claimed_stat.st_ino:
+                            claim_file.unlink()
+                    except Exception:
+                        pass
 
                 return final_file.name
 
             except FileExistsError:
-                if claimed_owned and claim_file.exists():
+                if tmp_file.exists():
                     try:
-                        claim_file.unlink()
+                        st = tmp_file.stat()
+                        if tmp_stat and st.st_dev == tmp_stat.st_dev and st.st_ino == tmp_stat.st_ino:
+                            tmp_file.unlink()
+                    except Exception:
+                        pass
+                if claim_file.exists():
+                    try:
+                        st = claim_file.stat()
+                        if claimed_stat and st.st_dev == claimed_stat.st_dev and st.st_ino == claimed_stat.st_ino:
+                            claim_file.unlink()
                     except Exception:
                         pass
                 raise IntentIdConflict(f"Intent ID conflict for {intent_id}: target file exists.")
             except IntentIdConflict:
-                if claimed_owned and claim_file.exists():
+                if tmp_file.exists():
                     try:
-                        claim_file.unlink()
+                        st = tmp_file.stat()
+                        if tmp_stat and st.st_dev == tmp_stat.st_dev and st.st_ino == tmp_stat.st_ino:
+                            tmp_file.unlink()
+                    except Exception:
+                        pass
+                if claim_file.exists():
+                    try:
+                        st = claim_file.stat()
+                        if claimed_stat and st.st_dev == claimed_stat.st_dev and st.st_ino == claimed_stat.st_ino:
+                            claim_file.unlink()
                     except Exception:
                         pass
                 raise
             except Exception as e:
-                if tmp_owned and tmp_file.exists():
+                if tmp_file.exists():
                     try:
-                        tmp_file.unlink()
+                        st = tmp_file.stat()
+                        if tmp_stat and st.st_dev == tmp_stat.st_dev and st.st_ino == tmp_stat.st_ino:
+                            tmp_file.unlink()
                     except Exception:
                         pass
-                if claimed_owned and claim_file.exists():
+                if claim_file.exists():
                     try:
-                        claim_file.unlink()
+                        st = claim_file.stat()
+                        if claimed_stat and st.st_dev == claimed_stat.st_dev and st.st_ino == claimed_stat.st_ino:
+                            claim_file.unlink()
                     except Exception:
                         pass
                 raise TaskPersistenceError(f"Failed to publish staging file for {intent_id}: {e}") from e

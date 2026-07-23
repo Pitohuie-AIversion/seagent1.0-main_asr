@@ -20,6 +20,8 @@ dialogue_manager.py - 对话主控制器
 
 import copy
 import json
+import os
+import stat
 import logging
 import threading
 from typing import Any
@@ -48,6 +50,7 @@ from .oilfield_linker import OilfieldEntityLinker
 from .exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
 from .id_sequence import validate_intent_id
 from .slot_store import SlotStore, Slot
+from .result_paths import get_task_dir
 from .intent_router import IntentRouter, IntentRouteResult
 
 HARD_REFUSAL_LIMIT = 4   # 连续拒绝上限
@@ -763,7 +766,6 @@ class DialogueManager:
             intent_id_slot = new_slots.get("intent_id")
             if old_phase == "done" or not intent_id_slot or intent_id_slot.status != "valid" or not intent_id_slot.value:
                 today = get_current_datetime().strftime("%Y%m%d")
-                from .task_intent_builder import get_task_dir
                 task_dir = get_task_dir(create=False)
                 from .id_sequence import next_daily_id
                 ti_intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
@@ -1834,17 +1836,26 @@ class DialogueManager:
             valid_pub_evidence = False
             if intent_slot and intent_slot.status == "valid" and validate_intent_id(intent_slot.value):
                 cur_id = str(intent_slot.value)
-                from .task_intent_builder import get_task_dir
-                task_dir = get_task_dir(create=False)
+                from . import task_intent_builder as _tib
+                task_dir = _tib.get_task_dir(create=False)
+                TaskPublishLock = _tib.TaskPublishLock
                 pub_file = task_dir / f"task_intent_{cur_id}.json"
-                if pub_file.exists() and pub_file.is_file():
-                    try:
-                        with open(pub_file, "r", encoding="utf-8") as pf:
-                            f_data = json.load(pf)
-                        if isinstance(f_data, dict) and f_data.get("intent_id") == cur_id:
-                            valid_pub_evidence = True
-                    except Exception:
-                        valid_pub_evidence = False
+                if pub_file.exists() and not pub_file.is_symlink() and pub_file.is_file():
+                    with TaskPublishLock(task_dir):
+                        try:
+                            open_flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                            f_fd = os.open(pub_file, open_flags)
+                            try:
+                                f_stat = os.fstat(f_fd)
+                                if stat.S_ISREG(f_stat.st_mode):
+                                    with os.fdopen(f_fd, "r", encoding="utf-8", closefd=True) as pf:
+                                        f_data = json.load(pf)
+                                    if isinstance(f_data, dict) and f_data.get("intent_id") == cur_id:
+                                        valid_pub_evidence = True
+                            except Exception:
+                                valid_pub_evidence = False
+                        except Exception:
+                            valid_pub_evidence = False
 
             if not valid_pub_evidence:
                 candidate_phase = "confirming" if not candidate_missing else "collecting"
@@ -1869,7 +1880,6 @@ class DialogueManager:
             )
             if needs_new_intent_id:
                 today = get_current_datetime().strftime("%Y%m%d")
-                from .task_intent_builder import get_task_dir
                 task_dir = get_task_dir(create=False)
                 from .id_sequence import next_daily_id
                 ti_intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
