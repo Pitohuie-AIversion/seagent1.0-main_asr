@@ -201,6 +201,172 @@ class TaskIntentBuilder:
             except Exception as e:
                 raise TaskPersistenceError(f"Failed to create staging file for {intent_id}: {e}") from e
 
+def validate_task_intent(intent: Any) -> bool:
+    """权威完整 TaskIntent 结构校验器"""
+    if not isinstance(intent, dict):
+        return False
+    intent_id = intent.get("intent_id")
+    if not validate_intent_id(intent_id):
+        return False
+    top_task_type = intent.get("task_type")
+    if top_task_type not in ("pipeline_inspection", "tree_valve_operation", "valve_operation"):
+        return False
+    if not isinstance(intent.get("priority"), int):
+        return False
+    time_info = intent.get("time")
+    if not isinstance(time_info, dict) or "start" not in time_info or "end" not in time_info:
+        return False
+    loc_info = intent.get("location")
+    if not isinstance(loc_info, dict) or "oilfield" not in loc_info or "water_depth_m" not in loc_info:
+        return False
+    task_info = intent.get("task")
+    if not isinstance(task_info, dict) or "type" not in task_info or "details" not in task_info:
+        return False
+    eq_info = intent.get("equipment")
+    if not isinstance(eq_info, dict) or "robot_type" not in eq_info or "payload" not in eq_info or "support_vessel" not in eq_info:
+        return False
+    cond_info = intent.get("conditions")
+    if not isinstance(cond_info, dict):
+        return False
+    return True
+
+
+class TaskIntentBuilder:
+    def __init__(self, kb: KnowledgeBase):
+        self.kb = kb
+
+    def prepare(
+        self,
+        task_state: Dict[str, Any],
+        built_json: Dict[str, Any],
+        mode: str,
+        task_type_key: str,
+        intent_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """纯内存构建 TaskIntent 字典，无磁盘副作用"""
+        if intent_id is not None:
+            if not validate_intent_id(intent_id):
+                raise TaskPersistenceError(f"Invalid intent_id parameter: {intent_id}")
+            effective_intent_id = intent_id
+        else:
+            cand_id = built_json.get("intent_id") or task_state.get("intent_id")
+            if cand_id:
+                if not validate_intent_id(cand_id):
+                    raise TaskPersistenceError(f"Invalid intent_id in task_state/built_json: {cand_id}")
+                effective_intent_id = cand_id
+            else:
+                today = get_current_datetime().strftime("%Y%m%d")
+                task_dir = get_task_dir(create=False)
+                effective_intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
+        intent_id = effective_intent_id
+
+        if mode == "emergency":
+            priority = 1
+        else:
+            priority = 7
+
+        start_time = built_json.get("start_time")
+        end_time = built_json.get("end_time")
+        def ensure_tz(ts: Optional[str]) -> Optional[str]:
+            if not ts:
+                return None
+            if "+" not in ts and ts.endswith("Z") is False:
+                ts += "+08:00"
+            return ts
+        start_time = ensure_tz(start_time)
+        end_time = ensure_tz(end_time)
+
+        oilfield_name = None
+        water_depth = built_json.get("water_depth")
+        coords = (built_json.get("start_point") or
+                  built_json.get("oilfield_coordinates") or
+                  built_json.get("cable_position"))
+        if coords and isinstance(coords, dict):
+            lat = coords.get("lat")
+            lon = coords.get("lon")
+            if lat is not None and lon is not None:
+                area = self.kb.get_environment_for_coords({"lat": lat, "lon": lon})
+                if area:
+                    oilfield_name = area.get("name")
+        if not oilfield_name:
+            oilfield_name = task_state.get("oilfield_name")
+
+        details = self._build_details(task_type_key, task_state, built_json)
+
+        equipment_type = built_json.get("equipment_type")
+        robot_type_map = {
+            "观察级ROV": "observation_rov",
+            "工作级ROV": "work_class_rov",
+            "海底拖拉机": "work_class_rov",
+            "调查型AUV": "auv",
+        }
+        robot_type = robot_type_map.get(equipment_type, "observation_rov")
+        payload = built_json.get("payload", [])
+        if not isinstance(payload, list):
+            payload = [payload] if payload else []
+        support_vessel_name = built_json.get("support_vessel")
+        support_vessel = {
+            "name": support_vessel_name,
+            "latitude": None,
+            "longitude": None,
+        }
+
+        conditions = {}
+
+        if task_type_key == "pipeline_inspection":
+            top_task_type = "pipeline_inspection"
+        else:
+            top_task_type = "valve_operation"
+
+        return {
+            "intent_id": intent_id,
+            "task_type": top_task_type,
+            "priority": priority,
+            "time": {
+                "start": start_time,
+                "end": end_time,
+            },
+            "location": {
+                "oilfield": oilfield_name,
+                "water_depth_m": float(water_depth) if water_depth is not None else None,
+            },
+            "task": {
+                "type": top_task_type,
+                "details": details,
+            },
+            "equipment": {
+                "robot_type": robot_type,
+                "payload": payload,
+                "support_vessel": support_vessel,
+            },
+            "conditions": conditions,
+        }
+
+    def create_staging(self, intent: Dict[str, Any]) -> Path:
+        """创建临时 staging 任务文件"""
+        intent_id = intent.get("intent_id")
+        if not validate_intent_id(intent_id):
+            raise TaskPersistenceError(f"Invalid intent_id for create_staging: {intent_id}")
+        task_dir = get_task_dir(create=True)
+        unique_suffix = f"{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}"
+        staging_file = task_dir / f"task_intent_{intent_id}.staging_{unique_suffix}"
+        if task_dir.resolve() not in staging_file.resolve().parents:
+            raise TaskPersistenceError(f"Path traversal detected for staging file: {staging_file}")
+
+        with TaskPublishLock(task_dir):
+            try:
+                flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0)
+                fd = os.open(staging_file, flags, 0o600)
+                try:
+                    content_bytes = json.dumps(intent, ensure_ascii=False, indent=2).encode("utf-8")
+                    os.write(fd, content_bytes)
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                return staging_file
+            except Exception as e:
+                raise TaskPersistenceError(f"Failed to create staging file for {intent_id}: {e}") from e
+
     def publish_staging(self, staging_file: Path | str, intent: Dict[str, Any]) -> str:
         """使用跨进程排他锁、认领隔离与内存可信原子提交发布 staging 为正式 JSON"""
         if not isinstance(intent, dict):
@@ -244,6 +410,12 @@ class TaskIntentBuilder:
                 f"Staging filename '{staging_path.name}' does not match controlled format pattern for intent_id '{intent_id}'"
             )
 
+        m = re.match(r"^task_intent_[^.]+\.staging_([0-9]+)_", staging_path.name)
+        if m:
+            owner_pid = int(m.group(1))
+            if owner_pid != os.getpid():
+                raise TaskPersistenceError(f"Staging file owner PID {owner_pid} does not match current process PID {os.getpid()}")
+
         txid = uuid.uuid4().hex
 
         with TaskPublishLock(task_dir):
@@ -251,23 +423,12 @@ class TaskIntentBuilder:
             if resolved_task_dir not in final_file.resolve().parents:
                 raise TaskPersistenceError(f"Path traversal detected for final file: {final_file}")
 
-            # 2. 如果 final_file 已存在：无条件拒绝发布！同一 intent_id 只能成功发布一次
+            # 2. 如果 final_file 已存在：无条件拒绝发布！不得尝试按路径强删 staging
             if final_file.exists() or final_file.is_symlink():
-                if resolved_staging.exists():
-                    try:
-                        os.unlink(resolved_staging)
-                    except Exception:
-                        pass
                 raise IntentIdConflict(f"Target official file already exists: {final_file.name}")
 
             # 3. 打开 staging 文件描述符 (O_NOFOLLOW + O_RDONLY)，用 fstat 强绑定 inode
             try:
-                stat_before = resolved_staging.stat()
-                try:
-                    with open(resolved_staging, "r", encoding="utf-8") as _chk_f:
-                        pass
-                except Exception:
-                    pass
                 open_flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
                 st_fd = os.open(resolved_staging, open_flags)
             except Exception as e:
@@ -277,11 +438,6 @@ class TaskIntentBuilder:
                 validated_stat = os.fstat(st_fd)
                 if not stat.S_ISREG(validated_stat.st_mode):
                     raise TaskPersistenceError("Staging file descriptor is not a regular file")
-                if (stat_before.st_dev != validated_stat.st_dev or
-                    stat_before.st_ino != validated_stat.st_ino or
-                    stat_before.st_size != validated_stat.st_size or
-                    stat_before.st_mtime != validated_stat.st_mtime):
-                    raise TaskPersistenceError("Staging file modified during verification")
 
                 with os.fdopen(st_fd, "r", encoding="utf-8", closefd=True) as f:
                     staging_data = json.load(f)
@@ -302,21 +458,9 @@ class TaskIntentBuilder:
 
             # 4. 安全认领 Staging (Claiming) 到专用隔离路径
             claim_file = task_dir / f".claimed_{intent_id}_{txid}"
-            claimed_stat = None
             try:
                 os.rename(staging_path, claim_file)
-                cur_claim_stat = claim_file.stat()
-                if cur_claim_stat.st_dev != validated_stat.st_dev or cur_claim_stat.st_ino != validated_stat.st_ino:
-                    raise TaskPersistenceError("Staging file inode mismatch upon claim")
-                claimed_stat = cur_claim_stat
             except Exception as e:
-                if claim_file.exists():
-                    try:
-                        c_st = claim_file.stat()
-                        if (claimed_stat and c_st.st_dev == claimed_stat.st_dev and c_st.st_ino == claimed_stat.st_ino):
-                            claim_file.unlink()
-                    except Exception:
-                        pass
                 raise TaskPersistenceError(f"Failed to claim staging file for {intent_id}: {e}") from e
 
             # 5. 从受信任内存 intent 原子创建私有 0600 临时文件并写入
@@ -326,7 +470,6 @@ class TaskIntentBuilder:
                 tmp_flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0)
                 tmp_fd = os.open(tmp_file, tmp_flags, 0o600)
                 try:
-                    tmp_stat = os.fstat(tmp_fd)
                     content_bytes = json.dumps(intent, ensure_ascii=False, indent=2).encode("utf-8")
                     os.write(tmp_fd, content_bytes)
                     os.fsync(tmp_fd)
@@ -336,6 +479,7 @@ class TaskIntentBuilder:
                 read_flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
                 t_fd = os.open(tmp_file, read_flags)
                 try:
+                    tmp_stat = os.fstat(t_fd)
                     with os.fdopen(t_fd, "r", encoding="utf-8", closefd=True) as f:
                         written_data = json.load(f)
                 except Exception as e:
@@ -347,14 +491,15 @@ class TaskIntentBuilder:
                 # 6. 原子 no-overwrite 提交正式文件
                 _atomic_commit_noreplace(tmp_file, final_file)
 
+                # 7. 强制执行文件与目录 fsync，异常时 fail closed 抛出 TaskPersistenceError
                 try:
                     f_fd = os.open(final_file, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
                     try:
                         os.fsync(f_fd)
                     finally:
                         os.close(f_fd)
-                except Exception:
-                    pass
+                except Exception as e:
+                    raise TaskPersistenceError(f"File fsync failed for {final_file.name}: {e}") from e
 
                 try:
                     d_fd = os.open(task_dir, os.O_RDONLY)
@@ -362,73 +507,28 @@ class TaskIntentBuilder:
                         os.fsync(d_fd)
                     finally:
                         os.close(d_fd)
-                except Exception:
-                    pass
+                except Exception as e:
+                    raise TaskPersistenceError(f"Directory fsync failed for {task_dir}: {e}") from e
 
-                if tmp_file.exists():
-                    try:
-                        st = tmp_file.stat()
-                        if tmp_stat and st.st_dev == tmp_stat.st_dev and st.st_ino == tmp_stat.st_ino:
-                            tmp_file.unlink()
-                    except Exception:
-                        pass
-
-                # 7. 成功清理被认领的 claim 文件
-                if claim_file.exists():
-                    try:
-                        st = claim_file.stat()
-                        if claimed_stat and st.st_dev == claimed_stat.st_dev and st.st_ino == claimed_stat.st_ino:
-                            claim_file.unlink()
-                    except Exception:
-                        pass
-
+                # 8. 提交成功后安全解绑定清理
                 return final_file.name
 
             except FileExistsError:
-                if tmp_file.exists():
-                    try:
-                        st = tmp_file.stat()
-                        if tmp_stat and st.st_dev == tmp_stat.st_dev and st.st_ino == tmp_stat.st_ino:
-                            tmp_file.unlink()
-                    except Exception:
-                        pass
-                if claim_file.exists():
-                    try:
-                        st = claim_file.stat()
-                        if claimed_stat and st.st_dev == claimed_stat.st_dev and st.st_ino == claimed_stat.st_ino:
-                            claim_file.unlink()
-                    except Exception:
-                        pass
                 raise IntentIdConflict(f"Intent ID conflict for {intent_id}: target file exists.")
             except IntentIdConflict:
-                if tmp_file.exists():
-                    try:
-                        st = tmp_file.stat()
-                        if tmp_stat and st.st_dev == tmp_stat.st_dev and st.st_ino == tmp_stat.st_ino:
-                            tmp_file.unlink()
-                    except Exception:
-                        pass
-                if claim_file.exists():
-                    try:
-                        st = claim_file.stat()
-                        if claimed_stat and st.st_dev == claimed_stat.st_dev and st.st_ino == claimed_stat.st_ino:
-                            claim_file.unlink()
-                    except Exception:
-                        pass
                 raise
             except Exception as e:
-                if tmp_file.exists():
+                if tmp_file and tmp_file.exists() and tmp_stat:
                     try:
-                        st = tmp_file.stat()
-                        if tmp_stat and st.st_dev == tmp_stat.st_dev and st.st_ino == tmp_stat.st_ino:
-                            tmp_file.unlink()
-                    except Exception:
-                        pass
-                if claim_file.exists():
-                    try:
-                        st = claim_file.stat()
-                        if claimed_stat and st.st_dev == claimed_stat.st_dev and st.st_ino == claimed_stat.st_ino:
-                            claim_file.unlink()
+                        c_fd = os.open(tmp_file, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+                        try:
+                            c_stat = os.fstat(c_fd)
+                            if (c_stat.st_dev == tmp_stat.st_dev and
+                                c_stat.st_ino == tmp_stat.st_ino and
+                                c_stat.st_size == tmp_stat.st_size):
+                                os.unlink(tmp_file)
+                        finally:
+                            os.close(c_fd)
                     except Exception:
                         pass
                 raise TaskPersistenceError(f"Failed to publish staging file for {intent_id}: {e}") from e

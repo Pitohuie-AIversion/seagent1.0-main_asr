@@ -70,7 +70,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
             with open(final_file, "w", encoding="utf-8") as f:
                 json.dump(existing_intent, f)
 
-            staging_file = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
+            staging_file = task_dir / f"task_intent_TI2026072101.staging_{os.getpid()}_5678_abcd1234"
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
@@ -90,7 +90,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
             with open(final_file, "w", encoding="utf-8") as f:
                 json.dump(existing_intent, f)
 
-            staging_file = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
+            staging_file = task_dir / f"task_intent_TI2026072101.staging_{os.getpid()}_5678_abcd1234"
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
@@ -135,7 +135,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            staging_file = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
+            staging_file = task_dir / f"task_intent_TI2026072101.staging_{os.getpid()}_5678_abcd1234"
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
@@ -262,7 +262,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            staging_file = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
+            staging_file = task_dir / f"task_intent_TI2026072101.staging_{os.getpid()}_5678_abcd1234"
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 

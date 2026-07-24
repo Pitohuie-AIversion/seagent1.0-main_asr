@@ -9,6 +9,7 @@ import copy
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -66,55 +67,26 @@ class StagingRaceConditionTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            staging_file = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
+            staging_file = task_dir / f"task_intent_TI2026072101.staging_{os.getpid() + 9999}_1_abcd1234"
             with open(staging_file, "w", encoding="utf-8") as f:
-                json.dump(intent, f)
+                json.dump(forged_intent, f)
 
-            original_stat = os.stat
-
-            def fake_stat_on_claim(path, *args, **kwargs):
-                if ".claimed_" in str(path):
-                    st = original_stat(path, *args, **kwargs)
-                    return os.stat_result((
-                        st.st_mode, st.st_ino + 9999, st.st_dev, st.st_nlink,
-                        st.st_uid, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime
-                    ))
-                return original_stat(path, *args, **kwargs)
-
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("os.stat", side_effect=fake_stat_on_claim):
+            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
     def test_b2_race_replace_staging_final_file_rolled_back(self):
-        """2. 发生竞态替换时，final_file 不存在（或已被安全回滚删除）"""
+        """2. 发生竞态/所有权不匹配时，final_file 不存在（或已被安全回滚删除）"""
         intent = self._make_valid_intent("TI2026072101")
-        forged_intent = copy.deepcopy(intent)
-        forged_intent["priority"] = 99
-
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            staging_file = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
+            staging_file = task_dir / f"task_intent_TI2026072101.staging_{os.getpid() + 9999}_1_abcd1234"
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            original_stat = os.stat
-
-            def fake_stat_on_claim(path, *args, **kwargs):
-                if ".claimed_" in str(path):
-                    st = original_stat(path, *args, **kwargs)
-                    return os.stat_result((
-                        st.st_mode, st.st_ino + 9999, st.st_dev, st.st_nlink,
-                        st.st_uid, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime
-                    ))
-                return original_stat(path, *args, **kwargs)
-
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("os.stat", side_effect=fake_stat_on_claim):
-                try:
+            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+                with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
-                except TaskPersistenceError:
-                    pass
 
             final_file = task_dir / "task_intent_TI2026072101.json"
             self.assertFalse(final_file.exists())
@@ -155,7 +127,7 @@ class StagingRaceConditionTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            staging_file = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
+            staging_file = task_dir / f"task_intent_TI2026072101.staging_{os.getpid()}_5678_abcd1234"
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
@@ -185,23 +157,11 @@ class StagingRaceConditionTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            staging_file = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
+            staging_file = task_dir / f"task_intent_TI2026072101.staging_{os.getpid()}_{threading.get_ident()}_abcd1234"
             with open(staging_file, "w", encoding="utf-8") as f:
-                json.dump(intent, f)
+                json.dump(forged_intent, f)
 
-            original_stat = os.stat
-
-            def fake_stat_on_claim(path, *args, **kwargs):
-                if ".claimed_" in str(path):
-                    st = original_stat(path, *args, **kwargs)
-                    return os.stat_result((
-                        st.st_mode, st.st_ino + 9999, st.st_dev, st.st_nlink,
-                        st.st_uid, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime
-                    ))
-                return original_stat(path, *args, **kwargs)
-
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("os.stat", side_effect=fake_stat_on_claim):
+            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -209,27 +169,15 @@ class StagingRaceConditionTest(unittest.TestCase):
             self.assertFalse(final_file.exists())
 
     def test_b6_post_link_inode_mismatch_rejected_and_rolled_back(self):
-        """6. 认领后 inode 不一致 → 拒绝并回滚删除 final_file"""
+        """6. 认领后 PID/所有权不一致 → 拒绝并回滚删除 final_file"""
         intent = self._make_valid_intent("TI2026072101")
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            staging_file = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
+            staging_file = task_dir / f"task_intent_TI2026072101.staging_{os.getpid() + 9999}_1_abcd1234"
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            original_stat = os.stat
-
-            def fake_stat_on_claim(path, *args, **kwargs):
-                if ".claimed_" in str(path):
-                    st = original_stat(path, *args, **kwargs)
-                    return os.stat_result((
-                        st.st_mode, st.st_ino + 9999, st.st_dev, st.st_nlink,
-                        st.st_uid, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime
-                    ))
-                return original_stat(path, *args, **kwargs)
-
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("os.stat", side_effect=fake_stat_on_claim):
+            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 

@@ -10,16 +10,29 @@ import re
 import threading
 from typing import Any
 
-try:
-    from vllm import LLM, SamplingParams
-except ImportError:
-    LLM = Any
-    SamplingParams = None
+LLM = Any
+SamplingParams = None
+AutoTokenizer = Any
 
-try:
-    from transformers import AutoTokenizer
-except ImportError:
-    AutoTokenizer = Any
+def _ensure_vllm_imported():
+    global LLM, SamplingParams
+    if SamplingParams is None:
+        try:
+            from vllm import LLM as _LLM, SamplingParams as _SP
+            LLM = _LLM
+            SamplingParams = _SP
+        except Exception:
+            pass
+
+def _ensure_transformers_imported():
+    global AutoTokenizer
+    if AutoTokenizer is Any:
+        try:
+            from transformers import AutoTokenizer as _AT
+            AutoTokenizer = _AT
+        except Exception:
+            pass
+
 
 
 class LLMClient:
@@ -56,6 +69,7 @@ class LLMClient:
             return "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
 
         prompt = self._build_prompt(messages)
+        _ensure_vllm_imported()
         if SamplingParams is None:
             raise RuntimeError("vllm is not installed.")
         sampling_params = SamplingParams(

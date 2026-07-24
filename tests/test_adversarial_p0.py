@@ -184,7 +184,7 @@ class AdversarialP0SecurityTest(unittest.TestCase):
             final_files = list(tmp_path.glob("task_intent_*.json")) if tmp_path.exists() else []
             staging_files = list(tmp_path.glob("*.staging_*")) if tmp_path.exists() else []
             self.assertEqual(len(final_files), 0)
-            self.assertEqual(len(staging_files), 0)
+            self.assertGreater(len(staging_files), 0, "Staging file must survive in tmp_path when publish fails")
 
     # 10. confirming 但 intent_id missing -> fail closed, 不调用 prepare/create_staging/publish_staging
     def test_adv_10_missing_intent_id_fails_closed(self):

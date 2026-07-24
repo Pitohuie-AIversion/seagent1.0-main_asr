@@ -288,35 +288,19 @@ class IntentRouter:
                 )
 
         # ── 2. 明确任务创建 (优先于别名查询) ──
-        if has_create_act and not is_q:
-            return IntentRouteResult(
-                intent="TASK_CREATE",
-                confidence=0.95,
-                reason="规则识别到显式任务创建动作指令",
-                source="rule",
-                should_update_slots=True,
-            )
+        res_create = self._check_task_create(msg, is_q)
+        if res_create:
+            return res_create
 
         # ── 3. 明确任务修改 (优先于别名查询) ──
-        if not is_q and (has_explicit_upd or is_modification_request or (task_state.get("task_type_key") and has_verb_and_slot)):
-            return IntentRouteResult(
-                intent="TASK_UPDATE",
-                confidence=0.95,
-                reason="规则识别到具体参数修改或已有任务下的槽位填报",
-                source="rule",
-                should_update_slots=True,
-            )
+        res_upd = self._check_task_update(msg, is_q, is_modification_request)
+        if res_upd:
+            return res_upd
 
         # 用户正在回答系统明确询问的 missing expected_slot
-        if expected_slots and not is_q:
-            if self._matches_expected_slot(msg, expected_slots):
-                return IntentRouteResult(
-                    intent="TASK_UPDATE",
-                    confidence=0.95,
-                    reason="用户正在精准回答系统当前提问的缺失槽位",
-                    source="rule",
-                    should_update_slots=True,
-                )
+        res_exp = self._check_expected_slot(msg, is_q, expected_slots)
+        if res_exp:
+            return res_exp
 
         # ── 4. 状态查询 ──
         if any(kw in msg for kw in ["当前任务有哪些参数", "当前任务填了什么", "当前任务还缺什么", "当前任务进行到哪一步", "当前任务是否可以发布", "任务进度", "当前任务状态", "任务填到哪了", "进度如何"]):
@@ -385,14 +369,12 @@ class IntentRouter:
             for alias, dev_ids in self.device_alias_index.items():
                 if not alias:
                     continue
-                # 纯数字别名（如 "001"）仅在有明确设备能力语义时参与匹配（普通疑问句不激活）
                 if alias.isdigit() and not has_explicit_device_capability_semantics:
                     continue
                 if alias in msg or alias.lower() in msg.lower():
                     matched_aliases.append((alias, dev_ids))
 
             if matched_aliases:
-                # 按别名长度降序排列（最长匹配优先）
                 matched_aliases.sort(key=lambda item: len(item[0]), reverse=True)
                 longest_alias, longest_ids = matched_aliases[0]
 
@@ -465,41 +447,7 @@ class IntentRouter:
                 query_subtype="introduction",
             )
 
-        # ── 5. 明确任务创建 (动作门控) ──
-        has_create_act = any(p in msg for p in CREATE_ACTION_PHRASES) or (
-            any(v in msg for v in ["创建", "新建", "开展", "开始规划"]) and any(e in msg for e in ["任务", "巡检", "插拔", "管缆"])
-        )
-        if has_create_act and not is_q:
-            return IntentRouteResult(
-                intent="TASK_CREATE",
-                confidence=0.95,
-                reason="规则识别到显式任务创建动作指令",
-                source="rule",
-                should_update_slots=True,
-            )
-
-        # ── 6. 明确任务修改 (动作门控 或 已有任务下填报) ──
-        if not is_q and (has_explicit_upd or (task_state.get("task_type_key") and (has_verb_and_slot or is_modification_request))):
-            return IntentRouteResult(
-                intent="TASK_UPDATE",
-                confidence=0.95,
-                reason="规则识别到具体参数修改或已有任务下的槽位填报",
-                source="rule",
-                should_update_slots=True,
-            )
-
-        # 用户正在回答系统明确询问的 missing expected_slot
-        if expected_slots and not is_q:
-            if self._matches_expected_slot(msg, expected_slots, self.device_alias_index):
-                return IntentRouteResult(
-                    intent="TASK_UPDATE",
-                    confidence=0.95,
-                    reason="用户正在精准回答系统当前提问的缺失槽位",
-                    source="rule",
-                    should_update_slots=True,
-                )
-
-        # ── 7. 意图澄清指令 ──
+        # ── 9. 意图澄清指令 ──
         if msg_clean in ("帮我处理一下", "处理一下", "处理", "搞一下", "跑一下") or any(kw in msg_clean for kw in ["帮我处理", "处理一下", "搞一下", "跑一下"]):
             return IntentRouteResult(
                 intent="CLARIFICATION",
@@ -509,6 +457,45 @@ class IntentRouter:
                 should_update_slots=False,
             )
 
+        return None
+
+    @staticmethod
+    def _check_task_create(msg: str, is_q: bool) -> IntentRouteResult | None:
+        has_create_act = any(p in msg for p in CREATE_ACTION_PHRASES) or (
+            any(v in msg for v in ["创建", "新建", "开展", "开始规划", "执行"]) and any(e in msg for e in ["任务", "巡检", "插拔", "管缆"])
+        )
+        if has_create_act and not is_q:
+            return IntentRouteResult(
+                intent="TASK_CREATE",
+                confidence=0.95,
+                reason="规则识别到显式任务创建动作指令",
+                source="rule",
+                should_update_slots=True,
+            )
+        return None
+
+    @staticmethod
+    def _check_task_update(msg: str, is_q: bool, is_modification_request: bool) -> IntentRouteResult | None:
+        if not is_q and is_modification_request:
+            return IntentRouteResult(
+                intent="TASK_UPDATE",
+                confidence=0.95,
+                reason="规则识别到具体参数修改或已有任务下的槽位填报",
+                source="rule",
+                should_update_slots=True,
+            )
+        return None
+
+    def _check_expected_slot(self, msg: str, is_q: bool, expected_slots: list[str] | None) -> IntentRouteResult | None:
+        if expected_slots and not is_q:
+            if self._matches_expected_slot(msg, expected_slots, self.device_alias_index):
+                return IntentRouteResult(
+                    intent="TASK_UPDATE",
+                    confidence=0.95,
+                    reason="用户正在精准回答系统当前提问的缺失槽位",
+                    source="rule",
+                    should_update_slots=True,
+                )
         return None
 
     @staticmethod

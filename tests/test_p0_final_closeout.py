@@ -155,8 +155,29 @@ class SnapshotIntentIdPreservationTest(unittest.TestCase):
             tmp_task_dir = Path(tmp_dir) / "task"
             tmp_task_dir.mkdir(parents=True, exist_ok=True)
             pub_file = tmp_task_dir / "task_intent_TI2026070001.json"
+            valid_intent = {
+                "intent_id": "TI2026070001",
+                "task_type": "pipeline_inspection",
+                "priority": 7,
+                "time": {"start": "2026-06-30T10:00:00+08:00", "end": "2026-06-30T12:00:00+08:00"},
+                "location": {"oilfield": "南海一号", "water_depth_m": 300.0},
+                "task": {
+                    "type": "pipeline_inspection",
+                    "details": {
+                        "pipeline_type": "subsea_oil_gas",
+                        "start_point": {"latitude": 20.0, "longitude": 110.0},
+                        "end_point": {"latitude": 20.1, "longitude": 110.1},
+                    },
+                },
+                "equipment": {
+                    "robot_type": "observation_rov",
+                    "payload": ["camera_hd"],
+                    "support_vessel": {"name": "海洋石油201"},
+                },
+                "conditions": {"max_current_speed_knots": 2.0, "sea_state_level": 3},
+            }
             with open(pub_file, "w", encoding="utf-8") as f:
-                json.dump({"intent_id": "TI2026070001", "task_type": "pipeline_inspection"}, f)
+                json.dump(valid_intent, f)
 
             snap = {
                 "phase": "done",

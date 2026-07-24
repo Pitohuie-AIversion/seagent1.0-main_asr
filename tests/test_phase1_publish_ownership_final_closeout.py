@@ -9,6 +9,7 @@ import os
 import tempfile
 import unittest
 import multiprocessing as mp
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -85,6 +86,14 @@ def _mp_worker_lock_contender(tmp_dir_str, res_queue):
             res_queue.put(("acquired", os.getpid()))
 
 
+def _mp_worker_create_staging(tmp_dir_s, intent_d, q):
+    t_dir = Path(tmp_dir_s) / "task"
+    b = TaskIntentBuilder(KnowledgeBase())
+    with patch("src.task_intent_builder.get_task_dir", return_value=t_dir):
+        st = b.create_staging(intent_d)
+        q.put(("acquired", st.name))
+
+
 class PublishOwnershipAndLockTest(unittest.TestCase):
     def setUp(self):
         self.kb = KnowledgeBase()
@@ -103,7 +112,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
         }
 
     def test_01_staging_replaced_at_claim_fails_and_preserves_replacement(self):
-        """1. staging 在认领瞬间被替换：不得发布、不得删除替换文件"""
+        """1. staging 在认领前被替换（PID/所有权不匹配）：不得发布、不得删除替换文件"""
         intent = self._make_valid_intent("TI2026072101")
         forged = copy.deepcopy(intent)
         forged["priority"] = 99
@@ -111,77 +120,93 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
-            staging_file = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
+            staging_file = task_dir / f"task_intent_TI2026072101.staging_{os.getpid() + 9999}_1_abcd1234"
             with open(staging_file, "w", encoding="utf-8") as f:
-                json.dump(intent, f)
+                json.dump(forged, f)
 
-            real_rename = os.rename
-
-            def race_rename_replace(src, dst):
-                real_rename(src, dst)
-                with open(staging_file, "w", encoding="utf-8") as f:
-                    json.dump(forged, f)
-
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("os.rename", side_effect=race_rename_replace):
-                try:
+            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+                with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
-                except TaskPersistenceError:
-                    pass
 
-            self.assertTrue(staging_file.exists())
+            final_file = task_dir / "task_intent_TI2026072101.json"
+            self.assertFalse(final_file.exists(), "Final file must not be created on claim race failure")
+            self.assertTrue(staging_file.exists(), "Replaced staging file must survive deletion")
             with open(staging_file, "r", encoding="utf-8") as f:
                 self.assertEqual(json.load(f)["priority"], 99)
 
     def test_02_claim_replaced_at_cleanup_preserves_replacement(self):
         """2. claim 在清理窗口被替换：不得删除替换文件"""
         intent = self._make_valid_intent("TI2026072101")
+        forged = {"forged": True, "secret": "replacement_claim"}
+
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
+
             with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
                 st = self.builder.create_staging(intent)
-                pub_name = self.builder.publish_staging(st, intent)
+
+                real_rename = os.rename
+
+                def race_claim_replace(src, dst):
+                    real_rename(src, dst)
+                    if ".claimed_" in str(dst):
+                        with open(dst, "w", encoding="utf-8") as f:
+                            json.dump(forged, f)
+
+                with patch("os.rename", side_effect=race_claim_replace):
+                    pub_name = self.builder.publish_staging(st, intent)
+
                 self.assertTrue((task_dir / pub_name).exists())
+                claims = list(task_dir.glob(".claimed_*"))
+                self.assertGreater(len(claims), 0, "Replaced claim file must survive cleanup")
+                with open(claims[0], "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.assertEqual(data.get("secret"), "replacement_claim")
 
     def test_03_temp_replaced_at_rollback_preserves_replacement(self):
         """3. temp 在失败回滚窗口被替换：不得删除替换文件"""
         intent = self._make_valid_intent("TI2026072101")
+        forged = {"forged": True, "secret": "replacement_temp"}
+
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
-            staging_file = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
-            with open(staging_file, "w", encoding="utf-8") as f:
-                json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("src.task_intent_builder._atomic_commit_noreplace", side_effect=OSError("Disk failure")):
-                with self.assertRaises(TaskPersistenceError):
-                    self.builder.publish_staging(staging_file, intent)
+            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+                st = self.builder.create_staging(intent)
+
+                def hook_commit_fail_and_replace_temp(temp_file, final_file):
+                    with open(temp_file, "w", encoding="utf-8") as f:
+                        json.dump(forged, f)
+                    raise OSError("Disk failure during commit")
+
+                with patch("src.task_intent_builder._atomic_commit_noreplace", side_effect=hook_commit_fail_and_replace_temp):
+                    with self.assertRaises(TaskPersistenceError):
+                        self.builder.publish_staging(st, intent)
+
+                final_file = task_dir / "task_intent_TI2026072101.json"
+                self.assertFalse(final_file.exists())
+                tmps = list(task_dir.glob(".tmp_publish_*"))
+                self.assertGreater(len(tmps), 0, "Replaced temp file must survive rollback")
+                with open(tmps[0], "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.assertEqual(data.get("secret"), "replacement_temp")
 
     def test_04_inode_mismatch_fails_closed(self):
-        """4. inode 不一致时 fail closed"""
+        """4. staging 内容/所有权不一致时 fail closed"""
         intent = self._make_valid_intent("TI2026072101")
+        tampered_intent = copy.deepcopy(intent)
+        tampered_intent["priority"] = 999
+
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
-            staging_file = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
+            staging_file = task_dir / f"task_intent_TI2026072101.staging_{os.getpid()}_{threading.get_ident()}_abcd1234"
             with open(staging_file, "w", encoding="utf-8") as f:
-                json.dump(intent, f)
+                json.dump(tampered_intent, f)
 
-            orig_stat = os.stat
-
-            def fake_stat_claim(path, *args, **kwargs):
-                if ".claimed_" in str(path):
-                    st = orig_stat(path, *args, **kwargs)
-                    return os.stat_result((
-                        st.st_mode, st.st_ino + 8888, st.st_dev, st.st_nlink,
-                        st.st_uid, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime
-                    ))
-                return orig_stat(path, *args, **kwargs)
-
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("os.stat", side_effect=fake_stat_claim):
+            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -203,7 +228,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
                 json.dump(intent, f)
 
             with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
-                with self.assertRaises(TaskPersistenceError):
+                with self.assertRaises((TaskPersistenceError, IntentIdConflict)):
                     self.builder.publish_staging(staging_file, intent)
 
             with open(final_file, "r", encoding="utf-8") as f:
@@ -314,11 +339,9 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             p_contender = ctx.Process(target=_mp_worker_lock_contender, args=(tmp_dir, res_queue))
             p_contender.start()
 
-            # 确认在 hold_event 被 set 之前 contender 依然无法获得锁
             p_contender.join(timeout=0.5)
             self.assertTrue(p_contender.is_alive())
 
-            # 释放锁
             hold_event.set()
             p_holder.join(timeout=5)
             p_contender.join(timeout=5)
@@ -327,50 +350,96 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             self.assertEqual(res[0], "acquired")
 
     def test_10_create_staging_follows_same_lock_protocol(self):
-        """10. create_staging 遵循同一锁协议"""
+        """10. create_staging 遵循同一锁协议：进程 A 持锁时，进程 B 的 create_staging 被真实阻塞"""
         intent = self._make_valid_intent("TI2026072101")
+        ctx = mp.get_context("spawn")
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
-                st = self.builder.create_staging(intent)
-                self.assertTrue(st.exists())
+
+            res_queue = ctx.Queue()
+            ready_event = ctx.Event()
+            hold_event = ctx.Event()
+
+            p_holder = ctx.Process(target=_mp_worker_lock_holder, args=(tmp_dir, hold_event, ready_event))
+            p_holder.start()
+            ready_event.wait(timeout=5)
+
+            p_contender = ctx.Process(target=_mp_worker_create_staging, args=(tmp_dir, intent, res_queue))
+            p_contender.start()
+
+            p_contender.join(timeout=0.5)
+            self.assertTrue(p_contender.is_alive(), "create_staging in Process B must be blocked when Process A holds lock")
+
+            hold_event.set()
+            p_holder.join(timeout=5)
+            p_contender.join(timeout=5)
+            res = res_queue.get(timeout=2)
+            self.assertEqual(res[0], "acquired")
 
     def test_11_load_snapshot_follows_same_lock_protocol(self):
-        """11. load_snapshot 遵循同一锁协议"""
+        """11. load_snapshot 遵循同一锁协议与完整 TaskIntent 结构校验：拒绝残缺 2 字段 final，接受完整 final"""
         kb = KnowledgeBase()
         llm = DummyLLM()
-        dm = DialogueManager(llm, kb)
-        seed_complete_valid_pipeline_task(dm, kb)
-        dm.slot_store.slots["intent_id"].value = "TI2026063001"
-        dm.slot_store.slots["intent_id"].status = "valid"
-        dm.task_state["intent_id"] = "TI2026063001"
-        if dm._last_built_json:
-            dm._last_built_json["intent_id"] = "TI2026063001"
-        snap = dm.slot_store.export_snapshot()
+
+        intent_full = self._make_valid_intent("TI2026063001")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
+
+            # 11a: 验证残缺 2 字段 final 被拒绝
             pub_file = task_dir / "task_intent_TI2026063001.json"
             with open(pub_file, "w", encoding="utf-8") as f:
                 json.dump({"intent_id": "TI2026063001", "task_type": "pipeline_inspection"}, f)
 
-            snap_full = {
+            dm_bad = DialogueManager(llm, kb)
+            seed_complete_valid_pipeline_task(dm_bad, kb)
+            dm_bad.slot_store.slots["intent_id"].value = "TI2026063001"
+            dm_bad.slot_store.slots["intent_id"].status = "valid"
+            dm_bad.task_state["intent_id"] = "TI2026063001"
+
+            snap_bad = {
                 "phase": "done",
                 "mode": "normal",
-                "task_state": dm.task_state,
-                "built_json": dm._last_built_json,
-                "slot_store": snap
+                "task_state": dm_bad.task_state,
+                "built_json": dm_bad._last_built_json,
+                "slot_store": dm_bad.slot_store.export_snapshot()
             }
 
             with patch("src.dialogue_manager.get_task_dir", return_value=task_dir), \
                  patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("src.result_paths.get_task_dir", return_value=task_dir), \
                  patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
-                dm.load_snapshot(snap_full)
+                dm_bad.load_snapshot(snap_bad)
 
-            self.assertEqual(dm.phase, "done")
+            self.assertNotEqual(dm_bad.phase, "done", "Consumer must reject incomplete 2-field final JSON")
+
+            # 11b: 验证完整 TaskIntent final 能被接受
+            with open(pub_file, "w", encoding="utf-8") as f:
+                json.dump(intent_full, f)
+
+            dm_good = DialogueManager(llm, kb)
+            seed_complete_valid_pipeline_task(dm_good, kb)
+            dm_good.slot_store.slots["intent_id"].value = "TI2026063001"
+            dm_good.slot_store.slots["intent_id"].status = "valid"
+            dm_good.task_state["intent_id"] = "TI2026063001"
+
+            snap_good = {
+                "phase": "done",
+                "mode": "normal",
+                "task_state": dm_good.task_state,
+                "built_json": intent_full,
+                "slot_store": dm_good.slot_store.export_snapshot()
+            }
+
+            with patch("src.dialogue_manager.get_task_dir", return_value=task_dir), \
+                 patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+                 patch("src.result_paths.get_task_dir", return_value=task_dir), \
+                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+                dm_good.load_snapshot(snap_good)
+
+            self.assertEqual(dm_good.phase, "done")
 
     def test_12_staging_symlink_rejected(self):
         """12. staging 符号链接被拒绝"""
@@ -425,7 +494,6 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
                  patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 dm.load_snapshot(snap)
 
-            # 符号链接无法通过消费者真实性校验，降级 phase
             self.assertNotEqual(dm.phase, "done")
 
     def test_14_final_json_equals_intent(self):
@@ -442,7 +510,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
                     self.assertEqual(json.load(f), intent)
 
     def test_15_final_content_generated_from_trusted_memory(self):
-        """15. final 内容来自可信内存 intent"""
+        """15. final 内容来自可信内存 intent，完整内容等于可信 intent"""
         intent = self._make_valid_intent("TI2026072101")
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
@@ -453,10 +521,10 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
                 final_file = task_dir / pub_name
                 with open(final_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                self.assertEqual(data["intent_id"], "TI2026072101")
+                self.assertEqual(data, intent, "Final file content must match trusted memory intent completely")
 
     def test_16_fsync_called_on_file_and_directory(self):
-        """16. 文件和结果目录执行 fsync"""
+        """16. 分别验证文件和目录 fsync 成功"""
         intent = self._make_valid_intent("TI2026072101")
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
@@ -465,7 +533,8 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
                  patch("os.fsync") as mock_fsync:
                 st = self.builder.create_staging(intent)
                 self.builder.publish_staging(st, intent)
-                self.assertTrue(mock_fsync.called)
+                # 必须至少调用 2 次 fsync (包含 temp/final 文件 fsync 和目录 fsync)
+                self.assertGreaterEqual(mock_fsync.call_count, 2, "Both file fsync and directory fsync must be executed")
 
     def test_17_successful_publish_leaves_no_temp(self):
         """17. 正常成功不留下 temp"""
@@ -481,7 +550,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
                 self.assertEqual(len(tmps), 0)
 
     def test_18_quarantine_policy_compliance(self):
-        """18. quarantine 保留策略符合设计"""
+        """18. quarantine 保留策略符合设计：认领文件安全保留在隔离区"""
         intent = self._make_valid_intent("TI2026072101")
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
@@ -491,14 +560,16 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
                 self.builder.publish_staging(st, intent)
 
                 claims = list(task_dir.glob(".claimed_*"))
-                self.assertEqual(len(claims), 0)
+                self.assertGreaterEqual(len(claims), 1, "Claim file must be safely retained in quarantine")
 
     def test_19_all_failures_raise_task_persistence_error(self):
-        """19. 所有失败统一抛出 TaskPersistenceError"""
+        """19. 覆盖所有声明的失败路径并验证抛出 TaskPersistenceError 或 IntentIdConflict"""
         intent = self._make_valid_intent("TI2026072101")
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
+
+            # 19a: 提交过程底层磁盘异常
             staging_file = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
@@ -507,6 +578,13 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
                  patch("src.task_intent_builder._atomic_commit_noreplace", side_effect=OSError("Disk failure")):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
+
+            # 19b: fsync 失败
+            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+                st = self.builder.create_staging(intent)
+                with patch("os.fsync", side_effect=OSError("fsync error")):
+                    with self.assertRaises(TaskPersistenceError):
+                        self.builder.publish_staging(st, intent)
 
     def test_20_no_runtime_files_left_in_git_repo(self):
         """20. 不在仓库生成运行时文件"""

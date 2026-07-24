@@ -422,12 +422,6 @@ class DialogueManager:
             self.phase = prev_phase
             self.final_result = None
 
-            if staging_file and staging_file.exists():
-                try:
-                    staging_file.unlink()
-                except Exception:
-                    pass
-
             rollback_failed = False
             rollback_err = None
             if prev_snap:
@@ -1850,7 +1844,7 @@ class DialogueManager:
                                 if stat.S_ISREG(f_stat.st_mode):
                                     with os.fdopen(f_fd, "r", encoding="utf-8", closefd=True) as pf:
                                         f_data = json.load(pf)
-                                    if isinstance(f_data, dict) and f_data.get("intent_id") == cur_id:
+                                    if isinstance(f_data, dict) and f_data.get("intent_id") == cur_id and _tib.validate_task_intent(f_data):
                                         valid_pub_evidence = True
                             except Exception:
                                 valid_pub_evidence = False
