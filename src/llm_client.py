@@ -197,7 +197,7 @@ class LLMClient:
         return None
 
     def _mock_classify_interaction(self, messages: list[dict]) -> dict:
-        """离线交互路由 mock；只判断交互类型，不规范化业务实体。"""
+        """离线交互路由 mock；只返回最小协议结构，不维护业务关键词分类器。"""
         raw_user_content = self._message_content(messages, len(messages) - 1)
         text = self._latest_user_message(messages)
         context = self._json_after_marker(raw_user_content, "【当前上下文状态】") or {}
@@ -205,67 +205,27 @@ class LLMClient:
         lower = text.lower()
         is_question = bool(re.search(r"(?:什么|哪些|如何|为什么|多少|几|吗|是否|能否|有没有|怎么|[？?])", text))
 
-        interaction_type = "AMBIGUOUS"
-        write_action = "NONE"
-        control_action = "NONE"
+        interaction_type = "WRITE"
         query_intent = None
-        reason = "离线模式未识别到明确交互性质"
-        write_evidence: list[str] = []
-        query_evidence: list[str] = []
+        reason = "离线测试返回预设 WRITE 结果"
 
-        if re.search(r"(?:取消|放弃|终止).*(?:任务|作业)?", text):
-            interaction_type, control_action, reason = "CONTROL", "CANCEL", "离线规则识别到取消控制指令"
-        elif re.search(r"(?:确认|确定).*(?:发布|下发|任务|继续)?", text):
-            interaction_type, control_action, reason = "CONTROL", "CONFIRM", "离线规则识别到确认控制指令"
-        elif expected_slots and not is_question:
-            interaction_type, write_action, reason = "WRITE", "UPDATE", "离线规则识别到用户回答 expected_slots"
-            write_evidence = [text]
-        elif not is_question and self._mock_looks_like_task_creation(text):
-            interaction_type, write_action, reason = "WRITE", "CREATE", "离线规则识别到任务创建输入"
-            write_evidence = [text]
-        elif not is_question and self._mock_looks_like_slot_submission(text):
-            interaction_type, write_action, reason = "WRITE", "UPDATE", "离线规则识别到参数写入输入"
-            write_evidence = [text]
-        elif is_question and re.search(r"(?:任务|作业).*(?:状态|进度|缺|参数)", text):
-            interaction_type, query_intent, reason = "QUERY", "TASK_STATUS", "离线规则识别到任务状态查询"
-            query_evidence = [text]
-        elif is_question and re.search(r"(?:工具|载荷|抓手|声呐|机械臂|传感器)", text):
-            interaction_type, query_intent, reason = "QUERY", "TOOL_QUERY", "离线规则识别到工具查询"
-            query_evidence = [text]
-        elif is_question and re.search(r"(?:类型|参数|字段|规则|模板|分类)", text):
-            interaction_type, query_intent, reason = "QUERY", "KNOWLEDGE_QA", "离线规则识别到知识查询"
-            query_evidence = [text]
-        elif is_question and (any(word in lower for word in ("rov", "auv")) or re.search(r"(?:设备|型号|能力|最大水深|下潜)", text)):
-            interaction_type, query_intent, reason = "QUERY", "DEVICE_CAPABILITY", "离线规则识别到设备能力查询"
-            query_evidence = [text]
-        elif any(word in lower for word in ("你好", "您好", "hello", "hi", "thanks")) or any(word in text for word in ("你是谁", "你能做什么")):
-            interaction_type, reason = "CHAT", "离线规则识别到普通对话"
+        if any(word in lower for word in ("你好", "您好", "hello", "hi", "thanks")) or any(word in text for word in ("你是谁", "你能做什么")):
+            interaction_type = "QUERY"
+            query_intent = "GENERAL_CHAT"
+            reason = "离线测试返回预设 QUERY 普通聊天结果"
+        elif is_question:
+            interaction_type = "QUERY"
+            query_intent = "UNKNOWN"
+            reason = "离线测试返回预设 QUERY 未知查询结果"
+        elif expected_slots:
+            reason = "离线测试返回预设 WRITE expected_slots 回答结果"
 
         return {
             "interaction_type": interaction_type,
-            "write_action": write_action,
-            "control_action": control_action,
             "query_intent": query_intent,
-            "confidence": 0.95 if interaction_type != "AMBIGUOUS" else 0.75,
+            "confidence": 0.95,
             "reason": reason,
-            "write_evidence": write_evidence,
-            "query_evidence": query_evidence,
         }
-
-    @staticmethod
-    def _mock_looks_like_task_creation(text: str) -> bool:
-        action_pattern = r"(?:创建|新建|规划|安排|执行|开展|开始|做|进行|发起)"
-        object_pattern = r"(?:任务|作业|巡检|插入|拔出|控制面板|管缆|采油树)"
-        return bool(re.search(action_pattern, text) and re.search(object_pattern, text))
-
-    @staticmethod
-    def _mock_looks_like_slot_submission(text: str) -> bool:
-        field_pattern = (
-            r"(?:开始|结束|时间|起始|终止|坐标|经纬度|水深|深度|类型|系列|型号|编号|"
-            r"设备|机器人|工具|载荷|母船|支持船|井口|油田)"
-        )
-        assignment_pattern = r"(?:为|是|用|使用|选择|选|改|换|携带|带|配备|搭载|编号|类型|型号)"
-        return bool(re.search(field_pattern, text) and re.search(assignment_pattern, text))
 
     def _mock_generate_text(self, messages: list[dict]) -> str:
         system_content = self._message_content(messages, 0)

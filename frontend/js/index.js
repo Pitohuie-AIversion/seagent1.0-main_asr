@@ -511,7 +511,7 @@
       if (typeof val === 'object') {
         if (val.lat !== undefined && val.lon !== undefined) {
           if (currentLang === 'zh') {
-            return `北纬${val.lat}度, 东经${val.lon}度`;
+            return `(${val.lat}, ${val.lon})`;
           } else {
             const latStr = val.lat >= 0 ? `${val.lat}°N` : `${Math.abs(val.lat)}°S`;
             const lonStr = val.lon >= 0 ? `${val.lon}°E` : `${Math.abs(val.lon)}°W`;

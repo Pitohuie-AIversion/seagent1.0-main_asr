@@ -17,6 +17,14 @@ from src.intent_router import IntentRouter
 from src.simulated_time import get_current_datetime
 
 
+class FixedInteractionLLM:
+    def __init__(self, result):
+        self.result = result
+
+    def classify_interaction(self, messages, max_tokens=260):
+        return dict(self.result)
+
+
 class DialogueManagerROVTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -25,7 +33,12 @@ class DialogueManagerROVTest(unittest.TestCase):
         cls.llm.generate.return_value = "null"
 
     def test_interaction_router_prioritizes_write_over_entity_keyword_query(self):
-        router = IntentRouter(LLMClient(None, None), device_terms=self.kb)
+        router = IntentRouter(FixedInteractionLLM({
+            "interaction_type": "WRITE",
+            "query_intent": None,
+            "confidence": 0.95,
+            "reason": "用户提交任务信息",
+        }))
         route = router.route(
             "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆类型海底油气管道",
             conversation_history=[],
@@ -35,12 +48,15 @@ class DialogueManagerROVTest(unittest.TestCase):
         )
 
         self.assertEqual(route.interaction_type, "WRITE")
-        self.assertEqual(route.write_action, "CREATE")
-        self.assertEqual(route.intent, "TASK_CREATE")
-        self.assertTrue(route.should_update_slots)
+        self.assertIsNone(route.query_intent)
 
     def test_interaction_router_keeps_real_cable_type_question_as_query(self):
-        router = IntentRouter(LLMClient(None, None), device_terms=self.kb)
+        router = IntentRouter(FixedInteractionLLM({
+            "interaction_type": "QUERY",
+            "query_intent": "KNOWLEDGE_QA",
+            "confidence": 0.95,
+            "reason": "用户询问业务知识",
+        }))
         route = router.route(
             "管缆类型有哪些？",
             conversation_history=[],
@@ -51,11 +67,14 @@ class DialogueManagerROVTest(unittest.TestCase):
 
         self.assertEqual(route.interaction_type, "QUERY")
         self.assertEqual(route.query_intent, "KNOWLEDGE_QA")
-        self.assertEqual(route.intent, "KNOWLEDGE_QA")
-        self.assertFalse(route.should_update_slots)
 
     def test_interaction_router_treats_expected_slot_answer_as_write(self):
-        router = IntentRouter(LLMClient(None, None), device_terms=self.kb)
+        router = IntentRouter(FixedInteractionLLM({
+            "interaction_type": "WRITE",
+            "query_intent": None,
+            "confidence": 0.95,
+            "reason": "用户回答 expected_slots",
+        }))
         route = router.route(
             "海底油气管道",
             conversation_history=[],
@@ -65,9 +84,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         )
 
         self.assertEqual(route.interaction_type, "WRITE")
-        self.assertEqual(route.write_action, "UPDATE")
-        self.assertEqual(route.intent, "TASK_UPDATE")
-        self.assertTrue(route.should_update_slots)
+        self.assertIsNone(route.query_intent)
 
     def test_dialogue_manager_writes_compound_create_message_slots(self):
         class CompoundExtractor:

@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)   # ✅ 新增导入
 
 from .llm_client import LLMClient
 from .knowledge_retriever import KnowledgeBase
-from .extractor import ParameterExtractor, MUTATING_INTENTS
+from .extractor import ParameterExtractor
 from .normalizer import FieldNormalizer
 from .output_builder import OutputBuilder
 from .validator import TaskValidator, Violation
@@ -89,8 +89,7 @@ class DialogueManager:
         self.builder = OutputBuilder(kb)
         self.validator = TaskValidator(kb)
         self.oilfield_linker = OilfieldEntityLinker(kb.environment)
-        # 复用同一个知识库实例，保证路由词表、歧义索引与查询数据版本一致。
-        self.intent_router = IntentRouter(llm, device_terms=kb)
+        self.intent_router = IntentRouter(llm)
 
         # 对话核心状态
         self.conversation_history: list[dict] = []
@@ -137,13 +136,15 @@ class DialogueManager:
         initial_mode = self.mode
         initial_rov_candidates = copy.deepcopy(self._pending_rov_candidates)
 
-        if route.intent in ("TOOL_QUERY", "DEVICE_CAPABILITY", "KNOWLEDGE_QA"):
+        query_intent = route.query_intent
+
+        if query_intent in ("TOOL_QUERY", "DEVICE_CAPABILITY", "KNOWLEDGE_QA"):
             reply = self._handle_knowledge_query(user_message, route)
-        elif route.intent in ("TASK_STATUS", "DEVICE_STATUS", "ENVIRONMENT_QUERY"):
+        elif query_intent in ("TASK_STATUS", "DEVICE_STATUS", "ENVIRONMENT_QUERY"):
             reply = self._handle_status_query(user_message, route)
-        elif route.intent == "GENERAL_CHAT":
+        elif query_intent == "GENERAL_CHAT":
             reply = self._handle_general_chat(user_message, route)
-        elif route.intent in ("CLARIFICATION", "UNKNOWN"):
+        elif query_intent == "UNKNOWN":
             reply = self._handle_unknown_intent(user_message, route)
         else:
             reply = self._handle_unknown_intent(user_message, route)
@@ -164,10 +165,10 @@ class DialogueManager:
 
         if not (v_ok and s_ok and u_ok and t_ok and b_ok and m_ok and p_ok and mo_ok and r_ok):
             logger.critical(
-                f"[CRITICAL] State invariance violation in non-task route '{route.intent}'! "
+                f"[CRITICAL] State invariance violation in non-task route '{route.query_intent}'! "
                 f"ver_ok={v_ok}, snap_ok={s_ok}, unres_ok={u_ok}, state_ok={t_ok}, built_ok={b_ok}, miss_ok={m_ok}"
             )
-            raise RuntimeError(f"State invariance violation in non-task route {route.intent}")
+            raise RuntimeError(f"State invariance violation in non-task route {route.query_intent}")
 
         return reply
 
@@ -176,11 +177,11 @@ class DialogueManager:
             "task_type_key": self.task_state.get("task_type_key"),
             "equipment_type": self.task_state.get("equipment_type") or self.task_state.get("equipment_name"),
         }
-        kb_evidence = self.kb.execute_typed_query(route.intent, user_message, context=context)
+        kb_evidence = self.kb.execute_typed_query(route.query_intent, user_message, context=context)
         if not kb_evidence.get("found"):
             return "当前知识库未提供该信息。"
 
-        if route.intent == "DEVICE_CAPABILITY" and kb_evidence.get("query_mode") == "device_check":
+        if route.query_intent == "DEVICE_CAPABILITY" and kb_evidence.get("query_mode") == "device_check":
             results = kb_evidence.get("results", [])
             depth_cond = kb_evidence.get("depth_condition", {})
             target_depth = depth_cond.get("depth_m")
@@ -200,7 +201,7 @@ class DialogueManager:
             for item in result_items
         )
         if not reply or not reply.strip() or ("符合条件" in reply and all_devices_unmet):
-            if route.intent == "DEVICE_CAPABILITY" and kb_evidence.get("query_mode") == "device_check":
+            if route.query_intent == "DEVICE_CAPABILITY" and kb_evidence.get("query_mode") == "device_check":
                 if all_devices_unmet:
                     dev = result_items[0]
                     dev_name = dev.get("robot_class_name") or dev.get("full_name") or "目标设备"
@@ -211,7 +212,7 @@ class DialogueManager:
         return self.llm.filter_reply(reply)
 
     def _handle_status_query(self, user_message: str, route: IntentRouteResult) -> str:
-        if route.intent == "TASK_STATUS":
+        if route.query_intent == "TASK_STATUS":
             status_evidence = {
                 "query_type": "TASK_STATUS",
                 "phase": self.phase,
@@ -225,14 +226,14 @@ class DialogueManager:
             equipment = self.task_state.get("equipment_name") or self.task_state.get("equipment_type")
             has_realtime = False
             state_dict = None
-            if equipment and route.intent == "DEVICE_STATUS":
+            if equipment and route.query_intent == "DEVICE_STATUS":
                 state_dict = self.kb.get_robot_state_dict(equipment)
                 if state_dict and any(v is not None for v in state_dict.values()):
                     has_realtime = True
 
             if has_realtime:
                 status_evidence = {
-                    "query_type": route.intent,
+                    "query_type": route.query_intent,
                     "target": equipment,
                     "state_data": state_dict,
                     "found": True,
@@ -508,6 +509,21 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": pending_reply})
             return pending_reply
 
+        # 控制动作由 DialogueManager 当前阶段处理，不再交给 IntentRouter 判断。
+        if self.phase in ("blocked_soft", "confirming") and (
+            self._is_confirmation_only(user_message)
+            or (self.phase == "blocked_soft" and any(kw in user_message.lower() for kw in SOFT_IGNORE_KEYWORDS))
+        ):
+            return self._handle_task_confirm(user_message, request_id)
+
+        if self.phase in ("blocked_hard", "blocked_soft", "confirming", "collecting") and self._user_cancelled(user_message):
+            self.phase = "rejected"
+            self.final_result = None
+            reply = "任务已取消。如需重新规划，请重新开始。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
         # ── 独立意图路由分流阶段 ──
         expected_slots = [m["key"] for m in self._last_missing if isinstance(m, dict) and "key" in m]
         route = self.intent_router.route(
@@ -518,19 +534,7 @@ class DialogueManager:
             expected_slots=expected_slots,
         )
 
-        # ── CONTROL / QUERY / CHAT / AMBIGUOUS 在抽取流水线之前拦截 ──
-        if route.interaction_type == "CONTROL":
-            if route.control_action in ("CONFIRM", "CONTINUE") or route.intent == "TASK_CONFIRM":
-                return self._handle_task_confirm(user_message, request_id)
-            if route.control_action == "CANCEL" or route.intent == "TASK_CANCEL":
-                self.phase = "rejected"
-                self.final_result = None
-                reply = "任务已取消。如需重新规划，请重新开始。"
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
-
-        if route.interaction_type != "WRITE":
+        if route.interaction_type == "QUERY":
             return self._handle_non_task_route(user_message, route, request_id)
 
         # 3. Parameter Extraction & Processing Pipeline (Atomic Transaction with Optimistic Lock)
@@ -569,29 +573,6 @@ class DialogueManager:
                 required=None,
                 conversation_history=self.conversation_history,
             )
-            # IntentRouter 是意图权威；ParameterExtractor 只负责返回槽位候选。
-            intent_str = route.intent
-
-            if intent_str not in MUTATING_INTENTS:
-                if intent_str == "GENERAL_CHAT":
-                    messages = [
-                        {"role": "system", "content": "你是一个水下多智能体任务规划系统助手。请友好专业地回答用户的问候或一般性问题。"},
-                        *self.conversation_history[-6:],
-                        {"role": "user", "content": user_message}
-                    ]
-                    reply = self.llm.generate(messages, temperature=0.7)
-                    if not reply or reply.strip() in ("", "null"):
-                        reply = "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
-                    reply = self.llm.filter_reply(reply)
-                    self.conversation_history.append({"role": "user", "content": user_message})
-                    self.conversation_history.append({"role": "assistant", "content": reply})
-                    return reply
-
-                # UNKNOWN or any illegal intent fails closed
-                reply = "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数还是查询系统功能？"
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
 
             if not extraction_res.get("slot_candidates"):
                 record_unresolved(extraction_res)
@@ -635,29 +616,6 @@ class DialogueManager:
                 ROV2type=self.kb.ROV2type,
                 conversation_history=self.conversation_history,
             )
-            # IntentRouter 是意图权威；ParameterExtractor 只负责返回槽位候选。
-            intent_str = route.intent
-
-            if intent_str not in MUTATING_INTENTS:
-                if intent_str == "GENERAL_CHAT":
-                    messages = [
-                        {"role": "system", "content": "你是一个水下多智能体任务规划系统助手。请友好专业地回答用户的问候或一般性问题。"},
-                        *self.conversation_history[-6:],
-                        {"role": "user", "content": user_message}
-                    ]
-                    reply = self.llm.generate(messages, temperature=0.7)
-                    if not reply or reply.strip() in ("", "null"):
-                        reply = "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
-                    reply = self.llm.filter_reply(reply)
-                    self.conversation_history.append({"role": "user", "content": user_message})
-                    self.conversation_history.append({"role": "assistant", "content": reply})
-                    return reply
-
-                # UNKNOWN or any illegal intent fails closed
-                reply = "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数还是查询系统功能？"
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
 
             record_unresolved(extraction_res)
 
@@ -749,7 +707,7 @@ class DialogueManager:
             self._apply_updates_in_transaction(
                 stage2_updates,
                 new_slots,
-                allow_overwrite=(route.intent == "TASK_UPDATE"),
+                allow_overwrite=had_task_type_key_at_turn_start,
             )
             if "rov_description" in stage2_updates:
                 all_rovs = self.kb.get_all_rovs()

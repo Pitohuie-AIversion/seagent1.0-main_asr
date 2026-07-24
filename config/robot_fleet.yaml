@@ -301,8 +301,8 @@ model_variants:
 
   light_work_class_rov_hp:
     family_id: "light_work_class_rov"
-    full_name: "轻型工作级深海机器人 HP"
-    aliases: ["轻型工作级深海机器人HP", "轻型工作级ROV HP", "轻型ROV HP", "轻型HP", "天鹰座HP"]
+    full_name: "轻型工作级深海机器人"
+    aliases: ["轻型工作级深海机器人", "轻型工作级ROV", "轻型ROV", "轻型", "天鹰座"]
     hard_params:
       max_depth_m: 600
       max_burial_depth_m: "不适用"
@@ -337,8 +337,8 @@ model_variants:
 
   observation_rov_hp:
     family_id: "observation_rov"
-    full_name: "观察级深海机器人 HP"
-    aliases: ["观察级深海机器人HP", "观察级ROV HP", "观察型ROV HP", "观察级HP", "巡检ROV HP"]
+    full_name: "观察级深海机器人"
+    aliases: ["观察级深海机器人", "观察级ROV", "观察型ROV", "观察级", "巡检ROV"]
     hard_params:
       max_depth_m: 600
       max_burial_depth_m: "不适用"
@@ -369,10 +369,10 @@ model_variants:
       max_operating_speed_kn: null
       max_endurance_h: "不适用"
 
-  autonomous_underwater_vehicle_hp:
+  autonomous_underwater_vehicle_324cc:
     family_id: "autonomous_underwater_vehicle"
-    full_name: "水下无人自主航行器 HP"
-    aliases: ["水下无人自主航行器HP", "自主水下航行器HP", "水下无人自主机器人HP", "自主型HP", "AUV HP"]
+    full_name: "水下无人自主航行器 324CC"
+    aliases: ["水下无人自主航行器 324CC", "自主水下航行器 324CC", "自主型324CC", "324CC自主型", "324CC",  "水下无人自主机器人324CC", "324CC AUV"]
     hard_params:
       max_depth_m: 1000
       max_burial_depth_m: "不适用"
@@ -436,30 +436,30 @@ fleet_units:
     status_ref: "WROV-250-001"
     aliases: ["001", "一号机", "通用型001", "通用型一号机", "通用工作级001", "通用工作级一号机", "通用工作级深海机器人001", "通用工作级深海机器人一号机"]
 
-  - unit_id: "LROV-HP-001"
+  - unit_id: "LROV--001"
     variant_id: "light_work_class_rov_hp"
     serial_no: "001"
     display_name: "轻型工作级深海机器人HP-001"
-    status_ref: "LROV-HP-001"
+    status_ref: "LROV--001"
     aliases: ["001", "一号机", "轻型001", "轻型一号机", "轻型工作级001", "轻型工作级一号机", "天鹰座001", "天鹰座一号机"]
 
-  - unit_id: "LROV-HP-002"
+  - unit_id: "LROV--002"
     variant_id: "light_work_class_rov_hp"
     serial_no: "002"
-    display_name: "轻型工作级深海机器人HP-002"
-    status_ref: "LROV-HP-002"
+    display_name: "轻型工作级深海机器人-002"
+    status_ref: "LROV-002"
     aliases: ["002", "二号机", "轻型002", "轻型二号机", "轻型工作级002", "轻型工作级二号机", "天鹰座002", "天鹰座二号机"]
 
-  - unit_id: "OBSROV-HP-001"
+  - unit_id: "OBSROV--001"
     variant_id: "observation_rov_hp"
     serial_no: "001"
-    display_name: "观察级深海机器人HP-001"
-    status_ref: "OBSROV-HP-001"
+    display_name: "观察级深海机器人-001"
+    status_ref: "OBSROV-001"
     aliases: ["001", "一号机", "观察级001", "观察级一号机", "观察型001", "观察型一号机", "观察级深海机器人001", "观察级深海机器人一号机"]
 
-  - unit_id: "AUV-HP-001"
-    variant_id: "autonomous_underwater_vehicle_hp"
+  - unit_id: "AUV-324cc-001"
+    variant_id: "autonomous_underwater_vehicle_324cc"
     serial_no: "001"
-    display_name: "水下无人自主航行器HP-001"
-    status_ref: "AUV-HP-001"
+    display_name: "水下无人自主航行器-324cc-001"
+    status_ref: "AUV-324cc-001"
     aliases: ["001", "一号机", "AUV001", "AUV一号机", "自主型001", "自主型一号机", "水下无人自主航行器001", "水下无人自主航行器一号机"]

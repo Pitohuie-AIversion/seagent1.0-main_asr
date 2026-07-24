@@ -10,8 +10,6 @@ from datetime import date
 
 from .llm_client import LLMClient
 
-MUTATING_INTENTS = {"TASK_CREATE", "TASK_UPDATE"}
-
 
 MAX_EXTRACTION_USER_HISTORY = 6
 

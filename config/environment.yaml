@@ -12,7 +12,7 @@ oil_fields:
     aliases: ["流花11-1油田", "流花11-1", "流花11 1", "流花11_1", "LH11-1", "LH 11-1", "LH11_1", "Liuhua 11-1", "Liuhua11-1", "Liuhua 11-1 Oilfield"]
     lat_range: [20.81, 20.82]
     lon_range: [115.73, 115.74]
-    seabed_type: "unknown"
+    seabed_type: "hard"
     notes: >
       区域: 南海东部;
       盆地: 珠江口盆地;
@@ -27,7 +27,7 @@ oil_fields:
     aliases: ["陆丰14-8油田", "陆丰14-8", "陆丰14 8", "陆丰14_8", "LF14-8", "LF 14-8", "LF14_8", "Lufeng 14-8", "Lufeng14-8", "Lufeng 14-8 Oilfield"]
     lat_range: [21.65, 21.66]
     lon_range: [116.18, 116.19]
-    seabed_type: "unknown"
+    seabed_type: "soft"
     notes: >
       区域: 南海东部;
       盆地: 珠江口盆地;
@@ -42,7 +42,7 @@ oil_fields:
     aliases: ["恩平21-4油田", "恩平21-4", "恩平21 4", "恩平21_4", "EP21-4", "EP 21-4", "EP21_4", "Enping 21-4", "Enping21-4", "Enping 21-4 Oilfield"]
     lat_range: [20.39, 20.39]
     lon_range: [114.21, 114.21]
-    seabed_type: "unknown"
+    seabed_type: "soft"
     notes: >
       区域: 南海东部;
       盆地: 珠江口盆地;
@@ -57,7 +57,7 @@ oil_fields:
     aliases: ["番禺10-1油田", "番禺10-1", "番禺10 1", "番禺10_1", "PY10-1", "PY 10-1", "PY10_1", "Panyu 10-1", "Panyu10-1", "Panyu 10-1 Oilfield"]
     lat_range: [20.79, 20.79]
     lon_range: [114.82, 114.82]
-    seabed_type: "unknown"
+    seabed_type: "soft"
     notes: >
       区域: 南海东部;
       盆地: 珠江口盆地;
@@ -72,7 +72,7 @@ oil_fields:
     aliases: ["惠州32-5油田", "惠州32-5", "惠州32 5", "惠州32_5", "HZ32-5", "HZ 32-5", "HZ32_5", "Huizhou 32-5", "Huizhou32-5", "Huizhou 32-5 Oilfield"]
     lat_range: [21.07, 21.10]
     lon_range: [115.16, 115.20]
-    seabed_type: "unknown"
+    seabed_type: "soft"
     notes: >
       区域: 南海东部;
       盆地: 珠江口盆地;
@@ -90,7 +90,7 @@ oil_fields:
     aliases: ["文昌16-2油田", "文昌16-2", "文昌16 2", "文昌16_2", "WC16-2", "WC 16-2", "WC16_2", "Wenchang 16-2", "Wenchang16-2", "Wenchang 16-2 Oilfield"]
     lat_range: [19.72, 19.72]
     lon_range: [112.37, 112.37]
-    seabed_type: "unknown"
+    seabed_type: "soft"
     notes: >
       区域: 南海西部;
       盆地: 珠江口盆地西部;
@@ -107,7 +107,7 @@ oil_fields:
     aliases: ["涠洲5-3油田", "涠洲5-3", "涠洲5 3", "涠洲5_3", "WZ5-3", "WZ 5-3", "WZ5_3", "Weizhou 5-3", "Weizhou5-3", "Weizhou 5-3 Oilfield"]
     lat_range: [20.90, 20.90]
     lon_range: [108.72, 108.72]
-    seabed_type: "unknown"
+    seabed_type: "soft"
     notes: >
       区域: 南海西部;
       盆地: 北部湾盆地;
@@ -122,7 +122,7 @@ oil_fields:
     aliases: ["乌石17-2油田群", "乌石17-2油田", "乌石17-2", "乌石17 2", "乌石17_2", "WS17-2", "WS 17-2", "WS17_2", "Wushi 17-2", "Wushi17-2", "Wushi 17-2 Oilfield"]
     lat_range: [20.54, 20.55]
     lon_range: [109.63, 109.64]
-    seabed_type: "unknown"
+    seabed_type: "soft"
     notes: >
       区域: 南海西部;
       盆地: 北部湾盆地;
