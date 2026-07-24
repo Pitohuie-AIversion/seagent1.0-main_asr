@@ -93,10 +93,14 @@ class FieldNormalizer:
     # ──────────────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _match_key(value: str) -> str:
+    def make_match_key(value: Any) -> str:
         text = unicodedata.normalize("NFKC", str(value or ""))
         text = re.sub(r"[\s\u3000]+", "", text)
         return text.casefold()
+
+    @staticmethod
+    def _match_key(value: str) -> str:
+        return FieldNormalizer.make_match_key(value)
 
     @staticmethod
     def _normalize_text(value: Any) -> str | None:

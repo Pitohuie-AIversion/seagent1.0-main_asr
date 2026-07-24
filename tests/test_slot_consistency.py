@@ -12,6 +12,7 @@ from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
 from src.extractor import ParameterExtractor
 from src.llm_client import LLMClient
+from src.output_builder import OutputBuilder
 from src.slot_store import SlotStore, Slot
 from src.simulated_time import get_simulated_time
 from datetime import datetime
@@ -111,6 +112,99 @@ class SlotConsistencyTest(unittest.TestCase):
         messages = llm.extract_json.call_args.args[0]
         self.assertEqual(messages[1:-1], history[-6:])
         self.assertEqual(messages[-1]["content"], "改成第二个")
+
+    def test_output_builder_keeps_ambiguous_aliases_and_candidate_evidence(self):
+        builder = OutputBuilder(self.kb)
+        catalog = [
+            {"canonical_value": "A", "aliases": ["一号机", "Alpha"]},
+            {"canonical_value": "B", "aliases": ["一号机", "Beta"]},
+        ]
+
+        alias_mappings, ambiguous_aliases = builder._build_alias_indexes(catalog)
+
+        self.assertEqual(alias_mappings["Alpha"], "A")
+        self.assertEqual(alias_mappings["Beta"], "B")
+        self.assertNotIn("一号机", alias_mappings)
+        self.assertEqual(ambiguous_aliases["一号机"], ["A", "B"])
+
+    def test_extractor_resolves_exact_alias_to_allowed_canonical_value(self):
+        builder = OutputBuilder(self.kb)
+        required = builder.get_required(
+            "tree_valve_operation",
+            task_state={"equipment_family": "通用工作级深海机器人"},
+        )
+        llm = MagicMock(spec=LLMClient)
+        llm.extract_json.return_value = {
+            "slot_candidates": [
+                {
+                    "raw_key": "型号",
+                    "canonical_key": "equipment_type",
+                    "raw_value": "奇点250HP",
+                    "normalized_value": "奇点250HP",
+                    "confidence": 0.9,
+                }
+            ],
+            "unresolved": [],
+        }
+
+        result = ParameterExtractor(llm).extract_updates(
+            "奇点250HP",
+            {"equipment_family": "通用工作级深海机器人"},
+            task_type_key="tree_valve_operation",
+            required=required,
+        )
+
+        self.assertEqual(len(result["slot_candidates"]), 1)
+        candidate = result["slot_candidates"][0]
+        self.assertEqual(candidate["canonical_key"], "equipment_type")
+        self.assertEqual(candidate["normalized_value"], "通用工作级深海机器人 250HP")
+        self.assertEqual(candidate["resolution_method"], "alias_exact")
+        self.assertEqual(llm.extract_json.call_count, 1)
+
+    def test_extractor_uses_semantic_resolution_then_backend_validation(self):
+        builder = OutputBuilder(self.kb)
+        required = builder.get_required(
+            "tree_valve_operation",
+            task_state={"equipment_family": "通用工作级深海机器人"},
+        )
+        llm = MagicMock(spec=LLMClient)
+        llm.extract_json.side_effect = [
+            {
+                "slot_candidates": [
+                    {
+                        "raw_key": "型号",
+                        "canonical_key": "equipment_type",
+                        "raw_value": "奇点那台250马力的",
+                        "normalized_value": "奇点那台250马力的",
+                        "confidence": 0.88,
+                    }
+                ],
+                "unresolved": [],
+            },
+            {
+                "matched": True,
+                "canonical_key": "equipment_type",
+                "canonical_value": "通用工作级深海机器人 250HP",
+                "confidence": 0.94,
+                "reason": "奇点和250马力共同指向该型号",
+            },
+        ]
+
+        result = ParameterExtractor(llm).extract_updates(
+            "就用奇点那台250马力的",
+            {"equipment_family": "通用工作级深海机器人"},
+            task_type_key="tree_valve_operation",
+            required=required,
+        )
+
+        self.assertEqual(len(result["slot_candidates"]), 1)
+        candidate = result["slot_candidates"][0]
+        self.assertEqual(candidate["canonical_key"], "equipment_type")
+        self.assertEqual(candidate["normalized_value"], "通用工作级深海机器人 250HP")
+        self.assertEqual(candidate["confidence"], 0.94)
+        self.assertEqual(candidate["resolution_method"], "llm_semantic")
+        self.assertEqual(result["unresolved"], [])
+        self.assertEqual(llm.extract_json.call_count, 2)
 
     def test_confirmation_publish_skips_parameter_extraction(self):
         self.dm.phase = "confirming"

@@ -18,6 +18,7 @@ from .simulated_time import get_current_date
 from .coord_parser import parse_coord_value
 from .id_sequence import next_daily_id
 from .result_paths import get_task_dir, get_history_dir
+from .normalizer import FieldNormalizer
 
 
 class OutputBuilder:
@@ -52,20 +53,21 @@ class OutputBuilder:
             ftype = field_def["type"]
             if ftype not in ("auto", "fixed"):
                 item = {"key": key, "label": label, "type": ftype}
-                allowed = self.resolve_allowed_values(
+                catalog = self._resolve_candidate_catalog(
                     field_def,
                     task_type_key,
                     task_state,
                 )
+                allowed = [item["canonical_value"] for item in catalog]
                 if allowed:
                     item["allowed_values"] = allowed
-                alias_mappings = self._resolve_alias_mappings(
-                    field_def,
-                    task_type_key,
-                    task_state,
-                )
+                alias_mappings, ambiguous_aliases = self._build_alias_indexes(catalog)
                 if alias_mappings:
                     item["alias_mappings"] = alias_mappings
+                if ambiguous_aliases:
+                    item["ambiguous_aliases"] = ambiguous_aliases
+                if catalog:
+                    item["candidate_evidence"] = catalog
                 required.append(item)
 
         return required
@@ -345,6 +347,138 @@ class OutputBuilder:
             return mappings
 
         return mappings
+
+    def _resolve_candidate_catalog(
+        self,
+        field_def: dict,
+        task_type_key: str = "",
+        task_state: dict | None = None,
+    ) -> list[dict]:
+        """统一构建候选目录，避免 allowed_values / aliases / evidence 三处不一致。"""
+        ref = field_def.get("allowed_values_ref")
+        catalog: list[dict] = []
+
+        if field_def.get("type") == "tasktype" or "allowed_values" in field_def or not ref:
+            return [
+                {
+                    "canonical_value": value,
+                    "aliases": [],
+                    "display_name": None,
+                    "parent": None,
+                }
+                for value in self._resolve_allowed(field_def, task_type_key, task_state)
+            ]
+
+        if ref == "robot_family_full_names":
+            for _, family in self.kb.get_robot_families_for_task(task_type_key):
+                standard = family.get("full_name")
+                if standard:
+                    catalog.append(
+                        {
+                            "canonical_value": standard,
+                            "aliases": list(family.get("aliases", []) or []),
+                            "display_name": family.get("display_name"),
+                            "parent": None,
+                        }
+                    )
+            return catalog
+
+        if ref in ("robot_full_names", "robot_variant_full_names"):
+            family_selector = str(task_state.get("equipment_family") or "") if task_state else ""
+            for robot in self.kb.get_task_allowed_robot_variants(
+                task_type_key,
+                family_selector or None,
+            ):
+                standard = robot.get("full_name")
+                if standard:
+                    parent = None
+                    family = self.kb.robot_fleet.get("robot_families", {}).get(robot.get("family_id"))
+                    if family and family.get("full_name"):
+                        parent = {
+                            "field": "equipment_family",
+                            "value": family.get("full_name"),
+                        }
+                    catalog.append(
+                        {
+                            "canonical_value": standard,
+                            "aliases": list(robot.get("aliases", []) or []),
+                            "display_name": robot.get("display_name"),
+                            "parent": parent,
+                        }
+                    )
+            return catalog
+
+        if ref == "robot_unit_ids":
+            variant_selector = str(task_state.get("equipment_type") or "") if task_state else ""
+            if not variant_selector:
+                return []
+            robot = self.kb.get_rov_for_task(variant_selector, task_type_key)
+            if not robot:
+                return []
+            for unit in robot.get("fleet_units", []):
+                unit_id = unit.get("unit_id")
+                if unit_id:
+                    aliases = [
+                        alias
+                        for alias in [unit.get("display_name"), *(unit.get("aliases", []) or [])]
+                        if alias
+                    ]
+                    catalog.append(
+                        {
+                            "canonical_value": unit_id,
+                            "aliases": aliases,
+                            "display_name": unit.get("display_name"),
+                            "parent": {
+                                "field": "equipment_type",
+                                "value": robot.get("full_name"),
+                            },
+                        }
+                    )
+            return catalog
+
+        return [
+            {
+                "canonical_value": value,
+                "aliases": [],
+                "display_name": None,
+                "parent": None,
+            }
+            for value in self._resolve_allowed(field_def, task_type_key, task_state)
+        ]
+
+    def _build_alias_indexes(
+        self,
+        catalog: list[dict],
+    ) -> tuple[dict[str, str], dict[str, list[str]]]:
+        """拆分唯一 alias 与歧义 alias；歧义项保留给 LLM 语义兜底。"""
+        alias_display: dict[str, str] = {}
+        alias_targets: dict[str, dict[str, str]] = {}
+
+        for item in catalog:
+            standard = item.get("canonical_value")
+            if not standard:
+                continue
+            for alias in item.get("aliases", []) or []:
+                if not alias:
+                    continue
+                alias_text = str(alias)
+                match_key = FieldNormalizer.make_match_key(alias_text)
+                if not match_key:
+                    continue
+                alias_display.setdefault(match_key, alias_text)
+                alias_targets.setdefault(match_key, {})[str(standard)] = str(standard)
+
+        mappings: dict[str, str] = {}
+        ambiguous_aliases: dict[str, list[str]] = {}
+        for match_key, targets in alias_targets.items():
+            alias_text = alias_display[match_key]
+            values = list(targets.values())
+            if len(values) == 1:
+                mappings[alias_text] = values[0]
+            else:
+                ambiguous_aliases[alias_text] = values
+
+        return mappings, ambiguous_aliases
 
     def _resolve_allowed(
         self,

@@ -9,6 +9,7 @@ import re
 from datetime import date
 
 from .llm_client import LLMClient
+from .normalizer import FieldNormalizer
 
 
 MAX_EXTRACTION_USER_HISTORY = 6
@@ -102,6 +103,12 @@ EXTRACTION_SYSTEM = """\
 14. 最新用户消息使用“第一个”“第二个”“选2”等编号选择时，只能根据最近历史中明确列出的选项映射。
 15. 只根据所需字段中定义的key提取，不新增其他字段。
 16. 任务维度中无法识别或无法映射的片段写入 unresolved；普通寒暄不写入 unresolved。无法识别任何字段时返回空 slot_candidates。
+
+【枚举字段抽取边界】
+- raw_value 必须保留用户原始表达。
+- normalized_value 可以填写模型初步判断，但不代表已经通过后端标准值校验。
+- 用户可以使用 allowed_values 对应的 aliases、简称、展示名、自然语言描述或上下文指代；不要因为用户没有逐字复制标准名称就判定无效。
+- 不确定时不要猜测标准候选，保持用户原表达，由后端结合 aliases 和 allowed_values 解析。
 
 【当前时间】{today}
 
@@ -207,14 +214,19 @@ class ParameterExtractor:
         if not isinstance(unresolved, list):
             unresolved = []
 
+        normalized_candidates, resolver_unresolved = self._normalize_candidates(
+            raw_candidates,
+            allowed_keys,
+            required or [],
+            current_state,
+            conversation_history or [],
+        )
+
         return {
-            "slot_candidates": self._normalize_candidates(
-                raw_candidates,
-                allowed_keys,
-            ),
+            "slot_candidates": normalized_candidates,
             "unresolved": [
                 str(item).strip()
-                for item in unresolved
+                for item in [*unresolved, *resolver_unresolved]
                 if str(item).strip()
             ],
         }
@@ -245,14 +257,23 @@ class ParameterExtractor:
         )
         return keys
 
-    @staticmethod
     def _normalize_candidates(
+        self,
         candidates: list,
         allowed_keys: set[str],
-    ) -> list[dict]:
+        required: list[dict],
+        current_state: dict,
+        conversation_history: list[dict],
+    ) -> tuple[list[dict], list[str]]:
         """校验候选结构；同一字段多次出现时保留最后一次修正。"""
         aliases = {"equipment_model": "equipment_type"}
+        required_by_key = {
+            str(field.get("key")): field
+            for field in required or []
+            if field.get("key")
+        }
         normalized_by_key: dict[str, dict] = {}
+        unresolved: list[str] = []
 
         for candidate in candidates:
             if not isinstance(candidate, dict):
@@ -274,15 +295,225 @@ class ParameterExtractor:
             confidence = min(1.0, max(0.0, confidence))
 
             raw_value = candidate.get("raw_value", value)
-            normalized_by_key[key] = {
+            trusted_candidate = {
                 "raw_key": str(candidate.get("raw_key") or key),
                 "canonical_key": key,
                 "raw_value": raw_value,
                 "normalized_value": value,
                 "confidence": confidence,
             }
+            resolved_candidate, unresolved_reason = self._resolve_candidate_value(
+                trusted_candidate,
+                required_by_key,
+                allowed_keys,
+                current_state,
+                conversation_history,
+            )
+            if resolved_candidate is None:
+                if unresolved_reason:
+                    unresolved.append(unresolved_reason)
+                continue
 
-        return list(normalized_by_key.values())
+            normalized_by_key[resolved_candidate["canonical_key"]] = resolved_candidate
+
+        return list(normalized_by_key.values()), unresolved
+
+    def _resolve_candidate_value(
+        self,
+        candidate: dict,
+        required_by_key: dict[str, dict],
+        allowed_keys: set[str],
+        current_state: dict,
+        conversation_history: list[dict],
+    ) -> tuple[dict | None, str | None]:
+        """受约束字段解析：标准值 exact → alias exact → LLM 语义兜底 → 后端校验。"""
+        key = str(candidate.get("canonical_key") or "")
+        field_def = required_by_key.get(key)
+        if not field_def or not field_def.get("allowed_values"):
+            candidate.setdefault("resolution_method", "type_normalization")
+            return candidate, None
+        if field_def.get("type") == "list":
+            candidate.setdefault("resolution_method", "type_normalization")
+            return candidate, None
+
+        for value in self._candidate_match_inputs(candidate):
+            canonical = self._match_allowed_value(value, field_def.get("allowed_values") or [])
+            if canonical is not None:
+                resolved = dict(candidate)
+                resolved["normalized_value"] = canonical
+                resolved["resolution_method"] = "canonical_exact"
+                return (
+                    (resolved, None)
+                    if self._validate_resolved_candidate(key, canonical, required_by_key, allowed_keys)
+                    else (None, self._format_unresolved(candidate, "不属于当前合法候选"))
+                )
+
+        for value in self._candidate_match_inputs(candidate):
+            canonical = self._match_alias_value(value, field_def)
+            if canonical is not None:
+                resolved = dict(candidate)
+                resolved["normalized_value"] = canonical
+                resolved["resolution_method"] = "alias_exact"
+                return (
+                    (resolved, None)
+                    if self._validate_resolved_candidate(key, canonical, required_by_key, allowed_keys)
+                    else (None, self._format_unresolved(candidate, "alias 指向的标准值不属于当前合法候选"))
+                )
+
+        semantic = self._resolve_candidate_semantically(
+            candidate.get("raw_value", candidate.get("normalized_value")),
+            key,
+            list(required_by_key.values()),
+            current_state,
+            conversation_history,
+        )
+        if semantic:
+            resolved_key = str(semantic.get("canonical_key") or "")
+            canonical = semantic.get("canonical_value")
+            if self._validate_resolved_candidate(
+                resolved_key,
+                canonical,
+                required_by_key,
+                allowed_keys,
+            ):
+                resolved = dict(candidate)
+                resolved["canonical_key"] = resolved_key
+                resolved["normalized_value"] = canonical
+                resolved["confidence"] = self._coerce_confidence(
+                    semantic.get("confidence"),
+                    candidate.get("confidence", 1.0),
+                )
+                resolved["resolution_method"] = "llm_semantic"
+                return resolved, None
+
+        return None, self._format_unresolved(candidate, "无法唯一匹配当前合法候选")
+
+    @staticmethod
+    def _candidate_match_inputs(candidate: dict) -> list[object]:
+        values = []
+        for key in ("normalized_value", "raw_value"):
+            value = candidate.get(key)
+            if value is not None and value != "":
+                values.append(value)
+        return values
+
+    @staticmethod
+    def _match_allowed_value(value: object, allowed_values: list) -> object | None:
+        needle = FieldNormalizer.make_match_key(value)
+        if not needle:
+            return None
+        matches = [
+            allowed
+            for allowed in allowed_values
+            if FieldNormalizer.make_match_key(allowed) == needle
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _match_alias_value(value: object, field_def: dict) -> object | None:
+        needle = FieldNormalizer.make_match_key(value)
+        if not needle:
+            return None
+        matches = []
+        for alias, canonical in (field_def.get("alias_mappings") or {}).items():
+            if FieldNormalizer.make_match_key(alias) == needle:
+                matches.append(canonical)
+        return matches[0] if len(set(map(str, matches))) == 1 else None
+
+    def _resolve_candidate_semantically(
+        self,
+        raw_value: object,
+        proposed_key: str,
+        required: list[dict],
+        current_state: dict,
+        conversation_history: list[dict],
+    ) -> dict | None:
+        candidate_fields = []
+        for field in required:
+            allowed = field.get("allowed_values") or []
+            evidence = field.get("candidate_evidence") or []
+            if not allowed:
+                continue
+            candidate_fields.append(
+                {
+                    "key": field.get("key"),
+                    "label": field.get("label"),
+                    "allowed_values": allowed,
+                    "alias_mappings": field.get("alias_mappings") or {},
+                    "ambiguous_aliases": field.get("ambiguous_aliases") or {},
+                    "candidate_evidence": evidence,
+                }
+            )
+        if not candidate_fields:
+            return None
+
+        payload = {
+            "user_expression": raw_value,
+            "proposed_field": proposed_key,
+            "expected_fields": [field.get("key") for field in required if field.get("key")],
+            "current_state": current_state,
+            "candidate_fields": candidate_fields,
+            "recent_history": [
+                {
+                    "role": item.get("role"),
+                    "content": item.get("content"),
+                }
+                for item in (conversation_history or [])[-MAX_EXTRACTION_USER_HISTORY:]
+                if item.get("role") in ("user", "assistant") and item.get("content")
+            ],
+        }
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是受约束的候选语义解析器，只能输出 JSON object。"
+                    "请结合 aliases、ambiguous_aliases、candidate_evidence、当前状态和历史，"
+                    "从 allowed_values 中选择唯一标准值；不能生成 allowed_values 之外的值。"
+                    "输出格式："
+                    "{\"matched\": true/false, \"canonical_key\": string|null, "
+                    "\"canonical_value\": string|null, \"confidence\": number, \"reason\": string}"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(payload, ensure_ascii=False),
+            },
+        ]
+        result = self.llm.extract_json(messages, max_tokens=500)
+        if not isinstance(result, dict) or not result.get("matched"):
+            return None
+        return result
+
+    @staticmethod
+    def _validate_resolved_candidate(
+        key: str,
+        value: object,
+        required_by_key: dict[str, dict],
+        allowed_keys: set[str],
+    ) -> bool:
+        if key not in allowed_keys:
+            return False
+        field_def = required_by_key.get(key)
+        if not field_def:
+            return False
+        allowed_values = field_def.get("allowed_values") or []
+        if allowed_values:
+            return any(value == allowed for allowed in allowed_values)
+        return value is not None and value != ""
+
+    @staticmethod
+    def _coerce_confidence(value: object, fallback: object = 1.0) -> float:
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError):
+            confidence = float(fallback)
+        return min(1.0, max(0.0, confidence))
+
+    @staticmethod
+    def _format_unresolved(candidate: dict, reason: str) -> str:
+        key = candidate.get("canonical_key") or "未知字段"
+        raw = candidate.get("raw_value", candidate.get("normalized_value", ""))
+        return f"{key} 表达“{raw}”{reason}。"
 
     def _select_extraction_history(
         self,

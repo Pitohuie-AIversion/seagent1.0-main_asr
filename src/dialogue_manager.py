@@ -586,7 +586,7 @@ class DialogueManager:
                     "value": v,
                     "raw_value": candidate.get("raw_value"),
                     "confidence": candidate.get("confidence", 1.0),
-                    "source": "user_input"
+                    "source": self._source_for_resolution_method(candidate.get("resolution_method"))
                 }
                 stage1_updates[k] = cand_info
                 merged_updates[k] = v
@@ -629,7 +629,7 @@ class DialogueManager:
                     "value": v,
                     "raw_value": candidate.get("raw_value"),
                     "confidence": candidate.get("confidence", 1.0),
-                    "source": "user_input"
+                    "source": self._source_for_resolution_method(candidate.get("resolution_method"))
                 }
                 stage2_updates[k] = cand_info
                 merged_updates[k] = v
@@ -1142,6 +1142,16 @@ class DialogueManager:
                 slot.raw_value = meta["raw_value"]
                 slot.confidence = meta["confidence"]
                 slot.source = meta["source"]
+
+    @staticmethod
+    def _source_for_resolution_method(resolution_method: str | None) -> str:
+        source_map = {
+            "canonical_exact": "user_input",
+            "alias_exact": "alias_mapping",
+            "llm_semantic": "llm_semantic_match",
+            "type_normalization": "user_input",
+        }
+        return source_map.get(resolution_method, "user_input")
 
     @staticmethod
     def _apply_slot_update_in_transaction(
