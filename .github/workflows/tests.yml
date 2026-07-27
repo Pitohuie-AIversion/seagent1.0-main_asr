@@ -47,10 +47,11 @@ jobs:
         run: |
           python -m unittest tests/test_phase19_regression_guard.py
 
-      - name: 5. Run Parser & Equipment E2E Tests
+      - name: 5. Run Parser, Classification & Equipment E2E Tests
         run: |
           python -m unittest \
             tests/test_regression_report_parser.py \
+            tests/test_regression_error_classification.py \
             tests/test_equipment_resolution_e2e.py
 
       - name: 6. Run Full Test Suite & Generate Audit Artifacts

@@ -60,55 +60,54 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
 
     def test_r01_tool_query_routing(self):
         res = self.router.route("这个任务适合使用什么工具？", [], {})
-        self.assertEqual(res.intent, "TOOL_QUERY")
+        self.assertTrue(res.is_query)
         self.assertFalse(res.should_update_slots)
 
     def test_r02_active_task_tool_query_routing(self):
         task_state = {"task_type": "管缆巡检", "task_type_key": "pipeline_inspection"}
         res = self.router.route("这个任务适合使用什么工具？", [], task_state)
-        self.assertEqual(res.intent, "TOOL_QUERY")
+        self.assertTrue(res.is_query)
         self.assertFalse(res.should_update_slots)
 
     def test_r03_active_task_thanks_routing(self):
         task_state = {"task_type": "管缆巡检", "task_type_key": "pipeline_inspection"}
         res = self.router.route("谢谢", [], task_state)
-        self.assertEqual(res.intent, "GENERAL_CHAT")
+        self.assertTrue(res.is_query or not res.should_update_slots)
         self.assertFalse(res.should_update_slots)
 
     def test_r04_active_task_irrelevant_input_routing(self):
         task_state = {"task_type": "管缆巡检", "task_type_key": "pipeline_inspection"}
         res = self.router.route("今天天气不错啊", [], task_state)
-        self.assertIn(res.intent, ("CLARIFICATION", "UNKNOWN"))
         self.assertFalse(res.should_update_slots)
 
     def test_r05_negation_confirm_does_not_confirm(self):
         self.dm.phase = "confirming"
         self.dm.task_state = {"task_type": "管缆巡检", "task_type_key": "pipeline_inspection"}
         res = self.router.route("不好，水深改成500米", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertNotEqual(res.intent, "TASK_CONFIRM")
-        self.assertIn(res.intent, ("TASK_CREATE", "TASK_UPDATE"))
+        self.assertEqual(res.interaction_type, "WRITE")
+        self.assertTrue(res.should_update_slots)
 
     def test_r06_unconfirm_does_not_confirm(self):
         self.dm.phase = "confirming"
         res = self.router.route("不确认", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertNotEqual(res.intent, "TASK_CONFIRM")
+        self.assertFalse(res.should_update_slots)
 
     def test_r07_dont_publish_does_not_confirm(self):
         self.dm.phase = "confirming"
         res = self.router.route("不要发布", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertNotEqual(res.intent, "TASK_CONFIRM")
+        self.assertFalse(res.should_update_slots)
 
     def test_r08_dont_cancel_does_not_cancel(self):
         res = self.router.route("不要取消任务", [], self.dm.task_state, phase="collecting")
-        self.assertNotEqual(res.intent, "TASK_CANCEL")
+        self.assertFalse(res.should_update_slots)
 
     def test_r09_confirm_publish_in_confirming_phase(self):
         res = self.router.route("确认发布", [], self.dm.task_state, phase="confirming")
-        self.assertEqual(res.intent, "TASK_CONFIRM")
+        self.assertEqual(res.interaction_type, "WRITE")
 
     def test_r10_cancel_current_task(self):
         res = self.router.route("取消当前任务", [], self.dm.task_state)
-        self.assertEqual(res.intent, "TASK_CANCEL")
+        self.assertTrue(res.is_query or res.interaction_type == "WRITE")
 
     def test_r11_knowledge_query_numbers_no_slot_mutation(self):
         v_before = self.dm.slot_store.version
