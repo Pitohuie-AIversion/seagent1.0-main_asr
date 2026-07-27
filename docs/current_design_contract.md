@@ -33,6 +33,9 @@ The system classifies all natural language user inputs into two primary interact
 - **Publish Negation (`"不要发布"`, `"不发布"`):** MUST NOT trigger task publication in `confirming` phase.
 - **Confirmation Negation (`"不确认"`):** MUST NOT confirm task or publish intent JSON.
 
+### 2.3 Control Command Processing Order
+- Control commands (e.g., confirm, cancel, continue/ignore warning) MUST be evaluated and processed BEFORE passing user inputs to standard WRITE extractor.
+
 ---
 
 ## 3. Confidence & Validation Security
@@ -72,8 +75,11 @@ User Alias (e.g., "观察级一号机")
                     └── equipment_family ("观察级深海机器人")
 ```
 
-### 5.2 Model Selection Rule
-- Changing `equipment_variant` or `equipment_unit_id` automatically updates `equipment_family` and clears stale `equipment_unit_id` values from `SlotStore`.
+### 5.2 Model Selection & Variant Change Rule
+- Changing `equipment_variant` clears only non-compatible legacy `equipment_unit_id` values from `SlotStore`.
+
+### 5.3 Direct Unit ID Selection Rule
+- Directly selecting a new `equipment_unit_id` retains the new `equipment_unit_id` value and automatically synchronizes corresponding `equipment_variant` and `equipment_family`.
 
 ---
 

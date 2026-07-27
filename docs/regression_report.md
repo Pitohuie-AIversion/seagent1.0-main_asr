@@ -1,48 +1,48 @@
-# SEAgent Phase 1.9.3 Rigorous Regression Audit & P0 Closeout Report
+# SEAgent Phase 1.9.4 Design Contract & Audit Verification Report
 
-## 1. Audit Metadata & Executive Summary
+## 1. Audit Metadata & Independent Counters
 
 - **Execution Command**: `/root/miniconda3/envs/seagent/bin/python -m unittest discover tests`
 - **Python Version**: `3.12.3 | packaged by Anaconda, Inc. | (main, May  6 2024, 19:46:43) [GCC 11.2.0]`
-- **Timestamp (UTC)**: `2026-07-27T09:23:06.533244+00:00`
-- **Git Commit SHA**: `4aae4616d370e315d1b117913393bcbf1f4230c8`
+- **Timestamp (UTC)**: `2026-07-27T09:59:11.486870+00:00`
+- **Git Commit SHA**: `f8b07178265425a98e0e740b3e53353a7f5c51c1`
 
-### Math Invariant Verification
-- **Total Tests Executed (`total`)**: **450**
-- **Passed (`passed`)**: **296**
-- **Failures (`failures`)**: **88**
-- **Errors (`errors`)**: **66**
-- **Skipped (`skipped`)**: **0**
-- **Non-Passing (`non_passing_count`)**: **154** (88 failures + 66 errors)
-- **Classified (`classified_count`)**: **154**
-- **Invariant Sum (`invariant_count`)**: **154**
-- **Matrix Row Count (`matrix_row_count`)**: **154**
-- **Math Equality Status**: `154 == 154 == 154 == 154` (**100% MATHEMATICALLY VERIFIED**)
+### Independent Counters Verification
+- **Runner Counters**: `tests_run=464`, `failures=90`, `errors=69`, `skipped=0`
+- **Record Counters**: `total=464`, `failures=90`, `errors=69`, `skipped=0`
+- **Non-Passing (`non_passing_count`)**: **159** (90 failures + 69 errors)
+- **Classified (`classified_count`)**: **159**
+- **Invariant Sum (`invariant_count`)**: **159**
+- **Math Verification Status**: `464 == 464` and `159 == 159 == 159` (**100% INDEPENDENTLY VERIFIED**)
 
-- **Collection Errors (`unittest.loader._FailedTest`)**: **2**
+- **Collection Errors (`unittest.loader._FailedTest`)**: **0**
 
 ## 2. Audited Failure Classification Matrix
 
 | Test ID | Error Type | Invariant Type | Category | Replacement Method | Justification |
 |---------|------------|----------------|----------|--------------------|---------------|
+| `test_adv_07_blocked_soft_mixed_update (test_adversarial_p0.AdversarialP0SecurityTest.test_adv_07_blocked_soft_mixed_update)` | ASSERTION_FAILURE | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
+| `test_adv_08_confirm_publish_success_invariance (test_adversarial_p0.AdversarialP0SecurityTest.test_adv_08_confirm_publish_success_invariance)` | ASSERTION_FAILURE | **ATOMIC_PUBLISH** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
+| `test_adv_09_confirm_publish_failure_rollback (test_adversarial_p0.AdversarialP0SecurityTest.test_adv_09_confirm_publish_failure_rollback)` | ASSERTION_FAILURE | **ATOMIC_PUBLISH** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
+| `test_adv_10_missing_intent_id_fails_closed (test_adversarial_p0.AdversarialP0SecurityTest.test_adv_10_missing_intent_id_fails_closed)` | ASSERTION_FAILURE | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
+| `test_adv_11_specific_device_check_depth_exceeded (test_adversarial_p0.AdversarialP0SecurityTest.test_adv_11_specific_device_check_depth_exceeded)` | ASSERTION_FAILURE | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
+| `test_adv_15_invalid_query_subtype_types (test_adversarial_p0.AdversarialP0SecurityTest.test_adv_15_invalid_query_subtype_types)` | ASSERTION_FAILURE | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_equipment_transaction_with_rov_alias_observation (test_dialogue_manager_rov.DialogueManagerROVTest.test_equipment_transaction_with_rov_alias_observation)` | ASSERTION_FAILURE | **EQUIPMENT_RESOLUTION** | **DUPLICATE_COVERAGE** | `tests/test_equipment_resolution_e2e.py::EquipmentResolutionE2ETest.test_alias_to_unit_variant_family_e2e_flow` | Covered by dedicated equipment resolution E2E pipeline test |
 | `test_equipment_transaction_with_rov_alias_tractor (test_dialogue_manager_rov.DialogueManagerROVTest.test_equipment_transaction_with_rov_alias_tractor)` | ASSERTION_FAILURE | **EQUIPMENT_RESOLUTION** | **DUPLICATE_COVERAGE** | `tests/test_equipment_resolution_e2e.py::EquipmentResolutionE2ETest.test_alias_to_unit_variant_family_e2e_flow` | Covered by dedicated equipment resolution E2E pipeline test |
 | `test_equipment_transaction_with_rov_alias_work (test_dialogue_manager_rov.DialogueManagerROVTest.test_equipment_transaction_with_rov_alias_work)` | ASSERTION_FAILURE | **EQUIPMENT_RESOLUTION** | **DUPLICATE_COVERAGE** | `tests/test_equipment_resolution_e2e.py::EquipmentResolutionE2ETest.test_alias_to_unit_variant_family_e2e_flow` | Covered by dedicated equipment resolution E2E pipeline test |
 | `test_family_and_variant_candidate_interfaces (test_dialogue_manager_rov.DialogueManagerROVTest.test_family_and_variant_candidate_interfaces)` | ASSERTION_FAILURE | **EQUIPMENT_RESOLUTION** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
-| `test_model_change_updates_family_and_clears_old_unit_via_slot_store (test_dialogue_manager_rov.DialogueManagerROVTest.test_model_change_updates_family_and_clears_old_unit_via_slot_store)` | ASSERTION_FAILURE | **EQUIPMENT_RESOLUTION** | **DUPLICATE_COVERAGE** | `tests/test_equipment_resolution_e2e.py::EquipmentResolutionE2ETest.test_alias_to_unit_variant_family_e2e_flow` | Covered by dedicated equipment resolution E2E pipeline test |
-| `test_model_selection_auto_fills_family (test_dialogue_manager_rov.DialogueManagerROVTest.test_model_selection_auto_fills_family)` | ASSERTION_FAILURE | **EQUIPMENT_RESOLUTION** | **DUPLICATE_COVERAGE** | `tests/test_equipment_resolution_e2e.py::EquipmentResolutionE2ETest.test_alias_to_unit_variant_family_e2e_flow` | Covered by dedicated equipment resolution E2E pipeline test |
+| `test_model_change_updates_family_and_clears_old_unit_via_slot_store (test_dialogue_manager_rov.DialogueManagerROVTest.test_model_change_updates_family_and_clears_old_unit_via_slot_store)` | ASSERTION_FAILURE | **EQUIPMENT_RESOLUTION** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Fix)` | Unit clear on variant change requires active unit test assertion |
+| `test_model_selection_auto_fills_family (test_dialogue_manager_rov.DialogueManagerROVTest.test_model_selection_auto_fills_family)` | ASSERTION_FAILURE | **EQUIPMENT_RESOLUTION** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_prompt_requires_allowed_values_to_be_rendered_verbatim_for_all_fields (test_dialogue_manager_rov.DialogueManagerROVTest.test_prompt_requires_allowed_values_to_be_rendered_verbatim_for_all_fields)` | ASSERTION_FAILURE | **EQUIPMENT_RESOLUTION** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_variant_alias_is_available_to_backend_lookup (test_dialogue_manager_rov.DialogueManagerROVTest.test_variant_alias_is_available_to_backend_lookup)` | ASSERTION_FAILURE | **EQUIPMENT_RESOLUTION** | **DUPLICATE_COVERAGE** | `tests/test_equipment_resolution_e2e.py::EquipmentResolutionE2ETest.test_alias_tianying_to_unit_variant_e2e_flow` | Covered by dedicated equipment resolution E2E pipeline test |
-| `test_empty_reason_falls_to_clarification (test_intent_routing.TestIntentRoutingAndInvariance.test_empty_reason_falls_to_clarification)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
 | `test_llm_exception_falls_to_clarification (test_intent_routing.TestIntentRoutingAndInvariance.test_llm_exception_falls_to_clarification)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
 | `test_llm_invalid_intent_falls_to_clarification (test_intent_routing.TestIntentRoutingAndInvariance.test_llm_invalid_intent_falls_to_clarification)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
 | `test_llm_invalid_json_falls_to_clarification (test_intent_routing.TestIntentRoutingAndInvariance.test_llm_invalid_json_falls_to_clarification)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
 | `test_llm_low_confidence_falls_to_clarification (test_intent_routing.TestIntentRoutingAndInvariance.test_llm_low_confidence_falls_to_clarification)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
-| `test_missing_reason_falls_to_clarification (test_intent_routing.TestIntentRoutingAndInvariance.test_missing_reason_falls_to_clarification)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
-| `test_n06_current_task_params_task_status (test_intent_routing.TestIntentRoutingAndInvariance.test_n06_current_task_params_task_status)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE** | `tests/test_query_write_mixed_benchmark.py::QueryWriteMixedBenchmarkTest.test_query_does_not_mutate_slot_store_or_state` | Replaced legacy TASK_STATUS intent with QUERY status invariance benchmark |
+| `test_n06_current_task_params_task_status (test_intent_routing.TestIntentRoutingAndInvariance.test_n06_current_task_params_task_status)` | ASSERTION_FAILURE | **ROUTING** | **DUPLICATE_COVERAGE** | `tests/test_query_write_mixed_benchmark.py::QueryWriteMixedBenchmarkTest.test_query_does_not_mutate_slot_store_or_state` | Replaced legacy TASK_STATUS intent with QUERY status invariance benchmark |
 | `test_n07_pipeline_inspection_params_knowledge_qa (test_intent_routing.TestIntentRoutingAndInvariance.test_n07_pipeline_inspection_params_knowledge_qa)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
-| `test_n08_what_robots_available_device_capability_found (test_intent_routing.TestIntentRoutingAndInvariance.test_n08_what_robots_available_device_capability_found)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE** | `tests/test_intent_routing_matrix.py::TestIntentRoutingMatrix.test_01_query_device_capability` | Replaced legacy TOOL_QUERY enum with IntentRouter QUERY device capability decision |
-| `test_n10_able_to_work_500m_robots_device_capability (test_intent_routing.TestIntentRoutingAndInvariance.test_n10_able_to_work_500m_robots_device_capability)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE** | `tests/test_intent_routing_matrix.py::TestIntentRoutingMatrix.test_01_query_device_capability` | Replaced legacy TOOL_QUERY enum with IntentRouter QUERY device capability decision |
+| `test_n08_what_robots_available_device_capability_found (test_intent_routing.TestIntentRoutingAndInvariance.test_n08_what_robots_available_device_capability_found)` | ASSERTION_FAILURE | **ROUTING** | **DUPLICATE_COVERAGE** | `tests/test_intent_routing_matrix.py::TestIntentRoutingMatrix.test_01_query_device_capability` | Replaced legacy TOOL_QUERY enum with IntentRouter QUERY device capability decision |
+| `test_n10_able_to_work_500m_robots_device_capability (test_intent_routing.TestIntentRoutingAndInvariance.test_n10_able_to_work_500m_robots_device_capability)` | ASSERTION_FAILURE | **ROUTING** | **DUPLICATE_COVERAGE** | `tests/test_intent_routing_matrix.py::TestIntentRoutingMatrix.test_01_query_device_capability` | Replaced legacy TOOL_QUERY enum with IntentRouter QUERY device capability decision |
 | `test_n12_missing_confidence_no_slot_update (test_intent_routing.TestIntentRoutingAndInvariance.test_n12_missing_confidence_no_slot_update)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
 | `test_n13_all_invalid_confidences_fall_to_clarification (test_intent_routing.TestIntentRoutingAndInvariance.test_n13_all_invalid_confidences_fall_to_clarification)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
 | `test_n16_confirming_confirm_publish_flow (test_intent_routing.TestIntentRoutingAndInvariance.test_n16_confirming_confirm_publish_flow)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
@@ -51,9 +51,6 @@
 | `test_r07_dont_publish_does_not_confirm (test_intent_routing.TestIntentRoutingAndInvariance.test_r07_dont_publish_does_not_confirm)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
 | `test_r08_dont_cancel_does_not_cancel (test_intent_routing.TestIntentRoutingAndInvariance.test_r08_dont_cancel_does_not_cancel)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
 | `test_r12_non_task_routes_no_extractor_or_commit (test_intent_routing.TestIntentRoutingAndInvariance.test_r12_non_task_routes_no_extractor_or_commit)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
-| `test_restored_device_status_routing (test_intent_routing.TestIntentRoutingAndInvariance.test_restored_device_status_routing)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE** | `tests/test_query_write_mixed_benchmark.py::QueryWriteMixedBenchmarkTest.test_query_does_not_mutate_slot_store_or_state` | Replaced legacy DEVICE_STATUS intent with QUERY status invariance benchmark |
-| `test_slot_candidates_nan_confidence_rejected (test_intent_routing.TestIntentRoutingAndInvariance.test_slot_candidates_nan_confidence_rejected)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
-| `test_slot_candidates_no_longer_bypass_validation (test_intent_routing.TestIntentRoutingAndInvariance.test_slot_candidates_no_longer_bypass_validation)` | ASSERTION_FAILURE | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
 | `test_p1_done_revision_transaction_failure_rollback (test_p0_boundary_closeout.P0BoundaryCloseoutTest.test_p1_done_revision_transaction_failure_rollback)` | ASSERTION_FAILURE | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_p1_done_revision_with_invalid_value_changes_intent_id (test_p0_boundary_closeout.P0BoundaryCloseoutTest.test_p1_done_revision_with_invalid_value_changes_intent_id)` | ASSERTION_FAILURE | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_p2_pending_oilfield_explicit_confirmation (test_p0_boundary_closeout.P0BoundaryCloseoutTest.test_p2_pending_oilfield_explicit_confirmation)` | ASSERTION_FAILURE | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
@@ -102,18 +99,18 @@
 | `test_b11_001_in_explicit_device_cap_context_is_clarification (test_p0_security_final_closeout.NumericDeviceAliasContextTest.test_b11_001_in_explicit_device_cap_context_is_clarification)` | ASSERTION_FAILURE | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_a6_standalone_device_alias_without_context_no_auto_slot_filling (test_p0_true_final_closeout.DeviceAliasRoutingPriorityTest.test_a6_standalone_device_alias_without_context_no_auto_slot_filling)` | ASSERTION_FAILURE | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_a8_end_to_end_device_slot_update_flow (test_p0_true_final_closeout.DeviceAliasRoutingPriorityTest.test_a8_end_to_end_device_slot_update_flow)` | ASSERTION_FAILURE | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
-| `test_04_dialogue_manager_rollback_does_not_delete_replaced_staging (test_phase1_publish_cleanup_true_closeout.PublishCleanupTrueCloseoutTest.test_04_dialogue_manager_rollback_does_not_delete_replaced_staging)` | ASSERTION_FAILURE | **ATOMIC_PUBLISH** | **DUPLICATE_COVERAGE** | `tests/test_failure_recovery_benchmark.py::FailureRecoveryBenchmarkTest.test_publish_failure_rollback` | Covered by Phase 1.8 failure recovery benchmark suite |
+| `test_04_dialogue_manager_rollback_does_not_delete_replaced_staging (test_phase1_publish_cleanup_true_closeout.PublishCleanupTrueCloseoutTest.test_04_dialogue_manager_rollback_does_not_delete_replaced_staging)` | ASSERTION_FAILURE | **ATOMIC_PUBLISH** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Fix)` | Staging inode ownership preservation during rollback is specific |
 | `test_05_consumer_rejects_incomplete_final_structures (test_phase1_publish_cleanup_true_closeout.PublishCleanupTrueCloseoutTest.test_05_consumer_rejects_incomplete_final_structures)` | ASSERTION_FAILURE | **ATOMIC_PUBLISH** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_21_jinniuzuo_depth_is_500m_ne_routes_to_device_capability (test_phase1_publish_ownership_final_closeout.DeviceCapabilityQuestionRoutingTest.test_21_jinniuzuo_depth_is_500m_ne_routes_to_device_capability)` | ASSERTION_FAILURE | **ATOMIC_PUBLISH** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_11_load_snapshot_follows_same_lock_protocol (test_phase1_publish_ownership_final_closeout.PublishOwnershipAndLockTest.test_11_load_snapshot_follows_same_lock_protocol)` | ASSERTION_FAILURE | **SNAPSHOT_RECOVERY** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_13_final_symlink_rejected_by_consumer (test_phase1_publish_ownership_final_closeout.PublishOwnershipAndLockTest.test_13_final_symlink_rejected_by_consumer)` | ASSERTION_FAILURE | **ATOMIC_PUBLISH** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
+| `test_math_invariant_and_metadata_structure (test_regression_report_parser.RegressionReportParserTest.test_math_invariant_and_metadata_structure)` | ASSERTION_FAILURE | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_13_mock_mode_capabilities (test_slot_consistency.SlotConsistencyTest.test_13_mock_mode_capabilities)` | ASSERTION_FAILURE | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_25_legacy_snapshot_conversion (test_slot_consistency.SlotConsistencyTest.test_25_legacy_snapshot_conversion)` | ASSERTION_FAILURE | **SNAPSHOT_RECOVERY** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_44_legacy_snapshot_value_type_inference (test_slot_consistency.SlotConsistencyTest.test_44_legacy_snapshot_value_type_inference)` | ASSERTION_FAILURE | **SNAPSHOT_RECOVERY** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_50a_multiprocess_publish_no_clobber_race (test_slot_consistency.SlotConsistencyTest.test_50a_multiprocess_publish_no_clobber_race)` | ASSERTION_FAILURE | **ATOMIC_PUBLISH** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_50b_multiprocess_publish_idempotent_retry (test_slot_consistency.SlotConsistencyTest.test_50b_multiprocess_publish_idempotent_retry)` | ASSERTION_FAILURE | **ATOMIC_PUBLISH** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_52_equipment_alias_normalization_and_category_protection (test_slot_consistency.SlotConsistencyTest.test_52_equipment_alias_normalization_and_category_protection)` | ASSERTION_FAILURE | **EQUIPMENT_RESOLUTION** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
-| `test_adversarial_p0 (unittest.loader._FailedTest.test_adversarial_p0)` | COLLECTION_ERROR | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_asr_chinese_success (test_asr_api.TestASRAPI.test_asr_chinese_success)` | EXECUTION_ERROR | **ASR_API** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_asr_english_success (test_asr_api.TestASRAPI.test_asr_english_success)` | EXECUTION_ERROR | **ASR_API** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_process_passes_committed_slot_delta_to_responder (test_dialogue_manager_rov.DialogueManagerROVTest.test_process_passes_committed_slot_delta_to_responder)` | EXECUTION_ERROR | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
@@ -121,11 +118,15 @@
 | `test_task_intent_robot_type_comes_from_selected_variant (test_dialogue_manager_rov.DialogueManagerROVTest.test_task_intent_robot_type_comes_from_selected_variant) (variant='通用工作级深海机器人 250HP')` | EXECUTION_ERROR | **EQUIPMENT_RESOLUTION** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_task_intent_robot_type_comes_from_selected_variant (test_dialogue_manager_rov.DialogueManagerROVTest.test_task_intent_robot_type_comes_from_selected_variant) (variant='水下无人自主航行器 HP')` | EXECUTION_ERROR | **EQUIPMENT_RESOLUTION** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_task_intent_robot_type_comes_from_selected_variant (test_dialogue_manager_rov.DialogueManagerROVTest.test_task_intent_robot_type_comes_from_selected_variant) (variant='履带式海底重载作业机器人 1600HP')` | EXECUTION_ERROR | **EQUIPMENT_RESOLUTION** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
+| `test_empty_reason_falls_to_clarification (test_intent_routing.TestIntentRoutingAndInvariance.test_empty_reason_falls_to_clarification)` | EXECUTION_ERROR | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
+| `test_missing_reason_falls_to_clarification (test_intent_routing.TestIntentRoutingAndInvariance.test_missing_reason_falls_to_clarification)` | EXECUTION_ERROR | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
 | `test_r01_tool_query_routing (test_intent_routing.TestIntentRoutingAndInvariance.test_r01_tool_query_routing)` | EXECUTION_ERROR | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
 | `test_r02_active_task_tool_query_routing (test_intent_routing.TestIntentRoutingAndInvariance.test_r02_active_task_tool_query_routing)` | EXECUTION_ERROR | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
-| `test_r03_active_task_thanks_routing (test_intent_routing.TestIntentRoutingAndInvariance.test_r03_active_task_thanks_routing)` | EXECUTION_ERROR | **ROUTING** | **LEGACY_INTERFACE** | `tests/test_intent_routing_matrix.py::TestIntentRoutingMatrix.test_04_query_non_task` | Replaced legacy GENERAL_CHAT enum with IntentRouter non-task query route |
+| `test_r03_active_task_thanks_routing (test_intent_routing.TestIntentRoutingAndInvariance.test_r03_active_task_thanks_routing)` | EXECUTION_ERROR | **ROUTING** | **DUPLICATE_COVERAGE** | `tests/test_intent_routing_matrix.py::TestIntentRoutingMatrix.test_04_query_non_task` | Replaced legacy GENERAL_CHAT enum with IntentRouter non-task query route |
 | `test_r10_cancel_current_task (test_intent_routing.TestIntentRoutingAndInvariance.test_r10_cancel_current_task)` | EXECUTION_ERROR | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
-| `test_regression_report_parser (unittest.loader._FailedTest.test_regression_report_parser)` | COLLECTION_ERROR | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
+| `test_restored_device_status_routing (test_intent_routing.TestIntentRoutingAndInvariance.test_restored_device_status_routing)` | EXECUTION_ERROR | **ROUTING** | **DUPLICATE_COVERAGE** | `tests/test_query_write_mixed_benchmark.py::QueryWriteMixedBenchmarkTest.test_query_does_not_mutate_slot_store_or_state` | Replaced legacy DEVICE_STATUS intent with QUERY status invariance benchmark |
+| `test_slot_candidates_nan_confidence_rejected (test_intent_routing.TestIntentRoutingAndInvariance.test_slot_candidates_nan_confidence_rejected)` | EXECUTION_ERROR | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
+| `test_slot_candidates_no_longer_bypass_validation (test_intent_routing.TestIntentRoutingAndInvariance.test_slot_candidates_no_longer_bypass_validation)` | EXECUTION_ERROR | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
 | `test_02_alias_mapping_canonical_key (test_slot_consistency.SlotConsistencyTest.test_02_alias_mapping_canonical_key)` | EXECUTION_ERROR | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
 | `test_03_multi_value_slot (test_slot_consistency.SlotConsistencyTest.test_03_multi_value_slot)` | EXECUTION_ERROR | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
 | `test_04_duplicate_inputs_handling (test_slot_consistency.SlotConsistencyTest.test_04_duplicate_inputs_handling)` | EXECUTION_ERROR | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
@@ -183,30 +184,28 @@
 ## 3. Classification & Invariant Taxonomy Breakdown
 
 ### Failure Category Summary:
-- **COLLECTION_ERROR (`_FailedTest`)**: **2**
-- **TRUE_REGRESSION**: **103**
-- **LEGACY_INTERFACE**: **5**
-- **LEGACY_INTERFACE_PENDING_REWRITE**: **39**
+- **COLLECTION_ERROR (`_FailedTest`)**: **0**
+- **TRUE_REGRESSION**: **109**
+- **LEGACY_INTERFACE**: **0**
+- **LEGACY_INTERFACE_PENDING_REWRITE**: **41**
 - **FIXTURE_OR_ENVIRONMENT**: **0**
-- **DUPLICATE_COVERAGE**: **7**
+- **DUPLICATE_COVERAGE**: **9**
 
 ### Invariant Taxonomy Breakdown:
 - **ASR_API**: 2
-- **ATOMIC_PUBLISH**: 9
+- **ATOMIC_PUBLISH**: 11
 - **EQUIPMENT_RESOLUTION**: 13
 - **ROUTING**: 44
 - **SNAPSHOT_RECOVERY**: 11
-- **STATE_INVARIANCE**: 75
+- **STATE_INVARIANCE**: 78
 
 ## 4. Phase 2 Admission Decision
 
 ### Readiness Checklist:
-1. **Math Statistics Invariant**: **PASS** (`non_passing = classified = invariant = matrix_rows` strictly equal).
-2. **Collection Errors**: **PASS** (2 `_FailedTest` modules).
-3. **Explicit YAML Replacement Map**: **PASS** (`docs/regression_replacement_map.yaml` loaded & verified).
-4. **P0 Security Negation Fix**: **PASS** (`DialogueManager._user_cancelled` negation bug fixed).
-5. **Equipment Model E2E Test**: **PASS** (`tests/test_equipment_resolution_e2e.py`).
-6. **Classifier & Math Unit Tests**: **PASS** (`tests/test_regression_error_classification.py`).
-7. **TRUE_REGRESSION Resolution**: **NO (BLOCKED)** — Currently 103 TRUE_REGRESSION items and 39 pending rewrites remain.
+1. **Runner vs Record Counter Independence**: **PASS** (`runner_counters == record_counters`).
+2. **Collection Errors**: **PASS** (0 `_FailedTest` modules).
+3. **Current Design Contract Document**: **PASS** (`docs/current_design_contract.md`).
+4. **Replacement Equivalence Audit**: **PASS** (`docs/regression_replacement_map.yaml` with `equivalence_status: FULL`).
+5. **TRUE_REGRESSION Resolution**: **NO (BLOCKED)** — Currently 109 TRUE_REGRESSION items and 41 pending rewrites remain.
 
 **Final Decision**: **NO** (Phase 2 development remains blocked until TRUE_REGRESSION items and pending rewrites are resolved or formally risk-accepted).
