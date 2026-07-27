@@ -364,19 +364,7 @@ def build_knowledge_responder_messages(
     ]
 
 
-def build_status_responder_messages(
-    status_evidence: dict,
-    conversation_history: list[dict],
-    latest_user_message: str,
-) -> list[dict]:
-    status_json_str = json.dumps(status_evidence, ensure_ascii=False, indent=2)
-    sys_content = STATUS_RESPONDER_SYSTEM.format(status_evidence_json=status_json_str)
-    recent_history = conversation_history[-8:] if len(conversation_history) > 8 else conversation_history
-    return [
-        {"role": "system", "content": sys_content},
-        *recent_history,
-        {"role": "user", "content": latest_user_message},
-    ]
+
 
 
 GENERAL_CHAT_RESPONDER_SYSTEM = """\

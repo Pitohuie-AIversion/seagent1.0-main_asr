@@ -34,20 +34,12 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)   # ✅ 新增导入
-
 from .llm_client import LLMClient
 from .knowledge_retriever import KnowledgeBase
-from .extractor import ParameterExtractor, MUTATING_INTENTS, NON_MUTATING_INTENTS, normalize_intent
+from .extractor import ParameterExtractor
 from .normalizer import FieldNormalizer
 from .output_builder import OutputBuilder
 from .validator import TaskValidator, Violation
-from .prompts import (
-    build_responder_messages,
-    build_general_chat_messages,
-    build_knowledge_responder_messages,
-    build_status_responder_messages,
-)
 from .prompts import (
     build_responder_messages,
     build_general_chat_messages,
@@ -61,12 +53,9 @@ from .coord_parser import parse_coordinate_updates
 from .oilfield_linker import OilfieldEntityLinker
 from .exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
 from .id_sequence import validate_intent_id
-from .exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
-from .id_sequence import validate_intent_id
 from .slot_store import SlotStore, Slot
 from .intent_router import IntentRouter, IntentRouteResult
 from .result_paths import get_task_dir
-from .intent_router import IntentRouter, IntentRouteResult
 
 HARD_REFUSAL_LIMIT = 4   # 连续拒绝上限
 
@@ -243,9 +232,26 @@ class DialogueManager:
             }
         else:
             equipment = self.task_state.get("equipment_name") or self.task_state.get("equipment_type")
+            if not equipment:
+                alias_index = self.kb.get_device_alias_index()
+                matched_alias = None
+                for alias in sorted(alias_index.keys(), key=len, reverse=True):
+                    if len(alias) >= 2 and alias in user_message:
+                        matched_alias = alias
+                        break
+                if matched_alias:
+                    equipment = matched_alias
+                else:
+                    rov_match = self.kb._find_rov(user_message)
+                    if rov_match:
+                        equipment = rov_match.get("full_name") or rov_match.get("variant_name")
+                    else:
+                        unit_match = self.kb.resolve_robot_unit(user_message)
+                        if unit_match:
+                            equipment = unit_match.get("robot", {}).get("full_name") or unit_match.get("unit_id")
             has_realtime = False
             state_dict = None
-            if equipment and route.query_intent == "DEVICE_STATUS":
+            if equipment and route.query_intent in ("DEVICE_STATUS", "DEVICE_CAPABILITY", "ENVIRONMENT_QUERY"):
                 state_dict = self.kb.get_robot_state_dict(equipment)
                 if state_dict and any(v is not None for v in state_dict.values()):
                     has_realtime = True
@@ -1042,7 +1048,9 @@ class DialogueManager:
 
 
     def _link_oilfield_update_in_transaction(self, updates: dict, new_slots: dict) -> dict:
-        raw_name = updates.get("oilfield_name")
+        raw_name = updates.get("oilfield_name") or updates.get("raw_oilfield_name")
+        if isinstance(raw_name, dict):
+            raw_name = raw_name.get("value")
         if not raw_name:
             return updates
 
@@ -1074,6 +1082,10 @@ class DialogueManager:
 
         if match.status == "accepted" and match.standard_name:
             linked["oilfield_name"] = match.standard_name
+            if "oilfield_name" not in new_slots:
+                new_slots["oilfield_name"] = Slot("oilfield_name")
+            new_slots["oilfield_name"].value = match.standard_name
+            new_slots["oilfield_name"].status = "valid"
             if "oilfield_entity_id" not in new_slots:
                 new_slots["oilfield_entity_id"] = Slot("oilfield_entity_id")
             new_slots["oilfield_entity_id"].value = match.entity_id
@@ -1081,8 +1093,13 @@ class DialogueManager:
             linked["__clear_pending_oilfield"] = True
         else:
             linked.pop("oilfield_name", None)
-            linked["pending_oilfield_name"] = match.raw
-            linked["pending_oilfield_candidates"] = match.candidates
+            for k in ("pending_oilfield_name", "pending_oilfield_candidates"):
+                if k not in new_slots:
+                    new_slots[k] = Slot(slot_name=k)
+            new_slots["pending_oilfield_name"].value = match.raw
+            new_slots["pending_oilfield_name"].status = "valid"
+            new_slots["pending_oilfield_candidates"].value = match.candidates
+            new_slots["pending_oilfield_candidates"].status = "valid"
             linked["__clear_oilfield_name"] = True
         return linked
 
@@ -1612,7 +1629,7 @@ class DialogueManager:
             self._rebuild_cache()
             return "已取消当前待确认油田名称，请提供标准的油田名称（例如：流花11-1油田、陵水17-2油田等），或补充油田坐标。"
 
-        if action_result["action"] != "confirm":
+        if not self._user_confirmed_oilfield(user_message):
             return None
 
         candidate = self._top_pending_oilfield_candidate()
@@ -1745,8 +1762,8 @@ class DialogueManager:
                             "hard_refusal_counts": {}}
                 return {"type": "none", "violations": [], "hard_refusal_counts": {}}
 
-        # collecting状态下的新违规
-        if self.phase == "collecting":
+        # collecting / confirming 状态下的新违规
+        if self.phase in ("collecting", "confirming"):
             hard_new = [v for v in new_violations if v.severity == "hard"]
             soft_new = [v for v in new_violations
                         if v.severity == "soft" and not self._is_whitelisted(v)]

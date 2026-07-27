@@ -704,12 +704,15 @@ class KnowledgeBase:
             rov = resolved_unit.get("robot")
         else:
             rov = self._find_rov(equipment_selector)
-        if rov and not resolved_unit:
-            for unit in rov.get("fleet_units", []):
-                lookup_keys.extend([
-                    unit.get("status_ref", ""),
-                    unit.get("unit_id", ""),
-                ])
+        if rov:
+            if rov.get("status_ref"):
+                lookup_keys.append(str(rov.get("status_ref")))
+            if not resolved_unit:
+                for unit in rov.get("fleet_units", []):
+                    lookup_keys.extend([
+                        unit.get("status_ref", ""),
+                        unit.get("unit_id", ""),
+                    ])
 
         deduped_keys: list[str] = []
         seen = set()

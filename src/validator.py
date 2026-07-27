@@ -118,7 +118,7 @@ class TaskValidator:
         violations = []
         task_type    = task_state.get("task_type_key")
         unit_selector = task_state.get("equipment_unit_id")
-        variant_selector = task_state.get("equipment_type")
+        variant_selector = task_state.get("equipment_type") or task_state.get("equipment_name")
         water_depth  = task_state.get("water_depth")
         vessel_id    = task_state.get("support_vessel")
         tree_type    = task_state.get("tree_type")
