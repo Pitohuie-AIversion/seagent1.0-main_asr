@@ -11,7 +11,6 @@ output_builder.py — 标准 JSON 构建器 & 完整性检查器
 - 唯一例外：type=coord 的字段值为 {"lat": float, "lon": float}
 """
 
-from pathlib import Path
 from typing import Any
 
 from .knowledge_retriever import KnowledgeBase
@@ -19,6 +18,7 @@ from .simulated_time import get_current_date
 from .coord_parser import parse_coord_value
 from .id_sequence import next_daily_id
 from .result_paths import get_task_dir, get_history_dir
+from .normalizer import FieldNormalizer
 
 
 class OutputBuilder:
@@ -35,6 +35,7 @@ class OutputBuilder:
             self,
             task_type_key: str,
             mode: str = "normal",
+            task_state: dict | None = None,
     ) -> list[dict]:
         """
         获取当前任务模板下所需字段（含 allowed_values）
@@ -52,9 +53,21 @@ class OutputBuilder:
             ftype = field_def["type"]
             if ftype not in ("auto", "fixed"):
                 item = {"key": key, "label": label, "type": ftype}
-                allowed = self._resolve_allowed(field_def, task_type_key)
+                catalog = self._resolve_candidate_catalog(
+                    field_def,
+                    task_type_key,
+                    task_state,
+                )
+                allowed = [item["canonical_value"] for item in catalog]
                 if allowed:
                     item["allowed_values"] = allowed
+                alias_mappings, ambiguous_aliases = self._build_alias_indexes(catalog)
+                if alias_mappings:
+                    item["alias_mappings"] = alias_mappings
+                if ambiguous_aliases:
+                    item["ambiguous_aliases"] = ambiguous_aliases
+                if catalog:
+                    item["candidate_evidence"] = catalog
                 required.append(item)
 
         return required
@@ -243,6 +256,230 @@ class OutputBuilder:
     # allowed_values 解析
     # ══════════════════════════════════════════════════════════════════════════
 
+    def resolve_allowed_values(
+        self,
+        field_def: dict,
+        task_type_key: str = "",
+        task_state: dict | None = None,
+    ) -> list[str]:
+        """解析字段在当前任务状态下的合法候选值。"""
+        return self._resolve_allowed(field_def, task_type_key, task_state)
+
+    def _resolve_alias_mappings(
+        self,
+        field_def: dict,
+        task_type_key: str = "",
+        task_state: dict | None = None,
+    ) -> dict[str, str]:
+        """向现有提取上下文提供分层 alias -> 标准值映射。
+
+        allowed_values 仍只包含标准候选；aliases 仅用于识别用户的模糊表达，
+        且不会跨机器人系列、型号和单机层级复用。
+        """
+        ref = field_def.get("allowed_values_ref")
+        mappings: dict[str, str] = {}
+        ambiguous_aliases: set[str] = set()
+
+        def add_mapping(alias: object, standard: object) -> None:
+            if not alias or not standard:
+                return
+            alias_text = str(alias)
+            standard_text = str(standard)
+            if alias_text in ambiguous_aliases:
+                return
+            existing = mappings.get(alias_text)
+            if existing is not None and existing != standard_text:
+                mappings.pop(alias_text, None)
+                ambiguous_aliases.add(alias_text)
+                return
+            mappings[alias_text] = standard_text
+
+        if ref == "robot_family_full_names":
+            for _, family in self.kb.get_robot_families_for_task(task_type_key):
+                standard = family.get("full_name")
+                if not standard:
+                    continue
+                for alias in family.get("aliases", []):
+                    add_mapping(alias, standard)
+            return mappings
+
+        if ref in ("robot_full_names", "robot_variant_full_names"):
+            family_selector = (
+                str(task_state.get("equipment_family") or "")
+                if task_state
+                else ""
+            )
+            for robot in self.kb.get_task_allowed_robot_variants(
+                task_type_key,
+                family_selector or None,
+            ):
+                standard = robot.get("full_name")
+                if not standard:
+                    continue
+                for alias in robot.get("aliases", []):
+                    add_mapping(alias, standard)
+            return mappings
+
+        if ref == "robot_unit_ids":
+            variant_selector = (
+                str(task_state.get("equipment_type") or "")
+                if task_state
+                else ""
+            )
+            # fleet_units 必须依赖已确认的 model_variant。型号尚未确定时，
+            # 不向提取器暴露其他型号的单机 aliases。
+            if not variant_selector:
+                return {}
+            robots = [
+                self.kb.get_rov_for_task(variant_selector, task_type_key)
+            ]
+            for robot in (item for item in robots if item):
+                for unit in robot.get("fleet_units", []):
+                    unit_id = unit.get("unit_id")
+                    if not unit_id:
+                        continue
+                    targets = [
+                        unit.get("display_name"),
+                        *unit.get("aliases", []),
+                    ]
+                    for alias in targets:
+                        add_mapping(alias, unit_id)
+            return mappings
+
+        return mappings
+
+    def _resolve_candidate_catalog(
+        self,
+        field_def: dict,
+        task_type_key: str = "",
+        task_state: dict | None = None,
+    ) -> list[dict]:
+        """统一构建候选目录，避免 allowed_values / aliases / evidence 三处不一致。"""
+        ref = field_def.get("allowed_values_ref")
+        catalog: list[dict] = []
+
+        if field_def.get("type") == "tasktype" or "allowed_values" in field_def or not ref:
+            return [
+                {
+                    "canonical_value": value,
+                    "aliases": [],
+                    "display_name": None,
+                    "parent": None,
+                }
+                for value in self._resolve_allowed(field_def, task_type_key, task_state)
+            ]
+
+        if ref == "robot_family_full_names":
+            for _, family in self.kb.get_robot_families_for_task(task_type_key):
+                standard = family.get("full_name")
+                if standard:
+                    catalog.append(
+                        {
+                            "canonical_value": standard,
+                            "aliases": list(family.get("aliases", []) or []),
+                            "display_name": family.get("display_name"),
+                            "parent": None,
+                        }
+                    )
+            return catalog
+
+        if ref in ("robot_full_names", "robot_variant_full_names"):
+            family_selector = str(task_state.get("equipment_family") or "") if task_state else ""
+            for robot in self.kb.get_task_allowed_robot_variants(
+                task_type_key,
+                family_selector or None,
+            ):
+                standard = robot.get("full_name")
+                if standard:
+                    parent = None
+                    family = self.kb.robot_fleet.get("robot_families", {}).get(robot.get("family_id"))
+                    if family and family.get("full_name"):
+                        parent = {
+                            "field": "equipment_family",
+                            "value": family.get("full_name"),
+                        }
+                    catalog.append(
+                        {
+                            "canonical_value": standard,
+                            "aliases": list(robot.get("aliases", []) or []),
+                            "display_name": robot.get("display_name"),
+                            "parent": parent,
+                        }
+                    )
+            return catalog
+
+        if ref == "robot_unit_ids":
+            variant_selector = str(task_state.get("equipment_type") or "") if task_state else ""
+            if not variant_selector:
+                return []
+            robot = self.kb.get_rov_for_task(variant_selector, task_type_key)
+            if not robot:
+                return []
+            for unit in robot.get("fleet_units", []):
+                unit_id = unit.get("unit_id")
+                if unit_id:
+                    aliases = [
+                        alias
+                        for alias in [unit.get("display_name"), *(unit.get("aliases", []) or [])]
+                        if alias
+                    ]
+                    catalog.append(
+                        {
+                            "canonical_value": unit_id,
+                            "aliases": aliases,
+                            "display_name": unit.get("display_name"),
+                            "parent": {
+                                "field": "equipment_type",
+                                "value": robot.get("full_name"),
+                            },
+                        }
+                    )
+            return catalog
+
+        return [
+            {
+                "canonical_value": value,
+                "aliases": [],
+                "display_name": None,
+                "parent": None,
+            }
+            for value in self._resolve_allowed(field_def, task_type_key, task_state)
+        ]
+
+    def _build_alias_indexes(
+        self,
+        catalog: list[dict],
+    ) -> tuple[dict[str, str], dict[str, list[str]]]:
+        """拆分唯一 alias 与歧义 alias；歧义项保留给 LLM 语义兜底。"""
+        alias_display: dict[str, str] = {}
+        alias_targets: dict[str, dict[str, str]] = {}
+
+        for item in catalog:
+            standard = item.get("canonical_value")
+            if not standard:
+                continue
+            for alias in item.get("aliases", []) or []:
+                if not alias:
+                    continue
+                alias_text = str(alias)
+                match_key = FieldNormalizer.make_match_key(alias_text)
+                if not match_key:
+                    continue
+                alias_display.setdefault(match_key, alias_text)
+                alias_targets.setdefault(match_key, {})[str(standard)] = str(standard)
+
+        mappings: dict[str, str] = {}
+        ambiguous_aliases: dict[str, list[str]] = {}
+        for match_key, targets in alias_targets.items():
+            alias_text = alias_display[match_key]
+            values = list(targets.values())
+            if len(values) == 1:
+                mappings[alias_text] = values[0]
+            else:
+                ambiguous_aliases[alias_text] = values
+
+        return mappings, ambiguous_aliases
+
     def _resolve_allowed(
         self,
         field_def: dict,
@@ -262,11 +499,18 @@ class OutputBuilder:
             return []
 
         selector = ""
-        if ref == "robot_unit_ids" and task_state:
-            selector = str(task_state.get("equipment_type") or task_state.get("equipment_name") or "")
+        if task_state and ref in ("robot_full_names", "robot_variant_full_names"):
+            selector = str(task_state.get("equipment_family") or "")
+        elif ref == "robot_unit_ids" and task_state:
+            selector = str(task_state.get("equipment_type") or "")
         cache_key = (
             f"{ref}:{task_type_key}:{selector}"
-            if ref in ("robot_full_names", "robot_unit_ids")
+            if ref in (
+                "robot_family_full_names",
+                "robot_full_names",
+                "robot_variant_full_names",
+                "robot_unit_ids",
+            )
             else ref
         )
         if cache_key in self._ref_cache:
@@ -286,7 +530,9 @@ class OutputBuilder:
         解析 allowed_values_ref 字符串，从知识库中取对应列表。
         支持：
           robot_category_labels          → 所有 ROV 类型的 label
-          robot_full_names               → 所有 ROV 的 full_name
+          robot_family_full_names        → 当前任务允许的机器人族 full_name
+          robot_variant_full_names       → 当前任务及机器人族允许的型号 full_name
+          robot_full_names               → robot_variant_full_names 的兼容名称
           payload_options.pipeline_inspection
           payload_options.tree_valve_operation
           vessel_ids
@@ -294,10 +540,20 @@ class OutputBuilder:
         if ref == "robot_category_labels":
             return self.kb.get_robot_class_labels()
 
-        if ref == "robot_full_names":
-            if task_type_key:
-                return [r["full_name"] for r in self.kb.get_task_allowed_robot_variants(task_type_key)]
-            return [r["full_name"] for r in self.kb.get_all_rovs()]
+        if ref == "robot_family_full_names":
+            return self.kb.get_task_allowed_robot_family_names(task_type_key)
+
+        if ref in ("robot_full_names", "robot_variant_full_names"):
+            family_selector = ""
+            if task_state:
+                family_selector = str(task_state.get("equipment_family") or "")
+            return [
+                r["full_name"]
+                for r in self.kb.get_task_allowed_robot_variants(
+                    task_type_key,
+                    family_selector or None,
+                )
+            ]
 
         if ref == "robot_unit_ids":
             return self._get_robot_unit_ids(task_type_key, task_state)
@@ -319,7 +575,7 @@ class OutputBuilder:
     ) -> list[str]:
         selector = ""
         if task_state:
-            selector = str(task_state.get("equipment_type") or task_state.get("equipment_name") or "")
+            selector = str(task_state.get("equipment_type") or "")
 
         if selector:
             robot = self.kb.get_rov(selector)
@@ -327,19 +583,9 @@ class OutputBuilder:
                 return []
             return list(robot.get("unit_ids", []))
 
-        if task_type_key:
-            robots = self.kb.get_task_allowed_robot_variants(task_type_key)
-        else:
-            robots = self.kb.get_all_rovs()
-
-        unit_ids: list[str] = []
-        seen = set()
-        for robot in robots:
-            for unit_id in robot.get("unit_ids", []):
-                if unit_id and unit_id not in seen:
-                    unit_ids.append(unit_id)
-                    seen.add(unit_id)
-        return unit_ids
+        # 没有 equipment_type 时无法确定 model_variant，不能把当前任务下
+        # 所有型号的 fleet_units 混成一个候选列表。
+        return []
 
     # ══════════════════════════════════════════════════════════════════════════
     # Schema 获取

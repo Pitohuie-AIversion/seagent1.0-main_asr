@@ -1,8 +1,9 @@
 import copy
 import logging
 import threading
-from typing import Any, Optional, Dict, List, Tuple
 from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
 from src.simulated_time import get_current_datetime
 
 logger = logging.getLogger("backend.slot_store")
@@ -24,29 +25,42 @@ BASE_SLOT_TYPES = {
     "emergency_mode": "boolean",
     "task_id": "string",
     "intent_id": "string",
-    "equipment_name": "string",
+    "equipment_family": "string",
     "equipment_type": "string",
+    "equipment_name": "string",
 }
 
-ALLOWED_INTERNAL_SLOTS = {
-    "raw_oilfield_name",
-    "oilfield_match_status",
-    "oilfield_match_confidence",
-    "oilfield_match_evidence",
-    "oilfield_match_candidates",
-    "oilfield_entity_id",
-    "pending_oilfield_name",
-    "pending_oilfield_candidates",
-    "_rov_candidates",
+
+INTERNAL_SLOT_TYPES = {
+    "raw_oilfield_name": "string",
+    "oilfield_match_status": "string",
+    "oilfield_match_confidence": "number",
+    "oilfield_match_evidence": "list",
+    "oilfield_match_candidates": "list",
+    "oilfield_entity_id": "string",
+    "pending_oilfield_name": "string",
+    "pending_oilfield_candidates": "list",
+    "_rov_candidates": "list",
 }
 
+
+ALLOWED_INTERNAL_SLOTS = set(INTERNAL_SLOT_TYPES)
+
+VALID_SLOT_STATUSES = {
+    "missing",
+    "candidate",
+    "valid",
+    "invalid",
+    "conflict",
+    "unresolved",
+}
 
 VALID_VALUE_TYPES = {"string", "number", "boolean", "list", "coord", "datetime", "object"}
 LEGACY_SCHEMA_TYPES = {"tasktype", "auto", "fixed", "raw"}
 
 
 def normalize_slot_value_type(schema_type: Optional[str] = None, value: Any = None) -> str:
-    """Map schema behavior types (tasktype, auto, fixed, raw) or Python values to canonical runtime value types."""
+    """Map schema behavior types or Python values to canonical runtime value types."""
     if schema_type:
         st = schema_type.lower()
         if st in VALID_VALUE_TYPES:
@@ -104,13 +118,13 @@ class Slot:
         validation_error: Optional[str] = None,
         updated_at: Optional[str] = None,
         version: int = 0,
-        candidate_value: Any = None
+        candidate_value: Any = None,
     ):
         self.slot_name = slot_name
         self.value = value
         self.value_type = normalize_slot_value_type(value_type, value)
         self.status = status  # missing | candidate | valid | invalid | conflict | unresolved
-        self.source = source  # user_input | auto | fixed
+        self.source = source  # user_input | auto | fixed | system-derived values
         self.raw_value = raw_value
         self.confidence = confidence
         self.validation_error = validation_error
@@ -130,7 +144,7 @@ class Slot:
             "validation_error": self.validation_error,
             "updated_at": self.updated_at,
             "version": self.version,
-            "candidate_value": copy.deepcopy(self.candidate_value)
+            "candidate_value": copy.deepcopy(self.candidate_value),
         }
 
     def copy(self):
@@ -145,7 +159,7 @@ class Slot:
             validation_error=self.validation_error,
             updated_at=self.updated_at,
             version=self.version,
-            candidate_value=copy.deepcopy(self.candidate_value)
+            candidate_value=copy.deepcopy(self.candidate_value),
         )
 
 
@@ -158,52 +172,47 @@ class SlotStore:
         self.version: int = 0
         self._initialize_base_slots()
 
-    def _initialize_base_slots(self, slots_dict: Dict[str, Slot] = None):
+    def _initialize_base_slots(self, slots_dict: Optional[Dict[str, Slot]] = None):
         target_slots = self.slots if slots_dict is None else slots_dict
-        base_keys = {
-            "task_type": "string",
-            "task_type_key": "string",
-            "emergency_mode": "boolean",
-            "task_id": "string",
-            "intent_id": "string",
-            "equipment_name": "string",
-            "equipment_type": "string",
-            "raw_oilfield_name": "string",
-            "oilfield_match_status": "string",
-            "oilfield_match_confidence": "number",
-            "oilfield_match_evidence": "list",
-            "oilfield_match_candidates": "list",
-            "pending_oilfield_name": "string",
-            "pending_oilfield_candidates": "list",
-            "_rov_candidates": "list"
-        }
-        for key, vtype in base_keys.items():
+        for key, vtype in {**BASE_SLOT_TYPES, **INTERNAL_SLOT_TYPES}.items():
             if key not in target_slots:
                 target_slots[key] = Slot(slot_name=key, value_type=vtype)
 
-    def _init_task_slots_in_transaction(self, target_slots: Dict[str, Slot], schema_fields: List[Dict[str, Any]]):
+    def init_task_slots(self, schema_fields: List[Dict[str, Any]]):
+        """Synchronize store slots with the active task schema for legacy callers."""
+        with self._lock:
+            self._init_task_slots_in_transaction(self.slots, schema_fields)
+
+    def _init_task_slots_in_transaction(
+        self,
+        target_slots: Dict[str, Slot],
+        schema_fields: List[Dict[str, Any]],
+    ):
         self._initialize_base_slots(target_slots)
         schema_keys = {field["key"] for field in schema_fields}
 
         to_remove = [
-            k for k in target_slots
-            if k not in BASE_SLOT_TYPES and k not in schema_keys and k not in ALLOWED_INTERNAL_SLOTS
+            key
+            for key in target_slots
+            if key not in BASE_SLOT_TYPES
+            and key not in schema_keys
+            and key not in ALLOWED_INTERNAL_SLOTS
         ]
-        for k in to_remove:
-            del target_slots[k]
+        for key in to_remove:
+            del target_slots[key]
 
         for field in schema_fields:
             key = field["key"]
             ftype = field.get("type", "string")
-            canonical_type = normalize_slot_value_type(ftype, target_slots[key].value if key in target_slots else None)
+            current_value = target_slots[key].value if key in target_slots else None
+            canonical_type = normalize_slot_value_type(ftype, current_value)
             if key not in target_slots:
                 target_slots[key] = Slot(slot_name=key, value_type=canonical_type)
-            else:
-                if target_slots[key].value_type != canonical_type:
-                    target_slots[key].value_type = canonical_type
-                    target_slots[key].value = None
-                    target_slots[key].candidate_value = None
-                    target_slots[key].status = "missing"
+            elif target_slots[key].value_type != canonical_type:
+                target_slots[key].value_type = canonical_type
+                target_slots[key].value = None
+                target_slots[key].candidate_value = None
+                target_slots[key].status = "missing"
 
     def get_task_state(self) -> Dict[str, Any]:
         """Returns ONLY status == 'valid' and non-None slots as current facts."""
@@ -222,23 +231,45 @@ class SlotStore:
                 for key, slot in self.slots.items()
             }
 
-    def get_built_json(self) -> Dict[str, Any]:
+    def get_built_json(
+        self,
+        output_schema: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Return valid slots, optionally projected to official output schema fields."""
         with self._lock:
+            keys = (
+                [field["key"] for field in output_schema]
+                if output_schema is not None
+                else list(self.slots.keys())
+            )
             return {
-                key: copy.deepcopy(slot.value)
-                for key, slot in self.slots.items()
-                if slot.status == "valid" and slot.value is not None
+                key: copy.deepcopy(self.slots[key].value)
+                for key in keys
+                if key in self.slots
+                and self.slots[key].status == "valid"
+                and self.slots[key].value is not None
             }
 
-    def get_missing_slots(self, required_schema: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def get_missing_slots(
+        self,
+        required_schema: List[Dict[str, Any]],
+        allowed_values_resolver: Optional[Callable[[Dict[str, Any]], List[Any]]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return missing fields and optionally fill dynamic allowed values."""
         with self._lock:
-            missing = []
+            missing_fields = []
             for field in required_schema:
                 key = field["key"]
                 slot = self.slots.get(key)
-                if not slot or slot.status != "valid" or slot.value is None:
-                    missing.append(field)
-            return missing
+                if slot and slot.status == "valid" and slot.value is not None:
+                    continue
+                missing_fields.append(copy.deepcopy(field))
+
+        if allowed_values_resolver is not None:
+            for field in missing_fields:
+                field["allowed_values"] = list(allowed_values_resolver(field) or [])
+
+        return missing_fields
 
     def export_snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -268,8 +299,6 @@ class SlotStore:
             if unresolved_data is None or not isinstance(unresolved_data, list):
                 raise SnapshotValidationError("unresolved must be a list.")
 
-            VALID_STATUSES = {"missing", "candidate", "valid", "invalid", "conflict", "unresolved"}
-            VALID_VALUE_TYPES = {"string", "number", "boolean", "list", "coord", "datetime", "object"}
             new_slots = {}
             for key, sdict in slots_data.items():
                 if not isinstance(key, str):
@@ -281,21 +310,25 @@ class SlotStore:
                     slot_name = sdict.get("slot_name")
                     if slot_name is not None and slot_name != key:
                         raise SnapshotValidationError(f"Slot key '{key}' does not match slot_name '{slot_name}'.")
-                    st = sdict.get("status")
-                    if st not in VALID_STATUSES:
-                        raise SnapshotValidationError(f"Invalid status '{st}' for slot '{key}'.")
-                    ver = sdict.get("version", 0)
-                    if not isinstance(ver, int) or isinstance(ver, bool) or ver < 0:
-                        raise SnapshotValidationError(f"Invalid slot version '{ver}' for slot '{key}'.")
-                    conf = sdict.get("confidence")
-                    if conf is not None and (isinstance(conf, bool) or not isinstance(conf, (int, float)) or not (0.0 <= float(conf) <= 1.0)):
-                        raise SnapshotValidationError(f"Invalid confidence '{conf}' for slot '{key}'.")
+                    status = sdict.get("status")
+                    if status not in VALID_SLOT_STATUSES:
+                        raise SnapshotValidationError(f"Invalid status '{status}' for slot '{key}'.")
+                    version = sdict.get("version", 0)
+                    if not isinstance(version, int) or isinstance(version, bool) or version < 0:
+                        raise SnapshotValidationError(f"Invalid slot version '{version}' for slot '{key}'.")
+                    confidence = sdict.get("confidence")
+                    if confidence is not None and (
+                        isinstance(confidence, bool)
+                        or not isinstance(confidence, (int, float))
+                        or not (0.0 <= float(confidence) <= 1.0)
+                    ):
+                        raise SnapshotValidationError(f"Invalid confidence '{confidence}' for slot '{key}'.")
                     raw_val_type = sdict.get("value_type", "string")
-                    val = copy.deepcopy(sdict.get("value"))
+                    value = copy.deepcopy(sdict.get("value"))
                     if not isinstance(raw_val_type, str):
                         raise SnapshotValidationError(f"Invalid value_type '{raw_val_type}' for slot '{key}'.")
-                    val_type = normalize_slot_value_type(raw_val_type, val)
-                    if val_type not in VALID_VALUE_TYPES:
+                    value_type = normalize_slot_value_type(raw_val_type, value)
+                    if value_type not in VALID_VALUE_TYPES:
                         raise SnapshotValidationError(f"Invalid value_type '{raw_val_type}' for slot '{key}'.")
                     source = sdict.get("source", "user_input")
                     if not isinstance(source, str):
@@ -307,37 +340,43 @@ class SlotStore:
                         try:
                             clean_dt = updated_at.replace("Z", "+00:00")
                             datetime.fromisoformat(clean_dt)
-                        except Exception as e:
-                            raise SnapshotValidationError(f"Invalid ISO-8601 updated_at timestamp '{updated_at}' for slot '{key}': {e}")
+                        except Exception as exc:
+                            raise SnapshotValidationError(
+                                f"Invalid ISO-8601 updated_at timestamp '{updated_at}' for slot '{key}': {exc}"
+                            )
 
-                    if st == "valid" and val is None:
+                    if status == "valid" and value is None:
                         raise SnapshotValidationError(f"Valid slot '{key}' cannot have null value.")
 
                     new_slots[key] = Slot(
                         slot_name=key,
-                        value=val,
-                        value_type=val_type,
-                        status=st,
+                        value=value,
+                        value_type=value_type,
+                        status=status,
                         source=source,
                         raw_value=copy.deepcopy(sdict.get("raw_value")),
-                        confidence=conf,
+                        confidence=confidence,
                         validation_error=sdict.get("validation_error"),
                         updated_at=updated_at,
-                        version=ver,
-                        candidate_value=copy.deepcopy(sdict.get("candidate_value"))
+                        version=version,
+                        candidate_value=copy.deepcopy(sdict.get("candidate_value")),
                     )
                 elif isinstance(sdict, Slot):
                     if sdict.slot_name != key:
                         raise SnapshotValidationError(f"Slot key '{key}' does not match slot_name '{sdict.slot_name}'.")
-                    if sdict.status not in VALID_STATUSES:
+                    if sdict.status not in VALID_SLOT_STATUSES:
                         raise SnapshotValidationError(f"Invalid status '{sdict.status}' for slot '{key}'.")
-                    val_type = normalize_slot_value_type(sdict.value_type, sdict.value)
-                    if val_type not in VALID_VALUE_TYPES:
+                    value_type = normalize_slot_value_type(sdict.value_type, sdict.value)
+                    if value_type not in VALID_VALUE_TYPES:
                         raise SnapshotValidationError(f"Invalid value_type '{sdict.value_type}' for slot '{key}'.")
-                    sdict.value_type = val_type
+                    sdict.value_type = value_type
                     if not isinstance(sdict.version, int) or isinstance(sdict.version, bool) or sdict.version < 0:
                         raise SnapshotValidationError(f"Invalid slot version '{sdict.version}' for slot '{key}'.")
-                    if sdict.confidence is not None and (isinstance(sdict.confidence, bool) or not isinstance(sdict.confidence, (int, float)) or not (0.0 <= float(sdict.confidence) <= 1.0)):
+                    if sdict.confidence is not None and (
+                        isinstance(sdict.confidence, bool)
+                        or not isinstance(sdict.confidence, (int, float))
+                        or not (0.0 <= float(sdict.confidence) <= 1.0)
+                    ):
                         raise SnapshotValidationError(f"Invalid confidence '{sdict.confidence}' for slot '{key}'.")
                     if sdict.updated_at is not None:
                         if not isinstance(sdict.updated_at, str):
@@ -345,8 +384,10 @@ class SlotStore:
                         try:
                             clean_dt = sdict.updated_at.replace("Z", "+00:00")
                             datetime.fromisoformat(clean_dt)
-                        except Exception as e:
-                            raise SnapshotValidationError(f"Invalid ISO-8601 updated_at timestamp '{sdict.updated_at}' for slot '{key}': {e}")
+                        except Exception as exc:
+                            raise SnapshotValidationError(
+                                f"Invalid ISO-8601 updated_at timestamp '{sdict.updated_at}' for slot '{key}': {exc}"
+                            )
                     if sdict.status == "valid" and sdict.value is None:
                         raise SnapshotValidationError(f"Valid slot '{key}' cannot have null value.")
                     new_slots[key] = sdict.copy()
@@ -365,7 +406,7 @@ class SlotStore:
 
     def clone_slots(self) -> Dict[str, Slot]:
         with self._lock:
-            return {k: s.copy() for k, s in self.slots.items()}
+            return {key: slot.copy() for key, slot in self.slots.items()}
 
     def snapshot(self) -> Tuple[Dict[str, Slot], List[Any], int]:
         with self._lock:
@@ -385,15 +426,18 @@ class SlotStore:
                     f"but current store version is {self.version}"
                 )
 
-            temp_slots = {k: s.copy() for k, s in new_slots.items()}
+            temp_slots = {key: slot.copy() for key, slot in new_slots.items()}
             temp_unresolved = copy.deepcopy(new_unresolved)
 
             now_str = get_current_datetime().isoformat()
-            task_id = self.slots.get("task_id").value if (self.slots.get("task_id") and self.slots.get("task_id").value) else "unknown"
+            task_id = (
+                self.slots.get("task_id").value
+                if self.slots.get("task_id") and self.slots.get("task_id").value
+                else "unknown"
+            )
 
             slot_changes_detected = False
 
-            # Check deleted slots
             deleted_keys = set(self.slots.keys()) - set(temp_slots.keys())
             for key in deleted_keys:
                 old_slot = self.slots[key]
@@ -444,7 +488,7 @@ class SlotStore:
                         f"source={new_slot.source}"
                     )
 
-            unresolved_changed = (self.unresolved != temp_unresolved)
+            unresolved_changed = self.unresolved != temp_unresolved
             if unresolved_changed:
                 logger.info(
                     f"[UNRESOLVED_UPDATE] task_id={task_id} request_id={request_id} "

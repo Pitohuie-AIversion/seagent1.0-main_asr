@@ -20,9 +20,10 @@ import builtins
 import multiprocessing
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
+from src.extractor import ParameterExtractor
 from src.llm_client import LLMClient
-from src.exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError, TaskRollbackError
-from src.slot_store import SlotStore, Slot, SlotVersionConflict, SnapshotValidationError, VALID_VALUE_TYPES
+from src.output_builder import OutputBuilder
+from src.slot_store import SlotStore, Slot
 from src.simulated_time import get_simulated_time
 from src.history_manager import save_conversation, load_history
 from src.task_intent_builder import TaskIntentBuilder
@@ -149,18 +150,191 @@ class SlotConsistencyTest(unittest.TestCase):
         )
         self.llm.extract_json.return_value = {"intent": "TASK_UPDATE", "confidence": 1.0, "reason": "test", "slot_candidates": [], "unresolved": []}
         self.dm = DialogueManager(self.llm, self.kb)
-        self.client = app.test_client()
-        # 隔离意图路由：slot consistency 槽位单元测试聚焦于 SlotStore / 事务行为
-        from src.intent_router import IntentRouteResult
-        self._default_route = IntentRouteResult(
-            intent="TASK_UPDATE", confidence=1.0, reason="test",
-            source="rule", should_update_slots=True
-        )
-        self._orig_route = self.dm.intent_router.route
-        self.dm.intent_router.route = lambda *a, **kw: self._default_route
 
-    # 1. 单条消息同时写入三个槽位
-    def test_01_single_message_three_slots(self):
+    def test_extractor_context_excludes_history_on_self_contained_modification(self):
+        llm = MagicMock(spec=LLMClient)
+        llm.extract_json.return_value = {
+            "intent": "task_update",
+            "slot_candidates": [],
+            "unresolved": [],
+        }
+        extractor = ParameterExtractor(llm)
+
+        extractor.extract_updates(
+            "修改水深为500米",
+            {"water_depth": 300.0},
+            task_type_key="pipeline_inspection",
+            required=[{"key": "water_depth", "label": "水深（米）"}],
+            conversation_history=[
+                {"role": "user", "content": "水深300米，起点19.8,113.5"},
+                {"role": "assistant", "content": "已记录水深300米和起点19.8,113.5。"},
+            ],
+        )
+
+        messages = llm.extract_json.call_args.args[0]
+        self.assertEqual(
+            [message["role"] for message in messages],
+            ["system", "user"],
+        )
+        self.assertEqual(messages[-1]["content"], "修改水深为500米")
+
+    def test_extractor_context_keeps_recent_history_for_numbered_selection(self):
+        llm = MagicMock(spec=LLMClient)
+        llm.extract_json.return_value = {
+            "intent": "task_update",
+            "slot_candidates": [],
+            "unresolved": [],
+        }
+        extractor = ParameterExtractor(llm)
+        history = [
+            {"role": "assistant", "content": "旧问题：请选择支持船。"},
+            {"role": "user", "content": "先不选"},
+            {"role": "assistant", "content": "请选择机器人系列：1.轻型；2.观察级。"},
+        ]
+
+        extractor.extract_updates(
+            "第二个",
+            {},
+            task_type_key="pipeline_inspection",
+            required=[],
+            conversation_history=history,
+        )
+
+        messages = llm.extract_json.call_args.args[0]
+        self.assertEqual(messages[1:-1], history)
+        self.assertEqual(messages[-1]["content"], "第二个")
+
+    def test_fuzzy_modification_uses_six_recent_history_messages(self):
+        llm = MagicMock(spec=LLMClient)
+        llm.extract_json.return_value = {
+            "intent": "task_update",
+            "slot_candidates": [],
+            "unresolved": [],
+        }
+        extractor = ParameterExtractor(llm)
+        history = [
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"历史{index}",
+            }
+            for index in range(8)
+        ]
+
+        extractor.extract_updates(
+            "改成第二个",
+            {},
+            task_type_key="pipeline_inspection",
+            required=[],
+            conversation_history=history,
+        )
+
+        messages = llm.extract_json.call_args.args[0]
+        self.assertEqual(messages[1:-1], history[-6:])
+        self.assertEqual(messages[-1]["content"], "改成第二个")
+
+    def test_output_builder_keeps_ambiguous_aliases_and_candidate_evidence(self):
+        builder = OutputBuilder(self.kb)
+        catalog = [
+            {"canonical_value": "A", "aliases": ["一号机", "Alpha"]},
+            {"canonical_value": "B", "aliases": ["一号机", "Beta"]},
+        ]
+
+        alias_mappings, ambiguous_aliases = builder._build_alias_indexes(catalog)
+
+        self.assertEqual(alias_mappings["Alpha"], "A")
+        self.assertEqual(alias_mappings["Beta"], "B")
+        self.assertNotIn("一号机", alias_mappings)
+        self.assertEqual(ambiguous_aliases["一号机"], ["A", "B"])
+
+    def test_extractor_resolves_exact_alias_to_allowed_canonical_value(self):
+        builder = OutputBuilder(self.kb)
+        required = builder.get_required(
+            "tree_valve_operation",
+            task_state={"equipment_family": "通用工作级深海机器人"},
+        )
+        llm = MagicMock(spec=LLMClient)
+        llm.extract_json.return_value = {
+            "slot_candidates": [
+                {
+                    "raw_key": "型号",
+                    "canonical_key": "equipment_type",
+                    "raw_value": "奇点250HP",
+                    "normalized_value": "奇点250HP",
+                    "confidence": 0.9,
+                }
+            ],
+            "unresolved": [],
+        }
+
+        result = ParameterExtractor(llm).extract_updates(
+            "奇点250HP",
+            {"equipment_family": "通用工作级深海机器人"},
+            task_type_key="tree_valve_operation",
+            required=required,
+        )
+
+        self.assertEqual(len(result["slot_candidates"]), 1)
+        candidate = result["slot_candidates"][0]
+        self.assertEqual(candidate["canonical_key"], "equipment_type")
+        self.assertEqual(candidate["normalized_value"], "通用工作级深海机器人 250HP")
+        self.assertEqual(candidate["resolution_method"], "alias_exact")
+        self.assertEqual(llm.extract_json.call_count, 1)
+
+    def test_extractor_uses_semantic_resolution_then_backend_validation(self):
+        builder = OutputBuilder(self.kb)
+        required = builder.get_required(
+            "tree_valve_operation",
+            task_state={"equipment_family": "通用工作级深海机器人"},
+        )
+        llm = MagicMock(spec=LLMClient)
+        llm.extract_json.side_effect = [
+            {
+                "slot_candidates": [
+                    {
+                        "raw_key": "型号",
+                        "canonical_key": "equipment_type",
+                        "raw_value": "奇点那台250马力的",
+                        "normalized_value": "奇点那台250马力的",
+                        "confidence": 0.88,
+                    }
+                ],
+                "unresolved": [],
+            },
+            {
+                "matched": True,
+                "canonical_key": "equipment_type",
+                "canonical_value": "通用工作级深海机器人 250HP",
+                "confidence": 0.94,
+                "reason": "奇点和250马力共同指向该型号",
+            },
+        ]
+
+        result = ParameterExtractor(llm).extract_updates(
+            "就用奇点那台250马力的",
+            {"equipment_family": "通用工作级深海机器人"},
+            task_type_key="tree_valve_operation",
+            required=required,
+        )
+
+        self.assertEqual(len(result["slot_candidates"]), 1)
+        candidate = result["slot_candidates"][0]
+        self.assertEqual(candidate["canonical_key"], "equipment_type")
+        self.assertEqual(candidate["normalized_value"], "通用工作级深海机器人 250HP")
+        self.assertEqual(candidate["confidence"], 0.94)
+        self.assertEqual(candidate["resolution_method"], "llm_semantic")
+        self.assertEqual(result["unresolved"], [])
+        self.assertEqual(llm.extract_json.call_count, 2)
+
+    def test_confirmation_publish_skips_parameter_extraction(self):
+        self.dm.phase = "confirming"
+        self.llm.extract_json.reset_mock()
+
+        self.dm.process("确认发布")
+
+        self.llm.extract_json.assert_not_called()
+
+    # 1. 单条消息同时包含三个不同槽位
+    def test_three_slots_in_one_message(self):
         self.dm.reset()
         self.llm.extract_json.return_value = {
             "intent": "TASK_CREATE",
@@ -236,8 +410,81 @@ class SlotConsistencyTest(unittest.TestCase):
         self.assertEqual(ver1, ver2)
         assert_ssot_consistency(self, self.dm)
 
-    # 5. 用户修改已有槽位
-    def test_05_update_existing_valid_slot(self):
+    def test_unextracted_value_remains_missing_for_followup(self):
+        self.dm.reset()
+        self.dm.slot_store.init_task_slots(
+            self.dm.builder.get_schema("pipeline_inspection", "normal")
+        )
+        self.dm.slot_store.slots["task_type_key"].value = "pipeline_inspection"
+        self.dm.slot_store.slots["task_type_key"].status = "valid"
+        self.dm.slot_store.slots["task_type"].value = "管缆巡检"
+        self.dm.slot_store.slots["task_type"].status = "valid"
+        self.dm.task_state = self.dm.slot_store.get_task_state()
+
+        self.dm.llm.extract_json.return_value = {
+            "intent": "task_update",
+            "slot_candidates": [],
+            "unresolved": [],
+        }
+
+        self.dm.process("管缆类型海底油气管道")
+
+        slot = self.dm.slot_store.slots["cable_type"]
+        self.assertIsNone(slot.value)
+        self.assertEqual(slot.status, "missing")
+
+        schema = self.dm.builder.get_schema("pipeline_inspection", "normal")
+        missing = self.dm.slot_store.get_missing_slots(
+            schema,
+            allowed_values_resolver=lambda field: self.dm.builder.resolve_allowed_values(
+                field,
+                "pipeline_inspection",
+                self.dm.slot_store.get_task_state(),
+            ),
+        )
+        self.assertIn("cable_type", {field["key"] for field in missing})
+
+    def test_pending_oilfield_confirmation_commits_to_slot_store(self):
+        self.dm.reset()
+        self.dm.slot_store.init_task_slots(
+            self.dm.builder.get_schema("tree_valve_operation", "normal")
+        )
+        slots = self.dm.slot_store.clone_slots()
+        slots["pending_oilfield_name"].value = "硫化11-1油田"
+        slots["pending_oilfield_name"].status = "valid"
+        slots["pending_oilfield_candidates"].value = [
+            {
+                "name": "流花11-1油田",
+                "id": "LH11-1",
+                "confidence": 0.95,
+                "evidence": ["alias"],
+            }
+        ]
+        slots["pending_oilfield_candidates"].status = "valid"
+        self.dm.slot_store.commit_transaction(slots, [])
+        self.dm.task_state = self.dm.slot_store.get_task_state()
+
+        reply = self.dm._resolve_pending_oilfield_confirmation("确认")
+
+        self.assertIn("流花11-1油田", reply)
+        self.assertEqual(
+            self.dm.slot_store.slots["oilfield_name"].value,
+            "流花11-1油田",
+        )
+        self.assertEqual(
+            self.dm.slot_store.slots["oilfield_name"].status,
+            "valid",
+        )
+        self.assertIsNone(
+            self.dm.slot_store.slots["pending_oilfield_name"].value
+        )
+        self.assertEqual(
+            self.dm.task_state,
+            self.dm.slot_store.get_task_state(),
+        )
+
+    # 3. 一个槽位包含多个值
+    def test_list_type_multiple_values(self):
         self.dm.reset()
         self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
         self.dm.slot_store.slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
@@ -366,8 +613,44 @@ class SlotConsistencyTest(unittest.TestCase):
         self.assertEqual(dm.slot_store.version, 0)
         assert_ssot_consistency(self, dm)
 
-    # 14. TASK_CREATE 可以写入 SlotStore
-    def test_14_task_create_updates_slot_store(self):
+    def test_semantically_equal_number_does_not_create_conflict(self):
+        self.dm.reset()
+        self.dm.slot_store.init_task_slots(
+            self.dm.builder.get_schema("pipeline_inspection", "normal")
+        )
+        slots = self.dm.slot_store.clone_slots()
+        slots["task_type_key"].value = "pipeline_inspection"
+        slots["task_type_key"].status = "valid"
+        slots["task_type"].value = "管缆巡检"
+        slots["task_type"].status = "valid"
+        slots["water_depth"].value = 300.0
+        slots["water_depth"].status = "valid"
+        self.dm.slot_store.commit_transaction(slots, [])
+        self.dm.task_state = self.dm.slot_store.get_task_state()
+
+        self.dm.llm.extract_json.return_value = {
+            "intent": "task_update",
+            "slot_candidates": [
+                {
+                    "raw_key": "水深",
+                    "canonical_key": "water_depth",
+                    "raw_value": "300米",
+                    "normalized_value": "300",
+                    "confidence": 1.0,
+                }
+            ],
+            "unresolved": [],
+        }
+
+        self.dm.process("水深300米")
+
+        slot = self.dm.slot_store.slots["water_depth"]
+        self.assertEqual(slot.value, 300.0)
+        self.assertEqual(slot.status, "valid")
+        self.assertIsNone(slot.candidate_value)
+
+    # 5. 用户修改已经填写的槽位
+    def test_user_modify_filled_slot(self):
         self.dm.reset()
         self.llm.extract_json.return_value = {
             "intent": "TASK_CREATE",
@@ -409,11 +692,17 @@ class SlotConsistencyTest(unittest.TestCase):
             ],
             "unresolved": []
         }
-        self.dm.process("新建管缆巡检")
-        self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
+        # In this turn, different value is processed:
+        self.dm.process("修改水深为500米")
+        
+        # 用户明确说“修改”时直接覆盖；不带修改意图的新值仍由下一项测试
+        # 验证 conflict → 用户确认的流程。
+        self.assertEqual(self.dm.slot_store.slots["water_depth"].status, "valid")
+        self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 500.0)
+        self.assertIsNone(self.dm.slot_store.slots["water_depth"].candidate_value)
 
-    # 17. built_json 与 SlotStore 一致
-    def test_17_ssot_built_json_consistency(self):
+    # 6. 新值与已有值发生冲突
+    def test_conflict_detection_and_resolution(self):
         self.dm.reset()
         self.llm.extract_json.return_value = {
             "intent": "TASK_CREATE",

@@ -29,7 +29,7 @@ class Violation:
 
 
 # check_type → 该约束关注的字段集合
-_EQUIPMENT_FIELDS = ["equipment_unit_id", "equipment_type", "equipment_name"]
+_EQUIPMENT_FIELDS = ["equipment_unit_id", "equipment_family", "equipment_type", "equipment_name"]
 
 _CHECK_FIELDS: dict[str, list[str]] = {
     "robot_category":              _EQUIPMENT_FIELDS,
@@ -117,15 +117,29 @@ class TaskValidator:
     ) -> list[Violation]:
         violations = []
         task_type    = task_state.get("task_type_key")
-        equipment    = (
-            task_state.get("equipment_unit_id")
-            or task_state.get("equipment_name")
-            or task_state.get("equipment_type")
-        )
+        unit_selector = task_state.get("equipment_unit_id")
+        variant_selector = task_state.get("equipment_type")
         water_depth  = task_state.get("water_depth")
         vessel_id    = task_state.get("support_vessel")
         tree_type    = task_state.get("tree_type")
-        rov          = self.kb.get_rov(equipment) if equipment else None
+        resolved_unit = (
+            self.kb.resolve_robot_unit(
+                str(unit_selector),
+                task_type,
+                str(variant_selector) if variant_selector else None,
+            )
+            if unit_selector
+            else None
+        )
+        rov = (
+            resolved_unit.get("robot")
+            if resolved_unit
+            else (
+                self.kb.get_rov(str(variant_selector))
+                if variant_selector
+                else None
+            )
+        )
 
         for c in self.kb.get_constraints():
             check = c["check_type"]
