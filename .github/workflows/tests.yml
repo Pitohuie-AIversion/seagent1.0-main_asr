@@ -1,0 +1,68 @@
+name: SEAgent CI & Regression Verification
+
+on:
+  push:
+    branches: [ main, "phase*" ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-and-verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: 1. Python Syntax & Compilation Check
+        run: |
+          python -m compileall -q src tests
+
+      - name: 2. Run Phase 1.5 Tests
+        run: |
+          python -m unittest \
+            tests/test_intent_routing_matrix.py \
+            tests/test_payload_multivalue.py \
+            tests/test_robot_state_consistency.py
+
+      - name: 3. Run Phase 1.8 Benchmark Tests
+        run: |
+          python -m unittest \
+            tests/test_multiturn_consistency_benchmark.py \
+            tests/test_query_write_mixed_benchmark.py \
+            tests/test_ambiguity_resolution_benchmark.py \
+            tests/test_failure_recovery_benchmark.py
+
+      - name: 4. Run Phase 1.9 Guard Tests
+        run: |
+          python -m unittest tests/test_phase19_regression_guard.py
+
+      - name: 5. Run Parser & Equipment E2E Tests
+        run: |
+          python -m unittest \
+            tests/test_regression_report_parser.py \
+            tests/test_equipment_resolution_e2e.py
+
+      - name: 6. Run Full Test Suite & Generate Audit Artifacts
+        continue-on-error: true
+        run: |
+          python scratch/parse_tests.py
+          python scratch/generate_report.py
+
+      - name: 7. Upload Regression Report & Test Log Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-audit-report
+          path: |
+            docs/regression_report.md
+            /tmp/test_records.json
