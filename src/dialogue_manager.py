@@ -1176,7 +1176,6 @@ class DialogueManager:
                 slot.source = meta["source"]
 
         if updates.get("emergency_mode"):
-        if updates.get("emergency_mode"):
             if "emergency_mode" in new_slots:
                 new_slots["emergency_mode"].value = True
                 new_slots["emergency_mode"].status = "valid"

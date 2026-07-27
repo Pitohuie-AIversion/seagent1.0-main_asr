@@ -183,9 +183,6 @@ def _max_existing_sequence(
     for entry, json_key in scan_specs:
         directory = entry() if callable(entry) else entry
         if not directory or not directory.exists():
-    for entry, json_key in scan_specs:
-        directory = entry() if callable(entry) else entry
-        if not directory or not directory.exists():
             continue
         # 临时文件和 staging 文件也可能已经占用了序号，文件名必须一并扫描。
         for path in directory.iterdir():
