@@ -206,21 +206,45 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/favicon.ico")
+def favicon():
+    return "", 204
+
+
 @app.route("/api/asr", methods=["POST"])
 def api_asr():
+    req_id = f"req_{uuid.uuid4().hex[:8]}"
     if _shared_asr is None:
-        return jsonify({"code": 503, "msg": "ASR service is not initialized"}), 503
+        return jsonify({
+            "ok": False,
+            "code": 503,
+            "error": "service_unavailable",
+            "msg": "ASR service is not initialized",
+            "request_id": req_id,
+            "retryable": True
+        }), 503
 
     audio = request.files.get("audio")
     if audio is None or not audio.filename:
-        return jsonify({"code": 400, "msg": "missing audio file"}), 400
+        return jsonify({
+            "ok": False,
+            "code": 400,
+            "error": "missing_file",
+            "msg": "missing audio file (expected form field: 'audio')",
+            "request_id": req_id,
+            "retryable": False
+        }), 400
 
     filename = secure_filename(audio.filename)
     if not _is_allowed_audio(filename):
         return jsonify({
+            "ok": False,
             "code": 400,
+            "error": "unsupported_format",
             "msg": f"unsupported audio format: {Path(filename).suffix}",
             "allowed_extensions": sorted(_allowed_audio_extensions),
+            "request_id": req_id,
+            "retryable": False
         }), 400
 
     language = (request.form.get("language") or _asr_api_config.get("language") or "Chinese").strip()
@@ -258,21 +282,41 @@ def api_asr():
             "segments": result["segments"],
         })
     except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
+        logging.error(f"ASR processing exception: {e}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "error": "ASRProcessingError",
+            "msg": "语音识别服务异常，请稍后重试。",
+            "request_id": req_id,
+            "retryable": True
+        }), 500
+
+from src.slot_store import SlotVersionConflict
+from src.exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
-    data = request.json or {}
-    sid = data.get("session_id") or str(uuid.uuid4())
-    msg = data.get("message", "").strip()
-    if not msg:
-        return jsonify({"error": "empty message"}), 400
+    try:
+        data = request.json or {}
+        sid = data.get("session_id") or str(uuid.uuid4())
+        request_id = data.get("request_id") or f"req_{uuid.uuid4().hex[:8]}"
+        msg = data.get("message", "").strip()
+        if not msg:
+            return jsonify({
+                "ok": False,
+                "code": 400,
+                "error": "EmptyMessage",
+                "msg": "消息内容不能为空。",
+                "request_id": request_id,
+                "retryable": False
+            }), 400
 
-    mgr = get_or_create_manager(sid)
+        mgr = get_or_create_manager(sid)
 
-    with _sess_lock:
-        if sid not in _sessions:
-            _sessions[sid] = Session(sid)
+        with _sess_lock:
+            if sid not in _sessions:
+                _sessions[sid] = Session(sid)
 
     reply = mgr.process(msg)
     print_status(mgr)
@@ -291,17 +335,76 @@ def api_chat():
         except Exception as e:
             logging.error("保存历史快照失败: %s", e, exc_info=True)
 
-    return jsonify({
-        "session_id": sid,
-        "reply": reply,
-        "done": mgr.phase == "done",
-        "rejected": mgr.phase == "rejected",
-        "collected": mgr._last_built_json,
-        "missing": [miss["key"] for miss in mgr._last_missing],
-        "task_type": mgr.task_state.get("task_type_key"),
-        "emergency": mgr.mode == "emergency",
-        "final_json": mgr._last_built_json if mgr.phase == "done" else None
-    })
+        resp_data = {
+            "code": 200,
+            "session_id": sid,
+            "request_id": request_id,
+            "reply": reply,
+            "done": mgr.phase == "done",
+            "rejected": mgr.phase == "rejected",
+            "collected": mgr._last_built_json,
+            "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
+            "task_type": mgr.task_state.get("task_type_key"),
+            "emergency": mgr.mode == "emergency",
+            "final_json": mgr._last_built_json if mgr.phase == "done" else None
+        }
+        for k, v in resp_data.items():
+            try:
+                json.dumps(v)
+            except Exception as e:
+                raise TypeError(f"Field '{k}' is not JSON serializable: {type(v)} -> {v}") from e
+
+        return jsonify(resp_data)
+    except SlotVersionConflict as svc:
+        logging.error(f"Slot version conflict in /api/chat: {svc}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 409,
+            "error": "SlotVersionConflict",
+            "msg": f"并发版本冲突: {str(svc)}",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": True
+        }), 409
+    except IntentIdConflict as iic:
+        logging.error(f"Intent ID conflict in /api/chat: {iic}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 409,
+            "error": "IntentIdConflict",
+            "msg": "Intent ID 存在冲突，未覆盖已有任务文件。",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": True
+        }), 409
+    except (TaskPersistenceError, IdReservationError, TaskRollbackError) as tpe:
+        logging.error(f"Task persistence error in /api/chat: {tpe}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "error": type(tpe).__name__,
+            "msg": "任务文件保存失败，任务未能成功下发。",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": True
+        }), 500
+    except ValueError as ve:
+        logging.error(f"Validation error in /api/chat: {ve}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 400,
+            "error": "ValidationError",
+            "msg": f"槽位校验失败: {str(ve)}",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": False
+        }), 400
+    except Exception as exc:
+        logging.error(f"Unhandled exception in /api/chat: {exc}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "error": "InternalServerError",
+            "msg": "服务器内部错误，请稍后重试。",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": True
+        }), 500
 
 
 @app.route("/api/reset", methods=["POST"])
@@ -315,6 +418,34 @@ def api_reset():
         with _sess_lock:
             _sessions.pop(sid, None)
     return jsonify({"ok": True})
+
+
+@app.route("/api/session/state", methods=["GET"])
+def get_session_state():
+    sid = request.args.get("session_id")
+    if not sid:
+        return jsonify({"ok": False, "code": 400, "error": "MissingSessionId", "msg": "session_id 不能为空", "retryable": False}), 400
+
+    with _sessions_lock:
+        mgr = _sessions_manager.get(sid)
+
+    if not mgr:
+        return jsonify({"ok": True, "code": 200, "exists": False}), 200
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "exists": True,
+        "session_id": sid,
+        "done": mgr.phase == "done",
+        "rejected": mgr.phase == "rejected",
+        "collected": mgr._last_built_json,
+        "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
+        "task_type": mgr.task_state.get("task_type_key"),
+        "emergency": mgr.mode == "emergency",
+        "history": mgr.conversation_history,
+        "final_json": mgr._last_built_json if mgr.phase == "done" else None
+    })
 
 
 import re as _re_module
@@ -476,9 +607,21 @@ def _translate_text_internal(text: str, target_lang: str) -> str:
 
 @app.route("/api/translate", methods=["POST"])
 def api_translate():
+    req_id = f"req_{uuid.uuid4().hex[:8]}"
     data = request.json or {}
     text = data.get("text", "").strip()
-    target_lang = data.get("target_lang", "English").strip()
+
+    if "target_lang" not in data or data.get("target_lang") is None:
+        return jsonify({
+            "ok": False,
+            "code": 400,
+            "error": "missing_parameter",
+            "msg": "Missing required parameter: target_lang",
+            "request_id": req_id,
+            "retryable": False
+        }), 400
+
+    target_lang = str(data.get("target_lang", "")).strip()
 
     if not text:
         return jsonify({"code": 200, "translated_text": ""})
@@ -486,7 +629,14 @@ def api_translate():
     # 校验 target_lang
     allowed_langs = {"English", "Chinese"}
     if target_lang not in allowed_langs:
-        return jsonify({"code": 400, "msg": f"Unsupported target_lang: {target_lang}. Allowed: {sorted(allowed_langs)}"}), 400
+        return jsonify({
+            "ok": False,
+            "code": 400,
+            "error": "unsupported_language",
+            "msg": f"Unsupported target_lang: {target_lang}. Allowed: {sorted(allowed_langs)}",
+            "request_id": req_id,
+            "retryable": False
+        }), 400
 
     try:
         original_text = text
@@ -506,10 +656,24 @@ def api_translate():
         return jsonify(resp)
 
     except RuntimeError as re_err:
-        return jsonify({"code": 503, "msg": str(re_err)}), 503
+        return jsonify({
+            "ok": False,
+            "code": 503,
+            "error": "model_error",
+            "msg": str(re_err),
+            "request_id": req_id,
+            "retryable": True
+        }), 503
     except Exception as e:
         logging.exception("[translate] Unexpected error in api_translate")
-        return jsonify({"code": 500, "msg": str(e)}), 500
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "error": "internal_error",
+            "msg": "Internal server error during translation",
+            "request_id": req_id,
+            "retryable": True
+        }), 500
 
 
 # ==============================================================================

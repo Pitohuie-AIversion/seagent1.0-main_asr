@@ -19,22 +19,35 @@ dialogue_manager.py - 对话主控制器
 """
 
 import copy
+import copy
 import json
 import logging
 import re
+import threading
+import os
+import stat
+import logging
 import threading
 from typing import Any
 from zoneinfo import ZoneInfo
 from datetime import datetime
 
+logger = logging.getLogger(__name__)
+
 logger = logging.getLogger(__name__)   # ✅ 新增导入
 
 from .llm_client import LLMClient
 from .knowledge_retriever import KnowledgeBase
-from .extractor import ParameterExtractor
+from .extractor import ParameterExtractor, MUTATING_INTENTS, NON_MUTATING_INTENTS, normalize_intent
 from .normalizer import FieldNormalizer
 from .output_builder import OutputBuilder
 from .validator import TaskValidator, Violation
+from .prompts import (
+    build_responder_messages,
+    build_general_chat_messages,
+    build_knowledge_responder_messages,
+    build_status_responder_messages,
+)
 from .prompts import (
     build_responder_messages,
     build_general_chat_messages,
@@ -48,7 +61,11 @@ from .coord_parser import parse_coordinate_updates
 from .oilfield_linker import OilfieldEntityLinker
 from .exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
 from .id_sequence import validate_intent_id
+from .exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
+from .id_sequence import validate_intent_id
 from .slot_store import SlotStore, Slot
+from .intent_router import IntentRouter, IntentRouteResult
+from .result_paths import get_task_dir
 from .intent_router import IntentRouter, IntentRouteResult
 
 HARD_REFUSAL_LIMIT = 4   # 连续拒绝上限
@@ -115,6 +132,8 @@ class DialogueManager:
 
         # 会话锁（按 session 隔离并发控制）
         self._session_lock = threading.RLock()
+
+
 
     # --------------------------------------------------------------------------
     # 主入口
@@ -504,6 +523,7 @@ class DialogueManager:
             return reply
 
         pending_reply = self._resolve_pending_oilfield_confirmation(user_message, request_id=request_id)
+        pending_reply = self._resolve_pending_oilfield_confirmation(user_message, request_id=request_id)
         if pending_reply is not None:
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": pending_reply})
@@ -547,6 +567,7 @@ class DialogueManager:
 
         merged_updates = {}
         merged_updates_meta = {}
+
         extraction_res = {}
         proposed_pending_rov = list(self._pending_rov_candidates)
         turn_unresolved: list = []
@@ -591,6 +612,7 @@ class DialogueManager:
                 stage1_updates[k] = cand_info
                 merged_updates[k] = v
                 merged_updates_meta[k] = cand_info
+                
             self._apply_updates_in_transaction(stage1_updates, new_slots)
             record_unresolved(extraction_res)
 
@@ -606,7 +628,7 @@ class DialogueManager:
 
         if should_extract_task_parameters:
             # Stage 2: Extract task parameters
-            current_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
+            current_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.status == "valid" and s.value is not None}
             required = self.builder.get_required(task_type_key, self.mode, current_state)
             extraction_res = self.extractor.extract_updates(
                 user_message, current_state,
@@ -639,7 +661,18 @@ class DialogueManager:
             for k, v in raw_stage2.items():
                 if k not in stage2_updates:
                     stage2_updates[k] = {"value": v, "raw_value": user_message, "confidence": 1.0, "source": "rule_parser"}
+                merged_updates_meta[k] = cand_info
+
+            raw_stage2 = self._merge_coordinate_updates(user_message, {k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, required)
+            for k, v in raw_stage2.items():
+                if k not in stage2_updates:
+                    stage2_updates[k] = {"value": v, "raw_value": user_message, "confidence": 1.0, "source": "rule_parser"}
                 merged_updates[k] = v
+
+            raw_linked = self._link_oilfield_update_in_transaction({k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, new_slots)
+            for k, v in raw_linked.items():
+                if k not in stage2_updates:
+                    stage2_updates[k] = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": "entity_linker"}
 
             raw_linked = self._link_oilfield_update_in_transaction({k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, new_slots)
             for k, v in raw_linked.items():
@@ -727,6 +760,12 @@ class DialogueManager:
         if merged_updates.get("emergency_mode"):
             proposed_mode = "emergency"
 
+
+        # Compute proposed mode change without mutating self.mode before commit
+        proposed_mode = self.mode
+        if merged_updates.get("emergency_mode"):
+            proposed_mode = "emergency"
+
         # Compute changed fields based on proposed updates
         changed_fields = set()
         for k, v in merged_updates.items():
@@ -734,6 +773,21 @@ class DialogueManager:
                 old_val = self.slot_store.slots.get(k).value if self.slot_store.slots.get(k) else None
                 if old_val != v:
                     changed_fields.add(k)
+
+        proposed_whitelist = {item for item in self._soft_whitelist if item[0] not in changed_fields}
+
+        # Normalize and validate inside transaction working dict new_slots
+        curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
+        self._normalize_and_validate_in_transaction(new_slots, curr_task_type_key)
+
+        # Auto-generate task_id inside new_slots BEFORE commit
+        if curr_task_type_key:
+            task_id_slot = new_slots.get("task_id")
+            if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None:
+                valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
+                tid = self.builder._generate_task_id(curr_task_type_key, valid_cand_state)
+                if "task_id" not in new_slots:
+                    new_slots["task_id"] = Slot("task_id")
 
         proposed_whitelist = {item for item in self._soft_whitelist if item[0] not in changed_fields}
 
@@ -887,6 +941,7 @@ class DialogueManager:
         )
         reply = self.llm.chat(messages, temperature=0.7, max_tokens=1500)
         reply = self.llm.filter_reply(reply)
+        reply = self.llm.filter_reply(reply)
 
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": reply})
@@ -1001,7 +1056,7 @@ class DialogueManager:
         )
         match = self.oilfield_linker.link(str(raw_name), coords)
         linked = dict(updates)
-        
+
         for k in ("raw_oilfield_name", "oilfield_match_status", "oilfield_match_confidence", "oilfield_match_evidence", "oilfield_match_candidates"):
             if k not in new_slots:
                 new_slots[k] = Slot(slot_name=k)
@@ -1120,6 +1175,7 @@ class DialogueManager:
                 slot.confidence = meta["confidence"]
                 slot.source = meta["source"]
 
+        if updates.get("emergency_mode"):
         if updates.get("emergency_mode"):
             if "emergency_mode" in new_slots:
                 new_slots["emergency_mode"].value = True
@@ -1404,30 +1460,42 @@ class DialogueManager:
         task_type_map = self.kb.get_task_type_map()
         templates = self.kb.task_schemas.get("task_templates", {})
 
+        target_key = None
         if value in task_type_map:
             new_slots["task_type"].value = value
             new_slots["task_type"].status = "valid"
-            new_slots["task_type_key"].value = task_type_map[value]
+            target_key = task_type_map[value]
+            new_slots["task_type_key"].value = target_key
             new_slots["task_type_key"].status = "valid"
-            required_fields = self.builder.get_schema(task_type_map[value], self.mode)
-            self.slot_store.init_task_slots(required_fields)
-            for f in required_fields:
-                fkey = f["key"]
-                if fkey not in new_slots:
-                    new_slots[fkey] = Slot(slot_name=fkey, value_type=f.get("type", "string"))
         elif key == "task_type_key" and value in templates:
+            target_key = value
             new_slots["task_type_key"].value = value
             new_slots["task_type_key"].status = "valid"
             values = templates[value].get("task_type_values", [])
             if len(values) == 1:
                 new_slots["task_type"].value = values[0]
                 new_slots["task_type"].status = "valid"
-            required_fields = self.builder.get_schema(value, self.mode)
-            self.slot_store.init_task_slots(required_fields)
+
+        if target_key:
+            required_fields = self.builder.get_schema(target_key, self.mode)
+            schema_keys = {f["key"] for f in required_fields}
+
+            # Clean up old dynamic slots in new_slots that do not belong to BASE_SLOT_TYPES, schema_keys, or ALLOWED_INTERNAL_SLOTS
+            from .slot_store import BASE_SLOT_TYPES, ALLOWED_INTERNAL_SLOTS
+            to_remove = [
+                k for k in list(new_slots.keys())
+                if k not in BASE_SLOT_TYPES and k not in schema_keys and k not in ALLOWED_INTERNAL_SLOTS
+            ]
+            for k in to_remove:
+                del new_slots[k]
+
             for f in required_fields:
                 fkey = f["key"]
+                ftype = f.get("type", "string")
                 if fkey not in new_slots:
-                    new_slots[fkey] = Slot(slot_name=fkey, value_type=f.get("type", "string"))
+                    new_slots[fkey] = Slot(slot_name=fkey, value_type=ftype)
+                else:
+                    new_slots[fkey].value_type = ftype
 
     def _handle_rov_description_in_transaction(self, description: str, new_slots: dict):
         all_rovs = self.kb.get_all_rovs()
@@ -1447,61 +1515,76 @@ class DialogueManager:
     def _normalize_and_validate_in_transaction(self, new_slots: dict, task_type_key: str | None):
         if not task_type_key:
             return
-            
+
         schema = self.builder.get_schema(task_type_key, self.mode)
-        
+
         for field_def in schema:
             key = field_def["key"]
             ftype = field_def["type"]
             slot = new_slots.get(key)
-            if not slot or slot.value is None or slot.status in ("fixed", "auto", "conflict"):
+            if not slot or slot.status in ("fixed", "auto", "conflict"):
                 continue
-                
-            temp_state = {k: s.value for k, s in new_slots.items() if s.value is not None}
+
+            target_val = slot.candidate_value if slot.candidate_value is not None else slot.value
+            if target_val is None:
+                continue
+
+            temp_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
             allowed = self.builder._resolve_allowed(field_def, task_type_key, temp_state)
             if allowed:
-                raw = slot.value
+                raw = target_val
                 if ftype == "list":
                     normalized = self.normalizer.normalize(raw, allowed, ftype)
                 else:
                     normalized = self.normalizer.normalize(str(raw), allowed, ftype)
-                    
+
                 if normalized is not None:
                     slot.value = normalized
+                    slot.candidate_value = None
                     slot.status = "valid"
                     slot.validation_error = None
                 else:
                     slot.status = "invalid"
+                    slot.candidate_value = raw
                     slot.validation_error = f"Value '{raw}' could not be normalized to allowed options: {allowed}"
             else:
                 if ftype == "datetime":
                     val_str = str(slot.value)
                     pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"
                     if re.match(pattern, val_str):
+                        slot.value = val_str
+                        slot.candidate_value = None
                         slot.status = "valid"
                         slot.validation_error = None
                     else:
                         slot.status = "invalid"
+                        slot.candidate_value = target_val
                         slot.validation_error = f"Invalid datetime format: {val_str}. Expected YYYY-MM-DDTHH:MM:SS"
                 elif ftype == "coord":
-                    coord = self.builder._validate_coord(slot.value)
+                    coord = self.builder._validate_coord(target_val)
                     if coord:
                         slot.value = coord
+                        slot.candidate_value = None
                         slot.status = "valid"
                         slot.validation_error = None
                     else:
                         slot.status = "invalid"
-                        slot.validation_error = f"Invalid coordinate format: {slot.value}"
+                        slot.candidate_value = target_val
+                        slot.validation_error = f"Invalid coordinate format: {target_val}"
                 elif ftype == "number":
-                    num = self.builder._validate_number(slot.value)
+                    num = self.builder._validate_number(target_val)
                     if num is not None:
                         slot.value = num
+                        slot.candidate_value = None
                         slot.status = "valid"
                         slot.validation_error = None
                     else:
                         slot.status = "invalid"
-                        slot.validation_error = f"Invalid numeric value: {slot.value}"
+                        slot.candidate_value = target_val
+                        slot.validation_error = f"Invalid numeric value: {target_val}"
                 else:
+                    slot.value = target_val
+                    slot.candidate_value = None
                     slot.status = "valid"
                     slot.validation_error = None
 
@@ -1529,7 +1612,8 @@ class DialogueManager:
             )
             self._rebuild_cache()
             return "已取消当前待确认油田名称，请提供标准的油田名称（例如：流花11-1油田、陵水17-2油田等），或补充油田坐标。"
-        if not self._user_confirmed_oilfield(user_message):
+
+        if action_result["action"] != "confirm":
             return None
 
         candidate = self._top_pending_oilfield_candidate()
@@ -1554,8 +1638,11 @@ class DialogueManager:
         return f"已确认油田名称为“{confirmed_name}”，我会按这个标准名称继续收集任务信息。"
 
     def _build_pending_oilfield_reply(self) -> str | None:
-        raw_name = self.task_state.get("pending_oilfield_name")
-        if not raw_name or self.task_state.get("oilfield_name"):
+        pending_slot = self.slot_store.slots.get("pending_oilfield_name")
+        raw_name = pending_slot.value if (pending_slot and pending_slot.status == "valid") else None
+        oil_slot = self.slot_store.slots.get("oilfield_name")
+        has_oilfield = oil_slot.value if (oil_slot and oil_slot.status == "valid") else None
+        if not raw_name or has_oilfield:
             return None
 
         candidate = self._top_pending_oilfield_candidate()
@@ -1568,7 +1655,8 @@ class DialogueManager:
         )
 
     def _top_pending_oilfield_candidate(self) -> dict | None:
-        candidates = self.task_state.get("pending_oilfield_candidates")
+        cand_slot = self.slot_store.slots.get("pending_oilfield_candidates")
+        candidates = cand_slot.value if (cand_slot and cand_slot.status == "valid") else None
         if isinstance(candidates, list) and candidates:
             candidate = candidates[0]
             if isinstance(candidate, dict) and candidate.get("name"):
@@ -1576,8 +1664,12 @@ class DialogueManager:
         return None
 
     def _user_confirmed_oilfield(self, message: str) -> bool:
-        keywords = ["是", "对", "就是", "采用", "确认", "确定", "可以", "好的", "ok"]
-        return self._user_confirmed(message) or any(kw in message.lower() for kw in keywords)
+        keywords = ["是", "对", "就是", "采用", "确认", "确定", "可以", "好的", "ok", "使用"]
+        negations = ["不", "别", "不要", "不是", "取消"]
+        msg = message.strip().lower()
+        if any(neg in msg for neg in negations):
+            return False
+        return any(kw in msg for kw in keywords)
 
     @staticmethod
     def _user_cancelled_oilfield(message: str) -> bool:
@@ -1895,7 +1987,9 @@ class DialogueManager:
     # --------------------------------------------------------------------------
 
     def _rebuild_cache(self) -> None:
-        """根据当前 task_state 重新构建 _last_built_json 和 _last_missing"""
+        """根据当前 slot_store 重新构建 task_state, _last_built_json 和 _last_missing"""
+        self.task_state = self.slot_store.get_task_state()
+        built = self.slot_store.get_built_json()
         task_type_key = self.task_state.get("task_type_key")
         if task_type_key:
             built, missing = self.builder.build(self.task_state, task_type_key, self.mode)
@@ -1906,7 +2000,7 @@ class DialogueManager:
             self._last_built_json = built
             self._last_missing = missing
         else:
-            self._last_built_json = {}
+            self._last_built_json = built
             self._last_missing = [{
                 "key": "task_type",
                 "label": "任务类型",
@@ -2042,4 +2136,3 @@ class DialogueManager:
         self._soft_whitelist = set()
         self._hard_refusal_counts = {}
         self._pending_rov_candidates = []
-        self._rebuild_cache()

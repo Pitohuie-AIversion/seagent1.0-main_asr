@@ -373,7 +373,7 @@ class KnowledgeBase:
             env_info = self._get_environment(coords)
             if env_info:
                 sections.append(f"【作业区域环境状态】\n{env_info}")
-        
+
         # 8. 适用约束规则摘要
         sections.append(self._relevant_constraints(task_type))
 

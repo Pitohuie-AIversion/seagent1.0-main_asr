@@ -165,16 +165,40 @@ class TestTranslateAPIRoute(unittest.TestCase):
         self.assertEqual(resp.status_code, 503)
 
     # ── target_lang validation ─────────────────────────────────────────
+    def test_missing_target_lang(self):
+        resp = self._post({"text": "Hello"})
+        self.assertEqual(resp.status_code, 400)
+        data = json.loads(resp.data)
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["code"], 400)
+        self.assertEqual(data["error"], "missing_parameter")
+        self.assertIn("request_id", data)
+
     def test_unsupported_target_lang(self):
         resp = self._post({"text": "Hello", "target_lang": "Japanese"})
         self.assertEqual(resp.status_code, 400)
         data = json.loads(resp.data)
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["code"], 400)
+        self.assertEqual(data["error"], "unsupported_language")
         self.assertIn("Unsupported", data["msg"])
 
-    def test_chinese_target_lang_accepted(self):
-        self.mock_llm.chat.return_value = "你好，测试。"
-        resp = self._post({"text": "Hello test.", "target_lang": "Chinese"})
+    def test_english_to_chinese_translation(self):
+        self.mock_llm.chat.return_value = "确认任务。"
+        resp = self._post({"text": "Confirm the task.", "target_lang": "Chinese"})
         self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        self.assertEqual(data["code"], 200)
+        self.assertEqual(data["translated_text"], "确认任务。")
+        self.assertNotIn("收到您的信息", data["translated_text"])
+
+    def test_chinese_to_english_translation(self):
+        self.mock_llm.chat.return_value = "Create a subsea inspection task"
+        resp = self._post({"text": "创建一个水下巡检任务", "target_lang": "English"})
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        self.assertEqual(data["code"], 200)
+        self.assertEqual(data["translated_text"], "Create a subsea inspection task")
 
     # ── Cache bypass (TRANSLATION_USE_CACHE=False) ─────────────────────
     def test_no_cache_mode_calls_llm_every_time(self):

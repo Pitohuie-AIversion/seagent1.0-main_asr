@@ -346,8 +346,6 @@ class TaskValidator:
                 vel = state_info.get("current_velocity")
                 if vel is None:
                     return None
-                print("【当前检查约束的流速为】")
-                print(vel)
                 # 按规则ID分别判断
                 if c["id"] == "C015":
                     if 0.5 < vel <= 0.8:
@@ -405,7 +403,6 @@ class TaskValidator:
                             msg = c["violation_message"].replace("{update_timestamp}", str(timestamp_str))
                             return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
                     except Exception:
-                        # 解析失败则忽略此约束
                         pass
 
         # ========== 机器人状态相关约束（基于 3002 文档） ==========

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import fcntl
 import json
 import logging
 import os
@@ -49,6 +50,9 @@ def next_daily_id(
     """生成跨进程安全、可持久化恢复的每日递增 ID。"""
     scan_specs_list = list(scan_specs)
     counter_key = f"{prefix}{date_text}"
+    lock_file = _get_lock_file_path()
+    counter_file = _get_counter_file_path()
+
     lock_file = _get_lock_file_path()
     counter_file = _get_counter_file_path()
 
@@ -176,6 +180,9 @@ def _max_existing_sequence(
 ) -> int:
     max_seq = 0
     pattern = re.compile(rf"{re.escape(prefix)}{re.escape(date_text)}(\d{{{width},}})")
+    for entry, json_key in scan_specs:
+        directory = entry() if callable(entry) else entry
+        if not directory or not directory.exists():
     for entry, json_key in scan_specs:
         directory = entry() if callable(entry) else entry
         if not directory or not directory.exists():
