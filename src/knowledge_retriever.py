@@ -212,7 +212,11 @@ class KnowledgeBase:
             "unit_ids": [u.get("unit_id") for u in units if u.get("unit_id")],
         }
         robot.update(hard_params)
-        robot.setdefault("supported_payloads", hard_params.get("supported_payloads", []))
+        onboard_payloads = list(hard_params.get("onboard_payloads", []) or [])
+        supported_payloads = list(hard_params.get("supported_payloads", []) or [])
+        robot["onboard_payloads"] = onboard_payloads
+        robot["supported_payloads"] = supported_payloads
+        robot["all_payloads"] = onboard_payloads + supported_payloads
         return robot
 
     def _build_robot_variant_index(self) -> list[dict]:
@@ -433,12 +437,14 @@ class KnowledgeBase:
         rov = self._find_rov(model_or_alias)
         if not rov:
             return None
-        payloads = "、".join(rov.get("supported_payloads", []))
+        onboard_payloads = "、".join(rov.get("onboard_payloads", [])) or "无"
+        supported_payloads = "、".join(rov.get("supported_payloads", [])) or "无"
         return (
             f"{rov['full_name']}\n"
             f"类型: {rov.get('robot_class_name')} | 能力: {'、'.join(rov.get('capabilities', []))} | "
             f"最大水深: {rov.get('max_depth_m')}m\n"
-            f"可搭载载荷: {payloads}\n"
+            f"自带载荷: {onboard_payloads}\n"
+            f"可选载荷: {supported_payloads}\n"
             f"简介: {rov.get('brief', '')}"
         )
 
@@ -828,14 +834,18 @@ class KnowledgeBase:
             tool_set: set[str] = set()
             equipment_mappings: list[dict] = []
             for robot in robots:
-                payloads = list(robot.get("supported_payloads", []))
+                onboard_payloads = list(robot.get("onboard_payloads", []))
+                supported_payloads = list(robot.get("supported_payloads", []))
+                payloads = onboard_payloads + supported_payloads
                 tool_set.update(payloads)
                 equipment_mappings.append({
                     "equipment_type": robot.get("full_name"),
                     "variant_id": robot.get("variant_id"),
                     "family_id": robot.get("family_id"),
                     "robot_class": robot.get("robot_class_name"),
-                    "supported_payloads": payloads,
+                    "onboard_payloads": onboard_payloads,
+                    "supported_payloads": supported_payloads,
+                    "all_payloads": payloads,
                 })
 
             task_payloads = self.assets.get("payload_options", {})
