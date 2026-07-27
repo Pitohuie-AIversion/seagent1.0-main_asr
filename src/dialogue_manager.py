@@ -1856,6 +1856,9 @@ class DialogueManager:
 
     @staticmethod
     def _user_cancelled(message: str) -> bool:
+        negated_cancel = ["不要取消", "别取消", "不取消", "免取消"]
+        if any(neg in message for neg in negated_cancel):
+            return False
         keywords = ["取消", "放弃", "不要了", "终止", "退出"]
         return any(kw in message for kw in keywords)
 
