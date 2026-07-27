@@ -67,6 +67,8 @@ class RegressionErrorClassificationTest(unittest.TestCase):
                 "replacement_test": "tests/test_bar.py::BarTest.test_bar",
                 "invariant_type": "ROUTING",
                 "equivalence_reason": "Covered by dedicated bar test",
+                "equivalence_status": "FULL",
+                "missing_assertions": [],
                 "review_status": "approved"
             }
         }

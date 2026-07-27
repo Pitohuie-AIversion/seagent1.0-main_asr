@@ -62,7 +62,7 @@ class RegressionReportParserTest(unittest.TestCase):
         self.assertEqual(skipped, 1)
 
         # 2. 验证记录条数无重复
-        records = list(res.test_records.values())
+        records = list(res.test_records)
         self.assertEqual(len(records), 5)
 
         statuses = [r["status"] for r in records]

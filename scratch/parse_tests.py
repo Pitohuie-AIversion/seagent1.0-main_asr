@@ -1,11 +1,8 @@
 """
-scratch/parse_tests.py — SEAgent Phase 1.9.3 Accurate Test Suite Runner & Collector
+scratch/parse_tests.py — SEAgent Phase 1.9.4 Audit Data Collector
 
-直接根据 unittest.TextTestResult 导出的 result.failures, result.errors, result.skipped 记录矩阵，
-确保 100% 具备数学强不变性：
-1. total = passed + failures + errors + skipped
-2. len(non_passing_records) == failures + errors == 143
-3. len(records) == total
+分别记录 runner_counters 与 record_counters，绝不用 records 数量反向覆盖 runner 统计。
+强校验 runner_counters == record_counters，如果不一致，记录差异清单并退出。
 """
 
 import sys
@@ -30,83 +27,104 @@ def get_git_commit():
         return "unknown"
 
 
+class AuditTestResult(unittest.TextTestResult):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.test_records = []
+        self._seen_ids = {}
+
+    def _get_unique_test_id(self, test):
+        raw = str(test)
+        count = self._seen_ids.get(raw, 0) + 1
+        self._seen_ids[raw] = count
+        return raw if count == 1 else f"{raw} [instance {count}]"
+
+    def addSuccess(self, test):
+        super().addSuccess(test)
+        self._record(test, "passed")
+
+    def addFailure(self, test, err):
+        super().addFailure(test, err)
+        self._record(test, "failures", str(err[1]))
+
+    def addError(self, test, err):
+        super().addError(test, err)
+        self._record(test, "errors", str(err[1]))
+
+    def addSkip(self, test, reason):
+        super().addSkip(test, reason)
+        self._record(test, "skipped", str(reason))
+
+    def _record(self, test, status, detail=""):
+        unique_id = self._get_unique_test_id(test)
+        first_line = detail.splitlines()[-1] if detail else ""
+        self.test_records.append({
+            "test_id": unique_id,
+            "status": status,
+            "detail": first_line
+        })
+
+
 def run_and_collect_tests(test_dir="tests"):
     loader = unittest.TestLoader()
     suite = loader.discover(test_dir)
-    runner = unittest.TextTestRunner(verbosity=0)
+    runner = unittest.TextTestRunner(resultclass=AuditTestResult, verbosity=0)
     result = runner.run(suite)
 
-    total = result.testsRun
-    failures_count = len(result.failures)
-    errors_count = len(result.errors)
-    skipped_count = len(result.skipped)
-    passed_count = total - failures_count - errors_count - skipped_count
+    # 1. Direct Runner Counters
+    runner_counters = {
+        "tests_run": result.testsRun,
+        "failures": len(result.failures),
+        "errors": len(result.errors),
+        "skipped": len(result.skipped)
+    }
 
-    # 验证数学不变性
-    assert total == passed_count + failures_count + errors_count + skipped_count, \
-        f"Math invariant failed: {total} != {passed_count} + {failures_count} + {errors_count} + {skipped_count}"
+    records = result.test_records
 
-    records = []
-    seen_ids = {}
+    # 2. Record Counters
+    rec_failures = sum(1 for r in records if r["status"] == "failures")
+    rec_errors = sum(1 for r in records if r["status"] == "errors")
+    rec_skipped = sum(1 for r in records if r["status"] == "skipped")
+    rec_passed = sum(1 for r in records if r["status"] == "passed")
 
-    def get_unique_id(test_obj):
-        raw = str(test_obj)
-        count = seen_ids.get(raw, 0) + 1
-        seen_ids[raw] = count
-        return raw if count == 1 else f"{raw} [instance {count}]"
+    record_counters = {
+        "total": len(records),
+        "passed": rec_passed,
+        "failures": rec_failures,
+        "errors": rec_errors,
+        "skipped": rec_skipped
+    }
 
-    # 1. Collect Failures
-    for test_obj, err_str in result.failures:
-        first_line = err_str.splitlines()[-1] if err_str else ""
-        records.append({
-            "test_id": get_unique_id(test_obj),
-            "status": "failures",
-            "detail": first_line
-        })
+    # 3. Independent Audit Comparison
+    mismatches = []
+    if runner_counters["tests_run"] != record_counters["total"]:
+        mismatches.append(f"tests_run ({runner_counters['tests_run']}) != total ({record_counters['total']})")
+    if runner_counters["failures"] != record_counters["failures"]:
+        mismatches.append(f"runner failures ({runner_counters['failures']}) != record failures ({record_counters['failures']})")
+    if runner_counters["errors"] != record_counters["errors"]:
+        mismatches.append(f"runner errors ({runner_counters['errors']}) != record errors ({record_counters['errors']})")
+    if runner_counters["skipped"] != record_counters["skipped"]:
+        mismatches.append(f"runner skipped ({runner_counters['skipped']}) != record skipped ({record_counters['skipped']})")
 
-    # 2. Collect Errors
-    for test_obj, err_str in result.errors:
-        first_line = err_str.splitlines()[-1] if err_str else ""
-        records.append({
-            "test_id": get_unique_id(test_obj),
-            "status": "errors",
-            "detail": first_line
-        })
-
-    # 3. Collect Skipped
-    for test_obj, reason in result.skipped:
-        records.append({
-            "test_id": get_unique_id(test_obj),
-            "status": "skipped",
-            "detail": str(reason)
-        })
-
-    # 4. Dummy passed placeholders to match total
-    for i in range(passed_count):
-        records.append({
-            "test_id": f"passed_test_{i+1}",
-            "status": "passed",
-            "detail": "OK"
-        })
-
-    assert len(records) == total, f"Record count mismatch: len(records) ({len(records)}) != total ({total})"
+    if mismatches:
+        print("FATAL: Runner vs Record Counters Audit Discrepancy Detected!")
+        for m in mismatches:
+            print(f"  - {m}")
+        sys.exit(1)
 
     metadata = {
         "command": f"{sys.executable} -m unittest discover {test_dir}",
         "python_version": sys.version,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "commit_sha": get_git_commit(),
-        "total": total,
-        "passed": passed_count,
-        "failures": failures_count,
-        "errors": errors_count,
-        "skipped": skipped_count,
+        "runner_counters": runner_counters,
+        "record_counters": record_counters,
         "records": records
     }
 
     out_path = Path("/tmp/test_records.json")
     out_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"Collected {total} test records successfully (passed={passed_count}, failures={failures_count}, errors={errors_count}, skipped={skipped_count}). Saved to {out_path}.")
+    print(f"Collected {runner_counters['tests_run']} test records successfully (runner_counters == record_counters). Saved to {out_path}.")
 
 
 if __name__ == "__main__":

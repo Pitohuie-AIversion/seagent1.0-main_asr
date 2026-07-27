@@ -4,22 +4,22 @@
 
 - **Execution Command**: `/root/miniconda3/envs/seagent/bin/python -m unittest discover tests`
 - **Python Version**: `3.12.3 | packaged by Anaconda, Inc. | (main, May  6 2024, 19:46:43) [GCC 11.2.0]`
-- **Timestamp (UTC)**: `2026-07-27T09:22:30.243692+00:00`
-- **Git Commit SHA**: `00f5d96aa92ea462287354234e650f58177b5519`
+- **Timestamp (UTC)**: `2026-07-27T09:23:06.533244+00:00`
+- **Git Commit SHA**: `4aae4616d370e315d1b117913393bcbf1f4230c8`
 
 ### Math Invariant Verification
-- **Total Tests Executed (`total`)**: **448**
-- **Passed (`passed`)**: **291**
-- **Failures (`failures`)**: **90**
-- **Errors (`errors`)**: **67**
+- **Total Tests Executed (`total`)**: **450**
+- **Passed (`passed`)**: **296**
+- **Failures (`failures`)**: **88**
+- **Errors (`errors`)**: **66**
 - **Skipped (`skipped`)**: **0**
-- **Non-Passing (`non_passing_count`)**: **157** (90 failures + 67 errors)
-- **Classified (`classified_count`)**: **157**
-- **Invariant Sum (`invariant_count`)**: **157**
-- **Matrix Row Count (`matrix_row_count`)**: **157**
-- **Math Equality Status**: `157 == 157 == 157 == 157` (**100% MATHEMATICALLY VERIFIED**)
+- **Non-Passing (`non_passing_count`)**: **154** (88 failures + 66 errors)
+- **Classified (`classified_count`)**: **154**
+- **Invariant Sum (`invariant_count`)**: **154**
+- **Matrix Row Count (`matrix_row_count`)**: **154**
+- **Math Equality Status**: `154 == 154 == 154 == 154` (**100% MATHEMATICALLY VERIFIED**)
 
-- **Collection Errors (`unittest.loader._FailedTest`)**: **3**
+- **Collection Errors (`unittest.loader._FailedTest`)**: **2**
 
 ## 2. Audited Failure Classification Matrix
 
@@ -110,13 +110,10 @@
 | `test_13_mock_mode_capabilities (test_slot_consistency.SlotConsistencyTest.test_13_mock_mode_capabilities)` | ASSERTION_FAILURE | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_25_legacy_snapshot_conversion (test_slot_consistency.SlotConsistencyTest.test_25_legacy_snapshot_conversion)` | ASSERTION_FAILURE | **SNAPSHOT_RECOVERY** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_44_legacy_snapshot_value_type_inference (test_slot_consistency.SlotConsistencyTest.test_44_legacy_snapshot_value_type_inference)` | ASSERTION_FAILURE | **SNAPSHOT_RECOVERY** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
-| `test_49b_multiprocess_initial_run_task_id_uniqueness (test_slot_consistency.SlotConsistencyTest.test_49b_multiprocess_initial_run_task_id_uniqueness)` | ASSERTION_FAILURE | **FIXTURE_ENVIRONMENT** | **FIXTURE_OR_ENVIRONMENT** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
-| `test_49c_multiprocess_four_process_concurrency (test_slot_consistency.SlotConsistencyTest.test_49c_multiprocess_four_process_concurrency)` | ASSERTION_FAILURE | **FIXTURE_ENVIRONMENT** | **FIXTURE_OR_ENVIRONMENT** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_50a_multiprocess_publish_no_clobber_race (test_slot_consistency.SlotConsistencyTest.test_50a_multiprocess_publish_no_clobber_race)` | ASSERTION_FAILURE | **ATOMIC_PUBLISH** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_50b_multiprocess_publish_idempotent_retry (test_slot_consistency.SlotConsistencyTest.test_50b_multiprocess_publish_idempotent_retry)` | ASSERTION_FAILURE | **ATOMIC_PUBLISH** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_52_equipment_alias_normalization_and_category_protection (test_slot_consistency.SlotConsistencyTest.test_52_equipment_alias_normalization_and_category_protection)` | ASSERTION_FAILURE | **EQUIPMENT_RESOLUTION** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_adversarial_p0 (unittest.loader._FailedTest.test_adversarial_p0)` | COLLECTION_ERROR | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
-| `test_ambiguity_resolution_benchmark (unittest.loader._FailedTest.test_ambiguity_resolution_benchmark)` | COLLECTION_ERROR | **STATE_INVARIANCE** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_asr_chinese_success (test_asr_api.TestASRAPI.test_asr_chinese_success)` | EXECUTION_ERROR | **ASR_API** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_asr_english_success (test_asr_api.TestASRAPI.test_asr_english_success)` | EXECUTION_ERROR | **ASR_API** | **TRUE_REGRESSION** | `N/A (Pending Fix)` | Assertion failure requiring fix in test file or underlying contract |
 | `test_process_passes_committed_slot_delta_to_responder (test_dialogue_manager_rov.DialogueManagerROVTest.test_process_passes_committed_slot_delta_to_responder)` | EXECUTION_ERROR | **ROUTING** | **LEGACY_INTERFACE_PENDING_REWRITE** | `N/A (Pending Rewrite)` | Legacy intent enum assertion pending rewrite to WRITE/QUERY API |
@@ -186,31 +183,30 @@
 ## 3. Classification & Invariant Taxonomy Breakdown
 
 ### Failure Category Summary:
-- **COLLECTION_ERROR (`_FailedTest`)**: **3**
-- **TRUE_REGRESSION**: **104**
+- **COLLECTION_ERROR (`_FailedTest`)**: **2**
+- **TRUE_REGRESSION**: **103**
 - **LEGACY_INTERFACE**: **5**
 - **LEGACY_INTERFACE_PENDING_REWRITE**: **39**
-- **FIXTURE_OR_ENVIRONMENT**: **2**
+- **FIXTURE_OR_ENVIRONMENT**: **0**
 - **DUPLICATE_COVERAGE**: **7**
 
 ### Invariant Taxonomy Breakdown:
 - **ASR_API**: 2
 - **ATOMIC_PUBLISH**: 9
 - **EQUIPMENT_RESOLUTION**: 13
-- **FIXTURE_ENVIRONMENT**: 2
 - **ROUTING**: 44
 - **SNAPSHOT_RECOVERY**: 11
-- **STATE_INVARIANCE**: 76
+- **STATE_INVARIANCE**: 75
 
 ## 4. Phase 2 Admission Decision
 
 ### Readiness Checklist:
 1. **Math Statistics Invariant**: **PASS** (`non_passing = classified = invariant = matrix_rows` strictly equal).
-2. **Collection Errors**: **PASS** (3 `_FailedTest` modules).
+2. **Collection Errors**: **PASS** (2 `_FailedTest` modules).
 3. **Explicit YAML Replacement Map**: **PASS** (`docs/regression_replacement_map.yaml` loaded & verified).
 4. **P0 Security Negation Fix**: **PASS** (`DialogueManager._user_cancelled` negation bug fixed).
 5. **Equipment Model E2E Test**: **PASS** (`tests/test_equipment_resolution_e2e.py`).
 6. **Classifier & Math Unit Tests**: **PASS** (`tests/test_regression_error_classification.py`).
-7. **TRUE_REGRESSION Resolution**: **NO (BLOCKED)** — Currently 104 TRUE_REGRESSION items and 39 pending rewrites remain.
+7. **TRUE_REGRESSION Resolution**: **NO (BLOCKED)** — Currently 103 TRUE_REGRESSION items and 39 pending rewrites remain.
 
 **Final Decision**: **NO** (Phase 2 development remains blocked until TRUE_REGRESSION items and pending rewrites are resolved or formally risk-accepted).

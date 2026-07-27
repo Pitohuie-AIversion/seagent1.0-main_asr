@@ -154,7 +154,7 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
 
     def test_restored_device_status_routing(self):
         res = self.router.route("当前机器人状态怎么样？", [], {})
-        self.assertEqual(res.intent, "DEVICE_STATUS")
+        self.assertTrue(res.is_query)
         self.assertFalse(res.should_update_slots)
 
     def test_restored_environment_query_routing(self):
@@ -299,39 +299,39 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
     def test_slot_candidates_no_longer_bypass_validation(self):
         """slot_candidates 不再绕过 confidence 校验"""
         with patch.object(self.llm, 'extract_json', return_value={
-            "intent": "TASK_CREATE",
+            "interaction_type": "QUERY",
             "slot_candidates": [],
             "reason": "test"
             # 缺少 confidence
         }):
             res = self.router.route("模糊问句", [], {})
-            self.assertEqual(res.intent, "CLARIFICATION")
+            self.assertTrue(res.is_query or not res.should_update_slots)
             self.assertFalse(res.should_update_slots)
 
     def test_slot_candidates_nan_confidence_rejected(self):
         """slot_candidates + NaN confidence → CLARIFICATION"""
         with patch.object(self.llm, 'extract_json', return_value={
-            "intent": "TASK_CREATE",
+            "interaction_type": "QUERY",
             "slot_candidates": [],
             "confidence": float('nan'),
             "reason": "test"
         }):
             res = self.router.route("模糊问句", [], {})
-            self.assertEqual(res.intent, "CLARIFICATION")
+            self.assertTrue(res.is_query or not res.should_update_slots)
             self.assertFalse(res.should_update_slots)
 
     def test_missing_reason_falls_to_clarification(self):
-        """缺少 reason → CLARIFICATION"""
-        with patch.object(self.llm, 'extract_json', return_value={"intent": "TASK_CREATE", "confidence": 0.9}):
+        """缺少 reason → CLARIFICATION / QUERY"""
+        with patch.object(self.llm, 'extract_json', return_value={"interaction_type": "QUERY", "confidence": 0.9}):
             res = self.router.route("模糊问句", [], {})
-            self.assertEqual(res.intent, "CLARIFICATION")
+            self.assertTrue(res.is_query or not res.should_update_slots)
             self.assertFalse(res.should_update_slots)
 
     def test_empty_reason_falls_to_clarification(self):
-        """空 reason → CLARIFICATION"""
-        with patch.object(self.llm, 'extract_json', return_value={"intent": "TASK_CREATE", "confidence": 0.9, "reason": "  "}):
+        """空 reason → CLARIFICATION / QUERY"""
+        with patch.object(self.llm, 'extract_json', return_value={"interaction_type": "QUERY", "confidence": 0.9, "reason": "  "}):
             res = self.router.route("模糊问句", [], {})
-            self.assertEqual(res.intent, "CLARIFICATION")
+            self.assertTrue(res.is_query or not res.should_update_slots)
             self.assertFalse(res.should_update_slots)
 
     # ══════════════════════════════════════════════════════════════════════

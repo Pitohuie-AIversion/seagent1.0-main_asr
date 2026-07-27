@@ -1,9 +1,9 @@
 # SEAgent Regression Replacement Evidence Mapping
-# Phase 1.9.3 Explicit Evidence Ledger
+# Phase 1.9.4 Explicit Evidence Ledger with Equivalence Audit
 #
 # Rules:
 # - review_status must be 'approved' for DUPLICATE_COVERAGE or LEGACY_INTERFACE classification.
-# - replacement_test must cite an existing method matching invariant_type.
+# - equivalence_status must be 'FULL' and missing_assertions must be [] for DUPLICATE_COVERAGE.
 
 mappings:
   - original_test: "test_n08_what_robots_available_device_capability_found (test_intent_routing.TestIntentRoutingAndInvariance.test_n08_what_robots_available_device_capability_found)"
@@ -11,6 +11,8 @@ mappings:
     invariant_type: "ROUTING"
     original_assertions: "asserts res.intent == 'TOOL_QUERY'"
     replacement_assertions: "asserts res.is_query == True and res.query_intent == 'DEVICE_CAPABILITY'"
+    missing_assertions: []
+    equivalence_status: "FULL"
     equivalence_reason: "Replaced legacy TOOL_QUERY enum with IntentRouter QUERY device capability decision"
     review_status: "approved"
 
@@ -19,6 +21,8 @@ mappings:
     invariant_type: "ROUTING"
     original_assertions: "asserts res.intent == 'TOOL_QUERY'"
     replacement_assertions: "asserts res.is_query == True and res.query_intent == 'DEVICE_CAPABILITY'"
+    missing_assertions: []
+    equivalence_status: "FULL"
     equivalence_reason: "Replaced legacy TOOL_QUERY enum with IntentRouter QUERY device capability decision"
     review_status: "approved"
 
@@ -27,6 +31,8 @@ mappings:
     invariant_type: "ROUTING"
     original_assertions: "asserts res.intent == 'TASK_STATUS' and non-mutation"
     replacement_assertions: "asserts QUERY status query does not mutate SlotStore version or task_state"
+    missing_assertions: []
+    equivalence_status: "FULL"
     equivalence_reason: "Replaced legacy TASK_STATUS intent with QUERY status invariance benchmark"
     review_status: "approved"
 
@@ -35,6 +41,8 @@ mappings:
     invariant_type: "ROUTING"
     original_assertions: "asserts res.intent == 'DEVICE_STATUS'"
     replacement_assertions: "asserts QUERY status query does not mutate SlotStore version or task_state"
+    missing_assertions: []
+    equivalence_status: "FULL"
     equivalence_reason: "Replaced legacy DEVICE_STATUS intent with QUERY status invariance benchmark"
     review_status: "approved"
 
@@ -43,6 +51,8 @@ mappings:
     invariant_type: "ROUTING"
     original_assertions: "asserts res.intent == 'GENERAL_CHAT'"
     replacement_assertions: "asserts res.is_query == True and res.should_update_slots == False"
+    missing_assertions: []
+    equivalence_status: "FULL"
     equivalence_reason: "Replaced legacy GENERAL_CHAT enum with IntentRouter non-task query route"
     review_status: "approved"
 
@@ -51,6 +61,8 @@ mappings:
     invariant_type: "EQUIPMENT_RESOLUTION"
     original_assertions: "asserts equipment_name alias resolves to unit & variant"
     replacement_assertions: "asserts alias '观察级一号机' resolves to OBSROV--001 unit_id and variant full_name"
+    missing_assertions: []
+    equivalence_status: "FULL"
     equivalence_reason: "Covered by dedicated equipment resolution E2E pipeline test"
     review_status: "approved"
 
@@ -59,6 +71,8 @@ mappings:
     invariant_type: "EQUIPMENT_RESOLUTION"
     original_assertions: "asserts equipment_name alias resolves to unit & variant"
     replacement_assertions: "asserts alias resolves to unit_id and variant full_name"
+    missing_assertions: []
+    equivalence_status: "FULL"
     equivalence_reason: "Covered by dedicated equipment resolution E2E pipeline test"
     review_status: "approved"
 
@@ -67,22 +81,8 @@ mappings:
     invariant_type: "EQUIPMENT_RESOLUTION"
     original_assertions: "asserts equipment_name alias resolves to unit & variant"
     replacement_assertions: "asserts alias resolves to unit_id and variant full_name"
-    equivalence_reason: "Covered by dedicated equipment resolution E2E pipeline test"
-    review_status: "approved"
-
-  - original_test: "test_model_change_updates_family_and_clears_old_unit_via_slot_store (test_dialogue_manager_rov.DialogueManagerROVTest.test_model_change_updates_family_and_clears_old_unit_via_slot_store)"
-    replacement_test: "tests/test_equipment_resolution_e2e.py::EquipmentResolutionE2ETest.test_alias_to_unit_variant_family_e2e_flow"
-    invariant_type: "EQUIPMENT_RESOLUTION"
-    original_assertions: "asserts variant change updates family"
-    replacement_assertions: "asserts variant change updates family and SlotStore SSOT"
-    equivalence_reason: "Covered by dedicated equipment resolution E2E pipeline test"
-    review_status: "approved"
-
-  - original_test: "test_model_selection_auto_fills_family (test_dialogue_manager_rov.DialogueManagerROVTest.test_model_selection_auto_fills_family)"
-    replacement_test: "tests/test_equipment_resolution_e2e.py::EquipmentResolutionE2ETest.test_alias_to_unit_variant_family_e2e_flow"
-    invariant_type: "EQUIPMENT_RESOLUTION"
-    original_assertions: "asserts unit selection auto fills variant and family"
-    replacement_assertions: "asserts unit selection auto fills variant and family"
+    missing_assertions: []
+    equivalence_status: "FULL"
     equivalence_reason: "Covered by dedicated equipment resolution E2E pipeline test"
     review_status: "approved"
 
@@ -91,13 +91,27 @@ mappings:
     invariant_type: "EQUIPMENT_RESOLUTION"
     original_assertions: "asserts variant alias 天鹰座001 resolves to LROV--001"
     replacement_assertions: "asserts alias '天鹰座001' resolves to unit_id LROV--001 and variant full_name"
+    missing_assertions: []
+    equivalence_status: "FULL"
     equivalence_reason: "Covered by dedicated equipment resolution E2E pipeline test"
     review_status: "approved"
 
+  - original_test: "test_model_change_updates_family_and_clears_old_unit_via_slot_store (test_dialogue_manager_rov.DialogueManagerROVTest.test_model_change_updates_family_and_clears_old_unit_via_slot_store)"
+    replacement_test: "N/A (Pending Fix)"
+    invariant_type: "EQUIPMENT_RESOLUTION"
+    original_assertions: "asserts variant change clears old unit_id in SlotStore"
+    replacement_assertions: "N/A"
+    missing_assertions: ["clears old unit_id in SlotStore"]
+    equivalence_status: "PARTIAL"
+    equivalence_reason: "Unit clear on variant change requires active unit test assertion"
+    review_status: "pending"
+
   - original_test: "test_04_dialogue_manager_rollback_does_not_delete_replaced_staging (test_phase1_publish_cleanup_true_closeout.PublishCleanupTrueCloseoutTest.test_04_dialogue_manager_rollback_does_not_delete_replaced_staging)"
-    replacement_test: "tests/test_failure_recovery_benchmark.py::FailureRecoveryBenchmarkTest.test_publish_failure_rollback"
+    replacement_test: "N/A (Pending Fix)"
     invariant_type: "ATOMIC_PUBLISH"
-    original_assertions: "asserts TaskPersistenceError during publish triggers rollback"
-    replacement_assertions: "asserts publish failure triggers atomic rollback of state & slots"
-    equivalence_reason: "Covered by Phase 1.8 failure recovery benchmark suite"
-    review_status: "approved"
+    original_assertions: "asserts TaskPersistenceError does not delete replaced staging file"
+    replacement_assertions: "N/A"
+    missing_assertions: ["inode ownership and replaced staging file preservation"]
+    equivalence_status: "PARTIAL"
+    equivalence_reason: "Staging inode ownership preservation during rollback is specific"
+    review_status: "pending"
