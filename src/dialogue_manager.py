@@ -666,24 +666,18 @@ class DialogueManager:
             raw_stage2 = self._merge_coordinate_updates(user_message, {k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, required)
             for k, v in raw_stage2.items():
                 if k not in stage2_updates:
-                    stage2_updates[k] = {"value": v, "raw_value": user_message, "confidence": 1.0, "source": "rule_parser"}
-                merged_updates_meta[k] = cand_info
-
-            raw_stage2 = self._merge_coordinate_updates(user_message, {k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, required)
-            for k, v in raw_stage2.items():
-                if k not in stage2_updates:
-                    stage2_updates[k] = {"value": v, "raw_value": user_message, "confidence": 1.0, "source": "rule_parser"}
+                    c_info = {"value": v, "raw_value": user_message, "confidence": 1.0, "source": "rule_parser"}
+                    stage2_updates[k] = c_info
+                    merged_updates_meta[k] = c_info
                 merged_updates[k] = v
 
             raw_linked = self._link_oilfield_update_in_transaction({k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, new_slots)
             for k, v in raw_linked.items():
-                if k not in stage2_updates:
-                    stage2_updates[k] = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": "entity_linker"}
-
-            raw_linked = self._link_oilfield_update_in_transaction({k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, new_slots)
-            for k, v in raw_linked.items():
-                if k not in stage2_updates:
-                    stage2_updates[k] = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": "entity_linker"}
+                if k.startswith("__"):
+                    continue
+                c_info = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": "entity_linker"}
+                stage2_updates[k] = c_info
+                merged_updates_meta[k] = c_info
                 merged_updates[k] = v
 
             if not stage2_updates:

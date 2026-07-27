@@ -2,7 +2,6 @@
 task_intent_builder.py — 生成符合 TaskIntent 规范的 JSON 文件
 """
 import fcntl
-import fcntl
 import json
 import os
 import re
@@ -13,8 +12,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .exceptions import IntentIdConflict, TaskPersistenceError
-from .id_sequence import next_daily_id, validate_intent_id
 from .exceptions import IntentIdConflict, TaskPersistenceError
 from .id_sequence import next_daily_id, validate_intent_id
 from .knowledge_retriever import KnowledgeBase
