@@ -228,9 +228,9 @@ task_templates:
         - key: oilfield_coordinates
           label: "油田经纬度坐标"
           type: coord
-        - key: wellhead_id
-          label: "井口编号"
-          type: raw
+        # - key: wellhead_id
+        #   label: "井口编号"
+        #   type: raw
 #        # 采油树不再区分立式/卧式，停用该字段以避免继续询问类型。
 #        - key: tree_type
 #          label: "采油树类型"
