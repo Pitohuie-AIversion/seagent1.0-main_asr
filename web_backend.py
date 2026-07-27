@@ -318,22 +318,22 @@ def api_chat():
             if sid not in _sessions:
                 _sessions[sid] = Session(sid)
 
-    reply = mgr.process(msg)
-    print_status(mgr)
-    if mgr.phase == "done":
-        try:
-            save_conversation(
-                session_id=sid,
-                conversation_history=mgr.conversation_history,
-                task_state=mgr.task_state,
-                built_json=mgr._last_built_json,
-                mode=mgr.mode,
-                phase=mgr.phase,
-                intent_id=mgr.task_state.get('intent_id'),
-                slot_store=mgr.slot_store,
-            )
-        except Exception as e:
-            logging.error("保存历史快照失败: %s", e, exc_info=True)
+        reply = mgr.process(msg)
+        print_status(mgr)
+        if mgr.phase == "done":
+            try:
+                save_conversation(
+                    session_id=sid,
+                    conversation_history=mgr.conversation_history,
+                    task_state=mgr.task_state,
+                    built_json=mgr._last_built_json,
+                    mode=mgr.mode,
+                    phase=mgr.phase,
+                    intent_id=mgr.task_state.get('intent_id'),
+                    slot_store=mgr.slot_store,
+                )
+            except Exception as e:
+                logging.error("保存历史快照失败: %s", e, exc_info=True)
 
         resp_data = {
             "code": 200,

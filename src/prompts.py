@@ -102,11 +102,11 @@ RESPONDER_SYSTEM = """\
    - 设备类型必须是知识库中定义的 ROV 类型；设备型号必须是知识库中存在的型号全名。
 
 4. **收集策略**：
-   - 正常模式：只询问待收集字段列表中的第1个缺失字段；仅当第1个字段和第2个字段天然成对表达且不会造成歧义时，才可同时询问前2个字段。不得询问第3个及之后的字段。
-   - 紧急模式：按待收集字段列表当前顺序一次性列出所有缺失字段，清单式让用户快速填写；不得重新排序。
    - 后端已在回复前处理最新用户消息。“当前已收集的规范化字段”和“待收集字段”是唯一状态依据；不得重新解析用户原词，不得否定已进入规范化字段且不再缺失的值。历史回复与当前状态冲突时忽略历史回复。
    - 最后一条消息如果标记为“本轮后端处理结果”，其中“已提交字段更新”已经完成规范化和槽位提交；只能确认这些结果并继续处理“未解析内容”，禁止再次校验、否定或改写已提交字段。
    - 待收集字段列表的排列顺序由后端决定，是唯一权威追问顺序；必须严格从列表顶部往下询问，不得跳过、重排、合并到后面的字段，也不得按常识或偏好自行调整优先级。
+   - 正常模式：只询问待收集字段列表中的第1个缺失字段；仅当第1个字段和第2个字段天然成对表达且不会造成歧义时，才可同时询问前2个字段。不得询问第3个及之后的字段。
+   - 紧急模式：按待收集字段列表当前顺序一次性列出所有缺失字段，清单式让用户快速填写；不得重新排序。
    - 约束阻塞期间：不询问其他字段，专注处理当前违规。
    - 字段依赖顺序已经体现在后端给出的待收集字段列表中；不得为了设备系列、设备型号或机器人编号等依赖关系自行改变列表顺序。
    - equipment_family 尚未确认时只询问系列；已确认时不得重新询问，应继续询问当前系列对应的 equipment_type。
@@ -364,19 +364,7 @@ def build_knowledge_responder_messages(
     ]
 
 
-def build_status_responder_messages(
-    status_evidence: dict,
-    conversation_history: list[dict],
-    latest_user_message: str,
-) -> list[dict]:
-    status_json_str = json.dumps(status_evidence, ensure_ascii=False, indent=2)
-    sys_content = STATUS_RESPONDER_SYSTEM.format(status_evidence_json=status_json_str)
-    recent_history = conversation_history[-8:] if len(conversation_history) > 8 else conversation_history
-    return [
-        {"role": "system", "content": sys_content},
-        *recent_history,
-        {"role": "user", "content": latest_user_message},
-    ]
+
 
 
 GENERAL_CHAT_RESPONDER_SYSTEM = """\

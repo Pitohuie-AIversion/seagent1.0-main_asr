@@ -192,13 +192,22 @@ class OutputBuilder:
             if not raw:
                 return None
             allowed = self._resolve_allowed(field_def, task_type_key, task_state)
+            raw_list = [raw] if isinstance(raw, str) else (list(raw) if isinstance(raw, (list, tuple, set)) else None)
+            if not raw_list:
+                return None
             if not allowed:
-                return raw if isinstance(raw, list) else None
-            # 过滤出合法值
-            if isinstance(raw, list):
-                valid = [v for v in raw if v in allowed]
-                return valid if valid else None
-            return None
+                return raw_list
+            valid: list[Any] = []
+            allowed_stripped_map = {str(item).replace(" ", ""): item for item in allowed}
+            for item in raw_list:
+                if item in allowed:
+                    if item not in valid:
+                        valid.append(item)
+                elif isinstance(item, str) and item.replace(" ", "") in allowed_stripped_map:
+                    matched = allowed_stripped_map[item.replace(" ", "")]
+                    if matched not in valid:
+                        valid.append(matched)
+            return valid if valid else None
 
         return None
 

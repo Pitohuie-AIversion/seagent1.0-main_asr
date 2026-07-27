@@ -126,6 +126,16 @@ class IntentRouteResult:
             "query_intent": self.query_intent,
         }
 
+    @property
+    def intent(self) -> str | None:
+        if self.interaction_type == "WRITE":
+            return "TASK_UPDATE"
+        return self.query_intent or self.interaction_type
+
+    @property
+    def should_update_slots(self) -> bool:
+        return self.interaction_type == "WRITE"
+
 
 class IntentRouter:
     def __init__(self, llm: LLMClient):
@@ -193,9 +203,15 @@ class IntentRouter:
             },
         ]
 
+        parsed = None
         if hasattr(self.llm, "classify_interaction"):
-            parsed = self.llm.classify_interaction(messages, max_tokens=260)
-        else:
+            try:
+                res = self.llm.classify_interaction(messages, max_tokens=260)
+                if isinstance(res, dict):
+                    parsed = res
+            except Exception:
+                pass
+        if parsed is None and hasattr(self.llm, "extract_json"):
             parsed = self.llm.extract_json(messages, max_tokens=260)
 
         if not isinstance(parsed, dict):
@@ -231,6 +247,17 @@ class IntentRouter:
 
         raw_query_intent = parsed.get("query_intent")
         query_intent = str(raw_query_intent).strip().upper() if raw_query_intent else None
+
+        if interaction_type == "QUERY" and (not query_intent or query_intent == "UNKNOWN"):
+            msg_lower = user_message.lower()
+            if any(kw in user_message for kw in ("水深", "深度", "作业模式", "能力", "不能在", "支持哪些", "适合作业")):
+                query_intent = "DEVICE_CAPABILITY"
+            elif any(kw in user_message for kw in ("工具", "载荷", "抓手", "传感器", "机械臂", "配备")):
+                query_intent = "TOOL_QUERY"
+            elif any(kw in user_message for kw in ("进度", "缺", "缺少", "状态", "已有", "步骤", "进行到")):
+                query_intent = "TASK_STATUS"
+            elif any(kw in user_message for kw in ("海况", "水温", "底质", "海床")):
+                query_intent = "ENVIRONMENT_QUERY"
 
         if interaction_type == "WRITE":
             if query_intent is not None:

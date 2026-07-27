@@ -574,7 +574,13 @@ class TaskIntentBuilder:
         return parsed.isoformat(timespec="seconds")
 
     def _resolve_output_task_type(self, task_type_key: str) -> str:
-        output_type = TASK_TYPE_OUTPUT_MAP.get(task_type_key)
+        # 从 kb 动态构建 {template_key: first_task_type_value} 映射
+        task_type_map = self.kb.get_task_type_map()  # {value: key}
+        output_map = {}  # {key: value}
+        for value, key in task_type_map.items():
+            if key not in output_map:
+                output_map[key] = value
+        output_type = output_map.get(task_type_key)
         if output_type is None:
             raise TaskPersistenceError(f"不支持的 task_type_key: {task_type_key}")
         return output_type
@@ -708,7 +714,8 @@ class TaskIntentBuilder:
         if not validate_intent_id(intent.get("intent_id")):
             raise TaskPersistenceError(f"intent_id 非法: {intent.get('intent_id')}")
 
-        if intent.get("task_type") not in set(TASK_TYPE_OUTPUT_MAP.values()):
+        all_task_type_values = set(self.kb.get_all_task_type_values())
+        if intent.get("task_type") not in all_task_type_values:
             raise TaskPersistenceError(f"非法输出任务类型: {intent.get('task_type')}")
 
         if intent.get("task", {}).get("type") != intent.get("task_type"):

@@ -24,8 +24,7 @@
 #   - power_hp：最大/标称功率；未知时置为 null。AUV 的“节”是速度单位，不写入 power_hp。
 #   环境/载荷边界：
 #   - supported_seabed：可支持作业的海床底质类型，例如 hard / soft；未知时置为空列表。
-#   - onboard_payloads：自带/必选载荷、传感器或工具；未知或待补充时置为空列表。
-#   - supported_payloads：可选支持/可额外搭载的设备或工具；未知或待补充时置为空列表。
+#   - supported_payloads：可支持/可搭载的设备或工具；未知或待补充时置为空列表。
 #   - max_payload_weight_kg：最大载荷重量，单位 kg；未知时置为 null。
 #   - structural_lifting_capacity_kg：结构/底盘/框架提升能力，单位 kg；适用但未知时置为 null；不适用时置为 "不适用"。
 #   运动边界：
@@ -53,7 +52,7 @@
 #    - robot_class 必须属于 allowed_robot_classes
 #    - capabilities 必须覆盖 required_capabilities
 # 3. 得到 robot_families 的 key 后，用 model_variants[*].family_id 找规格。
-# 4. 使用 hard_params 进行水深、尺寸等硬件约束判断，使用 onboard_payloads 判断自带设备，使用 supported_payloads 判断可选搭载设备。
+# 4. 使用 hard_params 进行水深、尺寸等硬件约束判断，使用 supported_payloads 判断可搭载设备。
 # 5. 如果需要派发具体设备，再用 model_variants 的 key 匹配 fleet_units[*].variant_id。
 # ==============================================================================
 
@@ -151,30 +150,27 @@ model_variants:
       weight_in_air_kg: 32000
       power_hp: 1600
       supported_seabed: ["hard"]
-      onboard_payloads:
-        - "高压水射流喷冲埋设模块"
-        - "海缆压埋装置"
-        - "埋深控制装置"
-        - "高清水下摄像机"
-        - "云台摄像机"
-        - "LED水下照明灯"
-        - "USBL定位设备"
       supported_payloads:
+        - "高压水射流喷冲埋设模块"
+        - "机械切割开沟模块（可选）"
+        - "海缆压埋/保持装置"
+        - "埋深控制装置"
         - "海缆保护施工工具"
         - "TSS管缆跟踪传感器"
-        - "机械切割开沟模块"
-        - "激光标尺"
+        - "高清水下摄像机"
+        - "云台摄像机（可选）"
+        - "LED水下照明灯"
+        - "激光标尺（可选）"
         - "前视声呐"
         - "成像声呐"
-        - "多波束声呐"
-        - "机械式声呐"
-        - "水下定位信标"
-        - "声学应答器"
-        - "海床地质探测设备"
-        - "管缆外观检测设备"
-        - "腐蚀检测探头"
-        - "温度传感器"
-        - "压力传感器"
+        - "多波束声呐（可选）"
+        - "USBL定位设备"
+        - "水下定位信标（可选）"
+        - "声学应答器（可选）"
+        - "海床地质探测设备（可选）"
+        - "管缆外观检测设备（可选）"
+        - "腐蚀检测设备（可选）"
+        - "温度/压力传感器模块（可选）"
       max_payload_weight_kg: null
       structural_lifting_capacity_kg: "不适用"
       min_turning_radius_m: "不适用"
@@ -194,29 +190,26 @@ model_variants:
       weight_in_air_kg: 25000
       power_hp: 1500
       supported_seabed: ["hard"]
-      onboard_payloads:
-        - "高压水射流喷冲埋设模块"
-        - "海缆压埋装置"
-        - "埋深控制装置"
-        - "高清水下摄像机"
-        - "LED水下照明灯"
-        - "USBL定位设备"
       supported_payloads:
-        - "机械切割开沟模块"
-        - "云台摄像机"
-        - "激光标尺"
-        - "机械式声呐"
+        - "高压水射流喷冲埋设模块"
+        - "机械切割开沟模块（可选）"
+        - "海缆压埋/保持装置"
+        - "埋深控制装置"
+        - "TSS管缆跟踪传感器"
+        - "高清水下摄像机"
+        - "云台摄像机（可选）"
+        - "LED水下照明灯"
+        - "激光标尺（可选）"
         - "前视声呐"
         - "成像声呐"
-        - "多波束声呐"
-        - "水下定位信标"
-        - "声学应答器"
-        - "海床地质探测设备"
-        - "管缆外观检测设备"
-        - "腐蚀检测探头"
-        - "温度传感器"
-        - "压力传感器"
-        
+        - "多波束声呐（可选）"
+        - "USBL定位设备"
+        - "水下定位信标（可选）"
+        - "声学应答器（可选）"
+        - "海床地质探测设备（可选）"
+        - "管缆外观检测设备（可选）"
+        - "腐蚀检测设备（可选）"
+        - "温度/压力传感器模块（可选）"
       max_payload_weight_kg: null
       structural_lifting_capacity_kg: "不适用"
       min_turning_radius_m: "不适用"
@@ -236,33 +229,30 @@ model_variants:
       weight_in_air_kg: 13500
       power_hp: 600
       supported_seabed: ["hard"]                      #工作场景限制，座底作业
-      onboard_payloads:
+      supported_payloads:
         - "高压水射流喷冲埋设模块"
-        - "海缆压埋装置"
+        - "机械切割开沟模块（可选）"
+        - "海缆压埋/保持装置"
         - "埋深控制装置"
+        - "TSS管缆跟踪传感器"
         - "高清水下摄像机"
         - "云台摄像机"
         - "LED水下照明灯"
+        - "激光标尺（可选）"
         - "前视声呐"
         - "成像声呐"
-        - "多波束声呐"
+        - "多波束声呐（可选）"
+        - "USBL定位设备"
+        - "水下定位信标（可选）"
+        - "声学应答器（可选）"
+        - "海床地质探测设备（可选）"
+        - "管缆外观检测设备"
+        - "腐蚀检测设备（可选）"
+        - "温度/压力传感器模块（可选）"
+        - "多功能机械臂"
+        - "检测探头（可选）"
         - "滑橇组件"
         - "履带组件"
-      supported_payloads:
-        - "机械切割开沟模块"
-        - "TSS管缆跟踪传感器"
-        - "激光标尺"
-        - "机械式声呐"
-        - "USBL定位设备"
-        - "水下定位信标"
-        - "声学应答器"
-        - "海床地质探测设备"
-        - "管缆外观检测设备"
-        - "腐蚀检测探头"
-        - "温度传感器"
-        - "压力传感器"
-        - "多功能机械臂"
-        - "检测探头"
       max_payload_weight_kg: null
       structural_lifting_capacity_kg: null
       min_turning_radius_m: null
@@ -282,33 +272,26 @@ model_variants:
       weight_in_air_kg: 5500
       power_hp: 250
       supported_seabed: ["hard", "soft"]
-      onboard_payloads:
-        - "高清水下摄像机"
-        - "LED水下照明灯"
-        - "前视声呐"
-        - "成像声呐"
-        - "多波束声呐"
-        - "INS惯性导航系统"
-        - "DVL多普勒测速仪"
-        - "深度传感器"
-        - "高度计"
       supported_payloads:
         - "多功能液压机械臂"
         - "电液机械臂"
-        - "双目视觉模块"
+        - "高清水下摄像机"
+        - "双目视觉模块（可选）"
+        - "LED照明系统"
         - "激光标尺"
-        - "三维视觉系统"
-        - "机械式声呐"
-        - "USBL定位设备"
-        - "夹爪"
-        - "清洗刷"
-        - "采样器"
-        - "切割工具"
-        - "液压剪切器"
-        - "温度传感器"
-        - "压力传感器"
-        - "泄漏检测传感器"
-        - "水质传感器"
+        - "三维视觉系统（可选）"
+        - "前视声呐"
+        - "成像声呐（可选）"
+        - "多波束声呐（可选）"
+        - "INS惯性导航系统"
+        - "DVL多普勒测速仪"
+        - "USBL超短基线定位系统"
+        - "深度传感器"
+        - "高度计"
+        - "温度传感器（可选）"
+        - "压力传感器（可选）"
+        - "泄漏检测传感器（可选）"
+        - "水质传感器（可选）"
       max_payload_weight_kg: 650
       structural_lifting_capacity_kg: 4000
       min_turning_radius_m: null
@@ -328,32 +311,23 @@ model_variants:
       weight_in_air_kg: 200
       power_hp: null
       supported_seabed: ["hard", "soft"]
-      onboard_payloads:
+      supported_payloads:
         - "高清水下摄像机"
         - "云台摄像机"
         - "LED水下照明灯"
-        - "前视声呐"
-        - "成像声呐"
-        - "多波束声呐"
-        - "INS惯性导航系统"
-        - "DVL多普勒测速仪"
-        - "深度传感器"
-        - "高度计"
-        - "轻型多功能液压机械臂"
-        - "轻型电液机械臂"
-      supported_payloads:
         - "激光标尺"
-        - "双目视觉模块"
-        - "机械式声呐"
+        - "双目视觉模块（可选）"
+        - "成像声呐"
+        - "前视声呐"
+        - "多波束声呐"
         - "电磁检测传感器"
         - "腐蚀检测探头"
         - "厚度检测传感器"
+        - "INS惯性导航系统"
+        - "DVL多普勒测速仪"
         - "USBL定位设备"
-        - "温度传感器"
-        - "压力传感器"
-        - "泄漏检测传感器"
-        - "水质传感器"
-        - "采样器"
+        - "深度传感器"
+        - "高度计"
       max_payload_weight_kg: 16
       structural_lifting_capacity_kg: 100
       min_turning_radius_m: null
@@ -373,30 +347,21 @@ model_variants:
       weight_in_air_kg: 160
       power_hp: null
       supported_seabed: ["hard", "soft"]
-      onboard_payloads:
+      supported_payloads:
         - "高清水下摄像机"
-        - "云台摄像机"
+        - "广角摄像机"
         - "LED水下照明灯"
-        - "前视声呐"
+        - "激光标尺"
         - "成像声呐"
-        - "多波束声呐"
+        - "前视声呐"
+        - "温度传感器"
+        - "水质传感器"
+        - "压力传感器"
         - "INS惯性导航系统"
         - "DVL多普勒测速仪"
+        - "USBL定位设备"
         - "深度传感器"
         - "高度计"
-      supported_payloads:
-        - "激光标尺"
-        - "双目视觉模块"
-        - "机械式声呐"
-        - "电磁检测传感器"
-        - "腐蚀检测探头"
-        - "厚度检测传感器"
-        - "USBL定位设备"
-        - "温度传感器"
-        - "压力传感器"
-        - "泄漏检测传感器"
-        - "水质传感器"
-        - "采样器"
       max_payload_weight_kg: 16
       structural_lifting_capacity_kg: 100
       min_turning_radius_m: null
@@ -416,26 +381,25 @@ model_variants:
       weight_in_air_kg: 180
       power_hp: null
       supported_seabed: ["hard", "soft"]
-      onboard_payloads:
+      supported_payloads:
+        - "侧扫声呐"
         - "前视声呐"
-        - "成像声呐"
         - "多波束声呐"
+        - "合成孔径声呐"
+        - "浅地层剖面仪"
         - "高清水下摄像机"
         - "LED水下照明灯"
         - "激光标尺"
-        - "INS惯性导航系统"
-        - "DVL多普勒测速仪"
-        - "USBL定位设备"
-        - "深度传感器"
-      supported_payloads:
-        - "侧扫声呐"
-        - "合成孔径声呐"
-        - "浅地层剖面仪"
         - "光学测量模块"
         - "CTD"
         - "水质传感器"
         - "溶解氧传感器"
         - "浊度传感器"
+        - "磁力仪"
+        - "INS惯性导航系统"
+        - "DVL多普勒测速仪"
+        - "USBL定位设备"
+        - "深度传感器"
       max_payload_weight_kg: 15
       structural_lifting_capacity_kg: "不适用"
       min_turning_radius_m: 15

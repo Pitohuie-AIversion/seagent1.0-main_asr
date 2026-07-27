@@ -247,6 +247,8 @@ class ParameterExtractor:
                 "emergency_mode",
                 "rov_description",
                 "equipment_name",
+                "raw_oilfield_name",
+                "oilfield_name",
             }
         )
         return keys
@@ -260,7 +262,10 @@ class ParameterExtractor:
         conversation_history: list[dict],
     ) -> tuple[list[dict], list[str]]:
         """校验候选结构；同一字段多次出现时保留最后一次修正。"""
-        aliases = {"equipment_model": "equipment_type"}
+        aliases = {
+            "equipment_model": "equipment_type",
+            "raw_oilfield_name": "oilfield_name",
+        }
         required_by_key = {
             str(field.get("key")): field
             for field in required or []
@@ -308,7 +313,34 @@ class ParameterExtractor:
                     unresolved.append(unresolved_reason)
                 continue
 
-            normalized_by_key[resolved_candidate["canonical_key"]] = resolved_candidate
+            canonical_k = resolved_candidate["canonical_key"]
+            field_def = required_by_key.get(canonical_k)
+            is_list_field = (field_def and field_def.get("type") == "list") or canonical_k == "payload"
+
+            if is_list_field:
+                val = resolved_candidate["normalized_value"]
+                val_list = val if isinstance(val, list) else ([val] if val is not None else [])
+                raw_v = resolved_candidate["raw_value"]
+                raw_list = raw_v if isinstance(raw_v, list) else ([raw_v] if raw_v is not None else [])
+
+                if canonical_k in normalized_by_key:
+                    existing = normalized_by_key[canonical_k]
+                    existing_vals = existing["normalized_value"] if isinstance(existing["normalized_value"], list) else [existing["normalized_value"]]
+                    existing_raws = existing["raw_value"] if isinstance(existing["raw_value"], list) else [existing["raw_value"]]
+                    for item in val_list:
+                        if item not in existing_vals:
+                            existing_vals.append(item)
+                    for item in raw_list:
+                        if item not in existing_raws:
+                            existing_raws.append(item)
+                    existing["normalized_value"] = existing_vals
+                    existing["raw_value"] = existing_raws
+                else:
+                    resolved_candidate["normalized_value"] = val_list
+                    resolved_candidate["raw_value"] = raw_list
+                    normalized_by_key[canonical_k] = resolved_candidate
+            else:
+                normalized_by_key[canonical_k] = resolved_candidate
 
         return list(normalized_by_key.values()), unresolved
 

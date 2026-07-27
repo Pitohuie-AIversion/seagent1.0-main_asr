@@ -46,7 +46,7 @@ class OilfieldEntityLinkerTest(unittest.TestCase):
         self.assertEqual(match.standard_name, "陵水17-2油田")
 
     def test_coords_can_disambiguate_name_without_digits(self):
-        match = self.linker.link("硫化油田", {"lat": 19.8, "lon": 113.5})
+        match = self.linker.link("硫化油田", {"lat": 20.815, "lon": 115.735})
         self.assertEqual(match.status, "accepted")
         self.assertEqual(match.standard_name, "流花11-1油田")
 
