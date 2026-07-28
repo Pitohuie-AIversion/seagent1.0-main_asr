@@ -20,12 +20,22 @@ class RobotStateInfo:
             state_data = self._load_state()
             robots = state_data.setdefault("robots", {})
 
+            target_name = equipment_name
+            try:
+                from .knowledge_retriever import KnowledgeBase
+                kb = KnowledgeBase()
+                unit = kb.resolve_robot_unit(equipment_name)
+                if unit and unit.get("status_ref"):
+                    target_name = unit.get("status_ref")
+            except Exception:
+                pass
+
             # 如果设备不存在，自动创建
-            if equipment_name not in robots:
-                robots[equipment_name] = {}
+            if target_name not in robots:
+                robots[target_name] = {}
 
             # 取出当前设备状态
-            state = robots[equipment_name]
+            state = robots[target_name]
 
             # 先合并用户传入的参数（除 update_timestamp 外可以先合并）
             state.update(params)
