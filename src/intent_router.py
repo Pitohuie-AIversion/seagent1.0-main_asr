@@ -153,13 +153,42 @@ class IntentRouter:
         if not msg:
             raise IntentRoutingError("用户输入为空")
 
-        return self._call_llm_router(
-            user_message=msg,
-            conversation_history=conversation_history,
-            task_state=task_state,
-            phase=phase,
-            expected_slots=expected_slots or [],
-        )
+        try:
+            return self._call_llm_router(
+                user_message=msg,
+                conversation_history=conversation_history,
+                task_state=task_state,
+                phase=phase,
+                expected_slots=expected_slots or [],
+            )
+        except IntentRoutingError as e:
+            logger.warning("[IntentRouter] LLM route failed, using rule fallback: %s", e)
+            return self._rule_fallback_route(msg, conversation_history, task_state, phase)
+
+    def _rule_fallback_route(
+        self,
+        user_message: str,
+        conversation_history: list[dict],
+        task_state: dict,
+        phase: str,
+    ) -> IntentRouteResult:
+        msg = user_message.strip()
+        if any(kw in msg for kw in ("确认发布", "确认开始", "确认", "发布", "开始", "提交", "同意", "好的", "没问题", "可以")):
+            if phase in ("confirming", "blocked_soft"):
+                return IntentRouteResult("WRITE", 0.95, "规则兜底: 确认发布", None)
+
+        if any(kw in msg for kw in ("水深", "深度", "作业模式", "能力", "不能在", "支持哪些", "适合作业")):
+            return IntentRouteResult("QUERY", 0.85, "规则兜底: 设备能力查询", "DEVICE_CAPABILITY")
+        if any(kw in msg for kw in ("工具", "载荷", "抓手", "传感器", "机械臂", "配备")):
+            return IntentRouteResult("QUERY", 0.85, "规则兜底: 工具查询", "TOOL_QUERY")
+        if any(kw in msg for kw in ("进度", "缺", "缺少", "状态", "已有", "步骤", "进行到")):
+            return IntentRouteResult("QUERY", 0.85, "规则兜底: 任务状态查询", "TASK_STATUS")
+        if any(kw in msg for kw in ("海况", "水温", "底质", "海床")):
+            return IntentRouteResult("QUERY", 0.85, "规则兜底: 环境查询", "ENVIRONMENT_QUERY")
+        if any(kw in msg for kw in ("你是谁", "自我介绍", "你叫什么", "帮助", "说明")):
+            return IntentRouteResult("QUERY", 0.85, "规则兜底: 通用对话", "GENERAL_CHAT")
+
+        return IntentRouteResult("WRITE", 0.8, "规则兜底: 默认任务更新", None)
 
     def _call_llm_router(
         self,

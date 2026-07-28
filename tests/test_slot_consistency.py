@@ -23,12 +23,15 @@ from src.dialogue_manager import DialogueManager
 from src.extractor import ParameterExtractor
 from src.llm_client import LLMClient
 from src.output_builder import OutputBuilder
-from src.slot_store import SlotStore, Slot
+from src.slot_store import SlotStore, Slot, SlotVersionConflict, SnapshotValidationError
 from src.simulated_time import get_simulated_time
 from src.history_manager import save_conversation, load_history
-from src.task_intent_builder import TaskIntentBuilder
-from src.output_builder import OutputBuilder
-from src.result_paths import get_task_dir, get_history_dir, get_result_dir
+from src.exceptions import (
+    TaskPersistenceError,
+    TaskRollbackError,
+    IntentIdConflict,
+    IdReservationError,
+)
 import src.id_sequence as id_sequence
 import web_backend
 from web_backend import app
@@ -73,6 +76,7 @@ def seed_complete_valid_pipeline_task(dm, kb):
         "start_point": (start_point, "coord"),
         "end_point": (end_point, "coord"),
         "equipment_type": (equipment_type, "string"),
+        "equipment_family": (selected_rov.get("family_full_name") or selected_rov.get("family") or "ROV", "string"),
         "equipment_unit_id": (equipment_unit_id, "string"),
         "payload": (payload, "list"),
         "support_vessel": (support_vessel, "string"),
@@ -82,9 +86,8 @@ def seed_complete_valid_pipeline_task(dm, kb):
     for key, (val, vtype) in slots_to_seed.items():
         store.slots[key] = Slot(slot_name=key, value=val, value_type=vtype, status="valid", source="user_input")
 
+    dm._rebuild_cache()
     dm.phase = "confirming"
-    dm.task_state = store.get_task_state()
-    dm._last_built_json = store.get_built_json()
 
     all_v = dm.validator.validate(dm.task_state)
     for v in all_v:
@@ -150,6 +153,7 @@ class SlotConsistencyTest(unittest.TestCase):
         )
         self.llm.extract_json.return_value = {"intent": "TASK_UPDATE", "confidence": 1.0, "reason": "test", "slot_candidates": [], "unresolved": []}
         self.dm = DialogueManager(self.llm, self.kb)
+        self._orig_route = self.dm.intent_router.route
 
     def test_extractor_context_excludes_history_on_self_contained_modification(self):
         llm = MagicMock(spec=LLMClient)
