@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: .
+      SEAGENT_RESULT_DIR: ${{ github.workspace }}/result
 
     steps:
       - name: Checkout Code
@@ -55,6 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: .
+      SEAGENT_RESULT_DIR: ${{ github.workspace }}/result
 
     steps:
       - name: Checkout Code

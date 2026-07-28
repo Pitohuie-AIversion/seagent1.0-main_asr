@@ -78,7 +78,7 @@ def seed_complete_valid_pipeline_task(dm, kb):
         "equipment_type": (equipment_type, "string"),
         "equipment_family": (selected_rov.get("family_full_name") or selected_rov.get("family") or "ROV", "string"),
         "equipment_unit_id": (equipment_unit_id, "string"),
-        "payload": (payload, "list"),
+        "payload": (["高清水下摄像机"], "list"),
         "support_vessel": (support_vessel, "string"),
         "intent_id": ("TI2026063001", "string"),
     }

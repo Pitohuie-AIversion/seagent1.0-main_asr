@@ -454,12 +454,6 @@ class DialogueManager:
             self.phase = prev_phase
             self.final_result = None
 
-            if staging_file and staging_file.exists():
-                try:
-                    staging_file.unlink()
-                except Exception:
-                    pass
-
             rollback_failed = False
             rollback_err = None
             if prev_snap:
@@ -501,7 +495,9 @@ class DialogueManager:
 
         # 发布成功
         self.phase = "done"
-        self.final_result = cand_built
+        self.task_state = self.slot_store.get_task_state()
+        self._last_built_json = self.slot_store.get_built_json()
+        self.final_result = self._last_built_json
         self.task_start_now = self.is_start_time_near_now()
         if self.task_start_now:
             reply = (f"✅ 信息收集完成，当前为【立即执行任务】，任务已生成并下发。\n"
@@ -858,7 +854,7 @@ class DialogueManager:
         self.task_state = self.slot_store.get_task_state()
         if curr_task_type_key:
             required_schema = self.builder.get_schema(curr_task_type_key, self.mode)
-            built = self.slot_store.get_built_json(required_schema)
+            built = self.slot_store.get_built_json()
             missing = self.slot_store.get_missing_slots(
                 required_schema,
                 allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
@@ -2005,24 +2001,30 @@ class DialogueManager:
     def _rebuild_cache(self) -> None:
         """根据当前 slot_store 重新构建 task_state, _last_built_json 和 _last_missing"""
         self.task_state = self.slot_store.get_task_state()
-        built = self.slot_store.get_built_json()
         task_type_key = self.task_state.get("task_type_key")
+        eq_type = self.task_state.get("equipment_type") or self.task_state.get("equipment_name")
+        if eq_type and not self.task_state.get("equipment_family"):
+            rov = self.kb.get_rov(eq_type)
+            family = (rov.get("family") if rov else None) or "ROV"
+            self._commit_internal_slot_values({"equipment_family": family})
+            self.task_state["equipment_family"] = family
+
         if task_type_key:
-            built, missing = self.builder.build(self.task_state, task_type_key, self.mode)
-            if "task_id" in built and not self.task_state.get("task_id"):
+            b_dict, missing = self.builder.build(self.task_state, task_type_key, self.mode)
+            if "task_id" in b_dict and not self.task_state.get("task_id"):
                 self._commit_internal_slot_values(
-                    {"task_id": built["task_id"]}
+                    {"task_id": b_dict["task_id"]}
                 )
-            self._last_built_json = built
             self._last_missing = missing
         else:
-            self._last_built_json = built
             self._last_missing = [{
                 "key": "task_type",
                 "label": "任务类型",
                 "type": "string",
                 "allowed_values": self.kb.get_all_task_type_values()
             }]
+        self.task_state = self.slot_store.get_task_state()
+        self._last_built_json = self.slot_store.get_built_json()
         self.task_start_now = self.is_start_time_near_now()
 
     # --------------------------------------------------------------------------

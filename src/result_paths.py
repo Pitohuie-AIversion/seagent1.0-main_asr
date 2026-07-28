@@ -12,9 +12,16 @@ DEFAULT_RESULT_DIR = Path("/root/autodl-tmp/result")
 def get_result_dir(create: bool = False) -> Path:
     """获取统一结果根目录。"""
     env_dir = os.environ.get("SEAGENT_RESULT_DIR")
-    path = Path(env_dir) if env_dir else DEFAULT_RESULT_DIR
+    if env_dir:
+        path = Path(env_dir)
+    else:
+        path = DEFAULT_RESULT_DIR
     if create:
-        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            path = Path(__file__).resolve().parents[1] / "result"
+            path.mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -27,7 +34,11 @@ def get_task_dir(create: bool = False) -> Path:
         base = get_result_dir(create=False)
         path = base / "task" if base.name != "task" else base
     if create:
-        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            path = Path(__file__).resolve().parents[1] / "result" / "task"
+            path.mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -40,5 +51,9 @@ def get_history_dir(create: bool = False) -> Path:
         base = get_result_dir(create=False)
         path = base / "history" if base.name != "history" else base
     if create:
-        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            path = Path(__file__).resolve().parents[1] / "result" / "history"
+            path.mkdir(parents=True, exist_ok=True)
     return path
