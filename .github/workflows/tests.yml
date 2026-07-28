@@ -30,8 +30,14 @@ jobs:
       - name: 1. Python Syntax & Compilation Check
         run: python -m compileall -q src tests
 
-      - name: 2. Run Phase 1.5 Tests
-        run: python -m unittest tests.test_intent_routing_matrix tests.test_payload_multivalue tests.test_robot_state_consistency
+      - name: 2a. Run Intent Routing Matrix Test
+        run: python -m unittest tests.test_intent_routing_matrix
+
+      - name: 2b. Run Payload MultiValue Test
+        run: python -m unittest tests.test_payload_multivalue
+
+      - name: 2c. Run Robot State Consistency Test
+        run: python -m unittest tests.test_robot_state_consistency
 
       - name: 3. Run Phase 1.8 Benchmark Tests
         run: python -m unittest tests.test_multiturn_consistency_benchmark tests.test_query_write_mixed_benchmark tests.test_ambiguity_resolution_benchmark tests.test_failure_recovery_benchmark
