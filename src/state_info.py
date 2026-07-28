@@ -20,15 +20,7 @@ class RobotStateInfo:
             state_data = self._load_state()
             robots = state_data.setdefault("robots", {})
 
-            target_name = equipment_name
-            try:
-                from .knowledge_retriever import KnowledgeBase
-                kb = KnowledgeBase()
-                unit = kb.resolve_robot_unit(equipment_name)
-                if unit and unit.get("status_ref"):
-                    target_name = unit.get("status_ref")
-            except Exception:
-                pass
+            target_name = self._resolve_status_ref(equipment_name)
 
             # 如果设备不存在，自动创建
             if target_name not in robots:
@@ -76,3 +68,24 @@ class RobotStateInfo:
         self.state_file.parent.mkdir(exist_ok=True)
         with open(self.state_file, "w", encoding="utf-8") as f:
             yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+
+    def _resolve_status_ref(self, equipment_name: str) -> str:
+        fleet_file = Path(__file__).parent.parent / "config" / "robot_fleet.yaml"
+        if not fleet_file.exists() or not equipment_name:
+            return equipment_name
+        try:
+            with open(fleet_file, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            for unit in data.get("fleet_units", []):
+                if equipment_name in (unit.get("unit_id"), unit.get("display_name"), unit.get("serial_no")):
+                    return unit.get("status_ref") or equipment_name
+            for var in data.get("model_variants", []):
+                if equipment_name in (var.get("variant_id"), var.get("full_name")):
+                    return var.get("status_ref") or equipment_name
+            for fam in data.get("robot_families", {}).values():
+                aliases = fam.get("aliases", [])
+                if equipment_name in aliases or equipment_name == fam.get("full_name"):
+                    return fam.get("status_ref") or equipment_name
+        except Exception:
+            pass
+        return equipment_name
