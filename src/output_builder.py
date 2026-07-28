@@ -445,6 +445,24 @@ class OutputBuilder:
                     )
             return catalog
 
+        if ref == "oilfield_names":
+            for oil_field in self.kb.environment.get("oil_fields", []):
+                if not isinstance(oil_field, dict):
+                    continue
+                standard_name = oil_field.get("name")
+                if not standard_name:
+                    continue
+                catalog.append(
+                    {
+                        "canonical_value": standard_name,
+                        "aliases": list(oil_field.get("aliases", []) or []),
+                        "display_name": standard_name,
+                        "parent": None,
+                        "entity_id": oil_field.get("id"),
+                    }
+                )
+            return catalog
+
         return [
             {
                 "canonical_value": value,
@@ -575,6 +593,13 @@ class OutputBuilder:
         if ref == "vessel_ids":
             return [r['id'] for r in self.kb.assets.get("vessels", [])]
             # return self.kb.assets.get("vessel_ids", [])
+
+        if ref == "oilfield_names":
+            return [
+                oil_field["name"]
+                for oil_field in self.kb.environment.get("oil_fields", [])
+                if isinstance(oil_field, dict) and oil_field.get("name")
+            ]
 
         if ref.startswith("payload_options."):
             # payload_options 属于任务工具知识，不再作为最终 payload 合法枚举来源。

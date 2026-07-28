@@ -85,10 +85,3 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-  金牛座一号机:
-    depth: 350
-    overall_status: available
-    update_timestamp: '2026-07-27T12:10:02+08:00'
-  LROV--001:
-    depth: 350
-    update_timestamp: '2026-07-27T14:17:49+08:00'

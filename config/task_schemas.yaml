@@ -224,7 +224,8 @@ task_templates:
           type: number
         - key: oilfield_name
           label: "油田名称"
-          type: raw
+          type: string
+          allowed_values_ref: "oilfield_names"
         - key: oilfield_coordinates
           label: "油田经纬度坐标"
           type: coord
