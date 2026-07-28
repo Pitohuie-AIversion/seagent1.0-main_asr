@@ -105,6 +105,68 @@ class PayloadMultiValueTest(unittest.TestCase):
         self.assertIn("声呐", values)
         self.assertIn("探测工具", values)
 
+    def test_payload_allowed_values_come_from_selected_robot_supported_payloads(self):
+        # 最终 JSON payload 的合法候选必须来自已选机器人型号的可选载荷，
+        # 不能再使用任务知识库里的 payload_options，也不能混入 onboard_payloads。
+        robot = self.kb.get_rov_for_task("轻型工作级深海机器人", "pipeline_inspection")
+        field_def = {
+            "key": "payload",
+            "label": "携带工具",
+            "type": "list",
+            "allowed_values_ref": "robot_supported_payloads",
+        }
+        task_state = {"equipment_type": robot["full_name"]}
+
+        allowed = self.output_builder.resolve_allowed_values(
+            field_def,
+            "pipeline_inspection",
+            task_state,
+        )
+
+        self.assertEqual(allowed, robot["supported_payloads"])
+        self.assertIn("激光标尺", allowed)
+        self.assertNotIn("高清水下摄像机", allowed)
+
+    def test_tool_query_task_tools_only_uses_assets_payload_options(self):
+        evidence = self.kb.execute_typed_query(
+            "TOOL_QUERY",
+            "管缆巡检任务支持什么工具？",
+            {"task_type_key": "pipeline_inspection"},
+        )
+        categories = [item.get("category") for item in evidence.get("results", [])]
+
+        self.assertEqual(categories, ["task_payload_suggestions"])
+        self.assertEqual(
+            evidence["results"][0]["current_task_suggestions"],
+            self.kb.assets["payload_options"]["pipeline_inspection"],
+        )
+
+    def test_tool_query_robot_payload_only_uses_supported_payloads(self):
+        evidence = self.kb.execute_typed_query(
+            "TOOL_QUERY",
+            "轻型工作级深海机器人能携带什么载荷？",
+            {"task_type_key": "pipeline_inspection"},
+        )
+        categories = [item.get("category") for item in evidence.get("results", [])]
+        tools = evidence["results"][0]["tools"]
+
+        self.assertEqual(categories, ["robot_supported_payloads"])
+        self.assertIn("激光标尺", tools)
+        self.assertNotIn("高清水下摄像机", tools)
+
+    def test_tool_query_onboard_payloads_only_uses_onboard_payloads(self):
+        evidence = self.kb.execute_typed_query(
+            "TOOL_QUERY",
+            "轻型工作级深海机器人自带什么设备？",
+            {"task_type_key": "pipeline_inspection"},
+        )
+        categories = [item.get("category") for item in evidence.get("results", [])]
+        tools = evidence["results"][0]["tools"]
+
+        self.assertEqual(categories, ["robot_onboard_payloads"])
+        self.assertIn("高清水下摄像机", tools)
+        self.assertNotIn("激光标尺", tools)
+
 
 if __name__ == "__main__":
     unittest.main()

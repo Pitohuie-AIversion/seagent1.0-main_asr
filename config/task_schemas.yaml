@@ -78,7 +78,7 @@ task_templates:
         - key: payload
           label: "携带工具"
           type: list
-          allowed_values_ref: "payload_options.pipeline_inspection"
+          allowed_values_ref: "robot_supported_payloads"
         - key: support_vessel
           label: "支持船编号"
           type: string
@@ -162,7 +162,7 @@ task_templates:
         - key: payload
           label: "携带工具"
           type: list
-          allowed_values_ref: "payload_options.pipeline_burial"
+          allowed_values_ref: "robot_supported_payloads"
         - key: support_vessel
           label: "支持船编号"
           type: string
@@ -251,7 +251,7 @@ task_templates:
         - key: payload
           label: "携带工具"
           type: list
-          allowed_values_ref: "payload_options.tree_valve_operation"
+          allowed_values_ref: "robot_supported_payloads"
         - key: support_vessel
           label: "支持船编号"
           type: string

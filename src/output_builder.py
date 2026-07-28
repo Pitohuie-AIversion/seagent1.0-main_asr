@@ -512,6 +512,8 @@ class OutputBuilder:
             selector = str(task_state.get("equipment_family") or "")
         elif ref == "robot_unit_ids" and task_state:
             selector = str(task_state.get("equipment_type") or "")
+        elif ref == "robot_supported_payloads" and task_state:
+            selector = str(task_state.get("equipment_type") or task_state.get("equipment_name") or "")
         cache_key = (
             f"{ref}:{task_type_key}:{selector}"
             if ref in (
@@ -519,6 +521,7 @@ class OutputBuilder:
                 "robot_full_names",
                 "robot_variant_full_names",
                 "robot_unit_ids",
+                "robot_supported_payloads",
             )
             else ref
         )
@@ -542,8 +545,7 @@ class OutputBuilder:
           robot_family_full_names        → 当前任务允许的机器人族 full_name
           robot_variant_full_names       → 当前任务及机器人族允许的型号 full_name
           robot_full_names               → robot_variant_full_names 的兼容名称
-          payload_options.pipeline_inspection
-          payload_options.tree_valve_operation
+          robot_supported_payloads     → 当前已选型号的 supported_payloads
           vessel_ids
         """
         if ref == "robot_category_labels":
@@ -567,15 +569,39 @@ class OutputBuilder:
         if ref == "robot_unit_ids":
             return self._get_robot_unit_ids(task_type_key, task_state)
 
+        if ref == "robot_supported_payloads":
+            return self._get_robot_supported_payloads(task_type_key, task_state)
+
         if ref == "vessel_ids":
             return [r['id'] for r in self.kb.assets.get("vessels", [])]
             # return self.kb.assets.get("vessel_ids", [])
 
         if ref.startswith("payload_options."):
-            task_key = ref.split(".", 1)[1]
-            return self.kb.assets.get("payload_options", {}).get(task_key, []).get("common", [])
+            # payload_options 属于任务工具知识，不再作为最终 payload 合法枚举来源。
+            return []
 
         return []
+
+    def _get_robot_supported_payloads(
+        self,
+        task_type_key: str = "",
+        task_state: dict | None = None,
+    ) -> list[str]:
+        if not task_state:
+            return []
+
+        selector = str(
+            task_state.get("equipment_type")
+            or task_state.get("equipment_name")
+            or ""
+        )
+        if not selector:
+            return []
+
+        robot = self.kb.get_rov_for_task(selector, task_type_key)
+        if not robot:
+            return []
+        return list(robot.get("supported_payloads", []) or [])
 
     def _get_robot_unit_ids(
         self,

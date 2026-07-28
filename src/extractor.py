@@ -216,6 +216,21 @@ class ParameterExtractor:
             conversation_history or [],
         )
 
+        if (
+            not normalized_candidates
+            and self._needs_history_context(user_message, required)
+        ):
+            contextual_candidate = self._resolve_contextual_selection_candidate(
+                user_message,
+                allowed_keys,
+                required or [],
+                current_state,
+                conversation_history or [],
+            )
+            if contextual_candidate:
+                normalized_candidates = [contextual_candidate]
+                resolver_unresolved = []
+
         return {
             "slot_candidates": normalized_candidates,
             "unresolved": [
@@ -509,6 +524,59 @@ class ParameterExtractor:
         if not isinstance(result, dict) or not result.get("matched"):
             return None
         return result
+
+    def _resolve_contextual_selection_candidate(
+        self,
+        user_message: str,
+        allowed_keys: set[str],
+        required: list[dict],
+        current_state: dict,
+        conversation_history: list[dict],
+    ) -> dict | None:
+        candidate_fields = [
+            field
+            for field in required
+            if field.get("key") in allowed_keys and field.get("allowed_values")
+        ]
+        if not candidate_fields:
+            return None
+
+        proposed_key = str(candidate_fields[0].get("key") or "")
+        semantic = self._resolve_candidate_semantically(
+            user_message,
+            proposed_key,
+            required,
+            current_state,
+            conversation_history,
+        )
+        if not semantic:
+            return None
+
+        resolved_key = str(semantic.get("canonical_key") or "")
+        canonical = semantic.get("canonical_value")
+        required_by_key = {
+            str(field.get("key")): field
+            for field in required
+            if field.get("key")
+        }
+        if not self._validate_resolved_candidate(
+            resolved_key,
+            canonical,
+            required_by_key,
+            allowed_keys,
+        ):
+            return None
+
+        field_def = required_by_key.get(resolved_key, {})
+        value = [canonical] if field_def.get("type") == "list" else canonical
+        return {
+            "raw_key": str(field_def.get("label") or resolved_key),
+            "canonical_key": resolved_key,
+            "raw_value": user_message,
+            "normalized_value": value,
+            "confidence": self._coerce_confidence(semantic.get("confidence"), 1.0),
+            "resolution_method": "llm_contextual_selection",
+        }
 
     @staticmethod
     def _validate_resolved_candidate(

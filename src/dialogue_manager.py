@@ -336,8 +336,7 @@ class DialogueManager:
             # 检查是否有缺失槽位
             task_type_key = self.task_state.get("task_type_key")
             if task_type_key:
-                req_schema = self.builder.get_schema(task_type_key, self.mode)
-                missing = self.slot_store.get_missing_slots(req_schema)
+                missing = self._get_missing_slots_with_allowed_values(task_type_key)
                 self._last_missing = missing
                 if not missing:
                     self.phase = "confirming"
@@ -377,6 +376,23 @@ class DialogueManager:
         self.conversation_history.append({"role": "assistant", "content": reply})
         return reply
 
+    def _get_missing_slots_with_allowed_values(
+        self,
+        task_type_key: str,
+        mode: str | None = None,
+        task_state: dict | None = None,
+    ) -> list[dict]:
+        required_schema = self.builder.get_schema(task_type_key, mode or self.mode)
+        state = task_state if task_state is not None else self.slot_store.get_task_state()
+        return self.slot_store.get_missing_slots(
+            required_schema,
+            allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
+                field,
+                task_type_key,
+                state,
+            ),
+        )
+
     def _handle_final_publish_confirmation(self, user_message: str, request_id: str) -> str:
         """confirming 阶段的唯一正式确认发布处理。
 
@@ -408,8 +424,7 @@ class DialogueManager:
 
         # 检查缺失
         if task_type_key:
-            req_schema = self.builder.get_schema(task_type_key, self.mode)
-            missing = self.slot_store.get_missing_slots(req_schema)
+            missing = self._get_missing_slots_with_allowed_values(task_type_key)
         else:
             missing = [{"key": "task_type", "label": "任务类型"}]
 
@@ -478,8 +493,7 @@ class DialogueManager:
             self.task_start_now = prev_task_start_now
 
             if task_type_key:
-                required_schema = self.builder.get_schema(task_type_key, self.mode)
-                self._last_missing = self.slot_store.get_missing_slots(required_schema)
+                self._last_missing = self._get_missing_slots_with_allowed_values(task_type_key)
 
             logger.error(
                 "TaskIntent publish failed: request_id=%s, task_id=%s, intent_id=%s, err_type=%s, err=%s, rollback_failed=%s",
@@ -865,13 +879,9 @@ class DialogueManager:
         if curr_task_type_key:
             required_schema = self.builder.get_schema(curr_task_type_key, self.mode)
             built = self.slot_store.get_built_json(required_schema)
-            missing = self.slot_store.get_missing_slots(
-                required_schema,
-                allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
-                    field,
-                    curr_task_type_key,
-                    self.task_state,
-                ),
+            missing = self._get_missing_slots_with_allowed_values(
+                curr_task_type_key,
+                task_state=self.task_state,
             )
             self._last_missing = missing
         else:

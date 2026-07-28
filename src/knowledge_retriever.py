@@ -358,12 +358,8 @@ class KnowledgeBase:
         # 4. 管缆类型（管缆巡检任务）
         if task_type == "pipeline_inspection":
             sections.append(self._cable_types_overview())
-            sections.append(self._payload_suggestions("pipeline_inspection"))
         elif task_type == "pipeline_burial":
             sections.append(self._cable_types_overview())
-            sections.append(self._payload_suggestions("pipeline_burial"))
-        elif task_type == "tree_valve_operation":
-            sections.append(self._payload_suggestions("tree_valve_operation"))
 
         # 6. 支持船信息
         sections.append(self._vessels_overview())
@@ -804,6 +800,49 @@ class KnowledgeBase:
                 terms.add(full_name.strip())
         return terms
 
+    @staticmethod
+    def _is_onboard_payload_query(user_message: str) -> bool:
+        return any(term in user_message for term in ("自带", "内置", "已有", "固定设备", "默认设备"))
+
+    @staticmethod
+    def _is_robot_payload_query(user_message: str) -> bool:
+        robot_terms = ("机器人", "ROV", "rov", "设备", "型号", "单机", "这台", "该设备")
+        payload_terms = ("能携带", "可携带", "可搭载", "能搭载", "载荷", "工具", "传感器", "机械臂")
+        return any(term in user_message for term in robot_terms) and any(term in user_message for term in payload_terms)
+
+    def _resolve_tool_query_robots(
+        self,
+        user_message: str,
+        context: dict,
+        task_type_key: str | None,
+    ) -> list[dict]:
+        equipment_selector = str(context.get("equipment_type") or "")
+        if equipment_selector and any(term in user_message for term in ("这台", "该设备", "当前", "已选")):
+            robot = self.get_rov_for_task(equipment_selector, task_type_key)
+            return [robot] if robot else []
+
+        unit = self.resolve_robot_unit(user_message, task_type_key, equipment_selector or None)
+        if unit and unit.get("robot"):
+            return [unit["robot"]]
+
+        robot = self.get_rov_for_task(user_message, task_type_key)
+        if robot:
+            return [robot]
+
+        family_id = self.resolve_robot_family_id(user_message, task_type_key)
+        if family_id:
+            return [
+                robot
+                for robot in self.get_task_allowed_robot_variants(task_type_key)
+                if robot.get("family_id") == family_id
+            ]
+
+        if equipment_selector and self._is_robot_payload_query(user_message):
+            robot = self.get_rov_for_task(equipment_selector, task_type_key)
+            return [robot] if robot else []
+
+        return []
+
     def execute_typed_query(
         self,
         query_type: str,
@@ -823,41 +862,53 @@ class KnowledgeBase:
 
         if query_type == "TOOL_QUERY":
             task_type_key = context.get("task_type_key")
-            robots = (
-                self.get_task_allowed_robot_variants(task_type_key)
-                if task_type_key
-                else self.get_all_rovs()
-            )
-            tool_set: set[str] = set()
-            equipment_mappings: list[dict] = []
-            for robot in robots:
-                payloads = list(robot.get("supported_payloads", []))
-                tool_set.update(payloads)
-                equipment_mappings.append({
-                    "equipment_type": robot.get("full_name"),
-                    "variant_id": robot.get("variant_id"),
-                    "family_id": robot.get("family_id"),
-                    "robot_class": robot.get("robot_class_name"),
-                    "supported_payloads": payloads,
-                })
-
             task_payloads = self.assets.get("payload_options", {})
-            current_suggestions = (
-                task_payloads.get(task_type_key, {}) if task_type_key else {}
-            )
+            target_robots = self._resolve_tool_query_robots(user_message, context, task_type_key)
+            asks_onboard = self._is_onboard_payload_query(user_message)
+            asks_robot_payload = asks_onboard or bool(target_robots) or self._is_robot_payload_query(user_message)
+
+            if asks_robot_payload:
+                robots = target_robots or (
+                    [self.get_rov_for_task(str(context.get("equipment_type") or ""), task_type_key)]
+                    if context.get("equipment_type")
+                    else (
+                        self.get_task_allowed_robot_variants(task_type_key)
+                        if task_type_key
+                        else self.get_all_rovs()
+                    )
+                )
+                robots = [robot for robot in robots if robot]
+                payload_key = "onboard_payloads" if asks_onboard else "supported_payloads"
+                category = "robot_onboard_payloads" if asks_onboard else "robot_supported_payloads"
+                tool_set: set[str] = set()
+                mappings: list[dict] = []
+                for robot in robots:
+                    payloads = list(robot.get(payload_key, []) or [])
+                    tool_set.update(payloads)
+                    mappings.append({
+                        "equipment_type": robot.get("full_name"),
+                        "variant_id": robot.get("variant_id"),
+                        "family_id": robot.get("family_id"),
+                        "robot_class": robot.get("robot_class_name"),
+                        payload_key: payloads,
+                    })
+                response["results"] = [
+                    {"category": category, "tools": sorted(tool_set), "mappings": mappings}
+                ]
+                response["found"] = bool(tool_set)
+                if task_type_key:
+                    response["used_task_type_key"] = task_type_key
+                return response
+
+            current_suggestions = task_payloads.get(task_type_key, {}) if task_type_key else {}
             response["results"] = [
-                {"category": "all_supported_tools", "tools": sorted(tool_set)},
-                {
-                    "category": "equipment_payload_mapping",
-                    "mappings": equipment_mappings,
-                },
                 {
                     "category": "task_payload_suggestions",
                     "task_suggestions": task_payloads,
                     "current_task_suggestions": current_suggestions,
-                },
+                }
             ]
-            response["found"] = bool(tool_set or task_payloads)
+            response["found"] = bool(current_suggestions or task_payloads)
             if task_type_key:
                 response["used_task_type_key"] = task_type_key
             return response

@@ -276,9 +276,16 @@ class LLMClient:
             return "当前知识库未提供该信息。"
         if evidence.get("query_type") == "TOOL_QUERY":
             for item in evidence.get("results", []):
-                if isinstance(item, dict) and item.get("category") == "all_supported_tools":
+                if not isinstance(item, dict):
+                    continue
+                if item.get("category") in ("robot_supported_payloads", "robot_onboard_payloads"):
                     tools = item.get("tools", [])
-                    return "当前设备支持的搭载工具包括：" + "、".join(map(str, tools)) + "。"
+                    prefix = "当前设备自带设备包括：" if item.get("category") == "robot_onboard_payloads" else "当前设备支持的可选载荷包括："
+                    return prefix + "、".join(map(str, tools)) + "。"
+                if item.get("category") == "task_payload_suggestions":
+                    suggestions = item.get("current_task_suggestions") or {}
+                    tools = suggestions.get("common", []) if isinstance(suggestions, dict) else []
+                    return "当前任务常用工具建议包括：" + "、".join(map(str, tools)) + "。"
         if evidence.get("query_type") == "DEVICE_CAPABILITY":
             names = [
                 str(item.get("full_name"))

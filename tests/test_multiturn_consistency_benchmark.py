@@ -5,7 +5,7 @@ tests/test_multiturn_consistency_benchmark.py — 多轮任务一致性 Benchmar
 用户连续输入：
 1. 创建任务: "执行流花11-1油田管缆巡检"
 2. 补充设备: "使用金牛座一号机"
-3. 补充 payload: "携带机械臂和前视声呐"
+3. 补充 payload: "携带激光标尺和机械式声呐"
 4. 修改参数: "把水深改成300米"
 
 验证：
@@ -66,11 +66,11 @@ class FakeLLMForMultiTurnBenchmark:
                 ],
                 "unresolved": []
             }
-        elif "摄像机" in current_input or "声呐" in current_input:
+        elif "激光标尺" in current_input or "机械式声呐" in current_input:
             return {
                 "slot_candidates": [
-                    {"raw_key": "携带工具", "canonical_key": "payload", "raw_value": "高清摄像机", "normalized_value": "高清水下摄像机", "confidence": 0.95},
-                    {"raw_key": "携带工具", "canonical_key": "payload", "raw_value": "前视声呐", "normalized_value": "前视声呐", "confidence": 0.95},
+                    {"raw_key": "携带工具", "canonical_key": "payload", "raw_value": "激光标尺", "normalized_value": "激光标尺", "confidence": 0.95},
+                    {"raw_key": "携带工具", "canonical_key": "payload", "raw_value": "机械式声呐", "normalized_value": "机械式声呐", "confidence": 0.95},
                 ],
                 "unresolved": []
             }
@@ -117,13 +117,13 @@ class MultiTurnConsistencyBenchmarkTest(unittest.TestCase):
         self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
 
         # Turn 3: 补充 payload
-        r3 = self.dm.process("携带高清摄像机和前视声呐")
+        r3 = self.dm.process("携带激光标尺和机械式声呐")
         v3 = self.dm.slot_store.version
         self.assertGreater(v3, v2)
         payload = self.dm.task_state.get("payload")
         self.assertIsInstance(payload, list)
-        self.assertIn("高清水下摄像机", payload)
-        self.assertIn("前视声呐", payload)
+        self.assertIn("激光标尺", payload)
+        self.assertIn("机械式声呐", payload)
         self.assertEqual(self.dm.task_state.get("equipment_type"), "轻型工作级深海机器人")
         self.assertEqual(self.dm.task_state.get("raw_oilfield_name"), "流花11-1油田")
         self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
