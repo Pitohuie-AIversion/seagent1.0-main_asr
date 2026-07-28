@@ -28,34 +28,19 @@ jobs:
           pip install -r requirements/test.txt
 
       - name: 1. Python Syntax & Compilation Check
-        run: |
-          python -m compileall -q src tests
+        run: python -m compileall -q src tests
 
       - name: 2. Run Phase 1.5 Tests
-        run: |
-          python -m unittest \
-            tests.test_intent_routing_matrix \
-            tests.test_payload_multivalue \
-            tests.test_robot_state_consistency
+        run: python -m unittest tests.test_intent_routing_matrix tests.test_payload_multivalue tests.test_robot_state_consistency
 
       - name: 3. Run Phase 1.8 Benchmark Tests
-        run: |
-          python -m unittest \
-            tests.test_multiturn_consistency_benchmark \
-            tests.test_query_write_mixed_benchmark \
-            tests.test_ambiguity_resolution_benchmark \
-            tests.test_failure_recovery_benchmark
+        run: python -m unittest tests.test_multiturn_consistency_benchmark tests.test_query_write_mixed_benchmark tests.test_ambiguity_resolution_benchmark tests.test_failure_recovery_benchmark
 
       - name: 4. Run Phase 1.9 Guard Tests
-        run: |
-          python -m unittest tests.test_phase19_regression_guard
+        run: python -m unittest tests.test_phase19_regression_guard
 
       - name: 5. Run Parser, Classification & Equipment E2E Tests
-        run: |
-          python -m unittest \
-            tests.test_regression_report_parser \
-            tests.test_regression_error_classification \
-            tests.test_equipment_resolution_e2e
+        run: python -m unittest tests.test_regression_report_parser tests.test_regression_error_classification tests.test_equipment_resolution_e2e
 
   regression-audit:
     name: Regression Audit & Artifact Report Generation
