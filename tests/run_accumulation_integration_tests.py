@@ -6,6 +6,80 @@ import time
 from datetime import datetime, timedelta
 
 BASE_URL = "http://localhost:8890"
+STATE_TIMEOUT_SECONDS = 10
+CHAT_TIMEOUT_SECONDS = 180
+
+# Keep each constraint scenario isolated. The old baseline coordinates
+# (19.8, 113.5) are inside the configured DVL bottom-lock risk area and
+# therefore cannot represent a warning-free task.
+SAFE_PIPELINE_START = "(17.60,111.00)"
+SAFE_PIPELINE_END = "(17.70,111.10)"
+FORBIDDEN_PIPELINE_START = "(20.40,109.85)"
+FORBIDDEN_PIPELINE_END = "(20.45,109.90)"
+LINGSHUI_COORDINATES = "(17.52,110.15)"
+LINGSHUI_WELLHEAD = "B07"
+LIUHUA_COORDINATES = "(20.815,115.735)"
+
+
+def build_robot_state(update_timestamp, **overrides):
+    state = {
+        "current_velocity": 0.3,
+        "turbidity": 3,
+        "obstacle_density": "low",
+        "mothership_support": "strong",
+        "update_timestamp": update_timestamp,
+        "confidence": 0.95,
+        "overall_status": "available",
+        "survival_status": "normal",
+        "thruster_status": "normal",
+        "depth_keeping_status": "normal",
+        "sonar_status": "normal",
+        "vision_status": "normal",
+        "arm_status": "normal",
+        "end_effector_status": "normal",
+        "acoustic_comms_status": "normal",
+        "tether_connection_status": "normal",
+    }
+    state.update(overrides)
+    return state
+
+
+def build_pipeline_task(
+    *,
+    start=SAFE_PIPELINE_START,
+    end=SAFE_PIPELINE_END,
+    water_depth="300米",
+    equipment_model="观察级深海机器人",
+    unit_id="OBSROV--001",
+    payload="高清水下摄像机和前视声呐",
+    include_priority=True,
+):
+    priority = "，优先级 7" if include_priority else ""
+    return (
+        f"我想做管缆巡检，开始时间现在，结束时间五小时后，"
+        f"管缆位置在{start}，管缆类型为海底油气管道，起始点{start}，结束点{end}，"
+        f"水深{water_depth}，设备型号为{equipment_model}，"
+        f"具体机器人编号为{unit_id}，携带工具为{payload}，"
+        f"支持船：海洋石油681{priority}"
+    )
+
+
+def build_tree_task(
+    *,
+    water_depth="800米",
+    oilfield="陵水17-2",
+    coordinates=LINGSHUI_COORDINATES,
+    wellhead=LINGSHUI_WELLHEAD,
+):
+    return (
+        f"采油树控制面板插入，开始时间现在，结束时间五小时后，"
+        f"水深{water_depth}，油田名称{oilfield}，油田经纬度{coordinates}，"
+        f"井口编号{wellhead}，设备型号为通用工作级深海机器人 250HP，"
+        "具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，"
+        "支持船为海洋石油681，优先级 7"
+    )
+
+
 
 # Set robot state helper
 def set_robot_state(robot_name, params):
@@ -13,7 +87,7 @@ def set_robot_state(robot_name, params):
         res = requests.post(f"{BASE_URL}/api/robot/set-state-info", json={
             "robot_name": robot_name,
             "params": params
-        })
+        }, timeout=STATE_TIMEOUT_SECONDS)
         return res.status_code == 200, res.json()
     except Exception as e:
         return False, str(e)
@@ -21,7 +95,11 @@ def set_robot_state(robot_name, params):
 # Reset session helper
 def reset_session(session_id):
     try:
-        res = requests.post(f"{BASE_URL}/api/reset", json={"session_id": session_id})
+        res = requests.post(
+            f"{BASE_URL}/api/reset",
+            json={"session_id": session_id},
+            timeout=STATE_TIMEOUT_SECONDS,
+        )
         return res.status_code == 200
     except Exception:
         return False
@@ -32,7 +110,7 @@ def chat(session_id, message):
         res = requests.post(f"{BASE_URL}/api/chat", json={
             "session_id": session_id,
             "message": message
-        })
+        }, timeout=CHAT_TIMEOUT_SECONDS)
         if res.status_code == 200:
             return res.json()
         else:
@@ -58,14 +136,7 @@ def run_tests():
     stale_timestamp = (simulated_now - timedelta(hours=2)).isoformat(timespec="seconds")
 
     # Build standard normal parameters for inspection
-    normal_params_inspection = {
-        "current_velocity": 0.3, "turbidity": 3, "obstacle_density": "low", 
-        "mothership_support": "strong", "update_timestamp": fresh_timestamp,
-        "confidence": 0.95, "overall_status": "available", "survival_status": "normal", 
-        "thruster_status": "normal", "depth_keeping_status": "normal", "sonar_status": "normal", 
-        "vision_status": "normal", "arm_status": "normal", "end_effector_status": "normal", 
-        "acoustic_comms_status": "normal", "tether_connection_status": "normal"
-    }
+    normal_params_inspection = build_robot_state(fresh_timestamp)
 
     # Build standard normal parameters for work class
     normal_params_work = normal_params_inspection.copy()
@@ -74,9 +145,9 @@ def run_tests():
         # TS-01
         IntegrationTestCase(
             "TS-01", "语义补全完成后，设备与环境均正常，应允许",
-            "sealien_inspection", normal_params_inspection,
+            "OBSROV-001", normal_params_inspection,
             [
-                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681"
+                build_pipeline_task(include_priority=False)
             ],
             [
                 lambda step, res: (
@@ -89,10 +160,10 @@ def run_tests():
         # TS-02
         IntegrationTestCase(
             "TS-02", "语义补全完成后，环境为禁入区，应拒绝",
-            "sealien_inspection", normal_params_inspection,
+            "OBSROV-001", normal_params_inspection,
             [
-                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(20.5,114.2)，管缆类型为海底油气管道，起始点(20.5,114.2)，结束点(20.7,114.5)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7",
-                "将位置修改为：管缆位置: (19.8,113.5) 起始点: (19.8,113.5) 结束点: (19.9,113.8)"
+                build_pipeline_task(start=FORBIDDEN_PIPELINE_START, end=FORBIDDEN_PIPELINE_END),
+                f"将位置修改为：起始点{SAFE_PIPELINE_START}，结束点{SAFE_PIPELINE_END}"
             ],
             [
                 lambda step, res: (
@@ -108,9 +179,9 @@ def run_tests():
         # TS-03
         IntegrationTestCase(
             "TS-03", "语义补全完成后，流速过高，不支持执行",
-            "sealien_work_class", {**normal_params_work, "current_velocity": 1.5},
+            "WROV-250-001", {**normal_params_work, "current_velocity": 1.5},
             [
-                "采油树控制面板插入，开始时间现在，结束时间五小时后，水深800米，油田名称流花11-1，油田经纬度(19.9,113.6)，井口编号A03，设备型号为通用工作级深海机器人 250HP，具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，支持船为海洋石油681，优先级 7"
+                build_tree_task()
             ],
             [
                 lambda step, res: (
@@ -123,9 +194,9 @@ def run_tests():
         # TS-04
         IntegrationTestCase(
             "TS-04", "语义补全完成后，浑浊度高，应允许但提示",
-            "sealien_inspection", {**normal_params_inspection, "turbidity": 15},
+            "OBSROV-001", {**normal_params_inspection, "turbidity": 15},
             [
-                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7"
+                build_pipeline_task()
             ],
             [
                 lambda step, res: (
@@ -138,9 +209,9 @@ def run_tests():
         # TS-05
         IntegrationTestCase(
             "TS-05", "语义补全完成后，设备总体不可用，应拒绝",
-            "sealien_work_class", {**normal_params_work, "overall_status": "unavailable"},
+            "WROV-250-001", {**normal_params_work, "overall_status": "unavailable"},
             [
-                "采油树控制面板插入，开始时间现在，结束时间五小时后，水深800米，油田名称流花11-1，油田经纬度(19.9,113.6)，井口编号A03，设备型号为通用工作级深海机器人 250HP，具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，支持船为海洋石油681，优先级 7"
+                build_tree_task()
             ],
             [
                 lambda step, res: (
@@ -153,9 +224,9 @@ def run_tests():
         # TS-06
         IntegrationTestCase(
             "TS-06", "语义补全完成后，定深能力异常，不适合高精度作业",
-            "sealien_work_class", {**normal_params_work, "depth_keeping_status": "abnormal"},
+            "WROV-250-001", {**normal_params_work, "depth_keeping_status": "abnormal"},
             [
-                "采油树控制面板插入，开始时间现在，结束时间五小时后，水深800米，油田名称流花11-1，油田经纬度(19.9,113.6)，井口编号A03，设备型号为通用工作级深海机器人 250HP，具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，支持船为海洋石油681，优先级 7"
+                build_tree_task()
             ],
             [
                 lambda step, res: (
@@ -168,9 +239,9 @@ def run_tests():
         # TS-07
         IntegrationTestCase(
             "TS-07", "语义补全完成后，视觉异常 + 浑浊度高，应综合限制",
-            "sealien_work_class", {**normal_params_work, "vision_status": "abnormal", "turbidity": 15},
+            "WROV-250-001", {**normal_params_work, "vision_status": "abnormal", "turbidity": 15},
             [
-                "采油树控制面板插入，开始时间现在，结束时间五小时后，水深800米，油田名称流花11-1，油田经纬度(19.9,113.6)，井口编号A03，设备型号为通用工作级深海机器人 250HP，具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，支持船为海洋石油681，优先级 7"
+                build_tree_task()
             ],
             [
                 lambda step, res: (
@@ -183,9 +254,9 @@ def run_tests():
         # TS-08
         IntegrationTestCase(
             "TS-08", "语义补全完成后，机械臂异常，不适合插拔类任务",
-            "sealien_work_class", {**normal_params_work, "arm_status": "abnormal"},
+            "WROV-250-001", {**normal_params_work, "arm_status": "abnormal"},
             [
-                "采油树控制面板插入，开始时间现在，结束时间五小时后，水深800米，油田名称流花11-1，油田经纬度(19.9,113.6)，井口编号A03，设备型号为通用工作级深海机器人 250HP，具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，支持船为海洋石油681，优先级 7"
+                build_tree_task()
             ],
             [
                 lambda step, res: (
@@ -198,9 +269,9 @@ def run_tests():
         # TS-09
         IntegrationTestCase(
             "TS-09", "语义补全完成后，通信异常，需提示协同风险",
-            "sealien_work_class", {**normal_params_work, "tether_connection_status": "abnormal"},
+            "WROV-250-001", {**normal_params_work, "tether_connection_status": "abnormal"},
             [
-                "采油树控制面板插入，开始时间现在，结束时间五小时后，水深800米，油田名称流花11-1，油田经纬度(19.9,113.6)，井口编号A03，设备型号为通用工作级深海机器人 250HP，具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，支持船为海洋石油681，优先级 7"
+                build_tree_task()
             ],
             [
                 lambda step, res: (
@@ -213,9 +284,9 @@ def run_tests():
         # TS-10
         IntegrationTestCase(
             "TS-10", "语义补全完成后，环境信息过期，应暂缓",
-            "sealien_inspection", {**normal_params_inspection, "update_timestamp": stale_timestamp},
+            "OBSROV-001", {**normal_params_inspection, "update_timestamp": stale_timestamp},
             [
-                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7"
+                build_pipeline_task()
             ],
             [
                 lambda step, res: (
@@ -228,7 +299,7 @@ def run_tests():
         # TS-11
         IntegrationTestCase(
             "TS-11", "语义补全完成后，母船距离过远（针对AUV）",
-            "sealien_survey_auv", {
+            "AUV-324cc-001", {
                 "current_velocity": 0.2, "turbidity": 3.5, "obstacle_density": "low", 
                 "mothership_support": "weak", "update_timestamp": fresh_timestamp,
                 "confidence": 0.95, "overall_status": "available", "survival_status": "normal", 
@@ -237,7 +308,7 @@ def run_tests():
                 "acoustic_comms_status": "abnormal", "tether_connection_status": "abnormal"
             },
             [
-                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为水下无人自主航行器 324CC，具体机器人编号为AUV-324cc-001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7"
+                build_pipeline_task(equipment_model="水下无人自主航行器 324CC", unit_id="AUV-324cc-001")
             ],
             [
                 lambda step, res: (
@@ -250,13 +321,13 @@ def run_tests():
         # TS-12
         IntegrationTestCase(
             "TS-12", "语义补全完成后，但高障碍物密度区域，应允许但提示降低速度",
-            "sealien_inspection", {**normal_params_inspection, "obstacle_density": "high"},
+            "OBSROV-001", {**normal_params_inspection, "obstacle_density": "high"},
             [
-                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7"
+                build_pipeline_task()
             ],
             [
                 lambda step, res: (
-                    "障碍物" in res.get("reply", "") or "C011" in res.get("reply", "") or "避障" in res.get("reply", "") or "速度" in res.get("reply", ""),
+                    "障碍物" in res.get("reply", "") or "C0011" in res.get("reply", "") or "避障" in res.get("reply", "") or "速度" in res.get("reply", ""),
                     f"Expected obstacle density warning. Got reply: {res.get('reply')[:80]}..."
                 )
             ]
@@ -265,10 +336,10 @@ def run_tests():
         # TS-13
         IntegrationTestCase(
             "TS-13", "语义补全完成后，海床质地不匹配，应拒绝",
-            "crawler_heavy_seabed_robot_1600hp", normal_params_work,
+            "CRAWLER-1600-001", normal_params_work,
             [
-                "我想做管缆埋设，开始时间现在，结束时间五小时后，水深300米，管缆类型为海底油气管道，起始点(17.5,114.0)，结束点(17.6,114.2)，设备型号为履带式海底重载作业机器人 1600HP，具体机器人编号为CRAWLER-1600-001，携带工具为高压水射流喷冲埋设模块和前视声呐，支持船为海洋石油681，优先级 7",
-                "将位置修改为：管缆位置: (19.8,113.5) 起始点: (19.8,113.5) 结束点: (19.9,113.8)"
+                f"我想做管缆埋设，开始时间现在，结束时间五小时后，水深300米，管缆类型为海底油气管道，起始点{LINGSHUI_COORDINATES}，结束点(17.53,110.18)，设备型号为履带式海底重载作业机器人 1600HP，具体机器人编号为CRAWLER-1600-001，携带工具为高压水射流喷冲埋设模块和前视声呐，支持船为海洋石油681，优先级 7",
+                f"将位置修改为：起始点{LIUHUA_COORDINATES}，结束点{LIUHUA_COORDINATES}"
             ],
             [
                 lambda step, res: (
@@ -291,7 +362,7 @@ def run_tests():
                 "结束时间五小时后",
                 "设备型号为观察级深海机器人，具体机器人编号为OBSROV--001",
                 "管缆类型为海底油气管道",
-                "管缆位置在(19.8,113.5)，起始点和结束点分别是(19.8,113.5)和(19.9,113.8)",
+                f"管缆位置在{SAFE_PIPELINE_START}，起始点和结束点分别是{SAFE_PIPELINE_START}和{SAFE_PIPELINE_END}",
                 "水深300米",
                 "携带工具为高清水下摄像机和前视声呐",
                 "支持船海洋石油681"
@@ -308,7 +379,7 @@ def run_tests():
             "TS-15", "单位转换（水深进制转换）",
             None, None,
             [
-                "采油树控制面板插入，开始时间现在，结束时间五小时后，水深1.2千米，油田名称流花11-1，油田经纬度(19.9,113.6)，井口编号A03，设备型号为通用工作级深海机器人 250HP，具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，支持船为海洋石油681，优先级 7"
+                build_tree_task(water_depth="1.2千米")
             ],
             [
                 lambda step, res: (
@@ -323,7 +394,7 @@ def run_tests():
             "TS-16", "中途修改（修改已提供的任务信息）",
             None, None,
             [
-                "采油树控制面板插入，开始时间现在，结束时间五小时后，水深800米，油田名称流花11-1，油田经纬度(19.9,113.6)，井口编号A03，设备型号为通用工作级深海机器人 250HP，具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，支持船为海洋石油681，优先级 7",
+                build_tree_task(),
                 "把水深改成1000米"
             ],
             [
@@ -435,9 +506,9 @@ def run_tests():
         # TS-23
         IntegrationTestCase(
             "TS-23", "硬约束解除后软约束应继续提示（回归测试）",
-            "sealien_inspection", {**normal_params_inspection, "turbidity": 15},
+            "OBSROV-001", {**normal_params_inspection, "turbidity": 15},
             [
-                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深800米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7",
+                build_pipeline_task(water_depth="800米"),
                 "水深改成300米"
             ],
             [

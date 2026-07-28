@@ -7,8 +7,8 @@ on:
     branches: [ main ]
 
 jobs:
-  core-tests:
-    name: Core Syntax & Mandatory Guard Tests
+  full-suite-tests:
+    name: Mandatory Full Test Suite & Regression Audit Gate
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: .
@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install Dependencies
+      - name: Install CPU Test Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements/test.txt
@@ -31,52 +31,18 @@ jobs:
       - name: 1. Python Syntax & Compilation Check
         run: python -m compileall -q src tests
 
-      - name: 2a. Run Intent Routing Matrix Test
-        run: python -m unittest tests.test_intent_routing_matrix
-
-      - name: 2b. Run Payload MultiValue Test
-        run: python -m unittest tests.test_payload_multivalue
-
-      - name: 2c. Run Robot State Consistency Test
-        run: python -m unittest tests.test_robot_state_consistency
-
-      - name: 3. Run Phase 1.8 Benchmark Tests
-        run: python -m unittest tests.test_multiturn_consistency_benchmark tests.test_query_write_mixed_benchmark tests.test_ambiguity_resolution_benchmark tests.test_failure_recovery_benchmark
-
-      - name: 4. Run Phase 1.9 Guard Tests
-        run: python -m unittest tests.test_phase19_regression_guard
-
-      - name: 5. Run Parser, Classification & Equipment E2E Tests
-        run: python -m unittest tests.test_regression_report_parser tests.test_regression_error_classification tests.test_equipment_resolution_e2e
-
-  regression-audit:
-    name: Regression Audit & Artifact Report Generation
-    needs: core-tests
-    if: always()
-    runs-on: ubuntu-latest
-    env:
-      PYTHONPATH: .
-      SEAGENT_RESULT_DIR: ${{ github.workspace }}/result
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Install Dependencies
+      - name: 2. Run Full Test Suite & Generate Audit Data
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements/test.txt
-
-      - name: Run Full Test Suite & Generate Audit Data
-        continue-on-error: true
-        run: |
-          python scratch/parse_tests.py
-          python scratch/generate_report.py
+          set +e
+          TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m unittest discover tests -v 2>&1 | tee full_test.log
+          test_exit=${PIPESTATUS[0]}
+          set -e
+          
+          python scratch/parse_tests.py || true
+          python scratch/generate_report.py || true
+          
+          echo "Full test suite exited with code ${test_exit}"
+          exit "${test_exit}"
 
       - name: Upload Regression Report & Test Log Artifacts
         if: always()
@@ -85,4 +51,6 @@ jobs:
           name: regression-audit-report
           path: |
             docs/regression_report.md
+            full_test.log
             /tmp/test_records.json
+

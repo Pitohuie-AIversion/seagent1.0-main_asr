@@ -214,19 +214,29 @@ def generate_report():
     lines.append(f"- **FIXTURE_OR_ENVIRONMENT**: **{category_counts['FIXTURE_OR_ENVIRONMENT']}**")
     lines.append(f"- **DUPLICATE_COVERAGE**: **{category_counts['DUPLICATE_COVERAGE']}**\n")
 
-    lines.append("### Invariant Taxonomy Breakdown:")
-    for inv_k, count in sorted(invariant_counts.items()):
-        lines.append(f"- **{inv_k}**: {count}")
-
     lines.append("\n## 4. Phase 2 Admission Decision\n")
     lines.append("### Readiness Checklist:")
     lines.append("1. **Runner vs Record Counter Independence**: **PASS** (`runner_counters == record_counters`).")
     lines.append(f"2. **Collection Errors**: **PASS** ({collection_err_count} `_FailedTest` modules).")
     lines.append("3. **Current Design Contract Document**: **PASS** (`docs/current_design_contract.md`).")
     lines.append("4. **Replacement Equivalence Audit**: **PASS** (`docs/regression_replacement_map.yaml` with `equivalence_status: FULL`).")
-    lines.append(f"5. **TRUE_REGRESSION Resolution**: **NO (BLOCKED)** — Currently {category_counts['TRUE_REGRESSION']} TRUE_REGRESSION items and {category_counts['LEGACY_INTERFACE_PENDING_REWRITE']} pending rewrites remain.\n")
 
-    lines.append("**Final Decision**: **NO** (Phase 2 development remains blocked until TRUE_REGRESSION items and pending rewrites are resolved or formally risk-accepted).\n")
+    is_passed = (
+        runner_c.get("tests_run", 0) > 0
+        and non_passing_count == 0
+        and category_counts["TRUE_REGRESSION"] == 0
+        and category_counts["LEGACY_INTERFACE_PENDING_REWRITE"] == 0
+        and collection_err_count == 0
+    )
+
+    if is_passed:
+        lines.append("5. **TRUE_REGRESSION Resolution**: **PASS** — 0 TRUE_REGRESSION items and 0 pending rewrites remain.\n")
+        lines.append("**Final Decision**: **PASS** (Phase 1 acceptance complete, 100% test pass rate achieved).\n")
+    else:
+        lines.append(f"5. **TRUE_REGRESSION Resolution**: **NO (BLOCKED)** — Currently {category_counts['TRUE_REGRESSION']} TRUE_REGRESSION items and {category_counts['LEGACY_INTERFACE_PENDING_REWRITE']} pending rewrites remain.\n")
+        lines.append("**Final Decision**: **NO** (Phase 2 development remains blocked until TRUE_REGRESSION items and pending rewrites are resolved or formally risk-accepted).\n")
+
+
 
     report_content = "\n".join(lines)
     target_path = Path("docs/regression_report.md")
