@@ -2,12 +2,13 @@ name: SEAgent CI & Regression Verification
 
 on:
   push:
-    branches: [ main, "phase*" ]
+    branches: [ main, "phase*", "fix/*" ]
   pull_request:
     branches: [ main ]
 
 jobs:
-  test-and-verify:
+  core-tests:
+    name: Core Syntax & Mandatory Guard Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -22,7 +23,7 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install -r requirements/test.txt
 
       - name: 1. Python Syntax & Compilation Check
         run: |
@@ -54,13 +55,34 @@ jobs:
             tests/test_regression_error_classification.py \
             tests/test_equipment_resolution_e2e.py
 
-      - name: 6. Run Full Test Suite & Generate Audit Artifacts
+  regression-audit:
+    name: Regression Audit & Artifact Report Generation
+    needs: core-tests
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/test.txt
+
+      - name: Run Full Test Suite & Generate Audit Data
         continue-on-error: true
         run: |
           python scratch/parse_tests.py
           python scratch/generate_report.py
 
-      - name: 7. Upload Regression Report & Test Log Artifacts
+      - name: Upload Regression Report & Test Log Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: regression-audit-report
