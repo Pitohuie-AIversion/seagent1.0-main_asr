@@ -64,8 +64,17 @@ def normalize_slot_value_type(schema_type: Optional[str] = None, value: Any = No
     if schema_type:
         st = schema_type.lower()
         if st in VALID_VALUE_TYPES:
-            if st == "string" and value is not None and not isinstance(value, str):
-                pass
+            if st == "string" and value is not None:
+                if isinstance(value, str):
+                    try:
+                        clean_ts = value.replace("Z", "+00:00")
+                        if len(value) >= 10 and "T" in value:
+                            datetime.fromisoformat(clean_ts)
+                            return "datetime"
+                    except Exception:
+                        pass
+                else:
+                    pass
             else:
                 return st
         if st in ("tasktype", "raw"):
@@ -93,16 +102,17 @@ def normalize_slot_value_type(schema_type: Optional[str] = None, value: Any = No
                 return "coord"
             return "object"
         if isinstance(value, str):
-            if schema_type and schema_type.lower() == "datetime":
-                try:
-                    clean_ts = value.replace("Z", "+00:00")
+            try:
+                clean_ts = value.replace("Z", "+00:00")
+                if len(value) >= 10 and "T" in value:
                     datetime.fromisoformat(clean_ts)
                     return "datetime"
-                except Exception:
-                    pass
+            except Exception:
+                pass
             return "string"
 
     return "string"
+
 
 
 class Slot:
@@ -287,17 +297,22 @@ class SlotStore:
             if not isinstance(snapshot, dict):
                 raise SnapshotValidationError("Snapshot must be a dictionary.")
 
-            store_ver = snapshot.get("store_version")
-            if store_ver is None or not isinstance(store_ver, int) or isinstance(store_ver, bool) or store_ver < 0:
+            store_ver = snapshot.get("store_version", 1)
+            if store_ver is None:
+                store_ver = 1
+            if not isinstance(store_ver, int) or isinstance(store_ver, bool) or store_ver < 0:
                 raise SnapshotValidationError("store_version must be a non-negative integer.")
 
             slots_data = snapshot.get("slots")
             if slots_data is None or not isinstance(slots_data, dict):
                 raise SnapshotValidationError("slots must be a dictionary.")
 
-            unresolved_data = snapshot.get("unresolved")
-            if unresolved_data is None or not isinstance(unresolved_data, list):
+            unresolved_data = snapshot.get("unresolved", [])
+            if unresolved_data is None:
+                unresolved_data = []
+            if not isinstance(unresolved_data, list):
                 raise SnapshotValidationError("unresolved must be a list.")
+
 
             new_slots = {}
             for key, sdict in slots_data.items():

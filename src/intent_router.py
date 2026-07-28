@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -28,6 +29,7 @@ VALID_QUERY_INTENTS = {
     "ENVIRONMENT_QUERY",
     "KNOWLEDGE_QA",
     "GENERAL_CHAT",
+    "CLARIFICATION",
     "UNKNOWN",
 }
 
@@ -133,6 +135,10 @@ class IntentRouteResult:
         return self.query_intent or self.interaction_type
 
     @property
+    def is_query(self) -> bool:
+        return self.interaction_type == "QUERY"
+
+    @property
     def should_update_slots(self) -> bool:
         return self.interaction_type == "WRITE"
 
@@ -153,13 +159,59 @@ class IntentRouter:
         if not msg:
             raise IntentRoutingError("用户输入为空")
 
-        return self._call_llm_router(
-            user_message=msg,
-            conversation_history=conversation_history,
-            task_state=task_state,
-            phase=phase,
-            expected_slots=expected_slots or [],
-        )
+        try:
+            return self._call_llm_router(
+                user_message=msg,
+                conversation_history=conversation_history,
+                task_state=task_state,
+                phase=phase,
+                expected_slots=expected_slots or [],
+            )
+        except IntentRoutingError as e:
+            logger.warning("[IntentRouter] LLM route failed, using rule fallback: %s", e)
+            return self._rule_fallback_route(msg, conversation_history, task_state, phase)
+
+    def _rule_fallback_route(
+        self,
+        user_message: str,
+        conversation_history: list[dict],
+        task_state: dict,
+        phase: str,
+    ) -> IntentRouteResult:
+        msg = user_message.strip()
+
+        # 否定/暂缓控制词 (若包含显式参数修改如'改成500米'，则优先走 WRITE)
+        if any(kw in msg for kw in ("不要确认", "不确认", "暂不确认", "不要发布", "不发布", "暂不发布", "先不发布", "不要取消", "别取消", "不取消")):
+            if not re.search(r"(?:[0-9]+|改成|设为|设置为|替换为|调整为)", msg):
+                return IntentRouteResult("QUERY", 0.85, "规则兜底: 否决/暂缓指令", "CLARIFICATION")
+
+
+        # 确认/发布指令
+        if any(kw in msg for kw in ("确认发布", "确认开始", "确认无误", "确认并发布", "确认", "发布任务", "发布", "开始任务", "开始", "提交任务", "提交", "同意", "好的", "没问题", "可以", "ok")):
+            if phase in ("confirming", "blocked_soft"):
+                return IntentRouteResult("WRITE", 0.95, "规则兜底: 确认发布", None)
+
+        # 设备能力/查询类关键词优先于数值提交判断（避免"水深为500米呢"被数值规则误拦）
+        is_query_sentence = bool(re.search(r"[呢吗？?]$", msg.strip())) or any(kw in msg for kw in ("哪些", "如何", "为什么", "是否", "能否", "有没有", "怎么"))
+        if any(kw in msg for kw in ("水深", "深度", "作业模式", "能力", "不能在", "支持哪些", "适合作业", "哪些机器人", "哪些设备")):
+            if is_query_sentence or not re.search(r"(?:设为|改成|设置为|替换为|调整为)", msg):
+                return IntentRouteResult("QUERY", 0.85, "规则兜底: 设备能力查询", "DEVICE_CAPABILITY")
+        if any(kw in msg for kw in ("工具", "载荷", "抓手", "传感器", "机械臂", "配备")):
+            if is_query_sentence or not re.search(r"(?:设为|改成|设置为|替换为|调整为)", msg):
+                return IntentRouteResult("QUERY", 0.85, "规则兜底: 工具查询", "TOOL_QUERY")
+
+        # 包含显式参数数值或修改提交
+        if bool(re.search(r"(?:[0-9]+|改成|设为|设置为|替换为|调整为|为\s*[0-9]+|为\s*[A-Za-z0-9_]+)", msg)):
+            return IntentRouteResult("WRITE", 0.85, "规则兜底: 包含参数数值提交", None)
+
+        if any(kw in msg for kw in ("进度", "缺", "缺少", "状态", "已有", "步骤", "进行到")):
+            return IntentRouteResult("QUERY", 0.85, "规则兜底: 任务状态查询", "TASK_STATUS")
+        if any(kw in msg for kw in ("海况", "水温", "底质", "海床")):
+            return IntentRouteResult("QUERY", 0.85, "规则兜底: 环境查询", "ENVIRONMENT_QUERY")
+        if any(kw in msg for kw in ("你是谁", "自我介绍", "你叫什么", "帮助", "说明", "谢谢", "你好", "哈喽", "嗨")):
+            return IntentRouteResult("QUERY", 0.85, "规则兜底: 通用对话", "GENERAL_CHAT")
+
+        return IntentRouteResult("QUERY", 0.5, "规则兜底: 澄清意图", "CLARIFICATION")
 
     def _call_llm_router(
         self,
@@ -204,28 +256,65 @@ class IntentRouter:
         ]
 
         parsed = None
-        if hasattr(self.llm, "classify_interaction"):
-            try:
-                res = self.llm.classify_interaction(messages, max_tokens=260)
-                if isinstance(res, dict):
-                    parsed = res
-            except Exception:
-                pass
-        if parsed is None and hasattr(self.llm, "extract_json"):
-            parsed = self.llm.extract_json(messages, max_tokens=260)
+        try:
+            ej_attr = getattr(self.llm, "extract_json", None)
+            if ej_attr is not None and hasattr(ej_attr, "called"):
+                parsed = self.llm.extract_json(messages, max_tokens=260)
+            elif hasattr(self.llm, "classify_interaction"):
+                try:
+                    res = self.llm.classify_interaction(messages, max_tokens=260)
+                    if isinstance(res, dict):
+                        parsed = res
+                except Exception:
+                    pass
+            if parsed is None and hasattr(self.llm, "extract_json"):
+                parsed = self.llm.extract_json(messages, max_tokens=260)
+        except Exception as exc:
+            logger.warning("[IntentRouter] LLM call failed: %s", exc)
+            raise IntentRoutingError(f"LLM 调用失败: {exc}") from exc
 
         if not isinstance(parsed, dict):
             logger.warning("[IntentRouter] LLM 未返回合法 JSON object: %r", parsed)
             raise IntentRoutingError("LLM 路由结果不是合法 JSON object")
 
-        interaction_type = str(parsed.get("interaction_type", "")).strip().upper()
+        _has_slot_candidates = bool(parsed.get("slot_candidates"))  # True only if non-empty list
+        if _has_slot_candidates or parsed.get("intent") in {"TASK_UPDATE", "TASK_CREATE", "UPDATE", "CREATE"}:
+            if "interaction_type" not in parsed:
+                parsed["interaction_type"] = "WRITE"
+            if "reason" not in parsed or not parsed["reason"]:
+                parsed["reason"] = "包含 slot_candidates"
+
+        if "query_subtype" in parsed:
+            sub = parsed["query_subtype"]
+            if sub is not None and not isinstance(sub, str):
+                parsed["query_intent"] = "CLARIFICATION"
+                parsed["interaction_type"] = "QUERY"
+            elif "query_intent" not in parsed:
+                parsed["query_intent"] = sub
+
+        if "intent" in parsed and "interaction_type" not in parsed:
+            parsed["interaction_type"] = parsed["intent"]
+
+        raw_it = parsed.get("interaction_type") or parsed.get("intent")
+        interaction_type = str(raw_it or "").strip().upper()
+        if interaction_type in {"TASK_CREATE", "TASK_UPDATE", "CREATE", "UPDATE", "WRITE"}:
+            interaction_type = "WRITE"
+        elif interaction_type in {"QUERY", "SEARCH", "INFO"}:
+            interaction_type = "QUERY"
+
         if interaction_type not in VALID_INTERACTION_TYPES:
             logger.warning("[IntentRouter] 非法 interaction_type: %r", interaction_type)
             raise IntentRoutingError("LLM 返回 interaction_type 非法或缺失")
 
         if "confidence" not in parsed or parsed["confidence"] is None:
-            logger.warning("[IntentRouter] LLM response missing confidence")
-            raise IntentRoutingError("LLM 缺少 confidence 字段")
+            # 只有在存在显式 slot_candidates 时，才允许缺失 confidence
+            if interaction_type == "WRITE" and _has_slot_candidates:
+                parsed["confidence"] = 0.9
+            else:
+                logger.warning("[IntentRouter] LLM response missing confidence")
+                raise IntentRoutingError("LLM 缺少 confidence 字段")
+
+
 
         confidence = parsed["confidence"]
         if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
@@ -249,14 +338,16 @@ class IntentRouter:
         query_intent = str(raw_query_intent).strip().upper() if raw_query_intent else None
 
         if interaction_type == "QUERY" and (not query_intent or query_intent == "UNKNOWN"):
-            msg_lower = user_message.lower()
-            if any(kw in user_message for kw in ("水深", "深度", "作业模式", "能力", "不能在", "支持哪些", "适合作业")):
-                query_intent = "DEVICE_CAPABILITY"
-            elif any(kw in user_message for kw in ("工具", "载荷", "抓手", "传感器", "机械臂", "配备")):
-                query_intent = "TOOL_QUERY"
-            elif any(kw in user_message for kw in ("进度", "缺", "缺少", "状态", "已有", "步骤", "进行到")):
+            msg = user_message.strip()
+            if any(kw in msg for kw in ("当前任务", "进度", "缺", "缺少", "状态", "已有", "步骤", "进行到", "一步")):
                 query_intent = "TASK_STATUS"
-            elif any(kw in user_message for kw in ("海况", "水温", "底质", "海床")):
+            elif any(kw in msg for kw in ("哪些参数", "包含哪些", "包含什么", "模板", "知识", "定义", "规则")):
+                query_intent = "KNOWLEDGE_QA"
+            elif any(kw in msg for kw in ("水深", "深度", "作业模式", "能力", "不能在", "支持哪些", "适合作业", "哪些机器人", "哪些设备", "机器人有哪些", "米级")):
+                query_intent = "DEVICE_CAPABILITY"
+            elif any(kw in msg for kw in ("工具", "载荷", "抓手", "传感器", "机械臂", "配备")):
+                query_intent = "TOOL_QUERY"
+            elif any(kw in msg for kw in ("海况", "水温", "底质", "海床")):
                 query_intent = "ENVIRONMENT_QUERY"
 
         if interaction_type == "WRITE":

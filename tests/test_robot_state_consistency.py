@@ -71,7 +71,8 @@ class RobotStateConsistencyTest(unittest.TestCase):
         self.kb.state_info.set_status(target_robot, {
             "depth": 350,
             "overall_status": "available",
-            "current_velocity": 0.45
+            "current_velocity": 0.45,
+            "update_timestamp": None
         })
 
         # 2. 查询设备当前深度
@@ -89,7 +90,8 @@ class RobotStateConsistencyTest(unittest.TestCase):
         # 同样支持按中文显示名称设置与查询
         self.kb.state_info.set_status("金牛座一号机", {
             "depth": 350,
-            "overall_status": "available"
+            "overall_status": "available",
+            "update_timestamp": None
         })
         state_dict = self.kb.get_robot_state_dict("金牛座一号机")
         self.assertEqual(state_dict.get("depth"), 350)

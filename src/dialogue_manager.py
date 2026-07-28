@@ -51,13 +51,17 @@ from .simulated_time import get_current_datetime
 from .time_context import get_time_context, is_standalone_time_query
 from .coord_parser import parse_coordinate_updates
 from .oilfield_linker import OilfieldEntityLinker
-from .exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
-from .id_sequence import validate_intent_id
-from .slot_store import SlotStore, Slot
+from . import task_intent_builder as _ti_builder_module
+from .id_sequence import validate_intent_id, next_daily_id
+from .slot_store import SlotStore, Slot, normalize_slot_value_type
+
+from .exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError
 from .intent_router import IntentRouter, IntentRouteResult
 from .result_paths import get_task_dir
 
+
 HARD_REFUSAL_LIMIT = 4   # 连续拒绝上限
+
 
 FIELD_LABELS = {
     "task_id":             "任务编号",
@@ -454,12 +458,6 @@ class DialogueManager:
             self.phase = prev_phase
             self.final_result = None
 
-            if staging_file and staging_file.exists():
-                try:
-                    staging_file.unlink()
-                except Exception:
-                    pass
-
             rollback_failed = False
             rollback_err = None
             if prev_snap:
@@ -501,7 +499,9 @@ class DialogueManager:
 
         # 发布成功
         self.phase = "done"
-        self.final_result = cand_built
+        self.task_state = self.slot_store.get_task_state()
+        self._last_built_json = self.slot_store.get_built_json()
+        self.final_result = self._last_built_json
         self.task_start_now = self.is_start_time_near_now()
         if self.task_start_now:
             reply = (f"✅ 信息收集完成，当前为【立即执行任务】，任务已生成并下发。\n"
@@ -538,9 +538,10 @@ class DialogueManager:
         # 控制动作由 DialogueManager 当前阶段处理，不再交给 IntentRouter 判断。
         if self.phase in ("blocked_soft", "confirming") and (
             self._is_confirmation_only(user_message)
-            or (self.phase == "blocked_soft" and any(kw in user_message.lower() for kw in SOFT_IGNORE_KEYWORDS))
+            or (self.phase == "blocked_soft" and any(kw in user_message.lower() for kw in SOFT_IGNORE_KEYWORDS) and not any(mod_kw in user_message for mod_kw in ["改成", "修改", "水深", "深度", "时间", "支持船", "管缆", "油田", "设备", "工具", "改为", "设为", "调整", "增加", "减少"]))
         ):
             return self._handle_task_confirm(user_message, request_id)
+
 
         if self.phase in ("blocked_hard", "blocked_soft", "confirming", "collecting") and self._user_cancelled(user_message):
             self.phase = "rejected"
@@ -603,7 +604,15 @@ class DialogueManager:
 
             if not extraction_res.get("slot_candidates"):
                 record_unresolved(extraction_res)
+                if new_unresolved:
+                    self.slot_store.commit_transaction(
+                        new_slots,
+                        new_unresolved,
+                        request_id=request_id,
+                        expected_version=expected_version,
+                    )
                 return reply_write_without_candidates()
+
 
             stage1_updates = {}
             for candidate in extraction_res.get("slot_candidates", []):
@@ -680,8 +689,19 @@ class DialogueManager:
                 merged_updates_meta[k] = c_info
                 merged_updates[k] = v
 
-            if not stage2_updates:
+            _has_conflict = any(s.status == "conflict" for s in new_slots.values())
+            if not stage2_updates and not _has_conflict and not turn_unresolved:
+                if new_unresolved:
+                    self.slot_store.commit_transaction(
+                        new_slots,
+                        new_unresolved,
+                        request_id=request_id,
+                        expected_version=expected_version,
+                    )
                 return reply_write_without_candidates()
+
+
+
 
             # Scoped & Negation-Safe Conflict resolution check
             slot_name_aliases = {
@@ -858,7 +878,7 @@ class DialogueManager:
         self.task_state = self.slot_store.get_task_state()
         if curr_task_type_key:
             required_schema = self.builder.get_schema(curr_task_type_key, self.mode)
-            built = self.slot_store.get_built_json(required_schema)
+            built = self.slot_store.get_built_json()
             missing = self.slot_store.get_missing_slots(
                 required_schema,
                 allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
@@ -1143,8 +1163,15 @@ class DialogueManager:
                 for key, slot in new_slots.items()
                 if slot.value is not None
             }
-            updates = self.normalizer.normalize_updates(
-                updates,
+            equipment_keys = {
+                "equipment_family",
+                "equipment_type",
+                "equipment_name",
+                "equipment_unit_id",
+            }
+            non_eq_updates = {k: v for k, v in updates.items() if k not in equipment_keys}
+            norm_non_eq = self.normalizer.normalize_updates(
+                non_eq_updates,
                 self.builder.get_schema(task_type_key, self.mode),
                 current_state,
                 lambda field_def, state: self.builder._resolve_allowed(
@@ -1153,13 +1180,16 @@ class DialogueManager:
                     state,
                 ),
             )
+            eq_updates = {k: v for k, v in updates.items() if k in equipment_keys}
+            updates = {**norm_non_eq, **eq_updates}
+        else:
+            equipment_keys = {
+                "equipment_family",
+                "equipment_type",
+                "equipment_name",
+                "equipment_unit_id",
+            }
 
-        equipment_keys = {
-            "equipment_family",
-            "equipment_type",
-            "equipment_name",
-            "equipment_unit_id",
-        }
         skip = {
             "emergency_mode",
             "rov_description",
@@ -1167,6 +1197,7 @@ class DialogueManager:
             "__clear_pending_oilfield",
             *equipment_keys,
         }
+
         for key, value in updates.items():
             if key in skip or value is None or value == "":
                 continue
@@ -1270,18 +1301,22 @@ class DialogueManager:
         allow_overwrite: bool,
     ) -> None:
         """统一处理机器人系列、型号、设备全称和单机编号的父子联动。"""
-        equipment_updates = {
-            key: updates.get(key)
-            for key in (
-                "equipment_family",
-                "equipment_type",
-                "equipment_name",
-                "equipment_unit_id",
-            )
-            if updates.get(key) not in (None, "")
-        }
+        equipment_updates = {}
+        for key in (
+            "equipment_family",
+            "equipment_type",
+            "equipment_name",
+            "equipment_unit_id",
+        ):
+            val = updates.get(key)
+            if isinstance(val, dict):
+                val = val.get("value")
+            if val not in (None, ""):
+                equipment_updates[key] = val
+
         if not equipment_updates:
             return
+
 
         task_type = (
             new_slots.get("task_type_key").value
@@ -1357,6 +1392,13 @@ class DialogueManager:
                 task_type,
                 str(selected_family) if selected_family else None,
             )
+            if not selected_variant and selected_family:
+                selected_variant = self.kb.get_rov_for_task(
+                    str(variant_update),
+                    task_type,
+                    None,
+                )
+
             canonical_variant = (
                 selected_variant.get("full_name")
                 if selected_variant
@@ -1401,13 +1443,15 @@ class DialogueManager:
                         allow_overwrite,
                     )
 
-        # 单机编号和设备名称都只在 fleet_units 层解析。设备名称解析成功后
-        # 写入标准 unit_id，并由该单机向上反推型号与系列。
+        def _unwrap(v):
+            return v.get("value") if isinstance(v, dict) else v
+
         unit_update = (
-            equipment_updates.get("equipment_unit_id")
-            or equipment_updates.get("equipment_name")
+            _unwrap(equipment_updates.get("equipment_unit_id"))
+            or _unwrap(equipment_updates.get("equipment_name"))
         )
         if unit_update:
+
             variant_slot = new_slots.get("equipment_type")
             variant_context = (
                 selected_variant.get("full_name")
@@ -1434,37 +1478,49 @@ class DialogueManager:
             canonical_unit_id = (
                 resolved_unit.get("unit_id") if resolved_unit else unit_update
             )
-            self._apply_slot_update_in_transaction(
-                "equipment_unit_id",
-                canonical_unit_id,
-                new_slots,
-                allow_overwrite,
-            )
 
             if resolved_unit:
                 unit_variant = resolved_unit["robot"]
-                self._apply_slot_update_in_transaction(
-                    "equipment_type",
-                    unit_variant.get("full_name"),
-                    new_slots,
-                    allow_overwrite,
-                )
-                self._apply_slot_update_in_transaction(
-                    "equipment_family",
-                    unit_variant.get("family_full_name"),
-                    new_slots,
-                    allow_overwrite,
-                )
 
-                name_slot = new_slots.get("equipment_name")
-                if name_slot is None:
-                    name_slot = Slot("equipment_name")
-                    new_slots["equipment_name"] = name_slot
+                eq_type_slot = new_slots.get("equipment_type") or Slot("equipment_type")
+                eq_type_slot.value = unit_variant.get("full_name")
+                eq_type_slot.status = "valid"
+                eq_type_slot.candidate_value = None
+                eq_type_slot.raw_value = str(unit_update)
+                eq_type_slot.validation_error = None
+                new_slots["equipment_type"] = eq_type_slot
+
+                eq_fam_slot = new_slots.get("equipment_family") or Slot("equipment_family")
+                eq_fam_slot.value = unit_variant.get("family_full_name")
+                eq_fam_slot.status = "valid"
+                eq_fam_slot.candidate_value = None
+                eq_fam_slot.raw_value = str(unit_update)
+                eq_fam_slot.validation_error = None
+                new_slots["equipment_family"] = eq_fam_slot
+
+                eq_unit_slot = new_slots.get("equipment_unit_id") or Slot("equipment_unit_id")
+                eq_unit_slot.value = resolved_unit.get("unit_id")
+                eq_unit_slot.status = "valid"
+                eq_unit_slot.candidate_value = None
+                eq_unit_slot.raw_value = str(unit_update)
+                eq_unit_slot.validation_error = None
+                new_slots["equipment_unit_id"] = eq_unit_slot
+
+                name_slot = new_slots.get("equipment_name") or Slot("equipment_name")
                 name_slot.value = resolved_unit.get("display_name")
                 name_slot.status = "valid"
                 name_slot.candidate_value = None
                 name_slot.raw_value = str(unit_update)
                 name_slot.validation_error = None
+                new_slots["equipment_name"] = name_slot
+            else:
+                self._apply_slot_update_in_transaction(
+                    "equipment_unit_id",
+                    canonical_unit_id,
+                    new_slots,
+                    allow_overwrite,
+                )
+
 
     def _handle_task_type_update_in_transaction(self, key: str, value: str, new_slots: dict):
         task_type_map = self.kb.get_task_type_map()
@@ -1539,7 +1595,8 @@ class DialogueManager:
             if target_val is None:
                 continue
 
-            temp_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
+            temp_state = {k: (s.candidate_value if s.candidate_value is not None else s.value) for k, s in new_slots.items() if s.status not in ("invalid", "missing") and (s.value is not None or s.candidate_value is not None)}
+
             allowed = self.builder._resolve_allowed(field_def, task_type_key, temp_state)
             if allowed:
                 raw = target_val
@@ -1559,7 +1616,7 @@ class DialogueManager:
                     slot.validation_error = f"Value '{raw}' could not be normalized to allowed options: {allowed}"
             else:
                 if ftype == "datetime":
-                    val_str = str(slot.value)
+                    val_str = str(target_val)
                     pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"
                     if re.match(pattern, val_str):
                         slot.value = val_str
@@ -1591,12 +1648,14 @@ class DialogueManager:
                     else:
                         slot.status = "invalid"
                         slot.candidate_value = target_val
-                        slot.validation_error = f"Invalid numeric value: {target_val}"
+                        slot.validation_error = f"Invalid number: {target_val}"
                 else:
                     slot.value = target_val
                     slot.candidate_value = None
                     slot.status = "valid"
                     slot.validation_error = None
+
+
 
         # 字段自身的格式/候选合法性与任务组合约束是两类状态：
         # 例如“水深 600m”和“最大水深 500m 的设备”均可被正确录入，
@@ -1608,20 +1667,23 @@ class DialogueManager:
         user_message: str,
         request_id: str = "req_default",
     ) -> str | None:
-        if not self.task_state.get("pending_oilfield_name"):
+        pending_slot = self.slot_store.slots.get("pending_oilfield_name")
+        if not pending_slot or not pending_slot.value or pending_slot.status != "valid":
             return None
         if self._user_cancelled_oilfield(user_message):
+            oil_slot = self.slot_store.slots.get("oilfield_name")
+            clear_oil = ("oilfield_name", "oilfield_entity_id") if (not oil_slot or oil_slot.status != "valid") else ()
             self._commit_internal_slot_values(
                 {},
                 clear_keys=(
                     "pending_oilfield_name",
                     "pending_oilfield_candidates",
-                    "oilfield_name",
-                    "oilfield_entity_id",
+                    *clear_oil,
                 ),
             )
             self._rebuild_cache()
             return "已取消当前待确认油田名称，请提供标准的油田名称（例如：流花11-1油田、陵水17-2油田等），或补充油田坐标。"
+
 
         if not self._user_confirmed_oilfield(user_message):
             return None
@@ -1681,10 +1743,30 @@ class DialogueManager:
             return False
         return any(kw in msg for kw in keywords)
 
-    @staticmethod
-    def _user_cancelled_oilfield(message: str) -> bool:
-        keywords = ["不是", "不对", "否", "错了", "重新", "不要"]
-        return any(kw in message for kw in keywords)
+    def _user_cancelled_oilfield(self, message: str) -> bool:
+        msg = message.strip()
+        if any(neg in msg for neg in ["不是要取消", "不是取消", "不要取消", "不取消", "别取消", "不要修改", "不修改"]):
+            return False
+        if any(mod_kw in msg for mod_kw in ["改成", "修改", "水深", "支持船", "管缆", "设备", "载荷"]) and "油田" not in msg:
+            return False
+        if "任务" in msg or "取消任务" in msg:
+            return False
+
+        pending_slot = self.slot_store.slots.get("pending_oilfield_name")
+        pending_name = pending_slot.value if (pending_slot and pending_slot.status == "valid") else None
+        if pending_name:
+            import re
+            mentioned_oilfields = re.findall(r"[\u4e00-\u9fa50-9\-]+油田", msg)
+            if mentioned_oilfields:
+                p_norm = pending_name.replace("油田", "").strip()
+                matched_any = any(p_norm in m or m.replace("油田", "").strip() in p_norm for m in mentioned_oilfields)
+                if not matched_any:
+                    return False
+
+        keywords = ["不是", "不对", "否", "错了", "重新", "取消油田", "不要此油田", "这个油田不对", "不要"]
+        return any(kw in msg for kw in keywords) or msg in ("不要", "取消", "不对", "不是")
+
+
 
     # --------------------------------------------------------------------------
     # 约束检查（硬解除后检查软）
@@ -1839,6 +1921,9 @@ class DialogueManager:
             "确认发布",
             "确认并发布",
             "确认发布任务",
+            "确认开始",
+            "开始",
+            "开始任务",
             "发布",
             "发布任务",
             "立即发布",
@@ -1856,11 +1941,15 @@ class DialogueManager:
 
     @staticmethod
     def _user_cancelled(message: str) -> bool:
-        negated_cancel = ["不要取消", "别取消", "不取消", "免取消"]
+        negated_cancel = ["不是要取消", "不是取消", "不要取消", "别取消", "不取消", "免取消"]
         if any(neg in message for neg in negated_cancel):
             return False
-        keywords = ["取消", "放弃", "不要了", "终止", "退出"]
+
+        if any(mod_kw in message for mod_kw in ["修改", "参数", "设置", "载荷", "水深", "支持船", "管缆", "油田", "设备", "工具"]) and "任务" not in message:
+            return False
+        keywords = ["取消任务", "放弃任务", "终止任务", "取消", "放弃", "不要了", "终止", "退出"]
         return any(kw in message for kw in keywords)
+
 
     @staticmethod
     def _user_requested_modification(message: str) -> bool:
@@ -1999,27 +2088,34 @@ class DialogueManager:
     # 缓存重建
     # --------------------------------------------------------------------------
 
-    def _rebuild_cache(self) -> None:
+    def _rebuild_cache(self, commit_derived: bool = True) -> None:
         """根据当前 slot_store 重新构建 task_state, _last_built_json 和 _last_missing"""
         self.task_state = self.slot_store.get_task_state()
-        built = self.slot_store.get_built_json()
         task_type_key = self.task_state.get("task_type_key")
+        eq_type = self.task_state.get("equipment_type") or self.task_state.get("equipment_name")
+        if commit_derived and eq_type and not self.task_state.get("equipment_family"):
+            rov = self.kb.get_rov(eq_type)
+            family = (rov.get("family_full_name") if rov else None) or (rov.get("family") if rov else None) or "ROV"
+
+            self._commit_internal_slot_values({"equipment_family": family})
+            self.task_state["equipment_family"] = family
+
         if task_type_key:
-            built, missing = self.builder.build(self.task_state, task_type_key, self.mode)
-            if "task_id" in built and not self.task_state.get("task_id"):
+            b_dict, missing = self.builder.build(self.task_state, task_type_key, self.mode)
+            if commit_derived and "task_id" in b_dict and not self.task_state.get("task_id"):
                 self._commit_internal_slot_values(
-                    {"task_id": built["task_id"]}
+                    {"task_id": b_dict["task_id"]}
                 )
-            self._last_built_json = built
             self._last_missing = missing
         else:
-            self._last_built_json = built
             self._last_missing = [{
                 "key": "task_type",
                 "label": "任务类型",
                 "type": "string",
                 "allowed_values": self.kb.get_all_task_type_values()
             }]
+        self.task_state = self.slot_store.get_task_state()
+        self._last_built_json = self.slot_store.get_built_json()
         self.task_start_now = self.is_start_time_near_now()
 
     # --------------------------------------------------------------------------
@@ -2037,80 +2133,10 @@ class DialogueManager:
 
         mode = snapshot.get("mode", "normal")
         phase = snapshot.get("phase", "collecting")
-        slot_snapshot = snapshot.get("slot_store")
         candidate_store = None
 
-        if snapshot.get("snapshot_version") == 2 and slot_snapshot:
-            factory = getattr(SlotStore, "from_snapshot", None)
-            if callable(factory):
-                candidate_store = factory(slot_snapshot, self.kb)
-            else:
-                # 当前 LHL SlotStore 尚未合并新版恢复接口，先按同一数据结构兼容恢复。
-                if not isinstance(slot_snapshot, dict):
-                    raise ValueError("slot_store must be a dictionary")
-                store_version = slot_snapshot.get("store_version")
-                slots_data = slot_snapshot.get("slots")
-                unresolved = slot_snapshot.get("unresolved")
-                if (
-                    not isinstance(store_version, int)
-                    or isinstance(store_version, bool)
-                    or store_version < 0
-                    or not isinstance(slots_data, dict)
-                    or not isinstance(unresolved, list)
-                ):
-                    raise ValueError("Invalid v2 slot_store snapshot")
-
-                restored_slots = {}
-                valid_statuses = {
-                    "missing",
-                    "candidate",
-                    "valid",
-                    "invalid",
-                    "conflict",
-                    "unresolved",
-                }
-                for key, data in slots_data.items():
-                    if not isinstance(key, str) or not isinstance(data, dict):
-                        raise ValueError("Invalid slot entry in v2 snapshot")
-                    if data.get("slot_name", key) != key:
-                        raise ValueError("Slot key does not match slot_name")
-                    status = data.get("status", "missing")
-                    confidence = data.get("confidence")
-                    slot_version = data.get("version", 0)
-                    if status not in valid_statuses:
-                        raise ValueError(f"Invalid status for slot '{key}'")
-                    if (
-                        not isinstance(slot_version, int)
-                        or isinstance(slot_version, bool)
-                        or slot_version < 0
-                    ):
-                        raise ValueError(f"Invalid version for slot '{key}'")
-                    if confidence is not None and (
-                        isinstance(confidence, bool)
-                        or not isinstance(confidence, (int, float))
-                        or not 0.0 <= float(confidence) <= 1.0
-                    ):
-                        raise ValueError(f"Invalid confidence for slot '{key}'")
-                    restored_slots[key] = Slot(
-                        slot_name=key,
-                        value=copy.deepcopy(data.get("value")),
-                        value_type=data.get("value_type", "string"),
-                        status=status,
-                        source=data.get("source", "user_input"),
-                        raw_value=copy.deepcopy(data.get("raw_value")),
-                        confidence=confidence,
-                        validation_error=data.get("validation_error"),
-                        updated_at=data.get("updated_at"),
-                        version=slot_version,
-                        candidate_value=copy.deepcopy(data.get("candidate_value")),
-                    )
-
-                candidate_store = SlotStore(self.kb)
-                candidate_store.commit_transaction(
-                    restored_slots,
-                    copy.deepcopy(unresolved),
-                )
-                candidate_store.version = store_version
+        if "slot_store" in snapshot and isinstance(snapshot.get("slot_store"), dict):
+            candidate_store = SlotStore.from_snapshot(snapshot["slot_store"], self.kb)
 
         if candidate_store is None:
             # 兼容没有 snapshot_version/slot_store 的旧历史记录。
@@ -2125,23 +2151,26 @@ class DialogueManager:
 
             new_slots = candidate_store.clone_slots()
             for key, value in legacy_state.items():
+                vtype = normalize_slot_value_type(None, value)
                 if key in new_slots:
                     new_slots[key].value = copy.deepcopy(value)
                     new_slots[key].status = "valid"
+                    new_slots[key].value_type = vtype
                 else:
                     new_slots[key] = Slot(
                         slot_name=key,
                         value=copy.deepcopy(value),
                         status="valid",
+                        value_type=vtype,
                     )
             candidate_store.commit_transaction(new_slots, [])
+
 
         # 候选 SlotStore 完整构建后再一次性替换，避免半恢复状态泄漏。
         self.conversation_history = copy.deepcopy(conversation_history)
         self.slot_store = candidate_store
         self.task_state = self.slot_store.get_task_state()
         self.mode = mode
-        self.phase = phase
         self.final_result = None
         self.task_start_now = False
         # 清空阻塞与白名单，重新构建缓存
@@ -2149,3 +2178,78 @@ class DialogueManager:
         self._soft_whitelist = set()
         self._hard_refusal_counts = {}
         self._pending_rov_candidates = []
+        self._rebuild_cache(commit_derived=False)
+
+        # ── 快照 Intent ID 校验与 done 阶段完整性校验 ──
+        intent_slot = self.slot_store.slots.get("intent_id")
+        intent_id_val = intent_slot.value if (intent_slot and intent_slot.status == "valid") else None
+        is_valid_id = bool(intent_id_val and validate_intent_id(str(intent_id_val)))
+
+        _REQUIRED_INTENT_KEYS = {
+            "intent_id", "task_type", "priority", "time",
+            "location", "task", "equipment", "conditions"
+        }
+        _VALID_TASK_TYPES = {"pipeline_inspection", "valve_operation"}
+
+        if phase == "done":
+            validated = False
+            _loaded_intent = None
+            if is_valid_id and intent_id_val:
+                try:
+                    task_dir = _ti_builder_module.get_task_dir(create=False)
+                    pub_file = task_dir / f"task_intent_{intent_id_val}.json"
+                    if pub_file.is_symlink():
+                        logger.warning("[load_snapshot] final file is a symlink, rejecting done phase")
+                    elif pub_file.is_file():
+                        with open(pub_file, "r", encoding="utf-8") as _f:
+                            _data = json.load(_f)
+                        if isinstance(_data, dict) and _REQUIRED_INTENT_KEYS.issubset(_data.keys()):
+                            _file_task_type = _data.get("task_type")
+                            _file_intent_id = _data.get("intent_id")
+                            if _file_intent_id != intent_id_val:
+                                logger.warning("[load_snapshot] intent_id mismatch in final file")
+                            elif _file_task_type not in _VALID_TASK_TYPES:
+                                logger.warning("[load_snapshot] invalid task_type in final file: %r", _file_task_type)
+                            else:
+                                validated = True
+                                _loaded_intent = _data
+                        else:
+                            logger.warning("[load_snapshot] final file missing required keys")
+                    else:
+                        logger.warning("[load_snapshot] final file not found: %s", pub_file)
+                except Exception as _e:
+                    logger.warning("[load_snapshot] done-phase validation error: %s", _e)
+
+            if validated:
+                self.phase = "done"
+                self.final_result = _loaded_intent
+            else:
+                self.phase = "collecting"
+                today = get_current_datetime().strftime("%Y%m%d")
+                task_dir = _ti_builder_module.get_task_dir(create=False)
+                new_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
+                new_slots = self.slot_store.clone_slots()
+                if "intent_id" not in new_slots:
+                    new_slots["intent_id"] = Slot("intent_id")
+                new_slots["intent_id"].value = new_id
+                new_slots["intent_id"].status = "valid"
+                new_slots["intent_id"].source = "auto"
+                self.slot_store.commit_transaction(new_slots, self.slot_store.unresolved)
+                self.task_state = self.slot_store.get_task_state()
+                self._last_built_json = self.slot_store.get_built_json()
+        else:
+            self.phase = phase
+            if not is_valid_id:
+                today = get_current_datetime().strftime("%Y%m%d")
+                task_dir = _ti_builder_module.get_task_dir(create=False)
+                new_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
+                new_slots = self.slot_store.clone_slots()
+                if "intent_id" not in new_slots:
+                    new_slots["intent_id"] = Slot("intent_id")
+                new_slots["intent_id"].value = new_id
+                new_slots["intent_id"].status = "valid"
+                new_slots["intent_id"].source = "auto"
+                self.slot_store.commit_transaction(new_slots, self.slot_store.unresolved)
+                self.task_state = self.slot_store.get_task_state()
+                self._last_built_json = self.slot_store.get_built_json()
+

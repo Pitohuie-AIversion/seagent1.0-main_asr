@@ -4,9 +4,11 @@ web_backend.py - Web 后端主控
 共享只读模型（LLMClient, KnowledgeBase）。
 """
 
+import json
 import threading
 import uuid
 import yaml
+
 import logging
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template
@@ -452,14 +454,17 @@ import re as _re_module
 
 _CJK_RE = _re_module.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
 
-# 单次翻译最大输入字符数（超出则分段）
 TRANSLATION_CHUNK_SIZE = 2000
-
-# 输入长度硬上限（超出直接拒绝，防止 OOM）
 TRANSLATION_MAX_INPUT_CHARS = 20000
-
-# 翻译推理 max_tokens（足够覆盖长段落）
 TRANSLATION_MAX_TOKENS = 4096
+TRANSLATION_CACHE_FILE = Path("/root/autodl-tmp/result/translation_cache.json")
+_translation_cache_file = TRANSLATION_CACHE_FILE
+_translation_cache_lock = threading.Lock()
+_translation_cache: dict[str, str] = {}
+TRANSLATION_USE_CACHE = True
+
+def _get_cache_key(text: str, target_lang: str) -> str:
+    return f"{target_lang}:{text}"
 
 # 翻译系统提示词
 _TRANSLATE_SYSTEM_PROMPT = (
@@ -559,6 +564,12 @@ def _translate_text_internal(text: str, target_lang: str) -> str:
     if not text:
         return ""
 
+    cache_key = _get_cache_key(text, target_lang)
+    if TRANSLATION_USE_CACHE:
+        with _translation_cache_lock:
+            if cache_key in _translation_cache:
+                return _translation_cache[cache_key]
+
     # 输入长度硬限制
     if len(text) > TRANSLATION_MAX_INPUT_CHARS:
         logging.warning(
@@ -601,6 +612,10 @@ def _translate_text_internal(text: str, target_lang: str) -> str:
         )
         # 返回原文（安全回退）
         return text
+
+    if TRANSLATION_USE_CACHE:
+        with _translation_cache_lock:
+            _translation_cache[cache_key] = translated
 
     return translated
 

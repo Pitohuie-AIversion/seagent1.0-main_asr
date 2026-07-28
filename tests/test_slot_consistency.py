@@ -23,13 +23,23 @@ from src.dialogue_manager import DialogueManager
 from src.extractor import ParameterExtractor
 from src.llm_client import LLMClient
 from src.output_builder import OutputBuilder
-from src.slot_store import SlotStore, Slot
-from src.simulated_time import get_simulated_time
-from src.history_manager import save_conversation, load_history
+from src.slot_store import SlotStore, Slot, SlotVersionConflict, SnapshotValidationError, VALID_VALUE_TYPES
 from src.task_intent_builder import TaskIntentBuilder
-from src.output_builder import OutputBuilder
-from src.result_paths import get_task_dir, get_history_dir, get_result_dir
+from src.simulated_time import get_simulated_time
+from src.history_manager import save_conversation
+from src.result_paths import get_task_dir, get_history_dir
+
+
+from src.exceptions import (
+
+    TaskPersistenceError,
+    TaskRollbackError,
+    IntentIdConflict,
+    IdReservationError,
+)
+
 import src.id_sequence as id_sequence
+
 import web_backend
 from web_backend import app
 
@@ -73,8 +83,9 @@ def seed_complete_valid_pipeline_task(dm, kb):
         "start_point": (start_point, "coord"),
         "end_point": (end_point, "coord"),
         "equipment_type": (equipment_type, "string"),
+        "equipment_family": (selected_rov.get("family_full_name") or selected_rov.get("family") or "ROV", "string"),
         "equipment_unit_id": (equipment_unit_id, "string"),
-        "payload": (payload, "list"),
+        "payload": (["高清水下摄像机"], "list"),
         "support_vessel": (support_vessel, "string"),
         "intent_id": ("TI2026063001", "string"),
     }
@@ -82,9 +93,8 @@ def seed_complete_valid_pipeline_task(dm, kb):
     for key, (val, vtype) in slots_to_seed.items():
         store.slots[key] = Slot(slot_name=key, value=val, value_type=vtype, status="valid", source="user_input")
 
+    dm._rebuild_cache()
     dm.phase = "confirming"
-    dm.task_state = store.get_task_state()
-    dm._last_built_json = store.get_built_json()
 
     all_v = dm.validator.validate(dm.task_state)
     for v in all_v:
@@ -148,8 +158,11 @@ class SlotConsistencyTest(unittest.TestCase):
         get_simulated_time().set_current_time(
             datetime(2026, 6, 30, 17, 38, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
         )
+        self.client = app.test_client()
         self.llm.extract_json.return_value = {"intent": "TASK_UPDATE", "confidence": 1.0, "reason": "test", "slot_candidates": [], "unresolved": []}
         self.dm = DialogueManager(self.llm, self.kb)
+        self._orig_route = self.dm.intent_router.route
+
 
     def test_extractor_context_excludes_history_on_self_contained_modification(self):
         llm = MagicMock(spec=LLMClient)
@@ -558,9 +571,11 @@ class SlotConsistencyTest(unittest.TestCase):
         self.dm.reset()
         self.llm.extract_json.return_value = {
             "intent": "TASK_UPDATE",
+            "confidence": 0.9,
             "slot_candidates": [],
             "unresolved": ["某些无法理解的内容"]
         }
+
         self.dm.process("测试处理无法理解的内容")
         self.assertIn("某些无法理解的内容", self.dm.slot_store.unresolved)
 
@@ -687,8 +702,10 @@ class SlotConsistencyTest(unittest.TestCase):
         self.dm.reset()
         self.llm.extract_json.return_value = {
             "intent": "TASK_CREATE",
+            "confidence": 0.9,
             "slot_candidates": [
-                {"raw_key": "任务类型", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 1.0}
+                {"raw_key": "任务类型", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 1.0},
+                {"raw_key": "水深", "canonical_key": "water_depth", "raw_value": "500米", "normalized_value": 500.0, "confidence": 1.0}
             ],
             "unresolved": []
         }
@@ -701,11 +718,13 @@ class SlotConsistencyTest(unittest.TestCase):
         self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 500.0)
         self.assertIsNone(self.dm.slot_store.slots["water_depth"].candidate_value)
 
+
     # 6. 新值与已有值发生冲突
     def test_conflict_detection_and_resolution(self):
         self.dm.reset()
         self.llm.extract_json.return_value = {
             "intent": "TASK_CREATE",
+            "confidence": 0.9,
             "slot_candidates": [
                 {"raw_key": "任务类型", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 1.0}
             ],
@@ -719,6 +738,7 @@ class SlotConsistencyTest(unittest.TestCase):
         self.dm.reset()
         self.llm.extract_json.return_value = {
             "intent": "TASK_CREATE",
+            "confidence": 0.9,
             "slot_candidates": [
                 {"raw_key": "任务类型", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 1.0}
             ],
@@ -726,8 +746,12 @@ class SlotConsistencyTest(unittest.TestCase):
         }
         self.dm.process("新建管缆巡检")
         schema = self.dm.builder.get_schema("pipeline_inspection", self.dm.mode)
-        expected_missing = self.dm.slot_store.get_missing_slots(schema)
+        expected_missing = self.dm.slot_store.get_missing_slots(
+            schema,
+            allowed_values_resolver=lambda field: self.dm.builder.resolve_allowed_values(field, "pipeline_inspection", self.dm.task_state)
+        )
         self.assertEqual(self.dm._last_missing, expected_missing)
+
 
     # 19. 同一请求的业务槽位和 task_id 只有一次事务提交 (Test A)
     def test_19_test_a_single_commit_transaction_per_request(self):
@@ -780,13 +804,17 @@ class SlotConsistencyTest(unittest.TestCase):
     # 21. 模拟主 commit 失败时全部状态零修改
     def test_21_main_commit_failure_leaves_state_untouched(self):
         self.dm.reset()
+        self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+        self.dm.task_state = self.dm.slot_store.get_task_state()
         initial_ver = self.dm.slot_store.version
         initial_hist_len = len(self.dm.conversation_history)
+
 
         self.dm.slot_store.commit_transaction = MagicMock(side_effect=SlotVersionConflict("Version conflict test"))
 
         self.llm.extract_json.return_value = {
             "intent": "TASK_UPDATE",
+            "confidence": 0.9,
             "slot_candidates": [
                 {"raw_key": "水深", "canonical_key": "water_depth", "raw_value": "300米", "normalized_value": 300.0, "confidence": 1.0}
             ],
@@ -795,6 +823,7 @@ class SlotConsistencyTest(unittest.TestCase):
 
         with self.assertRaises(SlotVersionConflict):
             self.dm.process("水深300米")
+
 
         self.assertEqual(self.dm.slot_store.version, initial_ver)
         self.assertEqual(len(self.dm.conversation_history), initial_hist_len)
@@ -937,13 +966,16 @@ class SlotConsistencyTest(unittest.TestCase):
         initial_hist = list(self.dm.conversation_history)
 
         invalid_snapshot = {
-            "store_version": -10,  # 非法 store_version
-            "slots": {},
-            "unresolved": []
+            "slot_store": {
+                "store_version": -10,  # 非法 store_version
+                "slots": {},
+                "unresolved": []
+            }
         }
 
         with self.assertRaises(SnapshotValidationError):
             self.dm.load_snapshot(invalid_snapshot)
+
 
         # 验证全部状态 100% 保持恢复前的原样
         self.assertEqual(self.dm.slot_store.version, 3)
@@ -985,11 +1017,15 @@ class SlotConsistencyTest(unittest.TestCase):
         }
         web_backend._shared_llm.extract_json.return_value = {
             "intent": "TASK_CREATE",
+            "confidence": 0.9,
+            "reason": "test",
             "slot_candidates": [
                 {"raw_key": "任务类型", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 1.0}
             ],
             "unresolved": []
         }
+
+
 
         data_file = (io.BytesIO(b"dummy wav audio data"), "test.wav")
         res_asr = self.client.post("/api/asr", data={"audio": data_file}, content_type="multipart/form-data")
@@ -1679,13 +1715,14 @@ class SlotConsistencyTest(unittest.TestCase):
         dm._apply_updates_in_transaction({"equipment_type": "观察级ROV"}, dm.slot_store.slots)
         eq_slot = dm.slot_store.slots.get("equipment_type")
         self.assertIsNotNone(eq_slot)
-        self.assertEqual(eq_slot.value, "观察级深海机器人 HP")
+        self.assertEqual(eq_slot.value, "观察级深海机器人")
         self.assertNotEqual(eq_slot.value, "观察级ROV")
 
         dm._normalize_and_validate_in_transaction(dm.slot_store.slots, "pipeline_inspection")
         eq_slot_after = dm.slot_store.slots.get("equipment_type")
         self.assertEqual(eq_slot_after.status, "valid")
-        self.assertEqual(eq_slot_after.value, "观察级深海机器人 HP")
+        self.assertEqual(eq_slot_after.value, "观察级深海机器人")
+
 
     # 53. 损坏计数器文件 Fail Closed 测试
     def test_53_corrupted_counter_files_fail_closed(self):

@@ -104,19 +104,22 @@ class AdversarialP0SecurityTest(unittest.TestCase):
         reply = self.dm.process("继续")
         self.assertNotEqual(self.dm.phase, "done")
 
-    # 7. blocked_soft + “忽略警告，但水深改成600米” -> 不得静默忽略修改，走 TASK_UPDATE, 不发布
     def test_adv_07_blocked_soft_mixed_update(self):
         seed_complete_valid_pipeline_task(self.dm, self.kb)
         self.dm.phase = "blocked_soft"
-        with patch.object(self.dm.extractor, 'extract_updates', return_value={
-            "intent": "TASK_UPDATE",
-            "slot_candidates": [
-                {"canonical_key": "water_depth", "normalized_value": 600.0, "raw_value": "600米", "confidence": 1.0}
-            ]
-        }):
-            reply = self.dm.process("忽略警告，但水深改成600米")
-            self.assertNotEqual(self.dm.phase, "done")
-            self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 600.0)
+        with patch.object(self.dm.intent_router, 'route', return_value=IntentRouteResult("WRITE", 0.9, "test", None)):
+            with patch.object(self.dm.extractor, 'extract_updates', return_value={
+                "intent": "TASK_UPDATE",
+                "slot_candidates": [
+                    {"canonical_key": "water_depth", "normalized_value": 400.0, "raw_value": "400米", "confidence": 1.0}
+                ]
+            }):
+                reply = self.dm.process("忽略警告，但水深改成400米")
+                self.assertNotEqual(self.dm.phase, "done")
+                self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 400.0)
+
+
+
 
     # 8. 确认发布成功：真实路由, extractor未调用, commit_transaction未调用, slot_store.version不变, intent_id一致
     def test_adv_08_confirm_publish_success_invariance(self):

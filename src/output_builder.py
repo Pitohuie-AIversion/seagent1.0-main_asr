@@ -348,11 +348,13 @@ class OutputBuilder:
                     if not unit_id:
                         continue
                     targets = [
+                        unit_id,
                         unit.get("display_name"),
                         *unit.get("aliases", []),
                     ]
                     for alias in targets:
                         add_mapping(alias, unit_id)
+
             return mappings
 
         return mappings

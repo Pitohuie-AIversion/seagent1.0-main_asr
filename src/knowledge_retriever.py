@@ -496,8 +496,23 @@ class KnowledgeBase:
             if not variant:
                 return None
 
+        # 1. 优先尝试全库 unit_id 精确匹配
+        all_units = self.robot_fleet.get("fleet_units", [])
+        variants = {r["variant_id"]: r for r in self.get_all_rovs()}
+        exact_unit_id_matches = [
+            u for u in all_units
+            if _norm(u.get("unit_id")) == needle
+        ]
+        if len(exact_unit_id_matches) == 1:
+            u = exact_unit_id_matches[0]
+            unit_variant = variants.get(u.get("variant_id"))
+            if unit_variant and self.robot_matches_task(unit_variant, task_type_key):
+                return {**u, "robot": unit_variant}
+
+
         def matching_units(contains: bool) -> list[dict]:
             matches: list[dict] = []
+
             variants = {r["variant_id"]: r for r in self.get_all_rovs()}
             for unit in self.robot_fleet.get("fleet_units", []):
                 if variant and unit.get("variant_id") != variant.get("variant_id"):
@@ -694,7 +709,7 @@ class KnowledgeBase:
         if not equipment_selector or not isinstance(equipment_selector, str):
             return empty_state
 
-        lookup_keys: list[str] = [equipment_selector]
+        lookup_keys: list[str] = []
         resolved_unit = self.resolve_robot_unit(equipment_selector)
         if resolved_unit:
             lookup_keys.extend([
@@ -713,6 +728,7 @@ class KnowledgeBase:
                         unit.get("status_ref", ""),
                         unit.get("unit_id", ""),
                     ])
+        lookup_keys.append(equipment_selector)
 
         deduped_keys: list[str] = []
         seen = set()
@@ -911,16 +927,40 @@ class KnowledgeBase:
                 if entity_targets:
                     matched_alias = str(context_selector)
 
-        if entity_targets and len(entity_targets) > 1:
-            response["reason"] = "ambiguous_device_alias"
-            response["matched_alias"] = matched_alias
-            response["candidate_entities"] = entity_targets
-            response["query_mode"] = "device_check"
-            return response
-
         list_keywords = ("哪些", "列表", "所有", "有哪些", "推荐", "选择", "可用", "什么型号")
         is_list_query = any(keyword in user_message for keyword in list_keywords)
-        if entity_targets:
+
+        if entity_targets and len(entity_targets) > 1:
+            family_ids = set()
+            class_ids = set()
+            for target in entity_targets:
+                if target.startswith("family:"):
+                    family_ids.add(target.split(":", 1)[1])
+                elif target.startswith("variant:"):
+                    var_id = target.split(":", 1)[1]
+                    rov = self.get_rov(var_id)
+                    if rov and rov.get("family_id"):
+                        family_ids.add(rov["family_id"])
+                elif target.startswith("class:"):
+                    class_ids.add(target.split(":", 1)[1])
+
+            if len(family_ids) == 1 or len(class_ids) == 1:
+                robots = []
+                for et in entity_targets:
+                    _, r_list = self._robots_for_entity_target(et, task_type_key)
+                    for r in r_list:
+                        if r not in robots:
+                            robots.append(r)
+                response["matched_alias"] = matched_alias
+                response["matched_entity"] = entity_targets[0]
+                query_mode = "device_check"
+            else:
+                response["reason"] = "ambiguous_device_alias"
+                response["matched_alias"] = matched_alias
+                response["candidate_entities"] = entity_targets
+                response["query_mode"] = "device_check"
+                return response
+        elif entity_targets:
             entity_target = entity_targets[0]
             entity_kind, robots = self._robots_for_entity_target(
                 entity_target,

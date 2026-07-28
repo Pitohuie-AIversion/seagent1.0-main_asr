@@ -1,0 +1,5 @@
+# Optional GPU & ASR dependencies
+torch
+transformers
+accelerate
+vllm

@@ -2,13 +2,17 @@ name: SEAgent CI & Regression Verification
 
 on:
   push:
-    branches: [ main, "phase*" ]
+    branches: [ main, "phase*", "fix/*" ]
   pull_request:
     branches: [ main ]
 
 jobs:
-  test-and-verify:
+  core-tests:
+    name: Core Syntax & Mandatory Guard Tests
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+      SEAGENT_RESULT_DIR: ${{ github.workspace }}/result
 
     steps:
       - name: Checkout Code
@@ -22,45 +26,60 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install -r requirements/test.txt
 
       - name: 1. Python Syntax & Compilation Check
-        run: |
-          python -m compileall -q src tests
+        run: python -m compileall -q src tests
 
-      - name: 2. Run Phase 1.5 Tests
-        run: |
-          python -m unittest \
-            tests/test_intent_routing_matrix.py \
-            tests/test_payload_multivalue.py \
-            tests/test_robot_state_consistency.py
+      - name: 2a. Run Intent Routing Matrix Test
+        run: python -m unittest tests.test_intent_routing_matrix
+
+      - name: 2b. Run Payload MultiValue Test
+        run: python -m unittest tests.test_payload_multivalue
+
+      - name: 2c. Run Robot State Consistency Test
+        run: python -m unittest tests.test_robot_state_consistency
 
       - name: 3. Run Phase 1.8 Benchmark Tests
-        run: |
-          python -m unittest \
-            tests/test_multiturn_consistency_benchmark.py \
-            tests/test_query_write_mixed_benchmark.py \
-            tests/test_ambiguity_resolution_benchmark.py \
-            tests/test_failure_recovery_benchmark.py
+        run: python -m unittest tests.test_multiturn_consistency_benchmark tests.test_query_write_mixed_benchmark tests.test_ambiguity_resolution_benchmark tests.test_failure_recovery_benchmark
 
       - name: 4. Run Phase 1.9 Guard Tests
-        run: |
-          python -m unittest tests/test_phase19_regression_guard.py
+        run: python -m unittest tests.test_phase19_regression_guard
 
       - name: 5. Run Parser, Classification & Equipment E2E Tests
-        run: |
-          python -m unittest \
-            tests/test_regression_report_parser.py \
-            tests/test_regression_error_classification.py \
-            tests/test_equipment_resolution_e2e.py
+        run: python -m unittest tests.test_regression_report_parser tests.test_regression_error_classification tests.test_equipment_resolution_e2e
 
-      - name: 6. Run Full Test Suite & Generate Audit Artifacts
+  regression-audit:
+    name: Regression Audit & Artifact Report Generation
+    needs: core-tests
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+      SEAGENT_RESULT_DIR: ${{ github.workspace }}/result
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/test.txt
+
+      - name: Run Full Test Suite & Generate Audit Data
         continue-on-error: true
         run: |
           python scratch/parse_tests.py
           python scratch/generate_report.py
 
-      - name: 7. Upload Regression Report & Test Log Artifacts
+      - name: Upload Regression Report & Test Log Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: regression-audit-report
