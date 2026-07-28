@@ -694,7 +694,7 @@ class KnowledgeBase:
         if not equipment_selector or not isinstance(equipment_selector, str):
             return empty_state
 
-        lookup_keys: list[str] = [equipment_selector]
+        lookup_keys: list[str] = []
         resolved_unit = self.resolve_robot_unit(equipment_selector)
         if resolved_unit:
             lookup_keys.extend([
@@ -713,6 +713,7 @@ class KnowledgeBase:
                         unit.get("status_ref", ""),
                         unit.get("unit_id", ""),
                     ])
+        lookup_keys.append(equipment_selector)
 
         deduped_keys: list[str] = []
         seen = set()
