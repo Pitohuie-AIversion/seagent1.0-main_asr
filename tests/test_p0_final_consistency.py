@@ -163,13 +163,25 @@ class P0FinalConsistencyDefectTest(unittest.TestCase):
                 orig_final_result = copy.deepcopy(self.dm.final_result)
                 orig_snapshot = copy.deepcopy(self.dm.slot_store.export_snapshot())
 
-                with patch.object(self.dm.slot_store, 'commit_transaction', side_effect=SlotVersionConflict("Version conflict simulation")):
+                with patch.object(self.dm.extractor, 'extract_updates', return_value={
+                    "intent": "TASK_UPDATE",
+                    "slot_candidates": [
+                        {
+                            "canonical_key": "water_depth",
+                            "raw_value": "500米",
+                            "normalized_value": 500.0,
+                            "confidence": 1.0,
+                            "resolution_method": "exact_match",
+                        }
+                    ],
+                }), patch.object(self.dm.slot_store, 'commit_transaction', side_effect=SlotVersionConflict("Version conflict simulation")):
                     with self.assertRaises(SlotVersionConflict):
                         self.dm.process("水深改成500米")
 
                 self.assertEqual(self.dm.phase, "done")
                 self.assertEqual(self.dm.final_result, orig_final_result)
                 self.assertEqual(self.dm.slot_store.export_snapshot(), orig_snapshot)
+
 
     # ── 问题三：槽位冲突解决测试 ──
 

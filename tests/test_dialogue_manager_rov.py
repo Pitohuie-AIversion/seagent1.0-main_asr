@@ -163,9 +163,10 @@ class DialogueManagerROVTest(unittest.TestCase):
             "管缆巡检",
             {"equipment_name": "观察级"},
         )
-        self.assertEqual(dm.task_state.get("equipment_name"), "观察级深海机器人 HP")
+        self.assertEqual(dm.task_state.get("equipment_name"), "观察级深海机器人-001")
         self.assertEqual(dm.task_state.get("equipment_family"), "观察级深海机器人")
-        self.assertEqual(dm.task_state.get("equipment_type"), "观察级深海机器人 HP")
+        self.assertEqual(dm.task_state.get("equipment_type"), "观察级深海机器人")
+        self.assertEqual(dm.task_state.get("equipment_unit_id"), "OBSROV--001")
 
     def test_equipment_transaction_with_rov_alias_work(self):
         dm = self._commit_equipment_update(
@@ -173,9 +174,10 @@ class DialogueManagerROVTest(unittest.TestCase):
             "采油树控制面板插入",
             {"equipment_name": "工作级"},
         )
-        self.assertEqual(dm.task_state.get("equipment_name"), "通用工作级深海机器人 250HP")
+        self.assertEqual(dm.task_state.get("equipment_name"), "通用工作级深海机器人250HP-001")
         self.assertEqual(dm.task_state.get("equipment_family"), "通用工作级深海机器人")
         self.assertEqual(dm.task_state.get("equipment_type"), "通用工作级深海机器人 250HP")
+        self.assertEqual(dm.task_state.get("equipment_unit_id"), "WROV-250-001")
 
     def test_equipment_transaction_with_rov_alias_tractor(self):
         dm = self._commit_equipment_update(
@@ -183,9 +185,10 @@ class DialogueManagerROVTest(unittest.TestCase):
             "管缆埋设",
             {"equipment_name": "金牛座"},
         )
-        self.assertEqual(dm.task_state.get("equipment_name"), "履带式海底重载作业机器人 1600HP")
+        self.assertEqual(dm.task_state.get("equipment_name"), "履带式海底重载作业机器人1600HP-001")
         self.assertEqual(dm.task_state.get("equipment_family"), "履带式海底重载作业机器人")
         self.assertEqual(dm.task_state.get("equipment_type"), "履带式海底重载作业机器人 1600HP")
+        self.assertEqual(dm.task_state.get("equipment_unit_id"), "CRAWLER-1600-001")
 
     def test_family_and_variant_candidate_interfaces(self):
         builder = OutputBuilder(self.kb)
@@ -217,7 +220,7 @@ class DialogueManagerROVTest(unittest.TestCase):
             "type": "string",
             "allowed_values_ref": "robot_full_names",
         }
-        expected = ["观察级深海机器人 HP"]
+        expected = ["观察级深海机器人"]
         self.assertEqual(
             builder.resolve_allowed_values(
                 variant_field,
@@ -276,10 +279,11 @@ class DialogueManagerROVTest(unittest.TestCase):
 
 
     def test_variant_alias_is_available_to_backend_lookup(self):
-        rov = self.kb.get_rov("巡检ROV HP")
+        rov = self.kb.get_rov("巡检ROV")
         self.assertIsNotNone(rov)
-        self.assertEqual(rov["full_name"], "观察级深海机器人 HP")
-        self.assertIn("巡检ROV HP", rov["aliases"])
+        self.assertEqual(rov["full_name"], "观察级深海机器人")
+        self.assertIn("巡检ROV", rov["aliases"])
+
 
     def test_prompt_enforces_family_variant_unit_dependency(self):
         common = dict(
@@ -294,7 +298,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         )
         missing = [
             {"key": "equipment_family", "label": "作业机器人系列", "type": "string", "allowed_values": ["观察级深海机器人"]},
-            {"key": "equipment_type", "label": "作业设备型号", "type": "string", "allowed_values": ["观察级深海机器人 HP"]},
+            {"key": "equipment_type", "label": "作业设备型号", "type": "string", "allowed_values": ["观察级深海机器人"]},
             {"key": "equipment_unit_id", "label": "具体机器人编号", "type": "string", "allowed_values": []},
         ]
         system = build_responder_messages(
@@ -344,11 +348,11 @@ class DialogueManagerROVTest(unittest.TestCase):
         self.assertIn("海底油气管道", system)
         self.assertIn("电力电缆", system)
         self.assertIn("海洋石油681", system)
-        self.assertIn("任意待收集字段包含 allowed_values", system)
-        self.assertIn("逐字原样复制 allowed_values", system)
-        self.assertIn("用户看到的每一个候选项", system)
+        self.assertIn("凡是待收集字段包含 allowed_values", system)
+        self.assertIn("逐字原样展示 allowed_values", system)
+        self.assertIn("用户看到的候选项", system)
         self.assertIn("完全字符串匹配", system)
-        self.assertIn("不得把其他字段的已收集值", system)
+        self.assertIn("不得把父级字段值当成子级候选", system)
 
     def test_responder_uses_committed_update_instead_of_raw_alias(self):
         messages = build_responder_messages(
@@ -359,7 +363,7 @@ class DialogueManagerROVTest(unittest.TestCase):
                     "key": "equipment_type",
                     "label": "作业设备型号",
                     "type": "string",
-                    "allowed_values": ["轻型工作级深海机器人 HP"],
+                    "allowed_values": ["轻型工作级深海机器人"],
                 }
             ],
             mode="normal",
@@ -460,13 +464,13 @@ class DialogueManagerROVTest(unittest.TestCase):
     def test_model_selection_auto_fills_family(self):
         dm, slots = self._normal_slots()
         dm._apply_updates_in_transaction(
-            {"equipment_type": "巡检ROV HP"},
+            {"equipment_type": "巡检ROV"},
             slots,
         )
         dm._normalize_and_validate_in_transaction(slots, "pipeline_inspection")
         self.assertEqual(slots["equipment_family"].value, "观察级深海机器人")
         self.assertEqual(slots["equipment_family"].status, "valid")
-        self.assertEqual(slots["equipment_type"].value, "观察级深海机器人 HP")
+        self.assertEqual(slots["equipment_type"].value, "观察级深海机器人")
         self.assertEqual(slots["equipment_type"].status, "valid")
 
     def test_explicit_family_rejects_variant_from_another_family(self):
@@ -474,7 +478,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         dm._apply_updates_in_transaction(
             {
                 "equipment_family": "观察级深海机器人",
-                "equipment_type": "AUV HP",
+                "equipment_type": "水下无人自主航行器 324CC",
             },
             slots,
         )
@@ -487,9 +491,9 @@ class DialogueManagerROVTest(unittest.TestCase):
         dm, slots = self._normal_slots()
         for key, value in {
             "equipment_family": "观察级深海机器人",
-            "equipment_type": "观察级深海机器人 HP",
-            "equipment_unit_id": "OROV-HP-001",
-            "equipment_name": "观察级深海机器人 HP",
+            "equipment_type": "观察级深海机器人",
+            "equipment_unit_id": "OBSROV--001",
+            "equipment_name": "观察级深海机器人-001",
         }.items():
             slots[key].value = value
             slots[key].status = "valid"
@@ -507,18 +511,19 @@ class DialogueManagerROVTest(unittest.TestCase):
 
     def test_task_intent_robot_type_comes_from_selected_variant(self):
         builder = TaskIntentBuilder(self.kb)
-        cases = {
-            "观察级深海机器人 HP": "observation_rov",
-            "通用工作级深海机器人 250HP": "work_class_rov",
-            "水下无人自主航行器 HP": "auv",
-            "履带式海底重载作业机器人 1600HP": "work_class_rov",
-        }
-        for variant, expected in cases.items():
+        cases = (
+            ("观察级深海机器人", "pipeline_inspection", "observation_rov"),
+            ("通用工作级深海机器人 250HP", "tree_valve_operation", "work_class_rov"),
+            ("水下无人自主航行器 324CC", "pipeline_inspection", "auv"),
+            ("履带式海底重载作业机器人 1600HP", "pipeline_burial", "work_class_rov"),
+        )
+        for variant, task_type_key, expected in cases:
             with self.subTest(variant=variant):
                 self.assertEqual(
                     builder._resolve_robot_type(
                         {"equipment_type": variant},
                         {},
+                        task_type_key,
                     ),
                     expected,
                 )
@@ -528,9 +533,9 @@ class DialogueManagerROVTest(unittest.TestCase):
         dm, slots = self._normal_slots()
         for key, value in {
             "equipment_family": "观察级深海机器人",
-            "equipment_type": "观察级深海机器人 HP",
-            "equipment_name": "观察级深海机器人 HP",
-            "equipment_unit_id": "OBSROV-HP-001",
+            "equipment_type": "观察级深海机器人",
+            "equipment_name": "观察级深海机器人-001",
+            "equipment_unit_id": "OBSROV--001",
         }.items():
             slots[key].value = value
             slots[key].status = "valid"
@@ -538,7 +543,7 @@ class DialogueManagerROVTest(unittest.TestCase):
 
         new_slots = dm.slot_store.clone_slots()
         dm._apply_updates_in_transaction(
-            {"equipment_type": "AUV HP"},
+            {"equipment_type": "水下无人自主航行器 324CC"},
             new_slots,
             allow_overwrite=True,
         )
@@ -547,7 +552,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         dm.task_state = dm.slot_store.get_task_state()
 
         self.assertEqual(dm.task_state["equipment_family"], "水下无人自主航行器")
-        self.assertEqual(dm.task_state["equipment_type"], "水下无人自主航行器 HP")
+        self.assertEqual(dm.task_state["equipment_type"], "水下无人自主航行器 324CC")
         self.assertNotIn("equipment_unit_id", dm.task_state)
         self.assertIsNone(dm.slot_store.slots["equipment_unit_id"].value)
 

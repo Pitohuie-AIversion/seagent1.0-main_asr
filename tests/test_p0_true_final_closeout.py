@@ -125,14 +125,15 @@ class DeviceAliasRoutingPriorityTest(unittest.TestCase):
         with patch.object(self.dm.extractor, "extract_updates", return_value={
             "intent": "TASK_UPDATE",
             "slot_candidates": [
-                {"canonical_key": "equipment_unit_id", "normalized_value": "AUV-HP-001", "raw_value": "AUV一号机", "confidence": 1.0}
+                {"canonical_key": "equipment_unit_id", "normalized_value": "AUV-324cc-001", "raw_value": "AUV一号机", "confidence": 1.0}
             ]
         }) as mock_ext:
             reply = self.dm.process("把设备改成AUV一号机")
             mock_ext.assert_called_once()
             slot = self.dm.slot_store.slots.get("equipment_type")
             self.assertIsNotNone(slot)
-            self.assertEqual(slot.value, "水下无人自主航行器 HP")
+            self.assertEqual(slot.value, "水下无人自主航行器 324CC")
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

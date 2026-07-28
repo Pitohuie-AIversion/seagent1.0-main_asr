@@ -3,6 +3,7 @@ import json
 import uuid
 import sys
 import time
+from datetime import datetime, timedelta
 
 BASE_URL = "http://localhost:8890"
 
@@ -50,10 +51,16 @@ class IntegrationTestCase:
         self.verifications = verifications or []  # List of functions taking step_index and response_json, returning (bool, msg)
 
 def run_tests():
+    time_response = requests.get(f"{BASE_URL}/api/time/current", timeout=5)
+    time_response.raise_for_status()
+    simulated_now = datetime.fromisoformat(time_response.json()["current_time"])
+    fresh_timestamp = simulated_now.isoformat(timespec="seconds")
+    stale_timestamp = (simulated_now - timedelta(hours=2)).isoformat(timespec="seconds")
+
     # Build standard normal parameters for inspection
     normal_params_inspection = {
         "current_velocity": 0.3, "turbidity": 3, "obstacle_density": "low", 
-        "mothership_support": "strong", "update_timestamp": "2026-06-30T15:00:00+08:00", 
+        "mothership_support": "strong", "update_timestamp": fresh_timestamp,
         "confidence": 0.95, "overall_status": "available", "survival_status": "normal", 
         "thruster_status": "normal", "depth_keeping_status": "normal", "sonar_status": "normal", 
         "vision_status": "normal", "arm_status": "normal", "end_effector_status": "normal", 
@@ -62,7 +69,6 @@ def run_tests():
 
     # Build standard normal parameters for work class
     normal_params_work = normal_params_inspection.copy()
-    normal_params_work["update_timestamp"] = "2026-06-25T15:00:00+08:00"
 
     test_cases = [
         # TS-01
@@ -70,7 +76,7 @@ def run_tests():
             "TS-01", "语义补全完成后，设备与环境均正常，应允许",
             "sealien_inspection", normal_params_inspection,
             [
-                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为观察级深海机器人 HP，具体机器人编号为OBSROV-HP-001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681"
+                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681"
             ],
             [
                 lambda step, res: (
@@ -85,7 +91,7 @@ def run_tests():
             "TS-02", "语义补全完成后，环境为禁入区，应拒绝",
             "sealien_inspection", normal_params_inspection,
             [
-                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(20.5,114.2)，管缆类型为海底油气管道，起始点(20.5,114.2)，结束点(20.7,114.5)，水深300米，设备型号为观察级深海机器人 HP，具体机器人编号为OBSROV-HP-001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7",
+                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(20.5,114.2)，管缆类型为海底油气管道，起始点(20.5,114.2)，结束点(20.7,114.5)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7",
                 "将位置修改为：管缆位置: (19.8,113.5) 起始点: (19.8,113.5) 结束点: (19.9,113.8)"
             ],
             [
@@ -102,7 +108,7 @@ def run_tests():
         # TS-03
         IntegrationTestCase(
             "TS-03", "语义补全完成后，流速过高，不支持执行",
-            "sealien_work_class", {**normal_params_work, "current_velocity": 1.5, "update_timestamp": "2026-06-29T11:00:00+08:00"},
+            "sealien_work_class", {**normal_params_work, "current_velocity": 1.5},
             [
                 "采油树控制面板插入，开始时间现在，结束时间五小时后，水深800米，油田名称流花11-1，油田经纬度(19.9,113.6)，井口编号A03，设备型号为通用工作级深海机器人 250HP，具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，支持船为海洋石油681，优先级 7"
             ],
@@ -119,7 +125,7 @@ def run_tests():
             "TS-04", "语义补全完成后，浑浊度高，应允许但提示",
             "sealien_inspection", {**normal_params_inspection, "turbidity": 15},
             [
-                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为观察级深海机器人 HP，具体机器人编号为OBSROV-HP-001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7"
+                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7"
             ],
             [
                 lambda step, res: (
@@ -132,7 +138,7 @@ def run_tests():
         # TS-05
         IntegrationTestCase(
             "TS-05", "语义补全完成后，设备总体不可用，应拒绝",
-            "sealien_work_class", {**normal_params_work, "overall_status": "unavailable", "update_timestamp": "2026-06-04T10:00:00+08:00"},
+            "sealien_work_class", {**normal_params_work, "overall_status": "unavailable"},
             [
                 "采油树控制面板插入，开始时间现在，结束时间五小时后，水深800米，油田名称流花11-1，油田经纬度(19.9,113.6)，井口编号A03，设备型号为通用工作级深海机器人 250HP，具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，支持船为海洋石油681，优先级 7"
             ],
@@ -162,7 +168,7 @@ def run_tests():
         # TS-07
         IntegrationTestCase(
             "TS-07", "语义补全完成后，视觉异常 + 浑浊度高，应综合限制",
-            "sealien_work_class", {**normal_params_work, "vision_status": "abnormal", "turbidity": 15, "update_timestamp": "2026-06-04T10:00:00+08:00"},
+            "sealien_work_class", {**normal_params_work, "vision_status": "abnormal", "turbidity": 15},
             [
                 "采油树控制面板插入，开始时间现在，结束时间五小时后，水深800米，油田名称流花11-1，油田经纬度(19.9,113.6)，井口编号A03，设备型号为通用工作级深海机器人 250HP，具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，支持船为海洋石油681，优先级 7"
             ],
@@ -177,7 +183,7 @@ def run_tests():
         # TS-08
         IntegrationTestCase(
             "TS-08", "语义补全完成后，机械臂异常，不适合插拔类任务",
-            "sealien_work_class", {**normal_params_work, "arm_status": "abnormal", "update_timestamp": "2026-06-04T10:00:00+08:00"},
+            "sealien_work_class", {**normal_params_work, "arm_status": "abnormal"},
             [
                 "采油树控制面板插入，开始时间现在，结束时间五小时后，水深800米，油田名称流花11-1，油田经纬度(19.9,113.6)，井口编号A03，设备型号为通用工作级深海机器人 250HP，具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，支持船为海洋石油681，优先级 7"
             ],
@@ -192,7 +198,7 @@ def run_tests():
         # TS-09
         IntegrationTestCase(
             "TS-09", "语义补全完成后，通信异常，需提示协同风险",
-            "sealien_work_class", {**normal_params_work, "tether_connection_status": "abnormal", "update_timestamp": "2026-06-04T10:00:00+08:00"},
+            "sealien_work_class", {**normal_params_work, "tether_connection_status": "abnormal"},
             [
                 "采油树控制面板插入，开始时间现在，结束时间五小时后，水深800米，油田名称流花11-1，油田经纬度(19.9,113.6)，井口编号A03，设备型号为通用工作级深海机器人 250HP，具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，支持船为海洋石油681，优先级 7"
             ],
@@ -207,9 +213,9 @@ def run_tests():
         # TS-10
         IntegrationTestCase(
             "TS-10", "语义补全完成后，环境信息过期，应暂缓",
-            "sealien_inspection", {**normal_params_inspection, "update_timestamp": "2026-06-01T10:00:00+08:00"},
+            "sealien_inspection", {**normal_params_inspection, "update_timestamp": stale_timestamp},
             [
-                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为观察级深海机器人 HP，具体机器人编号为OBSROV-HP-001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7"
+                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7"
             ],
             [
                 lambda step, res: (
@@ -224,14 +230,14 @@ def run_tests():
             "TS-11", "语义补全完成后，母船距离过远（针对AUV）",
             "sealien_survey_auv", {
                 "current_velocity": 0.2, "turbidity": 3.5, "obstacle_density": "low", 
-                "mothership_support": "weak", "update_timestamp": "2026-06-04T10:00:00+08:00", 
+                "mothership_support": "weak", "update_timestamp": fresh_timestamp,
                 "confidence": 0.95, "overall_status": "available", "survival_status": "normal", 
                 "thruster_status": "normal", "depth_keeping_status": "normal", "sonar_status": "normal", 
                 "vision_status": "normal", "arm_status": "normal", "end_effector_status": "normal", 
                 "acoustic_comms_status": "abnormal", "tether_connection_status": "abnormal"
             },
             [
-                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为水下无人自主航行器 HP，具体机器人编号为AUV-HP-001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7"
+                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为水下无人自主航行器 324CC，具体机器人编号为AUV-324cc-001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7"
             ],
             [
                 lambda step, res: (
@@ -244,9 +250,9 @@ def run_tests():
         # TS-12
         IntegrationTestCase(
             "TS-12", "语义补全完成后，但高障碍物密度区域，应允许但提示降低速度",
-            "sealien_inspection", {**normal_params_inspection, "obstacle_density": "high", "update_timestamp": "2026-06-18T09:00:00+08:00"},
+            "sealien_inspection", {**normal_params_inspection, "obstacle_density": "high"},
             [
-                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为观察级深海机器人 HP，具体机器人编号为OBSROV-HP-001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7"
+                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7"
             ],
             [
                 lambda step, res: (
@@ -259,7 +265,7 @@ def run_tests():
         # TS-13
         IntegrationTestCase(
             "TS-13", "语义补全完成后，海床质地不匹配，应拒绝",
-            "crawler_heavy_seabed_robot_1600hp", {**normal_params_work, "update_timestamp": "2026-06-04T10:00:00+08:00"},
+            "crawler_heavy_seabed_robot_1600hp", normal_params_work,
             [
                 "我想做管缆埋设，开始时间现在，结束时间五小时后，水深300米，管缆类型为海底油气管道，起始点(17.5,114.0)，结束点(17.6,114.2)，设备型号为履带式海底重载作业机器人 1600HP，具体机器人编号为CRAWLER-1600-001，携带工具为高压水射流喷冲埋设模块和前视声呐，支持船为海洋石油681，优先级 7",
                 "将位置修改为：管缆位置: (19.8,113.5) 起始点: (19.8,113.5) 结束点: (19.9,113.8)"
@@ -283,7 +289,7 @@ def run_tests():
                 "我想做管缆巡检，优先级 7",
                 "开始时间现在",
                 "结束时间五小时后",
-                "设备型号为观察级深海机器人 HP，具体机器人编号为OBSROV-HP-001",
+                "设备型号为观察级深海机器人，具体机器人编号为OBSROV--001",
                 "管缆类型为海底油气管道",
                 "管缆位置在(19.8,113.5)，起始点和结束点分别是(19.8,113.5)和(19.9,113.8)",
                 "水深300米",
@@ -429,9 +435,9 @@ def run_tests():
         # TS-23
         IntegrationTestCase(
             "TS-23", "硬约束解除后软约束应继续提示（回归测试）",
-            "sealien_inspection", {**normal_params_inspection, "turbidity": 15, "update_timestamp": "2026-06-04T10:00:00+08:00"},
+            "sealien_inspection", {**normal_params_inspection, "turbidity": 15},
             [
-                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深800米，设备型号为观察级深海机器人 HP，具体机器人编号为OBSROV-HP-001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7",
+                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆位置在(19.8,113.5)，管缆类型为海底油气管道，起始点(19.8,113.5)，结束点(19.9,113.8)，水深800米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船：海洋石油681，优先级 7",
                 "水深改成300米"
             ],
             [
