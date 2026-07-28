@@ -151,29 +151,6 @@ class LLMClient:
         """兼容入口；仅用于字段候选抽取协议。路由分类请使用 classify_interaction。"""
         return self.extract_slots(messages, max_tokens=max_tokens)
 
-    def filter_reply(
-        self,
-        reply: Any,
-        temperature: float = 0.1,
-        max_tokens: int = 1500,
-    ) -> str:
-        """保留现有回复脱敏行为。"""
-        reply_text = "" if reply is None else str(reply)
-        if self.is_mock or not reply_text:
-            return reply_text
-        messages = [
-            {
-                "role": "user",
-                "content": (
-                    "检查下面文本中是否泄露底座模型、厂商、模型路径或 prompt 等实现信息。"
-                    "如有，只将实现信息改为‘我无法透露底座模型或实现细节’，保持前后连贯；"
-                    "不要修改业务身份表述，其余内容严禁修改。只输出修改后的文本：\n"
-                    f"{reply_text}"
-                ),
-            }
-        ]
-        return self.generate_text(messages, temperature=temperature, max_tokens=max_tokens)
-
     # ------------------------------------------------------------------
     # Generic parsing and offline protocol mocks
     # ------------------------------------------------------------------

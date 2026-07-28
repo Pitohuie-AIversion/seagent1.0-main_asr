@@ -217,7 +217,7 @@ class DialogueManager:
                     target_d = kb_evidence.get("depth_condition", {}).get("depth_m")
                     return f"已识别设备【{dev_name}】，其最大作业水深为 {max_d}米，无法满足您询问的 {target_d}米 作业要求。"
             return "当前知识库未提供该信息。"
-        return self.llm.filter_reply(reply)
+        return reply
 
     def _handle_status_query(self, user_message: str, route: IntentRouteResult) -> str:
         if route.query_intent == "TASK_STATUS":
@@ -270,14 +270,14 @@ class DialogueManager:
         reply = self.llm.chat(messages, temperature=0.1)
         if not reply or not reply.strip():
             return f"当前任务处于【{self.phase}】阶段，已收集 {len(self._last_built_json)} 个字段。"
-        return self.llm.filter_reply(reply)
+        return reply
 
     def _handle_general_chat(self, user_message: str, route: IntentRouteResult) -> str:
         messages = build_general_chat_messages(self.conversation_history, user_message)
         reply = self.llm.chat(messages, temperature=0.7)
         if not reply or not reply.strip():
             reply = "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
-        return self.llm.filter_reply(reply)
+        return reply
 
     def _handle_unknown_intent(self, user_message: str, route: IntentRouteResult) -> str:
         return "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数，还是查询设备工具与系统功能？"
@@ -370,7 +370,6 @@ class DialogueManager:
             slot_snapshot=self.slot_store.get_slot_snapshot(),
         )
         reply = self.llm.chat(messages, temperature=0.7, max_tokens=1500)
-        reply = self.llm.filter_reply(reply)
 
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": reply})
@@ -956,8 +955,6 @@ class DialogueManager:
             unresolved_inputs=turn_unresolved,
         )
         reply = self.llm.chat(messages, temperature=0.7, max_tokens=1500)
-        reply = self.llm.filter_reply(reply)
-        reply = self.llm.filter_reply(reply)
 
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": reply})
