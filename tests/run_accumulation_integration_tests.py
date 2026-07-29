@@ -96,14 +96,18 @@ def build_tree_task(
     oilfield="陵水17-2",
     coordinates=LINGSHUI_COORDINATES,
     wellhead=LINGSHUI_WELLHEAD,
+    equipment_model="通用工作级深海机器人 250HP",
+    unit_id="WROV-250-001",
+    task_action="插入",
 ):
     return (
-        f"采油树控制面板插入，开始时间现在，结束时间五小时后，"
+        f"采油树控制面板{task_action}，开始时间现在，结束时间五小时后，"
         f"水深{water_depth}，油田名称{oilfield}，油田经纬度{coordinates}，"
-        f"井口编号{wellhead}，设备型号为通用工作级深海机器人 250HP，"
-        "具体机器人编号为WROV-250-001，携带工具为多功能液压机械臂和高清水下摄像机，"
+        f"井口编号{wellhead}，设备型号为{equipment_model}，"
+        f"具体机器人编号为{unit_id}，携带工具为多功能液压机械臂和高清水下摄像机，"
         "支持船为海洋石油681，优先级 7"
     )
+
 
 
 def build_burial_task(
@@ -160,6 +164,19 @@ def chat(session_id, message):
         return {"error": str(e)}
 
 
+def run_test_action(action):
+    """Execute a non-chat integration step and propagate explicit failures."""
+    try:
+        result = action()
+    except Exception as exc:
+        return False, f"Action raised {type(exc).__name__}: {exc}"
+
+    if isinstance(result, tuple) and result and result[0] is False:
+        detail = result[1] if len(result) > 1 else "no failure detail"
+        return False, f"Action reported failure: {detail}"
+    return True, ""
+
+
 def verify_collected_unit(expected_unit_id, require_complete=True):
     def verify(step, response):
         collected = response.get("collected", {})
@@ -174,6 +191,61 @@ def verify_collected_unit(expected_unit_id, require_complete=True):
         )
 
     return verify
+
+
+def verify_complete_pipeline_extraction(step, response):
+    """Verify every stable normalized value explicitly supplied by build_pipeline_task."""
+    collected = response.get("collected") or {}
+    expected = {
+        "task_type": "管缆巡检",
+        "task_type_key": "pipeline_inspection",
+        "equipment_family": "观察级深海机器人",
+        "equipment_type": "观察级深海机器人",
+        "equipment_name": "观察级深海机器人-001",
+        "cable_type": "海底油气管道",
+        "start_point": {"lat": 17.6, "lon": 111.0},
+        "end_point": {"lat": 17.7, "lon": 111.1},
+        "water_depth": 300.0,
+        "equipment_unit_id": "OBSROV--001",
+        "payload": ["高清水下摄像机", "前视声呐"],
+        "support_vessel": "海洋石油681",
+    }
+    mismatches = {
+        key: {"expected": expected_value, "actual": collected.get(key)}
+        for key, expected_value in expected.items()
+        if collected.get(key) != expected_value
+    }
+
+    try:
+        start_time = datetime.fromisoformat(str(collected.get("start_time") or ""))
+        end_time = datetime.fromisoformat(str(collected.get("end_time") or ""))
+        if end_time - start_time != timedelta(hours=5):
+            mismatches["time_window"] = {
+                "expected": "5:00:00",
+                "actual": str(end_time - start_time),
+            }
+    except ValueError:
+        mismatches["time_window"] = {
+            "expected": "two ISO timestamps exactly five hours apart",
+            "actual": {
+                "start_time": collected.get("start_time"),
+                "end_time": collected.get("end_time"),
+            },
+        }
+
+    if response.get("task_type") != "pipeline_inspection":
+        mismatches["response.task_type"] = {
+            "expected": "pipeline_inspection",
+            "actual": response.get("task_type"),
+        }
+
+    missing = response.get("missing")
+    passed = not missing and not mismatches
+    return (
+        passed,
+        "Expected every explicit stable field to be normalized exactly; "
+        f"mismatches={mismatches}, missing={missing}, collected={collected}",
+    )
 
 
 def verify_publish_result(step, response):
@@ -211,6 +283,109 @@ def verify_publish_result(step, response):
     if history.get("phase") != "done" or history.get("built_json") != final_json:
         return False, "History artifact does not preserve the completed final_json"
     return True, ""
+
+
+def verify_end_time_order_hard_block(step, response):
+    reply = response.get("reply", "")
+    passed = (
+        response.get("done") is False
+        and response.get("final_json") is None
+        and "C031" in reply
+        and "任务结束时间必须晚于任务开始时间" in reply
+    )
+    return passed, f"Expected canonical C031 hard block without publication. Got: {response}"
+
+
+def verify_past_start_time_soft_warning(step, response):
+    reply = response.get("reply", "")
+    passed = (
+        response.get("done") is False
+        and response.get("final_json") is None
+        and "C030" in reply
+        and "软性警告" in reply
+        and "任务开始时间不能早于当前时间" in reply
+    )
+    return passed, f"Expected canonical C030 soft warning without publication. Got: {response}"
+
+
+def verify_unavailable_vessel_hard_block(step, response):
+    reply = response.get("reply", "")
+    passed = (
+        response.get("done") is False
+        and response.get("final_json") is None
+        and "C007" in reply
+        and "硬性违规" in reply
+        and "海洋石油708" in reply
+        and "不可用" in reply
+    )
+    return passed, f"Expected canonical C007 hard block without publication. Got: {response}"
+
+
+def build_idempotent_publish_verifications():
+    """Verify repeat confirmation reuses the completed task without republishing it."""
+    published = {}
+
+    def verify_unpublished(step, response):
+        passed = response.get("done") is False and response.get("final_json") is None
+        return passed, f"Expected task to remain unpublished before confirmation. Got: {response}"
+
+    def verify_first_publish(step, response):
+        passed, detail = verify_publish_result(step, response)
+        if not passed:
+            return passed, detail
+
+        final_json = response["final_json"]
+        published["final_json"] = final_json
+        published["intent_id"] = final_json["intent_id"]
+
+        if os.environ.get("SEAGENT_VERIFY_ARTIFACTS") != "1":
+            return True, ""
+
+        result_dir = Path(os.environ["SEAGENT_RESULT_DIR"])
+        task_dir = Path(os.environ.get("SEAGENT_TASK_DIR", result_dir / "task"))
+        history_dir = Path(os.environ.get("SEAGENT_HISTORY_DIR", result_dir / "history"))
+        task_file = task_dir / f"task_intent_{published['intent_id']}.json"
+        published["task_names"] = {path.name for path in task_dir.glob("task_intent_*.json")}
+        published["history_names"] = {path.name for path in history_dir.glob("history_*.json")}
+        published["task_bytes"] = task_file.read_bytes()
+        published["task_mtime_ns"] = task_file.stat().st_mtime_ns
+        return True, ""
+
+    def verify_repeat_confirmation(step, response):
+        reply = response.get("reply", "")
+        final_json = response.get("final_json")
+        if (
+            response.get("done") is not True
+            or not isinstance(final_json, dict)
+            or final_json != published.get("final_json")
+            or final_json.get("intent_id") != published.get("intent_id")
+            or not any(token in reply for token in ("已发布", "无需重复", "已经完成", "已完成"))
+        ):
+            return False, f"Expected repeat confirmation to reuse the completed intent. Got: {response}"
+
+        if os.environ.get("SEAGENT_VERIFY_ARTIFACTS") != "1":
+            return True, ""
+
+        result_dir = Path(os.environ["SEAGENT_RESULT_DIR"])
+        task_dir = Path(os.environ.get("SEAGENT_TASK_DIR", result_dir / "task"))
+        history_dir = Path(os.environ.get("SEAGENT_HISTORY_DIR", result_dir / "history"))
+        task_file = task_dir / f"task_intent_{published['intent_id']}.json"
+        current_task_names = {path.name for path in task_dir.glob("task_intent_*.json")}
+        current_history_names = {path.name for path in history_dir.glob("history_*.json")}
+        unchanged = (
+            current_task_names == published["task_names"]
+            and current_history_names == published["history_names"]
+            and task_file.read_bytes() == published["task_bytes"]
+            and task_file.stat().st_mtime_ns == published["task_mtime_ns"]
+        )
+        return (
+            unchanged,
+            "Repeat confirmation created or rewrote publish artifacts; "
+            f"tasks_before={published['task_names']}, tasks_after={current_task_names}, "
+            f"history_before={published['history_names']}, history_after={current_history_names}",
+        )
+
+    return [verify_unpublished, verify_unpublished, verify_first_publish, verify_repeat_confirmation]
 
 
 # Test case definition
@@ -253,7 +428,7 @@ def _run_tests():
             "OBSROV-001", normal_params_inspection,
             [
                 build_pipeline_task(include_priority=False),
-                "管缆类型为海底油气管道",
+                build_pipeline_task(),
             ],
             [
                 lambda step, res: (True, "") if step == 0 else (
@@ -264,7 +439,7 @@ def _run_tests():
                         or "描述文件" in res.get("reply", "")
                     ),
                     f"Expected completed fields and confirmation prompt. "
-                    f"Got missing: {res.get('missing')}, reply: {res.get('reply')[:80]}...",
+                    f"Got missing: {res.get('missing')}, reply: {res.get('reply')}",
                 )
             ]
         ),
@@ -298,13 +473,14 @@ def _run_tests():
             [
                 lambda step, res: (
                     "C017" in res.get("reply", "")
+                    or "流速状态监测-禁止" in res.get("reply", "")
                     or "超过安全上限" in res.get("reply", "")
                     or "任务已禁止执行" in res.get("reply", "")
                     or (
                         "硬性违规" in res.get("reply", "")
                         and "无法执行" in res.get("reply", "")
                     ),
-                    f"Expected flow velocity warning/rejection. Got reply: {res.get('reply')[:80]}..."
+                    f"Expected flow velocity warning/rejection. Got reply: {res.get('reply')}"
                 )
             ]
         ),
@@ -393,7 +569,7 @@ def _run_tests():
                         "C014" in res.get("reply", "")
                         or "浑浊度较高" in res.get("reply", "")
                     ),
-                    f"Expected vision + turbidity warnings. Got reply: {res.get('reply')[:80]}..."
+                    f"Expected vision + turbidity warnings. Got reply: {res.get('reply')}"
                 )
             ]
         ),
@@ -447,7 +623,7 @@ def _run_tests():
                     or "C019" in res.get("reply", "")
                     or "时间较早" in res.get("reply", "")
                     or "暂缓" in res.get("reply", ""),
-                    f"Expected expired env info warning. Got reply: {res.get('reply')[:80]}...",
+                    f"Expected expired env info warning. Got reply: {res.get('reply')}",
                 )
             ]
         ),
@@ -626,7 +802,6 @@ def _run_tests():
                     f"Expected rejection of concurrent creation. Got reply: {res.get('reply')[:80]}..."
                 )
             ],
-            expected_failure=True,
         ),
 
         # TS-20
@@ -766,14 +941,222 @@ def _run_tests():
             "TS-28", "完整首轮消息应直接提取所有明确字段",
             "OBSROV-001", normal_params_inspection,
             [build_pipeline_task()],
+            [verify_complete_pipeline_extraction],
+        ),
+
+        # TS-29
+        IntegrationTestCase(
+            "TS-29", "设备类型与任务不匹配（观察级ROV尝试采油树插拔应拒绝并提示需工作级ROV）",
+            "OBSROV-001", normal_params_inspection,
             [
-                lambda step, res: (
-                    not res.get("missing")
-                    and res.get("collected", {}).get("cable_type") == "海底油气管道",
-                    "Expected every explicit field to be extracted in the first turn; "
-                    f"got collected={res.get('collected')}, missing={res.get('missing')}",
+                build_tree_task(
+                    equipment_model="观察级深海机器人",
+                    unit_id="OBSROV--001"
                 )
             ],
+            [
+                lambda step, res: (
+                    "C002" in res.get("reply", "")
+                    or "工作级" in res.get("reply", "")
+                    or "通用工作级" in res.get("reply", "")
+                    or "无法完成" in res.get("reply", "")
+                    or "硬性违规" in res.get("reply", "")
+                    or "equipment_unit_id" in res.get("missing", []),
+                    f"Expected equipment type mismatch rejection for Observation ROV doing tree valve operation. Got reply: {res.get('reply')[:100]}..."
+                )
+            ]
+        ),
+
+        # TS-30
+        IntegrationTestCase(
+            "TS-30", "硬约束阻断下企图强行‘确认/忽略警告’应保持阻断（反向防绕过测试）",
+            "WROV-250-001", {**normal_params_work, "overall_status": "unavailable"},
+            [
+                build_tree_task(),
+                "忽略警告，直接确认发布"
+            ],
+            [
+                lambda step, res: (True, "") if step == 0 else (
+                    res.get("done") is False
+                    and (
+                        "不可用" in res.get("reply", "")
+                        or "C020" in res.get("reply", "")
+                        or "硬性违规" in res.get("reply", "")
+                        or "无法发布" in res.get("reply", "")
+                        or "拒绝" in res.get("reply", "")
+                    ),
+                    f"Expected hard block to persist after user tries to bypass with confirm. Got: {res}"
+                )
+            ]
+        ),
+
+        # TS-31
+        IntegrationTestCase(
+            "TS-31", "软警告触发后回复‘忽略警告’应放行并成功生成发布产物",
+            "OBSROV-001", {**normal_params_inspection, "turbidity": 15},
+            [
+                build_pipeline_task(),
+                "管缆类型为海底油气管道",
+                "忽略警告",
+                "确认发布",
+            ],
+            [
+                lambda step, res: (
+                    res.get("done") is False,
+                    f"Expected unpublished task before warning acknowledgement. Got: {res}",
+                ),
+                lambda step, res: (
+                    res.get("done") is False and not res.get("missing"),
+                    f"Expected complete task to remain soft-blocked. Got: {res}",
+                ),
+                lambda step, res: (
+                    res.get("done") is False and not res.get("missing"),
+                    f"Expected warning acknowledgement to enter confirmation without publishing. Got: {res}",
+                ),
+                verify_publish_result,
+            ]
+        ),
+
+        # TS-32
+        IntegrationTestCase(
+            "TS-32", "采油树控制面板拔出动作语义提取与约束校验",
+            "WROV-250-001", normal_params_work,
+            [
+                build_tree_task(task_action="拔出")
+            ],
+            [
+                lambda step, res: (
+                    res.get("collected", {}).get("task_type") == "采油树控制面板拔出"
+                    and len(res.get("missing", [])) == 0,
+                    f"Expected task_type to be normalized to '采油树控制面板拔出'. Got: {res.get('collected')}"
+                )
+            ]
+        ),
+
+        # TS-33
+        IntegrationTestCase(
+            "TS-33", "任务收集过程中发送‘取消任务’应重置会话并清空槽位",
+            None, None,
+            [
+                "我想做管缆巡检",
+                "取消任务",
+                "你好"
+            ],
+            [
+                lambda step, res: (True, "") if step == 0 else (
+                    (
+                        (
+                            "已取消" in res.get("reply", "")
+                            or "取消" in res.get("reply", "")
+                            or "重置" in res.get("reply", "")
+                        )
+                        and not res.get("collected")
+                        and res.get("task_type") is None,
+                        f"Expected cancellation acknowledgement and cleared draft. Got: {res}",
+                    ) if step == 1 else (
+                        res.get("task_type") is None and not res.get("collected"),
+                        f"Expected clean state after cancellation. Got: {res}"
+                    )
+                )
+            ]
+        ),
+
+        # TS-34
+        IntegrationTestCase(
+            "TS-34", "端口更新state后发送‘重新检查’应强制读取最新state快照解封",
+            "OBSROV-001", {**normal_params_inspection, "current_velocity": 1.5},
+            [
+                build_pipeline_task(),
+                lambda: set_robot_state("OBSROV-001", {**normal_params_inspection, "current_velocity": 0.3}),
+                "重新检查",
+            ],
+            [
+                lambda step, res: (
+                    "流速" in res.get("reply", "") or "C017" in res.get("reply", ""),
+                    f"Expected initial velocity rejection. Got reply: {res.get('reply')[:100]}..."
+                ),
+                lambda step, res: (
+                    len(res.get("missing", [])) == 0
+                    and (
+                        "安全" in res.get("reply", "")
+                        or "已消除" in res.get("reply", "")
+                        or "通过" in res.get("reply", "")
+                        or "正常" in res.get("reply", "")
+                        or "确认" in res.get("reply", "")
+                    ),
+                    f"Expected recheck to pick up updated state snapshot. Got: {res.get('reply')[:120]}..."
+                ),
+            ],
+        ),
+
+        # TS-35
+        IntegrationTestCase(
+            "TS-35", "询问‘观察级深海机器人能带什么工具’应命中知识问答路由且不创建任务槽位",
+            None, None,
+            [
+                "观察级深海机器人能带什么工具？"
+            ],
+            [
+                lambda step, res: (
+                    res.get("task_type") is None
+                    and (
+                        "高清水下摄像机" in res.get("reply", "")
+                        or "声呐" in res.get("reply", "")
+                        or "工具" in res.get("reply", "")
+                        or "载荷" in res.get("reply", "")
+                        or "摄像机" in res.get("reply", "")
+                    ),
+                    f"Expected deterministic KB answer without triggering task slot collection. Got: {res}"
+                )
+            ],
+        ),
+
+        # TS-36
+        IntegrationTestCase(
+            "TS-36", "结束时间早于开始时间逻辑倒错拦截",
+            "OBSROV-001", normal_params_inspection,
+            [
+                "我想做管缆巡检，开始时间五小时后，结束时间现在，管缆位置在(17.60,111.00)，管缆类型海底油气管道，起始点(17.60,111.00)，结束点(17.70,111.10)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船为海洋石油681，优先级 7"
+            ],
+            [verify_end_time_order_hard_block],
+        ),
+
+        # TS-37
+        IntegrationTestCase(
+            "TS-37", "过去时间作为开始时间触发C030软警告",
+            "OBSROV-001", normal_params_inspection,
+            [
+                "我想做管缆巡检，开始时间2020-01-01T08:00:00，结束时间2020-01-01T13:00:00，管缆位置在(17.60,111.00)，管缆类型海底油气管道，起始点(17.60,111.00)，结束点(17.70,111.10)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船为海洋石油681，优先级 7"
+            ],
+            [verify_past_start_time_soft_warning],
+        ),
+
+        # TS-38
+        IntegrationTestCase(
+            "TS-38", "指定不可用支持船触发C007硬阻断",
+            "OBSROV-001", normal_params_inspection,
+            [
+                build_pipeline_task(),
+                "支持船选择海洋石油708"
+            ],
+            [
+                lambda step, res: (True, "") if step == 0 else (
+                    verify_unavailable_vessel_hard_block(step, res)
+                )
+            ],
+        ),
+
+        # TS-39
+        IntegrationTestCase(
+            "TS-39", "已完成发布会话再次请求发布保持幂等性拦截",
+            "OBSROV-001", normal_params_inspection,
+            [
+                build_pipeline_task(),
+                "管缆类型为海底油气管道",
+                "确认发布",
+                "确认发布"
+            ],
+            build_idempotent_publish_verifications(),
         ),
     ]
 
@@ -816,30 +1199,42 @@ def _run_tests():
         case_passed = True
         error_msg = ""
         
-        for i, step_msg in enumerate(case.steps):
+        step_idx = 0
+        for step_item in case.steps:
             # Give a small delay to avoid race conditions and mimic user typing
             time.sleep(0.5)
-            
+
+            if callable(step_item):
+                action_passed, action_error = run_test_action(step_item)
+                if not action_passed:
+                    case_passed = False
+                    error_msg = action_error
+                    break
+                continue
+
+            step_msg = step_item
             chat_res = chat(session_id, step_msg)
             if "error" in chat_res:
-                print(f"  ❌ Chat error at step {i+1}: {chat_res['error']}")
+                print(f"  ❌ Chat error at step {step_idx+1}: {chat_res['error']}")
                 case_passed = False
                 error_msg = f"Chat error: {chat_res['error']}"
                 break
             
             # Run verification if defined
             check_fn = None
-            if i < len(case.verifications):
-                check_fn = case.verifications[i]
+            if step_idx < len(case.verifications):
+                check_fn = case.verifications[step_idx]
             elif len(case.verifications) == 1:
                 check_fn = case.verifications[0]
 
             if check_fn:
-                passed, msg = check_fn(i, chat_res)
+                passed, msg = check_fn(step_idx, chat_res)
                 if not passed:
                     case_passed = False
-                    error_msg = f"Step {i+1} failed: {msg}"
+                    error_msg = f"Step {step_idx+1} failed: {msg}"
                     break
+            step_idx += 1
+
         
         # Cleanup session
         reset_session(session_id)

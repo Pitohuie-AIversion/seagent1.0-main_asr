@@ -1,6 +1,8 @@
+import os
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -11,10 +13,16 @@ from tests.run_accumulation_integration_tests import (
     SAFE_PIPELINE_END,
     SAFE_PIPELINE_START,
     build_burial_task,
+    build_idempotent_publish_verifications,
     build_pipeline_task,
     build_robot_state,
     preserve_file_bytes,
+    run_test_action,
     verify_collected_unit,
+    verify_complete_pipeline_extraction,
+    verify_end_time_order_hard_block,
+    verify_past_start_time_soft_warning,
+    verify_unavailable_vessel_hard_block,
     build_tree_task,
 )
 
@@ -86,6 +94,13 @@ class AccumulationFixtureConsistencyTest(unittest.TestCase):
         self.assertIn("管缆类型为海底油气管道", build_pipeline_task())
         self.assertIn("WROV-250-001", build_tree_task())
         self.assertIn(
+            "OBSROV--001",
+            build_tree_task(
+                equipment_model="观察级深海机器人",
+                unit_id="OBSROV--001",
+            ),
+        )
+        self.assertIn(
             "TOWED-1500-001",
             build_burial_task(
                 equipment_model="拖曳式海底重载作业机器人 1500HP",
@@ -106,6 +121,143 @@ class AccumulationFixtureConsistencyTest(unittest.TestCase):
         self.assertTrue(
             completed(1, {**incomplete, "missing": []})[0]
         )
+
+    def test_action_runner_propagates_callback_failures(self):
+        self.assertEqual(run_test_action(lambda: (True, {"ok": True})), (True, ""))
+
+        passed, message = run_test_action(lambda: (False, "state API unavailable"))
+        self.assertFalse(passed)
+        self.assertIn("state API unavailable", message)
+
+        def raise_error():
+            raise RuntimeError("state update crashed")
+
+        passed, message = run_test_action(raise_error)
+        self.assertFalse(passed)
+        self.assertIn("RuntimeError", message)
+
+    def test_complete_pipeline_verifier_checks_all_stable_values(self):
+        response = {
+            "task_type": "pipeline_inspection",
+            "missing": [],
+            "collected": {
+                "task_type": "管缆巡检",
+                "task_type_key": "pipeline_inspection",
+                "equipment_family": "观察级深海机器人",
+                "equipment_type": "观察级深海机器人",
+                "equipment_name": "观察级深海机器人-001",
+                "start_time": "2026-07-29T15:00:00",
+                "end_time": "2026-07-29T20:00:00",
+                "cable_type": "海底油气管道",
+                "start_point": {"lat": 17.6, "lon": 111.0},
+                "end_point": {"lat": 17.7, "lon": 111.1},
+                "water_depth": 300.0,
+                "equipment_unit_id": "OBSROV--001",
+                "payload": ["高清水下摄像机", "前视声呐"],
+                "support_vessel": "海洋石油681",
+            },
+        }
+
+        self.assertTrue(verify_complete_pipeline_extraction(0, response)[0])
+
+        response["collected"]["end_point"] = {"lat": 17.8, "lon": 111.2}
+        passed, message = verify_complete_pipeline_extraction(0, response)
+        self.assertFalse(passed)
+        self.assertIn("end_point", message)
+
+    def test_complete_pipeline_verifier_rejects_wrong_time_window(self):
+        response = {
+            "task_type": "pipeline_inspection",
+            "missing": [],
+            "collected": {
+                "task_type": "管缆巡检",
+                "task_type_key": "pipeline_inspection",
+                "equipment_family": "观察级深海机器人",
+                "equipment_type": "观察级深海机器人",
+                "equipment_name": "观察级深海机器人-001",
+                "start_time": "2026-07-29T15:00:00",
+                "end_time": "2026-07-29T21:00:00",
+                "cable_type": "海底油气管道",
+                "start_point": {"lat": 17.6, "lon": 111.0},
+                "end_point": {"lat": 17.7, "lon": 111.1},
+                "water_depth": 300.0,
+                "equipment_unit_id": "OBSROV--001",
+                "payload": ["高清水下摄像机", "前视声呐"],
+                "support_vessel": "海洋石油681",
+            },
+        }
+
+        passed, message = verify_complete_pipeline_extraction(0, response)
+        self.assertFalse(passed)
+        self.assertIn("time_window", message)
+
+    def test_constraint_verifiers_require_canonical_ids_and_publication_state(self):
+        cases = (
+            (
+                verify_end_time_order_hard_block,
+                "⛔ 硬性违规 [C031] 任务结束时间必须晚于任务开始时间",
+                "C031",
+            ),
+            (
+                verify_past_start_time_soft_warning,
+                "⚠️ 软性警告 [C030] 任务开始时间不能早于当前时间",
+                "C030",
+            ),
+            (
+                verify_unavailable_vessel_hard_block,
+                "⛔ 硬性违规 [C007] 海洋石油708当前标记为不可用",
+                "C007",
+            ),
+        )
+        for verifier, reply, constraint_id in cases:
+            with self.subTest(constraint_id=constraint_id):
+                response = {"done": False, "final_json": None, "reply": reply}
+                self.assertTrue(verifier(0, response)[0])
+                response["reply"] = response["reply"].replace(constraint_id, "C999")
+                self.assertFalse(verifier(0, response)[0])
+                response.update(done=True, final_json={"intent_id": "TI2026072901"})
+                self.assertFalse(verifier(0, response)[0])
+
+    def test_idempotent_publish_verifier_detects_new_task_artifact(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result_dir = Path(temp_dir)
+            task_dir = result_dir / "task"
+            history_dir = result_dir / "history"
+            task_dir.mkdir()
+            history_dir.mkdir()
+            intent_id = "TI2026072901"
+            task_file = task_dir / f"task_intent_{intent_id}.json"
+            history_file = history_dir / f"history_{intent_id}.json"
+            task_file.write_bytes(b"stable-task-intent")
+            history_file.write_bytes(b"initial-history")
+            response = {
+                "done": True,
+                "final_json": {"intent_id": intent_id, "task_id": "PI2026072901"},
+                "reply": "任务已发布，无需重复发布。",
+            }
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "SEAGENT_VERIFY_ARTIFACTS": "1",
+                        "SEAGENT_RESULT_DIR": str(result_dir),
+                    },
+                    clear=False,
+                ),
+                patch(
+                    "tests.run_accumulation_integration_tests.verify_publish_result",
+                    return_value=(True, ""),
+                ),
+            ):
+                verifications = build_idempotent_publish_verifications()
+                self.assertTrue(verifications[2](2, response)[0])
+                self.assertTrue(verifications[3](3, response)[0])
+
+                (task_dir / "task_intent_TI2026072902.json").write_bytes(b"duplicate")
+                passed, message = verifications[3](3, response)
+                self.assertFalse(passed)
+                self.assertIn("created or rewrote", message)
 
     def test_state_file_guard_restores_existing_file_byte_for_byte(self):
         with tempfile.TemporaryDirectory() as temp_dir:
