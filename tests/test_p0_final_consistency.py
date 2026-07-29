@@ -72,16 +72,18 @@ class P0FinalConsistencyDefectTest(unittest.TestCase):
             self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 600.0)
 
     def test_p1_cancel_task_pure_control(self):
-        """输入'取消当前任务'：走 TASK_CANCEL, 不调用 extractor, SlotStore 不变, phase == rejected"""
+        """输入'取消当前任务'：走 TASK_CANCEL，不调用 extractor，并清空草稿。"""
         self.dm.reset()
         seed_complete_valid_pipeline_task(self.dm, self.kb)
-        snap_before = self.dm.slot_store.export_snapshot()
 
         with patch.object(self.dm.extractor, 'extract_updates') as mock_ext:
             reply = self.dm.process("取消当前任务")
             mock_ext.assert_not_called()
             self.assertEqual(self.dm.phase, "rejected")
-            self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+            self.assertEqual(self.dm.task_state, {})
+            self.assertEqual(self.dm._last_built_json, {})
+            self.assertEqual(self.dm._last_missing, [])
+            self.assertIsNone(self.dm.final_result)
 
     # ── 问题二：done 状态修改测试 ──
 
@@ -140,6 +142,46 @@ class P0FinalConsistencyDefectTest(unittest.TestCase):
                 self.assertEqual(len(final_files_3), 2)
                 self.assertEqual(self.dm.final_result["intent_id"], new_intent_id)
                 self.assertEqual(self.dm.final_result["water_depth"], 500.0)
+
+    def test_done_repeat_confirmation_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            task_dir = Path(tmp_dir) / "task"
+            task_dir.mkdir(parents=True, exist_ok=True)
+            seed_complete_valid_pipeline_task(self.dm, self.kb)
+
+            with (
+                patch("src.task_intent_builder.get_task_dir", return_value=task_dir),
+                patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)),
+            ):
+                self.dm.process("确认发布")
+                self.assertEqual(self.dm.phase, "done")
+                final_before = copy.deepcopy(self.dm.final_result)
+                snapshot_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+                task_files_before = {
+                    path.name: path.read_bytes()
+                    for path in task_dir.glob("task_intent_*.json")
+                }
+
+                with (
+                    patch.object(self.dm.intent_router, "route") as route_mock,
+                    patch.object(self.dm.extractor, "extract_updates") as extract_mock,
+                ):
+                    reply = self.dm.process("确认发布")
+
+                route_mock.assert_not_called()
+                extract_mock.assert_not_called()
+                self.assertIn("无需重复发布", reply)
+                self.assertIn(final_before["intent_id"], reply)
+                self.assertEqual(self.dm.phase, "done")
+                self.assertEqual(self.dm.final_result, final_before)
+                self.assertEqual(self.dm.slot_store.export_snapshot(), snapshot_before)
+                self.assertEqual(
+                    {
+                        path.name: path.read_bytes()
+                        for path in task_dir.glob("task_intent_*.json")
+                    },
+                    task_files_before,
+                )
 
     def test_p2_done_modification_commit_failure_rollback(self):
         """done 状态下修改槽位如果 commit_transaction 失败：所有状态与 final_result 保持原值"""

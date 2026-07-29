@@ -56,6 +56,7 @@ _CHECK_FIELDS: dict[str, list[str]] = {
     "robot_manipulator_status":    _EQUIPMENT_FIELDS,
     "robot_communication_status":  _EQUIPMENT_FIELDS,
     "start_time_not_in_past":      ["start_time"],
+    "end_time_after_start_time":   ["start_time", "end_time"],
 }
 
 _DYNAMIC_CHECKS = {
@@ -234,6 +235,18 @@ class TaskValidator:
                     .replace("{current_time}", now.strftime("%Y-%m-%d %H:%M:%S"))
                 )
                 return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+
+        elif check == "end_time_after_start_time":
+            start_time = self._parse_task_datetime(task_state.get("start_time"))
+            end_time = self._parse_task_datetime(task_state.get("end_time"))
+            if start_time is None or end_time is None or end_time > start_time:
+                return None
+            msg = (
+                c["violation_message"]
+                .replace("{start_time}", start_time.strftime("%Y-%m-%d %H:%M:%S"))
+                .replace("{end_time}", end_time.strftime("%Y-%m-%d %H:%M:%S"))
+            )
+            return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
 
 
         # elif check == "sea_state":

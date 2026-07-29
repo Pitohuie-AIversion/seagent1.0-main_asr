@@ -72,6 +72,7 @@ CONSTRAINT_TRIGGER_MATRIX = {
     },
     "C004": {"task": {"water_depth": 601}},
     "C030": {"task": {"start_time": (NOW - timedelta(minutes=6)).isoformat()}},
+    "C031": {"task": {"end_time": (NOW - timedelta(seconds=1)).isoformat()}},
     "C007": {"task": {"support_vessel": "海洋石油708"}},
     "C008": {"task": {"start_point": FORBIDDEN_POINT}},
     "C009": {

@@ -31,7 +31,18 @@ class FakeKnowledgeBase:
                     "可能表示任务开始时间已过期。请确认是否继续，或将任务开始时间修改为当前时间之后。"
                 ),
                 "severity": "soft",
-            }
+            },
+            {
+                "id": "C031",
+                "name": "任务结束时间必须晚于任务开始时间",
+                "applies_to": ["all"],
+                "check_type": "end_time_after_start_time",
+                "violation_message": (
+                    "任务结束时间 {end_time} 不得早于或等于任务开始时间 {start_time}，"
+                    "请修改任务时间窗口后再发布任务。"
+                ),
+                "severity": "hard",
+            },
         ]
 
     def get_rov(self, equipment):
@@ -78,6 +89,38 @@ class TaskTimeValidationTest(unittest.TestCase):
         self.assertEqual(len(violations), 1)
         self.assertEqual(violations[0].constraint_id, "C030")
         self.assertEqual(violations[0].severity, "soft")
+
+    def test_rejects_end_time_not_after_start_time(self):
+        for end_time in ("2026-06-30T18:00:00", "2026-06-30T17:59:59"):
+            with self.subTest(end_time=end_time):
+                violations = self.validator.validate({
+                    "start_time": "2026-06-30T18:00:00",
+                    "end_time": end_time,
+                })
+
+                self.assertEqual(len(violations), 1)
+                self.assertEqual(violations[0].constraint_id, "C031")
+                self.assertEqual(violations[0].severity, "hard")
+                self.assertEqual(
+                    violations[0].related_fields,
+                    ["start_time", "end_time"],
+                )
+
+    def test_incremental_validation_rechecks_time_order_from_either_field(self):
+        task = {
+            "start_time": "2026-06-30T18:00:00",
+            "end_time": "2026-06-30T17:00:00",
+        }
+        for changed_field in ("start_time", "end_time"):
+            with self.subTest(changed_field=changed_field):
+                violations = self.validator.validate_for_fields(
+                    task,
+                    changed_fields={changed_field},
+                )
+                self.assertEqual(
+                    [violation.constraint_id for violation in violations],
+                    ["C031"],
+                )
 
 
 if __name__ == "__main__":

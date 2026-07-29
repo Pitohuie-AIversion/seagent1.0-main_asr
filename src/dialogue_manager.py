@@ -57,6 +57,7 @@ from .slot_store import SlotStore, Slot, normalize_slot_value_type
 
 from .exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError
 from .intent_router import IntentRouter, IntentRouteResult
+from .task_request_guard import analyze_task_request
 from .result_paths import get_task_dir
 
 
@@ -376,6 +377,7 @@ class DialogueManager:
         )
         reply = self.llm.chat(messages, temperature=0.7, max_tokens=1500)
         reply = self.llm.filter_reply(reply)
+        reply = self._ensure_constraint_details(reply, constraint_context)
 
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": reply})
@@ -528,6 +530,14 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
+        if self.phase == "done" and self._is_confirmation_only(user_message):
+            intent_id = self.task_state.get("intent_id") or self._last_built_json.get("intent_id")
+            intent_detail = f"（intent_id: {intent_id}）" if intent_id else ""
+            reply = f"任务已发布成功{intent_detail}，无需重复发布。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
         pending_reply = self._resolve_pending_oilfield_confirmation(user_message, request_id=request_id)
         pending_reply = self._resolve_pending_oilfield_confirmation(user_message, request_id=request_id)
         if pending_reply is not None:
@@ -536,16 +546,25 @@ class DialogueManager:
             return pending_reply
 
         # 控制动作由 DialogueManager 当前阶段处理，不再交给 IntentRouter 判断。
+        if self.phase == "blocked_hard" and (
+            self._is_confirmation_only(user_message)
+            or self._is_soft_warning_acknowledgement(user_message)
+        ):
+            return self._reject_hard_constraint_bypass(user_message)
+
         if self.phase in ("blocked_soft", "confirming") and (
             self._is_confirmation_only(user_message)
-            or (self.phase == "blocked_soft" and any(kw in user_message.lower() for kw in SOFT_IGNORE_KEYWORDS) and not any(mod_kw in user_message for mod_kw in ["改成", "修改", "水深", "深度", "时间", "支持船", "管缆", "油田", "设备", "工具", "改为", "设为", "调整", "增加", "减少"]))
+            or (
+                self.phase == "blocked_soft"
+                and self._is_soft_warning_acknowledgement(user_message)
+            )
         ):
             return self._handle_task_confirm(user_message, request_id)
 
 
         if self.phase in ("blocked_hard", "blocked_soft", "confirming", "collecting") and self._user_cancelled(user_message):
+            self.reset()
             self.phase = "rejected"
-            self.final_result = None
             reply = "任务已取消。如需重新规划，请重新开始。"
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
@@ -563,6 +582,16 @@ class DialogueManager:
 
         if route.interaction_type == "QUERY":
             return self._handle_non_task_route(user_message, route, request_id)
+
+        compound_request = analyze_task_request(
+            user_message,
+            self.kb.get_all_task_type_values(),
+        )
+        if compound_request.should_block:
+            reply = compound_request.build_reply()
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
 
         # 3. Parameter Extraction & Processing Pipeline (Atomic Transaction with Optimistic Lock)
         new_slots, new_unresolved, expected_version = self.slot_store.snapshot()
@@ -906,7 +935,7 @@ class DialogueManager:
 
         # 处理软约束忽略（blocked_soft阶段）
         if self.phase == "blocked_soft":
-            user_ignore = any(kw in user_message.lower() for kw in SOFT_IGNORE_KEYWORDS)
+            user_ignore = self._is_soft_warning_acknowledgement(user_message)
             if self._blocking_violations:
                 soft_related_fields = set()
                 for v in self._blocking_violations:
@@ -962,6 +991,7 @@ class DialogueManager:
         reply = self.llm.chat(messages, temperature=0.7, max_tokens=1500)
         reply = self.llm.filter_reply(reply)
         reply = self.llm.filter_reply(reply)
+        reply = self._ensure_constraint_details(reply, constraint_context)
 
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": reply})
@@ -1939,6 +1969,60 @@ class DialogueManager:
             "ok",
         }
 
+    @classmethod
+    def _is_soft_warning_acknowledgement(cls, message: str) -> bool:
+        """Only treat a standalone acknowledgement as consent to ignore soft warnings."""
+        if cls._is_confirmation_only(message):
+            return True
+
+        parameter_cues = (
+            "改成", "修改", "水深", "深度", "时间", "支持船", "管缆", "油田",
+            "设备", "工具", "改为", "设为", "调整", "增加", "减少", "补充",
+        )
+        if any(cue in message for cue in parameter_cues):
+            return False
+        return any(
+            keyword in message.lower()
+            for keyword in ("忽略", "继续", "无视", "不管", "没关系")
+        )
+
+    def _ensure_constraint_details(self, reply: str, constraint_context: dict) -> str:
+        """Append canonical details for violations omitted or paraphrased by the LLM."""
+        violations = constraint_context.get("violations") or []
+        missing = [
+            violation
+            for violation in violations
+            if violation.message not in reply
+        ]
+        if not missing:
+            return reply
+
+        details = self.validator.format_violations(missing)
+        return f"{reply.rstrip()}\n\n{details}" if reply.strip() else details
+
+    def _reject_hard_constraint_bypass(self, user_message: str) -> str:
+        """Reject confirmation/ignore commands while hard violations remain."""
+        violations = [
+            violation
+            for violation in self._blocking_violations
+            if violation.severity == "hard"
+        ]
+        if not violations:
+            violations = [
+                violation
+                for violation in self.validator.validate(self.task_state)
+                if violation.severity == "hard"
+            ]
+
+        reply = "硬性约束不能通过确认或忽略警告绕过。请先修正以下问题后再发布任务。"
+        if violations:
+            reply = f"{reply}\n\n{self.validator.format_violations(violations)}"
+            self._blocking_violations = violations
+
+        self.conversation_history.append({"role": "user", "content": user_message})
+        self.conversation_history.append({"role": "assistant", "content": reply})
+        return reply
+
     @staticmethod
     def _user_cancelled(message: str) -> bool:
         negated_cancel = ["不是要取消", "不是取消", "不要取消", "别取消", "不取消", "免取消"]
@@ -2252,4 +2336,3 @@ class DialogueManager:
                 self.slot_store.commit_transaction(new_slots, self.slot_store.unresolved)
                 self.task_state = self.slot_store.get_task_state()
                 self._last_built_json = self.slot_store.get_built_json()
-

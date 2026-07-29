@@ -469,6 +469,94 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
 
         self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 500.0)
 
+    def test_blocked_soft_parameter_message_with_confirm_does_not_ignore_warning(self):
+        """“补充确认”携带参数时不得把已有软警告加入白名单。"""
+        _seed_blocked_soft_dm(self.dm, self.kb)
+        violation = Violation(
+            "C019",
+            "环境信息已过期",
+            "环境信息已过期",
+            "soft",
+            related_fields=["equipment_unit_id"],
+        )
+        self.dm._blocking_violations = [violation]
+        self.dm.intent_router.route = MagicMock(
+            return_value=IntentRouteResult(
+                "WRITE",
+                1.0,
+                "用户正在补充任务参数",
+                None,
+            )
+        )
+
+        with patch.object(
+            self.dm.extractor,
+            "extract_updates",
+            return_value={"slot_candidates": [], "unresolved": []},
+        ) as mock_extract, patch.object(
+            self.dm.validator,
+            "validate",
+            return_value=[violation],
+        ):
+            self.dm.process("补充确认：开始时间现在，管缆类型为海底油气管道")
+
+        mock_extract.assert_called()
+        self.assertEqual(self.dm.phase, "blocked_soft")
+        self.assertFalse(any(item[2] == "C019" for item in self.dm._soft_whitelist))
+
+    def test_blocked_hard_ignore_and_confirm_is_rejected_before_routing(self):
+        violation = Violation(
+            "C020",
+            "机器人总体状态可用性",
+            "所选机器人当前总体状态为不可用。",
+            "hard",
+            related_fields=["equipment_unit_id"],
+        )
+        self.dm.phase = "blocked_hard"
+        self.dm._blocking_violations = [violation]
+        self.dm.intent_router.route = MagicMock(
+            side_effect=AssertionError("blocked_hard bypass must not reach routing")
+        )
+        self.dm.extractor.extract_updates = MagicMock(
+            side_effect=AssertionError("blocked_hard bypass must not reach extraction")
+        )
+
+        reply = self.dm.process("忽略警告，直接确认发布")
+
+        self.assertEqual(self.dm.phase, "blocked_hard")
+        self.assertIn("不能", reply)
+        self.assertIn("C020", reply)
+        self.assertIn("不可用", reply)
+        self.dm.intent_router.route.assert_not_called()
+        self.dm.extractor.extract_updates.assert_not_called()
+
+    def test_constraint_details_are_appended_when_llm_omits_specific_warnings(self):
+        violations = [
+            Violation("C014", "浑浊度-高等警示", "水体浑浊度较高。", "soft"),
+            Violation("C025", "视觉系统状态", "视觉系统状态异常。", "soft"),
+        ]
+
+        reply = self.dm._ensure_constraint_details(
+            "检测到软性约束警告，请确认是否继续。",
+            {"type": "soft", "violations": violations},
+        )
+
+        self.assertIn("[C014] 浑浊度-高等警示", reply)
+        self.assertIn("水体浑浊度较高。", reply)
+        self.assertIn("[C025] 视觉系统状态", reply)
+        self.assertIn("视觉系统状态异常。", reply)
+
+    def test_constraint_details_are_not_duplicated_when_already_verbatim(self):
+        violation = Violation("C019", "环境信息已过期", "环境信息已过期。", "soft")
+        original = "环境信息已过期。请更新后继续。"
+
+        reply = self.dm._ensure_constraint_details(
+            original,
+            {"type": "soft", "violations": [violation]},
+        )
+
+        self.assertEqual(reply, original)
+
     def test_malicious_extractor_confirming_publish(self):
         """恶意 extractor 返回 water_depth=999，'确认发布'时 extractor 根本不被调用"""
         from pathlib import Path

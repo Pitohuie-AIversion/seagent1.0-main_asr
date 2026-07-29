@@ -6,7 +6,7 @@ extractor.py — 参数提取器
 
 import json
 import re
-from datetime import date
+from datetime import datetime, timedelta
 
 from .llm_client import LLMClient
 from .normalizer import FieldNormalizer
@@ -184,9 +184,8 @@ class ParameterExtractor:
 
         result = self.llm.extract_json(messages, max_tokens=800)
 
-        default_res = {"slot_candidates": [], "unresolved": []}
-        if not result or not isinstance(result, dict):
-            return default_res
+        if not isinstance(result, dict):
+            result = {}
 
         allowed_keys = self._allowed_candidate_keys(task_type_key, required)
         raw_candidates = result.get("slot_candidates")
@@ -214,6 +213,19 @@ class ParameterExtractor:
             required or [],
             current_state,
             conversation_history or [],
+        )
+        normalized_candidates = self._merge_explicit_enum_candidates(
+            user_message,
+            normalized_candidates,
+            required or [],
+            allowed_keys,
+        )
+        normalized_candidates = self._merge_explicit_datetime_candidates(
+            user_message,
+            normalized_candidates,
+            required or [],
+            allowed_keys,
+            now,
         )
 
         return {
@@ -252,6 +264,169 @@ class ParameterExtractor:
             }
         )
         return keys
+
+    @staticmethod
+    def _merge_explicit_enum_candidates(
+        user_message: str,
+        candidates: list[dict],
+        required: list[dict],
+        allowed_keys: set[str],
+    ) -> list[dict]:
+        """Recover schema enum values explicitly present but omitted by the LLM."""
+        merged = list(candidates)
+        existing_keys = {
+            str(candidate.get("canonical_key") or "")
+            for candidate in candidates
+            if isinstance(candidate, dict)
+        }
+        text = str(user_message or "")
+
+        for field in required:
+            key = str(field.get("key") or "").strip()
+            if (
+                not key
+                or key not in allowed_keys
+                or key in existing_keys
+                or field.get("type") == "list"
+            ):
+                continue
+
+            matches: list[tuple[int, int, str]] = []
+            for allowed_value in field.get("allowed_values") or []:
+                if not isinstance(allowed_value, str) or not allowed_value:
+                    continue
+                position = text.rfind(allowed_value)
+                if position >= 0:
+                    matches.append((position, len(allowed_value), allowed_value))
+            if not matches:
+                continue
+
+            _, _, value = max(matches)
+            merged.append(
+                {
+                    "raw_key": str(field.get("label") or key),
+                    "canonical_key": key,
+                    "raw_value": value,
+                    "normalized_value": value,
+                    "confidence": 1.0,
+                    "resolution_method": "canonical_exact",
+                }
+            )
+            existing_keys.add(key)
+
+        return merged
+
+    @classmethod
+    def _merge_explicit_datetime_candidates(
+        cls,
+        user_message: str,
+        candidates: list[dict],
+        required: list[dict],
+        allowed_keys: set[str],
+        now: datetime,
+    ) -> list[dict]:
+        """Recover explicitly labelled, unambiguous task times omitted by the LLM."""
+        merged = list(candidates)
+        existing_keys = {
+            str(candidate.get("canonical_key") or "")
+            for candidate in candidates
+            if isinstance(candidate, dict)
+        }
+        required_by_key = {
+            str(field.get("key") or ""): field
+            for field in required
+            if field.get("key")
+        }
+        labels = {
+            "start_time": "开始时间",
+            "end_time": "结束时间",
+        }
+        value_pattern = (
+            r"(?:\d{4}-\d{1,2}-\d{1,2}[T ]\d{1,2}:\d{2}(?::\d{2})?"
+            r"|(?:\d+|[零〇一二两三四五六七八九十]+)(?:个)?小时后"
+            r"|现在|当前|立即)"
+        )
+
+        for key, label in labels.items():
+            field = required_by_key.get(key)
+            if (
+                key not in allowed_keys
+                or key in existing_keys
+                or not field
+                or field.get("type") != "datetime"
+            ):
+                continue
+
+            match = re.search(
+                rf"{re.escape(label)}\s*(?:为|是|[:：])?\s*(?P<value>{value_pattern})",
+                str(user_message or ""),
+                flags=re.IGNORECASE,
+            )
+            if not match:
+                continue
+
+            raw_value = match.group("value")
+            normalized_value = cls._normalize_explicit_datetime(raw_value, now)
+            if normalized_value is None:
+                continue
+
+            merged.append(
+                {
+                    "raw_key": label,
+                    "canonical_key": key,
+                    "raw_value": raw_value,
+                    "normalized_value": normalized_value,
+                    "confidence": 1.0,
+                    "resolution_method": "explicit_datetime",
+                }
+            )
+            existing_keys.add(key)
+
+        return merged
+
+    @classmethod
+    def _normalize_explicit_datetime(cls, raw_value: str, now: datetime) -> str | None:
+        text = str(raw_value or "").strip()
+        local_now = now.replace(tzinfo=None, microsecond=0)
+        if text in {"现在", "当前", "立即"}:
+            return local_now.isoformat(timespec="seconds")
+
+        relative_match = re.fullmatch(
+            r"(?P<hours>\d+|[零〇一二两三四五六七八九十]+)(?:个)?小时后",
+            text,
+        )
+        if relative_match:
+            hours = cls._parse_explicit_integer(relative_match.group("hours"))
+            if hours is None:
+                return None
+            return (local_now + timedelta(hours=hours)).isoformat(timespec="seconds")
+
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is not None:
+            return None
+        return parsed.replace(microsecond=0).isoformat(timespec="seconds")
+
+    @staticmethod
+    def _parse_explicit_integer(text: str) -> int | None:
+        if text.isdigit():
+            return int(text)
+        digits = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3,
+                  "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+        if text == "十":
+            return 10
+        if "十" in text:
+            if text.count("十") != 1:
+                return None
+            left, right = text.split("十", 1)
+            if (left and left not in digits) or (right and right not in digits):
+                return None
+            tens = digits[left] if left else 1
+            ones = digits[right] if right else 0
+            return tens * 10 + ones
+        return digits.get(text)
 
     def _normalize_candidates(
         self,
