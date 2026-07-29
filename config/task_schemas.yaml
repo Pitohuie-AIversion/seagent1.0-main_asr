@@ -219,9 +219,7 @@ task_templates:
         - key: end_time
           label: "任务结束时间"
           type: datetime
-        - key: water_depth
-          label: "水深（米）"
-          type: number
+        
         - key: oilfield_name
           label: "油田名称"
           type: string
@@ -229,6 +227,9 @@ task_templates:
         - key: oilfield_coordinates
           label: "油田经纬度坐标"
           type: coord
+        - key: water_depth
+          label: "水深（米）"
+          type: number
         # - key: wellhead_id
         #   label: "井口编号"
         #   type: raw

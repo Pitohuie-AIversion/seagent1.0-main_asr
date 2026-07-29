@@ -18,7 +18,10 @@ class OilfieldEntityLinkerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         env = yaml.safe_load((PROJECT_ROOT / "config" / "environment.yaml").read_text(encoding="utf-8"))
-        cls.linker = OilfieldEntityLinker(env)
+        constraints = yaml.safe_load(
+            (PROJECT_ROOT / "config" / "constraints.yaml").read_text(encoding="utf-8")
+        )["constraints"]
+        cls.linker = OilfieldEntityLinker(env, constraints)
 
     def test_link_asr_error_liuhua_with_digits(self):
         match = self.linker.link("硫化11-1油田")
@@ -59,6 +62,38 @@ class OilfieldEntityLinkerTest(unittest.TestCase):
         match = self.linker.link("乱说十一杠一油田")
         self.assertNotEqual(match.status, "accepted")
         self.assertIsNone(match.standard_name)
+
+    def test_context_defaults_use_oilfield_reference(self):
+        result = self.linker.evaluate_context(entity_id="liuhua_11_1")
+
+        self.assertEqual(result.oilfield_name, "流花11-1油田")
+        self.assertEqual(result.defaults["oilfield_coordinates"], {"lat": 20.815, "lon": 115.735})
+        self.assertEqual(result.defaults["water_depth"], 305)
+        self.assertEqual(result.violations, [])
+        self.assertEqual(result.coordinate_status, "not_provided")
+        self.assertEqual(result.depth_status, "not_provided")
+
+    def test_context_flags_coordinate_outside_reference_range_as_soft(self):
+        result = self.linker.evaluate_context(
+            entity_id="liuhua_11_1",
+            coordinates={"lat": 21.5, "lon": 116.0},
+        )
+
+        self.assertEqual(len(result.violations), 1)
+        self.assertEqual(result.violations[0]["constraint_id"], "C028")
+        self.assertEqual(result.violations[0]["severity"], "soft")
+        self.assertEqual(result.coordinate_status, "mismatched")
+
+    def test_context_flags_depth_above_reference_as_hard(self):
+        result = self.linker.evaluate_context(
+            entity_id="liuhua_11_1",
+            water_depth=350,
+        )
+
+        self.assertEqual(len(result.violations), 1)
+        self.assertEqual(result.violations[0]["constraint_id"], "C029")
+        self.assertEqual(result.violations[0]["severity"], "hard")
+        self.assertEqual(result.depth_status, "exceeded_reference")
 
 
 if __name__ == "__main__":

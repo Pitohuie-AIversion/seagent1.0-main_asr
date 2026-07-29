@@ -72,6 +72,30 @@ constraints:
       设备无法到达目标深度。请更换能力更强的ROV或修改任务水深。
     severity: "hard"
 
+  # ── 油田关联一致性约束 ─────────────────────────────────────────────────────
+
+  - id: "C028"
+    name: "油田实际坐标与知识库范围不一致"
+    applies_to: ["tree_valve_operation"]
+    check_type: "oilfield_coordinate_mismatch"
+    violation_message: >
+      您输入的实际坐标（{actual_lat}, {actual_lon}）未落入
+      {oilfield_name}的知识库坐标范围：
+      纬度 {lat_min}～{lat_max}，经度 {lon_min}～{lon_max}。
+      系统已保留您输入的实际坐标，请确认油田名称或坐标是否正确；
+      您可以修改相关信息，也可以确认继续使用当前坐标。
+    severity: "soft"
+
+  - id: "C029"
+    name: "作业水深超过油田知识库参考水深"
+    applies_to: ["tree_valve_operation"]
+    check_type: "oilfield_reference_depth_exceeded"
+    violation_message: >
+      您输入的实际作业水深为 {actual_depth} 米，
+      超过 {oilfield_name}知识库记录的参考水深 {reference_depth} 米。
+      请核对目标油田、实际坐标和作业水深，并将水深修改至合理范围后继续。
+    severity: "hard"
+
   # ── 时间约束 ─────────────────────────────────────────────────────────────────
 
   - id: "C030"

@@ -50,7 +50,7 @@ from .task_intent_builder import TaskIntentBuilder
 from .simulated_time import get_current_datetime
 from .time_context import get_time_context, is_standalone_time_query
 from .coord_parser import parse_coordinate_updates
-from .oilfield_linker import OilfieldEntityLinker
+from .oilfield_linker import OilfieldEntityLinker, _UNSET
 from .exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
 from .id_sequence import validate_intent_id
 from .slot_store import SlotStore, Slot
@@ -94,7 +94,7 @@ class DialogueManager:
         self.normalizer = FieldNormalizer()
         self.builder = OutputBuilder(kb)
         self.validator = TaskValidator(kb)
-        self.oilfield_linker = OilfieldEntityLinker(kb.environment)
+        self.oilfield_linker = OilfieldEntityLinker(kb.environment, kb.get_constraints())
         self.intent_router = IntentRouter(llm)
 
         # 对话核心状态
@@ -111,6 +111,8 @@ class DialogueManager:
         self._blocking_violations: list[Violation] = []
         self._soft_whitelist: set[tuple[str, str, str]] = set()
         self._hard_refusal_counts: dict[str, int] = {}
+        self._oilfield_context_violations: list[Violation] = []
+        self._oilfield_context_feedback: list[str] = []
 
         # ROV候选暂存
         self._pending_rov_candidates: list[dict] = []
@@ -691,12 +693,8 @@ class DialogueManager:
             raw_linked = self._link_oilfield_update_in_transaction({k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, new_slots)
             for k, v in raw_linked.items():
                 if k not in stage2_updates:
-                    stage2_updates[k] = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": "entity_linker"}
-
-            raw_linked = self._link_oilfield_update_in_transaction({k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, new_slots)
-            for k, v in raw_linked.items():
-                if k not in stage2_updates:
-                    stage2_updates[k] = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": "entity_linker"}
+                    source = "oilfield_reference" if k in ("oilfield_coordinates", "water_depth") else "entity_linker"
+                    stage2_updates[k] = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": source}
                 merged_updates[k] = v
 
             if not stage2_updates:
@@ -932,6 +930,10 @@ class DialogueManager:
 
         # 知识上下文
         knowledge_context = self.kb.get_context_for_state(self.task_state)
+        if self._oilfield_context_feedback:
+            knowledge_context = knowledge_context + "\n\n【油田知识库匹配反馈】\n" + "\n".join(
+                f"- {item}" for item in self._oilfield_context_feedback
+            )
         accepted_updates = self._get_committed_turn_updates(
             merged_updates,
             state_before_turn,
@@ -1058,7 +1060,15 @@ class DialogueManager:
         raw_name = updates.get("oilfield_name") or updates.get("raw_oilfield_name")
         if isinstance(raw_name, dict):
             raw_name = raw_name.get("value")
-        if not raw_name:
+
+        current_entity_id = (
+            new_slots.get("oilfield_entity_id").value
+            if new_slots.get("oilfield_entity_id") and new_slots["oilfield_entity_id"].status == "valid"
+            else None
+        )
+        has_explicit_coordinates = "oilfield_coordinates" in updates and updates.get("oilfield_coordinates") is not None
+        has_explicit_depth = "water_depth" in updates and updates.get("water_depth") is not None
+        if not (raw_name or has_explicit_coordinates or has_explicit_depth or current_entity_id):
             return updates
 
         coords = (
@@ -1069,36 +1079,44 @@ class DialogueManager:
             or (new_slots.get("start_point").value if new_slots.get("start_point") else None)
             or (new_slots.get("cable_position").value if new_slots.get("cable_position") else None)
         )
-        match = self.oilfield_linker.link(str(raw_name), coords)
         linked = dict(updates)
+        self._oilfield_context_violations = []
+        self._oilfield_context_feedback = []
 
-        for k in ("raw_oilfield_name", "oilfield_match_status", "oilfield_match_confidence", "oilfield_match_evidence", "oilfield_match_candidates"):
-            if k not in new_slots:
-                new_slots[k] = Slot(slot_name=k)
+        match = None
+        if raw_name:
+            match = self.oilfield_linker.link(str(raw_name), coords)
 
-        new_slots["raw_oilfield_name"].value = match.raw
-        new_slots["raw_oilfield_name"].status = "valid"
-        new_slots["oilfield_match_status"].value = match.status
-        new_slots["oilfield_match_status"].status = "valid"
-        new_slots["oilfield_match_confidence"].value = match.confidence
-        new_slots["oilfield_match_confidence"].status = "valid"
-        new_slots["oilfield_match_evidence"].value = match.evidence
-        new_slots["oilfield_match_evidence"].status = "valid"
-        new_slots["oilfield_match_candidates"].value = match.candidates
-        new_slots["oilfield_match_candidates"].status = "valid"
+            for k in ("raw_oilfield_name", "oilfield_match_status", "oilfield_match_confidence", "oilfield_match_evidence", "oilfield_match_candidates"):
+                if k not in new_slots:
+                    new_slots[k] = Slot(slot_name=k)
 
-        if match.status == "accepted" and match.standard_name:
+            new_slots["raw_oilfield_name"].value = match.raw
+            new_slots["raw_oilfield_name"].status = "valid"
+            new_slots["oilfield_match_status"].value = match.status
+            new_slots["oilfield_match_status"].status = "valid"
+            new_slots["oilfield_match_confidence"].value = match.confidence
+            new_slots["oilfield_match_confidence"].status = "valid"
+            new_slots["oilfield_match_evidence"].value = match.evidence
+            new_slots["oilfield_match_evidence"].status = "valid"
+            new_slots["oilfield_match_candidates"].value = match.candidates
+            new_slots["oilfield_match_candidates"].status = "valid"
+
+        if match and match.status == "accepted" and match.standard_name:
             linked["oilfield_name"] = match.standard_name
             if "oilfield_name" not in new_slots:
                 new_slots["oilfield_name"] = Slot("oilfield_name")
             new_slots["oilfield_name"].value = match.standard_name
             new_slots["oilfield_name"].status = "valid"
+            new_slots["oilfield_name"].source = "entity_linker"
             if "oilfield_entity_id" not in new_slots:
                 new_slots["oilfield_entity_id"] = Slot("oilfield_entity_id")
             new_slots["oilfield_entity_id"].value = match.entity_id
             new_slots["oilfield_entity_id"].status = "valid"
+            new_slots["oilfield_entity_id"].source = "entity_linker"
+            current_entity_id = match.entity_id
             linked["__clear_pending_oilfield"] = True
-        else:
+        elif match:
             linked.pop("oilfield_name", None)
             for k in ("pending_oilfield_name", "pending_oilfield_candidates"):
                 if k not in new_slots:
@@ -1108,7 +1126,58 @@ class DialogueManager:
             new_slots["pending_oilfield_candidates"].value = match.candidates
             new_slots["pending_oilfield_candidates"].status = "valid"
             linked["__clear_oilfield_name"] = True
+            return linked
+
+        if not current_entity_id:
+            return linked
+
+        context = self.oilfield_linker.evaluate_context(
+            entity_id=current_entity_id,
+            coordinates=updates.get("oilfield_coordinates") if has_explicit_coordinates else _UNSET,
+            water_depth=updates.get("water_depth") if has_explicit_depth else _UNSET,
+        )
+        self._oilfield_context_feedback = list(context.feedback)
+        self._oilfield_context_violations = [
+            Violation(
+                issue.constraint_id,
+                issue.constraint_name,
+                issue.message,
+                issue.severity,
+                list(issue.related_fields),
+            )
+            for issue in context.issues
+        ]
+
+        if not has_explicit_coordinates and context.default_coordinates is not None:
+            coord_slot = new_slots.get("oilfield_coordinates")
+            if self._should_apply_oilfield_default(coord_slot):
+                linked["oilfield_coordinates"] = context.default_coordinates
+                self._set_oilfield_reference_slot(new_slots, "oilfield_coordinates", context.default_coordinates, "coord")
+
+        if not has_explicit_depth and context.reference_water_depth is not None:
+            depth_slot = new_slots.get("water_depth")
+            if self._should_apply_oilfield_default(depth_slot):
+                linked["water_depth"] = context.reference_water_depth
+                self._set_oilfield_reference_slot(new_slots, "water_depth", context.reference_water_depth, "number")
         return linked
+
+    @staticmethod
+    def _should_apply_oilfield_default(slot: Slot | None) -> bool:
+        if slot is None or slot.value is None or slot.status != "valid":
+            return True
+        return slot.source in {"auto", "entity_linker", "oilfield_reference"}
+
+    @staticmethod
+    def _set_oilfield_reference_slot(new_slots: dict, key: str, value: Any, value_type: str) -> None:
+        if key not in new_slots:
+            new_slots[key] = Slot(key, value_type=value_type)
+        new_slots[key].value = value
+        new_slots[key].status = "valid"
+        new_slots[key].source = "oilfield_reference"
+        new_slots[key].raw_value = None
+        new_slots[key].confidence = 1.0
+        new_slots[key].candidate_value = None
+        new_slots[key].validation_error = None
 
     def _apply_updates_in_transaction(
         self,
@@ -1712,6 +1781,7 @@ class DialogueManager:
             new_violations = self.validator.validate(self.task_state)
         else:
             new_violations = self.validator.validate_for_fields(self.task_state, changed_fields)
+        new_violations = self._merge_oilfield_context_violations(new_violations)
 
         # 处理soft阻塞解除/升级为hard
         if self.phase == "blocked_soft":
@@ -1789,6 +1859,18 @@ class DialogueManager:
                 return {"type": "soft", "violations": soft_new, "hard_refusal_counts": {}}
 
         return {"type": "none", "violations": [], "hard_refusal_counts": {}}
+
+    def _merge_oilfield_context_violations(self, violations: list[Violation]) -> list[Violation]:
+        if not self._oilfield_context_violations:
+            return violations
+        merged = list(violations)
+        seen = {(v.constraint_id, tuple(v.related_fields), v.message) for v in merged}
+        for violation in self._oilfield_context_violations:
+            key = (violation.constraint_id, tuple(violation.related_fields), violation.message)
+            if key not in seen:
+                merged.append(violation)
+                seen.add(key)
+        return merged
 
     # --------------------------------------------------------------------------
     # 工具方法
