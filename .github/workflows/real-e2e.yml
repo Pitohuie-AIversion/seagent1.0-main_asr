@@ -1,0 +1,98 @@
+name: SEAgent Real Model E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      asr_audio_path:
+        description: Absolute path to the labelled ASR audio fixture on the GPU runner
+        required: false
+        type: string
+      asr_expected_terms:
+        description: Comma-separated terms that must appear in raw ASR output
+        required: false
+        type: string
+  schedule:
+    - cron: "0 18 * * *"
+
+concurrency:
+  group: seagent-real-e2e
+  cancel-in-progress: false
+
+jobs:
+  real-model-e2e:
+    name: Qwen, ASR, Publish, and Chrome E2E
+    runs-on: [self-hosted, linux, x64, gpu, seagent-models]
+    timeout-minutes: 120
+    env:
+      PYTHONPATH: .
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+      SEAGENT_RESULT_DIR: ${{ runner.temp }}/seagent-real-e2e-${{ github.run_id }}
+      SEAGENT_VERIFY_ARTIFACTS: "1"
+      E2E_UI_TIMEOUT_SECONDS: "180"
+      SEAGENT_ASR_AUDIO: ${{ inputs.asr_audio_path || vars.SEAGENT_ASR_TEST_AUDIO }}
+      SEAGENT_ASR_EXPECTED_TERMS: ${{ inputs.asr_expected_terms || vars.SEAGENT_ASR_EXPECTED_TERMS }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Verify GPU Runner Prerequisites
+        run: |
+          test -x /root/miniconda3/envs/seagent/bin/python
+          test -d /root/autodl-tmp/model/Qwen3.5-9B
+          test -d /root/autodl-tmp/model/Qwen-asr-0.6B
+          test -x /usr/bin/google-chrome
+          test -n "${SEAGENT_ASR_AUDIO}"
+          test -f "${SEAGENT_ASR_AUDIO}"
+          test -n "${SEAGENT_ASR_EXPECTED_TERMS}"
+
+      - name: Start Real Local Models and Backend
+        run: |
+          mkdir -p "${SEAGENT_RESULT_DIR}"
+          /root/miniconda3/envs/seagent/bin/python run.py > "${RUNNER_TEMP}/seagent-backend.log" 2>&1 &
+          echo "$!" > "${RUNNER_TEMP}/seagent-backend.pid"
+          /root/miniconda3/envs/seagent/bin/python - <<'PY'
+          import time
+          import urllib.request
+
+          deadline = time.monotonic() + 2700
+          while time.monotonic() < deadline:
+              try:
+                  with urllib.request.urlopen(
+                      "http://localhost:8890/api/time/current",
+                      timeout=5,
+                  ) as response:
+                      if response.status == 200:
+                          break
+              except Exception:
+                  time.sleep(5)
+          else:
+              raise SystemExit("Real backend did not become ready within 45 minutes")
+          PY
+
+      - name: Run Real Qwen Accumulation and Publish Suite
+        run: /root/miniconda3/envs/seagent/bin/python tests/run_accumulation_integration_tests.py
+
+      - name: Run Real ASR Fixture
+        run: /root/miniconda3/envs/seagent/bin/python tests/run_real_asr_integration.py
+
+      - name: Run Chrome Against Real Backend
+        run: /root/miniconda3/envs/seagent/bin/python tests/run_chrome_e2e.py
+
+      - name: Stop Backend
+        if: always()
+        run: |
+          if test -f "${RUNNER_TEMP}/seagent-backend.pid"; then
+            kill "$(cat "${RUNNER_TEMP}/seagent-backend.pid")" || true
+          fi
+
+      - name: Upload Real E2E Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-e2e-evidence-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/seagent-backend.log
+            ${{ env.SEAGENT_RESULT_DIR }}
+            chrome_e2e_screenshot.png

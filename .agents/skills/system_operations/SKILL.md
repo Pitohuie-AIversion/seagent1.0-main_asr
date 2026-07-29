@@ -39,13 +39,13 @@ Example payload:
 curl -X POST http://localhost:8890/api/robot/set-state-info \
   -H "Content-Type: application/json" \
   -d '{
-    "robot_name": "sealien_inspection",
+    "robot_name": "OBSROV-001",
     "params": {
       "current_velocity": 0.3,
       "turbidity": 3,
       "obstacle_density": "low",
       "mothership_support": "strong",
-      "update_timestamp": "2026-07-13T14:00:00+08:00",
+      "update_timestamp": "2026-07-10T18:00:00+08:00",
       "confidence": 0.95,
       "overall_status": "available",
       "survival_status": "normal",

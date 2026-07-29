@@ -10,6 +10,7 @@ tests/test_query_write_mixed_benchmark.py — Query/Write 混合 Benchmark 测�
 """
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -73,11 +74,11 @@ class FakeLLMForQueryWriteMixed:
                 ],
                 "unresolved": []
             }
-        elif "金牛座一号机" in current_input:
+        elif "天鹰座一号机" in current_input:
             return {
                 "slot_candidates": [
-                    {"raw_key": "使用设备", "canonical_key": "equipment_type", "raw_value": "金牛座一号机", "normalized_value": "轻型工作级深海机器人", "confidence": 0.95},
-                    {"raw_key": "使用设备", "canonical_key": "equipment_name", "raw_value": "金牛座一号机", "normalized_value": "金牛座一号机", "confidence": 0.95},
+                    {"raw_key": "使用设备", "canonical_key": "equipment_type", "raw_value": "天鹰座一号机", "normalized_value": "轻型工作级深海机器人", "confidence": 0.95},
+                    {"raw_key": "使用设备", "canonical_key": "equipment_name", "raw_value": "天鹰座一号机", "normalized_value": "天鹰座一号机", "confidence": 0.95},
                 ],
                 "unresolved": []
             }
@@ -103,8 +104,13 @@ class FakeLLMForQueryWriteMixed:
 class QueryWriteMixedBenchmarkTest(unittest.TestCase):
     def setUp(self):
         self.kb = KnowledgeBase()
+        self._state_temp_dir = tempfile.TemporaryDirectory()
+        self.kb.state_info.state_file = Path(self._state_temp_dir.name) / "state.yaml"
         self.llm = FakeLLMForQueryWriteMixed()
         self.dm = DialogueManager(self.llm, self.kb)
+
+    def tearDown(self):
+        self._state_temp_dir.cleanup()
 
     def test_interleaved_query_write_invariance(self):
         ver_0 = self.dm.slot_store.version
@@ -117,14 +123,14 @@ class QueryWriteMixedBenchmarkTest(unittest.TestCase):
         self.assertGreater(ver_1, ver_0)
 
         # Turn 2 (QUERY): 设备能力查询
-        reply_q1 = self.dm.process("金牛座一号机最大水深是多少？")
+        reply_q1 = self.dm.process("天鹰座一号机最大水深是多少？")
         ver_q1 = self.dm.slot_store.version
         state_q1 = dict(self.dm.task_state)
         self.assertEqual(ver_q1, ver_1, "QUERY 操作不得改变 SlotStore 版本号")
         self.assertEqual(state_q1, state_1, "QUERY 操作不得改变 task_state 内容")
 
         # Turn 3 (WRITE): 补充设备
-        self.dm.process("使用金牛座一号机")
+        self.dm.process("使用天鹰座一号机")
         ver_2 = self.dm.slot_store.version
         state_2 = dict(self.dm.task_state)
         self.assertGreater(ver_2, ver_1)
@@ -145,8 +151,8 @@ class QueryWriteMixedBenchmarkTest(unittest.TestCase):
         # Turn 6 (QUERY): 实时状态查询
         # 先设置实时数据
         self.kb.state_info.set_status("LROV--001", {"depth": 350})
-        self.kb.state_info.set_status("金牛座一号机", {"depth": 350})
-        reply_q3 = self.dm.process("金牛座一号机当前深度？")
+        self.kb.state_info.set_status("天鹰座一号机", {"depth": 350})
+        reply_q3 = self.dm.process("天鹰座一号机当前深度？")
         ver_q3 = self.dm.slot_store.version
         state_q3 = dict(self.dm.task_state)
         self.assertEqual(ver_q3, ver_3, "QUERY 操作不得改变 SlotStore 版本号")

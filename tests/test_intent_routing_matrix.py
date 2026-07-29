@@ -3,12 +3,12 @@ tests/test_intent_routing_matrix.py — IntentRouter 行为验收测试矩阵
 
 涵盖场景：
 1. QUERY:
-   - "金牛座一号机最大水深是多少？" -> interaction_type=QUERY, query_intent=DEVICE_CAPABILITY, SlotStore 不变化
+   - "天鹰座一号机最大水深是多少？" -> interaction_type=QUERY, query_intent=DEVICE_CAPABILITY, SlotStore 不变化
    - "管缆巡检需要什么工具？" -> interaction_type=QUERY, query_intent=KNOWLEDGE_QA 或 TOOL_QUERY, SlotStore 不变化
    - "当前任务缺少什么？" -> interaction_type=QUERY, query_intent=TASK_STATUS, SlotStore 不变化
 2. WRITE:
    - "执行流花11-1油田管缆巡检" -> interaction_type=WRITE, 提取 task_type 和 oilfield_name
-   - "使用金牛座一号机，携带机械臂和声呐" -> interaction_type=WRITE, 提取 equipment_type 和 payload
+   - "使用天鹰座一号机，携带机械臂和声呐" -> interaction_type=WRITE, 提取 equipment_type 和 payload
 3. 边界场景:
    - "水深500米合适吗？" -> 必须识别为 QUERY, SlotStore 状态不发生写入修改
    - "把水深改成500米" -> 必须识别为 WRITE, 触发水深参数修改
@@ -110,7 +110,7 @@ class FakeLLMForRoutingMatrix:
         elif "携带机械臂和声呐" in last_msg:
             return {
                 "slot_candidates": [
-                    {"raw_key": "使用设备", "canonical_key": "equipment_type", "raw_value": "金牛座一号机", "normalized_value": "轻型工作级深海机器人", "confidence": 0.95},
+                    {"raw_key": "使用设备", "canonical_key": "equipment_type", "raw_value": "天鹰座一号机", "normalized_value": "轻型工作级深海机器人", "confidence": 0.95},
                     {"raw_key": "携带工具", "canonical_key": "payload", "raw_value": "机械臂", "normalized_value": "机械臂", "confidence": 0.95},
                     {"raw_key": "携带工具", "canonical_key": "payload", "raw_value": "声呐", "normalized_value": "前视声呐", "confidence": 0.95},
                 ],
@@ -140,7 +140,7 @@ class IntentRoutingMatrixTest(unittest.TestCase):
         self.dm = DialogueManager(self.llm, self.kb)
 
     def test_query_device_capability(self):
-        msg = "金牛座一号机最大水深是多少？"
+        msg = "天鹰座一号机最大水深是多少？"
         route = self.router.route(msg, [], {})
         self.assertEqual(route.interaction_type, "QUERY")
         self.assertEqual(route.query_intent, "DEVICE_CAPABILITY")
@@ -189,7 +189,7 @@ class IntentRoutingMatrixTest(unittest.TestCase):
     def test_write_equipment_and_payload(self):
         # 先建立任务
         self.dm.process("执行流花11-1油田管缆巡检")
-        msg = "使用金牛座一号机，携带机械臂和声呐"
+        msg = "使用天鹰座一号机，携带机械臂和声呐"
         route = self.router.route(msg, self.dm.conversation_history, self.dm.task_state)
         self.assertEqual(route.interaction_type, "WRITE")
 

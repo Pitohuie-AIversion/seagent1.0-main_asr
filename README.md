@@ -1,132 +1,143 @@
-# README_ASR
+# SEAgent 1.0 (深海多 Agent 任务规划与 ASR 交互系统)
 
-## 一、分支主要更新
+> 基于多 Agent 架构的深海作业任务规划、强约束对话管理与语音/文本多模态交互系统。
 
-本版本在原有系统基础上集成了 ASR（Automatic Speech Recognition，自动语音识别）接口，新增语音输入能力，使系统支持通过语音完成任务指令输入，并进一步提升人机交互的自然性与便捷性。
+---
 
-考虑到通用语音识别模型对水下机器人、水下任务、水下油田等领域专业术语的识别敏感度不足，准确率不高的问题，本版本采用方法二和方法三对语音识别效果进行针对性微调与优化，以提升专业场景下语音输入的准确性和系统交互稳定性。
+## 1. 项目解决的问题
 
-## 二、候选词 + 上下文纠错
+深海水下机器人（ROV/AUV）作业具有海况复杂、设备层级繁多、物理物理限制（水深、载荷、机械臂能力）严苛的特点。传统交互系统容易遇到：
+- **任务参数丢失与混淆**：多轮对话中用户补充或修改参数时容易导致已有槽位被误覆盖或混淆。
+- **查询与写入不分**：用户询问设备能力或状态时，提取器误将提问词更新至任务状态。
+- **静态历史替代动态遥测**：系统使用历史对话数据而非机器人实时遥测状态进行物理安全校验。
+- **任务文件并发安全隐患**：任务落盘过程中由于并发覆盖、半写入或重名导致任务 JSON 损坏。
 
-对应脚本：`src/asr_normalizer.py`
+SEAgent 通过 **WRITE/QUERY 双通道路由**、**SlotStore 统一状态中心**、**实时遥测物理约束校验** 以及 **TaskIntent 排他锁原子持久化**，彻底解决上述痛点。
 
-### 2.1 规则结构
+---
 
-每条规则由这些信息组成：
+## 2. 当前核心能力
 
-| 字段              | 含义                                                 |
-| ----------------- | ---------------------------------------------------- |
-| `target`        | 要纠正成的标准词                                     |
-| `aliases`       | ASR 可能听错的候选词                                 |
-| `context_words` | 只有附近出现这些上下文词，才认为可以纠错             |
-| `category`      | 词条类别，如采油树、阀门、管缆、油田，不参与打分逻辑 |
-| `base_score`    | 命中候选词后的基础分                                 |
-| `threshold`     | 分数阈值                                             |
+- **多模态自然语言交互**：支持文本输入与基于 Qwen ASR 的语音转写输入，结合领域词汇+上下文纠错与油田实体 Link 打分匹配。
+- **WRITE / QUERY 意图解耦**：精准区分写任务参数 (`WRITE`) 与读知识/状态 (`QUERY`)，确保查询交互绝对不污染任务状态。
+- **SlotStore 状态中心**：提供 Single Source of Truth，支持全局版本自增、只读快照断言与事务回滚。
+- **设备候选与别名层级解析**：支持系列（Family）、型号（Variant）与单机（Unit）分层别名映射及 `canonical_exact` -> `alias_exact` -> `llm_semantic` 递进解析。
+- **物理与海况强约束校验**：集成水深、海况、载荷及机器人在 `config/state.yaml` 中的实时遥测状态校验。
+- **TaskIntent 原子落盘保障**：基于 Staging 暂存区、跨进程排他锁 `TaskPublishLock` 与 `_atomic_commit_noreplace` 硬链接提交，确保任务文件全有或全无落盘。
 
-例如：
+---
 
-| ASR 可能输出           | 标准词 | 触发上下文示例                    |
-| ---------------------- | ------ | --------------------------------- |
-| 采油数、采油书、柴油树 | 采油树 | 控制面板、井口、阀门、ROV、机械臂 |
-| 卧室、卧试、或式       | 卧式   | 采油树、控制面板、阀门、类型      |
-| 历史、力士、立事       | 立式   | 采油树、控制面板、井口、类型      |
-| 管蓝、管栏、观览       | 管缆   | 巡检、管线、坐标、观察级 ROV      |
-| 逆阀、一阀、义阀       | 翼阀   | 目标阀门、主阀、采油树、控制面板  |
-| 声纳                   | 声呐   | 巡检、管线、多波束、侧扫          |
+## 3. 简化系统架构图
 
-### 2.2 处理流程
-
-1. 遍历所有规则，查找文本里是否出现 `aliases`。
-2. 找到候选词后，取候选词前后窗口文本。
-3. 如果窗口内命中业务上下文词，则增加分数；命中候选词同样增加分数。
-4. 分数达到阈值(>=5)，生成唯一候选替换项（target）。
-5. 没达到阈值则保留原转写文本不变。
-
-## 三、油田实体 Link
-
-对应脚本：`src/oilfield_linker.py`
-
-### 3.1 背景
-
-油田名通常独立出现，缺少稳定上下文，因此不能靠二纠错。
-
-它通常由中文名和数字段组成，所以采用实体 Link：根据名称、别名、拼音相似度、数字段和坐标等信息打分，把用户输入链接到环境知识库 `config/environment.yaml`中的标准油田实体。
-
-与候选词+上下文是对语音处理不同，它是在转写后对文本进行处理。
-
-### 3.2 匹配逻辑
-
-`OilfieldEntityLinker.link(raw_name, coords)` 会对每个标准油田打分。
-
-如果用户输入和标准名或某个别名完全一致，文本分给到 95 分；如果存在包含关系，比如用户只说了简称，给到 82 分；否则会继续用 `SequenceMatcher` 算字符相似度，最高贡献 35 分，并用宽松拼音相似度处理 ASR 近音错字，拼音足够相似时最高贡献 55 分。对于“陵水17-2”这类带数字段的名称，如果用户输入和候选名提取出的数字段一致，还会额外加 28 分。最后如果用户还给了坐标，坐标落入该油田范围会加 40 分，接近中心点会加 15 分。所有候选实体按总分排序，最高分大于等于 75 且比第二名至少高 8 分时才会被接受为标准油田实体；否则会返回 ambiguous 或 unmatched。
-
-### 3.3 接受和拒绝
-
-匹配结果分两类：
-
-| 状态                    | 含义                                 | 系统行为                       |
-| ----------------------- | ------------------------------------ | ------------------------------ |
-| `accepted`            | >=75分，分数高，并且和第二名拉开差距 | 自动写入标准油田名和实体 ID    |
-| `ambiguous/unmatched` | vice versa                           | 不强行改名，保留候选供后续确认 |
-
-## 四、模型直送开关
-
-direct_to_llm: 决定是否将转写文本直接输入llm（是否保留文本存在于对话框中供人工修改）
-
-它是一个true和false的开关值，可以在config/asr.yaml中修改。
-
-## 五、新增脚本索引
-
-| 脚本                              | 作用                                                        |
-| --------------------------------- | ----------------------------------------------------------- |
-| `config/asr.yaml`               | ASR 模型路径、语言、上传大小、允许格式、是否直送            |
-| `src/asr_service.py`            | 加载本地 Qwen ASR 模型，提供`transcribe_file()`给后端调用 |
-| `src/asr_normalizer.py`         | 候选词 + 上下文纠错规则                                     |
-| `src/oilfield_entity_linker.py` | 油田实体 link                                               |
-
-## 六、ASR 模型和配置
-
-| 项       | 当前值                          |
-| -------- | ------------------------------- |
-| 模型     | Qwen ASR 0.6B                   |
-| 本地路径 | `.../model/Qwen-asr-0.6B`     |
-| 配置文件 | `config/asr.yaml`             |
-| 服务封装 | `src/asr_service.py`          |
-| Web 接口 | `web_backend.py` `/api/asr` |
-
-```yaml
-model_path: /root/autodl-tmp/model/Qwen-asr-0.6B
-device: auto
-language: Chinese
-max_new_tokens: 256
-max_inference_batch_size: 1
-max_upload_mb: 25
-direct_to_llm: false
-allowed_extensions:
-  - wav
-  - mp3
-  - flac
-  - m4a
-  - ogg
-  - webm
+```mermaid
+graph TD
+    UserInput[用户输入 / ASR语音转写] --> IntentRouter[IntentRouter 意图路由器]
+    IntentRouter -->|QUERY 路径| KnowledgeQuery[_handle_non_task_route 只读保护 & 知识/状态查询]
+    IntentRouter -->|WRITE 路径| Extractor[Extractor 候选值提取与解析]
+    Extractor --> SlotStore[SlotStore 状态中心 Single Source of Truth]
+    SlotStore --> Validator[Validator 物理与海况约束校验]
+    Validator --> TaskIntentBuilder[TaskIntentBuilder 安全落盘构建]
+    TaskIntentBuilder --> TaskIntentPersistence[(TaskIntent JSON 安全持久化)]
 ```
 
-## 七、后续维护建议
+---
 
-- 新增 ASR 常见真值和混淆词：改`src/context_rule_normalizer.py` 里的 `TERM_RULES`。
-- 新增油田标准实体：改 `config/environment.yaml` 的 `oil_fields`，并同时增删改`src/oilfield_entity_linker.py`里的`_PINYIN`。
-- 调整油田 link 规则： `src/oilfield_entity_linker.py`
-
-启动命令：
+## 4. 仓库主要目录说明
 
 ```
-cd /root/mzy/seagent1.0-main_asr && TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 /root/miniconda3/envs/seagent/bin/python run.py
+.
+├── config/              # 业务与系统配置文件 (ASR, 资产, 物理约束, 地理环境, 机器人舰队, 状态)
+├── docs/                # 正式项目文档体系 (架构总览, 开发测试指南, ADR 决策记录, 阶段进度报表)
+│   ├── architecture/    # 系统架构设计文档
+│   ├── decisions/       # 架构决策记录 (ADR)
+│   ├── development/     # 开发与测试指南
+│   └── progress/        # 阶段验证与缺陷跟踪报表
+├── requirements/        # Python 依赖管理 (base.txt, test.txt, gpu.txt)
+├── src/                 # 系统核心 Python 源码模块
+│   ├── intent_router.py # WRITE/QUERY 路由控制
+│   ├── slot_store.py    # 统一状态中心 SlotStore
+│   ├── extractor.py     # 候选值提炼与三级解析
+│   ├── validator.py     # 物理/海况限制校验
+│   └── task_intent_builder.py # TaskIntent 排他锁与原子落盘
+├── tests/               # 自动化单元测试与回归测试套件
+├── index.html           # 前端交互 Web 页面
+├── run.py               # 系统主入口服务
+├── web_backend.py       # Web 后端 API 服务
+├── CONTRIBUTING.md      # 团队协作与贡献指南
+└── CHANGELOG.md         # Keep a Changelog 格式演进历史
 ```
 
-端口转发：
-cd /root/mzy/seagent1.0-main_asr && /root/miniconda3/envs/seagent/bin/python port_forward.py
-测试命令：
+---
 
+## 5. 快速开始与启动方式
+
+### 5.1 环境准备与依赖安装
+
+```bash
+# 1. 安装 CPU 测试与基础依赖
+pip install -r requirements/test.txt
+
+# 2. （可选）若需运行本地 ASR 语音模型，安装 GPU 依赖
+pip install -r requirements/gpu.txt
 ```
-curl -X POST http://localhost:8890/api/robot/set-state-info -H "Content-Type: application/json" -d '{"robot_name":"sealien_inspection","params":{"current_velocity":3,"turbidity":3,"obstacle_density":"low","mothership_support":"strong","update_timestamp":"2026-07-13T13:30:00+08:00","confidence":0.95,"overall_status":"available","survival_status":"normal","thruster_status":"normal","depth_keeping_status":"normal","sonar_status":"normal","vision_status":"normal","arm_status":"normal","end_effector_status":"normal","acoustic_comms_status":"normal","tether_connection_status":"normal"}}'
+
+### 5.2 启动主服务
+
+推荐使用离线模式启动服务：
+
+```bash
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python run.py
 ```
+
+服务启动后，可以通过浏览器访问根目录 [index.html](file:///root/mzy/seagent1.0-main_asr/index.html) 或通过 API 接口进行交互。
+
+---
+
+## 6. 核心测试命令
+
+在提交代码或发布前，必须在项目根目录运行以下测试验证：
+
+```bash
+# 1. Python 语法与编译检查
+python -m compileall -q src tests
+
+# 2. 全量单元测试套件
+python -m unittest discover tests
+```
+
+详细测试说明请参阅 [docs/development/testing.md](file:///root/mzy/seagent1.0-main_asr/docs/development/testing.md)。
+
+---
+
+## 7. 配置入口说明
+
+所有核心参数定义集中在 `config/` 目录：
+- [config/asr.yaml](file:///root/mzy/seagent1.0-main_asr/config/asr.yaml)：ASR 模型路径、语言及 `direct_to_llm` 模型直送开关。
+- [config/robot_fleet.yaml](file:///root/mzy/seagent1.0-main_asr/config/robot_fleet.yaml)：ROV/AUV 舰队定义、物理参数、设备别名及 `status_ref` 映射。
+- [config/constraints.yaml](file:///root/mzy/seagent1.0-main_asr/config/constraints.yaml)：物理约束规则限值与硬/软违规阈值。
+- [config/environment.yaml](file:///root/mzy/seagent1.0-main_asr/config/environment.yaml)：海床地理边界、油田坐标定义及电子围栏。
+- [config/state.yaml](file:///root/mzy/seagent1.0-main_asr/config/state.yaml)：机器人实时遥测状态与传感器健康度节点。
+
+---
+
+## 8. 文档导航
+
+- 📘 **系统架构总览**：[docs/architecture/overview.md](file:///root/mzy/seagent1.0-main_asr/docs/architecture/overview.md)
+- 🛠️ **开发与测试指南**：[docs/development/testing.md](file:///root/mzy/seagent1.0-main_asr/docs/development/testing.md)
+- 🤝 **团队贡献指南**：[CONTRIBUTING.md](file:///root/mzy/seagent1.0-main_asr/CONTRIBUTING.md)
+- 🏛️ **架构决策记录 (ADR)**：
+  - [ADR-001: WRITE/QUERY 双通道路由](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-001-write-query-routing.md)
+  - [ADR-002: SlotStore 作为统一状态中心](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-002-slotstore-source-of-truth.md)
+  - [ADR-003: TaskIntent 安全原子持久化](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-003-task-intent-atomic-persistence.md)
+- 📊 **阶段进展报表**：[docs/progress/phase-1-5-validation.md](file:///root/mzy/seagent1.0-main_asr/docs/progress/phase-1-5-validation.md)
+- 📜 **版本演进日志**：[CHANGELOG.md](file:///root/mzy/seagent1.0-main_asr/CHANGELOG.md)
+
+---
+
+## 9. 当前项目状态与已知限制
+
+- **状态**：Phase 1.5 阶段，核心架构闭环已完成并包含完整 CI 测试防线。
+- **已知限制**：
+  - 极度冷门或未录入别名表的设备俗称仍需依赖 LLM 语义解析，可能带来微小延时。
+  - 遥测数据（`config/state.yaml`）超过 1 小时未更新会被校验器判定为过期数据并阻断执行。
+  - TaskIntent 原子落盘依靠底层硬链接 `os.link` 保证，若在跨网络挂载盘（如 NFS）运行需确保跨文件系统链接支持。

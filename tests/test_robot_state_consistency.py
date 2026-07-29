@@ -3,13 +3,14 @@ tests/test_robot_state_consistency.py — 机器人实时状态一致性闭环�
 
 验证流程：
 1. 调用 StateInfoStore.set_status / KnowledgeBase.state_info.set_status 设置：
-   robot: 金牛座一号机 (sealien_inspection)
+   robot: 金牛座一号机 (CRAWLER-1600-001)
    depth: 350
 2. 询问: "金牛座一号机当前深度？"
 3. 必须返回 350m / 350米，且 SlotStore 状态保持不变。
 """
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -62,12 +63,17 @@ class FakeLLMForRobotState:
 class RobotStateConsistencyTest(unittest.TestCase):
     def setUp(self):
         self.kb = KnowledgeBase()
+        self._state_temp_dir = tempfile.TemporaryDirectory()
+        self.kb.state_info.state_file = Path(self._state_temp_dir.name) / "state.yaml"
         self.llm = FakeLLMForRobotState()
         self.dm = DialogueManager(self.llm, self.kb)
 
+    def tearDown(self):
+        self._state_temp_dir.cleanup()
+
     def test_robot_state_update_and_query_closed_loop(self):
         # 1. 更新机器人状态
-        target_robot = "sealien_inspection"  # 金牛座一号机 status_ref
+        target_robot = "CRAWLER-1600-001"  # 金牛座一号机 status_ref
         self.kb.state_info.set_status(target_robot, {
             "depth": 350,
             "overall_status": "available",
@@ -88,7 +94,7 @@ class RobotStateConsistencyTest(unittest.TestCase):
 
     def test_robot_state_by_display_name_lookup(self):
         # 同样支持按中文显示名称设置与查询
-        self.kb.state_info.set_status("金牛座一号机", {
+        self.kb.state_info.set_status("履带式海底重载作业机器人1600HP-001", {
             "depth": 350,
             "overall_status": "available",
             "update_timestamp": None

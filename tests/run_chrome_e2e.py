@@ -21,6 +21,7 @@ import websockets
 
 PORT = int(os.getenv("PORT", "8890"))
 CDP_PORT = int(os.getenv("CDP_PORT", "9222"))
+UI_TIMEOUT_SECONDS = float(os.getenv("E2E_UI_TIMEOUT_SECONDS", "5"))
 SCREENSHOT_PATH = Path(__file__).resolve().parents[1] / "chrome_e2e_screenshot.png"
 
 
@@ -95,6 +96,7 @@ class CDPClient:
         self.pending_futures: dict[int, asyncio.Future] = {}
         self.console_logs: list[str] = []
         self.uncaught_exceptions: list[str] = []
+        self.request_urls: list[str] = []
         self._listen_task = None
 
     async def connect(self):
@@ -104,6 +106,7 @@ class CDPClient:
         await self.send("Runtime.enable")
         await self.send("DOM.enable")
         await self.send("Log.enable")
+        await self.send("Network.enable")
 
     async def _listen(self):
         try:
@@ -140,6 +143,12 @@ class CDPClient:
                     txt = str(entry.get("text", ""))
                     if entry.get("level") == "error" and "favicon.ico" not in txt:
                         self.uncaught_exceptions.append(f"[Log.error] {txt}")
+
+                elif method == "Network.requestWillBeSent":
+                    request = msg.get("params", {}).get("request", {})
+                    url = request.get("url")
+                    if url:
+                        self.request_urls.append(url)
         except Exception:
             pass
 
@@ -162,8 +171,16 @@ class CDPClient:
         return res.get("result", {}).get("value")
 
     async def click_element(self, selector: str):
-        js = f"document.querySelector('{selector}').click()"
-        await self.eval_js(js)
+        js = f"""
+        (() => {{
+            const el = document.querySelector('{selector}');
+            if (!el) return false;
+            el.click();
+            return true;
+        }})()
+        """
+        if not await self.eval_js(js):
+            raise RuntimeError(f"Element not found: {selector}")
 
     async def type_input(self, selector: str, text: str):
         escaped = json.dumps(text)
@@ -207,10 +224,20 @@ async def run_e2e():
         client = CDPClient(ws_url)
         await client.connect()
 
-        await client.navigate(f"http://localhost:{PORT}/")
-        await asyncio.sleep(1)
-        await client.eval_js("localStorage.clear(); sessionStorage.clear();")
-        await client.wait_for_condition("!document.querySelector('#sendBtn').disabled", timeout=5.0)
+        await client.send(
+            "Storage.clearDataForOrigin",
+            {
+                "origin": f"http://localhost:{PORT}",
+                "storageTypes": "local_storage",
+            },
+        )
+        await client.navigate(f"http://localhost:{PORT}/" )
+        await client.wait_for_condition(
+            "window.__seagentFrontendInitialized === true"
+            " && document.querySelectorAll('#messages .message').length >= 1"
+            " && !document.querySelector('#sendBtn').disabled",
+            timeout=UI_TIMEOUT_SECONDS,
+        )
 
         # Case 1: Title Check
         title = await client.eval_js("document.title")
@@ -219,23 +246,39 @@ async def run_e2e():
 
         # Case 2: Send "你好", confirm general chat response & empty slots
         print("💬 Case 2: Sending GENERAL_CHAT '你好'...")
+        cnt_before = await client.eval_js("document.querySelectorAll('#messages .message').length")
         await client.type_input("#messageInput", "你好")
         await client.click_element("#sendBtn")
-        await client.wait_for_condition(
-            "document.querySelectorAll('#messages .message').length >= 2",
-            timeout=5.0
-        )
+        try:
+            await client.wait_for_condition(
+                f"document.querySelectorAll('#messages .message').length >= {cnt_before + 2}",
+                timeout=UI_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            diagnostics = await client.eval_js(
+                """JSON.stringify({
+                    initialized: window.__seagentFrontendInitialized,
+                    messageCount: document.querySelectorAll('#messages .message').length,
+                    inputValue: document.querySelector('#messageInput')?.value,
+                    sendDisabled: document.querySelector('#sendBtn')?.disabled,
+                    messages: document.querySelector('#messages')?.innerText
+                })"""
+            )
+            print(f"   Browser diagnostics: {diagnostics}")
+            print(f"   Requested URLs: {client.request_urls}")
+            raise
         collected_text = await client.eval_js("document.querySelector('#collectedFields').innerText")
         print(f"   Collected Fields after greeting: {collected_text.strip()}")
         assert "暂无" in collected_text or collected_text.strip() == "", "GENERAL_CHAT modified slots!"
 
         # Case 3: Send "机器人可以使用哪些工具？", confirm response contains tool names & slots unchanged
         print("🛠️ Case 3: Sending TOOL_QUERY '机器人可以使用哪些工具？'...")
+        cnt_before = await client.eval_js("document.querySelectorAll('#messages .message').length")
         await client.type_input("#messageInput", "机器人可以使用哪些工具？")
         await client.click_element("#sendBtn")
         await client.wait_for_condition(
-            "document.querySelectorAll('#messages .message').length >= 4",
-            timeout=5.0
+            f"document.querySelectorAll('#messages .message').length >= {cnt_before + 2}",
+            timeout=UI_TIMEOUT_SECONDS,
         )
         msg_text = await client.eval_js("document.querySelector('#messages').innerText")
         collected_text = await client.eval_js("document.querySelector('#collectedFields').innerText")
@@ -250,7 +293,7 @@ async def run_e2e():
         await client.click_element("#sendBtn")
         await client.wait_for_condition(
             "document.querySelector('#collectedFields').innerText.includes('300')",
-            timeout=5.0
+            timeout=UI_TIMEOUT_SECONDS
         )
         collected_text = await client.eval_js("document.querySelector('#collectedFields').innerText")
         print(f"   Collected Fields after task creation:\n{collected_text}")
@@ -264,7 +307,7 @@ async def run_e2e():
         await client.click_element("#sendBtn")
         await client.wait_for_condition(
             f"document.querySelectorAll('#messages .message').length >= {cnt_before + 2}",
-            timeout=5.0
+            timeout=UI_TIMEOUT_SECONDS
         )
         msg_text = await client.eval_js("document.querySelector('#messages').innerText")
         print(f"   Response snippet after '谢谢': {msg_text[-120:]}")
@@ -276,7 +319,7 @@ async def run_e2e():
         await client.click_element("#sendBtn")
         await client.wait_for_condition(
             f"document.querySelectorAll('#messages .message').length >= {cnt_before + 2}",
-            timeout=5.0
+            timeout=UI_TIMEOUT_SECONDS
         )
         collected_text = await client.eval_js("document.querySelector('#collectedFields').innerText")
         assert "300" in collected_text, "Water depth missing after TOOL_QUERY!"

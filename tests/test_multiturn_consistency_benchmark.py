@@ -4,7 +4,7 @@ tests/test_multiturn_consistency_benchmark.py — 多轮任务一致性 Benchmar
 验证场景：
 用户连续输入：
 1. 创建任务: "执行流花11-1油田管缆巡检"
-2. 补充设备: "使用金牛座一号机"
+2. 补充设备: "使用天鹰座一号机"
 3. 补充 payload: "携带机械臂和前视声呐"
 4. 修改参数: "把水深改成300米"
 
@@ -58,11 +58,11 @@ class FakeLLMForMultiTurnBenchmark:
                 ],
                 "unresolved": []
             }
-        elif "金牛座一号机" in current_input:
+        elif "天鹰座一号机" in current_input:
             return {
                 "slot_candidates": [
-                    {"raw_key": "使用设备", "canonical_key": "equipment_type", "raw_value": "金牛座一号机", "normalized_value": "轻型工作级深海机器人", "confidence": 0.95},
-                    {"raw_key": "使用设备", "canonical_key": "equipment_name", "raw_value": "金牛座一号机", "normalized_value": "金牛座一号机", "confidence": 0.95},
+                    {"raw_key": "使用设备", "canonical_key": "equipment_type", "raw_value": "天鹰座一号机", "normalized_value": "轻型工作级深海机器人", "confidence": 0.95},
+                    {"raw_key": "使用设备", "canonical_key": "equipment_name", "raw_value": "天鹰座一号机", "normalized_value": "天鹰座一号机", "confidence": 0.95},
                 ],
                 "unresolved": []
             }
@@ -109,7 +109,7 @@ class MultiTurnConsistencyBenchmarkTest(unittest.TestCase):
         self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
 
         # Turn 2: 补充设备
-        r2 = self.dm.process("使用金牛座一号机")
+        r2 = self.dm.process("使用天鹰座一号机")
         v2 = self.dm.slot_store.version
         self.assertGreater(v2, v1)
         self.assertEqual(self.dm.task_state.get("equipment_type"), "轻型工作级深海机器人")
