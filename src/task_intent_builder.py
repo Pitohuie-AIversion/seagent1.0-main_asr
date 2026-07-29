@@ -473,6 +473,9 @@ class TaskIntentBuilder:
         task_state: Dict[str, Any],
         built_json: Dict[str, Any],
     ) -> Dict[str, Any]:
+        if task_type_key == "tree_valve_operation":
+            return self._build_tree_valve_operation_details(task_state, built_json)
+
         schema_keys = self._get_output_schema_keys(task_type_key)
         if {"cable_type", "start_point", "end_point"}.issubset(schema_keys):
             return self._build_pipeline_work_details(task_state, built_json)
