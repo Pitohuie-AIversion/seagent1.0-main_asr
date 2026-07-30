@@ -31,18 +31,20 @@ jobs:
       - name: 1. Python Syntax & Compilation Check
         run: python -m compileall -q src tests
 
-      - name: 2. Run Full Test Suite & Generate Audit Data
+      - name: 2. Run Full Test Suite & Enforce Audit Gate
         run: |
           set +e
           TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m unittest discover tests -v 2>&1 | tee full_test.log
           test_exit=${PIPESTATUS[0]}
           set -e
           
-          python scratch/parse_tests.py || true
-          python scratch/generate_report.py || true
+          python scratch/parse_tests.py
+          python scratch/generate_report.py
           
-          echo "Full test suite exited with code ${test_exit}"
-          exit "${test_exit}"
+          if [ "${test_exit}" -ne 0 ]; then
+            echo "Full test suite failed with exit code ${test_exit}"
+            exit "${test_exit}"
+          fi
 
       - name: Upload Regression Report & Test Log Artifacts
         if: always()

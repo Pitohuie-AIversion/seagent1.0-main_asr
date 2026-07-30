@@ -103,11 +103,11 @@ def classify_audit_item(rec, replacement_map):
     }
 
 
-def generate_report():
+def generate_report() -> bool:
     record_file = Path("/tmp/test_records.json")
     if not record_file.exists():
         print("Error: /tmp/test_records.json not found!")
-        sys.exit(1)
+        return False
 
     with open(record_file, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -241,7 +241,8 @@ def generate_report():
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(report_content, encoding="utf-8")
     print(f"Generated audited Phase 1.9.4 report at {target_path} successfully ({len(audited_rows)} records).")
+    return is_passed
 
 
 if __name__ == "__main__":
-    generate_report()
+    raise SystemExit(0 if generate_report() else 1)
