@@ -709,38 +709,9 @@ class KnowledgeBase:
         if not equipment_selector or not isinstance(equipment_selector, str):
             return empty_state
 
-        lookup_keys: list[str] = []
-        resolved_unit = self.resolve_robot_unit(equipment_selector)
-        if resolved_unit:
-            lookup_keys.extend([
-                resolved_unit.get("status_ref", ""),
-                resolved_unit.get("unit_id", ""),
-            ])
-            rov = resolved_unit.get("robot")
-        else:
-            rov = self._find_rov(equipment_selector)
-        if rov:
-            if rov.get("status_ref"):
-                lookup_keys.append(str(rov.get("status_ref")))
-            if not resolved_unit:
-                for unit in rov.get("fleet_units", []):
-                    lookup_keys.extend([
-                        unit.get("status_ref", ""),
-                        unit.get("unit_id", ""),
-                    ])
-        lookup_keys.append(equipment_selector)
-
-        deduped_keys: list[str] = []
-        seen = set()
-        for key in lookup_keys:
-            if key and key not in seen:
-                deduped_keys.append(key)
-                seen.add(key)
-
-        for key in deduped_keys:
-            state = self.state_info.get_all_info(key)
-            if isinstance(state, dict):
-                return state
+        state = self.state_info.get_all_info(equipment_selector)
+        if isinstance(state, dict):
+            return state
         return empty_state
 
     # ──────────────────────────────────────────────────────────────────────────

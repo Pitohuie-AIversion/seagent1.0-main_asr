@@ -5,6 +5,7 @@ web_backend.py - Web 后端主控
 """
 
 import json
+import re
 import threading
 import uuid
 import yaml
@@ -22,6 +23,11 @@ from src.dialogue_manager import DialogueManager
 from src.simulated_time import get_simulated_time
 from src.history_manager import save_conversation, list_history, load_history
 from src.asr_normalizer import normalize_terminology
+from src.exceptions import (
+    StatePersistenceError,
+    StateSelectorError,
+    StateVersionConflict,
+)
 
 # ========== 配置路径（与你的项目一致）==========
 CONFIG_DIR = Path(__file__).parent / "config"
@@ -165,6 +171,7 @@ class EndpointFilter(logging.Filter):
         return True
 
 werkzeug_logger = logging.getLogger('werkzeug')
+logger = logging.getLogger(__name__)
 for f in werkzeug_logger.filters[:]:
     if isinstance(f, EndpointFilter):
         werkzeug_logger.removeFilter(f)
@@ -174,33 +181,141 @@ werkzeug_logger.addFilter(EndpointFilter())
 
 @app.route("/api/robot/set-state-info", methods=["POST"])
 def set_robot_state_info():
+    supplied_request_id = request.headers.get("X-Request-ID", "")
+    request_id = (
+        supplied_request_id
+        if re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", supplied_request_id)
+        else f"req_{uuid.uuid4().hex[:12]}"
+    )
+    if _shared_kb is None:
+        return jsonify({
+            "ok": False,
+            "code": 503,
+            "error": "service_unavailable",
+            "msg": "Robot state service is not initialized",
+            "request_id": request_id,
+            "retryable": True,
+        }), 503
+
+    robot_name = None
+    expected_version = None
+    status_ref = None
+    current_version = None
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            raise ValueError("request body must be a JSON object")
         robot_name = data.get("robot_name")
         params = data.get("params")
+        expected_version = data.get("expected_version")
 
-        if not robot_name or not params:
-            return jsonify({"code": 400, "msg": "robot_name 和 params 不能为空"}), 400
+        if not isinstance(robot_name, str) or not robot_name.strip():
+            raise ValueError("robot_name must be a non-empty string")
+        if not isinstance(params, dict) or not params:
+            raise ValueError("params must be a non-empty JSON object")
 
-        print("【更新前的state】")
-        print(_shared_kb.state_info.get_robot_state(robot_name))
+        status_ref = _shared_kb.state_info.resolve_status_ref(robot_name)
+        state_before = _shared_kb.state_info.get_robot_state(robot_name)
+        if isinstance(state_before, dict):
+            current_version = state_before.get("version", 0)
 
-        _shared_kb.state_info.set_status(robot_name, params)
-
-        updated_state = _shared_kb.state_info.get_robot_state(robot_name)
-        print("【更新后的state】")
-        print(updated_state)
-        print(f"✅ 机器人 {robot_name} 状态已更新，update_timestamp = {updated_state.get('update_timestamp')}")
-
+        result = _shared_kb.state_info.set_status(
+            robot_name,
+            params,
+            expected_version=expected_version,
+        )
+        logger.info(
+            "Robot state updated: request_id=%s status_ref=%s "
+            "expected_version=%s current_version=%s",
+            request_id,
+            result["status_ref"],
+            expected_version,
+            result["version"],
+        )
         return jsonify({
+            "ok": True,
             "code": 200,
-            "msg": "✅ 状态更新成功",
+            "msg": "状态更新成功",
             "robot": robot_name,
-            "updated_params": params,
-            "final_timestamp": updated_state.get("update_timestamp")
+            "status_ref": result["status_ref"],
+            "version": result["version"],
+            "store_version": result["store_version"],
+            "updated_at": result["updated_at"],
+            "state": result["state"],
+            "request_id": request_id,
         })
-    except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
+    except StateVersionConflict as exc:
+        logger.warning(
+            "Robot state version conflict: request_id=%s status_ref=%s "
+            "expected_version=%s current_version=%s",
+            request_id,
+            exc.status_ref,
+            exc.expected_version,
+            exc.current_version,
+        )
+        return jsonify({
+            "ok": False,
+            "code": 409,
+            "error": "StateVersionConflict",
+            "msg": "Robot state version is stale",
+            "status_ref": exc.status_ref,
+            "expected_version": exc.expected_version,
+            "current_version": exc.current_version,
+            "request_id": request_id,
+            "retryable": True,
+        }), 409
+    except (StateSelectorError, TypeError, ValueError) as exc:
+        logger.warning(
+            "Invalid robot state update: request_id=%s status_ref=%s "
+            "expected_version=%s current_version=%s error=%s",
+            request_id,
+            status_ref,
+            expected_version,
+            current_version,
+            type(exc).__name__,
+        )
+        return jsonify({
+            "ok": False,
+            "code": 400,
+            "error": type(exc).__name__,
+            "msg": "Invalid robot state update request",
+            "request_id": request_id,
+            "retryable": False,
+        }), 400
+    except StatePersistenceError:
+        logger.exception(
+            "Robot state persistence failed: request_id=%s status_ref=%s "
+            "expected_version=%s current_version=%s",
+            request_id,
+            status_ref,
+            expected_version,
+            current_version,
+        )
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "error": "StatePersistenceError",
+            "msg": "Robot state persistence failed",
+            "request_id": request_id,
+            "retryable": True,
+        }), 500
+    except Exception:
+        logger.exception(
+            "Unhandled robot state update failure: request_id=%s status_ref=%s "
+            "expected_version=%s current_version=%s",
+            request_id,
+            status_ref,
+            expected_version,
+            current_version,
+        )
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "error": "internal_error",
+            "msg": "Internal server error",
+            "request_id": request_id,
+            "retryable": False,
+        }), 500
 
 
 @app.route("/")
