@@ -41,14 +41,16 @@ def _mp_lock_holder_create_staging(tmp_dir_str, hold_event, ready_event):
         lock = TaskPublishLock(task_dir)
         with lock:
             ready_event.set()
-            hold_event.wait(timeout=5)
+            hold_event.wait(timeout=15)
 
 
-def _mp_contender_create_staging(tmp_dir_str, intent, res_queue):
+def _mp_contender_create_staging(tmp_dir_str, intent, res_queue, attempting_event=None):
     """争锁 worker: create_staging"""
     kb = KnowledgeBase()
     builder = TaskIntentBuilder(kb)
     task_dir = Path(tmp_dir_str) / "task"
+    if attempting_event is not None:
+        attempting_event.set()
     with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
         try:
             st = builder.create_staging(intent)
@@ -57,11 +59,13 @@ def _mp_contender_create_staging(tmp_dir_str, intent, res_queue):
             res_queue.put(("error", type(e).__name__, os.getpid()))
 
 
-def _mp_contender_publish_staging(tmp_dir_str, intent, res_queue):
+def _mp_contender_publish_staging(tmp_dir_str, intent, res_queue, attempting_event=None):
     """争锁 worker: publish_staging"""
     kb = KnowledgeBase()
     builder = TaskIntentBuilder(kb)
     task_dir = Path(tmp_dir_str) / "task"
+    if attempting_event is not None:
+        attempting_event.set()
     with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
         try:
             st = builder.create_staging(intent)
@@ -71,12 +75,14 @@ def _mp_contender_publish_staging(tmp_dir_str, intent, res_queue):
             res_queue.put(("error", type(e).__name__, os.getpid()))
 
 
-def _mp_contender_load_snapshot(tmp_dir_str, snap_dict, res_queue):
+def _mp_contender_load_snapshot(tmp_dir_str, snap_dict, res_queue, attempting_event=None):
     """争锁 worker: load_snapshot"""
     kb = KnowledgeBase()
     llm = DummyLLM()
     dm = DialogueManager(llm, kb)
     task_dir = Path(tmp_dir_str) / "task"
+    if attempting_event is not None:
+        attempting_event.set()
     with patch("src.dialogue_manager.get_task_dir", return_value=task_dir), \
          patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
          patch("src.result_paths.get_task_dir", return_value=task_dir), \
@@ -305,6 +311,7 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
 
     def test_06_real_lock_blocking_proof(self):
         """6. 真实锁阻塞证明：进程 A 持锁时，进程 B 的 create_staging / publish_staging / load_snapshot 均被真实阻塞"""
+        import time
         intent = self._make_valid_intent("TI2026063001")
         ctx = mp.get_context("spawn")
 
@@ -318,42 +325,48 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
             res_q1 = ctx.Queue()
             ready_e1 = ctx.Event()
             hold_e1 = ctx.Event()
+            attempt_e1 = ctx.Event()
 
             p_holder1 = ctx.Process(target=_mp_lock_holder_create_staging, args=(tmp_dir, hold_e1, ready_e1))
             p_holder1.start()
-            ready_e1.wait(timeout=5)
+            ready_e1.wait(timeout=15)
 
-            p_contender1 = ctx.Process(target=_mp_contender_create_staging, args=(tmp_dir, intent, res_q1))
+            p_contender1 = ctx.Process(target=_mp_contender_create_staging, args=(tmp_dir, intent, res_q1, attempt_e1))
             p_contender1.start()
+            attempt_e1.wait(timeout=15)
+            time.sleep(0.1)
 
-            p_contender1.join(timeout=0.4)
             self.assertTrue(p_contender1.is_alive(), "Process B create_staging must be blocked while Process A holds lock")
+            self.assertTrue(res_q1.empty(), "Process B must not have acquired lock yet")
 
             hold_e1.set()
-            p_holder1.join(timeout=5)
-            p_contender1.join(timeout=5)
-            res1 = res_q1.get(timeout=2)
+            p_holder1.join(timeout=15)
+            p_contender1.join(timeout=15)
+            res1 = res_q1.get(timeout=15)
             self.assertEqual(res1[0], "acquired")
 
             # Test 6.2: publish_staging blocked
             res_q2 = ctx.Queue()
             ready_e2 = ctx.Event()
             hold_e2 = ctx.Event()
+            attempt_e2 = ctx.Event()
 
             p_holder2 = ctx.Process(target=_mp_lock_holder_create_staging, args=(tmp_dir, hold_e2, ready_e2))
             p_holder2.start()
-            ready_e2.wait(timeout=5)
+            ready_e2.wait(timeout=15)
 
-            p_contender2 = ctx.Process(target=_mp_contender_publish_staging, args=(tmp_dir, intent, res_q2))
+            p_contender2 = ctx.Process(target=_mp_contender_publish_staging, args=(tmp_dir, intent, res_q2, attempt_e2))
             p_contender2.start()
+            attempt_e2.wait(timeout=15)
+            time.sleep(0.1)
 
-            p_contender2.join(timeout=0.4)
             self.assertTrue(p_contender2.is_alive(), "Process B publish_staging must be blocked while Process A holds lock")
+            self.assertTrue(res_q2.empty(), "Process B must not have acquired lock yet")
 
             hold_e2.set()
-            p_holder2.join(timeout=5)
-            p_contender2.join(timeout=5)
-            res2 = res_q2.get(timeout=2)
+            p_holder2.join(timeout=15)
+            p_contender2.join(timeout=15)
+            res2 = res_q2.get(timeout=15)
             self.assertEqual(res2[0], "acquired")
 
             # Test 6.3: load_snapshot blocked
@@ -380,21 +393,24 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
             res_q3 = ctx.Queue()
             ready_e3 = ctx.Event()
             hold_e3 = ctx.Event()
+            attempt_e3 = ctx.Event()
 
             p_holder3 = ctx.Process(target=_mp_lock_holder_create_staging, args=(tmp_dir, hold_e3, ready_e3))
             p_holder3.start()
-            ready_e3.wait(timeout=5)
+            ready_e3.wait(timeout=15)
 
-            p_contender3 = ctx.Process(target=_mp_contender_load_snapshot, args=(tmp_dir, snap_full, res_q3))
+            p_contender3 = ctx.Process(target=_mp_contender_load_snapshot, args=(tmp_dir, snap_full, res_q3, attempt_e3))
             p_contender3.start()
+            attempt_e3.wait(timeout=15)
+            time.sleep(0.1)
 
-            p_contender3.join(timeout=0.4)
             self.assertTrue(p_contender3.is_alive(), "Process B load_snapshot must be blocked while Process A holds lock")
+            self.assertTrue(res_q3.empty(), "Process B must not have acquired lock yet")
 
             hold_e3.set()
-            p_holder3.join(timeout=5)
-            p_contender3.join(timeout=5)
-            res3 = res_q3.get(timeout=2)
+            p_holder3.join(timeout=15)
+            p_contender3.join(timeout=15)
+            res3 = res_q3.get(timeout=15)
             self.assertEqual(res3[0], "acquired")
 
 

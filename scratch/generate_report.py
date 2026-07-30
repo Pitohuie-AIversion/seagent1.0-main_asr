@@ -217,24 +217,28 @@ def generate_report():
     lines.append("\n## 4. Phase 2 Admission Decision\n")
     lines.append("### Readiness Checklist:")
     lines.append("1. **Runner vs Record Counter Independence**: **PASS** (`runner_counters == record_counters`).")
-    lines.append(f"2. **Collection Errors**: **PASS** ({collection_err_count} `_FailedTest` modules).")
+    coll_status = "PASS" if collection_err_count == 0 else "FAIL"
+    lines.append(f"2. **Collection Errors**: **{coll_status}** ({collection_err_count} `_FailedTest` modules).")
     lines.append("3. **Current Design Contract Document**: **PASS** (`docs/current_design_contract.md`).")
     lines.append("4. **Replacement Equivalence Audit**: **PASS** (`docs/regression_replacement_map.yaml` with `equivalence_status: FULL`).")
 
     is_passed = (
         runner_c.get("tests_run", 0) > 0
-        and non_passing_count == 0
-        and category_counts["TRUE_REGRESSION"] == 0
-        and category_counts["LEGACY_INTERFACE_PENDING_REWRITE"] == 0
+        and runner_c.get("failures", 0) == 0
+        and runner_c.get("errors", 0) == 0
+        and runner_c.get("skipped", 0) == 0
         and collection_err_count == 0
+        and non_passing_count == 0
+        and category_counts.get("TRUE_REGRESSION", 0) == 0
+        and category_counts.get("LEGACY_INTERFACE_PENDING_REWRITE", 0) == 0
     )
 
     if is_passed:
         lines.append("5. **TRUE_REGRESSION Resolution**: **PASS** — 0 TRUE_REGRESSION items and 0 pending rewrites remain.\n")
         lines.append("**Final Decision**: **PASS** (Phase 1 acceptance complete, 100% test pass rate achieved).\n")
     else:
-        lines.append(f"5. **TRUE_REGRESSION Resolution**: **NO (BLOCKED)** — Currently {category_counts['TRUE_REGRESSION']} TRUE_REGRESSION items and {category_counts['LEGACY_INTERFACE_PENDING_REWRITE']} pending rewrites remain.\n")
-        lines.append("**Final Decision**: **NO** (Phase 2 development remains blocked until TRUE_REGRESSION items and pending rewrites are resolved or formally risk-accepted).\n")
+        lines.append(f"5. **TRUE_REGRESSION Resolution**: **NO (BLOCKED)** — Currently {category_counts.get('TRUE_REGRESSION', 0)} TRUE_REGRESSION items, {category_counts.get('LEGACY_INTERFACE_PENDING_REWRITE', 0)} pending rewrites, {runner_c.get('failures', 0)} failures, {runner_c.get('errors', 0)} errors, and {collection_err_count} collection errors remain.\n")
+        lines.append("**Final Decision**: **NO / FAIL** (Phase 2 development remains blocked until test suite passes with zero failures, zero errors, and zero collection errors).\n")
 
 
 

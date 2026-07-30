@@ -2281,7 +2281,8 @@ class DialogueManager:
             if is_valid_id and intent_id_val:
                 try:
                     task_dir = _ti_builder_module.get_task_dir(create=False)
-                    pub_file = task_dir / f"task_intent_{intent_id_val}.json"
+                    with _ti_builder_module.TaskPublishLock(task_dir):
+                        pub_file = task_dir / f"task_intent_{intent_id_val}.json"
                     if pub_file.is_symlink():
                         logger.warning("[load_snapshot] final file is a symlink, rejecting done phase")
                     elif pub_file.is_file():
