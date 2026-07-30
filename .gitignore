@@ -25,3 +25,5 @@ venv/
 # 外部或本地临时目录
 outside/
 record/
+docs/regression_report.md
+full_test.log

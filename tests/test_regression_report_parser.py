@@ -100,9 +100,10 @@ class RegressionReportParserTest(unittest.TestCase):
                     return Path(p)
                 mock_path.side_effect = mock_path_factory
 
-                generate_report()
+                is_passed = generate_report()
 
-            return report_path.read_text(encoding="utf-8")
+            content = report_path.read_text(encoding="utf-8")
+            return is_passed, content
 
     def test_generate_report_strict_evaluation_cases(self):
         """测试 0/1 failure/error/collection error/skip 的严苛判定规则"""
@@ -111,6 +112,7 @@ class RegressionReportParserTest(unittest.TestCase):
                 "name": "all_pass",
                 "runner": {"tests_run": 500, "failures": 0, "errors": 0, "skipped": 0},
                 "records": [{"test_id": f"test_{i}", "status": "passed", "detail": "OK"} for i in range(500)],
+                "expected_passed": True,
                 "expected_decision": "**Final Decision**: **PASS**",
                 "expected_coll": "**Collection Errors**: **PASS**",
             },
@@ -119,6 +121,7 @@ class RegressionReportParserTest(unittest.TestCase):
                 "runner": {"tests_run": 500, "failures": 1, "errors": 0, "skipped": 0},
                 "records": [{"test_id": "test_fail", "status": "failures", "detail": "AssertionError"}]
                 + [{"test_id": f"test_{i}", "status": "passed", "detail": "OK"} for i in range(499)],
+                "expected_passed": False,
                 "expected_decision": "**Final Decision**: **NO / FAIL**",
                 "expected_coll": "**Collection Errors**: **PASS**",
             },
@@ -127,6 +130,7 @@ class RegressionReportParserTest(unittest.TestCase):
                 "runner": {"tests_run": 500, "failures": 0, "errors": 1, "skipped": 0},
                 "records": [{"test_id": "unittest.loader._FailedTest.test_mod", "status": "errors", "detail": "ImportError"}]
                 + [{"test_id": f"test_{i}", "status": "passed", "detail": "OK"} for i in range(499)],
+                "expected_passed": False,
                 "expected_decision": "**Final Decision**: **NO / FAIL**",
                 "expected_coll": "**Collection Errors**: **FAIL**",
             },
@@ -135,6 +139,7 @@ class RegressionReportParserTest(unittest.TestCase):
                 "runner": {"tests_run": 500, "failures": 0, "errors": 0, "skipped": 1},
                 "records": [{"test_id": "test_skip", "status": "skipped", "detail": "skip reason"}]
                 + [{"test_id": f"test_{i}", "status": "passed", "detail": "OK"} for i in range(499)],
+                "expected_passed": False,
                 "expected_decision": "**Final Decision**: **NO / FAIL**",
                 "expected_coll": "**Collection Errors**: **PASS**",
             },
@@ -149,7 +154,8 @@ class RegressionReportParserTest(unittest.TestCase):
                     "errors": case["runner"]["errors"],
                     "skipped": case["runner"]["skipped"],
                 }
-                content = self._run_generate_report(case["runner"], record_counters, case["records"])
+                is_passed, content = self._run_generate_report(case["runner"], record_counters, case["records"])
+                self.assertEqual(is_passed, case["expected_passed"])
                 self.assertIn(case["expected_decision"], content)
                 self.assertIn(case["expected_coll"], content)
 
@@ -159,14 +165,16 @@ class RegressionReportParserTest(unittest.TestCase):
         records = [{"test_id": "test_err", "status": "errors", "detail": "RuntimeError"}] + [
             {"test_id": f"test_{i}", "status": "passed", "detail": "OK"} for i in range(9)
         ]
-        content = self._run_generate_report(runner_c, record_c, records)
+        is_passed, content = self._run_generate_report(runner_c, record_c, records)
+        self.assertFalse(is_passed)
         self.assertIn("**Final Decision**: **NO / FAIL**", content)
 
     def test_generate_report_fails_on_test_count_mismatch(self):
         runner_c = {"tests_run": 10, "failures": 0, "errors": 0, "skipped": 0}
         record_c = {"total": 9, "passed": 9, "failures": 0, "errors": 0, "skipped": 0}
         records = [{"test_id": f"test_{i}", "status": "passed", "detail": "OK"} for i in range(9)]
-        content = self._run_generate_report(runner_c, record_c, records)
+        is_passed, content = self._run_generate_report(runner_c, record_c, records)
+        self.assertFalse(is_passed)
         self.assertIn("1. **Runner vs Record Counter Independence**: **FAIL**", content)
         self.assertIn("**Final Decision**: **NO / FAIL**", content)
 
@@ -174,7 +182,8 @@ class RegressionReportParserTest(unittest.TestCase):
         runner_c = {"tests_run": 10, "failures": 1, "errors": 0, "skipped": 0}
         record_c = {"total": 10, "passed": 10, "failures": 0, "errors": 0, "skipped": 0}
         records = [{"test_id": f"test_{i}", "status": "passed", "detail": "OK"} for i in range(10)]
-        content = self._run_generate_report(runner_c, record_c, records)
+        is_passed, content = self._run_generate_report(runner_c, record_c, records)
+        self.assertFalse(is_passed)
         self.assertIn("1. **Runner vs Record Counter Independence**: **FAIL**", content)
         self.assertIn("**Final Decision**: **NO / FAIL**", content)
 
@@ -182,7 +191,8 @@ class RegressionReportParserTest(unittest.TestCase):
         runner_c = {"tests_run": 10, "failures": 0, "errors": 1, "skipped": 0}
         record_c = {"total": 10, "passed": 10, "failures": 0, "errors": 0, "skipped": 0}
         records = [{"test_id": f"test_{i}", "status": "passed", "detail": "OK"} for i in range(10)]
-        content = self._run_generate_report(runner_c, record_c, records)
+        is_passed, content = self._run_generate_report(runner_c, record_c, records)
+        self.assertFalse(is_passed)
         self.assertIn("1. **Runner vs Record Counter Independence**: **FAIL**", content)
         self.assertIn("**Final Decision**: **NO / FAIL**", content)
 
@@ -190,7 +200,8 @@ class RegressionReportParserTest(unittest.TestCase):
         runner_c = {"tests_run": 10, "failures": 0, "errors": 0, "skipped": 1}
         record_c = {"total": 10, "passed": 10, "failures": 0, "errors": 0, "skipped": 0}
         records = [{"test_id": f"test_{i}", "status": "passed", "detail": "OK"} for i in range(10)]
-        content = self._run_generate_report(runner_c, record_c, records)
+        is_passed, content = self._run_generate_report(runner_c, record_c, records)
+        self.assertFalse(is_passed)
         self.assertIn("1. **Runner vs Record Counter Independence**: **FAIL**", content)
         self.assertIn("**Final Decision**: **NO / FAIL**", content)
 
