@@ -2273,8 +2273,6 @@ class DialogueManager:
             "intent_id", "task_type", "priority", "time",
             "location", "task", "equipment", "conditions"
         }
-        _VALID_TASK_TYPES = {"pipeline_inspection", "valve_operation"}
-
         if phase == "done":
             validated = False
             _loaded_intent = None
@@ -2283,25 +2281,25 @@ class DialogueManager:
                     task_dir = _ti_builder_module.get_task_dir(create=False)
                     with _ti_builder_module.TaskPublishLock(task_dir):
                         pub_file = task_dir / f"task_intent_{intent_id_val}.json"
-                    if pub_file.is_symlink():
-                        logger.warning("[load_snapshot] final file is a symlink, rejecting done phase")
-                    elif pub_file.is_file():
-                        with open(pub_file, "r", encoding="utf-8") as _f:
-                            _data = json.load(_f)
-                        if isinstance(_data, dict) and _REQUIRED_INTENT_KEYS.issubset(_data.keys()):
-                            _file_task_type = _data.get("task_type")
-                            _file_intent_id = _data.get("intent_id")
-                            if _file_intent_id != intent_id_val:
-                                logger.warning("[load_snapshot] intent_id mismatch in final file")
-                            elif _file_task_type not in _VALID_TASK_TYPES:
-                                logger.warning("[load_snapshot] invalid task_type in final file: %r", _file_task_type)
+                        if pub_file.is_symlink():
+                            logger.warning("[load_snapshot] final file is a symlink, rejecting done phase")
+                        elif pub_file.is_file():
+                            with open(pub_file, "r", encoding="utf-8") as _f:
+                                _data = json.load(_f)
+                            if isinstance(_data, dict) and _REQUIRED_INTENT_KEYS.issubset(_data.keys()):
+                                _file_task_type = _data.get("task_type")
+                                _file_intent_id = _data.get("intent_id")
+                                if _file_intent_id != intent_id_val:
+                                    logger.warning("[load_snapshot] intent_id mismatch in final file")
+                                elif not _ti_builder_module.validate_task_intent(_data):
+                                    logger.warning("[load_snapshot] invalid task_type or TaskIntent structure in final file: %r", _file_task_type)
+                                else:
+                                    validated = True
+                                    _loaded_intent = copy.deepcopy(_data)
                             else:
-                                validated = True
-                                _loaded_intent = _data
+                                logger.warning("[load_snapshot] final file missing required keys")
                         else:
-                            logger.warning("[load_snapshot] final file missing required keys")
-                    else:
-                        logger.warning("[load_snapshot] final file not found: %s", pub_file)
+                            logger.warning("[load_snapshot] final file not found: %s", pub_file)
                 except Exception as _e:
                     logger.warning("[load_snapshot] done-phase validation error: %s", _e)
 
