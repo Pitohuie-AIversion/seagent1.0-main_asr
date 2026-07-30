@@ -589,7 +589,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
     def test_20_no_runtime_files_left_in_git_repo(self):
         """20. 不在仓库生成运行时文件"""
         intent = self._make_valid_intent("TI2026072101")
-        repo_root = Path("/root/mzy/seagent1.0-main_asr")
+        repo_root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)

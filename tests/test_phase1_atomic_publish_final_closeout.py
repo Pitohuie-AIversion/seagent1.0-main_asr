@@ -359,7 +359,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
     def test_a15_no_runtime_files_left_in_git_repo(self):
         """15. 发布过程不得在 Git 仓库内部生成任何运行时临时文件"""
         intent = self._make_valid_intent("TI2026072101")
-        repo_root = Path("/root/mzy/seagent1.0-main_asr")
+        repo_root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
             with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):

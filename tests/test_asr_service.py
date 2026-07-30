@@ -15,12 +15,13 @@ from src.asr_service import ASRConfig, ASRService
 
 
 class TestASRServiceFallback(unittest.TestCase):
-    @unittest.skipUnless(HAS_TORCH, "torch is not installed")
     def test_load_falls_back_when_model_load_ooms(self):
+        oom_exc = torch.OutOfMemoryError if (HAS_TORCH and hasattr(torch, "OutOfMemoryError")) else RuntimeError
+
         class FakeQwen3ASRModel:
             @classmethod
             def from_pretrained(cls, *args, **kwargs):
-                raise torch.OutOfMemoryError("CUDA out of memory")
+                raise oom_exc("CUDA out of memory")
 
         fake_qwen_asr = types.SimpleNamespace(Qwen3ASRModel=FakeQwen3ASRModel)
 
