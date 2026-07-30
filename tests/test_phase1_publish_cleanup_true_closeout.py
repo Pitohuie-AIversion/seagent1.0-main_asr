@@ -16,6 +16,7 @@ from src.dialogue_manager import DialogueManager
 from src.exceptions import IntentIdConflict, TaskPersistenceError
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
+from src.slot_store import Slot
 from src.task_intent_builder import TaskIntentBuilder, TaskPublishLock
 
 
@@ -550,6 +551,91 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
 
             res_contender = res_q_contender.get(timeout=15)
             self.assertEqual(res_contender[0], "acquired")
+
+    def test_pipeline_burial_done_snapshot_restores_successfully(self):
+        """验证 pipeline_burial 任务在完成发布后，保存的 done 状态 snapshot 能成功被恢复。
+        恢复后 phase 为 done，final_result.task_type 为 pipeline_burial，且 intent_id 保持不变。
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            task_dir = Path(tmp_dir) / "task"
+            task_dir.mkdir(parents=True, exist_ok=True)
+            res_dir = Path(tmp_dir)
+            res_dir.mkdir(parents=True, exist_ok=True)
+
+            kb = KnowledgeBase()
+            llm = DummyLLM()
+
+            with patch("src.dialogue_manager.get_task_dir", return_value=task_dir), \
+                 patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+                 patch("src.result_paths.get_task_dir", return_value=task_dir), \
+                 patch("src.id_sequence.get_result_dir", return_value=res_dir):
+                dm = DialogueManager(llm, kb)
+
+                # 1. 种子灌入合法的 pipeline_burial 任务槽位
+                task_type_key = "pipeline_burial"
+                task_type = kb.task_schemas.get("task_templates", {}).get(task_type_key, {}).get("task_type_values", ["海管埋设"])[0]
+                allowed_rovs = kb.get_task_allowed_robot_variants(task_type_key)
+                selected_rov = allowed_rovs[0] if allowed_rovs else kb.get_all_rovs()[0]
+
+                slots_to_seed = {
+                    "task_id": ("PB2026071801", "string"),
+                    "task_type_key": (task_type_key, "string"),
+                    "task_type": (task_type, "string"),
+                    "cable_type": ("海底油气管道", "string"),
+                    "water_depth": (150.0, "number"),
+                    "start_time": ("2026-07-19T08:00:00", "datetime"),
+                    "end_time": ("2026-07-19T18:00:00", "datetime"),
+                    "start_point": ({"lat": 19.5, "lon": 115.2}, "coord"),
+                    "end_point": ({"lat": 19.6, "lon": 115.3}, "coord"),
+                    "equipment_type": (selected_rov["full_name"], "string"),
+                    "equipment_family": (selected_rov.get("family_full_name") or selected_rov.get("family") or "Work Class ROV", "string"),
+                    "equipment_unit_id": (selected_rov.get("unit_ids", ["WCROV-STD-001"])[0], "string"),
+                    "payload": (["高清水下摄像机"], "list"),
+                    "support_vessel": ("DSV-Oceanic", "string"),
+                    "intent_id": ("TI2026063002", "string"),
+                }
+
+                for key, (val, vtype) in slots_to_seed.items():
+                    dm.slot_store.slots[key] = Slot(slot_name=key, value=val, value_type=vtype, status="valid", source="user_input")
+
+                dm._rebuild_cache()
+
+                # Whitelist any soft constraint warnings
+                all_v = dm.validator.validate(dm.task_state)
+                for v in all_v:
+                    if v.severity == "soft":
+                        for f in v.related_fields:
+                            val = dm.task_state.get(f)
+                            if val is not None:
+                                dm._soft_whitelist.add((f, str(val), v.constraint_id))
+
+                # 2. 正式生成 staging 文件并发布发布件
+                dm.phase = "confirming"
+                dm._handle_final_publish_confirmation("确认发布", "req_test")
+                self.assertEqual(dm.phase, "done")
+                orig_intent_id = dm.task_state.get("intent_id")
+                self.assertEqual(orig_intent_id, "TI2026063002")
+
+                # 3. 导出 snapshot 字典
+                snap = {
+                    "snapshot_version": 2,
+                    "phase": "done",
+                    "mode": dm.mode,
+                    "task_state": copy.deepcopy(dm.task_state),
+                    "slot_store": dm.slot_store.export_snapshot(),
+                }
+                self.assertEqual(snap.get("phase"), "done")
+
+                # 4. 新建 DialogueManager 实例并恢复 snapshot
+                dm_new = DialogueManager(llm, kb)
+                dm_new.load_snapshot(snap)
+
+                # 5. 断言恢复成功，状态为 done，task_type 为 pipeline_burial，且 intent_id 保持一致
+                self.assertEqual(dm_new.phase, "done")
+                self.assertIsNotNone(dm_new.final_result)
+                self.assertEqual(dm_new.final_result.get("task_type"), "pipeline_burial")
+                self.assertEqual(dm_new.task_state.get("intent_id"), orig_intent_id)
+                self.assertEqual(dm_new.slot_store.slots["intent_id"].value, orig_intent_id)
 
 
 if __name__ == "__main__":
