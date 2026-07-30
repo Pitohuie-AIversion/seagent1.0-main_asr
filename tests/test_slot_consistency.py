@@ -1156,7 +1156,7 @@ class SlotConsistencyTest(unittest.TestCase):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
                     task_state={"water_depth": 300.0},
-                    built_json={"water_depth": 300.0},
+                    built_json={"water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
@@ -1172,7 +1172,7 @@ class SlotConsistencyTest(unittest.TestCase):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
                     task_state={"water_depth": 300.0},
-                    built_json={"water_depth": 300.0},
+                    built_json={"water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
@@ -1290,7 +1290,7 @@ class SlotConsistencyTest(unittest.TestCase):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
                     task_state={"water_depth": 300.0},
-                    built_json={"water_depth": 300.0},
+                    built_json={"water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
@@ -1434,7 +1434,7 @@ class SlotConsistencyTest(unittest.TestCase):
                 builder = TaskIntentBuilder(self.kb)
                 intent1 = builder.prepare(
                     task_state={"water_depth": 300.0},
-                    built_json={"water_depth": 300.0},
+                    built_json={"water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
@@ -1459,7 +1459,7 @@ class SlotConsistencyTest(unittest.TestCase):
                 builder = TaskIntentBuilder(self.kb)
                 intent1 = builder.prepare(
                     task_state={"water_depth": 300.0},
-                    built_json={"water_depth": 300.0},
+                    built_json={"water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
