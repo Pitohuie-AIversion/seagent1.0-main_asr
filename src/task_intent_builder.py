@@ -18,6 +18,9 @@ from .knowledge_retriever import KnowledgeBase
 from .result_paths import get_task_dir
 from .simulated_time import get_current_datetime
 
+BEIJING_TZ = timezone(timedelta(hours=8))
+VALID_ROBOT_TYPES = {"observation_rov", "work_class_rov", "auv"}
+
 
 class TaskPublishLock:
     """进程间与线程间任务发布排他锁"""
@@ -65,142 +68,6 @@ def _atomic_commit_noreplace(temp_file: Path, final_file: Path) -> None:
         raise TaskPersistenceError(f"Atomic commit failed: {e}") from e
 
 
-class TaskIntentBuilder:
-    def __init__(self, kb: KnowledgeBase):
-        self.kb = kb
-
-    def prepare(
-        self,
-        task_state: Dict[str, Any],
-        built_json: Dict[str, Any],
-        mode: str,
-        task_type_key: str,
-        intent_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """纯内存构建 TaskIntent 字典，无磁盘副作用"""
-        if intent_id is not None:
-            if not validate_intent_id(intent_id):
-                raise TaskPersistenceError(f"Invalid intent_id parameter: {intent_id}")
-            effective_intent_id = intent_id
-        else:
-            cand_id = built_json.get("intent_id") or task_state.get("intent_id")
-            if cand_id:
-                if not validate_intent_id(cand_id):
-                    raise TaskPersistenceError(f"Invalid intent_id in task_state/built_json: {cand_id}")
-                effective_intent_id = cand_id
-            else:
-                today = get_current_datetime().strftime("%Y%m%d")
-                task_dir = get_task_dir(create=False)
-                effective_intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
-        intent_id = effective_intent_id
-
-        if mode == "emergency":
-            priority = 1
-        else:
-            priority = 7
-
-        start_time = built_json.get("start_time")
-        end_time = built_json.get("end_time")
-        def ensure_tz(ts: Optional[str]) -> Optional[str]:
-            if not ts:
-                return None
-            if "+" not in ts and ts.endswith("Z") is False:
-                ts += "+08:00"
-            return ts
-        start_time = ensure_tz(start_time)
-        end_time = ensure_tz(end_time)
-
-        oilfield_name = None
-        water_depth = built_json.get("water_depth")
-        coords = (built_json.get("start_point") or
-                  built_json.get("oilfield_coordinates") or
-                  built_json.get("cable_position"))
-        if coords and isinstance(coords, dict):
-            lat = coords.get("lat")
-            lon = coords.get("lon")
-            if lat is not None and lon is not None:
-                area = self.kb.get_environment_for_coords({"lat": lat, "lon": lon})
-                if area:
-                    oilfield_name = area.get("name")
-        if not oilfield_name:
-            oilfield_name = task_state.get("oilfield_name")
-
-        details = self._build_details(task_type_key, task_state, built_json)
-
-        equipment_type = built_json.get("equipment_type")
-        robot_type_map = {
-            "观察级ROV": "observation_rov",
-            "工作级ROV": "work_class_rov",
-            "海底拖拉机": "work_class_rov",
-            "调查型AUV": "auv",
-        }
-        robot_type = robot_type_map.get(equipment_type, "observation_rov")
-        payload = built_json.get("payload", [])
-        if not isinstance(payload, list):
-            payload = [payload] if payload else []
-        support_vessel_name = built_json.get("support_vessel")
-        support_vessel = {
-            "name": support_vessel_name,
-            "latitude": None,
-            "longitude": None,
-        }
-
-        conditions = {}
-
-        if task_type_key == "pipeline_inspection":
-            top_task_type = "pipeline_inspection"
-        else:
-            top_task_type = "valve_operation"
-
-        return {
-            "intent_id": intent_id,
-            "task_type": top_task_type,
-            "priority": priority,
-            "time": {
-                "start": start_time,
-                "end": end_time,
-            },
-            "location": {
-                "oilfield": oilfield_name,
-                "water_depth_m": float(water_depth) if water_depth is not None else None,
-            },
-            "task": {
-                "type": top_task_type,
-                "details": details,
-            },
-            "equipment": {
-                "robot_type": robot_type,
-                "payload": payload,
-                "support_vessel": support_vessel,
-            },
-            "conditions": conditions,
-        }
-
-    def create_staging(self, intent: Dict[str, Any]) -> Path:
-        """创建临时 staging 任务文件"""
-        intent_id = intent.get("intent_id")
-        if not validate_intent_id(intent_id):
-            raise TaskPersistenceError(f"Invalid intent_id for create_staging: {intent_id}")
-        task_dir = get_task_dir(create=True)
-        unique_suffix = f"{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}"
-        staging_file = task_dir / f"task_intent_{intent_id}.staging_{unique_suffix}"
-        if task_dir.resolve() not in staging_file.resolve().parents:
-            raise TaskPersistenceError(f"Path traversal detected for staging file: {staging_file}")
-
-        with TaskPublishLock(task_dir):
-            try:
-                flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0)
-                fd = os.open(staging_file, flags, 0o600)
-                try:
-                    content_bytes = json.dumps(intent, ensure_ascii=False, indent=2).encode("utf-8")
-                    os.write(fd, content_bytes)
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
-                return staging_file
-            except Exception as e:
-                raise TaskPersistenceError(f"Failed to create staging file for {intent_id}: {e}") from e
-
 def validate_task_intent(intent: Any) -> bool:
     """权威完整 TaskIntent 结构校验器"""
     if not isinstance(intent, dict):
@@ -209,9 +76,10 @@ def validate_task_intent(intent: Any) -> bool:
     if not validate_intent_id(intent_id):
         return False
     top_task_type = intent.get("task_type")
-    if top_task_type not in ("pipeline_inspection", "tree_valve_operation", "valve_operation"):
+    if top_task_type not in ("pipeline_inspection", "pipeline_burial", "valve_operation", "tree_valve_operation"):
         return False
-    if not isinstance(intent.get("priority"), int):
+    priority = intent.get("priority")
+    if isinstance(priority, bool) or not isinstance(priority, int):
         return False
     time_info = intent.get("time")
     if not isinstance(time_info, dict) or "start" not in time_info or "end" not in time_info:
@@ -222,8 +90,12 @@ def validate_task_intent(intent: Any) -> bool:
     task_info = intent.get("task")
     if not isinstance(task_info, dict) or "type" not in task_info or "details" not in task_info:
         return False
+    if task_info.get("type") != top_task_type:
+        return False
     eq_info = intent.get("equipment")
     if not isinstance(eq_info, dict) or "robot_type" not in eq_info or "payload" not in eq_info or "support_vessel" not in eq_info:
+        return False
+    if eq_info.get("robot_type") not in VALID_ROBOT_TYPES:
         return False
     cond_info = intent.get("conditions")
     if not isinstance(cond_info, dict):
@@ -296,14 +168,7 @@ class TaskIntentBuilder:
         top_task_type = self._resolve_output_task_type(task_type_key)
         details = self._build_details(task_type_key, task_state, built_json)
 
-        equipment_type = built_json.get("equipment_type")
-        robot_type_map = {
-            "观察级ROV": "observation_rov",
-            "工作级ROV": "work_class_rov",
-            "海底拖拉机": "work_class_rov",
-            "调查型AUV": "auv",
-        }
-        robot_type = robot_type_map.get(equipment_type, "observation_rov")
+        robot_type = self._resolve_robot_type(task_state, built_json, task_type_key)
         payload = built_json.get("payload", [])
         if not isinstance(payload, list):
             payload = [payload] if payload else []
@@ -316,12 +181,7 @@ class TaskIntentBuilder:
 
         conditions = {}
 
-        if task_type_key == "pipeline_inspection":
-            top_task_type = "pipeline_inspection"
-        else:
-            top_task_type = "valve_operation"
-
-        return {
+        res = {
             "intent_id": intent_id,
             "task_type": top_task_type,
             "priority": priority,
@@ -344,6 +204,8 @@ class TaskIntentBuilder:
             },
             "conditions": conditions,
         }
+        self._validate_intent(res)
+        return res
 
     def create_staging(self, intent: Dict[str, Any]) -> Path:
         """创建临时 staging 任务文件"""
@@ -566,18 +428,18 @@ class TaskIntentBuilder:
             raise TaskPersistenceError(f"非法任务时间格式: {value}") from exc
 
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=TASK_TIMEZONE)
+            parsed = parsed.replace(tzinfo=BEIJING_TZ)
 
         return parsed.isoformat(timespec="seconds")
 
     def _resolve_output_task_type(self, task_type_key: str) -> str:
-        # 从 kb 动态构建 {template_key: first_task_type_value} 映射
-        task_type_map = self.kb.get_task_type_map()  # {value: key}
-        output_map = {}  # {key: value}
-        for value, key in task_type_map.items():
-            if key not in output_map:
-                output_map[key] = value
-        output_type = output_map.get(task_type_key)
+        mapping = {
+            "pipeline_inspection": "pipeline_inspection",
+            "pipeline_burial": "pipeline_burial",
+            "tree_valve_operation": "valve_operation",
+            "valve_operation": "valve_operation",
+        }
+        output_type = mapping.get(task_type_key)
         if output_type is None:
             raise TaskPersistenceError(f"不支持的 task_type_key: {task_type_key}")
         return output_type
@@ -591,6 +453,18 @@ class TaskIntentBuilder:
         """由已选型号或单机的知识库 robot_class 生成 TaskIntent robot_type。"""
         unit_selector = built_json.get("equipment_unit_id") or task_state.get("equipment_unit_id")
         variant_selector = built_json.get("equipment_type") or task_state.get("equipment_type")
+
+        if not unit_selector and not variant_selector:
+            default_map = {
+                "pipeline_inspection": "observation_rov",
+                "pipeline_burial": "work_class_rov",
+                "tree_valve_operation": "work_class_rov",
+                "valve_operation": "work_class_rov",
+            }
+            default_type = default_map.get(task_type_key)
+            if default_type:
+                return default_type
+            raise TaskPersistenceError(f"无法为任务类型 {task_type_key} 确定默认 robot_type")
 
         rov = None
         if unit_selector:
@@ -610,6 +484,7 @@ class TaskIntentBuilder:
                 "观察级ROV": "observation_rov",
                 "工作级ROV": "work_class_rov",
                 "管缆埋设机器人": "work_class_rov",
+                "履带式机器人": "work_class_rov",
                 "海底拖拉机": "work_class_rov",
                 "AUV": "auv",
                 "调查型AUV": "auv",
@@ -637,7 +512,7 @@ class TaskIntentBuilder:
         task_state: Dict[str, Any],
         built_json: Dict[str, Any],
     ) -> Dict[str, Any]:
-        if task_type_key == "pipeline_inspection":
+        if task_type_key in ("pipeline_inspection", "pipeline_burial"):
             return self._build_pipeline_inspection_details(task_state, built_json)
         if task_type_key == "tree_valve_operation":
             return self._build_tree_valve_operation_details(task_state, built_json)
@@ -711,8 +586,8 @@ class TaskIntentBuilder:
         if not validate_intent_id(intent.get("intent_id")):
             raise TaskPersistenceError(f"intent_id 非法: {intent.get('intent_id')}")
 
-        all_task_type_values = set(self.kb.get_all_task_type_values())
-        if intent.get("task_type") not in all_task_type_values:
+        valid_output_task_types = {"pipeline_inspection", "pipeline_burial", "valve_operation", "tree_valve_operation"}
+        if intent.get("task_type") not in valid_output_task_types:
             raise TaskPersistenceError(f"非法输出任务类型: {intent.get('task_type')}")
 
         if intent.get("task", {}).get("type") != intent.get("task_type"):
