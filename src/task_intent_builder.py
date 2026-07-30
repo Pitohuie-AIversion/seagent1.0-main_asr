@@ -19,6 +19,12 @@ from .result_paths import get_task_dir
 from .simulated_time import get_current_datetime
 
 BEIJING_TZ = timezone(timedelta(hours=8))
+TASK_ALLOWED_ROBOT_TYPES = {
+    "pipeline_inspection": {"observation_rov", "auv"},
+    "pipeline_burial": {"work_class_rov"},
+    "tree_valve_operation": {"work_class_rov"},
+    "valve_operation": {"work_class_rov"},
+}
 VALID_ROBOT_TYPES = {"observation_rov", "work_class_rov", "auv"}
 
 
@@ -69,14 +75,14 @@ def _atomic_commit_noreplace(temp_file: Path, final_file: Path) -> None:
 
 
 def validate_task_intent(intent: Any) -> bool:
-    """权威完整 TaskIntent 结构校验器"""
+    """权威完整 TaskIntent 结构与交叉约束校验器"""
     if not isinstance(intent, dict):
         return False
     intent_id = intent.get("intent_id")
     if not validate_intent_id(intent_id):
         return False
     top_task_type = intent.get("task_type")
-    if top_task_type not in ("pipeline_inspection", "pipeline_burial", "valve_operation", "tree_valve_operation"):
+    if top_task_type not in TASK_ALLOWED_ROBOT_TYPES:
         return False
     priority = intent.get("priority")
     if isinstance(priority, bool) or not isinstance(priority, int):
@@ -95,7 +101,9 @@ def validate_task_intent(intent: Any) -> bool:
     eq_info = intent.get("equipment")
     if not isinstance(eq_info, dict) or "robot_type" not in eq_info or "payload" not in eq_info or "support_vessel" not in eq_info:
         return False
-    if eq_info.get("robot_type") not in VALID_ROBOT_TYPES:
+    robot_type = eq_info.get("robot_type")
+    allowed_robots = TASK_ALLOWED_ROBOT_TYPES.get(top_task_type, set())
+    if robot_type not in allowed_robots:
         return False
     cond_info = intent.get("conditions")
     if not isinstance(cond_info, dict):
@@ -455,16 +463,7 @@ class TaskIntentBuilder:
         variant_selector = built_json.get("equipment_type") or task_state.get("equipment_type")
 
         if not unit_selector and not variant_selector:
-            default_map = {
-                "pipeline_inspection": "observation_rov",
-                "pipeline_burial": "work_class_rov",
-                "tree_valve_operation": "work_class_rov",
-                "valve_operation": "work_class_rov",
-            }
-            default_type = default_map.get(task_type_key)
-            if default_type:
-                return default_type
-            raise TaskPersistenceError(f"无法为任务类型 {task_type_key} 确定默认 robot_type")
+            raise TaskPersistenceError("缺少可解析的机器人型号或单机编号")
 
         rov = None
         if unit_selector:
@@ -478,20 +477,14 @@ class TaskIntentBuilder:
             rov = resolved_unit.get("robot")
         elif variant_selector:
             rov = self.kb.get_rov_for_task(str(variant_selector), task_type_key)
+            if not rov:
+                family_info = self.kb.resolve_robot_family(str(variant_selector), task_type_key)
+                if family_info:
+                    robot_class = family_info.get("robot_class")
+                    if robot_class:
+                        rov = {"robot_class": robot_class}
 
         if rov is None:
-            legacy_map = {
-                "观察级ROV": "observation_rov",
-                "工作级ROV": "work_class_rov",
-                "管缆埋设机器人": "work_class_rov",
-                "履带式机器人": "work_class_rov",
-                "海底拖拉机": "work_class_rov",
-                "AUV": "auv",
-                "调查型AUV": "auv",
-            }
-            legacy_type = legacy_map.get(str(variant_selector))
-            if legacy_type:
-                return legacy_type
             raise TaskPersistenceError(f"无法根据设备信息确定 robot_type: {variant_selector}")
 
         class_map = {
@@ -586,11 +579,11 @@ class TaskIntentBuilder:
         if not validate_intent_id(intent.get("intent_id")):
             raise TaskPersistenceError(f"intent_id 非法: {intent.get('intent_id')}")
 
-        valid_output_task_types = {"pipeline_inspection", "pipeline_burial", "valve_operation", "tree_valve_operation"}
-        if intent.get("task_type") not in valid_output_task_types:
-            raise TaskPersistenceError(f"非法输出任务类型: {intent.get('task_type')}")
+        top_task_type = intent.get("task_type")
+        if top_task_type not in TASK_ALLOWED_ROBOT_TYPES:
+            raise TaskPersistenceError(f"非法输出任务类型: {top_task_type}")
 
-        if intent.get("task", {}).get("type") != intent.get("task_type"):
+        if intent.get("task", {}).get("type") != top_task_type:
             raise TaskPersistenceError("task.type 与顶层 task_type 不一致")
 
         priority = intent.get("priority")
@@ -602,5 +595,6 @@ class TaskIntentBuilder:
                 raise TaskPersistenceError(f"TaskIntent section must be dict: {section}")
 
         robot_type = intent["equipment"].get("robot_type")
-        if robot_type not in VALID_ROBOT_TYPES:
-            raise TaskPersistenceError(f"非法 robot_type: {robot_type}")
+        allowed_robots = TASK_ALLOWED_ROBOT_TYPES.get(top_task_type, set())
+        if robot_type not in allowed_robots:
+            raise TaskPersistenceError(f"任务类型 {top_task_type} 不支持机器人类型 {robot_type}")
