@@ -414,7 +414,16 @@ def api_asr():
 
 
 from src.slot_store import SlotVersionConflict
-from src.exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError, ControlAuditPersistenceError, ServiceNotInitializedError
+from src.exceptions import (
+    TaskPersistenceError,
+    TaskRollbackError,
+    IntentIdConflict,
+    IdReservationError,
+    ControlAuditPersistenceError,
+    ControlAuditConflictError,
+    ControlAuditConflict,
+    ServiceNotInitializedError,
+)
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
@@ -439,38 +448,38 @@ def api_chat():
             if sid not in _sessions:
                 _sessions[sid] = Session(sid)
 
-        # 导出请求前零副作用内存快照
-        pre_snapshot = mgr._export_runtime_state()
         pre_control_state = mgr.control_state
         pre_phase = mgr.phase
 
-        reply = mgr.process(msg, request_id=request_id)
+        def _persist_callback(manager):
+            is_control_transition = (manager.control_state != pre_control_state or manager.control_state != "idle")
+            is_draft_cancellation = (pre_phase in ("collecting", "confirming", "blocked_soft", "blocked_hard") and manager.phase == "rejected")
+            requires_audit_save = (is_control_transition or is_draft_cancellation or manager.phase in ("done", "rejected"))
+
+            if requires_audit_save:
+                try:
+                    save_conversation(
+                        session_id=sid,
+                        conversation_history=manager.conversation_history,
+                        task_state=manager.task_state,
+                        built_json=manager._last_built_json,
+                        mode=manager.mode,
+                        phase=manager.phase,
+                        intent_id=manager.task_state.get('intent_id'),
+                        slot_store=manager.slot_store,
+                        dialogue_mode=manager.dialogue_mode,
+                        control_state=manager.control_state,
+                        last_control_request=manager.last_control_request,
+                        request_id=request_id if (is_control_transition or is_draft_cancellation) else None,
+                    )
+                except ControlAuditConflictError:
+                    raise
+                except Exception as e:
+                    logging.error("保存历史快照失败: %s", e, exc_info=True)
+                    raise ControlAuditPersistenceError(f"控制历史快照保存失败: {e}") from e
+
+        reply = mgr.process_with_audit(msg, request_id=request_id, persist_callback=_persist_callback)
         print_status(mgr)
-
-        is_control_transition = (mgr.control_state != pre_control_state or mgr.control_state != "idle")
-        is_draft_cancellation = (pre_phase in ("collecting", "confirming", "blocked_soft", "blocked_hard") and mgr.phase == "rejected")
-        requires_audit_save = (is_control_transition or is_draft_cancellation or mgr.phase in ("done", "rejected"))
-
-        if requires_audit_save:
-            try:
-                save_conversation(
-                    session_id=sid,
-                    conversation_history=mgr.conversation_history,
-                    task_state=mgr.task_state,
-                    built_json=mgr._last_built_json,
-                    mode=mgr.mode,
-                    phase=mgr.phase,
-                    intent_id=mgr.task_state.get('intent_id'),
-                    slot_store=mgr.slot_store,
-                    dialogue_mode=mgr.dialogue_mode,
-                    control_state=mgr.control_state,
-                    last_control_request=mgr.last_control_request,
-                    request_id=request_id if (is_control_transition or is_draft_cancellation) else None,
-                )
-            except Exception as e:
-                logging.error("保存历史快照失败: %s", e, exc_info=True)
-                mgr._restore_runtime_state(pre_snapshot)
-                raise ControlAuditPersistenceError(f"控制历史快照保存失败: {e}") from e
 
         resp_data = {
             "code": 200,
@@ -495,6 +504,16 @@ def api_chat():
                 raise TypeError(f"Field '{k}' is not JSON serializable: {type(v)} -> {v}") from e
 
         return jsonify(resp_data)
+    except (ControlAuditConflictError, ControlAuditConflict) as cac:
+        logging.warning(f"Control audit conflict in /api/chat: {cac}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 409,
+            "error": "ControlAuditConflict",
+            "msg": f"控制审计事件冲突: {str(cac)}",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": False
+        }), 409
     except ServiceNotInitializedError as sne:
         logging.error(f"Service uninitialized in /api/chat: {sne}", exc_info=True)
         return jsonify({

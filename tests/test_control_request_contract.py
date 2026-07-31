@@ -18,6 +18,8 @@ from src.history_manager import (
     load_history,
     list_history,
     _resolve_history_file,
+    _atomic_durable_write,
+    get_history_dir,
     SNAPSHOT_VERSION,
 )
 from src.intent_router import IntentRouter, IntentRouteResult
@@ -26,6 +28,8 @@ from src.llm_client import LLMClient
 from src.slot_store import Slot
 from src.exceptions import (
     ControlAuditPersistenceError,
+    ControlAuditConflictError,
+    ControlAuditConflict,
     ServiceNotInitializedError,
 )
 import web_backend
@@ -45,8 +49,11 @@ class DummyLLM:
         content = str(messages[-1].get("content", "")) if messages else ""
         sys_content = str(messages[0].get("content", "")) if (isinstance(messages, list) and messages) else ""
         if "三级主线路" in sys_content or "三级意图路由" in sys_content:
+            if any(kw in content for kw in ["暂停", "停止", "终止", "取消"]):
+                act = "pause" if "暂停" in content else ("stop" if "停止" in content else ("abort" if "终止" in content else "cancel"))
+                return {"dialogue_mode": "emergency_intervention", "emergency_action": act, "confidence": 0.95, "reason": f"DummyLLM {act}"}
             return {"dialogue_mode": "task_collection", "confidence": 0.95, "reason": "DummyLLM 意图路由"}
-        if "巡检" in content or "管缆" in content or "创建" in content or "任务" in content:
+        if "巡检" in content or "管缆" in content or "创建" in content:
             depth = 500.0 if "500" in content else (300.0 if "300" in content else None)
             cands = [
                 {"raw_key": "任务类型", "canonical_key": "task_type_key", "raw_value": "管缆巡检", "normalized_value": "pipeline_inspection", "confidence": 0.95},
@@ -89,8 +96,22 @@ class TestControlRequestContract(unittest.TestCase):
         self.llm = DummyLLM()
         self.dm = DialogueManager(self.llm, self.kb)
         self.router = IntentRouter(self.llm)
-        # 初始化 web_backend 中的全局 Manager 引用，避免 503
+        with web_backend._sessions_lock:
+            web_backend._sessions.clear()
+            web_backend._sessions_manager.clear()
         web_backend.init_manager(self.dm)
+
+    def tearDown(self):
+        with web_backend._sessions_lock:
+            web_backend._sessions.clear()
+            web_backend._sessions_manager.clear()
+        history_dir = get_history_dir(create=False)
+        if history_dir.exists():
+            for f in history_dir.glob("*.json"):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
 
     def _seed_pipeline_task(self):
         self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
@@ -510,6 +531,225 @@ class TestControlRequestContract(unittest.TestCase):
         self.assertEqual(res.dialogue_mode, "uncertain")
         self.assertEqual(res.query_intent, "CLARIFICATION")
         self.assertIsNone(res.emergency_action)
+
+    # --------------------------------------------------------------------------
+    # 目标 11: PR #15 第五轮整改新增 - 事务原子性、跨进程锁、Fail-Closed与幂等性测试
+    # --------------------------------------------------------------------------
+
+    def test_same_session_control_transaction_holds_lock_until_persisted(self):
+        """1. 同一 Session 事务：process_with_audit 全程持有 _session_lock 直至 persist 完成"""
+        lock_held_during_persist = False
+        def check_lock(mgr_inst):
+            nonlocal lock_held_during_persist
+            lock_held_during_persist = mgr_inst._session_lock._is_owned()
+
+        self.dm.process("创建一个管缆巡检任务，水深300米")
+        self.dm.process_with_audit("立即停止当前任务", request_id="req_lock_test", persist_callback=check_lock)
+        self.assertTrue(lock_held_during_persist)
+
+    def test_failed_request_cannot_rollback_later_successful_request(self):
+        """2. 隔离性测试：上一次成功请求的状态不能被后续失败请求的回滚所覆盖"""
+        self.dm.process("创建一个管缆巡检任务，水深300米")
+        # 成功请求 1
+        self.dm.process("立即停止当前任务", request_id="req_succ_1")
+        self.assertEqual(self.dm.control_state, "stop_requested")
+
+        # 失败请求 2
+        def failing_persist(mgr_inst):
+            raise OSError("Disk write failed on request 2")
+
+        with self.assertRaises(OSError):
+            self.dm.process_with_audit("暂停当前任务", request_id="req_fail_2", persist_callback=failing_persist)
+
+        # 验证 Manager 状态回滚至请求 2 之前（即保留请求 1 的 stop_requested 状态），绝不回滚至更早状态
+        self.assertEqual(self.dm.control_state, "stop_requested")
+
+    def test_same_session_concurrent_success_and_failure_remain_consistent(self):
+        """3. 同一 Session 连续成功与失败交替时，状态始终保持精确一致"""
+        self.dm.process("创建一个管缆巡检任务，水深300米")
+        self.dm.process("暂停当前任务", request_id="req_seq_1")
+        self.assertEqual(self.dm.control_state, "pause_requested")
+
+        # 触发失败
+        with self.assertRaises(OSError):
+            self.dm.process_with_audit("终止当前任务", request_id="req_seq_2", persist_callback=lambda m: (_ for _ in ()).throw(OSError("Fail")))
+
+        # 仍然为 pause_requested
+        self.assertEqual(self.dm.control_state, "pause_requested")
+
+    def test_audit_success_main_failure_leaves_no_committed_control_event(self):
+        """4. 单一权威提交测试：控制事件只写 control_...json，不存在主历史文件写入失败导致的半提交"""
+        history_dir = get_history_dir(create=False)
+        app = web_backend.app.test_client()
+        sid = "test_session_single_commit"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+        res = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_single_01"})
+        self.assertEqual(res.status_code, 200)
+
+        # 检查 history_dir：存在 control_...json，但不存在二次写入产生的半提交隐患
+        control_files = list(history_dir.glob("*req_single_01*.json"))
+        self.assertEqual(len(control_files), 1)
+
+    def test_control_transaction_is_all_or_nothing(self):
+        """5. 控制事务 All-or-Nothing：持久化失败时不留下任何提交的控制事件文件，且 Manager 回滚"""
+        app = web_backend.app.test_client()
+        sid = "test_session_all_or_nothing"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        with patch("src.history_manager._atomic_durable_write", side_effect=OSError("Disk full")):
+            res = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_aon_01"})
+            self.assertEqual(res.status_code, 500)
+
+        # 验证 API 状态：后续 session/state 仍为 idle
+        res_st = app.get(f"/api/session/state?session_id={sid}")
+        data = res_st.get_json()
+        self.assertEqual(data["control_state"], "idle")
+
+    def test_multiprocess_history_writes_use_shared_lock(self):
+        """6. 真正多进程测试：并发 save_conversation 正确获取并争用 .history.lock"""
+        import multiprocessing
+
+        def worker_write(sid, req_id):
+            save_conversation(
+                session_id=sid,
+                conversation_history=[],
+                task_state={},
+                built_json={},
+                mode="normal",
+                phase="collecting",
+                request_id=req_id,
+            )
+
+        processes = []
+        for i in range(4):
+            p = multiprocessing.Process(target=worker_write, args=("test_mp_session", f"req_mp_{i}"))
+            processes.append(p)
+            p.start()
+
+        for p in processes:
+            p.join(timeout=5)
+            self.assertEqual(p.exitcode, 0)
+
+        lock_path = get_history_dir(create=False) / ".history.lock"
+        self.assertTrue(lock_path.exists())
+
+    def test_multiprocess_main_snapshot_never_loses_latest_committed_state(self):
+        """7. 真正多进程并发快照测试：并发主历史写入绝不损坏或丢失最新快照"""
+        import multiprocessing
+
+        def worker_main_write(sid, intent_id, val):
+            save_conversation(
+                session_id=sid,
+                conversation_history=[],
+                task_state={"task_type_key": "pipeline_inspection", "val": val},
+                built_json={},
+                mode="normal",
+                phase="collecting",
+                intent_id=intent_id,
+            )
+
+        processes = []
+        for i in range(4):
+            p = multiprocessing.Process(target=worker_main_write, args=("test_mp_main_sess", "TI_MP_TEST", i))
+            processes.append(p)
+            p.start()
+
+        for p in processes:
+            p.join(timeout=5)
+            self.assertEqual(p.exitcode, 0)
+
+        h = load_history("history_TI_MP_TEST.json")
+        self.assertIsNotNone(h)
+        self.assertEqual(h["snapshot_version"], 3)
+
+    def test_directory_fsync_failure_returns_500_and_restores_manager(self):
+        """8. 父目录 fsync 失败 (OSError) 必须 fail closed，向上传播返回 500 并恢复 Manager 内存"""
+        app = web_backend.app.test_client()
+        sid = "test_session_dir_fsync_fail"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        orig_open = os.open
+        def mock_os_open(path, flags, mode=0o777):
+            fd = orig_open(path, flags, mode)
+            path_str = str(path)
+            if "history" in path_str and os.path.isdir(path_str):
+                raise OSError("Directory fsync failed")
+            return fd
+
+        with patch("os.open", side_effect=mock_os_open):
+            res = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_dfs_01"})
+            self.assertEqual(res.status_code, 500)
+
+        # 检查状态回滚
+        res_st = app.get(f"/api/session/state?session_id={sid}")
+        data = res_st.get_json()
+        self.assertEqual(data["control_state"], "idle")
+
+    def test_temp_file_removed_after_write_failure(self):
+        """9. 写入 payload 过程失败时，清理本次创建的临时文件"""
+        history_dir = get_history_dir(create=True)
+        before_tmps = set(history_dir.glob(".tmp_*"))
+
+        orig_write = os.write
+        def mock_write(fd, data):
+            raise OSError("Write payload failure")
+
+        with patch("os.write", side_effect=mock_write):
+            with self.assertRaises(OSError):
+                _atomic_durable_write(history_dir / "target_test_fail.json", {"a": 1})
+
+        after_tmps = set(history_dir.glob(".tmp_*"))
+        self.assertEqual(before_tmps, after_tmps)
+
+    def test_temp_file_removed_after_replace_failure(self):
+        """10. atomic replace 过程失败时，清理本次创建的临时文件"""
+        history_dir = get_history_dir(create=True)
+        before_tmps = set(history_dir.glob(".tmp_*"))
+
+        with patch("pathlib.Path.replace", side_effect=OSError("Replace failure")):
+            with self.assertRaises(OSError):
+                _atomic_durable_write(history_dir / "target_test_replace_fail.json", {"a": 1})
+
+        after_tmps = set(history_dir.glob(".tmp_*"))
+        self.assertEqual(before_tmps, after_tmps)
+
+    def test_readback_must_equal_expected_snapshot(self):
+        """11. 写后读取校验：若磁盘读取内容与预期快照不完全相等，触发 RuntimeError 且 fail closed"""
+        history_dir = get_history_dir(create=True)
+        target = history_dir / "target_readback_test.json"
+
+        with patch("json.load", return_value={"different": "data"}):
+            with self.assertRaises(RuntimeError) as cm:
+                _atomic_durable_write(target, {"snapshot_version": 3, "data": "original"})
+            self.assertIn("Read-after-write verification failed", str(cm.exception))
+
+    def test_same_request_id_same_content_is_idempotent(self):
+        """12. 幂等性测试：重复写入相同的 request_id 且 payload 一致，返回 200 幂等成功"""
+        app = web_backend.app.test_client()
+        sid = "test_session_idempotent"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_idem_01"})
+        self.assertEqual(res1.status_code, 200)
+
+        # 重复发送完全相同的 request_id
+        res2 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_idem_01"})
+        self.assertEqual(res2.status_code, 200)
+
+    def test_same_request_id_different_content_is_rejected(self):
+        """13. 冲突拒绝测试：重复使用相同 request_id 但 payload 不同，抛出 ControlAuditConflict 并返回 HTTP 409"""
+        app = web_backend.app.test_client()
+        sid = "test_session_conflict"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_conf_01"})
+        self.assertEqual(res1.status_code, 200)
+
+        # 重复使用相同 request_id 发送不同的控制指令（如暂停）
+        res2 = app.post("/api/chat", json={"session_id": sid, "message": "暂停当前任务", "request_id": "req_conf_01"})
+        self.assertEqual(res2.status_code, 409)
+        data = res2.get_json()
+        self.assertEqual(data["error"], "ControlAuditConflict")
 
 
 if __name__ == "__main__":

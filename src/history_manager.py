@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .exceptions import ControlAuditConflictError
 from .result_paths import get_history_dir
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,12 @@ _file_lock = threading.RLock()
 def _ensure_dir() -> Path:
     """确保 history 目录存在并返回。"""
     return get_history_dir(create=True)
+
+
+def _get_cross_process_lock(history_dir: Path):
+    """获取/创建跨进程锁文件句柄。"""
+    lock_path = history_dir / ".history.lock"
+    return open(lock_path, "a+")
 
 
 def _safe_filename_component(value: str, field_name: str) -> str:
@@ -82,11 +89,57 @@ def _serialize_slot_store(slot_store: Any) -> Dict[str, Any]:
     }
 
 
-def _atomic_durable_write(target_path: Path, snapshot_data: Dict[str, Any]) -> None:
-    """以 0600 权限、同目录临时文件、flock、fsync、原子替换及父目录 fsync 安全写入快照。"""
+def _is_snapshot_equal(s1: Dict[str, Any], s2: Dict[str, Any], is_control_event: bool = False) -> bool:
+    """比较两个快照的数据内容是否在幂等语义下相等。
+    对于控制审计事件，依据 (session_id, request_id, control_action) 进行幂等校验；
+    对于主历史快照，比较忽略 saved_at 后的完整字典。
+    """
+    if not isinstance(s1, dict) or not isinstance(s2, dict):
+        return s1 == s2
+    if is_control_event:
+        sid1 = s1.get("session_id")
+        sid2 = s2.get("session_id")
+        req1 = (s1.get("last_control_request") or {}).get("request_id")
+        req2 = (s2.get("last_control_request") or {}).get("request_id")
+        act1 = (s1.get("last_control_request") or {}).get("action")
+        act2 = (s2.get("last_control_request") or {}).get("action")
+        return (sid1 == sid2) and (req1 == req2) and (act1 == act2)
+
+    c1 = copy.deepcopy(s1)
+    c2 = copy.deepcopy(s2)
+    c1.pop("saved_at", None)
+    c2.pop("saved_at", None)
+    return c1 == c2
+
+
+def _atomic_durable_write(target_path: Path, snapshot_data: Dict[str, Any], is_control_event: bool = False) -> None:
+    """在已持有的线程锁与跨进程锁保护下：
+    - 检查已有文件（幂等判断 / 冲突拒绝）
+    - 以 0600 权限、同目录临时文件、循环 os.write、fsync、原子 replace、父目录 fsync (fail closed)
+    - 写后读取校验等于 expected snapshot
+    - 失败路径清理自有 temp 文件
+    """
     history_dir = target_path.parent
     history_dir.mkdir(parents=True, exist_ok=True)
 
+    # 1. 幂等性与冲突校验
+    if target_path.exists():
+        try:
+            with open(target_path, "r", encoding="utf-8") as f:
+                existing_data = json.load(f)
+        except Exception as e:
+            if is_control_event:
+                raise ControlAuditConflictError(f"Control audit event {target_path.name} exists but cannot be parsed: {e}") from e
+            existing_data = None
+
+        if existing_data is not None:
+            if _is_snapshot_equal(existing_data, snapshot_data, is_control_event=is_control_event):
+                logger.info("Snapshot file %s already exists with identical content. Returning idempotent success.", target_path.name)
+                return
+            elif is_control_event:
+                raise ControlAuditConflictError(f"Control audit event {target_path.name} already exists with different payload")
+
+    # 2. 同目录临时文件
     temp_filename = f".tmp_{target_path.name}_{uuid.uuid4().hex[:8]}"
     temp_path = history_dir / temp_filename
 
@@ -94,31 +147,49 @@ def _atomic_durable_write(target_path: Path, snapshot_data: Dict[str, Any]) -> N
 
     fd = os.open(str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        try:
-            os.write(fd, payload_bytes)
-            os.fsync(fd)
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-    finally:
+        written = 0
+        total = len(payload_bytes)
+        while written < total:
+            n = os.write(fd, payload_bytes[written:])
+            if n == 0:
+                raise OSError("os.write returned 0 bytes")
+            written += n
+
+        os.fsync(fd)
+    except Exception:
+        os.close(fd)
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        raise
+    else:
         os.close(fd)
 
-    temp_path.replace(target_path)
-
+    # 3. 原子 commit 替换
     try:
-        dir_fd = os.open(str(history_dir), os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    except OSError as e:
-        logger.debug("Parent directory fsync skipped: %s", e)
+        temp_path.replace(target_path)
+    except Exception:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        raise
 
-    # 写后校验：读取验证 JSON 完整性
+    # 4. 父目录 fsync (FAIL CLOSED: 绝不捕获吞掉 OSError!)
+    dir_fd = os.open(str(history_dir), os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+    # 5. 写后读取校验 (要求与 snapshot_data 深度相等)
     with open(target_path, "r", encoding="utf-8") as f:
         read_back = json.load(f)
-    if not isinstance(read_back, dict) or read_back.get("snapshot_version") != SNAPSHOT_VERSION:
-        raise RuntimeError(f"Read-after-write verification failed for {target_path}")
+    if read_back != snapshot_data:
+        raise RuntimeError(f"Read-after-write verification failed: payload mismatch for {target_path.name}")
 
 
 def save_conversation(
@@ -135,52 +206,59 @@ def save_conversation(
     last_control_request: Optional[Dict[str, Any]] = None,
     request_id: Optional[str] = None,
 ) -> str:
-    """保存 v3 对话快照。如果是控制事件，生成独立 control audit 文件。"""
+    """保存 v3 对话快照。全流程由线程 RLock + 跨进程 flock 双锁保护。
+    若传入 request_id，控制事件文件 control_<id>_<req_id>.json 作为唯一权威提交，不再同时强制更新 main 历史文件。
+    """
+    history_dir = _ensure_dir()
+
     with _file_lock:
-        history_dir = _ensure_dir()
-        safe_session_id = _safe_filename_component(session_id, "session_id")
+        lock_file_handle = _get_cross_process_lock(history_dir)
+        try:
+            fcntl.flock(lock_file_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                safe_session_id = _safe_filename_component(session_id, "session_id")
 
-        snapshot = {
-            "snapshot_version": SNAPSHOT_VERSION,
-            "session_id": session_id,
-            "saved_at": datetime.now().isoformat(),
-            "conversation_history": copy.deepcopy(conversation_history),
-            "slot_store": _serialize_slot_store(slot_store),
-            "task_state": copy.deepcopy(task_state),
-            "built_json": copy.deepcopy(built_json),
-            "mode": mode,
-            "phase": phase,
-            "dialogue_mode": dialogue_mode,
-            "control_state": control_state,
-            "last_control_request": copy.deepcopy(last_control_request),
-            "task_id": built_json.get("task_id", "unknown") if isinstance(built_json, dict) else "unknown",
-            "task_type": task_state.get("task_type_key", "unknown") if isinstance(task_state, dict) else "unknown",
-            "intent_id": intent_id,
-        }
+                snapshot = {
+                    "snapshot_version": SNAPSHOT_VERSION,
+                    "session_id": session_id,
+                    "saved_at": datetime.now().isoformat(),
+                    "conversation_history": copy.deepcopy(conversation_history),
+                    "slot_store": _serialize_slot_store(slot_store),
+                    "task_state": copy.deepcopy(task_state),
+                    "built_json": copy.deepcopy(built_json),
+                    "mode": mode,
+                    "phase": phase,
+                    "dialogue_mode": dialogue_mode,
+                    "control_state": control_state,
+                    "last_control_request": copy.deepcopy(last_control_request),
+                    "task_id": built_json.get("task_id", "unknown") if isinstance(built_json, dict) else "unknown",
+                    "task_type": task_state.get("task_type_key", "unknown") if isinstance(task_state, dict) else "unknown",
+                    "intent_id": intent_id,
+                }
 
-        written_filename = None
+                if request_id:
+                    safe_req_id = _safe_filename_component(request_id, "request_id")
+                    if intent_id:
+                        safe_intent_id = _safe_filename_component(intent_id, "intent_id")
+                        target_filename = f"control_{safe_intent_id}_{safe_req_id}.json"
+                    else:
+                        target_filename = f"control_{safe_session_id}_{safe_req_id}.json"
 
-        # 控制请求审计文件 (写独立文件，不覆盖)
-        if request_id:
-            safe_req_id = _safe_filename_component(request_id, "request_id")
-            if intent_id:
-                safe_intent_id = _safe_filename_component(intent_id, "intent_id")
-                audit_filename = f"control_{safe_intent_id}_{safe_req_id}.json"
-            else:
-                audit_filename = f"control_{safe_session_id}_{safe_req_id}.json"
-            _atomic_durable_write(history_dir / audit_filename, snapshot)
-            written_filename = audit_filename
+                    _atomic_durable_write(history_dir / target_filename, snapshot, is_control_event=True)
+                    return target_filename
+                else:
+                    if intent_id:
+                        safe_intent_id = _safe_filename_component(intent_id, "intent_id")
+                        target_filename = f"history_{safe_intent_id}.json"
+                    else:
+                        target_filename = f"history_{safe_session_id}.json"
 
-        # 主历史文件更新
-        if intent_id:
-            safe_intent_id = _safe_filename_component(intent_id, "intent_id")
-            main_filename = f"history_{safe_intent_id}.json"
-        else:
-            main_filename = f"history_{safe_session_id}.json"
-
-        _atomic_durable_write(history_dir / main_filename, snapshot)
-
-        return written_filename or main_filename
+                    _atomic_durable_write(history_dir / target_filename, snapshot, is_control_event=False)
+                    return target_filename
+            finally:
+                fcntl.flock(lock_file_handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_file_handle.close()
 
 
 def list_history() -> List[Dict[str, Any]]:
@@ -206,7 +284,7 @@ def list_history() -> List[Dict[str, Any]]:
                 }
             )
         except (OSError, json.JSONDecodeError, TypeError, AttributeError) as exc:
-            logger.warning("Skipping invalid history file %s: %s", filepath, exc)
+            logger.warning("Skipping invalid history file %s: %s", filepath.name, exc)
 
     records.sort(key=lambda item: item["saved_at"], reverse=True)
     return records

@@ -7,6 +7,14 @@ class ControlAuditPersistenceError(RuntimeError):
     """控制请求或草稿取消的历史审计持久化失败。"""
 
 
+class ControlAuditConflictError(RuntimeError):
+    """控制请求 ID 已存在且内容冲突。"""
+
+
+class ControlAuditConflict(ControlAuditConflictError):
+    """ControlAuditConflictError 的简写别名。"""
+
+
 class ServiceNotInitializedError(RuntimeError):
     """全局 AI 服务或知识库未初始化。"""
 

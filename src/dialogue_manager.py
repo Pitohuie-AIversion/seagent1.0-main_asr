@@ -28,7 +28,7 @@ import os
 import stat
 import logging
 import threading
-from typing import Any
+from typing import Any, Dict, List, Optional, Callable
 from zoneinfo import ZoneInfo
 from datetime import datetime
 
@@ -334,6 +334,24 @@ class DialogueManager:
     def process(self, user_message: str, request_id: str = "req_default") -> str:
         with self._session_lock:
             return self._process_internal(user_message, request_id)
+
+    def process_with_audit(
+        self,
+        user_message: str,
+        request_id: str = "req_default",
+        persist_callback: Optional[Callable[["DialogueManager"], None]] = None,
+    ) -> str:
+        """在同一个 Session 锁内完成完整事务：导出快照 -> 处理指令 -> 执行持久化回调 -> 异常回滚。"""
+        with self._session_lock:
+            before_state = self._export_runtime_state()
+            try:
+                reply = self.process(user_message, request_id=request_id)
+                if persist_callback:
+                    persist_callback(self)
+                return reply
+            except Exception:
+                self._restore_runtime_state(before_state)
+                raise
 
     def _handle_non_task_route(self, user_message: str, route: IntentRouteResult, request_id: str) -> str:
         # 1. 记录前置快照镜像（用于严格的只读状态不变性断言）
