@@ -61,7 +61,16 @@ from .task_request_guard import analyze_task_request
 from .result_paths import get_task_dir
 
 
+import math
+
 HARD_REFUSAL_LIMIT = 4   # 连续拒绝上限
+
+DRAFT_PHASES = {
+    "collecting",
+    "confirming",
+    "blocked_soft",
+    "blocked_hard",
+}
 
 VALID_DIALOGUE_MODES = {
     "task_collection",
@@ -76,6 +85,73 @@ VALID_CONTROL_STATES = {
     "abort_requested",
     "cancel_requested",
 }
+ACTION_TO_CONTROL_STATE = {
+    "pause": "pause_requested",
+    "stop": "stop_requested",
+    "abort": "abort_requested",
+    "cancel": "cancel_requested",
+}
+VALID_CONTROL_SOURCES = {"rule", "llm", "fallback"}
+VALID_CONTROL_ACTIONS = {"pause", "stop", "abort", "cancel"}
+
+
+def _validate_control_snapshot(
+    control_state: Any,
+    last_control_request: Any,
+) -> tuple[str, dict | None]:
+    if control_state is None:
+        clean_c_state = "idle"
+    elif isinstance(control_state, str) and control_state.strip() in VALID_CONTROL_STATES:
+        clean_c_state = control_state.strip()
+    else:
+        raise ValueError(f"Invalid control_state in snapshot: {control_state!r}")
+
+    if clean_c_state == "idle":
+        if last_control_request is not None:
+            raise ValueError("control_state is idle but last_control_request is not None")
+        return ("idle", None)
+
+    # 非 idle 状态
+    if not isinstance(last_control_request, dict):
+        raise ValueError(f"control_state is {clean_c_state!r} but last_control_request is not a dictionary")
+
+    action = last_control_request.get("action")
+    status = last_control_request.get("status")
+    source = last_control_request.get("source")
+    confidence = last_control_request.get("confidence")
+    reason = last_control_request.get("reason")
+
+    if action not in VALID_CONTROL_ACTIONS:
+        raise ValueError(f"Invalid action in last_control_request: {action!r}")
+
+    if ACTION_TO_CONTROL_STATE[action] != clean_c_state:
+        raise ValueError(f"Action {action!r} does not match control_state {clean_c_state!r}")
+
+    if status != "requested":
+        raise ValueError(f"Invalid status in last_control_request: {status!r}")
+
+    if not isinstance(source, str) or source.strip() not in VALID_CONTROL_SOURCES:
+        raise ValueError(f"Invalid source in last_control_request: {source!r}")
+
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not (0.0 <= float(confidence) <= 1.0)
+        or math.isnan(float(confidence))
+    ):
+        raise ValueError(f"Invalid confidence in last_control_request: {confidence!r}")
+
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError(f"Invalid or empty reason in last_control_request: {reason!r}")
+
+    clean_req = {
+        "action": action,
+        "status": "requested",
+        "source": source.strip(),
+        "confidence": float(confidence),
+        "reason": reason.strip(),
+    }
+    return (clean_c_state, clean_req)
 
 
 FIELD_LABELS = {
@@ -334,12 +410,44 @@ class DialogueManager:
                 confidence=route.confidence,
                 reason="紧急动作不明确，请求用户澄清",
             )
-            reply = "我识别到您可能要进行紧急干预，但无法确定是暂停、停止、终止还是取消。请明确说明需要执行的动作。"
+            reply = "请明确您是要停止当前任务、暂停当前任务，还是取消未发布任务草稿。"
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
-        # 记录前置快照镜像（用于严格的只读状态不变性断言）
+        # ── 1. 未发布草稿阶段的 cancel 处理 ──
+        if action == "cancel" and self.phase in DRAFT_PHASES:
+            self.reset()
+            self.phase = "rejected"
+            self.control_state = "idle"
+            self.last_control_request = None
+            self._switch_dialogue_mode(
+                "emergency_intervention",
+                source=route.source,
+                confidence=route.confidence,
+                reason=route.reason,
+            )
+            reply = "当前未发布任务草稿已取消。如需重新规划，请重新开始。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        # ── 2. 已处于 rejected 阶段或没有活动任务时的 cancel 处理 ──
+        if action == "cancel" and self.phase == "rejected":
+            self.control_state = "idle"
+            self.last_control_request = None
+            self._switch_dialogue_mode(
+                "emergency_intervention",
+                source=route.source,
+                confidence=route.confidence,
+                reason=route.reason,
+            )
+            reply = "当前没有可取消的未发布任务。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        # ── 3. 已发布阶段 (phase == "done") 的 cancel 以及所有阶段的 pause, stop, abort ──
         initial_version = self.slot_store.version
         initial_snapshot = copy.deepcopy(self.slot_store.export_snapshot())
         initial_unresolved = list(self.slot_store.unresolved)
@@ -374,7 +482,7 @@ class DialogueManager:
         elif action == "abort":
             reply = "已识别终止请求。当前系统尚未接入实际机器人执行控制接口，因此尚未确认设备已实际终止。"
         elif action == "cancel":
-            reply = "已识别取消请求。已记录该指令。"
+            reply = "已识别取消请求。当前系统尚未接入实际机器人执行控制接口，因此尚未确认设备已实际取消。"
         else:
             reply = "已记录紧急控制指令。"
 
@@ -597,7 +705,7 @@ class DialogueManager:
                 self._last_missing = self.slot_store.get_missing_slots(required_schema)
 
             logger.error(
-                "TaskIntent publish_staging failed: request_id=%s, task_id=%s, intent_id=%s, err_type=%s, err=%s, rollback_failed=%s",
+                "TaskIntent publish failed: request_id=%s, task_id=%s, intent_id=%s, err_type=%s, err=%s, rollback_failed=%s",
                 request_id,
                 cand_built.get("task_id", "unknown"),
                 intent_id,
@@ -713,7 +821,10 @@ class DialogueManager:
                 confidence=route.confidence,
                 reason=route.reason,
             )
-            reply = "对不起，我没有完全理解您的需求。请问您是希望【创建/修改任务】，还是想【查询系统与设备知识】？"
+            if route.reason and ("紧急" in route.reason or "动作" in route.reason):
+                reply = "请明确您是要停止当前任务、暂停当前任务，还是取消未发布任务草稿。"
+            else:
+                reply = "对不起，我没有完全理解您的需求。请问您是希望【创建/修改任务】，还是想【查询系统与设备知识】？"
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
@@ -2369,12 +2480,8 @@ class DialogueManager:
             raise ValueError(f"Invalid dialogue_mode in snapshot: {raw_d_mode!r}")
 
         raw_c_state = snapshot.get("control_state")
-        if raw_c_state is None:
-            control_state = "idle"
-        elif isinstance(raw_c_state, str) and raw_c_state.strip() in VALID_CONTROL_STATES:
-            control_state = raw_c_state.strip()
-        else:
-            raise ValueError(f"Invalid control_state in snapshot: {raw_c_state!r}")
+        raw_last_req = snapshot.get("last_control_request")
+        control_state, clean_last_req = _validate_control_snapshot(raw_c_state, raw_last_req)
 
         conversation_history = snapshot.get("conversation_history", [])
         if not isinstance(conversation_history, list):
@@ -2421,7 +2528,7 @@ class DialogueManager:
         self.mode = mode
         self.dialogue_mode = dialogue_mode
         self.control_state = control_state
-        self.last_control_request = copy.deepcopy(snapshot.get("last_control_request"))
+        self.last_control_request = copy.deepcopy(clean_last_req)
         self.final_result = None
         self.task_start_now = False
         # 清空阻塞与白名单，重新构建缓存

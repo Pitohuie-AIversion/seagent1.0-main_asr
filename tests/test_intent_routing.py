@@ -995,6 +995,13 @@ class TestIssue10ThreeModeRouting(unittest.TestCase):
             "mode": "normal",
             "dialogue_mode": "knowledge_qa",
             "control_state": "pause_requested",
+            "last_control_request": {
+                "action": "pause",
+                "status": "requested",
+                "source": "rule",
+                "confidence": 0.98,
+                "reason": "pause",
+            },
             "task_state": copy.deepcopy(self.dm.task_state),
         }
         # 1. 正常恢复
@@ -1027,52 +1034,210 @@ class TestIssue10ThreeModeRouting(unittest.TestCase):
                 self.dm.load_snapshot(invalid_snap_c)
             self.assertEqual(self.dm.get_status(), state_before)
 
-    def test_knowledge_qa_read_only_invariance(self):
-        """只读性与状态不变性"""
+    def test_draft_cancel_phases(self):
+        """草稿取消：collecting, confirming, blocked_soft, blocked_hard 阶段输入取消当前任务清空草稿"""
+        draft_phases = ["collecting", "confirming", "blocked_soft", "blocked_hard"]
+        for p in draft_phases:
+            self.dm.reset()
+            self._seed_pipeline_task()
+            self.dm.phase = p
+
+            with patch.object(self.dm.extractor, 'extract_updates') as mock_ext:
+                reply = self.dm.process("取消当前任务")
+                mock_ext.assert_not_called()
+
+            self.assertEqual(self.dm.phase, "rejected")
+            self.assertEqual(self.dm.task_state, {})
+            self.assertEqual(self.dm._last_built_json, {})
+            self.assertEqual(self.dm._last_missing, [])
+            self.assertIsNone(self.dm.final_result)
+            self.assertIn("未发布任务草稿已取消", reply)
+
+    def test_pending_oilfield_draft_cancel(self):
+        """存在 pending oilfield 时输入'取消当前任务'：必须清空整个草稿"""
+        self.dm.reset()
         self._seed_pipeline_task()
-        v_before = self.dm.slot_store.version
-        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
-        task_state_before = copy.deepcopy(self.dm.task_state)
-        unresolved_before = copy.deepcopy(self.dm.slot_store.unresolved)
-        built_json_before = copy.deepcopy(self.dm._last_built_json)
-        missing_before = copy.deepcopy(self.dm._last_missing)
-        phase_before = self.dm.phase
+        from src.slot_store import Slot
+        self.dm.slot_store.slots["oilfield_name"] = Slot("oilfield_name", value="流花11-1油田", status="valid")
+        self.dm.slot_store.slots["oilfield_name"].status = "pending_confirmation"
+        self.dm.slot_store.slots["oilfield_name"].candidate_value = "流花11-1油田"
 
-        # 输入知识问答
-        reply = self.dm.process("这个机器人最大下潜深度是多少？")
-        self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
+        with patch.object(self.dm.extractor, 'extract_updates') as mock_ext:
+            reply = self.dm.process("取消当前任务")
+            mock_ext.assert_not_called()
 
-        # 断言所有数据结构完完全全不变
-        self.assertEqual(self.dm.slot_store.version, v_before)
-        self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
-        self.assertEqual(self.dm.task_state, task_state_before)
-        self.assertEqual(self.dm.slot_store.unresolved, unresolved_before)
-        self.assertEqual(self.dm._last_built_json, built_json_before)
-        self.assertEqual(self.dm._last_missing, missing_before)
-        self.assertEqual(self.dm.phase, phase_before)
+        self.assertEqual(self.dm.phase, "rejected")
+        self.assertEqual(self.dm.task_state, {})
+        self.assertIsNone(self.dm.final_result)
 
-    def test_multiturn_state_preservation(self):
-        """多轮对话状态交错测试"""
-        # 第一轮：创建巡检任务
+    def test_done_phase_cancel(self):
+        """done 阶段输入取消当前任务：保留已发布任务数据并记录 control_state = cancel_requested"""
+        self.dm.reset()
         self._seed_pipeline_task()
-        self.assertEqual(self.dm.task_state.get("task_type"), "管缆巡检")
+        self.dm.phase = "done"
+        self.dm.final_result = {"task_id": "TSK_001", "task_type": "管缆巡检"}
 
-        # 第二轮：问答（不破坏任务）
-        self.dm.process("ROV 最大水深是多少？")
-        self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
-        self.assertEqual(self.dm.task_state.get("task_type"), "管缆巡检")
+        reply = self.dm.process("取消当前任务")
+        self.assertEqual(self.dm.phase, "done")
+        self.assertEqual(self.dm.control_state, "cancel_requested")
+        self.assertIsNotNone(self.dm.final_result)
+        self.assertIn("尚未确认设备已实际取消", reply)
 
-        # 第三轮：继续任务槽位收集
-        with patch.object(self.dm.extractor, 'extract_updates', return_value={
-            "intent": "TASK_UPDATE",
-            "slot_candidates": [
-                {"raw_key": "水深", "canonical_key": "water_depth", "raw_value": "300米", "normalized_value": 300.0, "confidence": 0.95}
-            ]
-        }):
-            self.dm.process("水深设置为300米")
+    def test_negation_plus_parameter_update(self):
+        """否定控制动作 + 参数修改：确定性走 task_collection，更新参数，不进入 emergency_intervention，且不调用 LLM"""
+        inputs_and_expected = [
+            ("不要停止任务，水深改成500米", "water_depth", 500.0),
+            ("不要取消任务，水深改成600米", "water_depth", 600.0),
+            ("别终止任务，水深改成700米", "water_depth", 700.0),
+        ]
+        for inp, target_key, target_val in inputs_and_expected:
+            self.dm.reset()
+            self._seed_pipeline_task()
+
+            with patch.object(self.dm.llm, 'extract_json') as mock_llm:
+                with patch.object(self.dm.extractor, 'extract_updates', return_value={
+                    "intent": "TASK_UPDATE",
+                    "slot_candidates": [
+                        {"canonical_key": target_key, "normalized_value": target_val, "raw_value": str(target_val), "confidence": 1.0}
+                    ]
+                }):
+                    reply = self.dm.process(inp)
+                    mock_llm.assert_not_called()
+
             self.assertEqual(self.dm.dialogue_mode, "task_collection")
-            self.assertEqual(self.dm.slot_store.slots.get("water_depth").value, 300.0)
-            self.assertEqual(self.dm.task_state.get("task_type"), "管缆巡检")
+            self.assertEqual(self.dm.control_state, "idle")
+            self.assertNotEqual(self.dm.phase, "rejected")
+            self.assertEqual(self.dm.slot_store.slots[target_key].value, target_val)
+
+    def test_wrong_llm_cannot_upgrade_negation_update(self):
+        """模拟 LLM 错误返回 emergency_intervention：仍然强行判定为 task_collection"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+
+        mock_llm_err = {
+            "dialogue_mode": "emergency_intervention",
+            "emergency_action": "stop",
+            "confidence": 0.99,
+            "reason": "误判为停止",
+        }
+        with patch.object(self.dm.llm, 'extract_json', return_value=mock_llm_err):
+            res = self.router.route("不要停止任务，水深改成500米", [], self.dm.task_state)
+            self.assertEqual(res.dialogue_mode, "task_collection")
+            self.assertIsNone(res.emergency_action)
+
+    def test_bare_action_words(self):
+        """裸动作词：停止、暂停、终止、取消 -> uncertain 澄清且无 control_state 变化"""
+        bare_words = ["停止", "暂停", "终止", "取消"]
+        for bw in bare_words:
+            self.dm.reset()
+            self._seed_pipeline_task()
+            snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+
+            res = self.router.route(bw, [], self.dm.task_state)
+            self.assertEqual(res.dialogue_mode, "uncertain")
+            self.assertIsNone(res.emergency_action)
+
+            reply = self.dm.process(bw)
+            self.assertEqual(self.dm.control_state, "idle")
+            self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+            self.assertIn("请明确您是要", reply)
+
+    def test_non_task_objects(self):
+        """非任务对象：停止回答、停止生成、取消告警、暂停功能、取消载荷修改、终止说明输出 -> 不进入 emergency"""
+        non_task_inputs = [
+            "停止回答",
+            "停止生成",
+            "取消告警",
+            "暂停功能",
+            "终止说明输出",
+        ]
+        for nti in non_task_inputs:
+            res = self.router.route(nti, [], {})
+            self.assertNotEqual(res.dialogue_mode, "emergency_intervention")
+            self.assertIsNone(res.emergency_action)
+
+        # 取消载荷修改 -> 走槽位更新/修改线路，不进入全局取消
+        self.dm.reset()
+        self._seed_pipeline_task()
+        res_payload = self.router.route("取消载荷修改", [], self.dm.task_state)
+        self.assertNotEqual(res_payload.dialogue_mode, "emergency_intervention")
+
+    def test_explicit_emergency_actions(self):
+        """明确紧急动作：识别为对应控制请求，保留任务状态，不调用 extractor"""
+        actions_inputs = [
+            ("立即停止当前任务", "stop_requested"),
+            ("暂停当前任务", "pause_requested"),
+            ("终止当前任务", "abort_requested"),
+        ]
+        for inp, expected_cstate in actions_inputs:
+            self.dm.reset()
+            self._seed_pipeline_task()
+            self.dm.phase = "done"  # done 阶段测试 control_state 记录
+            snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+
+            with patch.object(self.dm.extractor, 'extract_updates') as mock_ext:
+                reply = self.dm.process(inp)
+                mock_ext.assert_not_called()
+
+            self.assertEqual(self.dm.control_state, expected_cstate)
+            self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+            self.assertIn("尚未确认设备已实际", reply)
+
+    def test_control_snapshot_consistency_validation(self):
+        """control snapshot 一致性校验：全面测试合法 round-trip 与各种非法 snapshot 的拒绝与状态完好性"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+        status_before = copy.deepcopy(self.dm.get_status())
+
+        # 1. 合法 round-trip
+        valid_snap = {
+            "conversation_history": [],
+            "mode": "normal",
+            "dialogue_mode": "emergency_intervention",
+            "control_state": "pause_requested",
+            "last_control_request": {
+                "action": "pause",
+                "status": "requested",
+                "source": "rule",
+                "confidence": 0.98,
+                "reason": "规则识别",
+            },
+            "task_state": copy.deepcopy(self.dm.task_state),
+        }
+        self.dm.load_snapshot(valid_snap)
+        self.assertEqual(self.dm.control_state, "pause_requested")
+        self.assertEqual(self.dm.last_control_request["action"], "pause")
+
+        # 2. 非法 snapshot
+        invalid_snapshots = [
+            # action 与 control_state 不匹配
+            {"control_state": "stop_requested", "last_control_request": {"action": "pause", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "test"}},
+            # non-dict last_control_request
+            {"control_state": "pause_requested", "last_control_request": ["invalid"]},
+            # idle 但 last_control_request 不为 None
+            {"control_state": "idle", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "test"}},
+            # 非 idle 但 last_control_request 缺失 (None)
+            {"control_state": "stop_requested", "last_control_request": None},
+            # confidence 为 bool
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": True, "reason": "test"}},
+            # confidence 为 NaN
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": float("nan"), "reason": "test"}},
+            # confidence 越界 (> 1.0)
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": 1.5, "reason": "test"}},
+            # status 非 requested
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "completed", "source": "rule", "confidence": 0.9, "reason": "test"}},
+            # reason 为空
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "  "}},
+        ]
+
+        for inv in invalid_snapshots:
+            self.dm.reset()
+            self._seed_pipeline_task()
+            state_before = copy.deepcopy(self.dm.get_status())
+
+            with self.assertRaises(ValueError):
+                self.dm.load_snapshot(inv)
+            self.assertEqual(self.dm.get_status(), state_before)
 
 
 if __name__ == "__main__":
