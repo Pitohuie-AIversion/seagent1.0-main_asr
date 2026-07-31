@@ -451,6 +451,7 @@ def api_chat():
                 _sessions[sid] = Session(sid)
 
         def _persist_callback(manager, outcome, before_state):
+            # 控制审计事件（停止/暂停/终止/草稿取消）
             if outcome.control_event_created:
                 try:
                     save_conversation(
@@ -460,12 +461,12 @@ def api_chat():
                         built_json=manager._last_built_json,
                         mode=manager.mode,
                         phase=manager.phase,
-                        intent_id=manager.task_state.get('intent_id'),
+                        intent_id=manager.task_state.get('intent_id') if isinstance(manager.task_state, dict) else None,
                         slot_store=manager.slot_store,
                         dialogue_mode=manager.dialogue_mode,
                         control_state=manager.control_state,
                         last_control_request=manager.last_control_request,
-                        request_id=request_id if outcome.control_event_created else None,
+                        request_id=request_id,
                         user_message=msg,
                         reply=outcome.reply,
                         control_action=outcome.control_action,
@@ -473,8 +474,34 @@ def api_chat():
                 except (ControlAuditConflictError, ControlAuditCommitUncertainError):
                     raise
                 except Exception as e:
-                    logging.error("保存历史快照失败: %s", e, exc_info=True)
-                    raise ControlAuditPersistenceError(f"控制历史快照保存失败: {e}") from e
+                    logging.error("保存控制审计事件失败: %s", e, exc_info=True)
+                    raise ControlAuditPersistenceError(f"控制审计事件保存失败: {e}") from e
+
+            # 主历史快照（普通任务完成 done / 阶段变更快照）
+            if outcome.history_snapshot_required:
+                try:
+                    save_conversation(
+                        session_id=sid,
+                        conversation_history=manager.conversation_history,
+                        task_state=manager.task_state,
+                        built_json=manager._last_built_json,
+                        mode=manager.mode,
+                        phase=manager.phase,
+                        intent_id=manager.task_state.get('intent_id') if isinstance(manager.task_state, dict) else None,
+                        slot_store=manager.slot_store,
+                        dialogue_mode=manager.dialogue_mode,
+                        control_state=manager.control_state,
+                        last_control_request=manager.last_control_request,
+                        request_id=None,  # 主历史快照不携带 request_id
+                        user_message=None,
+                        reply=None,
+                        control_action=None,
+                    )
+                except (ControlAuditCommitUncertainError,):
+                    raise
+                except Exception as e:
+                    logging.error("保存主历史快照失败: %s", e, exc_info=True)
+                    raise ControlAuditPersistenceError(f"主历史快照保存失败: {e}") from e
 
         outcome = mgr.process_with_audit(msg, request_id=request_id, session_id=sid, persist_callback=_persist_callback)
         reply = outcome.reply

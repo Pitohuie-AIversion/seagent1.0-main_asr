@@ -19,8 +19,14 @@ from src.history_manager import (
     list_history,
     _resolve_history_file,
     _atomic_durable_write,
+    _create_control_event_no_overwrite,
+    _replace_main_snapshot_with_recovery,
+    _canonical_payload_hash,
     get_history_dir,
+    get_control_event_path,
+    load_control_event,
     compute_request_fingerprint,
+    _safe_request_id,
     SNAPSHOT_VERSION,
 )
 from src.intent_router import IntentRouter, IntentRouteResult
@@ -599,11 +605,12 @@ class TestControlRequestContract(unittest.TestCase):
         sid = "test_session_all_or_nothing"
         app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
 
-        with patch("src.history_manager._atomic_durable_write", side_effect=OSError("Disk full")):
+        # 新版控制事件写入走 _create_control_event_no_overwrite
+        with patch("src.history_manager._create_control_event_no_overwrite", side_effect=OSError("Disk full")):
             res = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_aon_01"})
             self.assertEqual(res.status_code, 500)
 
-        # 验证 API 状态：后续 session/state 仍为 idle
+        # 验证 API 状态：后续 session/state 仍为 idle（Manager 已回滚）
         res_st = app.get(f"/api/session/state?session_id={sid}")
         data = res_st.get_json()
         self.assertEqual(data["control_state"], "idle")
@@ -918,17 +925,24 @@ class TestControlRequestContract(unittest.TestCase):
         self.assertEqual(res2.status_code, 409)
 
     def test_same_request_id_same_action_different_payload_is_409(self):
-        """10. 相同 request_id 与 action，但上下文 payload 不同：触发 409 冲突"""
+        """10. 相同 session + 相同 request_id + 不同 user_message 内容（指纹不同）：触发 409 冲突。
+        不同 session 使用相同 request_id 是独立的，不应产生 409。
+        """
         app = web_backend.app.test_client()
-        sid = "test_session_diff_payload"
+        sid = "test_session_diff_payload_same_sess"
         app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
 
         res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_diff_pay_01"})
         self.assertEqual(res1.status_code, 200)
 
-        # 重复 request_id 但不同 session / payload
-        res2 = app.post("/api/chat", json={"session_id": "other_session", "message": "立即停止当前任务", "request_id": "req_diff_pay_01"})
+        # 相同 session，相同 request_id，不同 message → 指纹不同 → 409
+        res2 = app.post("/api/chat", json={"session_id": sid, "message": "请暂停机器人", "request_id": "req_diff_pay_01"})
         self.assertEqual(res2.status_code, 409)
+
+        # 不同 session 使用相同 request_id 是独立的，绝不应因为其他 session 的事件返回 409
+        res3 = app.post("/api/chat", json={"session_id": "independent_session_xyz", "message": "立即停止当前任务", "request_id": "req_diff_pay_01"})
+        self.assertIn(res3.status_code, (200,), "不同 session 的相同 request_id 应相互独立")
+
 
     def test_non_control_query_after_stop_does_not_create_control_event(self):
         """11. 停止后发送普通查询，不因为旧 control_state 生成二次控制事件文件"""
@@ -1053,6 +1067,168 @@ class TestControlRequestContract(unittest.TestCase):
         h = load_history("history_TI_COMMITTER_WINS.json")
         self.assertIsNotNone(h)
         self.assertEqual(h["snapshot_version"], 3)
+
+    # --------------------------------------------------------------------------
+    # R7 P0: 主历史文件在 Post-Replace 失败时不丢失
+    # --------------------------------------------------------------------------
+
+    def test_existing_main_history_survives_post_replace_fsync_failure_byte_for_byte(self):
+        """P0-1: 已有主历史快照在 Post-Replace 目录 fsync 失败时，旧内容完整恢复"""
+        history_dir = get_history_dir(create=True)
+        target = history_dir / "history_test_p0_recovery.json"
+
+        old_data = {"snapshot_version": SNAPSHOT_VERSION, "session_id": "sess_old", "phase": "collecting", "saved_at": "2024-01-01T00:00:00"}
+        old_bytes = json.dumps(old_data, ensure_ascii=False, indent=2).encode("utf-8")
+        target.write_bytes(old_bytes)
+
+        new_data = {"snapshot_version": SNAPSHOT_VERSION, "session_id": "sess_new", "phase": "done", "saved_at": "2024-01-02T00:00:00"}
+        expected_hash = _canonical_payload_hash(new_data)
+
+        call_count = [0]
+        orig_open = os.open
+        def mock_os_open(path, flags, mode=0o777):
+            fd = orig_open(path, flags, mode)
+            path_str = str(path)
+            if os.path.isdir(path_str):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise OSError("Injected dir fsync failure")
+            return fd
+
+        with patch("os.open", side_effect=mock_os_open):
+            with self.assertRaises((ControlAuditPersistenceError, RuntimeError, OSError)):
+                _replace_main_snapshot_with_recovery(target, new_data, expected_hash)
+
+        # 旧内容应被完整恢复
+        recovered_bytes = target.read_bytes()
+        self.assertEqual(recovered_bytes, old_bytes, "旧历史文件内容应完整恢复")
+
+    def test_main_history_never_unlinked_on_failure(self):
+        """P0-2: 主历史文件在任何失败路径下绝不被 unlink"""
+        history_dir = get_history_dir(create=True)
+        target = history_dir / "history_test_p0_no_unlink.json"
+
+        old_data = {"snapshot_version": SNAPSHOT_VERSION, "session_id": "no_unlink_sess", "phase": "collecting"}
+        target.write_bytes(json.dumps(old_data).encode("utf-8"))
+
+        new_data = {"snapshot_version": SNAPSHOT_VERSION, "session_id": "no_unlink_sess", "phase": "done"}
+        expected_hash = _canonical_payload_hash(new_data)
+
+        orig_os_open = os.open
+        call_count = [0]
+        def always_fail_dir_fsync(path, flags, mode=0o777):
+            fd = orig_os_open(path, flags, mode)
+            if os.path.isdir(str(path)):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise OSError("Always fail dir fsync")
+            return fd
+
+        with patch("os.open", side_effect=always_fail_dir_fsync):
+            try:
+                _replace_main_snapshot_with_recovery(target, new_data, expected_hash)
+            except Exception:
+                pass
+
+        # 目标文件必须存在（不应被 unlink）
+        self.assertTrue(target.exists(), "主历史文件必须存在，不应被 unlink")
+
+    # --------------------------------------------------------------------------
+    # R7 P1: done 任务仍然保存历史快照
+    # --------------------------------------------------------------------------
+
+    def test_done_history_can_be_saved_and_loaded(self):
+        """P1-1: done 任务的历史快照可以保存并加载恢复"""
+        save_conversation(
+            session_id="sess_done_restore",
+            conversation_history=[{"role": "user", "content": "test"}],
+            task_state={"task_type_key": "pipeline_inspection"},
+            built_json={"task_id": "PI_RESTORE_001"},
+            mode="normal",
+            phase="done",
+            intent_id="PI_RESTORE_001",
+            request_id=None,
+        )
+        h = load_history("history_PI_RESTORE_001.json")
+        self.assertIsNotNone(h, "done 快照应可成功加载")
+        self.assertEqual(h["phase"], "done")
+        self.assertEqual(h["snapshot_version"], SNAPSHOT_VERSION)
+
+    # --------------------------------------------------------------------------
+    # R7 P1: request_id 格式校验
+    # --------------------------------------------------------------------------
+
+    def test_request_id_glob_characters_are_rejected(self):
+        """P1-2: request_id 包含 glob 元字符时应拒绝 ValueError"""
+        invalid_ids = ["req_*", "req_[abc]", "req_?", "*", "?", "[abc]"]
+        for rid in invalid_ids:
+            with self.assertRaises(ValueError, msg=f"应拒绝 glob 元字符 request_id: {rid!r}"):
+                _safe_request_id(rid)
+
+    def test_request_id_path_traversal_is_rejected(self):
+        """P1-3: request_id 包含路径穿越时应拒绝 ValueError"""
+        invalid_ids = ["../evil", "/etc/passwd"]
+        for rid in invalid_ids:
+            with self.assertRaises(ValueError, msg=f"应拒绝路径穿越 request_id: {rid!r}"):
+                _safe_request_id(rid)
+
+    def test_same_request_id_different_sessions_are_independent(self):
+        """P1-4: 不同 session 使用相同 request_id 是完全独立的，不产生冲突"""
+        app = web_backend.app.test_client()
+
+        # Session A 首先发送控制请求
+        app.post("/api/chat", json={"session_id": "sess_ind_A", "message": "创建一个管缆巡检任务，水深300米"})
+        resA = app.post("/api/chat", json={"session_id": "sess_ind_A", "message": "立即停止", "request_id": "shared_req_001"})
+        self.assertEqual(resA.status_code, 200)
+
+        # Session B 使用相同 request_id，应完全独立
+        app.post("/api/chat", json={"session_id": "sess_ind_B", "message": "创建一个管缆巡检任务，水深300米"})
+        resB = app.post("/api/chat", json={"session_id": "sess_ind_B", "message": "立即停止", "request_id": "shared_req_001"})
+        self.assertIn(resB.status_code, (200,), "Session B 应独立于 Session A，相同 request_id 不应 409")
+
+    # --------------------------------------------------------------------------
+    # R7 P1: 控制事件写后完整 canonical hash 校验
+    # --------------------------------------------------------------------------
+
+    def test_control_readback_rejects_wrong_content_by_hash(self):
+        """P1-5: 控制事件 readback 内容 hash 不匹配时抛出 ControlAuditPersistenceError"""
+        history_dir = get_history_dir(create=True)
+        target = history_dir / "control_test_hash_check_req_hash_01.json"
+        if target.exists():
+            target.unlink()
+
+        audit_data = {
+            "event_type": "control_audit_event",
+            "session_id": "sess_hash",
+            "request_id": "req_hash_01",
+            "action": "stop",
+            "request_fingerprint": "fp_abc",
+            "snapshot_version": SNAPSHOT_VERSION,
+        }
+        expected_hash = _canonical_payload_hash(audit_data)
+
+        with patch("json.load", return_value={"different": "data", "request_fingerprint": "fp_abc"}):
+            with self.assertRaises((ControlAuditPersistenceError, ControlAuditCommitUncertainError, RuntimeError)):
+                _create_control_event_no_overwrite(target, audit_data, expected_hash)
+
+    def test_main_history_readback_rejects_wrong_content_and_recovers(self):
+        """P1-6: 主历史快照 readback 内容 hash 不匹配时抛出错误且恢复旧内容"""
+        history_dir = get_history_dir(create=True)
+        target = history_dir / "history_test_hash_main.json"
+
+        old_data = {"snapshot_version": SNAPSHOT_VERSION, "session_id": "sess_hash_main", "phase": "collecting"}
+        target.write_bytes(json.dumps(old_data).encode("utf-8"))
+
+        new_data = {"snapshot_version": SNAPSHOT_VERSION, "session_id": "sess_hash_main", "phase": "done"}
+        expected_hash = _canonical_payload_hash(new_data)
+
+        with patch("json.load", return_value={"snapshot_version": SNAPSHOT_VERSION, "session_id": "CORRUPTED"}):
+            with self.assertRaises((ControlAuditPersistenceError, ControlAuditCommitUncertainError, RuntimeError)):
+                _replace_main_snapshot_with_recovery(target, new_data, expected_hash)
+
+        # 旧内容应被恢复
+        recovered = json.loads(target.read_bytes())
+        self.assertEqual(recovered.get("phase"), "collecting", "旧内容应被恢复")
 
 
 if __name__ == "__main__":

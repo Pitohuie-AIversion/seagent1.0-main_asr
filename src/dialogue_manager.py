@@ -69,8 +69,9 @@ from .task_request_guard import analyze_task_request
 from .result_paths import get_task_dir, get_history_dir
 from .history_manager import (
     compute_request_fingerprint,
-    _is_snapshot_equal,
-    _safe_filename_component,
+    load_control_event,
+    get_control_event_path,
+    _safe_request_id,
 )
 
 
@@ -81,6 +82,7 @@ class ProcessOutcome:
     control_action: Optional[str]
     draft_cancelled: bool
     request_id: str
+    history_snapshot_required: bool = False
     control_event_data: Optional[Dict[str, Any]] = None
     is_retry: bool = False
 
@@ -355,29 +357,19 @@ class DialogueManager:
     # 主入口
     # --------------------------------------------------------------------------
 
-    def _find_existing_control_event(self, request_id: str) -> Optional[Dict[str, Any]]:
-        """在锁内检查历史控制事件文件。"""
+    def _find_existing_control_event(
+        self,
+        request_id: str,
+        session_id: str = "default_session",
+    ) -> Optional[Dict[str, Any]]:
+        """在锁内使用精确路径（(session_id, request_id) 作用域）检查控制事件文件，不使用 glob。"""
         if not request_id:
             return None
         history_dir = get_history_dir(create=False)
         if not history_dir.exists():
             return None
-
-        try:
-            safe_req_id = _safe_filename_component(request_id, "request_id")
-            for filepath in history_dir.glob(f"control_*_{safe_req_id}.json"):
-                if filepath.name.startswith(".tmp_"):
-                    continue
-                try:
-                    with open(filepath, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    if isinstance(data, dict):
-                        return data
-                except Exception as e:
-                    logger.warning("Failed to load control event file %s: %s", filepath.name, e)
-        except ValueError:
-            pass
-        return None
+        intent_id = self.task_state.get("intent_id") if isinstance(self.task_state, dict) else None
+        return load_control_event(history_dir, session_id, request_id, intent_id)
 
     def process(self, user_message: str, request_id: str = "req_default") -> str:
         with self._session_lock:
@@ -391,21 +383,26 @@ class DialogueManager:
         persist_callback: Optional[Callable[["DialogueManager", ProcessOutcome, Dict[str, Any]], None]] = None,
     ) -> ProcessOutcome:
         """同一 Session 锁内的全流程控制事务：
-        1. 状态机执行前去重与指纹校验
+        1. 状态机执行前精确路径去重（不使用 glob，(session_id, request_id) 作用域）
         2. 导出锁内 pre-state
         3. 调用 process 处理
-        4. 构造 ProcessOutcome 结构化事务结果
+        4. 构造 ProcessOutcome（分别标记 control_event_required 和 history_snapshot_required）
         5. 调用 persist_callback 并由异常捕获保护回滚
         """
         with self._session_lock:
             self.session_id = session_id
 
-            # 1. 状态机执行前完成 Request ID 去重与指纹判重
-            existing_event = self._find_existing_control_event(request_id)
+            # 1. 状态机执行前：精确路径 request ID 去重
+            try:
+                _safe_request_id(request_id)  # 严格白名单校验，失败时直接返回 400-like ValueError
+            except ValueError:
+                raise ControlAuditConflictError(f"Invalid request_id format: {request_id!r}")
+
+            existing_event = self._find_existing_control_event(request_id, session_id)
             if existing_event:
                 existing_fp = existing_event.get("request_fingerprint")
                 current_task_id = self._last_built_json.get("task_id") if isinstance(self._last_built_json, dict) else None
-                current_intent_id = self.task_state.get("intent_id")
+                current_intent_id = self.task_state.get("intent_id") if isinstance(self.task_state, dict) else None
                 eff_action = existing_event.get("action")
 
                 incoming_fp = compute_request_fingerprint(
@@ -417,11 +414,7 @@ class DialogueManager:
                     intent_id=current_intent_id,
                 )
 
-                is_same_fp = (existing_fp and existing_fp == incoming_fp)
-                if not is_same_fp and not existing_fp:
-                    is_same_fp = _is_snapshot_equal(existing_event, {"session_id": session_id, "user_message": user_message}, is_control_event=True)
-
-                if is_same_fp:
+                if existing_fp and existing_fp == incoming_fp:
                     saved_reply = existing_event.get("reply") or (existing_event.get("snapshot") or {}).get("reply", "控制请求已处理。")
                     action = existing_event.get("action")
                     return ProcessOutcome(
@@ -430,11 +423,14 @@ class DialogueManager:
                         control_action=action,
                         draft_cancelled=(existing_event.get("event_type") == "draft_cancel_event"),
                         request_id=request_id,
+                        history_snapshot_required=False,
                         control_event_data=existing_event,
                         is_retry=True,
                     )
                 else:
-                    raise ControlAuditConflictError(f"Control audit event {request_id} already exists with conflicting request fingerprint or payload")
+                    raise ControlAuditConflictError(
+                        f"Control audit event {request_id} already exists for session {session_id} with conflicting fingerprint"
+                    )
 
             # 2. 锁内捕获 pre-state
             before_state = self._export_runtime_state()
@@ -444,19 +440,29 @@ class DialogueManager:
             try:
                 reply = self.process(user_message, request_id=request_id)
 
-                # is_control_transition: 只有 control_state 发生了真实变更才算控制事件转换
-                # 普通问答前后 control_state 都是 idle，不应生成控制事件文件
+                # 控制事件：control_state 真实变更，或草稿取消
                 is_control_transition = (self.control_state != pre_control_state)
-                is_draft_cancellation = (pre_phase in ("collecting", "confirming", "blocked_soft", "blocked_hard") and self.phase == "rejected")
-                requires_audit_save = (is_control_transition or is_draft_cancellation)
+                is_draft_cancellation = (
+                    pre_phase in ("collecting", "confirming", "blocked_soft", "blocked_hard")
+                    and self.phase == "rejected"
+                )
+                requires_control_audit = is_control_transition or is_draft_cancellation
+
+                # 主历史快照：普通任务完成（phase = done），或任何非控制的状态变更
+                requires_history_snapshot = (
+                    self.phase == "done"
+                    or (self.phase != pre_phase and not requires_control_audit)
+                )
+
                 control_action = self.last_control_request.get("action") if isinstance(self.last_control_request, dict) else None
 
                 outcome = ProcessOutcome(
                     reply=reply,
-                    control_event_created=requires_audit_save and (request_id is not None),
+                    control_event_created=requires_control_audit,
                     control_action=control_action,
                     draft_cancelled=is_draft_cancellation,
                     request_id=request_id,
+                    history_snapshot_required=requires_history_snapshot,
                 )
 
                 if persist_callback:
@@ -466,6 +472,7 @@ class DialogueManager:
             except Exception:
                 self._restore_runtime_state(before_state)
                 raise
+
 
     def _handle_non_task_route(self, user_message: str, route: IntentRouteResult, request_id: str) -> str:
         # 1. 记录前置快照镜像（用于严格的只读状态不变性断言）
