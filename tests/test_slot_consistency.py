@@ -151,6 +151,12 @@ class SlotConsistencyTest(unittest.TestCase):
         cls.llm.generate.return_value = "已接收到您的任务输入"
         cls.llm.filter_reply.side_effect = lambda text, *args, **kwargs: text if isinstance(text, str) else "已接收到您的任务输入"
         cls.llm.extract_json.return_value = {"intent": "TASK_UPDATE", "confidence": 1.0, "reason": "test", "slot_candidates": [], "unresolved": []}
+        cls.llm.classify_interaction.return_value = {
+            "dialogue_mode": "task_collection",
+            "interaction_type": "WRITE",
+            "confidence": 0.95,
+            "reason": "mock classifier",
+        }
         app.testing = True
         web_backend.init_manager(DialogueManager(cls.llm, cls.kb))
 
@@ -1015,6 +1021,14 @@ class SlotConsistencyTest(unittest.TestCase):
             "elapsed_ms": 10.0,
             "segments": []
         }
+        web_backend._shared_llm = MagicMock()
+        web_backend._shared_router = None
+        web_backend._shared_llm.classify_interaction.return_value = {
+            "dialogue_mode": "task_collection",
+            "interaction_type": "WRITE",
+            "confidence": 0.95,
+            "reason": "test_28",
+        }
         web_backend._shared_llm.extract_json.return_value = {
             "intent": "TASK_CREATE",
             "confidence": 0.9,
@@ -1024,6 +1038,8 @@ class SlotConsistencyTest(unittest.TestCase):
             ],
             "unresolved": []
         }
+        web_backend._shared_llm.chat.return_value = "模拟 LLM 回复"
+        web_backend._shared_llm.filter_reply.side_effect = lambda t: str(t) if t is not None else ""
 
 
 
@@ -1108,7 +1124,8 @@ class SlotConsistencyTest(unittest.TestCase):
                     built_json=self.dm.slot_store.get_built_json(),
                     mode=self.dm.mode,
                     phase=self.dm.phase,
-                    slot_store=self.dm.slot_store.export_snapshot()
+                    slot_store=self.dm.slot_store.export_snapshot(),
+                    parent_revision=0,
                 )
 
                 res = self.client.post("/api/history/load", json={"history_id": filename, "session_id": "sess_ui_target"})

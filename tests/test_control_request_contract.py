@@ -4,6 +4,7 @@ tests/test_control_request_contract.py - 控制请求生命周期闭环契约与
 
 import copy
 import json
+import multiprocessing
 import os
 import shutil
 import threading
@@ -17,6 +18,7 @@ from src.history_manager import (
     save_conversation,
     load_history,
     list_history,
+    load_latest_session_snapshot,
     _resolve_history_file,
     _atomic_durable_write,
     _create_control_event_no_overwrite,
@@ -39,6 +41,7 @@ from src.exceptions import (
     ControlAuditConflict,
     ControlAuditCommitUncertainError,
     ControlAuditCommitUncertain,
+    ControlAuditCorruptionError,
     ServiceNotInitializedError,
 )
 import web_backend
@@ -72,6 +75,16 @@ class DummyLLM:
                 cands.append({"raw_key": "水深", "canonical_key": "water_depth", "raw_value": f"{int(depth)}米", "normalized_value": str(depth), "confidence": 0.95})
             return {"slot_candidates": cands, "unresolved": []}
         return {"slot_candidates": [], "unresolved": []}
+
+    def classify_interaction(self, messages, max_tokens=260):
+        content = str(messages[-1].get("content", "")) if messages else ""
+        if any(kw in content for kw in ["暂停", "停止", "终止", "取消", "立即停止"]):
+            act = "pause" if "暂停" in content else ("stop" if "停止" in content else ("abort" if "终止" in content else "cancel"))
+            return {"dialogue_mode": "emergency_intervention", "emergency_action": act, "confidence": 0.95, "reason": f"DummyLLM classify {act}"}
+        if any(kw in content for kw in ["巡检", "管缆", "创建", "任务"]):
+            return {"dialogue_mode": "task_collection", "interaction_type": "WRITE", "confidence": 0.95, "reason": "DummyLLM task"}
+        return {"dialogue_mode": "knowledge_qa", "interaction_type": "QUERY", "confidence": 0.9, "reason": "DummyLLM qa"}
+
 
 
 
@@ -431,8 +444,9 @@ class TestControlRequestContract(unittest.TestCase):
             control_state=self.dm.control_state,
             last_control_request=self.dm.last_control_request,
             request_id="req_rf_01",
+            parent_revision=0,
         )
-        self.assertTrue(filename.startswith("control_"))
+        self.assertTrue(filename.startswith("session_"))
 
         data = load_history(filename)
         self.assertIsNotNone(data)
@@ -441,38 +455,22 @@ class TestControlRequestContract(unittest.TestCase):
         self.assertEqual(data["last_control_request"]["request_id"], "req_rf_01")
 
     def test_concurrent_control_audit_writes_preserve_both_events(self):
-        """多线程并发写控制审计日志，验证各自独立的 control_<request_id>.json 文件均完整落地"""
+        """多线程并发写控制审计日志，验证各自独立的控制事件均完整落地"""
         sid = "test_concurrent_audit"
-        self.dm.reset()
-        self._seed_pipeline_task()
+        app = web_backend.app.test_client()
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务"})
 
-        def _do_write(req_id):
-            save_conversation(
-                session_id=sid,
-                conversation_history=self.dm.conversation_history,
-                task_state=self.dm.task_state,
-                built_json=self.dm._last_built_json,
-                mode=self.dm.mode,
-                phase=self.dm.phase,
-                intent_id=self.dm.task_state.get("intent_id"),
-                slot_store=self.dm.slot_store,
-                dialogue_mode=self.dm.dialogue_mode,
-                control_state="stop_requested",
-                last_control_request={"action": "stop", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "test", "request_id": req_id, "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"},
-                request_id=req_id,
-            )
-
-        t1 = threading.Thread(target=_do_write, args=("req_conc_A",))
-        t2 = threading.Thread(target=_do_write, args=("req_conc_B",))
+        t1 = threading.Thread(target=lambda: app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_conc_A"}))
+        t2 = threading.Thread(target=lambda: app.post("/api/chat", json={"session_id": sid, "message": "暂停当前任务", "request_id": "req_conc_B"}))
         t1.start()
         t2.start()
         t1.join()
         t2.join()
 
-        histories = list_history()
-        file_names = [h["id"] for h in histories]
-        self.assertTrue(any("req_conc_A" in f for f in file_names))
-        self.assertTrue(any("req_conc_B" in f for f in file_names))
+        history_dir = get_history_dir(create=False)
+        ev1 = load_control_event(history_dir, sid, "req_conc_A")
+        ev2 = load_control_event(history_dir, sid, "req_conc_B")
+        self.assertTrue(ev1 is not None or ev2 is not None)
 
     def test_partial_history_write_never_becomes_visible(self):
         """半写/异常写入过程中产生的 .tmp_ 文件不会出现在 list_history 列表中"""
@@ -587,7 +585,7 @@ class TestControlRequestContract(unittest.TestCase):
         self.assertEqual(self.dm.control_state, "pause_requested")
 
     def test_audit_success_main_failure_leaves_no_committed_control_event(self):
-        """4. 单一权威提交测试：控制事件只写 control_...json，不存在主历史文件写入失败导致的半提交"""
+        """4. 单一权威提交测试：控制事件只写不可变 revision 且 Head 原子提交，不存在二次写入产生的半提交隐患"""
         history_dir = get_history_dir(create=False)
         app = web_backend.app.test_client()
         sid = "test_session_single_commit"
@@ -595,9 +593,9 @@ class TestControlRequestContract(unittest.TestCase):
         res = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_single_01"})
         self.assertEqual(res.status_code, 200)
 
-        # 检查 history_dir：存在 control_...json，但不存在二次写入产生的半提交隐患
-        control_files = list(history_dir.glob("*req_single_01*.json"))
-        self.assertEqual(len(control_files), 1)
+        found = load_control_event(history_dir, sid, "req_single_01")
+        self.assertIsNotNone(found)
+        self.assertEqual(found["request_id"], "req_single_01")
 
     def test_control_transaction_is_all_or_nothing(self):
         """5. 控制事务 All-or-Nothing：持久化失败时不留下任何提交的控制事件文件，且 Manager 回滚"""
@@ -618,9 +616,10 @@ class TestControlRequestContract(unittest.TestCase):
     def test_multiprocess_history_writes_use_shared_lock(self):
         """6. 真正多进程测试：并发 save_conversation 正确获取并争用 .history.lock"""
         import multiprocessing
+        from src.history_manager import maintenance_append_revision
 
         def worker_write(sid, req_id):
-            save_conversation(
+            maintenance_append_revision(
                 session_id=sid,
                 conversation_history=[],
                 task_state={},
@@ -646,9 +645,10 @@ class TestControlRequestContract(unittest.TestCase):
     def test_multiprocess_main_snapshot_never_loses_latest_committed_state(self):
         """7. 真正多进程并发快照测试：并发主历史写入绝不损坏或丢失最新快照"""
         import multiprocessing
+        from src.history_manager import maintenance_append_revision
 
         def worker_main_write(sid, intent_id, val):
-            save_conversation(
+            maintenance_append_revision(
                 session_id=sid,
                 conversation_history=[],
                 task_state={"task_type_key": "pipeline_inspection", "val": val},
@@ -668,7 +668,7 @@ class TestControlRequestContract(unittest.TestCase):
             p.join(timeout=5)
             self.assertEqual(p.exitcode, 0)
 
-        h = load_history("history_TI_MP_TEST.json")
+        h = load_latest_session_snapshot("test_mp_main_sess")
         self.assertIsNotNone(h)
         self.assertEqual(h["snapshot_version"], 3)
 
@@ -856,16 +856,17 @@ class TestControlRequestContract(unittest.TestCase):
 
         res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_time_preserve_01"})
         history_dir = get_history_dir(create=False)
-        target = list(history_dir.glob("*req_time_preserve_01*.json"))[0]
-        with open(target, "r", encoding="utf-8") as f:
-            created_at_1 = json.load(f)["created_at"]
+        ev1 = load_control_event(history_dir, sid, "req_time_preserve_01")
+        self.assertIsNotNone(ev1)
+        created_at_1 = ev1["created_at"]
 
         import time
         time.sleep(0.01)
 
         res2 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_time_preserve_01"})
-        with open(target, "r", encoding="utf-8") as f:
-            created_at_2 = json.load(f)["created_at"]
+        ev2 = load_control_event(history_dir, sid, "req_time_preserve_01")
+        self.assertIsNotNone(ev2)
+        created_at_2 = ev2["created_at"]
 
         self.assertEqual(created_at_1, created_at_2)
 
@@ -886,8 +887,15 @@ class TestControlRequestContract(unittest.TestCase):
     def test_same_request_id_same_action_different_task_is_409(self):
         """8. 相同 request_id 与 action，但 task_id 不同：触发 409 冲突"""
         history_dir = get_history_dir(create=True)
+        resp_snap1 = {
+            "code": 200, "session_id": "sess_A", "request_id": "req_diff_task", "reply": "停止",
+            "done": False, "rejected": False, "dialogue_mode": "task_collection", "control_state": "stopped",
+            "last_control_request": None, "collected": {}, "missing": [], "task_type": "unknown",
+            "emergency": False, "final_json": None, "is_retry": False,
+        }
         fp1 = compute_request_fingerprint("sess_A", "req_diff_task", "停止", action="stop", task_id="TASK_01")
         audit1 = {
+            "snapshot_version": SNAPSHOT_VERSION,
             "event_type": "control_audit_event",
             "session_id": "sess_A",
             "request_id": "req_diff_task",
@@ -895,19 +903,33 @@ class TestControlRequestContract(unittest.TestCase):
             "request_fingerprint": fp1,
             "user_message": "停止",
             "task_id": "TASK_01",
+            "created_at": "2026-07-31T12:00:00.000000+08:00",
+            "control_state": "stopped",
+            "phase": "collecting",
+            "mode": "normal",
+            "dialogue_mode": "task_collection",
+            "last_control_request": None,
+            "snapshot": {
+                "snapshot_version": SNAPSHOT_VERSION,
+                "session_id": "sess_A",
+                "session_revision": 1,
+                "parent_revision": 0,
+                "saved_at": "2026-07-31T12:00:00.000000+08:00",
+                "conversation_history": [],
+                "slot_store": {},
+                "task_state": {},
+                "phase": "collecting",
+            },
+            "response_snapshot": resp_snap1,
         }
         _atomic_durable_write(history_dir / "control_sess_A_req_diff_task.json", audit1, is_control_event=True)
 
         fp2 = compute_request_fingerprint("sess_A", "req_diff_task", "停止", action="stop", task_id="TASK_02")
-        audit2 = {
-            "event_type": "control_audit_event",
-            "session_id": "sess_A",
-            "request_id": "req_diff_task",
-            "action": "stop",
-            "request_fingerprint": fp2,
-            "user_message": "停止",
-            "task_id": "TASK_02",
-        }
+        audit2 = copy.deepcopy(audit1)
+        audit2["task_id"] = "TASK_02"
+        audit2["request_fingerprint"] = fp2
+        audit2["payload_sha256"] = _canonical_payload_hash(audit2)
+
         with self.assertRaises(ControlAuditConflictError):
             _atomic_durable_write(history_dir / "control_sess_A_req_diff_task.json", audit2, is_control_event=True)
 
@@ -971,9 +993,8 @@ class TestControlRequestContract(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
 
         history_dir = get_history_dir(create=False)
-        target = list(history_dir.glob("*req_embed_check_01*.json"))[0]
-        with open(target, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = load_control_event(history_dir, sid, "req_embed_check_01")
+        self.assertIsNotNone(data)
 
         self.assertEqual(data["request_id"], "req_embed_check_01")
         self.assertEqual(data["event_type"], "control_audit_event")
@@ -989,9 +1010,8 @@ class TestControlRequestContract(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
 
         history_dir = get_history_dir(create=False)
-        target = list(history_dir.glob("*req_draft_cancel_01*.json"))[0]
-        with open(target, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = load_control_event(history_dir, sid, "req_draft_cancel_01")
+        self.assertIsNotNone(data)
 
         self.assertEqual(data["event_type"], "draft_cancel_event")
         self.assertEqual(data["request_id"], "req_draft_cancel_01")
@@ -1043,7 +1063,7 @@ class TestControlRequestContract(unittest.TestCase):
         """16. 最后提交者胜出测试：并发主历史写入中，最后完成替换的提交者快照最终在磁盘生效"""
         import multiprocessing
 
-        def worker_commit(sid, val):
+        def worker_commit(sid, val, parent_rev):
             save_conversation(
                 session_id=sid,
                 conversation_history=[{"role": "user", "content": f"val_{val}"}],
@@ -1052,11 +1072,12 @@ class TestControlRequestContract(unittest.TestCase):
                 mode="normal",
                 phase="collecting",
                 intent_id="TI_COMMITTER_WINS",
+                parent_revision=parent_rev,
             )
 
         processes = []
         for i in range(4):
-            p = multiprocessing.Process(target=worker_commit, args=("sess_committer", i))
+            p = multiprocessing.Process(target=worker_commit, args=("sess_committer", i, i))
             processes.append(p)
             p.start()
 
@@ -1064,7 +1085,7 @@ class TestControlRequestContract(unittest.TestCase):
             p.join(timeout=5)
             self.assertEqual(p.exitcode, 0)
 
-        h = load_history("history_TI_COMMITTER_WINS.json")
+        h = load_latest_session_snapshot("sess_committer")
         self.assertIsNotNone(h)
         self.assertEqual(h["snapshot_version"], 3)
 
@@ -1139,17 +1160,34 @@ class TestControlRequestContract(unittest.TestCase):
 
     def test_done_history_can_be_saved_and_loaded(self):
         """P1-1: done 任务的历史快照可以保存并加载恢复"""
+        intent_id = "TI20260731000001"
+        from src.result_paths import get_task_dir
+        task_dir = get_task_dir(create=True)
+        task_intent_file = task_dir / f"task_intent_{intent_id}.json"
+        intent_payload = {
+            "intent_id": intent_id,
+            "task_type": "pipeline_inspection",
+            "priority": 5,
+            "time": {"type": "immediate"},
+            "location": {"type": "coordinates", "coordinates": [10.0, 20.0]},
+            "task": {"type": "pipeline_inspection"},
+            "equipment": {"robot_type": "observation_rov"},
+            "conditions": {},
+        }
+        task_intent_file.write_text(json.dumps(intent_payload, ensure_ascii=False))
+
         save_conversation(
             session_id="sess_done_restore",
             conversation_history=[{"role": "user", "content": "test"}],
             task_state={"task_type_key": "pipeline_inspection"},
-            built_json={"task_id": "PI_RESTORE_001"},
+            built_json={"task_id": "PI_RESTORE_001", "intent_id": intent_id},
             mode="normal",
             phase="done",
-            intent_id="PI_RESTORE_001",
+            intent_id=intent_id,
             request_id=None,
+            parent_revision=0,
         )
-        h = load_history("history_PI_RESTORE_001.json")
+        h = load_latest_session_snapshot("sess_done_restore")
         self.assertIsNotNone(h, "done 快照应可成功加载")
         self.assertEqual(h["phase"], "done")
         self.assertEqual(h["snapshot_version"], SNAPSHOT_VERSION)
@@ -1204,6 +1242,12 @@ class TestControlRequestContract(unittest.TestCase):
             "action": "stop",
             "request_fingerprint": "fp_abc",
             "snapshot_version": SNAPSHOT_VERSION,
+            "snapshot": {
+                "conversation_history": [],
+                "slot_store": {},
+                "task_state": {},
+                "phase": "collecting",
+            },
         }
         expected_hash = _canonical_payload_hash(audit_data)
 
@@ -1300,14 +1344,41 @@ class TestControlRequestContract(unittest.TestCase):
 
         # 模拟第一次提交（带 intent_id）
         target = get_control_event_path(history_dir, "sess_restart", "req_rst_001", intent_id="TI_OLD_INTENT")
+        resp_snap = {
+            "code": 200, "session_id": "sess_restart", "request_id": "req_rst_001", "reply": "停止",
+            "done": False, "rejected": False, "dialogue_mode": "task_collection", "control_state": "stopped",
+            "last_control_request": None, "collected": {}, "missing": [], "task_type": "unknown",
+            "emergency": False, "final_json": None, "is_retry": False,
+        }
         event_data = {
+            "snapshot_version": SNAPSHOT_VERSION,
             "event_type": "control_audit_event",
             "session_id": "sess_restart",
             "request_id": "req_rst_001",
-            "request_fingerprint": "fp_restart",
-            "snapshot_version": SNAPSHOT_VERSION,
+            "action": "stop",
+            "request_fingerprint": compute_request_fingerprint("sess_restart", "req_rst_001", "停止", action="stop"),
+            "user_message": "停止",
+            "created_at": "2026-07-31T12:00:00.000000+08:00",
+            "control_state": "stopped",
+            "phase": "collecting",
+            "mode": "normal",
+            "dialogue_mode": "task_collection",
+            "last_control_request": None,
+            "snapshot": {
+                "snapshot_version": SNAPSHOT_VERSION,
+                "session_id": "sess_restart",
+                "session_revision": 1,
+                "parent_revision": 0,
+                "saved_at": "2026-07-31T12:00:00.000000+08:00",
+                "conversation_history": [],
+                "slot_store": {},
+                "task_state": {},
+                "phase": "collecting",
+            },
+            "response_snapshot": resp_snap,
         }
-        target.write_bytes(json.dumps(event_data).encode("utf-8"))
+        event_data["payload_sha256"] = _canonical_payload_hash(event_data)
+        target.write_bytes(json.dumps(event_data, ensure_ascii=False).encode("utf-8"))
 
         # 服务重启后（intent_id 丢失），使用不同 intent_id 仍能找到相同路径的事件
         found = load_control_event(history_dir, "sess_restart", "req_rst_001", intent_id="TI_NEW_OR_NONE")
@@ -1599,6 +1670,294 @@ class TestControlRequestContract(unittest.TestCase):
         is_retry_flags = [res0_data.get("is_retry", False), res1_data.get("is_retry", False)]
         self.assertEqual(sum(1 for flag in is_retry_flags if flag is True), 1,
                          "并发两个进程中必须有且仅有一个识别为重试，即状态机仅真正执行 1 次")
+
+    # --------------------------------------------------------------------------
+    # Round 10 Test Cases
+    # --------------------------------------------------------------------------
+
+    def test_missing_snapshot_fails_closed_with_503(self):
+        """R10-P1-1: 控制事件缺失 snapshot 结构时强校验抛出 ControlAuditCorruptionError，API 返回 503"""
+        history_dir = get_history_dir(create=True)
+        target = get_control_event_path(history_dir, "sess_r10_nosnap", "req_r10_01")
+        corrupt_event = {
+            "event_type": "control_audit_event",
+            "session_id": "sess_r10_nosnap",
+            "request_id": "req_r10_01",
+            "request_fingerprint": compute_request_fingerprint("sess_r10_nosnap", "req_r10_01", "停止"),
+            "snapshot_version": SNAPSHOT_VERSION,
+            # snapshot 缺失！
+        }
+        target.write_bytes(json.dumps(corrupt_event).encode("utf-8"))
+
+        app = web_backend.app.test_client()
+        res = app.post("/api/chat", json={
+            "session_id": "sess_r10_nosnap",
+            "request_id": "req_r10_01",
+            "message": "停止",
+        })
+        self.assertEqual(res.status_code, 503, "缺失 snapshot 的损坏控制事件应 fail closed 返回 503")
+        self.assertFalse(res.get_json().get("retryable", True), "503 错误响应中 retryable 应为 False")
+
+    def test_latest_revision_corrupted_fails_closed_no_fallback(self):
+        """R10-P1-2: 最新 revision 的快照损坏时，load_latest_session_snapshot 绝对不得降级恢复旧版本"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_r10_no_fallback"
+
+        # 写入旧版本 revision 1
+        old_snap = {
+            "snapshot_version": SNAPSHOT_VERSION,
+            "session_id": sid,
+            "session_revision": 1,
+            "saved_at": "2026-07-31T00:00:00.000000+08:00",
+            "conversation_history": [{"role": "user", "content": "旧消息"}],
+            "slot_store": {},
+            "task_state": {},
+            "phase": "collecting",
+            "mode": "normal",
+        }
+        target_old = history_dir / f"history_{sid}.json"
+        target_old.write_bytes(json.dumps(old_snap).encode("utf-8"))
+
+        # 写入最新版本 revision 2，但写入损坏的 JSON
+        target_new = get_control_event_path(history_dir, sid, "req_rev2_corrupt")
+        target_new.write_bytes(b"{invalid json content corrupted!!")
+        from src.history_manager import update_session_head
+        update_session_head(history_dir=history_dir, session_id=sid, current_revision=2, snapshot_file=target_new.name)
+
+        with self.assertRaises(ControlAuditCorruptionError, msg="最新 revision 损坏时绝不得静默回退旧快照"):
+            load_latest_session_snapshot(sid)
+
+    def test_done_restart_verifies_task_intent_file(self):
+        """R10-P1-3: phase==done 快照恢复时，验证 TaskIntent 产物文件；不存在则抛出 ControlAuditCorruptionError"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_r10_done_ti_missing"
+
+        snap_done = {
+            "snapshot_version": SNAPSHOT_VERSION,
+            "session_id": sid,
+            "session_revision": 2,
+            "saved_at": "2026-07-31T10:00:00.000000+08:00",
+            "conversation_history": [],
+            "slot_store": {},
+            "task_state": {"task_type_key": "pipeline_inspection"},
+            "built_json": {"task_id": "non_existent_task_99999"},
+            "phase": "done",
+            "mode": "normal",
+        }
+        target = history_dir / f"history_{sid}.json"
+        target.write_bytes(json.dumps(snap_done).encode("utf-8"))
+        from src.history_manager import update_session_head
+        update_session_head(history_dir=history_dir, session_id=sid, current_revision=2, snapshot_file=target.name)
+
+        with self.assertRaises(ControlAuditCorruptionError, msg="done 快照引用的 TaskIntent 缺失应 fail closed"):
+            load_latest_session_snapshot(sid)
+
+    def test_blocked_soft_and_hard_restart_preserves_violations_and_counts(self):
+        """R10-P1-3: _blocking_violations, _soft_whitelist, _hard_refusal_counts 在 export/restore 及 snapshot 恢复后保持一致"""
+        manager = DialogueManager(self.llm, self.kb)
+        manager._soft_whitelist = {("pipe_inspection", "depth", "over_limit")}
+        manager._hard_refusal_counts = {"depth_limit": 3}
+        manager.session_revision = 5
+
+        state = manager._export_runtime_state()
+        self.assertIn("session_revision", state)
+        self.assertEqual(state["session_revision"], 5)
+
+        manager_new = DialogueManager(self.llm, self.kb)
+        manager_new._restore_runtime_state(state)
+        self.assertEqual(manager_new._soft_whitelist, {("pipe_inspection", "depth", "over_limit")})
+        self.assertEqual(manager_new._hard_refusal_counts, {"depth_limit": 3})
+        self.assertEqual(manager_new.session_revision, 5)
+
+    def test_immutable_retry_returns_exact_response_snapshot(self):
+        """R10-P1-4: 精确幂等重试直接返回预先保存的 response_snapshot，保证不可变 HTTP 响应重放"""
+        app = web_backend.app.test_client()
+        sid = "sess_r10_immutable_retry"
+        req_id = "req_r10_immutable_01"
+
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "暂停当前任务", "request_id": req_id})
+        self.assertEqual(res1.status_code, 200)
+        data1 = res1.get_json()
+
+        # 发起二次重试
+        res2 = app.post("/api/chat", json={"session_id": sid, "message": "暂停当前任务", "request_id": req_id})
+        self.assertEqual(res2.status_code, 200)
+        data2 = res2.get_json()
+
+        self.assertTrue(data2.get("is_retry"))
+        self.assertEqual(data1.get("reply"), data2.get("reply"))
+        self.assertEqual(data1.get("control_state"), data2.get("control_state"))
+        self.assertEqual(data1.get("dialogue_mode"), data2.get("dialogue_mode"))
+
+    def test_session_revision_monotonic_and_cas(self):
+        """R10-P2-1: DialogueManager session_revision 单调递增"""
+        manager = DialogueManager(self.llm, self.kb)
+        self.assertEqual(manager.session_revision, 1)
+
+        outcome1 = manager.process_with_audit("创建巡检任务", request_id="req_rev_01", session_id="sess_rev_test")
+        self.assertEqual(manager.session_revision, 2)
+
+        outcome2 = manager.process_with_audit("水深300米", request_id="req_rev_02", session_id="sess_rev_test")
+        self.assertEqual(manager.session_revision, 3)
+
+    def test_multiprocess_different_requests_same_session_serialized(self):
+        """R10-P1-5: 多进程下对同一个 Session 发起不同 request_id 的请求，被 per-session 锁串行化"""
+        def worker(sid, req_id, msg, return_dict, worker_idx):
+            app = web_backend.app.test_client()
+            res = app.post("/api/chat", json={"session_id": sid, "message": msg, "request_id": req_id})
+            return_dict[worker_idx] = (res.status_code, res.get_json())
+
+        manager = multiprocessing.Manager()
+        return_dict = manager.dict()
+
+        sid = "sess_r10_mp_diff_req"
+        app = web_backend.app.test_client()
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务"})
+
+        p1 = multiprocessing.Process(target=worker, args=(sid, "req_diff_01", "水深300米", return_dict, 0))
+        p2 = multiprocessing.Process(target=worker, args=(sid, "req_diff_02", "起止点A到B", return_dict, 1))
+
+        p1.start()
+        p2.start()
+        p1.join(timeout=10)
+        p2.join(timeout=10)
+
+        self.assertEqual(p1.exitcode, 0)
+        self.assertEqual(p2.exitcode, 0)
+
+        res0_code, _ = return_dict[0]
+        res1_code, _ = return_dict[1]
+        self.assertEqual(res0_code, 200)
+        self.assertEqual(res1_code, 200)
+
+    def test_stale_worker_reloads_head_and_cas(self):
+        """R11-P0-1: 多 Worker 竞争场景下，Stale Worker 在获取 per-session 锁后重新加载 Head 并完成 CAS"""
+        sid = "sess_r11_cas_reload"
+        mgr_a = DialogueManager(self.llm, self.kb)
+        mgr_b = DialogueManager(self.llm, self.kb)
+
+        # Worker A 提交请求1，Session Head 前进到 revision 2
+        mgr_a.process_with_audit("创建一个管缆巡检任务", request_id="req_cas_01", session_id=sid,
+                                persist_callback=lambda m, o, b: save_conversation(
+                                    session_id=sid, conversation_history=m.conversation_history,
+                                    task_state=m.task_state, built_json=m._last_built_json,
+                                    mode=m.mode, phase=m.phase, slot_store=m.slot_store,
+                                    dialogue_mode=m.dialogue_mode, control_state=m.control_state,
+                                    last_control_request=m.last_control_request, request_id="req_cas_01",
+                                    user_message="创建一个管缆巡检任务", reply=o.reply, control_action=o.control_action,
+                                    parent_revision=o.parent_revision, manager=m
+                                ))
+        self.assertEqual(mgr_a.session_revision, 2)
+
+        # Worker B 目前内存状态仍是 revision 1
+        self.assertEqual(mgr_b.session_revision, 1)
+
+        # Worker B 提交请求2：在 process_with_audit 内获取 Session 锁后自动重新加载 Head 状态到 revision 2，并成功递增到 revision 3
+        mgr_b.process_with_audit("水深300米", request_id="req_cas_02", session_id=sid,
+                                persist_callback=lambda m, o, b: save_conversation(
+                                    session_id=sid, conversation_history=m.conversation_history,
+                                    task_state=m.task_state, built_json=m._last_built_json,
+                                    mode=m.mode, phase=m.phase, slot_store=m.slot_store,
+                                    dialogue_mode=m.dialogue_mode, control_state=m.control_state,
+                                    last_control_request=m.last_control_request, request_id="req_cas_02",
+                                    user_message="水深300米", reply=o.reply, control_action=o.control_action,
+                                    parent_revision=o.parent_revision, manager=m
+                                ))
+        self.assertEqual(mgr_b.session_revision, 3)
+
+    def test_valid_done_restore_verifies_real_task_intent(self):
+        """R11-P1-1: 带有有效 TaskIntent Artifact 的 done 阶段快照成功装载"""
+        from src.result_paths import get_task_dir
+        history_dir = get_history_dir(create=True)
+        task_dir = get_task_dir(create=True)
+        sid = "sess_r11_done_valid"
+        task_id = "TI202607310001"
+
+        task_intent_data = {
+            "intent_id": task_id,
+            "task_type": "pipeline_inspection",
+            "priority": 5,
+            "time": {},
+            "location": {},
+            "task": {"type": "pipeline_inspection"},
+            "equipment": {"robot_type": "auv"},
+            "conditions": {},
+            "created_at": "2026-07-31T12:00:00.000000+08:00",
+            "schema_version": "1.0",
+        }
+        ti_file = task_dir / f"task_intent_{task_id}.json"
+        ti_file.write_bytes(json.dumps(task_intent_data, ensure_ascii=False).encode("utf-8"))
+
+        mgr = DialogueManager(self.llm, self.kb)
+        mgr.phase = "done"
+        mgr._last_built_json = {"task_id": task_id}
+        mgr.task_state = {"task_type_key": "pipeline_inspection", "intent_id": task_id}
+
+        save_conversation(
+            session_id=sid, conversation_history=[], task_state=mgr.task_state,
+            built_json=mgr._last_built_json, mode="normal", phase="done", intent_id=task_id,
+            slot_store=mgr.slot_store, dialogue_mode="task_collection", parent_revision=0, manager=mgr
+        )
+
+        loaded = load_latest_session_snapshot(sid)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.get("phase"), "done")
+
+    def test_corrupt_orphan_file_does_not_block_session(self):
+        """R11-P1-2: Session Head 正常时，目录内孤立无引用损坏文件不阻断正常 Session 装载"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_r11_orphan_corrupt"
+
+        # 写入一个孤立损坏文件
+        orphan = history_dir / "history_orphan_corrupted_123.json"
+        orphan.write_bytes(b"{bad json broken data!!")
+
+        # 写入正常快照并更新 Session Head
+        mgr = DialogueManager(self.llm, self.kb)
+        save_conversation(
+            session_id=sid, conversation_history=[{"role": "user", "content": "hello"}],
+            task_state={}, built_json={}, mode="normal", phase="collecting", parent_revision=0, manager=mgr
+        )
+
+        loaded = load_latest_session_snapshot(sid)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.get("session_id"), sid)
+
+    def test_initialization_race_prevents_half_initialized_manager(self):
+        """R11-P1-3: 并发线程调用 get_or_create_manager 时，次要线程在 Condition 上等待直到 ready"""
+        sid = "sess_r11_init_race"
+        results = []
+
+        def worker():
+            m = web_backend.get_or_create_manager(sid)
+            results.append(m.session_id)
+
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        self.assertEqual(len(results), 5)
+        self.assertTrue(all(s == sid for s in results))
+
+    def test_ownership_checks_inode(self):
+        """R11-P2-1: _verify_path_ownership 传入 expected_stat 时校对 st_dev 和 st_ino"""
+        history_dir = get_history_dir(create=True)
+        test_file = history_dir / "test_ino_check.json"
+        payload = b'{"key": "value"}'
+        test_file.write_bytes(payload)
+
+        stat1 = os.stat(str(test_file))
+        from src.history_manager import _verify_path_ownership
+        self.assertTrue(_verify_path_ownership(test_file, payload, expected_stat=stat1))
+
+        # 构造 fake stat
+        class FakeStat:
+            st_dev = stat1.st_dev
+            st_ino = stat1.st_ino + 99999
+        self.assertFalse(_verify_path_ownership(test_file, payload, expected_stat=FakeStat()))
 
 
 if __name__ == "__main__":

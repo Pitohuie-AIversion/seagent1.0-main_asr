@@ -73,6 +73,9 @@ from .history_manager import (
     load_control_event,
     get_control_event_path,
     load_latest_session_snapshot,
+    validate_control_event,
+    read_session_head,
+    _get_session_lock,
     _get_request_lock,
     _safe_request_id,
 )
@@ -88,6 +91,8 @@ class ProcessOutcome:
     history_snapshot_required: bool = False
     control_event_data: Optional[Dict[str, Any]] = None
     is_retry: bool = False
+    response_snapshot: Optional[Dict[str, Any]] = None
+    parent_revision: int = 0
 
 
 import math
@@ -290,6 +295,9 @@ class DialogueManager:
         self._last_built_json: dict = {}
         self._last_missing: list[dict] = []
 
+        # 单调 Session Revision (版本号)
+        self.session_revision: int = 1
+
         # 会话锁（按 session 隔离并发控制）
         self._session_lock = threading.RLock()
 
@@ -313,27 +321,34 @@ class DialogueManager:
             "_hard_refusal_counts": copy.deepcopy(self._hard_refusal_counts),
             "awaiting_final_confirm": self.awaiting_final_confirm,
             "task_start_now": self.task_start_now,
+            "session_revision": self.session_revision,
         }
 
     def _restore_runtime_state(self, state: dict[str, Any]) -> None:
         """从内存快照完全恢复运行时状态（零磁盘与 ID 副作用）。"""
-        self.conversation_history = copy.deepcopy(state["conversation_history"])
-        self.slot_store = SlotStore.from_snapshot(state["slot_store_snapshot"], self.kb)
-        self.task_state = copy.deepcopy(state["task_state"])
-        self._last_built_json = copy.deepcopy(state["_last_built_json"])
-        self._last_missing = copy.deepcopy(state["_last_missing"])
-        self.phase = state["phase"]
-        self.mode = state["mode"]
-        self.dialogue_mode = state["dialogue_mode"]
-        self.control_state = state["control_state"]
-        self.last_control_request = copy.deepcopy(state["last_control_request"])
-        self.final_result = copy.deepcopy(state["final_result"])
-        self._blocking_violations = copy.deepcopy(state["_blocking_violations"])
-        self._soft_whitelist = copy.deepcopy(state["_soft_whitelist"])
-        self._pending_rov_candidates = copy.deepcopy(state["_pending_rov_candidates"])
-        self._hard_refusal_counts = copy.deepcopy(state["_hard_refusal_counts"])
-        self.awaiting_final_confirm = state["awaiting_final_confirm"]
-        self.task_start_now = state["task_start_now"]
+        self.conversation_history = copy.deepcopy(state.get("conversation_history", self.conversation_history))
+        if "slot_store_snapshot" in state:
+            self.slot_store = SlotStore.from_snapshot(state["slot_store_snapshot"], self.kb)
+        self.task_state = copy.deepcopy(state.get("task_state", self.task_state))
+        self._last_built_json = copy.deepcopy(state.get("_last_built_json", self._last_built_json))
+        self._last_missing = copy.deepcopy(state.get("_last_missing", self._last_missing))
+        self.phase = state.get("phase", self.phase)
+        self.mode = state.get("mode", self.mode)
+        self.dialogue_mode = state.get("dialogue_mode", self.dialogue_mode)
+        self.control_state = state.get("control_state", self.control_state)
+        self.last_control_request = copy.deepcopy(state.get("last_control_request", self.last_control_request))
+        self.final_result = copy.deepcopy(state.get("final_result", self.final_result))
+        self._blocking_violations = copy.deepcopy(state.get("_blocking_violations", self._blocking_violations))
+        soft = state.get("_soft_whitelist", set())
+        if isinstance(soft, list):
+            self._soft_whitelist = {tuple(x) if isinstance(x, list) else x for x in soft}
+        else:
+            self._soft_whitelist = copy.deepcopy(soft)
+        self._pending_rov_candidates = copy.deepcopy(state.get("_pending_rov_candidates", self._pending_rov_candidates))
+        self._hard_refusal_counts = copy.deepcopy(state.get("_hard_refusal_counts", self._hard_refusal_counts))
+        self.awaiting_final_confirm = state.get("awaiting_final_confirm", self.awaiting_final_confirm)
+        self.task_start_now = state.get("task_start_now", self.task_start_now)
+        self.session_revision = state.get("session_revision", self.session_revision)
 
     def _switch_dialogue_mode(
         self,
@@ -395,12 +410,20 @@ class DialogueManager:
             return False
 
     def _restore_state_from_snapshot(self, snapshot: Dict[str, Any]) -> None:
-        """从 snapshot 字典恢复 DialogueManager 内存状态。"""
+        """从 snapshot 字典完整恢复 DialogueManager 内存状态。"""
+        raw_soft = snapshot.get("_soft_whitelist") or snapshot.get("soft_whitelist") or []
+        if isinstance(raw_soft, list):
+            soft_set = {tuple(x) if isinstance(x, list) else x for x in raw_soft}
+        elif isinstance(raw_soft, set):
+            soft_set = raw_soft
+        else:
+            soft_set = set()
+
         mem_state = {
             "conversation_history": copy.deepcopy(snapshot.get("conversation_history", self.conversation_history)),
             "slot_store_snapshot": snapshot.get("slot_store", self.slot_store.export_snapshot()),
             "task_state": copy.deepcopy(snapshot.get("task_state", self.task_state)),
-            "_last_built_json": copy.deepcopy(snapshot.get("built_json", self._last_built_json)),
+            "_last_built_json": copy.deepcopy(snapshot.get("_last_built_json") or snapshot.get("built_json", self._last_built_json)),
             "_last_missing": copy.deepcopy(snapshot.get("_last_missing", self._last_missing)),
             "phase": snapshot.get("phase", self.phase),
             "mode": snapshot.get("mode", self.mode),
@@ -409,11 +432,12 @@ class DialogueManager:
             "last_control_request": copy.deepcopy(snapshot.get("last_control_request", self.last_control_request)),
             "final_result": copy.deepcopy(snapshot.get("final_result", self.final_result)),
             "_blocking_violations": copy.deepcopy(snapshot.get("_blocking_violations", self._blocking_violations)),
-            "_soft_whitelist": copy.deepcopy(snapshot.get("_soft_whitelist", self._soft_whitelist)),
+            "_soft_whitelist": soft_set,
             "_pending_rov_candidates": copy.deepcopy(snapshot.get("_pending_rov_candidates", self._pending_rov_candidates)),
             "_hard_refusal_counts": copy.deepcopy(snapshot.get("_hard_refusal_counts", self._hard_refusal_counts)),
             "awaiting_final_confirm": snapshot.get("awaiting_final_confirm", self.awaiting_final_confirm),
             "task_start_now": snapshot.get("task_start_now", self.task_start_now),
+            "session_revision": snapshot.get("session_revision", 0),
         }
         self._restore_runtime_state(mem_state)
 
@@ -434,16 +458,13 @@ class DialogueManager:
         session_id: str = "default_session",
         persist_callback: Optional[Callable[["DialogueManager", ProcessOutcome, Dict[str, Any]], None]] = None,
     ) -> ProcessOutcome:
-        """全流程控制事务（R9 版）：
+        """全流程控制事务（R10 版）：
 
-        1. 校验 request_id 格式
-        2. 获取跨进程 per-request 锁
-        3. 精确查重（fail closed on corruption）
-        4. 幂等重试：返回保存的结果，绝对不修改/覆盖当前 live Manager 内存状态
-        5. 导出 pre-state
-        6. 执行状态机
-        7. 构造 ProcessOutcome
-        8. 提交持久化
+        锁顺序：
+        1. 跨进程 per-session 锁
+        2. 跨进程 per-request 锁
+        3. 线程 session 锁
+        4. 文件 history 锁
         """
         try:
             _safe_request_id(request_id)
@@ -452,97 +473,129 @@ class DialogueManager:
 
         import fcntl as _fcntl
         history_dir = get_history_dir(create=True)
+        sess_lock = _get_session_lock(history_dir, session_id)
         req_lock = _get_request_lock(history_dir, session_id, request_id)
+
         try:
-            _fcntl.flock(req_lock.fileno(), _fcntl.LOCK_EX)
+            # 1. 跨进程 per-session 锁（保证同 session 不同 request 串行执行，防分叉）
+            _fcntl.flock(sess_lock.fileno(), _fcntl.LOCK_EX)
+            try:
+                # 2. 跨进程 per-request 锁（精确请求去重）
+                _fcntl.flock(req_lock.fileno(), _fcntl.LOCK_EX)
 
-            with self._session_lock:
-                self.session_id = session_id
+                with self._session_lock:
+                    self.session_id = session_id
 
-                try:
-                    existing_event = self._find_existing_control_event(request_id, session_id)
-                except ControlAuditCorruptionError:
-                    raise
-
-                if existing_event is not None:
-                    existing_fp = existing_event.get("request_fingerprint")
-                    eff_action = existing_event.get("action")
-
-                    incoming_fp = compute_request_fingerprint(
-                        session_id=session_id,
-                        request_id=request_id,
-                        user_message=user_message,
-                        action=eff_action,
-                    )
-
-                    if existing_fp and existing_fp == incoming_fp:
-                        # 步骤 4：幂等重试 — 直接返回最初保存的结果，绝不覆盖/改写 live Manager 状态！
-                        saved_reply = existing_event.get("reply") or (existing_event.get("snapshot") or {}).get("reply", "控制请求已处理。")
-                        action = existing_event.get("action")
-                        return ProcessOutcome(
-                            reply=saved_reply,
-                            control_event_created=False,
-                            control_action=action,
-                            draft_cancelled=(existing_event.get("event_type") == "draft_cancel_event"),
-                            request_id=request_id,
-                            history_snapshot_required=False,
-                            control_event_data=existing_event,
-                            is_retry=True,
-                        )
+                    # 检查权威磁盘 Session Head 指针：若 Head revision 大于等于本地，防分叉强制重新加载最新磁盘状态！
+                    head_data = read_session_head(history_dir, session_id)
+                    if head_data is not None:
+                        head_rev = head_data["current_revision"]
+                        if head_rev >= self.session_revision or not self.conversation_history:
+                            self.load_session_state(session_id)
+                        expected_parent_rev = self.session_revision
                     else:
-                        raise ControlAuditConflictError(
-                            f"Control audit event for request_id={request_id!r} session={session_id!r} "
-                            f"already exists with conflicting fingerprint"
+                        if not self.conversation_history:
+                            self.session_revision = 1
+                        expected_parent_rev = self.session_revision
+
+                    try:
+                        existing_event = self._find_existing_control_event(request_id, session_id)
+                    except ControlAuditCorruptionError:
+                        raise
+
+                    if existing_event is not None:
+                        validate_control_event(existing_event, expected_session_id=session_id, expected_request_id=request_id)
+                        existing_fp = existing_event.get("request_fingerprint")
+                        eff_action = existing_event.get("action")
+
+                        incoming_fp = compute_request_fingerprint(
+                            session_id=session_id,
+                            request_id=request_id,
+                            user_message=user_message,
+                            action=eff_action,
                         )
 
-                # 步骤 5：导出 pre-state
-                before_state = self._export_runtime_state()
-                pre_control_state = before_state["control_state"]
-                pre_phase = before_state["phase"]
+                        if existing_fp and existing_fp == incoming_fp:
+                            resp_snap = existing_event.get("response_snapshot")
+                            if isinstance(resp_snap, dict):
+                                resp_snap = copy.deepcopy(resp_snap)
+                                resp_snap["is_retry"] = True
+                            else:
+                                raise ControlAuditCorruptionError("Control event missing valid response_snapshot")
 
+                            return ProcessOutcome(
+                                reply=resp_snap.get("reply", ""),
+                                control_event_created=False,
+                                control_action=existing_event.get("action"),
+                                draft_cancelled=(existing_event.get("event_type") == "draft_cancel_event"),
+                                request_id=request_id,
+                                history_snapshot_required=False,
+                                control_event_data=existing_event,
+                                is_retry=True,
+                                response_snapshot=resp_snap,
+                            )
+                        else:
+                            raise ControlAuditConflictError(
+                                f"Control audit event for request_id={request_id!r} session={session_id!r} "
+                                f"already exists with conflicting fingerprint"
+                            )
+
+                    # 导出 pre-state
+                    before_state = self._export_runtime_state()
+                    pre_control_state = before_state["control_state"]
+                    pre_phase = before_state["phase"]
+
+                    try:
+                        self.session_revision = expected_parent_rev + 1
+                        reply = self.process(user_message, request_id=request_id)
+
+                        after_state = self._export_runtime_state()
+                        state_changed = (after_state != before_state) or (bool(user_message))
+
+                        is_control_transition = (self.control_state != pre_control_state)
+                        is_draft_cancellation = (
+                            pre_phase in ("collecting", "confirming", "blocked_soft", "blocked_hard")
+                            and self.phase == "rejected"
+                        )
+                        requires_control_audit = is_control_transition or is_draft_cancellation
+
+                        requires_history_snapshot = state_changed and not requires_control_audit
+
+                        control_action = self.last_control_request.get("action") if isinstance(self.last_control_request, dict) else None
+
+                        outcome = ProcessOutcome(
+                            reply=reply,
+                            control_event_created=requires_control_audit,
+                            control_action=control_action,
+                            draft_cancelled=is_draft_cancellation,
+                            request_id=request_id,
+                            history_snapshot_required=requires_history_snapshot,
+                            parent_revision=expected_parent_rev,
+                        )
+
+                        if persist_callback:
+                            persist_callback(self, outcome, before_state)
+
+                        return outcome
+                    except Exception:
+                        self._restore_runtime_state(before_state)
+                        raise
+            finally:
                 try:
-                    # 步骤 6：执行状态机（在 per-request 锁内）
-                    reply = self.process(user_message, request_id=request_id)
-
-                    # 步骤 7：构造 ProcessOutcome
-                    is_control_transition = (self.control_state != pre_control_state)
-                    is_draft_cancellation = (
-                        pre_phase in ("collecting", "confirming", "blocked_soft", "blocked_hard")
-                        and self.phase == "rejected"
-                    )
-                    requires_control_audit = is_control_transition or is_draft_cancellation
-
-                    # P0 修复：主历史快照只在"普通 done 且无控制事件"时写入。
-                    # 控制事件文件已包含完整 snapshot，是控制请求的单一权威提交。
-                    # 控制事件成功 + 主历史失败 不再形成半提交。
-                    requires_history_snapshot = (
-                        self.phase == "done"
-                        and not requires_control_audit
-                    )
-
-                    control_action = self.last_control_request.get("action") if isinstance(self.last_control_request, dict) else None
-
-                    outcome = ProcessOutcome(
-                        reply=reply,
-                        control_event_created=requires_control_audit,
-                        control_action=control_action,
-                        draft_cancelled=is_draft_cancellation,
-                        request_id=request_id,
-                        history_snapshot_required=requires_history_snapshot,
-                    )
-
-                    # 步骤 8：persist_callback（在 per-request 锁和 session 锁内）
-                    if persist_callback:
-                        persist_callback(self, outcome, before_state)
-
-                    return outcome
+                    _fcntl.flock(req_lock.fileno(), _fcntl.LOCK_UN)
                 except Exception:
-                    # 步骤 9：任何异常（含持久化失败）→ 回滚 Manager 内存状态
-                    self._restore_runtime_state(before_state)
-                    raise
+                    pass
+                try:
+                    req_lock.close()
+                except Exception:
+                    pass
         finally:
             try:
-                _fcntl.flock(req_lock.fileno(), _fcntl.LOCK_UN)
+                _fcntl.flock(sess_lock.fileno(), _fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                sess_lock.close()
             except Exception:
                 pass
             try:

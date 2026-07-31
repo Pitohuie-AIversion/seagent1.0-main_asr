@@ -11,6 +11,7 @@ import uuid
 import yaml
 
 import logging
+from typing import Dict, Any, List, Optional
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template
 from datetime import datetime
@@ -59,16 +60,60 @@ def init_asr_service(asr_service):
     global _shared_asr
     _shared_asr = asr_service
 
+class SessionManagerEntry:
+    """按 session 隔离的 Manager 初始化状态与并发排队对象"""
+    def __init__(self):
+        self.state = "initializing"  # "initializing", "ready", "failed"
+        self.manager: Optional[DialogueManager] = None
+        self.lock = threading.Lock()
+        self.cond = threading.Condition(self.lock)
+
+_sessions_entries: Dict[str, SessionManagerEntry] = {}
+_sessions_manager: Dict[str, DialogueManager] = {}
+
+
 def get_or_create_manager(sid: str) -> DialogueManager:
-    """获取或创建会话专属的 DialogueManager 实例（若新建则自动恢复最新 Session 状态）"""
+    """获取或创建会话专属的 DialogueManager 实例（并发安全，防止暴露半初始化对象）"""
     with _sessions_lock:
         if _shared_llm is None or _shared_kb is None:
             raise ServiceNotInitializedError("后端 AI 服务未初始化 (LLMClient 或 KnowledgeBase 未加载)")
-        if sid not in _sessions_manager:
+
+        if sid not in _sessions_entries:
+            entry = SessionManagerEntry()
+            _sessions_entries[sid] = entry
+            must_init = True
+        else:
+            entry = _sessions_entries[sid]
+            must_init = False
+
+    if must_init:
+        try:
             mgr = DialogueManager(_shared_llm, _shared_kb)
+            mgr.session_id = sid
             mgr.load_session_state(sid)
-            _sessions_manager[sid] = mgr
-        return _sessions_manager[sid]
+            with entry.lock:
+                entry.manager = mgr
+                entry.state = "ready"
+                entry.cond.notify_all()
+            with _sessions_lock:
+                _sessions_manager[sid] = mgr
+            return mgr
+        except Exception as e:
+            with entry.lock:
+                entry.state = "failed"
+                entry.cond.notify_all()
+            with _sessions_lock:
+                _sessions_entries.pop(sid, None)
+                _sessions_manager.pop(sid, None)
+            raise e
+    else:
+        with entry.lock:
+            while entry.state == "initializing":
+                entry.cond.wait()
+            if entry.state == "ready" and entry.manager is not None:
+                return entry.manager
+            else:
+                raise RuntimeError(f"Session {sid} initialization failed in another thread")
 
 
 def print_status(manager: DialogueManager):
@@ -473,6 +518,8 @@ def api_chat():
                         user_message=msg,
                         reply=outcome.reply,
                         control_action=outcome.control_action,
+                        parent_revision=outcome.parent_revision,
+                        manager=manager,
                     )
                 except (ControlAuditConflictError, ControlAuditCommitUncertainError):
                     raise
@@ -499,6 +546,8 @@ def api_chat():
                         user_message=None,
                         reply=None,
                         control_action=None,
+                        parent_revision=outcome.parent_revision,
+                        manager=manager,
                     )
                 except (ControlAuditCommitUncertainError,):
                     raise
@@ -507,6 +556,11 @@ def api_chat():
                     raise ControlAuditPersistenceError(f"主历史快照保存失败: {e}") from e
 
         outcome = mgr.process_with_audit(msg, request_id=request_id, session_id=sid, persist_callback=_persist_callback)
+
+        # 幂等重试：直接返回第一次提交保存的不可变 HTTP response snapshot！
+        if outcome.is_retry and outcome.response_snapshot:
+            return jsonify(outcome.response_snapshot)
+
         reply = outcome.reply
         print_status(mgr)
 
@@ -641,6 +695,7 @@ def api_reset():
     sid = (request.json or {}).get("session_id")
     if sid:
         with _sessions_lock:
+            _sessions_entries.pop(sid, None)
             mgr = _sessions_manager.pop(sid, None)
             if mgr:
                 mgr.reset()
@@ -655,11 +710,7 @@ def get_session_state():
     if not sid:
         return jsonify({"ok": False, "code": 400, "error": "MissingSessionId", "msg": "session_id 不能为空", "retryable": False}), 400
 
-    with _sessions_lock:
-        mgr = _sessions_manager.get(sid)
-
-    if not mgr:
-        return jsonify({"ok": True, "code": 200, "exists": False}), 200
+    mgr = get_or_create_manager(sid)
 
     return jsonify({
         "ok": True,
