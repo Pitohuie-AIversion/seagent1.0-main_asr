@@ -79,11 +79,8 @@ class P0FinalConsistencyDefectTest(unittest.TestCase):
         with patch.object(self.dm.extractor, 'extract_updates') as mock_ext:
             reply = self.dm.process("取消当前任务")
             mock_ext.assert_not_called()
-            self.assertEqual(self.dm.phase, "rejected")
-            self.assertEqual(self.dm.task_state, {})
-            self.assertEqual(self.dm._last_built_json, {})
-            self.assertEqual(self.dm._last_missing, [])
-            self.assertIsNone(self.dm.final_result)
+            self.assertEqual(self.dm.control_state, "cancel_requested")
+            self.assertNotEqual(self.dm.task_state.get("task_type"), None)
 
     # ── 问题二：done 状态修改测试 ──
 

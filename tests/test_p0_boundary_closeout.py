@@ -175,8 +175,8 @@ class P0BoundaryCloseoutTest(unittest.TestCase):
             reply = self.dm.process("取消当前任务")
             mock_ext.assert_not_called()
 
-        self.assertEqual(self.dm.phase, "rejected")
-        self.assertIsNone(self.dm.final_result)
+        self.assertEqual(self.dm.control_state, "cancel_requested")
+        self.assertNotEqual(self.dm.task_state.get("task_type"), None)
 
     def test_p2_pending_oilfield_explicit_rejection(self):
         """输入'这个油田不对'：只清除 pending oilfield 恢复原值，其他槽位不变"""

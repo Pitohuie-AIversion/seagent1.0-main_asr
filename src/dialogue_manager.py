@@ -63,6 +63,20 @@ from .result_paths import get_task_dir
 
 HARD_REFUSAL_LIMIT = 4   # 连续拒绝上限
 
+VALID_DIALOGUE_MODES = {
+    "task_collection",
+    "knowledge_qa",
+    "emergency_intervention",
+    "uncertain",
+}
+VALID_CONTROL_STATES = {
+    "idle",
+    "pause_requested",
+    "stop_requested",
+    "abort_requested",
+    "cancel_requested",
+}
+
 
 FIELD_LABELS = {
     "task_id":             "任务编号",
@@ -108,6 +122,8 @@ class DialogueManager:
         self.task_state: dict = self.slot_store.get_task_state()
         self.mode: str = "normal"
         self.dialogue_mode: str = "task_collection"
+        self.control_state: str = "idle"
+        self.last_control_request: dict | None = None
         self.phase: str = "collecting"
         self.final_result: dict | None = None
         self.awaiting_final_confirm = False
@@ -306,6 +322,85 @@ class DialogueManager:
 
     def _handle_unknown_intent(self, user_message: str, route: IntentRouteResult) -> str:
         return "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数，还是查询设备工具与系统功能？"
+
+    def _handle_emergency_intervention(
+        self, user_message: str, route: IntentRouteResult, request_id: str = "req_default"
+    ) -> str:
+        action = route.emergency_action
+        if not action or action not in ("stop", "pause", "abort", "cancel"):
+            self._switch_dialogue_mode(
+                "uncertain",
+                source=route.source,
+                confidence=route.confidence,
+                reason="紧急动作不明确，请求用户澄清",
+            )
+            reply = "我识别到您可能要进行紧急干预，但无法确定是暂停、停止、终止还是取消。请明确说明需要执行的动作。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        # 记录前置快照镜像（用于严格的只读状态不变性断言）
+        initial_version = self.slot_store.version
+        initial_snapshot = copy.deepcopy(self.slot_store.export_snapshot())
+        initial_unresolved = list(self.slot_store.unresolved)
+        initial_task_state = copy.deepcopy(self.task_state)
+        initial_built_json = copy.deepcopy(self._last_built_json)
+        initial_missing = copy.deepcopy(self._last_missing)
+        initial_phase = self.phase
+        initial_mode = self.mode
+        initial_rov_candidates = copy.deepcopy(self._pending_rov_candidates)
+        initial_soft_whitelist = copy.deepcopy(self._soft_whitelist)
+        initial_blocking_violations = copy.deepcopy(self._blocking_violations)
+
+        self.control_state = f"{action}_requested"
+        self.last_control_request = {
+            "action": action,
+            "status": "requested",
+            "source": route.source,
+            "confidence": route.confidence,
+            "reason": route.reason,
+        }
+        self._switch_dialogue_mode(
+            "emergency_intervention",
+            source=route.source,
+            confidence=route.confidence,
+            reason=route.reason,
+        )
+
+        if action == "pause":
+            reply = "已识别暂停请求。当前系统尚未接入实际机器人执行控制接口，因此尚未确认设备已实际暂停。"
+        elif action == "stop":
+            reply = "已识别停止请求。当前系统尚未接入实际机器人执行控制接口，因此尚未确认设备已实际停止。"
+        elif action == "abort":
+            reply = "已识别终止请求。当前系统尚未接入实际机器人执行控制接口，因此尚未确认设备已实际终止。"
+        elif action == "cancel":
+            reply = "已识别取消请求。已记录该指令。"
+        else:
+            reply = "已记录紧急控制指令。"
+
+        self.conversation_history.append({"role": "user", "content": user_message})
+        self.conversation_history.append({"role": "assistant", "content": reply})
+
+        # 状态不变性校验 (彻底防范数据污染或静默 wipe)
+        v_ok = (self.slot_store.version == initial_version)
+        s_ok = (self.slot_store.export_snapshot() == initial_snapshot)
+        u_ok = (self.slot_store.unresolved == initial_unresolved)
+        t_ok = (self.task_state == initial_task_state)
+        b_ok = (self._last_built_json == initial_built_json)
+        m_ok = (self._last_missing == initial_missing)
+        p_ok = (self.phase == initial_phase)
+        mo_ok = (self.mode == initial_mode)
+        r_ok = (self._pending_rov_candidates == initial_rov_candidates)
+        w_ok = (self._soft_whitelist == initial_soft_whitelist)
+        bv_ok = (self._blocking_violations == initial_blocking_violations)
+
+        if not (v_ok and s_ok and u_ok and t_ok and b_ok and m_ok and p_ok and mo_ok and r_ok and w_ok and bv_ok):
+            logger.critical(
+                f"[CRITICAL] State invariance violation in emergency_intervention action '{action}'!"
+            )
+            raise RuntimeError(f"State invariance violation in emergency_intervention action {action}")
+
+        return reply
 
     # --------------------------------------------------------------------------
     # TASK_CONFIRM 独立控制指令处理（彻底隔离于槽位抽取流水线）
@@ -597,27 +692,8 @@ class DialogueManager:
         )
 
         # 1. 紧急干预线路拦截 (在 SlotStore 抽取与写入之前拦截)
-        if route.dialogue_mode == "emergency_intervention" or (
-            self.phase in ("blocked_hard", "blocked_soft", "confirming", "collecting")
-            and self._user_cancelled(user_message)
-        ):
-            self.reset()
-            self.phase = "rejected"
-            self._switch_dialogue_mode(
-                "emergency_intervention",
-                source=route.source,
-                confidence=route.confidence,
-                reason=route.reason,
-            )
-            action_desc = "取消/停止"
-            if route.emergency_action == "pause":
-                action_desc = "暂停"
-            elif route.emergency_action == "abort":
-                action_desc = "终止"
-            reply = f"任务已{action_desc}。如需重新规划，请重新开始。"
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.conversation_history.append({"role": "assistant", "content": reply})
-            return reply
+        if route.dialogue_mode == "emergency_intervention":
+            return self._handle_emergency_intervention(user_message, route, request_id)
 
         # 2. 知识问答线路 (只读，不修改 SlotStore 与任务状态)
         if route.dialogue_mode == "knowledge_qa":
@@ -2147,6 +2223,8 @@ class DialogueManager:
             "phase": self.phase,
             "mode": self.mode,
             "dialogue_mode": self.dialogue_mode,
+            "control_state": self.control_state,
+            "last_control_request": copy.deepcopy(self.last_control_request),
             "filled": filled,
             "missing": missing_display,
             "whitelisted_soft": sorted({e[2] for e in self._soft_whitelist}),
@@ -2161,6 +2239,8 @@ class DialogueManager:
         self.task_state = self.slot_store.get_task_state()
         self.mode = "normal"
         self.dialogue_mode = "task_collection"
+        self.control_state = "idle"
+        self.last_control_request = None
         self.phase = "collecting"
         self.final_result = None
         self.awaiting_final_confirm = False
@@ -2280,12 +2360,27 @@ class DialogueManager:
         if not isinstance(snapshot, dict):
             raise ValueError("History snapshot must be a dictionary")
 
+        raw_d_mode = snapshot.get("dialogue_mode")
+        if raw_d_mode is None:
+            dialogue_mode = "task_collection"
+        elif isinstance(raw_d_mode, str) and raw_d_mode.strip() in VALID_DIALOGUE_MODES:
+            dialogue_mode = raw_d_mode.strip()
+        else:
+            raise ValueError(f"Invalid dialogue_mode in snapshot: {raw_d_mode!r}")
+
+        raw_c_state = snapshot.get("control_state")
+        if raw_c_state is None:
+            control_state = "idle"
+        elif isinstance(raw_c_state, str) and raw_c_state.strip() in VALID_CONTROL_STATES:
+            control_state = raw_c_state.strip()
+        else:
+            raise ValueError(f"Invalid control_state in snapshot: {raw_c_state!r}")
+
         conversation_history = snapshot.get("conversation_history", [])
         if not isinstance(conversation_history, list):
             raise ValueError("conversation_history must be a list")
 
         mode = snapshot.get("mode", "normal")
-        dialogue_mode = snapshot.get("dialogue_mode", "task_collection")
         phase = snapshot.get("phase", "collecting")
         candidate_store = None
 
@@ -2319,13 +2414,14 @@ class DialogueManager:
                     )
             candidate_store.commit_transaction(new_slots, [])
 
-
         # 候选 SlotStore 完整构建后再一次性替换，避免半恢复状态泄漏。
         self.conversation_history = copy.deepcopy(conversation_history)
         self.slot_store = candidate_store
         self.task_state = self.slot_store.get_task_state()
         self.mode = mode
         self.dialogue_mode = dialogue_mode
+        self.control_state = control_state
+        self.last_control_request = copy.deepcopy(snapshot.get("last_control_request"))
         self.final_result = None
         self.task_start_now = False
         # 清空阻塞与白名单，重新构建缓存

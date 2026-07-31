@@ -186,8 +186,6 @@ class IntentRouteResult:
         elif mode == "emergency_intervention":
             interaction_type = "QUERY"
             query_intent = None
-            if self.emergency_action is None:
-                object.__setattr__(self, "emergency_action", "stop")
         else:
             interaction_type = str(self.interaction_type).strip().upper()
             query_intent = (
@@ -282,19 +280,56 @@ class IntentRouter:
                 msg, conversation_history, task_state, phase
             )
 
-    def _rule_emergency_route(self, user_message: str) -> IntentRouteResult | None:
+    def _check_safety_veto(self, user_message: str) -> IntentRouteResult | None:
+        """检查否定句、疑问句与条件句，提供确定性安全否决权。
+
+        若触发否决权，绝对不允许升级为可执行的 emergency_intervention 动作。
+        """
         msg = user_message.strip()
 
-        # 否定句识别: 检查“不要”、“别”、“不”等是否直接修饰紧急动作动词
-        negated_emergency = bool(
-            re.search(
-                r"(?:不要|不|别|无须|不用|禁止|不能|严禁)\s*(?:再)?(?:停止|暂停|终止|撤回|取消|中断)",
-                msg,
+        # 针对特定槽位/属性的修改取消 (如'取消载荷修改'、'取消支持船修改') 属于槽位更新，不属于全局紧急干预
+        if (
+            any(
+                kw in msg
+                for kw in (
+                    "修改",
+                    "参数",
+                    "设置",
+                    "载荷",
+                    "水深",
+                    "支持船",
+                    "管缆",
+                    "油田",
+                    "设备",
+                    "工具",
+                )
             )
-        )
+            and "任务" not in msg
+            and "操作" not in msg
+        ):
+            return None
 
-        # 疑问句与条件句识别: 避免“如何停止当前任务？”或“如果停止任务会怎样？”被误判为执行紧急干预
-        is_question_or_condition = (
+        # 1. 否定表达识别 (如“不要停止”、“别取消”、“现在不需要暂停”、“无需终止”)
+        # 若包含显式参数修改 (如'不要取消任务，水深改成500米')，放行至 task_collection 进行参数更新
+        if not re.search(r"(?:[0-9]+|改成|设为|设置为|替换为|调整为)", msg):
+            if re.search(
+                r"(?:不要|不|别|无须|不用|不需要|无需|禁止|不能|严禁|不想)\s*(?:再|需要)?\s*(?:停止|暂停|终止|撤回|取消|中断|放弃)",
+                msg,
+            ):
+                return IntentRouteResult(
+                    dialogue_mode="uncertain",
+                    interaction_type="QUERY",
+                    query_intent="CLARIFICATION",
+                    confidence=0.95,
+                    reason="规则安全拦截: 否定表达否决紧急干预",
+                    source="rule",
+                )
+
+        # 2. 疑问表达识别 (如“如何停止当前任务？”、“怎么取消任务？”、“取消任务需要哪些权限？”)
+        has_emergency_verb = any(
+            kw in msg for kw in ("停止", "暂停", "终止", "撤回", "取消", "中断", "放弃")
+        )
+        is_question = (
             bool(re.search(r"[？?]$", msg))
             or any(
                 kw in msg
@@ -304,52 +339,139 @@ class IntentRouter:
                     "怎样",
                     "为什么",
                     "能否",
-                    "如果",
-                    "要是",
-                    "假设",
-                    "万一",
-                    "假使",
-                    "若",
-                    "会怎样",
-                    "会如何",
-                    "后果",
-                    "怎么办",
+                    "是不是",
+                    "方法",
+                    "权限",
+                    "要求",
+                    "说明",
+                    "请问",
+                    "了解",
+                    "咨询",
+                    "哪些",
                 )
             )
         )
+        if has_emergency_verb and is_question:
+            return IntentRouteResult(
+                dialogue_mode="knowledge_qa",
+                interaction_type="QUERY",
+                query_intent="KNOWLEDGE_QA",
+                confidence=0.95,
+                reason="规则安全拦截: 疑问句否决紧急干预",
+                source="rule",
+            )
 
-        # 明确的紧急干预动作词
-        has_emergency_verb = any(
+        # 3. 条件表达识别 (如“如果停止任务会怎样？”、“假如取消任务有什么后果？”)
+        is_condition = any(
+            kw in msg
+            for kw in (
+                "如果",
+                "要是",
+                "假设",
+                "万一",
+                "假使",
+                "若",
+                "会怎样",
+                "会如何",
+                "后果",
+                "怎么办",
+            )
+        )
+        if has_emergency_verb and is_condition:
+            return IntentRouteResult(
+                dialogue_mode="knowledge_qa",
+                interaction_type="QUERY",
+                query_intent="KNOWLEDGE_QA",
+                confidence=0.95,
+                reason="规则安全拦截: 条件句否决紧急干预",
+                source="rule",
+            )
+
+        return None
+
+    def _rule_emergency_route(self, user_message: str) -> IntentRouteResult | None:
+        msg = user_message.strip()
+
+        # 1. 确定性安全否决检查 (优先判定)
+        veto_res = self._check_safety_veto(msg)
+        if veto_res is not None:
+            return veto_res
+
+        # 针对特定槽位/属性的修改取消 (如'取消载荷修改'、'取消支持船修改') 属于槽位更新，不属于全局紧急干预
+        if (
+            any(
+                kw in msg
+                for kw in (
+                    "修改",
+                    "参数",
+                    "设置",
+                    "载荷",
+                    "水深",
+                    "支持船",
+                    "管缆",
+                    "油田",
+                    "设备",
+                    "工具",
+                )
+            )
+            and "任务" not in msg
+            and "操作" not in msg
+        ):
+            return None
+
+        # 2. 明确的紧急干预动作词匹配 (必须排除被“不要”、“不是要”等否定的动作)
+        negated_action = bool(
+            re.search(
+                r"(?:不要|不|别|无须|不用|不需要|无需|禁止|不能|严禁|不想|不是要|不是)\s*(?:再|需要)?\s*(?:停止|暂停|终止|撤回|取消|中断|放弃)",
+                msg,
+            )
+        )
+        if negated_action:
+            return None
+
+        action: EmergencyAction | None = None
+        if any(kw in msg for kw in ("暂停当前任务", "暂停任务", "暂停操作", "暂停")):
+            action = "pause"
+        elif any(
             kw in msg
             for kw in (
                 "立即停止",
                 "马上停止",
                 "停止当前任务",
                 "停止任务",
-                "暂停当前任务",
-                "暂停任务",
+                "紧急停止",
+                "中断当前任务",
+                "中断任务",
+                "停止",
+            )
+        ):
+            action = "stop"
+        elif any(
+            kw in msg
+            for kw in (
                 "终止当前任务",
                 "终止任务",
                 "撤回当前任务",
                 "撤回任务",
-                "取消当前操作",
-                "紧急停止",
-                "中断当前任务",
+                "终止",
+                "撤回",
             )
-        )
+        ):
+            action = "abort"
+        elif any(
+            kw in msg
+            for kw in (
+                "取消当前任务",
+                "取消任务",
+                "取消当前操作",
+                "放弃任务",
+                "取消",
+                "放弃",
+            )
+        ):
+            action = "cancel"
 
-        if negated_emergency or is_question_or_condition:
-            return None
-
-        if has_emergency_verb:
-            action: EmergencyAction = "stop"
-            if "暂停" in msg:
-                action = "pause"
-            elif "撤回" in msg:
-                action = "abort"
-            elif "取消" in msg:
-                action = "cancel"
-
+        if action is not None:
             return IntentRouteResult(
                 dialogue_mode="emergency_intervention",
                 interaction_type="QUERY",
@@ -370,6 +492,11 @@ class IntentRouter:
         phase: str,
     ) -> IntentRouteResult:
         msg = user_message.strip()
+
+        # 安全否决规则最高优先
+        veto_res = self._check_safety_veto(msg)
+        if veto_res is not None:
+            return veto_res
 
         # 否定/暂缓控制词 (若包含显式参数修改如'改成500米'，则优先走 task_collection)
         if any(
@@ -548,6 +675,11 @@ class IntentRouter:
         if self.llm is None:
             raise IntentRoutingError("IntentRouter 缺少 LLMClient")
 
+        # 0. 确定性否决检查最高优先: LLM 绝对无法覆盖安全否决
+        veto_res = self._check_safety_veto(user_message)
+        if veto_res is not None:
+            return veto_res
+
         context = {
             "phase": phase,
             "has_task": bool(task_state.get("task_type_key")),
@@ -715,8 +847,19 @@ class IntentRouter:
                 query_intent = "KNOWLEDGE_QA"
 
         emergency_action = parsed.get("emergency_action")
-        if dialogue_mode == "emergency_intervention" and not emergency_action:
-            emergency_action = "stop"
+        if dialogue_mode == "emergency_intervention":
+            if not emergency_action or str(emergency_action).strip().lower() not in VALID_EMERGENCY_ACTIONS:
+                # P0-3: 缺失或非法 emergency_action 不得默认 stop，必须安全降级为 uncertain 澄清
+                return IntentRouteResult(
+                    dialogue_mode="uncertain",
+                    interaction_type="QUERY",
+                    confidence=confidence_float,
+                    reason="LLM 缺少或非法 emergency_action，安全降级为澄清",
+                    query_intent="CLARIFICATION",
+                    source="llm",
+                    emergency_action=None,
+                )
+            emergency_action = str(emergency_action).strip().lower()
 
         return IntentRouteResult(
             dialogue_mode=dialogue_mode,
