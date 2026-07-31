@@ -72,6 +72,7 @@ from .history_manager import (
     compute_request_fingerprint,
     load_control_event,
     get_control_event_path,
+    load_latest_session_snapshot,
     _get_request_lock,
     _safe_request_id,
 )
@@ -379,14 +380,22 @@ class DialogueManager:
         # intent_id 不参与文件路径，只作为 JSON 元数据
         return load_control_event(history_dir, session_id, request_id)
 
-    def _restore_state_from_event_snapshot(self, event: Dict[str, Any]) -> None:
-        """从控制审计事件的 snapshot 字段恢复完整 Manager 运行时状态。
-        用于服务重启后的精确重试场景，保证 Manager 状态与已提交事件完全一致。
-        """
-        snapshot = event.get("snapshot")
-        if not isinstance(snapshot, dict):
-            logger.warning("Control event has no valid snapshot, skipping state restore.")
-            return
+    def load_session_state(self, session_id: str) -> bool:
+        """在 Manager 初始化或服务重启后装载指定 session_id 的最新持久化状态。"""
+        with self._session_lock:
+            self.session_id = session_id
+            latest_snap = load_latest_session_snapshot(session_id)
+            if latest_snap:
+                self._restore_state_from_snapshot(latest_snap)
+                logger.info(
+                    "[DialogueManager] Loaded session %s latest state: phase=%s control_state=%s",
+                    session_id, self.phase, self.control_state,
+                )
+                return True
+            return False
+
+    def _restore_state_from_snapshot(self, snapshot: Dict[str, Any]) -> None:
+        """从 snapshot 字典恢复 DialogueManager 内存状态。"""
         mem_state = {
             "conversation_history": copy.deepcopy(snapshot.get("conversation_history", self.conversation_history)),
             "slot_store_snapshot": snapshot.get("slot_store", self.slot_store.export_snapshot()),
@@ -407,10 +416,12 @@ class DialogueManager:
             "task_start_now": snapshot.get("task_start_now", self.task_start_now),
         }
         self._restore_runtime_state(mem_state)
-        logger.info(
-            "[DialogueManager] Restored Manager state from event snapshot: phase=%s control_state=%s",
-            self.phase, self.control_state,
-        )
+
+    def _restore_state_from_event_snapshot(self, event: Dict[str, Any]) -> None:
+        """兼容接口：从控制审计事件恢复状态。"""
+        snapshot = event.get("snapshot") if isinstance(event, dict) else None
+        if isinstance(snapshot, dict):
+            self._restore_state_from_snapshot(snapshot)
 
     def process(self, user_message: str, request_id: str = "req_default") -> str:
         with self._session_lock:
@@ -423,30 +434,22 @@ class DialogueManager:
         session_id: str = "default_session",
         persist_callback: Optional[Callable[["DialogueManager", ProcessOutcome, Dict[str, Any]], None]] = None,
     ) -> ProcessOutcome:
-        """全流程控制事务（R8 版）：
+        """全流程控制事务（R9 版）：
 
-        锁顺序：per-request 跨进程锁 → session 线程锁 → history 文件锁（在 persist_callback 中）
-
-        1. 严格校验 request_id 格式
-        2. 获取 per-request 跨进程锁（覆盖：查重 → 状态机执行 → 持久化提交）
-        3. 精确路径查重（fail closed on corruption）
-        4. 幂等重试：恢复完整 Manager 状态并返回已保存 reply
-        5. 导出 pre-state 快照
+        1. 校验 request_id 格式
+        2. 获取跨进程 per-request 锁
+        3. 精确查重（fail closed on corruption）
+        4. 幂等重试：返回保存的结果，绝对不修改/覆盖当前 live Manager 内存状态
+        5. 导出 pre-state
         6. 执行状态机
-        7. 构造 ProcessOutcome：
-           - requires_control_audit: control_state 真实变更 OR 草稿取消
-           - requires_history_snapshot: phase == done AND NOT requires_control_audit
-             （控制事件已含完整 snapshot，不再需要独立的主历史写入）
-        8. persist_callback：仅写一个权威文件（控制事件 OR 主历史，互斥）
-        9. 失败时回滚 Manager 内存状态
+        7. 构造 ProcessOutcome
+        8. 提交持久化
         """
-        # 步骤 1：request_id 格式校验（锁外，快速失败）
         try:
             _safe_request_id(request_id)
         except ValueError:
             raise ControlAuditConflictError(f"Invalid request_id format: {request_id!r}")
 
-        # 步骤 2：获取跨进程 per-request 锁（保护查重 → 执行 → 提交完整事务）
         import fcntl as _fcntl
         history_dir = get_history_dir(create=True)
         req_lock = _get_request_lock(history_dir, session_id, request_id)
@@ -456,16 +459,13 @@ class DialogueManager:
             with self._session_lock:
                 self.session_id = session_id
 
-                # 步骤 3：精确路径查重（fail closed on corruption）
                 try:
                     existing_event = self._find_existing_control_event(request_id, session_id)
                 except ControlAuditCorruptionError:
-                    raise  # 损坏事件：fail closed，不能视为"未找到"
+                    raise
 
                 if existing_event is not None:
                     existing_fp = existing_event.get("request_fingerprint")
-                    current_task_id = self._last_built_json.get("task_id") if isinstance(self._last_built_json, dict) else None
-                    current_intent_id = self.task_state.get("intent_id") if isinstance(self.task_state, dict) else None
                     eff_action = existing_event.get("action")
 
                     incoming_fp = compute_request_fingerprint(
@@ -473,13 +473,10 @@ class DialogueManager:
                         request_id=request_id,
                         user_message=user_message,
                         action=eff_action,
-                        task_id=current_task_id if current_task_id != "unknown" else None,
-                        intent_id=current_intent_id,
                     )
 
                     if existing_fp and existing_fp == incoming_fp:
-                        # 步骤 4：幂等重试 — 恢复完整 Manager 状态
-                        self._restore_state_from_event_snapshot(existing_event)
+                        # 步骤 4：幂等重试 — 直接返回最初保存的结果，绝不覆盖/改写 live Manager 状态！
                         saved_reply = existing_event.get("reply") or (existing_event.get("snapshot") or {}).get("reply", "控制请求已处理。")
                         action = existing_event.get("action")
                         return ProcessOutcome(

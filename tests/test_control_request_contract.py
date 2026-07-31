@@ -1382,6 +1382,224 @@ class TestControlRequestContract(unittest.TestCase):
         self.assertEqual(data2["control_state"], data1["control_state"],
                          "重试后 control_state 应与第一次提交一致")
 
+    # --------------------------------------------------------------------------
+    # R9 P1-1: 旧请求重试绝对不覆盖较新的 Session 实时状态
+    # --------------------------------------------------------------------------
+
+    def test_retry_does_not_revert_newer_session_state(self):
+        """R9-P1-1: 重试旧请求 A，返回 A 的原始响应，但 Manager 内存绝对不退回到 A 的旧快照状态"""
+        app = web_backend.app.test_client()
+        sid = "sess_no_state_reversion"
+
+        # 1. 建立任务
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        # 2. 发送请求 A (暂停任务)
+        resA = app.post("/api/chat", json={"session_id": sid, "message": "暂停当前任务", "request_id": "req_A_pause"})
+        self.assertEqual(resA.status_code, 200)
+
+        # 3. 发送请求 B (普通对话，推进对话历史与状态)
+        resB = app.post("/api/chat", json={"session_id": sid, "message": "检查一下天气状况", "request_id": "req_B_chat"})
+        self.assertEqual(resB.status_code, 200)
+
+        mgr = web_backend.get_or_create_manager(sid)
+        history_len_before_retry = len(mgr.conversation_history)
+
+        # 4. 重试请求 A (使用 req_A_pause)
+        resA_retry = app.post("/api/chat", json={"session_id": sid, "message": "暂停当前任务", "request_id": "req_A_pause"})
+        self.assertEqual(resA_retry.status_code, 200)
+        dataA_retry = resA_retry.get_json()
+
+        self.assertTrue(dataA_retry.get("is_retry"), "重试请求应带有 is_retry=True")
+        self.assertEqual(len(mgr.conversation_history), history_len_before_retry,
+                         "重试旧请求绝对不得把对话历史退回到请求 A 时的旧快照")
+
+    # --------------------------------------------------------------------------
+    # R9 P1-2: 真实服务重启后，活动任务的控制请求重试不返回 409
+    # --------------------------------------------------------------------------
+
+    def test_retry_after_service_restart_in_active_task_does_not_409(self):
+        """R9-P1-2: 活动任务中控制请求成功后彻底重启服务，同一 request_id 重试返回原始结果而非 409"""
+        app = web_backend.app.test_client()
+        sid = "sess_restart_active_task"
+
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_active_rst_01"})
+        self.assertEqual(res1.status_code, 200)
+
+        # 模拟服务彻底重启：清空内存 Sessions Manager
+        with web_backend._sessions_lock:
+            web_backend._sessions_manager.clear()
+
+        # 重置服务后再次发送同一 request_id
+        res2 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_active_rst_01"})
+        self.assertEqual(res2.status_code, 200, "重启后重试活动任务控制请求不应返回 409")
+        self.assertTrue(res2.get_json().get("is_retry"), "重启后重试应带有 is_retry=True")
+
+    # --------------------------------------------------------------------------
+    # R9 P1-3: 服务重启后的全新请求自动恢复最新 Session 状态
+    # --------------------------------------------------------------------------
+
+    def test_new_request_after_restart_restores_latest_control_state(self):
+        """R9-P1-3: 服务重启后，新的普通请求自动装载并保持最新已提交的控制状态"""
+        app = web_backend.app.test_client()
+        sid = "sess_restart_restore_state"
+
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "暂停当前任务", "request_id": "req_pause_before_rst"})
+        self.assertEqual(res1.status_code, 200)
+
+        # 模拟重启
+        with web_backend._sessions_lock:
+            web_backend._sessions_manager.clear()
+
+        # 发送全新的普通消息
+        res2 = app.post("/api/chat", json={"session_id": sid, "message": "你好", "request_id": "req_new_after_rst"})
+        self.assertEqual(res2.status_code, 200)
+        data2 = res2.get_json()
+
+        self.assertIn(data2.get("control_state"), ("pause_requested", "paused"),
+                      "重启后的新请求应自动恢复最新控制状态")
+
+    # --------------------------------------------------------------------------
+    # R9 P1-4: 损坏 Schema 或非法 Enum 导致 fail closed (503)
+    # --------------------------------------------------------------------------
+
+    def test_corrupted_schema_or_enum_event_fails_closed(self):
+        """R9-P1-4: 控制事件字段/枚举损坏 → validate_control_event 抛出 ControlAuditCorruptionError"""
+        history_dir = get_history_dir(create=True)
+
+        bad_event = {
+            "session_id": "sess_bad_enum",
+            "request_id": "req_bad_enum_01",
+            "request_fingerprint": "a" * 64,
+            "snapshot": {"phase": "INVALID_PHASE_ENUM_XXX", "control_state": "idle"}
+        }
+        target = get_control_event_path(history_dir, "sess_bad_enum", "req_bad_enum_01")
+        target.write_bytes(json.dumps(bad_event).encode("utf-8"))
+
+        from src.exceptions import ControlAuditCorruptionError as CACE
+        from src.history_manager import validate_control_event
+        with self.assertRaises(CACE):
+            validate_control_event(bad_event)
+
+        with self.assertRaises(CACE):
+            load_control_event(history_dir, "sess_bad_enum", "req_bad_enum_01")
+
+    # --------------------------------------------------------------------------
+    # R9 P1-5 & P1-6: 原子 os.link no-clobber & post-commit ownership 校验
+    # --------------------------------------------------------------------------
+
+    def test_atomic_no_overwrite_with_os_link_prevents_clobbering(self):
+        """R9-P1-5: _create_control_event_no_overwrite 使用 os.link 保证目标已存在时原子失败且绝不覆盖"""
+        history_dir = get_history_dir(create=True)
+        target = history_dir / "control_test_link_no_clobber_req_01.json"
+
+        # 预先创建目标文件
+        original_content = {"session_id": "sess_link", "request_id": "req_01", "request_fingerprint": "fp_old"}
+        target.write_bytes(json.dumps(original_content).encode("utf-8"))
+
+        new_data = {
+            "event_type": "control_audit_event",
+            "session_id": "sess_link",
+            "request_id": "req_01",
+            "request_fingerprint": "fp_new",
+            "snapshot": {"phase": "collecting", "control_state": "idle"}
+        }
+        expected_hash = _canonical_payload_hash(new_data)
+
+        # 尝试写入冲突内容：由于 target 已存在，不应覆盖已有文件
+        from src.exceptions import ControlAuditConflictError, ControlAuditCorruptionError
+        with self.assertRaises((ControlAuditConflictError, ControlAuditCorruptionError)):
+            _create_control_event_no_overwrite(target, new_data, expected_hash)
+
+        # 验证目标文件内容未被修改/覆盖
+        current = json.loads(target.read_bytes())
+        self.assertEqual(current.get("request_fingerprint"), "fp_old", "原有目标文件绝不可被 replace 覆盖")
+
+    def test_post_commit_cleanup_checks_exact_ownership(self):
+        """R9-P1-6: Post-commit 失败时清理之前，确认文件所有权；不属于本事务的文件绝不 unlink"""
+        history_dir = get_history_dir(create=True)
+        target = history_dir / "control_test_ownership_check_req_01.json"
+        if target.exists():
+            target.unlink()
+
+        audit_data = {
+            "event_type": "control_audit_event",
+            "session_id": "sess_own",
+            "request_id": "req_01",
+            "request_fingerprint": "a" * 64,
+            "snapshot": {"phase": "collecting", "control_state": "idle"}
+        }
+        expected_hash = _canonical_payload_hash(audit_data)
+
+        # 模拟：在链接成功后、post-commit 读回校验前，外部进程修改了目标文件内容
+        orig_open = open
+        def mock_open_corrupt(path, mode="r", *args, **kwargs):
+            if "r" in mode and str(target) in str(path):
+                # 外部写入者替换了文件内容
+                target.write_bytes(b'{"session_id":"sess_own","request_id":"req_01","request_fingerprint":"EXTERNALLY_MUTATED","snapshot":{"phase":"collecting"}}')
+            return orig_open(path, mode, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=mock_open_corrupt):
+            with self.assertRaises(ControlAuditCommitUncertainError):
+                _create_control_event_no_overwrite(target, audit_data, expected_hash)
+
+        # 验证：因为目标文件在 post-commit 时已被修改（ownership 不符），清理程序绝未 unlink 目标文件！
+        self.assertTrue(target.exists(), "不属于本事务的文件绝对不得被 unlink")
+
+    # --------------------------------------------------------------------------
+    # R9 P2-3: 真实多进程下状态机副作用严格只执行 1 次
+    # --------------------------------------------------------------------------
+
+    def test_real_multiprocess_state_machine_executes_only_once(self):
+        """R9-P2-3: 2 个独立进程并发并发相同 (session_id, request_id) 请求，状态机只执行 1 次"""
+        import multiprocessing
+
+        def worker(session_id, request_id, return_dict, worker_idx):
+            try:
+                app = web_backend.app.test_client()
+                res = app.post("/api/chat", json={
+                    "session_id": session_id,
+                    "message": "暂停当前任务",
+                    "request_id": request_id,
+                })
+                return_dict[worker_idx] = (res.status_code, res.get_json())
+            except Exception as e:
+                return_dict[worker_idx] = (500, str(e))
+
+        manager = multiprocessing.Manager()
+        return_dict = manager.dict()
+
+        sid = "sess_mp_once_test"
+        req_id = "req_mp_once_001"
+
+        # 首先建立一个任务
+        app = web_backend.app.test_client()
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        p1 = multiprocessing.Process(target=worker, args=(sid, req_id, return_dict, 0))
+        p2 = multiprocessing.Process(target=worker, args=(sid, req_id, return_dict, 1))
+
+        p1.start()
+        p2.start()
+        p1.join(timeout=10)
+        p2.join(timeout=10)
+
+        self.assertEqual(p1.exitcode, 0)
+        self.assertEqual(p2.exitcode, 0)
+
+        res0_code, res0_data = return_dict[0]
+        res1_code, res1_data = return_dict[1]
+
+        self.assertEqual(res0_code, 200)
+        self.assertEqual(res1_code, 200)
+
+        # 恰有一个为正常响应 (is_retry False 或 None)，另一个为重试响应 (is_retry True)
+        is_retry_flags = [res0_data.get("is_retry", False), res1_data.get("is_retry", False)]
+        self.assertEqual(sum(1 for flag in is_retry_flags if flag is True), 1,
+                         "并发两个进程中必须有且仅有一个识别为重试，即状态机仅真正执行 1 次")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -60,12 +60,14 @@ def init_asr_service(asr_service):
     _shared_asr = asr_service
 
 def get_or_create_manager(sid: str) -> DialogueManager:
-    """获取或创建会话专属的 DialogueManager 实例"""
+    """获取或创建会话专属的 DialogueManager 实例（若新建则自动恢复最新 Session 状态）"""
     with _sessions_lock:
         if _shared_llm is None or _shared_kb is None:
             raise ServiceNotInitializedError("后端 AI 服务未初始化 (LLMClient 或 KnowledgeBase 未加载)")
         if sid not in _sessions_manager:
-            _sessions_manager[sid] = DialogueManager(_shared_llm, _shared_kb)
+            mgr = DialogueManager(_shared_llm, _shared_kb)
+            mgr.load_session_state(sid)
+            _sessions_manager[sid] = mgr
         return _sessions_manager[sid]
 
 
