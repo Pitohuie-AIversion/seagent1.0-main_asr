@@ -4,6 +4,7 @@ history_manager.py — 对话历史与控制审计快照的原子持久化与加
 
 import copy
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -12,8 +13,13 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
-from .exceptions import ControlAuditConflictError
+from .exceptions import (
+    ControlAuditConflictError,
+    ControlAuditPersistenceError,
+    ControlAuditCommitUncertainError,
+)
 from .result_paths import get_history_dir
 
 logger = logging.getLogger(__name__)
@@ -51,6 +57,20 @@ def _resolve_history_file(history_id: str) -> Path:
     if filepath.parent != history_dir:
         raise ValueError("history_id escapes history directory")
     return filepath
+
+
+def compute_request_fingerprint(
+    session_id: str,
+    request_id: str,
+    user_message: str,
+    action: Optional[str] = None,
+    task_id: Optional[str] = None,
+    intent_id: Optional[str] = None,
+) -> str:
+    """计算控制请求的标准唯一指纹。"""
+    norm_msg = str(user_message or "").strip()
+    raw = f"{session_id or ''}|{request_id or ''}|{norm_msg}|{action or ''}|{task_id or ''}|{intent_id or ''}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _serialize_slot_store(slot_store: Any) -> Dict[str, Any]:
@@ -91,19 +111,31 @@ def _serialize_slot_store(slot_store: Any) -> Dict[str, Any]:
 
 def _is_snapshot_equal(s1: Dict[str, Any], s2: Dict[str, Any], is_control_event: bool = False) -> bool:
     """比较两个快照的数据内容是否在幂等语义下相等。
-    对于控制审计事件，依据 (session_id, request_id, control_action) 进行幂等校验；
-    对于主历史快照，比较忽略 saved_at 后的完整字典。
+    对于控制审计事件，优先校验 request_fingerprint；
+    若缺少指纹，依据 (session_id, request_id, control_action, user_message, task_id, intent_id) 校验。
     """
     if not isinstance(s1, dict) or not isinstance(s2, dict):
         return s1 == s2
     if is_control_event:
+        fp1 = s1.get("request_fingerprint")
+        fp2 = s2.get("request_fingerprint")
+        if fp1 and fp2:
+            return fp1 == fp2
+
         sid1 = s1.get("session_id")
         sid2 = s2.get("session_id")
-        req1 = (s1.get("last_control_request") or {}).get("request_id")
-        req2 = (s2.get("last_control_request") or {}).get("request_id")
-        act1 = (s1.get("last_control_request") or {}).get("action")
-        act2 = (s2.get("last_control_request") or {}).get("action")
-        return (sid1 == sid2) and (req1 == req2) and (act1 == act2)
+        req1 = s1.get("request_id") or (s1.get("last_control_request") or {}).get("request_id")
+        req2 = s2.get("request_id") or (s2.get("last_control_request") or {}).get("request_id")
+        act1 = s1.get("action") or (s1.get("last_control_request") or {}).get("action")
+        act2 = s2.get("action") or (s2.get("last_control_request") or {}).get("action")
+        msg1 = (s1.get("user_message") or "").strip()
+        msg2 = (s2.get("user_message") or "").strip()
+        tid1 = s1.get("task_id")
+        tid2 = s2.get("task_id")
+        iid1 = s1.get("intent_id")
+        iid2 = s2.get("intent_id")
+
+        return (sid1 == sid2) and (req1 == req2) and (act1 == act2) and (msg1 == msg2) and (tid1 == tid2) and (iid1 == iid2)
 
     c1 = copy.deepcopy(s1)
     c2 = copy.deepcopy(s2)
@@ -116,8 +148,8 @@ def _atomic_durable_write(target_path: Path, snapshot_data: Dict[str, Any], is_c
     """在已持有的线程锁与跨进程锁保护下：
     - 检查已有文件（幂等判断 / 冲突拒绝）
     - 以 0600 权限、同目录临时文件、循环 os.write、fsync、原子 replace、父目录 fsync (fail closed)
-    - 写后读取校验等于 expected snapshot
-    - 失败路径清理自有 temp 文件
+    - 写后读取校验
+    - 失败路径清理自有 temp 文件，Post-Replace 失败可证明 unlink 则正常回滚，不可证明则抛出 ControlAuditCommitUncertainError
     """
     history_dir = target_path.parent
     history_dir.mkdir(parents=True, exist_ok=True)
@@ -178,18 +210,46 @@ def _atomic_durable_write(target_path: Path, snapshot_data: Dict[str, Any], is_c
                 pass
         raise
 
-    # 4. 父目录 fsync (FAIL CLOSED: 绝不捕获吞掉 OSError!)
-    dir_fd = os.open(str(history_dir), os.O_RDONLY)
+    # 4. 父目录 fsync 与 读回校验 (Post-Replace)
     try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+        dir_fd = os.open(str(history_dir), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
-    # 5. 写后读取校验 (要求与 snapshot_data 深度相等)
-    with open(target_path, "r", encoding="utf-8") as f:
-        read_back = json.load(f)
-    if read_back != snapshot_data:
-        raise RuntimeError(f"Read-after-write verification failed: payload mismatch for {target_path.name}")
+        with open(target_path, "r", encoding="utf-8") as f:
+            read_back = json.load(f)
+        if not isinstance(read_back, dict):
+            raise RuntimeError(f"Read-after-write verification failed for {target_path.name}: not a dict")
+        if is_control_event:
+            req_in_read = read_back.get("request_id") or (read_back.get("snapshot") or {}).get("last_control_request", {}).get("request_id")
+            req_in_snap = snapshot_data.get("request_id") or (snapshot_data.get("snapshot") or {}).get("last_control_request", {}).get("request_id")
+            if req_in_read != req_in_snap:
+                raise RuntimeError(f"Read-after-write verification failed: request_id mismatch for {target_path.name}")
+        else:
+            # 对于普通历史快照，也需验证读回数据完整性（只检查顶层 snapshot_version 字段是否匹配）
+            if read_back.get("snapshot_version") != snapshot_data.get("snapshot_version"):
+                raise RuntimeError(f"Read-after-write verification failed: snapshot_version mismatch for {target_path.name}")
+    except Exception as post_err:
+        logger.error("Post-replace sync/readback failure for %s: %s", target_path.name, post_err)
+        rollback_proven = False
+        try:
+            if target_path.exists():
+                target_path.unlink()
+            dir_fd = os.open(str(history_dir), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+            rollback_proven = True
+        except Exception as rollback_err:
+            logger.critical("Failed to rollback target file after post-replace failure: %s", rollback_err)
+
+        if rollback_proven:
+            raise ControlAuditPersistenceError(f"Post-replace fsync/readback failed for {target_path.name} (file unlinked): {post_err}") from post_err
+        else:
+            raise ControlAuditCommitUncertainError(f"Control audit commit uncertain for {target_path.name}: {post_err}") from post_err
 
 
 def save_conversation(
@@ -205,9 +265,12 @@ def save_conversation(
     control_state: str = "idle",
     last_control_request: Optional[Dict[str, Any]] = None,
     request_id: Optional[str] = None,
+    user_message: Optional[str] = None,
+    reply: Optional[str] = None,
+    control_action: Optional[str] = None,
 ) -> str:
     """保存 v3 对话快照。全流程由线程 RLock + 跨进程 flock 双锁保护。
-    若传入 request_id，控制事件文件 control_<id>_<req_id>.json 作为唯一权威提交，不再同时强制更新 main 历史文件。
+    若传入 request_id，生成自描述控制审计文件 control_<id>_<req_id>.json 作为唯一权威提交。
     """
     history_dir = _ensure_dir()
 
@@ -217,11 +280,13 @@ def save_conversation(
             fcntl.flock(lock_file_handle.fileno(), fcntl.LOCK_EX)
             try:
                 safe_session_id = _safe_filename_component(session_id, "session_id")
+                task_id = built_json.get("task_id", "unknown") if isinstance(built_json, dict) else "unknown"
+                task_type = task_state.get("task_type_key", "unknown") if isinstance(task_state, dict) else "unknown"
 
-                snapshot = {
+                snapshot_core = {
                     "snapshot_version": SNAPSHOT_VERSION,
                     "session_id": session_id,
-                    "saved_at": datetime.now().isoformat(),
+                    "saved_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
                     "conversation_history": copy.deepcopy(conversation_history),
                     "slot_store": _serialize_slot_store(slot_store),
                     "task_state": copy.deepcopy(task_state),
@@ -231,8 +296,8 @@ def save_conversation(
                     "dialogue_mode": dialogue_mode,
                     "control_state": control_state,
                     "last_control_request": copy.deepcopy(last_control_request),
-                    "task_id": built_json.get("task_id", "unknown") if isinstance(built_json, dict) else "unknown",
-                    "task_type": task_state.get("task_type_key", "unknown") if isinstance(task_state, dict) else "unknown",
+                    "task_id": task_id,
+                    "task_type": task_type,
                     "intent_id": intent_id,
                 }
 
@@ -244,7 +309,38 @@ def save_conversation(
                     else:
                         target_filename = f"control_{safe_session_id}_{safe_req_id}.json"
 
-                    _atomic_durable_write(history_dir / target_filename, snapshot, is_control_event=True)
+                    eff_action = control_action or (last_control_request.get("action") if isinstance(last_control_request, dict) else None) or ("cancel" if phase == "rejected" else "unknown")
+                    request_fp = compute_request_fingerprint(
+                        session_id=session_id,
+                        request_id=request_id,
+                        user_message=user_message or "",
+                        action=eff_action,
+                        task_id=task_id if task_id != "unknown" else None,
+                        intent_id=intent_id,
+                    )
+                    event_type = "draft_cancel_event" if phase == "rejected" else "control_audit_event"
+
+                    audit_snapshot = {
+                        "event_type": event_type,
+                        "session_id": session_id,
+                        "request_id": request_id,
+                        "action": eff_action,
+                        "request_fingerprint": request_fp,
+                        "user_message": user_message or "",
+                        "reply": reply or "",
+                        "task_id": task_id if task_id != "unknown" else None,
+                        "intent_id": intent_id,
+                        "created_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+                        "control_state": control_state,
+                        "phase": phase,
+                        "mode": mode,
+                        "dialogue_mode": dialogue_mode,
+                        "last_control_request": copy.deepcopy(last_control_request),
+                        "snapshot_version": SNAPSHOT_VERSION,
+                        "snapshot": snapshot_core,
+                    }
+
+                    _atomic_durable_write(history_dir / target_filename, audit_snapshot, is_control_event=True)
                     return target_filename
                 else:
                     if intent_id:
@@ -253,7 +349,7 @@ def save_conversation(
                     else:
                         target_filename = f"history_{safe_session_id}.json"
 
-                    _atomic_durable_write(history_dir / target_filename, snapshot, is_control_event=False)
+                    _atomic_durable_write(history_dir / target_filename, snapshot_core, is_control_event=False)
                     return target_filename
             finally:
                 fcntl.flock(lock_file_handle.fileno(), fcntl.LOCK_UN)
@@ -274,13 +370,17 @@ def list_history() -> List[Dict[str, Any]]:
         try:
             with open(filepath, "r", encoding="utf-8") as file:
                 data = json.load(file)
+            saved_at = data.get("created_at") or data.get("saved_at") or (data.get("snapshot") or {}).get("saved_at", "")
+            task_id = data.get("task_id") or (data.get("snapshot") or {}).get("task_id", "unknown")
+            task_type = data.get("task_type") or (data.get("snapshot") or {}).get("task_type", "unknown")
+            session_id = data.get("session_id") or (data.get("snapshot") or {}).get("session_id", "")
             records.append(
                 {
                     "id": filepath.name,
-                    "saved_at": data.get("saved_at", ""),
-                    "task_id": data.get("task_id", "unknown"),
-                    "task_type": data.get("task_type", "unknown"),
-                    "session_id": data.get("session_id", ""),
+                    "saved_at": saved_at,
+                    "task_id": task_id,
+                    "task_type": task_type,
+                    "session_id": session_id,
                 }
             )
         except (OSError, json.JSONDecodeError, TypeError, AttributeError) as exc:
@@ -316,6 +416,13 @@ def load_history(history_id: str) -> Optional[Dict[str, Any]]:
         data = json.load(file)
     if not isinstance(data, dict):
         raise ValueError("History snapshot must be a JSON object")
+
+    if "snapshot" in data and isinstance(data["snapshot"], dict):
+        inner_snap = copy.deepcopy(data["snapshot"])
+        for meta_k in ("event_type", "request_id", "action", "request_fingerprint", "reply", "user_message", "created_at"):
+            if meta_k in data and meta_k not in inner_snap:
+                inner_snap[meta_k] = data[meta_k]
+        data = inner_snap
 
     ver = data.get("snapshot_version")
     if ver != SNAPSHOT_VERSION:

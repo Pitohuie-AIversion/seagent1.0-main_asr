@@ -15,6 +15,14 @@ class ControlAuditConflict(ControlAuditConflictError):
     """ControlAuditConflictError 的简写别名。"""
 
 
+class ControlAuditCommitUncertainError(RuntimeError):
+    """控制请求原子替换完成后落盘验证或父目录同步失败，落盘状态无法确定。"""
+
+
+class ControlAuditCommitUncertain(ControlAuditCommitUncertainError):
+    """ControlAuditCommitUncertainError 的简写别名。"""
+
+
 class ServiceNotInitializedError(RuntimeError):
     """全局 AI 服务或知识库未初始化。"""
 

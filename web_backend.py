@@ -422,6 +422,8 @@ from src.exceptions import (
     ControlAuditPersistenceError,
     ControlAuditConflictError,
     ControlAuditConflict,
+    ControlAuditCommitUncertainError,
+    ControlAuditCommitUncertain,
     ServiceNotInitializedError,
 )
 
@@ -448,15 +450,8 @@ def api_chat():
             if sid not in _sessions:
                 _sessions[sid] = Session(sid)
 
-        pre_control_state = mgr.control_state
-        pre_phase = mgr.phase
-
-        def _persist_callback(manager):
-            is_control_transition = (manager.control_state != pre_control_state or manager.control_state != "idle")
-            is_draft_cancellation = (pre_phase in ("collecting", "confirming", "blocked_soft", "blocked_hard") and manager.phase == "rejected")
-            requires_audit_save = (is_control_transition or is_draft_cancellation or manager.phase in ("done", "rejected"))
-
-            if requires_audit_save:
+        def _persist_callback(manager, outcome, before_state):
+            if outcome.control_event_created:
                 try:
                     save_conversation(
                         session_id=sid,
@@ -470,15 +465,19 @@ def api_chat():
                         dialogue_mode=manager.dialogue_mode,
                         control_state=manager.control_state,
                         last_control_request=manager.last_control_request,
-                        request_id=request_id if (is_control_transition or is_draft_cancellation) else None,
+                        request_id=request_id if outcome.control_event_created else None,
+                        user_message=msg,
+                        reply=outcome.reply,
+                        control_action=outcome.control_action,
                     )
-                except ControlAuditConflictError:
+                except (ControlAuditConflictError, ControlAuditCommitUncertainError):
                     raise
                 except Exception as e:
                     logging.error("保存历史快照失败: %s", e, exc_info=True)
                     raise ControlAuditPersistenceError(f"控制历史快照保存失败: {e}") from e
 
-        reply = mgr.process_with_audit(msg, request_id=request_id, persist_callback=_persist_callback)
+        outcome = mgr.process_with_audit(msg, request_id=request_id, session_id=sid, persist_callback=_persist_callback)
+        reply = outcome.reply
         print_status(mgr)
 
         resp_data = {
@@ -514,6 +513,16 @@ def api_chat():
             "request_id": request_id if 'request_id' in locals() else "req_unknown",
             "retryable": False
         }), 409
+    except (ControlAuditCommitUncertainError, ControlAuditCommitUncertain) as descu:
+        logging.error(f"Control audit commit uncertain in /api/chat: {descu}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "error": "ControlAuditCommitUncertain",
+            "msg": f"控制事务落盘状态无法确认: {str(descu)}",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": False
+        }), 500
     except ServiceNotInitializedError as sne:
         logging.error(f"Service uninitialized in /api/chat: {sne}", exc_info=True)
         return jsonify({

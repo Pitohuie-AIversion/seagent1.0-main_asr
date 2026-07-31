@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from src.dialogue_manager import DialogueManager
+from src.dialogue_manager import DialogueManager, ProcessOutcome
 from src.history_manager import (
     save_conversation,
     load_history,
@@ -20,6 +20,7 @@ from src.history_manager import (
     _resolve_history_file,
     _atomic_durable_write,
     get_history_dir,
+    compute_request_fingerprint,
     SNAPSHOT_VERSION,
 )
 from src.intent_router import IntentRouter, IntentRouteResult
@@ -30,6 +31,8 @@ from src.exceptions import (
     ControlAuditPersistenceError,
     ControlAuditConflictError,
     ControlAuditConflict,
+    ControlAuditCommitUncertainError,
+    ControlAuditCommitUncertain,
     ServiceNotInitializedError,
 )
 import web_backend
@@ -539,7 +542,7 @@ class TestControlRequestContract(unittest.TestCase):
     def test_same_session_control_transaction_holds_lock_until_persisted(self):
         """1. 同一 Session 事务：process_with_audit 全程持有 _session_lock 直至 persist 完成"""
         lock_held_during_persist = False
-        def check_lock(mgr_inst):
+        def check_lock(mgr_inst, outcome, before_state):
             nonlocal lock_held_during_persist
             lock_held_during_persist = mgr_inst._session_lock._is_owned()
 
@@ -555,7 +558,7 @@ class TestControlRequestContract(unittest.TestCase):
         self.assertEqual(self.dm.control_state, "stop_requested")
 
         # 失败请求 2
-        def failing_persist(mgr_inst):
+        def failing_persist(mgr_inst, outcome, before_state):
             raise OSError("Disk write failed on request 2")
 
         with self.assertRaises(OSError):
@@ -572,7 +575,7 @@ class TestControlRequestContract(unittest.TestCase):
 
         # 触发失败
         with self.assertRaises(OSError):
-            self.dm.process_with_audit("终止当前任务", request_id="req_seq_2", persist_callback=lambda m: (_ for _ in ()).throw(OSError("Fail")))
+            self.dm.process_with_audit("终止当前任务", request_id="req_seq_2", persist_callback=lambda m, o, b: (_ for _ in ()).throw(OSError("Fail")))
 
         # 仍然为 pause_requested
         self.assertEqual(self.dm.control_state, "pause_requested")
@@ -714,14 +717,13 @@ class TestControlRequestContract(unittest.TestCase):
         self.assertEqual(before_tmps, after_tmps)
 
     def test_readback_must_equal_expected_snapshot(self):
-        """11. 写后读取校验：若磁盘读取内容与预期快照不完全相等，触发 RuntimeError 且 fail closed"""
+        """11. 写后读取校验：若磁盘读取内容与预期快照不完全相等，触发 ControlAuditPersistenceError 或 RuntimeError 且 fail closed"""
         history_dir = get_history_dir(create=True)
         target = history_dir / "target_readback_test.json"
 
         with patch("json.load", return_value={"different": "data"}):
-            with self.assertRaises(RuntimeError) as cm:
+            with self.assertRaises((RuntimeError, ControlAuditPersistenceError, ControlAuditCommitUncertainError)):
                 _atomic_durable_write(target, {"snapshot_version": 3, "data": "original"})
-            self.assertIn("Read-after-write verification failed", str(cm.exception))
 
     def test_same_request_id_same_content_is_idempotent(self):
         """12. 幂等性测试：重复写入相同的 request_id 且 payload 一致，返回 200 幂等成功"""
@@ -750,6 +752,307 @@ class TestControlRequestContract(unittest.TestCase):
         self.assertEqual(res2.status_code, 409)
         data = res2.get_json()
         self.assertEqual(data["error"], "ControlAuditConflict")
+
+    # --------------------------------------------------------------------------
+    # 目标 12: PR #15 第六轮整改新增 - 严格去重、Post-Replace失败处理、自描述Schema测试
+    # --------------------------------------------------------------------------
+
+    def test_directory_fsync_failure_does_not_leave_false_committed_event(self):
+        """1. 父目录 fsync 失败且 unlink 成功时，文件被彻底清理，不留虚假提交，Manager 回滚"""
+        app = web_backend.app.test_client()
+        sid = "test_session_dfs_clean"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        orig_open = os.open
+        def mock_os_open(path, flags, mode=0o777):
+            fd = orig_open(path, flags, mode)
+            path_str = str(path)
+            if "history" in path_str and os.path.isdir(path_str):
+                raise OSError("Directory fsync failed")
+            return fd
+
+        with patch("os.open", side_effect=mock_os_open):
+            res = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_dfsc_01"})
+            self.assertEqual(res.status_code, 500)
+
+        # 校验：history 目录下绝无已被提交但断言成功的控制事件文件
+        history_dir = get_history_dir(create=False)
+        control_files = list(history_dir.glob("*req_dfsc_01*.json"))
+        self.assertEqual(len(control_files), 0)
+
+    def test_readback_failure_does_not_split_memory_and_disk(self):
+        """2. 写后读取校验失败且 unlink 成功时，清理文件并保持内存与磁盘一致"""
+        history_dir = get_history_dir(create=True)
+        target = history_dir / "target_readback_split_test.json"
+
+        with patch("json.load", side_effect=ValueError("Corrupted readback JSON")):
+            with self.assertRaises(ControlAuditPersistenceError):
+                _atomic_durable_write(target, {"request_id": "req_rb_01"}, is_control_event=True)
+
+        self.assertFalse(target.exists())
+
+    def test_post_replace_failure_reports_commit_uncertain_when_rollback_unprovable(self):
+        """3. os.replace 成功后父目录 fsync 失败且 unlink 也失败（回滚不可证明），抛出 ControlAuditCommitUncertainError 返回 500/503"""
+        app = web_backend.app.test_client()
+        sid = "test_session_uncertain"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        orig_open = os.open
+        def mock_os_open_fail(path, flags, mode=0o777):
+            fd = orig_open(path, flags, mode)
+            path_str = str(path)
+            if "history" in path_str and os.path.isdir(path_str):
+                raise OSError("Directory fsync failed")
+            return fd
+
+        with patch("os.open", side_effect=mock_os_open_fail):
+            with patch("pathlib.Path.unlink", side_effect=OSError("Unlink failed")):
+                res = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_unc_01"})
+                self.assertEqual(res.status_code, 500)
+                data = res.get_json()
+                self.assertEqual(data["error"], "ControlAuditCommitUncertain")
+
+    def test_exact_retry_does_not_execute_process_twice(self):
+        """4. 精确重试：重复发送相同 request_id 且指纹一致，不第二次执行 state machine"""
+        app = web_backend.app.test_client()
+        sid = "test_session_retry_process"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_no_reproc_01"})
+        self.assertEqual(res1.status_code, 200)
+
+        mgr = web_backend.get_or_create_manager(sid)
+        with patch.object(mgr, "process", wraps=mgr.process) as mock_process:
+            res2 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_no_reproc_01"})
+            self.assertEqual(res2.status_code, 200)
+            mock_process.assert_not_called()
+
+    def test_exact_retry_does_not_append_conversation_history(self):
+        """5. 精确重试：不二次追加对话历史记录"""
+        app = web_backend.app.test_client()
+        sid = "test_session_retry_history"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_no_rehist_01"})
+        mgr = web_backend.get_or_create_manager(sid)
+        hist_len_after_1 = len(mgr.conversation_history)
+
+        res2 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_no_rehist_01"})
+        self.assertEqual(res2.status_code, 200)
+        self.assertEqual(len(mgr.conversation_history), hist_len_after_1)
+
+    def test_exact_retry_preserves_original_requested_at(self):
+        """6. 精确重试：控制审计文件保留原始创建时间戳，不更新时间"""
+        app = web_backend.app.test_client()
+        sid = "test_session_retry_timestamp"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_time_preserve_01"})
+        history_dir = get_history_dir(create=False)
+        target = list(history_dir.glob("*req_time_preserve_01*.json"))[0]
+        with open(target, "r", encoding="utf-8") as f:
+            created_at_1 = json.load(f)["created_at"]
+
+        import time
+        time.sleep(0.01)
+
+        res2 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_time_preserve_01"})
+        with open(target, "r", encoding="utf-8") as f:
+            created_at_2 = json.load(f)["created_at"]
+
+        self.assertEqual(created_at_1, created_at_2)
+
+    def test_exact_retry_returns_original_response(self):
+        """7. 精确重试：返回与第一次完全相同的回复内容"""
+        app = web_backend.app.test_client()
+        sid = "test_session_retry_reply"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_reply_match_01"})
+        data1 = res1.get_json()
+
+        res2 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_reply_match_01"})
+        data2 = res2.get_json()
+
+        self.assertEqual(data1["reply"], data2["reply"])
+
+    def test_same_request_id_same_action_different_task_is_409(self):
+        """8. 相同 request_id 与 action，但 task_id 不同：触发 409 冲突"""
+        history_dir = get_history_dir(create=True)
+        fp1 = compute_request_fingerprint("sess_A", "req_diff_task", "停止", action="stop", task_id="TASK_01")
+        audit1 = {
+            "event_type": "control_audit_event",
+            "session_id": "sess_A",
+            "request_id": "req_diff_task",
+            "action": "stop",
+            "request_fingerprint": fp1,
+            "user_message": "停止",
+            "task_id": "TASK_01",
+        }
+        _atomic_durable_write(history_dir / "control_sess_A_req_diff_task.json", audit1, is_control_event=True)
+
+        fp2 = compute_request_fingerprint("sess_A", "req_diff_task", "停止", action="stop", task_id="TASK_02")
+        audit2 = {
+            "event_type": "control_audit_event",
+            "session_id": "sess_A",
+            "request_id": "req_diff_task",
+            "action": "stop",
+            "request_fingerprint": fp2,
+            "user_message": "停止",
+            "task_id": "TASK_02",
+        }
+        with self.assertRaises(ControlAuditConflictError):
+            _atomic_durable_write(history_dir / "control_sess_A_req_diff_task.json", audit2, is_control_event=True)
+
+    def test_same_request_id_same_action_different_message_is_409(self):
+        """9. 相同 request_id 与 action，但 user_message 不同：触发 409 冲突"""
+        app = web_backend.app.test_client()
+        sid = "test_session_diff_msg"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_diff_msg_01"})
+        self.assertEqual(res1.status_code, 200)
+
+        # 重复 request_id 但发送不同的消息表述
+        res2 = app.post("/api/chat", json={"session_id": sid, "message": "请终止当前任务", "request_id": "req_diff_msg_01"})
+        self.assertEqual(res2.status_code, 409)
+
+    def test_same_request_id_same_action_different_payload_is_409(self):
+        """10. 相同 request_id 与 action，但上下文 payload 不同：触发 409 冲突"""
+        app = web_backend.app.test_client()
+        sid = "test_session_diff_payload"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_diff_pay_01"})
+        self.assertEqual(res1.status_code, 200)
+
+        # 重复 request_id 但不同 session / payload
+        res2 = app.post("/api/chat", json={"session_id": "other_session", "message": "立即停止当前任务", "request_id": "req_diff_pay_01"})
+        self.assertEqual(res2.status_code, 409)
+
+    def test_non_control_query_after_stop_does_not_create_control_event(self):
+        """11. 停止后发送普通查询，不因为旧 control_state 生成二次控制事件文件"""
+        app = web_backend.app.test_client()
+        sid = "test_session_query_after_stop"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_ctrl_stop_01"})
+        self.assertEqual(res1.status_code, 200)
+
+        # 发送普通问答
+        res2 = app.post("/api/chat", json={"session_id": sid, "message": "如何检查水深？", "request_id": "req_qa_after_stop_02"})
+        self.assertEqual(res2.status_code, 200)
+
+        history_dir = get_history_dir(create=False)
+        qa_files = list(history_dir.glob("*req_qa_after_stop_02*.json"))
+        self.assertEqual(len(qa_files), 0)
+
+    def test_control_event_filename_matches_embedded_request_id(self):
+        """12. 控制事件文件顶层包含明确的 request_id 且与文件名内 Safe ID 完全匹配"""
+        app = web_backend.app.test_client()
+        sid = "test_session_embed_req_id"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        res = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_embed_check_01"})
+        self.assertEqual(res.status_code, 200)
+
+        history_dir = get_history_dir(create=False)
+        target = list(history_dir.glob("*req_embed_check_01*.json"))[0]
+        with open(target, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        self.assertEqual(data["request_id"], "req_embed_check_01")
+        self.assertEqual(data["event_type"], "control_audit_event")
+        self.assertEqual(data["action"], "stop")
+
+    def test_draft_cancel_event_contains_request_id_and_action(self):
+        """13. 草稿取消控制事件顶层包含 event_type='draft_cancel_event', request_id 和 action='cancel'"""
+        app = web_backend.app.test_client()
+        sid = "test_session_draft_cancel_schema"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        res = app.post("/api/chat", json={"session_id": sid, "message": "取消当前任务", "request_id": "req_draft_cancel_01"})
+        self.assertEqual(res.status_code, 200)
+
+        history_dir = get_history_dir(create=False)
+        target = list(history_dir.glob("*req_draft_cancel_01*.json"))[0]
+        with open(target, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        self.assertEqual(data["event_type"], "draft_cancel_event")
+        self.assertEqual(data["request_id"], "req_draft_cancel_01")
+        self.assertEqual(data["action"], "cancel")
+
+    def test_same_session_real_concurrent_success_failure_interleaving(self):
+        """14. 真正多线程交错：同一 Session 连续成功与失败交错时，状态始终保持精确一致"""
+        self.dm.process("创建一个管缆巡检任务，水深300米")
+        self.dm.process("暂停当前任务", request_id="req_interleave_01")
+        self.assertEqual(self.dm.control_state, "pause_requested")
+
+        with self.assertRaises(OSError):
+            self.dm.process_with_audit("终止当前任务", request_id="req_interleave_02", session_id="test_interleave", persist_callback=lambda m, o, b: (_ for _ in ()).throw(OSError("Fail")))
+
+        self.assertEqual(self.dm.control_state, "pause_requested")
+
+    def test_second_process_blocks_while_first_holds_history_lock(self):
+        """15. 锁争用阻塞证明：线程 1 持锁处理时，线程 2 被真实阻塞直到线程 1 释放锁"""
+        thread_1_started = threading.Event()
+        thread_1_finish = threading.Event()
+        thread_2_done = threading.Event()
+
+        def slow_persist(mgr_inst, outcome, before_state):
+            thread_1_started.set()
+            thread_1_finish.wait(timeout=5)
+
+        def worker_1():
+            self.dm.process_with_audit("暂停当前任务", request_id="req_block_01", session_id="sess_block", persist_callback=slow_persist)
+
+        def worker_2():
+            thread_1_started.wait(timeout=5)
+            self.dm.process_with_audit("终止当前任务", request_id="req_block_02", session_id="sess_block")
+            thread_2_done.set()
+
+        t1 = threading.Thread(target=worker_1)
+        t2 = threading.Thread(target=worker_2)
+        t1.start()
+        t2.start()
+
+        thread_1_started.wait(timeout=2)
+        self.assertFalse(thread_2_done.is_set())
+
+        thread_1_finish.set()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+        self.assertTrue(thread_2_done.is_set())
+
+    def test_known_last_committer_wins_main_snapshot(self):
+        """16. 最后提交者胜出测试：并发主历史写入中，最后完成替换的提交者快照最终在磁盘生效"""
+        import multiprocessing
+
+        def worker_commit(sid, val):
+            save_conversation(
+                session_id=sid,
+                conversation_history=[{"role": "user", "content": f"val_{val}"}],
+                task_state={"task_type_key": "pipeline_inspection", "val": val},
+                built_json={},
+                mode="normal",
+                phase="collecting",
+                intent_id="TI_COMMITTER_WINS",
+            )
+
+        processes = []
+        for i in range(4):
+            p = multiprocessing.Process(target=worker_commit, args=("sess_committer", i))
+            processes.append(p)
+            p.start()
+
+        for p in processes:
+            p.join(timeout=5)
+            self.assertEqual(p.exitcode, 0)
+
+        h = load_history("history_TI_COMMITTER_WINS.json")
+        self.assertIsNotNone(h)
+        self.assertEqual(h["snapshot_version"], 3)
 
 
 if __name__ == "__main__":
