@@ -25,5 +25,7 @@ venv/
 # 外部或本地临时目录
 outside/
 record/
+exports/
 docs/regression_report.md
 full_test.log
+config/*.lock

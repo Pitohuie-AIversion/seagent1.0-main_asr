@@ -107,6 +107,7 @@ class DialogueManager:
         self.slot_store = SlotStore(kb)
         self.task_state: dict = self.slot_store.get_task_state()
         self.mode: str = "normal"
+        self.dialogue_mode: str = "task_collection"
         self.phase: str = "collecting"
         self.final_result: dict | None = None
         self.awaiting_final_confirm = False
@@ -126,6 +127,25 @@ class DialogueManager:
 
         # 会话锁（按 session 隔离并发控制）
         self._session_lock = threading.RLock()
+
+    def _switch_dialogue_mode(
+        self,
+        new_mode: str,
+        source: str = "rule",
+        confidence: float = 1.0,
+        reason: str = "",
+    ) -> None:
+        old_mode = self.dialogue_mode
+        if old_mode != new_mode:
+            logger.info(
+                "[DialogueManager] Mode switch: %s -> %s | source=%s | confidence=%.2f | reason=%s",
+                old_mode,
+                new_mode,
+                source,
+                confidence,
+                reason,
+            )
+            self.dialogue_mode = new_mode
 
 
 
@@ -482,7 +502,7 @@ class DialogueManager:
                 self._last_missing = self.slot_store.get_missing_slots(required_schema)
 
             logger.error(
-                "TaskIntent publish failed: request_id=%s, task_id=%s, intent_id=%s, err_type=%s, err=%s, rollback_failed=%s",
+                "TaskIntent publish_staging failed: request_id=%s, task_id=%s, intent_id=%s, err_type=%s, err=%s, rollback_failed=%s",
                 request_id,
                 cand_built.get("task_id", "unknown"),
                 intent_id,
@@ -562,16 +582,12 @@ class DialogueManager:
             return self._handle_task_confirm(user_message, request_id)
 
 
-        if self.phase in ("blocked_hard", "blocked_soft", "confirming", "collecting") and self._user_cancelled(user_message):
-            self.reset()
-            self.phase = "rejected"
-            reply = "任务已取消。如需重新规划，请重新开始。"
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.conversation_history.append({"role": "assistant", "content": reply})
-            return reply
-
-        # ── 独立意图路由分流阶段 ──
-        expected_slots = [m["key"] for m in self._last_missing if isinstance(m, dict) and "key" in m]
+        # ── 三级独立意图路由分流阶段 ──
+        expected_slots = [
+            m["key"]
+            for m in self._last_missing
+            if isinstance(m, dict) and "key" in m
+        ]
         route = self.intent_router.route(
             user_message=user_message,
             conversation_history=self.conversation_history,
@@ -580,8 +596,59 @@ class DialogueManager:
             expected_slots=expected_slots,
         )
 
-        if route.interaction_type == "QUERY":
+        # 1. 紧急干预线路拦截 (在 SlotStore 抽取与写入之前拦截)
+        if route.dialogue_mode == "emergency_intervention" or (
+            self.phase in ("blocked_hard", "blocked_soft", "confirming", "collecting")
+            and self._user_cancelled(user_message)
+        ):
+            self.reset()
+            self.phase = "rejected"
+            self._switch_dialogue_mode(
+                "emergency_intervention",
+                source=route.source,
+                confidence=route.confidence,
+                reason=route.reason,
+            )
+            action_desc = "取消/停止"
+            if route.emergency_action == "pause":
+                action_desc = "暂停"
+            elif route.emergency_action == "abort":
+                action_desc = "终止"
+            reply = f"任务已{action_desc}。如需重新规划，请重新开始。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        # 2. 知识问答线路 (只读，不修改 SlotStore 与任务状态)
+        if route.dialogue_mode == "knowledge_qa":
+            self._switch_dialogue_mode(
+                "knowledge_qa",
+                source=route.source,
+                confidence=route.confidence,
+                reason=route.reason,
+            )
             return self._handle_non_task_route(user_message, route, request_id)
+
+        # 3. 安全澄清状态 (uncertain)
+        if route.dialogue_mode == "uncertain":
+            self._switch_dialogue_mode(
+                "uncertain",
+                source=route.source,
+                confidence=route.confidence,
+                reason=route.reason,
+            )
+            reply = "对不起，我没有完全理解您的需求。请问您是希望【创建/修改任务】，还是想【查询系统与设备知识】？"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        # 4. 任务收集线路 (task_collection)
+        self._switch_dialogue_mode(
+            "task_collection",
+            source=route.source,
+            confidence=route.confidence,
+            reason=route.reason,
+        )
 
         compound_request = analyze_task_request(
             user_message,
@@ -2079,6 +2146,7 @@ class DialogueManager:
         return {
             "phase": self.phase,
             "mode": self.mode,
+            "dialogue_mode": self.dialogue_mode,
             "filled": filled,
             "missing": missing_display,
             "whitelisted_soft": sorted({e[2] for e in self._soft_whitelist}),
@@ -2092,6 +2160,7 @@ class DialogueManager:
         self.slot_store = SlotStore(self.kb)
         self.task_state = self.slot_store.get_task_state()
         self.mode = "normal"
+        self.dialogue_mode = "task_collection"
         self.phase = "collecting"
         self.final_result = None
         self.awaiting_final_confirm = False
@@ -2216,6 +2285,7 @@ class DialogueManager:
             raise ValueError("conversation_history must be a list")
 
         mode = snapshot.get("mode", "normal")
+        dialogue_mode = snapshot.get("dialogue_mode", "task_collection")
         phase = snapshot.get("phase", "collecting")
         candidate_store = None
 
@@ -2255,6 +2325,7 @@ class DialogueManager:
         self.slot_store = candidate_store
         self.task_state = self.slot_store.get_task_state()
         self.mode = mode
+        self.dialogue_mode = dialogue_mode
         self.final_result = None
         self.task_start_now = False
         # 清空阻塞与白名单，重新构建缓存

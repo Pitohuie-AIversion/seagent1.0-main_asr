@@ -749,5 +749,120 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
         self.assertNotIn("超光速神潜器9000可以", reply)
 
 
+class TestIssue10ThreeModeRouting(unittest.TestCase):
+    def setUp(self):
+        self.kb = KnowledgeBase()
+        self.llm = DummyLLM()
+        self.router = IntentRouter(self.llm)
+        self.dm = DialogueManager(self.llm, self.kb)
+
+    def test_basic_three_mode_routing(self):
+        """1. 基础三级路由测试"""
+        # task_collection
+        res_task = self.router.route("帮我创建一个海底巡检任务", [], {})
+        self.assertEqual(res_task.dialogue_mode, "task_collection")
+        self.assertEqual(res_task.interaction_type, "WRITE")
+
+        # knowledge_qa
+        res_qa = self.router.route("ROV 最大作业水深是多少？", [], {})
+        self.assertEqual(res_qa.dialogue_mode, "knowledge_qa")
+        self.assertEqual(res_qa.query_intent, "DEVICE_CAPABILITY")
+
+        # emergency_intervention
+        res_em = self.router.route("立即停止当前任务", [], {})
+        self.assertEqual(res_em.dialogue_mode, "emergency_intervention")
+        self.assertEqual(res_em.emergency_action, "stop")
+
+        # uncertain
+        res_unc = self.router.route("我想问一下机器人……", [], {})
+        self.assertEqual(res_unc.dialogue_mode, "uncertain")
+        self.assertEqual(res_unc.query_intent, "CLARIFICATION")
+
+    def test_emergency_priority_and_slot_isolation(self):
+        """2. 紧急模式优先级与槽位隔离测试"""
+        self.dm.process("帮我创建一个管缆巡检任务")
+
+        reply = self.dm.process("马上停止，不要再下潜500米")
+        self.assertIn("任务已", reply)
+        self.assertEqual(self.dm.dialogue_mode, "emergency_intervention")
+        self.assertEqual(self.dm.phase, "rejected")
+
+        # 水深 500m 绝对不能被写进 SlotStore
+        wd = self.dm.slot_store.slots.get("water_depth")
+        self.assertTrue(wd is None or wd.value is None or wd.value != 500.0)
+
+    def test_negation_safety(self):
+        """3. 否定句安全测试：不要停止当前任务 -> 不触发紧急干预"""
+        self.dm.phase = "collecting"
+        res = self.router.route("不要停止当前任务", [], {})
+        self.assertNotEqual(res.dialogue_mode, "emergency_intervention")
+
+    def test_question_and_conditional_safety(self):
+        """4. 疑问句与条件句安全测试"""
+        # 如何停止当前任务？ -> 不执行实际停止
+        res_q = self.router.route("如何停止当前任务？", [], {})
+        self.assertNotEqual(res_q.dialogue_mode, "emergency_intervention")
+        reply_q = self.dm.process("如何停止当前任务？")
+        self.assertNotEqual(self.dm.phase, "rejected")
+
+        # 如果现在停止会怎么样？ -> 不执行实际停止
+        res_c = self.router.route("如果现在停止会怎么样？", [], {})
+        self.assertNotEqual(res_c.dialogue_mode, "emergency_intervention")
+        reply_c = self.dm.process("如果现在停止会怎么样？")
+        self.assertNotEqual(self.dm.phase, "rejected")
+
+    def _seed_pipeline_task(self):
+        self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+        self.dm.slot_store.slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
+        self.dm._rebuild_cache()
+
+    def test_knowledge_qa_read_only_invariance(self):
+        """5. 知识问答只读性与状态不变性"""
+        self._seed_pipeline_task()
+        v_before = self.dm.slot_store.version
+        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+        task_state_before = copy.deepcopy(self.dm.task_state)
+        unresolved_before = copy.deepcopy(self.dm.slot_store.unresolved)
+        built_json_before = copy.deepcopy(self.dm._last_built_json)
+        missing_before = copy.deepcopy(self.dm._last_missing)
+        phase_before = self.dm.phase
+
+        # 输入知识问答
+        reply = self.dm.process("这个机器人最大下潜深度是多少？")
+        self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
+
+        # 断言所有数据结构完完全全不变
+        self.assertEqual(self.dm.slot_store.version, v_before)
+        self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+        self.assertEqual(self.dm.task_state, task_state_before)
+        self.assertEqual(self.dm.slot_store.unresolved, unresolved_before)
+        self.assertEqual(self.dm._last_built_json, built_json_before)
+        self.assertEqual(self.dm._last_missing, missing_before)
+        self.assertEqual(self.dm.phase, phase_before)
+
+    def test_multiturn_state_preservation(self):
+        """6. 多轮对话状态交错测试"""
+        # 第一轮：创建巡检任务
+        self._seed_pipeline_task()
+        self.assertEqual(self.dm.task_state.get("task_type"), "管缆巡检")
+
+        # 第二轮：问答（不破坏任务）
+        self.dm.process("ROV 最大水深是多少？")
+        self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
+        self.assertEqual(self.dm.task_state.get("task_type"), "管缆巡检")
+
+        # 第三轮：继续任务槽位收集
+        with patch.object(self.dm.extractor, 'extract_updates', return_value={
+            "intent": "TASK_UPDATE",
+            "slot_candidates": [
+                {"raw_key": "水深", "canonical_key": "water_depth", "raw_value": "300米", "normalized_value": 300.0, "confidence": 0.95}
+            ]
+        }):
+            self.dm.process("水深设置为300米")
+            self.assertEqual(self.dm.dialogue_mode, "task_collection")
+            self.assertEqual(self.dm.slot_store.slots.get("water_depth").value, 300.0)
+            self.assertEqual(self.dm.task_state.get("task_type"), "管缆巡检")
+
+
 if __name__ == "__main__":
     unittest.main()

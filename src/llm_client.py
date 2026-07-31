@@ -230,7 +230,10 @@ class LLMClient:
             interaction_type = "QUERY"
             query_intent = "CLARIFICATION"
             reason = "歧义设备别名'一号机'应路由到 CLARIFICATION"
-
+        elif any(word in text for word in ("想问", "问一下", "打听", "咨询")):
+            interaction_type = "QUERY"
+            query_intent = "CLARIFICATION"
+            reason = "离线测试: 模糊提问路由到 CLARIFICATION"
 
         elif is_question and (
             any(kw in text for kw in ("水深", "深度", "能力", "最大", "作业", "支持哪些", "哪些机器人", "哪些设备", "工具", "载荷", "传感器"))
@@ -247,7 +250,12 @@ class LLMClient:
         elif expected_slots:
             reason = "离线测试返回预设 WRITE expected_slots 回答结果"
 
+        dialogue_mode = "task_collection" if interaction_type == "WRITE" else (
+            "uncertain" if query_intent == "CLARIFICATION" else "knowledge_qa"
+        )
+
         return {
+            "dialogue_mode": dialogue_mode,
             "interaction_type": interaction_type,
             "query_intent": query_intent,
             "confidence": 0.95,
