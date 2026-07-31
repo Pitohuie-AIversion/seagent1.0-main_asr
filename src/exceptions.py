@@ -23,6 +23,12 @@ class ControlAuditCommitUncertain(ControlAuditCommitUncertainError):
     """ControlAuditCommitUncertainError 的简写别名。"""
 
 
+class ControlAuditCorruptionError(RuntimeError):
+    """控制审计事件文件存在但内容损坏、不可解析或 schema 非法。
+    语义：文件存在但不可信 → fail closed（不得当作未找到）。"""
+
+
+
 class ServiceNotInitializedError(RuntimeError):
     """全局 AI 服务或知识库未初始化。"""
 

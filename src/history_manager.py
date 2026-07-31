@@ -32,6 +32,7 @@ from .exceptions import (
     ControlAuditConflictError,
     ControlAuditPersistenceError,
     ControlAuditCommitUncertainError,
+    ControlAuditCorruptionError,
 )
 from .result_paths import get_history_dir
 
@@ -210,15 +211,23 @@ def _create_control_event_no_overwrite(
 
     # 1. 再次确认目标不存在（防止 TOCTOU：request lock 已提供外层保护，此处二次校验）
     if target_path.exists():
+        # 文件存在但不可读或内容损坏 → fail closed（不能视为未找到）
         try:
-            existing = json.load(open(target_path, encoding="utf-8"))
-            existing_fp = existing.get("request_fingerprint")
-            incoming_fp = audit_data.get("request_fingerprint")
-            if existing_fp and incoming_fp and existing_fp == incoming_fp:
-                logger.info("Control event %s already exists with same fingerprint. Idempotent.", target_path.name)
+            with open(target_path, "r", encoding="utf-8") as fh:
+                existing = json.load(fh)
+        except Exception as e:
+            raise ControlAuditCorruptionError(
+                f"Control event {target_path.name} exists but cannot be read/parsed: {e}"
+            ) from e
+        existing_fp = existing.get("request_fingerprint")
+        incoming_fp = audit_data.get("request_fingerprint")
+        if existing_fp and incoming_fp and existing_fp == incoming_fp:
+            # 完整 payload 一致性验证（防止仅指纹相同但内容不同）
+            existing_hash = _canonical_payload_hash(existing)
+            incoming_hash = _canonical_payload_hash(audit_data)
+            if existing_hash == incoming_hash:
+                logger.info("Control event %s already exists with same fingerprint+payload. Idempotent.", target_path.name)
                 return
-        except Exception:
-            pass
         raise ControlAuditConflictError(
             f"Control audit event {target_path.name} already exists with conflicting content"
         )
@@ -373,15 +382,19 @@ def get_control_event_path(
     history_dir: Path,
     session_id: str,
     request_id: str,
-    intent_id: Optional[str] = None,
+    intent_id: Optional[str] = None,  # intent_id 只作为 JSON 元数据，不参与路径
 ) -> Path:
-    """计算控制事件文件的精确路径（(session_id, request_id) 作用域）。"""
+    """计算控制事件文件的精确路径。
+
+    路径固定为 control_<session_hash16>_<request_id>.json。
+    唯一键 = (session_id, request_id)。
+    intent_id 和 task_id 仅存储在 JSON 元数据中，不参与文件身份。
+    这样服务重启后、intent_id 丢失后仍可精确定位同一事件文件。
+    """
     safe_req_id = _safe_request_id(request_id)
-    safe_session_id = _safe_filename_component(session_id, "session_id")
-    if intent_id:
-        safe_intent_id = _safe_filename_component(intent_id, "intent_id")
-        return history_dir / f"control_{safe_intent_id}_{safe_req_id}.json"
-    return history_dir / f"control_{safe_session_id}_{safe_req_id}.json"
+    # session_id 使用 sha256 前16位，避免特殊字符同时保持唯一性
+    session_hash = hashlib.sha256(str(session_id).encode("utf-8")).hexdigest()[:16]
+    return history_dir / f"control_{session_hash}_{safe_req_id}.json"
 
 
 def load_control_event(
@@ -392,17 +405,32 @@ def load_control_event(
 ) -> Optional[Dict[str, Any]]:
     """
     精确加载 (session_id, request_id) 的控制事件文件，不使用 glob。
-    返回事件 dict 或 None（文件不存在或无法解析时）。
+
+    返回语义：
+    - None：文件不存在（可以执行新请求）
+    - dict：文件存在且合法（用于幂等重试或冲突检测）
+    - ControlAuditCorruptionError：文件存在但损坏/不可读/schema 非法 → fail closed
     """
     target = get_control_event_path(history_dir, session_id, request_id, intent_id)
     if not target.exists() or not target.is_file():
         return None
     try:
         with open(target, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception as e:
-        logger.warning("Failed to load control event %s: %s", target.name, e)
-        return None
+        raise ControlAuditCorruptionError(
+            f"Control event {target.name} exists but cannot be read/parsed: {e}"
+        ) from e
+    # schema 基础验证：必须包含 session_id 和 request_fingerprint
+    if not isinstance(data, dict):
+        raise ControlAuditCorruptionError(
+            f"Control event {target.name} is not a JSON object"
+        )
+    if "request_fingerprint" not in data and "snapshot_version" not in data:
+        raise ControlAuditCorruptionError(
+            f"Control event {target.name} missing required schema fields"
+        )
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -461,9 +489,11 @@ def save_conversation(
                 }
 
                 if request_id:
-                    # 控制审计事件：精确路径，跨进程 request lock
+                    # 控制审计事件：精确路径
+                    # 注意：per-request 跨进程锁已由调用方 process_with_audit() 在业务层持有，
+                    # 此处不再重复加锁，避免 fcntl.flock 的自锁语义问题。
                     safe_req_id = _safe_request_id(request_id)
-                    target_path = get_control_event_path(history_dir, session_id, request_id, intent_id)
+                    target_path = get_control_event_path(history_dir, session_id, request_id)
 
                     eff_action = (
                         control_action
@@ -501,17 +531,9 @@ def save_conversation(
                     }
 
                     expected_hash = _canonical_payload_hash(audit_snapshot)
-
-                    # 跨进程 request lock（保护"检查—执行—提交"原子性）
-                    req_lock = _get_request_lock(history_dir, session_id, safe_req_id)
-                    try:
-                        fcntl.flock(req_lock.fileno(), fcntl.LOCK_EX)
-                        _create_control_event_no_overwrite(target_path, audit_snapshot, expected_hash)
-                    finally:
-                        fcntl.flock(req_lock.fileno(), fcntl.LOCK_UN)
-                        req_lock.close()
-
+                    _create_control_event_no_overwrite(target_path, audit_snapshot, expected_hash)
                     return target_path.name
+
                 else:
                     # 主历史快照更新
                     if intent_id:

@@ -424,6 +424,7 @@ from src.exceptions import (
     ControlAuditConflict,
     ControlAuditCommitUncertainError,
     ControlAuditCommitUncertain,
+    ControlAuditCorruptionError,
     ServiceNotInitializedError,
 )
 
@@ -521,7 +522,8 @@ def api_chat():
             "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
             "task_type": mgr.task_state.get("task_type_key"),
             "emergency": mgr.mode == "emergency",
-            "final_json": mgr._last_built_json if mgr.phase == "done" else None
+            "final_json": mgr._last_built_json if mgr.phase == "done" else None,
+            "is_retry": outcome.is_retry,
         }
         for k, v in resp_data.items():
             try:
@@ -530,6 +532,16 @@ def api_chat():
                 raise TypeError(f"Field '{k}' is not JSON serializable: {type(v)} -> {v}") from e
 
         return jsonify(resp_data)
+    except ControlAuditCorruptionError as cace:
+        logging.error(f"Control audit corruption in /api/chat: {cace}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 503,
+            "error": "ControlAuditCorruption",
+            "msg": f"控制审计事件文件存在但内容损坏，无法安全判断重试语义: {str(cace)}",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": False
+        }), 503
     except (ControlAuditConflictError, ControlAuditConflict) as cac:
         logging.warning(f"Control audit conflict in /api/chat: {cac}", exc_info=True)
         return jsonify({

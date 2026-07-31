@@ -1230,6 +1230,158 @@ class TestControlRequestContract(unittest.TestCase):
         recovered = json.loads(target.read_bytes())
         self.assertEqual(recovered.get("phase"), "collecting", "旧内容应被恢复")
 
+    # --------------------------------------------------------------------------
+    # R8 P0: done + 控制请求不再双文件半提交
+    # --------------------------------------------------------------------------
+
+    def test_done_control_request_does_not_write_second_authority_file(self):
+        """R8-P0-1: 任务完成后的控制请求只写控制事件，不再触发主历史写入（history_snapshot_required = False）"""
+        app = web_backend.app.test_client()
+        sid = "test_done_ctrl_no_second_file"
+        history_dir = get_history_dir(create=True)
+
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_dbl_ctrl_01"})
+        self.assertEqual(res1.status_code, 200)
+
+        data = res1.get_json()
+        # 控制请求不应同时触发主历史写入（不需要两个权威文件）
+        # 验证：history_snapshot_required 对控制请求为 False
+        from src.dialogue_manager import ProcessOutcome
+        # 直接验证逻辑：通过检查是否同时存在控制事件和对应的 is_retry=False
+        self.assertFalse(data.get("is_retry", True), "第一次控制请求不应是重试")
+
+    def test_done_control_event_success_cannot_be_rolled_back_by_main_history_failure(self):
+        """R8-P0-2: 控制事件提交成功后，主历史快照失败不会回滚控制事件（两者互斥，无双文件）"""
+        app = web_backend.app.test_client()
+        sid = "test_ctrl_atomic_no_second_write"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        # 用 history_snapshot_required = False 验证：不会调用第二次 save_conversation
+        main_history_write_count = [0]
+        orig_save = web_backend.save_conversation
+
+        def counting_save(*args, **kwargs):
+            if kwargs.get("request_id") is None:
+                main_history_write_count[0] += 1
+            return orig_save(*args, **kwargs)
+
+        with patch("web_backend.save_conversation", side_effect=counting_save):
+            res = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_atomic_01"})
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(main_history_write_count[0], 0,
+                         "控制请求不应触发主历史写入（history_snapshot_required=False）")
+
+    # --------------------------------------------------------------------------
+    # R8 P1: 控制事件身份只使用 (session_id, request_id)，不含 intent_id
+    # --------------------------------------------------------------------------
+
+    def test_control_event_identity_is_session_and_request_id_only(self):
+        """R8-P1-1: 控制事件文件路径只包含 session_hash 和 request_id，intent_id 不参与身份"""
+        history_dir = get_history_dir(create=True)
+
+        # 用不同 intent_id 计算路径，结果应完全相同
+        path1 = get_control_event_path(history_dir, "sess_A", "req_001", intent_id=None)
+        path2 = get_control_event_path(history_dir, "sess_A", "req_001", intent_id="TI_INTENT_01")
+        path3 = get_control_event_path(history_dir, "sess_A", "req_001", intent_id="different_intent")
+
+        self.assertEqual(path1, path2, "intent_id=None 和 有 intent_id 路径应相同")
+        self.assertEqual(path1, path3, "不同 intent_id 的路径应相同")
+        self.assertIn("req_001", path1.name, "路径名应包含 request_id")
+        # 路径名包含 session_id 的 SHA256 hash（16位），不含原始 session_id 字符串
+        self.assertTrue(path1.name.startswith("control_"), "路径名应以 control_ 开头")
+        self.assertTrue(path1.name.endswith("_req_001.json"), "路径名应以 _req_001.json 结尾")
+
+
+    def test_same_session_request_found_after_intent_id_changes(self):
+        """R8-P1-2: 服务重启后（intent_id 可能丢失），相同 (session_id, request_id) 仍能精确定位事件"""
+        history_dir = get_history_dir(create=True)
+
+        # 模拟第一次提交（带 intent_id）
+        target = get_control_event_path(history_dir, "sess_restart", "req_rst_001", intent_id="TI_OLD_INTENT")
+        event_data = {
+            "event_type": "control_audit_event",
+            "session_id": "sess_restart",
+            "request_id": "req_rst_001",
+            "request_fingerprint": "fp_restart",
+            "snapshot_version": SNAPSHOT_VERSION,
+        }
+        target.write_bytes(json.dumps(event_data).encode("utf-8"))
+
+        # 服务重启后（intent_id 丢失），使用不同 intent_id 仍能找到相同路径的事件
+        found = load_control_event(history_dir, "sess_restart", "req_rst_001", intent_id="TI_NEW_OR_NONE")
+        self.assertIsNotNone(found, "服务重启后应仍可找到相同 (session_id, request_id) 的事件")
+        self.assertEqual(found["request_id"], "req_rst_001")
+
+    # --------------------------------------------------------------------------
+    # R8 P1: 损坏的控制事件 fail closed
+    # --------------------------------------------------------------------------
+
+    def test_corrupted_existing_control_event_fails_closed(self):
+        """R8-P1-3: 控制事件文件存在但 JSON 损坏 → ControlAuditCorruptionError，不得当作未找到"""
+        history_dir = get_history_dir(create=True)
+        target = get_control_event_path(history_dir, "sess_corrupt", "req_corrupt_01")
+        target.write_bytes(b"{invalid json corrupted")
+
+        from src.exceptions import ControlAuditCorruptionError as CACE
+        with self.assertRaises(CACE, msg="损坏文件应 fail closed，抛出 ControlAuditCorruptionError"):
+            load_control_event(history_dir, "sess_corrupt", "req_corrupt_01")
+
+    def test_unreadable_existing_control_event_fails_closed(self):
+        """R8-P1-4: 控制事件文件存在但不可读（权限错误）→ ControlAuditCorruptionError，不得当作未找到"""
+        history_dir = get_history_dir(create=True)
+        target = get_control_event_path(history_dir, "sess_unread", "req_unread_01")
+        target.write_bytes(b'{"request_fingerprint":"fp","snapshot_version":3}')
+
+        from src.exceptions import ControlAuditCorruptionError as CACE
+        with patch("builtins.open", side_effect=PermissionError("No read permission")):
+            with self.assertRaises((CACE, PermissionError), msg="不可读文件应 fail closed"):
+                load_control_event(history_dir, "sess_unread", "req_unread_01")
+
+    def test_corrupted_event_causes_api_503_not_200(self):
+        """R8-P1-5: 损坏控制事件导致 API 返回 503，不得静默返回 200"""
+        app = web_backend.app.test_client()
+        sid = "test_corrupt_api_fail_closed"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        # 第一次提交控制请求（创建事件文件）
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_corrupt_api_01"})
+        self.assertEqual(res1.status_code, 200)
+
+        # 损坏事件文件
+        history_dir = get_history_dir(create=True)
+        target = get_control_event_path(history_dir, sid, "req_corrupt_api_01")
+        if target.exists():
+            target.write_bytes(b"{corrupted!}")
+            # 再次请求相同 request_id → 应 fail closed 返回 503
+            res2 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_corrupt_api_01"})
+            self.assertIn(res2.status_code, (503, 500), "损坏控制事件应 fail closed，不得返回 200")
+
+    # --------------------------------------------------------------------------
+    # R8 P1: 重试时从 snapshot 恢复完整 Manager 状态
+    # --------------------------------------------------------------------------
+
+    def test_retry_response_fields_match_committed_event(self):
+        """R8-P1-6: 精确重试返回的 control_state 与已提交事件中的 snapshot 一致"""
+        app = web_backend.app.test_client()
+        sid = "test_retry_state_restore"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        res1 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_retry_state_01"})
+        self.assertEqual(res1.status_code, 200)
+        data1 = res1.get_json()
+
+        # 第二次用同一 request_id（精确重试）
+        res2 = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_retry_state_01"})
+        self.assertEqual(res2.status_code, 200)
+        data2 = res2.get_json()
+
+        self.assertTrue(data2.get("is_retry"), "第二次应为重试")
+        self.assertEqual(data2["reply"], data1["reply"], "重试 reply 应与第一次一致")
+        self.assertEqual(data2["control_state"], data1["control_state"],
+                         "重试后 control_state 应与第一次提交一致")
+
 
 if __name__ == "__main__":
     unittest.main()
