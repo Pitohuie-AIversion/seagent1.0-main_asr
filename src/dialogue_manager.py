@@ -115,11 +115,24 @@ def _validate_control_snapshot(
     if not isinstance(last_control_request, dict):
         raise ValueError(f"control_state is {clean_c_state!r} but last_control_request is not a dictionary")
 
+    # 旧快照降级策略：非 idle 但缺少新增元数据字段 (request_id / requested_at / phase_at_request) 时默认降级为 idle，不伪造伪假元数据
+    if (
+        "request_id" not in last_control_request
+        or "requested_at" not in last_control_request
+        or "phase_at_request" not in last_control_request
+    ):
+        return ("idle", None)
+
     action = last_control_request.get("action")
     status = last_control_request.get("status")
     source = last_control_request.get("source")
     confidence = last_control_request.get("confidence")
     reason = last_control_request.get("reason")
+    request_id = last_control_request.get("request_id")
+    requested_at = last_control_request.get("requested_at")
+    phase_at_request = last_control_request.get("phase_at_request")
+    task_id = last_control_request.get("task_id")
+    intent_id = last_control_request.get("intent_id")
 
     if action not in VALID_CONTROL_ACTIONS:
         raise ValueError(f"Invalid action in last_control_request: {action!r}")
@@ -144,31 +157,22 @@ def _validate_control_snapshot(
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError(f"Invalid or empty reason in last_control_request: {reason!r}")
 
-    request_id = last_control_request.get("request_id")
-    if request_id is None:
-        request_id = "req_legacy"
-    elif not isinstance(request_id, str) or not request_id.strip():
+    if not isinstance(request_id, str) or not request_id.strip():
         raise ValueError(f"Invalid or empty request_id in last_control_request: {request_id!r}")
 
-    requested_at = last_control_request.get("requested_at")
-    if requested_at is None:
-        requested_at = "2026-07-31T00:00:00+08:00"
-    elif not isinstance(requested_at, str) or not requested_at.strip():
+    if not isinstance(requested_at, str) or not requested_at.strip():
         raise ValueError(f"Invalid or empty requested_at in last_control_request: {requested_at!r}")
-    else:
-        try:
-            dt = datetime.fromisoformat(requested_at.strip())
-            if dt.tzinfo is None:
-                raise ValueError(f"requested_at must be timezone-aware: {requested_at!r}")
-        except Exception as e:
-            if isinstance(e, ValueError) and "timezone" in str(e):
-                raise e
-            raise ValueError(f"Invalid ISO 8601 requested_at in last_control_request: {requested_at!r}") from e
 
-    phase_at_request = last_control_request.get("phase_at_request")
-    if phase_at_request is None:
-        phase_at_request = "collecting"
-    elif not isinstance(phase_at_request, str) or not phase_at_request.strip():
+    try:
+        dt = datetime.fromisoformat(requested_at.strip())
+        if dt.tzinfo is None:
+            raise ValueError(f"requested_at must be timezone-aware: {requested_at!r}")
+    except Exception as e:
+        if isinstance(e, ValueError) and "timezone" in str(e):
+            raise e
+        raise ValueError(f"Invalid ISO 8601 requested_at in last_control_request: {requested_at!r}") from e
+
+    if not isinstance(phase_at_request, str) or not phase_at_request.strip():
         raise ValueError(f"Invalid or empty phase_at_request in last_control_request: {phase_at_request!r}")
 
     task_id = last_control_request.get("task_id")
@@ -259,6 +263,48 @@ class DialogueManager:
 
         # 会话锁（按 session 隔离并发控制）
         self._session_lock = threading.RLock()
+
+    def _export_runtime_state(self) -> dict[str, Any]:
+        """导出纯内存状态快照，用于控制/审计事务失败时的零副作用回滚。"""
+        return {
+            "conversation_history": copy.deepcopy(self.conversation_history),
+            "slot_store_snapshot": self.slot_store.export_snapshot(),
+            "task_state": copy.deepcopy(self.task_state),
+            "_last_built_json": copy.deepcopy(self._last_built_json),
+            "_last_missing": copy.deepcopy(self._last_missing),
+            "phase": self.phase,
+            "mode": self.mode,
+            "dialogue_mode": self.dialogue_mode,
+            "control_state": self.control_state,
+            "last_control_request": copy.deepcopy(self.last_control_request),
+            "final_result": copy.deepcopy(self.final_result),
+            "_blocking_violations": copy.deepcopy(self._blocking_violations),
+            "_soft_whitelist": copy.deepcopy(self._soft_whitelist),
+            "_pending_rov_candidates": copy.deepcopy(self._pending_rov_candidates),
+            "_hard_refusal_counts": copy.deepcopy(self._hard_refusal_counts),
+            "awaiting_final_confirm": self.awaiting_final_confirm,
+            "task_start_now": self.task_start_now,
+        }
+
+    def _restore_runtime_state(self, state: dict[str, Any]) -> None:
+        """从内存快照完全恢复运行时状态（零磁盘与 ID 副作用）。"""
+        self.conversation_history = copy.deepcopy(state["conversation_history"])
+        self.slot_store = SlotStore.from_snapshot(state["slot_store_snapshot"], self.kb)
+        self.task_state = copy.deepcopy(state["task_state"])
+        self._last_built_json = copy.deepcopy(state["_last_built_json"])
+        self._last_missing = copy.deepcopy(state["_last_missing"])
+        self.phase = state["phase"]
+        self.mode = state["mode"]
+        self.dialogue_mode = state["dialogue_mode"]
+        self.control_state = state["control_state"]
+        self.last_control_request = copy.deepcopy(state["last_control_request"])
+        self.final_result = copy.deepcopy(state["final_result"])
+        self._blocking_violations = copy.deepcopy(state["_blocking_violations"])
+        self._soft_whitelist = copy.deepcopy(state["_soft_whitelist"])
+        self._pending_rov_candidates = copy.deepcopy(state["_pending_rov_candidates"])
+        self._hard_refusal_counts = copy.deepcopy(state["_hard_refusal_counts"])
+        self.awaiting_final_confirm = state["awaiting_final_confirm"]
+        self.task_start_now = state["task_start_now"]
 
     def _switch_dialogue_mode(
         self,
@@ -440,22 +486,25 @@ class DialogueManager:
         return "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数，还是查询设备工具与系统功能？"
 
     def _has_active_task(self) -> bool:
-        """判定当前会话是否存在活动任务或有效任务草稿。"""
-        if self.phase == "done":
+        """判定当前会话是否存在活动任务或有效任务草稿（严格依据阶段与任务数据）。"""
+        if self.phase in ("done", "confirming", "blocked_soft", "blocked_hard"):
             return True
         if self.phase == "rejected":
             return False
-        if self.phase in DRAFT_PHASES:
-            if self.conversation_history:
-                return True
-            valid_slots = [
-                s for k, s in self.slot_store.slots.items()
-                if k != "intent_id" and getattr(s, "status", None) == "valid" and getattr(s, "value", None) is not None
-            ]
-            if valid_slots:
-                return True
-            if any(k != "intent_id" and v is not None for k, v in self.task_state.items()):
-                return True
+
+        valid_slots = [
+            s for k, s in self.slot_store.slots.items()
+            if getattr(s, "status", None) in ("valid", "pending_confirmation") and getattr(s, "value", None) is not None
+        ]
+        if valid_slots:
+            return True
+
+        if any(k != "intent_id" and v is not None for k, v in self.task_state.items()):
+            return True
+
+        if any(k not in ("intent_id", "session_id") and v is not None for k, v in self._last_built_json.items()):
+            return True
+
         return False
 
     def _clear_draft_state_preserving_history(self) -> None:

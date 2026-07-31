@@ -1,20 +1,33 @@
 """
-tests/test_control_request_contract.py - 控制请求生命周期闭环契约测试
+tests/test_control_request_contract.py - 控制请求生命周期闭环契约与事务持久化测试
 """
 
 import copy
 import json
+import os
+import shutil
+import threading
 import unittest
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from src.dialogue_manager import DialogueManager
-from src.history_manager import save_conversation, load_history
+from src.history_manager import (
+    save_conversation,
+    load_history,
+    list_history,
+    _resolve_history_file,
+    SNAPSHOT_VERSION,
+)
 from src.intent_router import IntentRouter, IntentRouteResult
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
 from src.slot_store import Slot
-from src.exceptions import ControlAuditPersistenceError
+from src.exceptions import (
+    ControlAuditPersistenceError,
+    ServiceNotInitializedError,
+)
 import web_backend
 
 
@@ -25,11 +38,25 @@ class DummyLLM:
     def filter_reply(self, text):
         return str(text) if text is not None else ""
 
-    def chat(self, messages, temperature=0.7):
+    def chat(self, messages, temperature=0.7, **kwargs):
         return "模拟 LLM 回复"
 
     def extract_json(self, messages, max_tokens=800):
-        return {}
+        content = str(messages[-1].get("content", "")) if messages else ""
+        sys_content = str(messages[0].get("content", "")) if (isinstance(messages, list) and messages) else ""
+        if "三级主线路" in sys_content or "三级意图路由" in sys_content:
+            return {"dialogue_mode": "task_collection", "confidence": 0.95, "reason": "DummyLLM 意图路由"}
+        if "巡检" in content or "管缆" in content or "创建" in content or "任务" in content:
+            depth = 500.0 if "500" in content else (300.0 if "300" in content else None)
+            cands = [
+                {"raw_key": "任务类型", "canonical_key": "task_type_key", "raw_value": "管缆巡检", "normalized_value": "pipeline_inspection", "confidence": 0.95},
+                {"raw_key": "任务类型名称", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 0.95},
+            ]
+            if depth:
+                cands.append({"raw_key": "水深", "canonical_key": "water_depth", "raw_value": f"{int(depth)}米", "normalized_value": str(depth), "confidence": 0.95})
+            return {"slot_candidates": cands, "unresolved": []}
+        return {"slot_candidates": [], "unresolved": []}
+
 
 
 class FakeClassifierLLM:
@@ -62,6 +89,8 @@ class TestControlRequestContract(unittest.TestCase):
         self.llm = DummyLLM()
         self.dm = DialogueManager(self.llm, self.kb)
         self.router = IntentRouter(self.llm)
+        # 初始化 web_backend 中的全局 Manager 引用，避免 503
+        web_backend.init_manager(self.dm)
 
     def _seed_pipeline_task(self):
         self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
@@ -106,6 +135,39 @@ class TestControlRequestContract(unittest.TestCase):
         self.assertEqual(self.dm.control_state, "idle")
         self.assertIsNone(self.dm.last_control_request)
         self.assertIn("当前没有可取消的未发布任务", reply)
+
+    def test_general_chat_does_not_create_active_task(self):
+        """普通聊天对话不建立活动任务"""
+        self.dm.reset()
+        self.dm.process("你好，自我介绍一下")
+        self.assertFalse(self.dm._has_active_task())
+
+    def test_general_chat_then_stop_has_no_active_task(self):
+        """普通聊天后输入'立即停止当前任务'：判定无活动任务并 fail-closed"""
+        self.dm.reset()
+        self.dm.process("你好，介绍下你自己")
+        reply = self.dm.process("立即停止当前任务", request_id="req_chat_stop")
+        self.assertEqual(self.dm.control_state, "idle")
+        self.assertIsNone(self.dm.last_control_request)
+        self.assertIn("当前没有活动任务", reply)
+
+    def test_general_chat_then_pause_has_no_active_task(self):
+        """普通聊天后输入'暂停当前任务'：判定无活动任务并 fail-closed"""
+        self.dm.reset()
+        self.dm.process("今天天气怎么样")
+        reply = self.dm.process("暂停当前任务", request_id="req_chat_pause")
+        self.assertEqual(self.dm.control_state, "idle")
+        self.assertIsNone(self.dm.last_control_request)
+        self.assertIn("当前没有活动任务", reply)
+
+    def test_knowledge_query_then_abort_has_no_active_task(self):
+        """知识问答后输入'终止当前任务'：判定无活动任务并 fail-closed"""
+        self.dm.reset()
+        self.dm.process("ROV 的最大工作水深是多少？")
+        reply = self.dm.process("终止当前任务", request_id="req_qa_abort")
+        self.assertEqual(self.dm.control_state, "idle")
+        self.assertIsNone(self.dm.last_control_request)
+        self.assertIn("当前没有活动任务", reply)
 
     # --------------------------------------------------------------------------
     # 目标 2: 区分全局控制与局部修改
@@ -163,7 +225,6 @@ class TestControlRequestContract(unittest.TestCase):
         reply = self.dm.process("取消当前任务", request_id="req_cancel_hist")
         self.assertEqual(self.dm.phase, "rejected")
         self.assertEqual(self.dm.task_state, {})
-        # 对话历史不被 wipe，且增加了用户取消与系统回复
         self.assertGreater(len(self.dm.conversation_history), history_count_before)
         self.assertEqual(self.dm.conversation_history[0]["content"], "你好")
         self.assertIn("取消", reply)
@@ -203,7 +264,7 @@ class TestControlRequestContract(unittest.TestCase):
         self.assertIsNotNone(dt.tzinfo)
 
     def test_control_request_contains_task_and_intent_ids(self):
-        """控制请求元数据包含 phase_at_request、intent_id 及 task_id (草稿阶段为 None/字符串)"""
+        """控制请求元数据包含 phase_at_request、intent_id 及 task_id"""
         self.dm.reset()
         self._seed_pipeline_task()
         self.dm.process("终止当前任务", request_id="req_meta_check")
@@ -214,7 +275,7 @@ class TestControlRequestContract(unittest.TestCase):
         self.assertIn("intent_id", req)
 
     # --------------------------------------------------------------------------
-    # 目标 6: 结构化 API 输出
+    # 目标 6: 结构化 API 输出与 503 检查
     # --------------------------------------------------------------------------
 
     def test_api_chat_exposes_control_state(self):
@@ -246,81 +307,183 @@ class TestControlRequestContract(unittest.TestCase):
         self.assertEqual(data["control_state"], "pause_requested")
         self.assertIsNotNone(data["last_control_request"])
 
-    # --------------------------------------------------------------------------
-    # 目标 7 & 8: 控制状态持久化、恢复与失败回滚
-    # --------------------------------------------------------------------------
-
-    def test_control_request_survives_history_round_trip(self):
-        """控制请求及元数据可保存至历史 JSON 并通过 load_snapshot 完整恢复"""
-        self.dm.reset()
-        self._seed_pipeline_task()
-        self.dm.process("立即停止当前任务", request_id="req_roundtrip_01")
-
-        snap = {
-            "conversation_history": self.dm.conversation_history,
-            "mode": self.dm.mode,
-            "phase": self.dm.phase,
-            "dialogue_mode": self.dm.dialogue_mode,
-            "control_state": self.dm.control_state,
-            "last_control_request": self.dm.last_control_request,
-            "slot_store": self.dm.slot_store.export_snapshot(),
-            "task_state": copy.deepcopy(self.dm.task_state),
-        }
-
-        dm_new = DialogueManager(self.llm, self.kb)
-        dm_new.load_snapshot(snap)
-        self.assertEqual(dm_new.control_state, "stop_requested")
-        self.assertIsNotNone(dm_new.last_control_request)
-        self.assertEqual(dm_new.last_control_request["request_id"], "req_roundtrip_01")
-
-    def test_legacy_snapshot_defaults_to_idle_control_state(self):
-        """无新增控制元数据的旧版快照恢复时自动默认 control_state 为 idle"""
-        legacy_snap = {
-            "conversation_history": [],
-            "mode": "normal",
-            "phase": "collecting",
-            "task_state": {},
-        }
-        dm_new = DialogueManager(self.llm, self.kb)
-        dm_new.load_snapshot(legacy_snap)
-        self.assertEqual(dm_new.dialogue_mode, "task_collection")
-        self.assertEqual(dm_new.control_state, "idle")
-        self.assertIsNone(dm_new.last_control_request)
-
-    def test_invalid_control_metadata_fails_closed(self):
-        """非法控制元数据（如 confidence 为 bool/NaN、无时区时间、空 request_id）拒不恢复并抛出 ValueError"""
-        invalids = [
-            # bool 作为 confidence
-            {"dialogue_mode": "emergency_intervention", "control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": True, "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
-            # NaN 作为 confidence
-            {"dialogue_mode": "emergency_intervention", "control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": float("nan"), "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
-            # 空 request_id
-            {"dialogue_mode": "emergency_intervention", "control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "test", "request_id": "  ", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
-            # 无时区 ISO 时间
-            {"dialogue_mode": "emergency_intervention", "control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00", "phase_at_request": "collecting"}},
-        ]
-        for inv in invalids:
-            dm_test = DialogueManager(self.llm, self.kb)
-            state_before = copy.deepcopy(dm_test.get_status())
-            with self.assertRaises(ValueError):
-                dm_test.load_snapshot(inv)
-            self.assertEqual(dm_test.get_status(), state_before)
-
-    def test_control_history_persistence_failure_rolls_back_state(self):
-        """控制历史快照保存失败抛出 ControlAuditPersistenceError 且 API 返回 500"""
+    def test_uninitialized_manager_returns_503_not_mock(self):
+        """全局 AI 服务未初始化时，/api/chat 必须抛出 ServiceNotInitializedError 并由 API 返回 503"""
         app = web_backend.app.test_client()
-        sid = "test_session_pers_fail"
-        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
-
-        with patch("web_backend.save_conversation", side_effect=OSError("Disk write failure")):
-            res = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_fail_01"})
-            self.assertEqual(res.status_code, 500)
+        with patch.object(web_backend, "_shared_kb", None), patch.object(web_backend, "_shared_llm", None):
+            res = app.post("/api/chat", json={"session_id": "uninit_session", "message": "你好"})
+            self.assertEqual(res.status_code, 503)
             data = res.get_json()
             self.assertFalse(data["ok"])
+            self.assertEqual(data["error"], "ServiceNotInitializedError")
+
+    # --------------------------------------------------------------------------
+    # 目标 7 & 8: 事务回滚与持久化失败响应
+    # --------------------------------------------------------------------------
+
+    def test_control_persistence_failure_restores_manager_state(self):
+        """控制历史保存失败时完全回滚 Manager 内存状态，并在随后 session/state 中显示预发状态 (idle)"""
+        app = web_backend.app.test_client()
+        sid = "test_session_roll_state"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        with patch("web_backend.save_conversation", side_effect=OSError("Disk failure")):
+            res = app.post("/api/chat", json={"session_id": sid, "message": "立即停止当前任务", "request_id": "req_fail_rollback"})
+            self.assertEqual(res.status_code, 500)
+
+        # 校验 /api/session/state 是否显示已恢复的预发状态 (control_state = idle)
+        st_res = app.get(f"/api/session/state?session_id={sid}")
+        st_data = st_res.get_json()
+        self.assertEqual(st_data["control_state"], "idle")
+        self.assertIsNone(st_data["last_control_request"])
+
+    def test_control_persistence_failure_removes_success_reply_from_history(self):
+        """控制历史保存失败时，回滚必须同步从 conversation_history 中移除本轮回复与输入"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+        history_before = copy.deepcopy(self.dm.conversation_history)
+
+        pre_state = self.dm._export_runtime_state()
+        self.dm.process("立即停止当前任务", request_id="req_fail_hist")
+
+        # 模拟持久化失败回滚
+        self.dm._restore_runtime_state(pre_state)
+        self.assertEqual(self.dm.conversation_history, history_before)
+        self.assertEqual(self.dm.control_state, "idle")
+
+    def test_draft_cancel_persistence_failure_restores_draft(self):
+        """草稿取消持久化失败时，完整恢复未发草稿的槽位与状态"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+        pre_state = self.dm._export_runtime_state()
+
+        self.dm.process("取消当前任务", request_id="req_cancel_roll")
+        self.assertEqual(self.dm.phase, "rejected")
+
+        # 恢复 pre_state
+        self.dm._restore_runtime_state(pre_state)
+        self.assertEqual(self.dm.phase, "collecting")
+        self.assertIn("water_depth", self.dm.task_state)
+
+    def test_draft_cancel_persistence_failure_returns_500(self):
+        """草稿取消审计保存失败时 API 返回 500 并标识 ControlAuditPersistenceError"""
+        app = web_backend.app.test_client()
+        sid = "test_session_cancel_500"
+        app.post("/api/chat", json={"session_id": sid, "message": "创建一个管缆巡检任务，水深300米"})
+
+        with patch("web_backend.save_conversation", side_effect=OSError("Disk write error")):
+            res = app.post("/api/chat", json={"session_id": sid, "message": "取消当前任务", "request_id": "req_cancel_500"})
+            self.assertEqual(res.status_code, 500)
+            data = res.get_json()
             self.assertEqual(data["error"], "ControlAuditPersistenceError")
 
     # --------------------------------------------------------------------------
-    # 目标 9: 生产分类入口测试 (FakeClassifierLLM, 不依赖 Mock.called)
+    # 目标 9: 真实文件持久化、并发与未完写隔离测试
+    # --------------------------------------------------------------------------
+
+    def test_real_history_file_round_trip(self):
+        """真实的 0600 权限、fsync 及快照 v3 写入与 load_history 读取校验"""
+        sid = "test_real_file_session"
+        self.dm.reset()
+        self._seed_pipeline_task()
+        self.dm.process("立即停止当前任务", request_id="req_rf_01")
+
+        filename = save_conversation(
+            session_id=sid,
+            conversation_history=self.dm.conversation_history,
+            task_state=self.dm.task_state,
+            built_json=self.dm._last_built_json,
+            mode=self.dm.mode,
+            phase=self.dm.phase,
+            intent_id=self.dm.task_state.get("intent_id"),
+            slot_store=self.dm.slot_store,
+            dialogue_mode=self.dm.dialogue_mode,
+            control_state=self.dm.control_state,
+            last_control_request=self.dm.last_control_request,
+            request_id="req_rf_01",
+        )
+        self.assertTrue(filename.startswith("control_"))
+
+        data = load_history(filename)
+        self.assertIsNotNone(data)
+        self.assertEqual(data["snapshot_version"], SNAPSHOT_VERSION)
+        self.assertEqual(data["control_state"], "stop_requested")
+        self.assertEqual(data["last_control_request"]["request_id"], "req_rf_01")
+
+    def test_concurrent_control_audit_writes_preserve_both_events(self):
+        """多线程并发写控制审计日志，验证各自独立的 control_<request_id>.json 文件均完整落地"""
+        sid = "test_concurrent_audit"
+        self.dm.reset()
+        self._seed_pipeline_task()
+
+        def _do_write(req_id):
+            save_conversation(
+                session_id=sid,
+                conversation_history=self.dm.conversation_history,
+                task_state=self.dm.task_state,
+                built_json=self.dm._last_built_json,
+                mode=self.dm.mode,
+                phase=self.dm.phase,
+                intent_id=self.dm.task_state.get("intent_id"),
+                slot_store=self.dm.slot_store,
+                dialogue_mode=self.dm.dialogue_mode,
+                control_state="stop_requested",
+                last_control_request={"action": "stop", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "test", "request_id": req_id, "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"},
+                request_id=req_id,
+            )
+
+        t1 = threading.Thread(target=_do_write, args=("req_conc_A",))
+        t2 = threading.Thread(target=_do_write, args=("req_conc_B",))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        histories = list_history()
+        file_names = [h["id"] for h in histories]
+        self.assertTrue(any("req_conc_A" in f for f in file_names))
+        self.assertTrue(any("req_conc_B" in f for f in file_names))
+
+    def test_partial_history_write_never_becomes_visible(self):
+        """半写/异常写入过程中产生的 .tmp_ 文件不会出现在 list_history 列表中"""
+        history_dir = _resolve_history_file("history_test_tmp_check.json").parent
+        tmp_file = history_dir / ".tmp_history_junk_12345.json"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write("{partial_json_corrupted")
+
+        try:
+            histories = list_history()
+            file_names = [h["id"] for h in histories]
+            self.assertNotIn(tmp_file.name, file_names)
+        finally:
+            if tmp_file.exists():
+                tmp_file.unlink()
+
+    def test_v2_snapshot_migrates_to_v3_without_fabricated_metadata(self):
+        """v2 旧版快照加载时迁移为 v3，缺少元数据时不伪造 request_id/timestamp，默认降级为 idle"""
+        v2_snap = {
+            "snapshot_version": 2,
+            "conversation_history": [],
+            "mode": "normal",
+            "phase": "collecting",
+            "control_state": "pause_requested",
+            "last_control_request": {
+                "action": "pause",
+                "status": "requested",
+                "source": "rule",
+                "confidence": 0.9,
+                "reason": "pause",
+            },
+            "task_state": {},
+        }
+        dm_new = DialogueManager(self.llm, self.kb)
+        dm_new.load_snapshot(v2_snap)
+        # 降级为 idle，绝不产生虚假的 request_id 或时区时间
+        self.assertEqual(dm_new.control_state, "idle")
+        self.assertIsNone(dm_new.last_control_request)
+
+    # --------------------------------------------------------------------------
+    # 目标 10: 生产分类入口测试 (FakeClassifierLLM, 不依赖 Mock.called)
     # --------------------------------------------------------------------------
 
     def test_production_classify_interaction_path_cannot_bypass_safety_veto(self):

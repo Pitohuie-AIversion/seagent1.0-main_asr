@@ -61,14 +61,9 @@ def init_asr_service(asr_service):
 
 def get_or_create_manager(sid: str) -> DialogueManager:
     """获取或创建会话专属的 DialogueManager 实例"""
-    global _shared_llm, _shared_kb
     with _sessions_lock:
-        if _shared_kb is None:
-            from src.knowledge_retriever import KnowledgeBase
-            _shared_kb = KnowledgeBase()
-        if _shared_llm is None:
-            from src.llm_client import LLMClient
-            _shared_llm = LLMClient()
+        if _shared_llm is None or _shared_kb is None:
+            raise ServiceNotInitializedError("后端 AI 服务未初始化 (LLMClient 或 KnowledgeBase 未加载)")
         if sid not in _sessions_manager:
             _sessions_manager[sid] = DialogueManager(_shared_llm, _shared_kb)
         return _sessions_manager[sid]
@@ -417,8 +412,9 @@ def api_asr():
             "retryable": True
         }), 500
 
+
 from src.slot_store import SlotVersionConflict
-from src.exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError, ControlAuditPersistenceError
+from src.exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError, ControlAuditPersistenceError, ServiceNotInitializedError
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
@@ -443,9 +439,19 @@ def api_chat():
             if sid not in _sessions:
                 _sessions[sid] = Session(sid)
 
+        # 导出请求前零副作用内存快照
+        pre_snapshot = mgr._export_runtime_state()
+        pre_control_state = mgr.control_state
+        pre_phase = mgr.phase
+
         reply = mgr.process(msg, request_id=request_id)
         print_status(mgr)
-        if mgr.phase in ("done", "rejected") or mgr.control_state != "idle":
+
+        is_control_transition = (mgr.control_state != pre_control_state or mgr.control_state != "idle")
+        is_draft_cancellation = (pre_phase in ("collecting", "confirming", "blocked_soft", "blocked_hard") and mgr.phase == "rejected")
+        requires_audit_save = (is_control_transition or is_draft_cancellation or mgr.phase in ("done", "rejected"))
+
+        if requires_audit_save:
             try:
                 save_conversation(
                     session_id=sid,
@@ -459,11 +465,12 @@ def api_chat():
                     dialogue_mode=mgr.dialogue_mode,
                     control_state=mgr.control_state,
                     last_control_request=mgr.last_control_request,
+                    request_id=request_id if (is_control_transition or is_draft_cancellation) else None,
                 )
             except Exception as e:
                 logging.error("保存历史快照失败: %s", e, exc_info=True)
-                if mgr.control_state != "idle":
-                    raise ControlAuditPersistenceError(f"控制历史快照保存失败: {e}") from e
+                mgr._restore_runtime_state(pre_snapshot)
+                raise ControlAuditPersistenceError(f"控制历史快照保存失败: {e}") from e
 
         resp_data = {
             "code": 200,
@@ -488,6 +495,16 @@ def api_chat():
                 raise TypeError(f"Field '{k}' is not JSON serializable: {type(v)} -> {v}") from e
 
         return jsonify(resp_data)
+    except ServiceNotInitializedError as sne:
+        logging.error(f"Service uninitialized in /api/chat: {sne}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 503,
+            "error": "ServiceNotInitializedError",
+            "msg": "后端 AI 服务尚未初始化，请稍后再试。",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": True
+        }), 503
     except SlotVersionConflict as svc:
         logging.error(f"Slot version conflict in /api/chat: {svc}", exc_info=True)
         return jsonify({

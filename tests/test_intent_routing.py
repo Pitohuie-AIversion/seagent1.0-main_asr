@@ -22,6 +22,19 @@ class DummyLLM(LLMClient):
         self.default_reply = default_reply
         self.called_chats = []
 
+    def extract_json(self, messages: list[dict], max_tokens: int = 800) -> dict:
+        content = ""
+        if isinstance(messages, list) and messages:
+            content = str(messages[-1].get("content", ""))
+        if "巡检" in content or "管缆" in content or "创建" in content:
+            res = {"task_type_key": "pipeline_inspection", "task_type": "管缆巡检"}
+            if "500" in content:
+                res["water_depth"] = 500.0
+            elif "300" in content:
+                res["water_depth"] = 300.0
+            return res
+        return {}
+
     def chat(self, messages: list[dict], temperature: float = 0.7, max_tokens: int = 800) -> str:
         self.called_chats.append(messages)
         res = super().chat(messages, temperature, max_tokens)
@@ -53,6 +66,7 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
         self.llm = DummyLLM()
         self.router = IntentRouter(self.llm)
         self.dm = DialogueManager(self.llm, self.kb)
+        web_backend.init_manager(self.dm)
 
     # ══════════════════════════════════════════════════════════════════════
     # 一、基础路由测试（保留原有测试）
@@ -755,6 +769,7 @@ class TestIssue10ThreeModeRouting(unittest.TestCase):
         self.llm = DummyLLM()
         self.router = IntentRouter(self.llm)
         self.dm = DialogueManager(self.llm, self.kb)
+        web_backend.init_manager(self.dm)
 
     def test_basic_three_mode_routing(self):
         """1. 基础三级路由测试"""
@@ -1001,6 +1016,9 @@ class TestIssue10ThreeModeRouting(unittest.TestCase):
                 "source": "rule",
                 "confidence": 0.98,
                 "reason": "pause",
+                "request_id": "req_snap_11",
+                "requested_at": "2026-07-31T14:30:00+08:00",
+                "phase_at_request": "collecting",
             },
             "task_state": copy.deepcopy(self.dm.task_state),
         }

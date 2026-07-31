@@ -7,6 +7,10 @@ class ControlAuditPersistenceError(RuntimeError):
     """控制请求或草稿取消的历史审计持久化失败。"""
 
 
+class ServiceNotInitializedError(RuntimeError):
+    """全局 AI 服务或知识库未初始化。"""
+
+
 class TaskPersistenceError(Exception):
     """TaskIntent 文件持久化失败。"""
 
