@@ -1201,6 +1201,9 @@ class TestIssue10ThreeModeRouting(unittest.TestCase):
                 "source": "rule",
                 "confidence": 0.98,
                 "reason": "规则识别",
+                "request_id": "req_snap_test",
+                "requested_at": "2026-07-31T14:30:00+08:00",
+                "phase_at_request": "collecting",
             },
             "task_state": copy.deepcopy(self.dm.task_state),
         }
@@ -1211,23 +1214,23 @@ class TestIssue10ThreeModeRouting(unittest.TestCase):
         # 2. 非法 snapshot
         invalid_snapshots = [
             # action 与 control_state 不匹配
-            {"control_state": "stop_requested", "last_control_request": {"action": "pause", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "test"}},
+            {"control_state": "stop_requested", "last_control_request": {"action": "pause", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
             # non-dict last_control_request
             {"control_state": "pause_requested", "last_control_request": ["invalid"]},
             # idle 但 last_control_request 不为 None
-            {"control_state": "idle", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "test"}},
+            {"control_state": "idle", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
             # 非 idle 但 last_control_request 缺失 (None)
             {"control_state": "stop_requested", "last_control_request": None},
             # confidence 为 bool
-            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": True, "reason": "test"}},
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": True, "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
             # confidence 为 NaN
-            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": float("nan"), "reason": "test"}},
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": float("nan"), "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
             # confidence 越界 (> 1.0)
-            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": 1.5, "reason": "test"}},
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": 1.5, "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
             # status 非 requested
-            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "completed", "source": "rule", "confidence": 0.9, "reason": "test"}},
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "completed", "source": "rule", "confidence": 0.9, "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
             # reason 为空
-            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "  "}},
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "  ", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
         ]
 
         for inv in invalid_snapshots:

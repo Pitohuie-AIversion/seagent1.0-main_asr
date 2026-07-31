@@ -55,7 +55,7 @@ from . import task_intent_builder as _ti_builder_module
 from .id_sequence import validate_intent_id, next_daily_id
 from .slot_store import SlotStore, Slot, normalize_slot_value_type
 
-from .exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError
+from .exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError, ControlAuditPersistenceError
 from .intent_router import IntentRouter, IntentRouteResult
 from .task_request_guard import analyze_task_request
 from .result_paths import get_task_dir
@@ -144,12 +144,52 @@ def _validate_control_snapshot(
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError(f"Invalid or empty reason in last_control_request: {reason!r}")
 
+    request_id = last_control_request.get("request_id")
+    if request_id is None:
+        request_id = "req_legacy"
+    elif not isinstance(request_id, str) or not request_id.strip():
+        raise ValueError(f"Invalid or empty request_id in last_control_request: {request_id!r}")
+
+    requested_at = last_control_request.get("requested_at")
+    if requested_at is None:
+        requested_at = "2026-07-31T00:00:00+08:00"
+    elif not isinstance(requested_at, str) or not requested_at.strip():
+        raise ValueError(f"Invalid or empty requested_at in last_control_request: {requested_at!r}")
+    else:
+        try:
+            dt = datetime.fromisoformat(requested_at.strip())
+            if dt.tzinfo is None:
+                raise ValueError(f"requested_at must be timezone-aware: {requested_at!r}")
+        except Exception as e:
+            if isinstance(e, ValueError) and "timezone" in str(e):
+                raise e
+            raise ValueError(f"Invalid ISO 8601 requested_at in last_control_request: {requested_at!r}") from e
+
+    phase_at_request = last_control_request.get("phase_at_request")
+    if phase_at_request is None:
+        phase_at_request = "collecting"
+    elif not isinstance(phase_at_request, str) or not phase_at_request.strip():
+        raise ValueError(f"Invalid or empty phase_at_request in last_control_request: {phase_at_request!r}")
+
+    task_id = last_control_request.get("task_id")
+    if task_id is not None and not isinstance(task_id, str):
+        raise ValueError(f"Invalid task_id in last_control_request: {task_id!r}")
+
+    intent_id = last_control_request.get("intent_id")
+    if intent_id is not None and not isinstance(intent_id, str):
+        raise ValueError(f"Invalid intent_id in last_control_request: {intent_id!r}")
+
     clean_req = {
         "action": action,
         "status": "requested",
         "source": source.strip(),
         "confidence": float(confidence),
         "reason": reason.strip(),
+        "request_id": request_id.strip(),
+        "requested_at": requested_at.strip(),
+        "phase_at_request": phase_at_request.strip(),
+        "task_id": task_id.strip() if isinstance(task_id, str) else None,
+        "intent_id": intent_id.strip() if isinstance(intent_id, str) else None,
     }
     return (clean_c_state, clean_req)
 
@@ -399,6 +439,41 @@ class DialogueManager:
     def _handle_unknown_intent(self, user_message: str, route: IntentRouteResult) -> str:
         return "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数，还是查询设备工具与系统功能？"
 
+    def _has_active_task(self) -> bool:
+        """判定当前会话是否存在活动任务或有效任务草稿。"""
+        if self.phase == "done":
+            return True
+        if self.phase == "rejected":
+            return False
+        if self.phase in DRAFT_PHASES:
+            if self.conversation_history:
+                return True
+            valid_slots = [
+                s for k, s in self.slot_store.slots.items()
+                if k != "intent_id" and getattr(s, "status", None) == "valid" and getattr(s, "value", None) is not None
+            ]
+            if valid_slots:
+                return True
+            if any(k != "intent_id" and v is not None for k, v in self.task_state.items()):
+                return True
+        return False
+
+    def _clear_draft_state_preserving_history(self) -> None:
+        """清空未发布任务草稿数据，但完整保留对话历史。"""
+        self.slot_store = SlotStore(self.kb)
+        self.task_state = {}
+        self._last_built_json = {}
+        self._last_missing = []
+        self._blocking_violations = []
+        self._soft_whitelist = set()
+        self._pending_rov_candidates = []
+        self._hard_refusal_counts = {}
+        self.final_result = None
+        self.awaiting_final_confirm = False
+        self.task_start_now = False
+        self.control_state = "idle"
+        self.last_control_request = None
+
     def _handle_emergency_intervention(
         self, user_message: str, route: IntentRouteResult, request_id: str = "req_default"
     ) -> str:
@@ -415,9 +490,27 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
-        # ── 1. 未发布草稿阶段的 cancel 处理 ──
+        # ── 1. 无活动任务或草稿时的 fail-closed 拦截 ──
+        if not self._has_active_task():
+            self.control_state = "idle"
+            self.last_control_request = None
+            self._switch_dialogue_mode(
+                "emergency_intervention",
+                source=route.source,
+                confidence=route.confidence,
+                reason=route.reason,
+            )
+            if action == "cancel":
+                reply = "当前没有可取消的未发布任务。"
+            else:
+                reply = "当前没有活动任务或可取消的任务草稿，无法执行控制指令。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        # ── 2. 未发布草稿阶段的 cancel 处理 ──
         if action == "cancel" and self.phase in DRAFT_PHASES:
-            self.reset()
+            self._clear_draft_state_preserving_history()
             self.phase = "rejected"
             self.control_state = "idle"
             self.last_control_request = None
@@ -432,7 +525,7 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
-        # ── 2. 已处于 rejected 阶段或没有活动任务时的 cancel 处理 ──
+        # ── 3. 已处于 rejected 阶段的 cancel 处理 ──
         if action == "cancel" and self.phase == "rejected":
             self.control_state = "idle"
             self.last_control_request = None
@@ -447,7 +540,7 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
-        # ── 3. 已发布阶段 (phase == "done") 的 cancel 以及所有阶段的 pause, stop, abort ──
+        # ── 4. 已发布阶段 (phase == "done") 的 cancel 以及所有阶段的 pause, stop, abort ──
         initial_version = self.slot_store.version
         initial_snapshot = copy.deepcopy(self.slot_store.export_snapshot())
         initial_unresolved = list(self.slot_store.unresolved)
@@ -460,13 +553,30 @@ class DialogueManager:
         initial_soft_whitelist = copy.deepcopy(self._soft_whitelist)
         initial_blocking_violations = copy.deepcopy(self._blocking_violations)
 
+        tz_now = get_current_datetime()
+        if tz_now.tzinfo is None:
+            tz_now = tz_now.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+        iso_requested_at = tz_now.isoformat()
+
+        task_id_val = self.task_state.get("task_id") or (
+            self.final_result.get("task_id") if isinstance(self.final_result, dict) else None
+        )
+        intent_id_val = self.task_state.get("intent_id") or (
+            self.final_result.get("intent_id") if isinstance(self.final_result, dict) else None
+        )
+
         self.control_state = f"{action}_requested"
         self.last_control_request = {
             "action": action,
             "status": "requested",
             "source": route.source,
-            "confidence": route.confidence,
+            "confidence": float(route.confidence),
             "reason": route.reason,
+            "request_id": request_id,
+            "requested_at": iso_requested_at,
+            "phase_at_request": self.phase,
+            "task_id": str(task_id_val) if task_id_val else None,
+            "intent_id": str(intent_id_val) if intent_id_val else None,
         }
         self._switch_dialogue_mode(
             "emergency_intervention",

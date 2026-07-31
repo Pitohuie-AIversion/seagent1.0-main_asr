@@ -280,56 +280,107 @@ class IntentRouter:
                 msg, conversation_history, task_state, phase
             )
 
+    def _is_local_slot_change(self, msg: str) -> bool:
+        """判断是否为局部槽位/参数修改撤销 (如'取消载荷修改', '取消任务载荷修改', '取消支持船修改')"""
+        if any(
+            kw in msg
+            for kw in (
+                "取消载荷修改",
+                "取消任务载荷修改",
+                "取消支持船修改",
+                "取消任务支持船修改",
+                "取消水深修改",
+                "取消任务水深修改",
+                "取消时间修改",
+                "取消位置修改",
+                "取消设备修改",
+                "取消油田修改",
+                "取消参数修改",
+                "取消槽位修改",
+            )
+        ):
+            return True
+        if re.search(r"取消.*(?:修改|设置|调整|填报|输入)", msg):
+            return True
+        return False
+
+    def _is_non_task_control(self, msg: str) -> bool:
+        """判断是否为非任务对象的控制指令 (如'停止任务打印', '终止说明输出', '停止回答', '取消告警')"""
+        if any(
+            kw in msg
+            for kw in (
+                "停止任务打印",
+                "终止说明输出",
+                "停止回答",
+                "停止生成",
+                "取消告警",
+                "暂停功能",
+                "停止打印",
+                "终止输出",
+                "停止播报",
+                "停止显示",
+            )
+        ):
+            return True
+        if re.search(
+            r"(?:停止|取消|暂停|终止).*(?:打印|输出|回答|生成|告警|功能|说明|对话|聊天|播报|显示)",
+            msg,
+        ):
+            return True
+        return False
+
     def _parse_executable_control_action(self, user_message: str) -> EmergencyAction | None:
-        """解析确定性可执行紧急动作，必须满足明确对象(Condition A)或明确紧急命令(Condition B)。"""
+        """解析确定性可执行全局紧急动作。"""
         msg = user_message.strip()
 
-        # 1. 排除非任务对象 (如"停止回答", "停止生成", "暂停功能", "取消告警", "取消载荷修改", "终止说明输出")
-        non_task_objects = (
-            "回答",
-            "生成",
-            "功能",
-            "告警",
-            "修改",
-            "设置",
-            "参数",
-            "载荷",
-            "支持船",
-            "水深",
-            "油田",
-            "设备",
-            "工具",
-            "说明",
-            "输出",
-            "打印",
-        )
-        if any(kw in msg for kw in non_task_objects) and "任务" not in msg and "操作" not in msg:
+        # 1. 排除局部槽位修改与非任务控制对象
+        if self._is_local_slot_change(msg) or self._is_non_task_control(msg):
             return None
 
-        # 2. 排除被否定的动作 (如"不要停止", "不是要取消", "别暂停")
+        # 2. 排除否定控制动作
         if re.search(
             r"(?:不要|不|别|无须|不用|不需要|无需|禁止|不能|严禁|不想|不是要|不是)\s*(?:再|需要)?\s*(?:停止|暂停|终止|撤回|取消|中断|放弃)",
             msg,
         ):
             return None
 
-        # 3. 明确的紧急干预组合：必须具备明确任务对象 (Condition A) 或明确紧急副词 (Condition B)
+        # 3. 明确的全局任务紧急控制词
         # 暂停
-        if any(kw in msg for kw in ("暂停当前任务", "暂停任务", "暂停当前操作", "紧急暂停", "立即暂停", "马上暂停")):
+        if any(
+            kw in msg
+            for kw in (
+                "暂停当前任务",
+                "暂停整个任务",
+                "立即暂停当前任务",
+                "紧急暂停当前任务",
+                "暂停当前操作",
+                "暂停任务",
+                "立即暂停",
+                "马上暂停",
+                "紧急暂停",
+            )
+        ):
             return "pause"
         # 停止
         if any(
             kw in msg
             for kw in (
+                "立即停止当前任务",
+                "马上停止当前任务",
+                "停止当前任务",
+                "紧急停止当前任务",
+                "停止整个任务",
+                "立即停止任务",
+                "中断当前任务",
+                "中断整个任务",
+                "立即中断当前任务",
+                "停止当前操作",
                 "立即停止",
                 "马上停止",
-                "停止当前任务",
-                "停止任务",
                 "紧急停止",
-                "中断当前任务",
+                "停止任务",
                 "中断任务",
                 "立即中断",
-                "停止当前操作",
             )
         ):
             return "stop"
@@ -338,12 +389,17 @@ class IntentRouter:
             kw in msg
             for kw in (
                 "终止当前任务",
-                "终止任务",
+                "终止整个任务",
                 "撤回当前任务",
+                "撤回整个任务",
+                "立即终止当前任务",
+                "紧急终止当前任务",
+                "终止当前操作",
+                "立即终止任务",
+                "终止任务",
                 "撤回任务",
                 "立即终止",
                 "紧急终止",
-                "终止当前操作",
             )
         ):
             return "abort"
@@ -352,13 +408,17 @@ class IntentRouter:
             kw in msg
             for kw in (
                 "取消当前任务",
-                "取消任务",
+                "取消整个任务",
                 "撤销当前任务草稿",
                 "放弃当前任务",
                 "取消当前操作",
+                "立即取消当前任务",
+                "紧急取消当前任务",
+                "取消任务草稿",
+                "取消任务",
+                "放弃任务",
                 "立即取消",
                 "紧急取消",
-                "放弃任务",
             )
         ):
             return "cancel"
@@ -366,12 +426,34 @@ class IntentRouter:
         return None
 
     def _check_safety_veto(self, user_message: str) -> IntentRouteResult | None:
-        """检查否定句、疑问句与条件句，提供确定性安全否决权。
+        """检查局部修改、非任务控制、否定句、疑问句与条件句，提供确定性安全否决权。
 
         若触发否决权，绝对不允许升级为可执行的 emergency_intervention 动作。
         """
         msg = user_message.strip()
 
+        # 1. 局部槽位/参数修改撤销 (如"取消载荷修改", "取消任务载荷修改") -> 路由至 task_collection 线路
+        if self._is_local_slot_change(msg):
+            return IntentRouteResult(
+                dialogue_mode="task_collection",
+                interaction_type="WRITE",
+                confidence=0.95,
+                reason="规则判定: 局部槽位/参数修改撤销，入任务收集线路",
+                source="rule",
+            )
+
+        # 2. 非任务对象的控制指令 (如"停止任务打印", "终止说明输出") -> 路由至 knowledge_qa 线路
+        if self._is_non_task_control(msg):
+            return IntentRouteResult(
+                dialogue_mode="knowledge_qa",
+                interaction_type="QUERY",
+                query_intent="GENERAL_CHAT",
+                confidence=0.95,
+                reason="规则安全拦截: 非任务对象控制指令，入知识问答线路",
+                source="rule",
+            )
+
+        # 3. 否定控制动作 + 参数修改 (如"不要停止任务，水深改成500米") -> 强行拦截并路由至 task_collection
         negated_control_action = bool(
             re.search(
                 r"(?:不要|不|别|无须|不用|不需要|无需|禁止|不能|严禁|不想|不是要|不是)\s*(?:再|需要)?\s*(?:停止|暂停|终止|撤回|取消|中断|放弃)",
@@ -382,7 +464,6 @@ class IntentRouter:
             re.search(r"(?:[0-9]+|改成|设为|设置为|替换为|调整为|改为)", msg)
         )
 
-        # 否定控制动作 + 参数修改 (如"不要停止任务，水深改成500米") -> 强行拦截并路由至 task_collection
         if negated_control_action and explicit_slot_update:
             return IntentRouteResult(
                 dialogue_mode="task_collection",
@@ -392,7 +473,7 @@ class IntentRouter:
                 source="rule",
             )
 
-        # 仅有否定控制动作 (如"不要停止任务", "别取消") -> 拦截降级至 uncertain 澄清
+        # 4. 仅有否定控制动作 (如"不要停止任务", "别取消") -> 拦截降级至 uncertain 澄清
         if negated_control_action:
             return IntentRouteResult(
                 dialogue_mode="uncertain",
@@ -403,7 +484,7 @@ class IntentRouter:
                 source="rule",
             )
 
-        # 疑问表达识别 (如“如何停止当前任务？”、“怎么取消任务？”)
+        # 5. 疑问表达识别 (如“如何停止当前任务？”、“怎么取消任务？”)
         has_emergency_verb = any(
             kw in msg for kw in ("停止", "暂停", "终止", "撤回", "取消", "中断", "放弃")
         )
@@ -439,7 +520,7 @@ class IntentRouter:
                 source="rule",
             )
 
-        # 条件表达识别 (如“如果停止任务会怎样？”)
+        # 6. 条件表达识别 (如“如果停止任务会怎样？”)
         is_condition = any(
             kw in msg
             for kw in (
@@ -465,7 +546,7 @@ class IntentRouter:
                 source="rule",
             )
 
-        # 裸动作词识别 (如单字/裸词 "停止", "暂停", "取消", "终止") -> 降级为 uncertain 澄清
+        # 7. 裸动作词识别 (如单字/裸词 "停止", "暂停", "取消", "终止") -> 降级为 uncertain 澄清
         bare_words = ("停止", "暂停", "终止", "取消", "撤回", "放弃")
         if msg in bare_words:
             return IntentRouteResult(

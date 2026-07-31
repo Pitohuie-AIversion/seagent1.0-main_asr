@@ -87,6 +87,9 @@ def save_conversation(
     phase: str,
     intent_id: Optional[str] = None,
     slot_store: Any = None,
+    dialogue_mode: str = "task_collection",
+    control_state: str = "idle",
+    last_control_request: Optional[Dict[str, Any]] = None,
 ) -> str:
     """保存 v2 对话快照，并返回不含路径的文件名。"""
     history_dir = _ensure_dir()
@@ -113,6 +116,9 @@ def save_conversation(
         "built_json": built_json,
         "mode": mode,
         "phase": phase,
+        "dialogue_mode": dialogue_mode,
+        "control_state": control_state,
+        "last_control_request": last_control_request,
         "task_id": built_json.get("task_id", "unknown"),
         "task_type": task_state.get("task_type_key", "unknown"),
         "intent_id": intent_id,

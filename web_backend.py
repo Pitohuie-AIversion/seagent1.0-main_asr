@@ -27,6 +27,7 @@ from src.exceptions import (
     StatePersistenceError,
     StateSelectorError,
     StateVersionConflict,
+    ControlAuditPersistenceError,
 )
 
 # ========== 配置路径（与你的项目一致）==========
@@ -60,7 +61,14 @@ def init_asr_service(asr_service):
 
 def get_or_create_manager(sid: str) -> DialogueManager:
     """获取或创建会话专属的 DialogueManager 实例"""
+    global _shared_llm, _shared_kb
     with _sessions_lock:
+        if _shared_kb is None:
+            from src.knowledge_retriever import KnowledgeBase
+            _shared_kb = KnowledgeBase()
+        if _shared_llm is None:
+            from src.llm_client import LLMClient
+            _shared_llm = LLMClient()
         if sid not in _sessions_manager:
             _sessions_manager[sid] = DialogueManager(_shared_llm, _shared_kb)
         return _sessions_manager[sid]
@@ -410,7 +418,7 @@ def api_asr():
         }), 500
 
 from src.slot_store import SlotVersionConflict
-from src.exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
+from src.exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError, ControlAuditPersistenceError
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
@@ -435,9 +443,9 @@ def api_chat():
             if sid not in _sessions:
                 _sessions[sid] = Session(sid)
 
-        reply = mgr.process(msg)
+        reply = mgr.process(msg, request_id=request_id)
         print_status(mgr)
-        if mgr.phase == "done":
+        if mgr.phase in ("done", "rejected") or mgr.control_state != "idle":
             try:
                 save_conversation(
                     session_id=sid,
@@ -448,9 +456,14 @@ def api_chat():
                     phase=mgr.phase,
                     intent_id=mgr.task_state.get('intent_id'),
                     slot_store=mgr.slot_store,
+                    dialogue_mode=mgr.dialogue_mode,
+                    control_state=mgr.control_state,
+                    last_control_request=mgr.last_control_request,
                 )
             except Exception as e:
                 logging.error("保存历史快照失败: %s", e, exc_info=True)
+                if mgr.control_state != "idle":
+                    raise ControlAuditPersistenceError(f"控制历史快照保存失败: {e}") from e
 
         resp_data = {
             "code": 200,
@@ -459,6 +472,9 @@ def api_chat():
             "reply": reply,
             "done": mgr.phase == "done",
             "rejected": mgr.phase == "rejected",
+            "dialogue_mode": mgr.dialogue_mode,
+            "control_state": mgr.control_state,
+            "last_control_request": mgr.last_control_request,
             "collected": mgr._last_built_json,
             "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
             "task_type": mgr.task_state.get("task_type_key"),
@@ -492,6 +508,16 @@ def api_chat():
             "request_id": request_id if 'request_id' in locals() else "req_unknown",
             "retryable": True
         }), 409
+    except ControlAuditPersistenceError as cae:
+        logging.error(f"Control audit persistence error in /api/chat: {cae}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "error": "ControlAuditPersistenceError",
+            "msg": "控制审计日志保存失败，控制请求未生成。",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": True
+        }), 500
     except (TaskPersistenceError, IdReservationError, TaskRollbackError) as tpe:
         logging.error(f"Task persistence error in /api/chat: {tpe}", exc_info=True)
         return jsonify({
@@ -556,6 +582,9 @@ def get_session_state():
         "session_id": sid,
         "done": mgr.phase == "done",
         "rejected": mgr.phase == "rejected",
+        "dialogue_mode": mgr.dialogue_mode,
+        "control_state": mgr.control_state,
+        "last_control_request": mgr.last_control_request,
         "collected": mgr._last_built_json,
         "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
         "task_type": mgr.task_state.get("task_type_key"),

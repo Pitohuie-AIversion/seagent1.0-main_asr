@@ -3,6 +3,10 @@ src/exceptions.py — 自定义异常类声明
 """
 
 
+class ControlAuditPersistenceError(RuntimeError):
+    """控制请求或草稿取消的历史审计持久化失败。"""
+
+
 class TaskPersistenceError(Exception):
     """TaskIntent 文件持久化失败。"""
 
