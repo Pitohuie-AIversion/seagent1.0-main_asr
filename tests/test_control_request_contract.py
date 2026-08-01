@@ -2966,12 +2966,18 @@ class TestControlRequestContract(unittest.TestCase):
 
         from src.history_manager import _fsync_directory
         orig_fsync = _fsync_directory
+        fsync_swapped = False
         def mock_fsync(h_dir):
             orig_fsync(h_dir)
-            if target.exists():
+            nonlocal fsync_swapped
+            if target.exists() and not fsync_swapped:
+                fsync_swapped = True
                 content = target.read_bytes()
+                keep_link = target.parent / "keep_inode_control.tmp"
+                os.link(str(target), str(keep_link))
                 target.unlink()
                 target.write_bytes(content)
+                keep_link.unlink(missing_ok=True)
 
         with patch("src.history_manager._fsync_directory", side_effect=mock_fsync):
             with self.assertRaises(ControlAuditCommitUncertainError):
@@ -3021,12 +3027,18 @@ class TestControlRequestContract(unittest.TestCase):
 
         from src.history_manager import _fsync_directory
         orig_fsync = _fsync_directory
+        fsync_swapped = False
         def mock_fsync(h_dir):
             orig_fsync(h_dir)
-            if target.exists():
+            nonlocal fsync_swapped
+            if target.exists() and not fsync_swapped:
+                fsync_swapped = True
                 content = target.read_bytes()
+                keep_link = target.parent / "keep_inode_main.tmp"
+                os.link(str(target), str(keep_link))
                 target.unlink()
                 target.write_bytes(content)
+                keep_link.unlink(missing_ok=True)
 
         with patch("src.history_manager._fsync_directory", side_effect=mock_fsync):
             with self.assertRaises(ControlAuditCommitUncertainError):
