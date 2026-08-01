@@ -2902,6 +2902,11 @@ class TestControlRequestContract(unittest.TestCase):
                 "reply": "OK",
                 "done": False,
                 "rejected": False,
+                "dialogue_mode": "task_collection",
+                "control_state": "idle",
+                "collected": {},
+                "missing": [],
+                "is_retry": False,
             }
         }
         expected_hash = _canonical_payload_hash(audit_data)
@@ -2949,6 +2954,11 @@ class TestControlRequestContract(unittest.TestCase):
                 "reply": "OK",
                 "done": False,
                 "rejected": False,
+                "dialogue_mode": "task_collection",
+                "control_state": "idle",
+                "collected": {},
+                "missing": [],
+                "is_retry": False,
             }
         }
         expected_hash = _canonical_payload_hash(audit_data)
