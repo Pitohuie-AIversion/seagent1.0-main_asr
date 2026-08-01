@@ -21,11 +21,12 @@ import json
 import logging
 import os
 import re
+import stat
 import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from .exceptions import (
@@ -144,15 +145,25 @@ def _verify_owned_committed_path(
     """验证 target_path 当前文件的 (st_dev, st_ino) 和字节内容与本事务已提交节点完全一致。
 
     如果 expected_stat 为 None 或非 os.stat_result，坚决拒绝并返回 False (禁止仅凭字节匹配假定所有权)。
+    使用 os.lstat 且明确拒绝 symlink，仅接受普通文件。
     """
     if expected_stat is None or not isinstance(expected_stat, os.stat_result):
         return False
-    if not target_path.exists() or not target_path.is_file():
-        return False
     try:
-        cur_stat = os.stat(str(target_path))
-        if (cur_stat.st_dev, cur_stat.st_ino) != (expected_stat.st_dev, expected_stat.st_ino):
-            return False
+        stat_result = os.lstat(target_path)
+    except Exception:
+        return False
+
+    if stat.S_ISLNK(stat_result.st_mode):
+        return False
+
+    if not stat.S_ISREG(stat_result.st_mode):
+        return False
+
+    if (stat_result.st_dev, stat_result.st_ino) != (expected_stat.st_dev, expected_stat.st_ino):
+        return False
+
+    try:
         actual_bytes = target_path.read_bytes()
         return actual_bytes == expected_payload_bytes
     except Exception:
@@ -167,9 +178,10 @@ def _verify_path_ownership(
     """验证 target_path 当前文件的 (st_dev, st_ino) 和字节内容是否与本事务一致。"""
     if expected_stat is not None:
         return _verify_owned_committed_path(target_path, expected_payload_bytes, expected_stat)
-    if not target_path.exists() or not target_path.is_file():
-        return False
     try:
+        stat_result = os.lstat(target_path)
+        if stat.S_ISLNK(stat_result.st_mode) or not stat.S_ISREG(stat_result.st_mode):
+            return False
         actual_bytes = target_path.read_bytes()
         return actual_bytes == expected_payload_bytes
     except Exception:
@@ -320,15 +332,99 @@ def read_session_head(history_dir: Path, session_id: str) -> Optional[Dict[str, 
     return _validate_session_head_data(history_dir, session_id, data)
 
 
+def _validate_revision_before_head_commit(
+    history_dir: Path,
+    session_id: str,
+    current_revision: int,
+    snapshot_file: str,
+    expected_payload_sha256: Optional[str] = None,
+) -> Dict[str, Any]:
+    """在更新 Session Head 之前强制验证 revision 文件的路径安全、物理存储、身份标量与 canonical hash。
+
+    必须在 Head replace 之前完成所有校验。校验失败抛出 ControlAuditPersistenceError。
+    """
+    if not snapshot_file or not isinstance(snapshot_file, str):
+        raise ControlAuditPersistenceError(f"snapshot_file must be a non-empty string, got {snapshot_file!r}")
+
+    if "/" in snapshot_file or "\\" in snapshot_file or ".." in snapshot_file or Path(snapshot_file).name != snapshot_file:
+        raise ControlAuditPersistenceError(f"snapshot_file contains path traversal or dir separator: {snapshot_file!r}")
+
+    expected_snap_path = get_session_revision_path(history_dir, session_id, current_revision)
+    if snapshot_file != expected_snap_path.name:
+        raise ControlAuditPersistenceError(
+            f"snapshot_file {snapshot_file!r} does not match derived revision filename {expected_snap_path.name!r}"
+        )
+
+    if not expected_snap_path.exists():
+        raise ControlAuditPersistenceError(f"Revision file {snapshot_file} does not exist in history dir")
+
+    try:
+        snap_stat = os.lstat(expected_snap_path)
+    except OSError as e:
+        raise ControlAuditPersistenceError(f"Failed to stat revision file {snapshot_file}: {e}") from e
+
+    if stat.S_ISLNK(snap_stat.st_mode):
+        raise ControlAuditPersistenceError(f"Revision file {snapshot_file} is a symlink, which is rejected")
+
+    if not stat.S_ISREG(snap_stat.st_mode):
+        raise ControlAuditPersistenceError(f"Revision file {snapshot_file} is not a regular file")
+
+    try:
+        snap_json = json.loads(expected_snap_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise ControlAuditPersistenceError(f"Revision file {snapshot_file} cannot be read/parsed: {e}") from e
+
+    if not isinstance(snap_json, dict):
+        raise ControlAuditPersistenceError(f"Revision file {snapshot_file} is not a JSON object")
+
+    snap_sid = snap_json.get("session_id")
+    if snap_sid != session_id:
+        raise ControlAuditPersistenceError(
+            f"Revision file {snapshot_file} session_id mismatch: expected {session_id!r}, got {snap_sid!r}"
+        )
+
+    snap_rev = snap_json.get("session_revision")
+    if snap_rev != current_revision:
+        raise ControlAuditPersistenceError(
+            f"Revision file {snapshot_file} session_revision mismatch: expected {current_revision!r}, got {snap_rev!r}"
+        )
+
+    real_hash = _canonical_payload_hash(snap_json)
+    if not _SHA256_HEX_RE.match(real_hash):
+        raise ControlAuditPersistenceError(f"Derived payload hash for {snapshot_file} is invalid: {real_hash!r}")
+
+    if expected_payload_sha256 is not None:
+        if not isinstance(expected_payload_sha256, str) or not _SHA256_HEX_RE.match(expected_payload_sha256):
+            raise ControlAuditPersistenceError("snapshot_payload_sha256 is required and must be a 64-hex SHA-256 string")
+        if real_hash != expected_payload_sha256:
+            raise ControlAuditPersistenceError(
+                f"Revision payload hash mismatch for {snapshot_file}: expected {expected_payload_sha256!r}, got {real_hash!r}"
+            )
+
+    return snap_json
+
+
 def _read_revision_payload_hash(history_dir: Path, snapshot_file: str) -> str:
     """尝试读取并计算给定 snapshot_file 的可信 canonical payload hash。
     若文件不存在、无法解析或格式非 dict，抛出 ControlAuditPersistenceError（禁止零/占位 Hash）。
     """
     snap_path = history_dir / snapshot_file
-    if not snap_path.exists() or not snap_path.is_file():
+    if not snap_path.exists():
         raise ControlAuditPersistenceError(
             f"Cannot derive snapshot payload hash: file {snapshot_file} does not exist or is not a regular file"
         )
+    try:
+        snap_stat = os.lstat(snap_path)
+    except OSError as e:
+        raise ControlAuditPersistenceError(
+            f"Cannot derive snapshot payload hash: file {snapshot_file} stat failed: {e}"
+        ) from e
+
+    if stat.S_ISLNK(snap_stat.st_mode) or not stat.S_ISREG(snap_stat.st_mode):
+        raise ControlAuditPersistenceError(
+            f"Cannot derive snapshot payload hash: file {snapshot_file} does not exist or is not a regular file"
+        )
+
     try:
         data = json.loads(snap_path.read_text(encoding="utf-8"))
     except Exception as e:
@@ -356,12 +452,15 @@ def update_session_head(
     snapshot_file: str,
     snapshot_payload_sha256: Optional[str] = None,
 ) -> None:
-    """原子更新 session_id 的权威 Session Head 文件（带 Post-replace 安全失败语义、inode 验证与旧 Head 强一致恢复）。"""
-    if not snapshot_payload_sha256:
-        snapshot_payload_sha256 = _read_revision_payload_hash(history_dir, snapshot_file)
-
-    if not isinstance(snapshot_payload_sha256, str) or not _SHA256_HEX_RE.match(snapshot_payload_sha256):
-        raise ControlAuditPersistenceError("snapshot_payload_sha256 is required and must be a 64-hex SHA-256 string")
+    """原子更新 session_id 的权威 Session Head 文件（带 Head replace 前严格 revision 验证、Post-replace 安全失败语义与 inode 验证）。"""
+    validated_snap = _validate_revision_before_head_commit(
+        history_dir=history_dir,
+        session_id=session_id,
+        current_revision=current_revision,
+        snapshot_file=snapshot_file,
+        expected_payload_sha256=snapshot_payload_sha256,
+    )
+    snapshot_payload_sha256 = _canonical_payload_hash(validated_snap)
 
     head_path = get_session_head_path(history_dir, session_id)
     old_head_bytes: Optional[bytes] = None
@@ -396,7 +495,12 @@ def update_session_head(
 
     # 替换成功后，立即获取已提交 Head 节点的 stat (st_dev, st_ino)
     try:
-        committed_stat = os.stat(str(head_path))
+        committed_stat = os.lstat(str(head_path))
+        os.stat(str(head_path))
+        if stat.S_ISLNK(committed_stat.st_mode) or not stat.S_ISREG(committed_stat.st_mode):
+            raise ControlAuditCommitUncertainError(
+                f"Head replace succeeded but committed path is not a regular file for {session_id}"
+            )
     except OSError as exc:
         raise ControlAuditCommitUncertainError(
             f"Head replace succeeded but committed inode cannot be proven for {session_id}: {exc}"
