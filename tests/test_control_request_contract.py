@@ -2893,6 +2893,7 @@ class TestControlRequestContract(unittest.TestCase):
                 "parent_revision": 0,
                 "conversation_history": [],
                 "slot_store": {},
+                "task_state": {},
             }
         }
         expected_hash = _canonical_payload_hash(audit_data)
@@ -2931,6 +2932,7 @@ class TestControlRequestContract(unittest.TestCase):
                 "parent_revision": 0,
                 "conversation_history": [],
                 "slot_store": {},
+                "task_state": {},
             }
         }
         expected_hash = _canonical_payload_hash(audit_data)
