@@ -1068,8 +1068,9 @@ class TestControlRequestContract(unittest.TestCase):
         """16. 最后提交者胜出测试：并发主历史写入中，最后完成替换的提交者快照最终在磁盘生效"""
         import multiprocessing
 
-        def worker_commit(sid, val, parent_rev):
-            save_conversation(
+        def worker_commit(sid, val):
+            from src.history_manager import maintenance_append_revision
+            maintenance_append_revision(
                 session_id=sid,
                 conversation_history=[{"role": "user", "content": f"val_{val}"}],
                 task_state={"task_type_key": "pipeline_inspection", "val": val},
@@ -1077,12 +1078,11 @@ class TestControlRequestContract(unittest.TestCase):
                 mode="normal",
                 phase="collecting",
                 intent_id="TI_COMMITTER_WINS",
-                parent_revision=parent_rev,
             )
 
         processes = []
         for i in range(4):
-            p = multiprocessing.Process(target=worker_commit, args=("sess_committer", i, i))
+            p = multiprocessing.Process(target=worker_commit, args=("sess_committer", i))
             processes.append(p)
             p.start()
 
@@ -1727,7 +1727,7 @@ class TestControlRequestContract(unittest.TestCase):
         target_new = get_control_event_path(history_dir, sid, "req_rev2_corrupt")
         target_new.write_bytes(b"{invalid json content corrupted!!")
         from src.history_manager import update_session_head
-        update_session_head(history_dir=history_dir, session_id=sid, current_revision=2, snapshot_file=target_new.name)
+        update_session_head(history_dir=history_dir, session_id=sid, current_revision=2, snapshot_file=target_new.name, snapshot_payload_sha256="a" * 64)
 
         with self.assertRaises(ControlAuditCorruptionError, msg="最新 revision 损坏时绝不得静默回退旧快照"):
             load_latest_session_snapshot(sid)
@@ -2192,6 +2192,220 @@ class TestControlRequestContract(unittest.TestCase):
         bad_sid = copy.deepcopy(valid_snap)
         with self.assertRaises(ControlAuditCorruptionError):
             validate_response_snapshot(bad_sid, expected_session_id="wrong_sid")
+
+    # ---------------------------------------------------------------------------
+    # Round 13 故障注入与安全边界面板测试
+    # ---------------------------------------------------------------------------
+
+    def test_update_head_rejects_missing_snapshot_hash(self):
+        """1. 不传 snapshot_payload_sha256 且 revision 文件不存在时，在写 Head 前失败抛出 ControlAuditPersistenceError"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_r13_missing_snap_hash"
+        snap_fname = f"session_{hashlib.sha256(sid.encode()).hexdigest()[:16]}_rev_1.json"
+        with self.assertRaises(ControlAuditPersistenceError):
+            update_session_head(history_dir, sid, 1, snap_fname, snapshot_payload_sha256=None)
+
+    def test_update_head_rejects_unreadable_snapshot_when_hash_is_derived(self):
+        """2. revision 文件存在但损坏无法解析时，推导 Hash 失败抛出 ControlAuditPersistenceError"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_r13_unreadable_snap"
+        snap_path = get_session_revision_path(history_dir, sid, 1)
+        snap_path.write_bytes(b"{corrupted invalid json!!")
+        with self.assertRaises(ControlAuditPersistenceError):
+            update_session_head(history_dir, sid, 1, snap_path.name, snapshot_payload_sha256=None)
+
+    def test_update_head_never_writes_zero_snapshot_hash(self):
+        """3. 无法取得可信 Hash 时，绝对不得向 Head 写入全零或占位 Hash"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_r13_no_zero_hash"
+        head_path = get_session_head_path(history_dir, sid)
+        snap_path = get_session_revision_path(history_dir, sid, 1)
+
+        with self.assertRaises(ControlAuditPersistenceError):
+            update_session_head(history_dir, sid, 1, snap_path.name, snapshot_payload_sha256=None)
+
+        # 验证绝无 Head 文件写入
+        self.assertFalse(head_path.exists())
+
+    def test_post_replace_stat_failure_is_commit_uncertain(self):
+        """4. post-replace os.stat 失败时，抛出 ControlAuditCommitUncertainError"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_r13_stat_fail_uncertain"
+        snap_path = get_session_revision_path(history_dir, sid, 1)
+        snap_data = {
+            "session_id": sid, "session_revision": 1, "parent_revision": 0, "snapshot_version": SNAPSHOT_VERSION,
+            "snapshot": {"session_revision": 1, "parent_revision": 0, "conversation_history": [], "slot_store": {}, "task_state": {}, "phase": "collecting"},
+            "response_snapshot": {
+                "code": 200, "session_id": sid, "request_id": "", "reply": "ok", "done": False, "rejected": False,
+                "dialogue_mode": "task_collection", "control_state": "idle", "collected": {}, "missing": [], "is_retry": False
+            }
+        }
+        snap_data["payload_sha256"] = _canonical_payload_hash(snap_data)
+        snap_path.write_text(json.dumps(snap_data), encoding="utf-8")
+
+        orig_stat = os.stat
+        call_count = [0]
+
+        def fake_stat(path, *args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] > 1:
+                raise OSError("Permission denied on stat")
+            return orig_stat(path, *args, **kwargs)
+
+        with patch("os.stat", side_effect=fake_stat):
+            with self.assertRaises(ControlAuditCommitUncertainError):
+                update_session_head(history_dir, sid, 1, snap_path.name, snap_data["payload_sha256"])
+
+    def test_post_replace_stat_failure_performs_no_destructive_rollback(self):
+        """5. post-replace os.stat 失败时，绝不执行 destructive rollback (不 unlink 或不篡改已替换 Head)"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_r13_no_destructive"
+        snap_path = get_session_revision_path(history_dir, sid, 1)
+        snap_data = {
+            "session_id": sid, "session_revision": 1, "parent_revision": 0, "snapshot_version": SNAPSHOT_VERSION,
+            "snapshot": {"session_revision": 1, "parent_revision": 0, "conversation_history": [], "slot_store": {}, "task_state": {}, "phase": "collecting"},
+            "response_snapshot": {
+                "code": 200, "session_id": sid, "request_id": "", "reply": "ok", "done": False, "rejected": False,
+                "dialogue_mode": "task_collection", "control_state": "idle", "collected": {}, "missing": [], "is_retry": False
+            }
+        }
+        snap_data["payload_sha256"] = _canonical_payload_hash(snap_data)
+        snap_path.write_text(json.dumps(snap_data), encoding="utf-8")
+
+        orig_stat = os.stat
+        call_count = [0]
+
+        def fake_stat(path, *args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] > 1:  # 写入 temp 后第一次获取 stat 时抛错
+                raise OSError("Stat failed post replace")
+            return orig_stat(path, *args, **kwargs)
+
+        head_path = get_session_head_path(history_dir, sid)
+
+        with patch("os.stat", side_effect=fake_stat):
+            with self.assertRaises(ControlAuditCommitUncertainError):
+                update_session_head(history_dir, sid, 1, snap_path.name, snap_data["payload_sha256"])
+
+        # 确定未发生物理 unlink 破坏
+        self.assertTrue(head_path.exists())
+
+    def test_same_bytes_different_inode_is_not_owned(self):
+        """6. 相同字节但不同 inode 绝不认定为本事务所有"""
+        from src.history_manager import _verify_owned_committed_path
+        history_dir = get_history_dir(create=True)
+        test_path = history_dir / "test_same_bytes.json"
+        payload = b'{"data": "same"}'
+        test_path.write_bytes(payload)
+
+        real_stat = os.stat(str(test_path))
+
+        class FakeStat:
+            st_dev = real_stat.st_dev
+            st_ino = real_stat.st_ino + 88888
+
+        # Inode 不匹配，必定返回 False
+        self.assertFalse(_verify_owned_committed_path(test_path, payload, FakeStat()))
+
+    def test_restored_head_with_missing_revision_is_not_recovered(self):
+        """7. 恢复旧 Head 后，若引用的 revision 文件缺失，不得标记为 recovered"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_r13_missing_rev_restore"
+        head_path = get_session_head_path(history_dir, sid)
+
+        # 构造旧 Head 指向不存在的 rev 1
+        old_head = {
+            "schema_version": SNAPSHOT_VERSION,
+            "session_id": sid,
+            "current_revision": 1,
+            "snapshot_file": get_session_revision_path(history_dir, sid, 1).name,
+            "snapshot_payload_sha256": "a" * 64,
+            "updated_at": "2026-08-01T12:00:00+08:00",
+        }
+        old_head["payload_sha256"] = _canonical_payload_hash(old_head)
+        head_path.write_text(json.dumps(old_head), encoding="utf-8")
+
+        # 触发更新 Head，Post-replace fsync 失败
+        with patch("src.history_manager._fsync_directory", side_effect=OSError("fsync fail")):
+            with self.assertRaises(ControlAuditCommitUncertainError):
+                update_session_head(history_dir, sid, 2, get_session_revision_path(history_dir, sid, 2).name, "b" * 64)
+
+    def test_restored_head_with_corrupt_revision_is_not_recovered(self):
+        """8. 恢复旧 Head 后，若引用的 revision 文件损坏，不得标记为 recovered"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_r13_corrupt_rev_restore"
+        head_path = get_session_head_path(history_dir, sid)
+        rev1_path = get_session_revision_path(history_dir, sid, 1)
+        rev1_path.write_bytes(b"{bad broken content!!")
+
+        old_head = {
+            "schema_version": SNAPSHOT_VERSION,
+            "session_id": sid,
+            "current_revision": 1,
+            "snapshot_file": rev1_path.name,
+            "snapshot_payload_sha256": "a" * 64,
+            "updated_at": "2026-08-01T12:00:00+08:00",
+        }
+        old_head["payload_sha256"] = _canonical_payload_hash(old_head)
+        head_path.write_text(json.dumps(old_head), encoding="utf-8")
+
+        with patch("src.history_manager._fsync_directory", side_effect=OSError("fsync fail")):
+            with self.assertRaises(ControlAuditCommitUncertainError):
+                update_session_head(history_dir, sid, 2, get_session_revision_path(history_dir, sid, 2).name, "b" * 64)
+
+    def test_restored_head_with_revision_hash_mismatch_is_not_recovered(self):
+        """9. 恢复旧 Head 后，若引用的 revision 文件 hash 不匹配，不得标记为 recovered"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_r13_hash_mismatch_restore"
+        head_path = get_session_head_path(history_dir, sid)
+        rev1_path = get_session_revision_path(history_dir, sid, 1)
+
+        rev1_data = {
+            "session_id": sid, "session_revision": 1, "parent_revision": 0, "snapshot_version": SNAPSHOT_VERSION,
+            "snapshot": {"session_revision": 1, "parent_revision": 0, "conversation_history": [], "slot_store": {}, "task_state": {}, "phase": "collecting"},
+            "response_snapshot": {
+                "code": 200, "session_id": sid, "request_id": "", "reply": "ok", "done": False, "rejected": False,
+                "dialogue_mode": "task_collection", "control_state": "idle", "collected": {}, "missing": [], "is_retry": False
+            }
+        }
+        rev1_data["payload_sha256"] = _canonical_payload_hash(rev1_data)
+        rev1_path.write_text(json.dumps(rev1_data), encoding="utf-8")
+
+        # 旧 Head 存储的 hash 故人为冲突 Hash
+        old_head = {
+            "schema_version": SNAPSHOT_VERSION,
+            "session_id": sid,
+            "current_revision": 1,
+            "snapshot_file": rev1_path.name,
+            "snapshot_payload_sha256": "f" * 64,
+            "updated_at": "2026-08-01T12:00:00+08:00",
+        }
+        old_head["payload_sha256"] = _canonical_payload_hash(old_head)
+        head_path.write_text(json.dumps(old_head), encoding="utf-8")
+
+        with patch("src.history_manager._fsync_directory", side_effect=OSError("fsync fail")):
+            with self.assertRaises(ControlAuditCommitUncertainError):
+                update_session_head(history_dir, sid, 2, get_session_revision_path(history_dir, sid, 2).name, "b" * 64)
+
+    def test_head_updated_at_requires_timezone_aware_iso8601(self):
+        """10. Head updated_at 必须为合法的带时区 ISO 8601 时间戳"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_r13_naive_updated_at"
+        head_path = get_session_head_path(history_dir, sid)
+        head_data = {
+            "schema_version": SNAPSHOT_VERSION,
+            "session_id": sid,
+            "current_revision": 1,
+            "snapshot_file": f"session_{hashlib.sha256(sid.encode()).hexdigest()[:16]}_rev_1.json",
+            "snapshot_payload_sha256": "a" * 64,
+            "payload_sha256": "b" * 64,
+            "updated_at": "2026-08-01T12:00:00",  # 无时区信息 (naive)
+        }
+        head_data["payload_sha256"] = _canonical_payload_hash(head_data)
+        head_path.write_text(json.dumps(head_data), encoding="utf-8")
+
+        with self.assertRaises(ControlAuditCorruptionError):
+            read_session_head(history_dir, sid)
 
 
 if __name__ == "__main__":

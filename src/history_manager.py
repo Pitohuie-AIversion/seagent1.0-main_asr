@@ -136,19 +136,40 @@ def _canonical_payload_hash(data: Dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _verify_owned_committed_path(
+    target_path: Path,
+    expected_payload_bytes: bytes,
+    expected_stat: os.stat_result,
+) -> bool:
+    """验证 target_path 当前文件的 (st_dev, st_ino) 和字节内容与本事务已提交节点完全一致。
+
+    如果 expected_stat 为 None 或非 os.stat_result，坚决拒绝并返回 False (禁止仅凭字节匹配假定所有权)。
+    """
+    if expected_stat is None or not isinstance(expected_stat, os.stat_result):
+        return False
+    if not target_path.exists() or not target_path.is_file():
+        return False
+    try:
+        cur_stat = os.stat(str(target_path))
+        if (cur_stat.st_dev, cur_stat.st_ino) != (expected_stat.st_dev, expected_stat.st_ino):
+            return False
+        actual_bytes = target_path.read_bytes()
+        return actual_bytes == expected_payload_bytes
+    except Exception:
+        return False
+
+
 def _verify_path_ownership(
     target_path: Path,
     expected_payload_bytes: bytes,
     expected_stat: Optional[os.stat_result] = None,
 ) -> bool:
     """验证 target_path 当前文件的 (st_dev, st_ino) 和字节内容是否与本事务一致。"""
+    if expected_stat is not None:
+        return _verify_owned_committed_path(target_path, expected_payload_bytes, expected_stat)
     if not target_path.exists() or not target_path.is_file():
         return False
     try:
-        if expected_stat is not None:
-            cur_stat = os.stat(str(target_path))
-            if (cur_stat.st_dev, cur_stat.st_ino) != (expected_stat.st_dev, expected_stat.st_ino):
-                return False
         actual_bytes = target_path.read_bytes()
         return actual_bytes == expected_payload_bytes
     except Exception:
@@ -172,26 +193,17 @@ def get_session_head_path(history_dir: Path, session_id: str) -> Path:
     return history_dir / f".session_head_{session_hash}.json"
 
 
-def read_session_head(history_dir: Path, session_id: str) -> Optional[Dict[str, Any]]:
-    """读取指定 session_id 的权威 Session Head 文件。
+def _validate_session_head_data(
+    history_dir: Path,
+    expected_session_id: str,
+    data: Any,
+) -> Dict[str, Any]:
+    """严格校验 Session Head 的字段、格式、时间戳、路径与关联 revision 完整链。
 
-    如果 Head 文件存在但解析/校验失败，抛出 ControlAuditCorruptionError (fail closed)。
-    包含所有 mandatory 字段校验、路径越界校验与关联 revision 文件一致性校验。
+    失败时抛出 ControlAuditCorruptionError (fail closed)。
     """
-    head_path = get_session_head_path(history_dir, session_id)
-    if not head_path.exists() or not head_path.is_file():
-        return None
-
-    try:
-        with open(head_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        raise ControlAuditCorruptionError(
-            f"Session head file {head_path.name} exists but cannot be read/parsed: {e}"
-        ) from e
-
     if not isinstance(data, dict):
-        raise ControlAuditCorruptionError(f"Session head file {head_path.name} is not a dict")
+        raise ControlAuditCorruptionError("Session head data is not a dict")
 
     # 1. 强制校验所有 mandatory 字段
     for field in (
@@ -204,13 +216,17 @@ def read_session_head(history_dir: Path, session_id: str) -> Optional[Dict[str, 
         "updated_at",
     ):
         if field not in data:
-            raise ControlAuditCorruptionError(f"Session head missing mandatory field '{field}' in {head_path.name}")
+            raise ControlAuditCorruptionError(f"Session head missing mandatory field '{field}'")
 
     if data.get("schema_version") != SNAPSHOT_VERSION:
-        raise ControlAuditCorruptionError(f"Session head invalid schema_version: expected {SNAPSHOT_VERSION}, got {data.get('schema_version')!r}")
+        raise ControlAuditCorruptionError(
+            f"Session head invalid schema_version: expected {SNAPSHOT_VERSION}, got {data.get('schema_version')!r}"
+        )
 
-    if data.get("session_id") != session_id:
-        raise ControlAuditCorruptionError(f"Session head session_id mismatch in {head_path.name}")
+    if data.get("session_id") != expected_session_id:
+        raise ControlAuditCorruptionError(
+            f"Session head session_id mismatch: expected {expected_session_id!r}, got {data.get('session_id')!r}"
+        )
 
     cur_rev = data.get("current_revision")
     if isinstance(cur_rev, bool) or not isinstance(cur_rev, int) or cur_rev < 1:
@@ -224,7 +240,7 @@ def read_session_head(history_dir: Path, session_id: str) -> Optional[Dict[str, 
     if "/" in snap_file or "\\" in snap_file or ".." in snap_file or Path(snap_file).name != snap_file:
         raise ControlAuditCorruptionError(f"Session head snapshot_file contains path traversal or dir separator: {snap_file!r}")
 
-    expected_snap_path = get_session_revision_path(history_dir, session_id, cur_rev)
+    expected_snap_path = get_session_revision_path(history_dir, expected_session_id, cur_rev)
     if snap_file != expected_snap_path.name:
         raise ControlAuditCorruptionError(
             f"Session head snapshot_file {snap_file!r} does not match derived revision filename {expected_snap_path.name!r}"
@@ -242,11 +258,21 @@ def read_session_head(history_dir: Path, session_id: str) -> Optional[Dict[str, 
     if not updated_at or not isinstance(updated_at, str):
         raise ControlAuditCorruptionError(f"Session head missing or invalid updated_at: {updated_at!r}")
 
+    # P2-2 updated_at 必须为合法的带时区 ISO 8601 时间戳
+    try:
+        dt = datetime.fromisoformat(updated_at.strip())
+        if dt.tzinfo is None:
+            raise ControlAuditCorruptionError(f"Session head updated_at must be timezone-aware ISO 8601: {updated_at!r}")
+    except Exception as e:
+        if isinstance(e, ControlAuditCorruptionError):
+            raise e
+        raise ControlAuditCorruptionError(f"Session head updated_at is not a valid ISO 8601 timestamp: {updated_at!r}") from e
+
     computed = _canonical_payload_hash(data)
     if computed != payload_hash:
-        raise ControlAuditCorruptionError(f"Session head payload_sha256 mismatch in {head_path.name}")
+        raise ControlAuditCorruptionError(f"Session head payload_sha256 mismatch")
 
-    # 3. 校验 Head 关联的 snapshot 文件存在且 revision/hash 精确匹配
+    # 3. 校验 Head 关联的 snapshot 文件存在且 revision/hash 精确匹配 (完整引用链校验)
     if not expected_snap_path.exists() or not expected_snap_path.is_file():
         raise ControlAuditCorruptionError(f"Head references snapshot file {snap_file} which does not exist in history dir")
 
@@ -273,6 +299,56 @@ def read_session_head(history_dir: Path, session_id: str) -> Optional[Dict[str, 
     return data
 
 
+def read_session_head(history_dir: Path, session_id: str) -> Optional[Dict[str, Any]]:
+    """读取指定 session_id 的权威 Session Head 文件。
+
+    如果 Head 文件存在但解析/校验失败，抛出 ControlAuditCorruptionError (fail closed)。
+    包含所有 mandatory 字段校验、路径越界校验与关联 revision 文件一致性校验。
+    """
+    head_path = get_session_head_path(history_dir, session_id)
+    if not head_path.exists() or not head_path.is_file():
+        return None
+
+    try:
+        with open(head_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        raise ControlAuditCorruptionError(
+            f"Session head file {head_path.name} exists but cannot be read/parsed: {e}"
+        ) from e
+
+    return _validate_session_head_data(history_dir, session_id, data)
+
+
+def _read_revision_payload_hash(history_dir: Path, snapshot_file: str) -> str:
+    """尝试读取并计算给定 snapshot_file 的可信 canonical payload hash。
+    若文件不存在、无法解析或格式非 dict，抛出 ControlAuditPersistenceError（禁止零/占位 Hash）。
+    """
+    snap_path = history_dir / snapshot_file
+    if not snap_path.exists() or not snap_path.is_file():
+        raise ControlAuditPersistenceError(
+            f"Cannot derive snapshot payload hash: file {snapshot_file} does not exist or is not a regular file"
+        )
+    try:
+        data = json.loads(snap_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise ControlAuditPersistenceError(
+            f"Cannot derive snapshot payload hash: file {snapshot_file} cannot be read/parsed: {e}"
+        ) from e
+
+    if not isinstance(data, dict):
+        raise ControlAuditPersistenceError(
+            f"Cannot derive snapshot payload hash: file {snapshot_file} is not a JSON object"
+        )
+
+    hash_val = _canonical_payload_hash(data)
+    if not _SHA256_HEX_RE.match(hash_val):
+        raise ControlAuditPersistenceError(
+            f"Derived payload hash for {snapshot_file} is invalid: {hash_val!r}"
+        )
+    return hash_val
+
+
 def update_session_head(
     history_dir: Path,
     session_id: str,
@@ -282,25 +358,15 @@ def update_session_head(
 ) -> None:
     """原子更新 session_id 的权威 Session Head 文件（带 Post-replace 安全失败语义、inode 验证与旧 Head 强一致恢复）。"""
     if not snapshot_payload_sha256:
-        snap_path = history_dir / snapshot_file
-        if snap_path.exists() and snap_path.is_file():
-            try:
-                snap_json = json.loads(snap_path.read_text(encoding="utf-8"))
-                snapshot_payload_sha256 = _canonical_payload_hash(snap_json)
-            except Exception:
-                snapshot_payload_sha256 = "0" * 64
-        else:
-            snapshot_payload_sha256 = "0" * 64
+        snapshot_payload_sha256 = _read_revision_payload_hash(history_dir, snapshot_file)
 
     if not isinstance(snapshot_payload_sha256, str) or not _SHA256_HEX_RE.match(snapshot_payload_sha256):
-        raise ValueError("snapshot_payload_sha256 is required and must be a 64-hex SHA-256 string")
+        raise ControlAuditPersistenceError("snapshot_payload_sha256 is required and must be a 64-hex SHA-256 string")
 
     head_path = get_session_head_path(history_dir, session_id)
     old_head_bytes: Optional[bytes] = None
-    stat_before: Optional[os.stat_result] = None
     if head_path.exists() and head_path.is_file():
         try:
-            stat_before = os.stat(str(head_path))
             old_head_bytes = head_path.read_bytes()
         except OSError:
             pass
@@ -328,9 +394,15 @@ def update_session_head(
             pass
         raise ControlAuditPersistenceError(f"Failed to update session head for {session_id}: {e}") from e
 
-    stat_after_replace: Optional[os.stat_result] = None
+    # 替换成功后，立即获取已提交 Head 节点的 stat (st_dev, st_ino)
     try:
-        stat_after_replace = os.stat(str(head_path))
+        committed_stat = os.stat(str(head_path))
+    except OSError as exc:
+        raise ControlAuditCommitUncertainError(
+            f"Head replace succeeded but committed inode cannot be proven for {session_id}: {exc}"
+        ) from exc
+
+    try:
         _fsync_directory(history_dir)
         read_back = json.loads(head_path.read_text(encoding="utf-8"))
         actual_hash = _canonical_payload_hash(read_back)
@@ -340,20 +412,18 @@ def update_session_head(
             )
     except Exception as post_err:
         logger.error("Post-replace failure for session head %s: %s", head_path.name, post_err)
-        # Inode 所有权校验：传入新替换后的 stat_after_replace
-        if _verify_path_ownership(head_path, payload_bytes, expected_stat=stat_after_replace):
+        # Inode 强所有权校验：必须传入有效的 committed_stat
+        if _verify_owned_committed_path(head_path, payload_bytes, committed_stat):
             recovered = False
             try:
                 if old_head_bytes is not None:
                     rec_temp = _write_temp_and_fsync(history_dir, head_path, old_head_bytes)
                     rec_temp.replace(head_path)
                     _fsync_directory(history_dir)
-                    # 旧 Head 强一致读回校验
+                    # 恢复旧 Head 后的完整 Head -> Revision 引用链校验
                     restored_readback = json.loads(head_path.read_text(encoding="utf-8"))
-                    restored_hash = _canonical_payload_hash(restored_readback)
-                    old_expected_hash = _canonical_payload_hash(json.loads(old_head_bytes.decode("utf-8")))
-                    if restored_hash == old_expected_hash:
-                        recovered = True
+                    _validate_session_head_data(history_dir, session_id, restored_readback)
+                    recovered = True
                 else:
                     head_path.unlink(missing_ok=True)
                     _fsync_directory(history_dir)
