@@ -11,6 +11,7 @@ import uuid
 import yaml
 
 import logging
+from typing import Dict, Any, List, Optional
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template
 from datetime import datetime
@@ -27,6 +28,7 @@ from src.exceptions import (
     StatePersistenceError,
     StateSelectorError,
     StateVersionConflict,
+    ControlAuditPersistenceError,
 )
 
 # ========== 配置路径（与你的项目一致）==========
@@ -58,12 +60,60 @@ def init_asr_service(asr_service):
     global _shared_asr
     _shared_asr = asr_service
 
+class SessionManagerEntry:
+    """按 session 隔离的 Manager 初始化状态与并发排队对象"""
+    def __init__(self):
+        self.state = "initializing"  # "initializing", "ready", "failed"
+        self.manager: Optional[DialogueManager] = None
+        self.lock = threading.Lock()
+        self.cond = threading.Condition(self.lock)
+
+_sessions_entries: Dict[str, SessionManagerEntry] = {}
+_sessions_manager: Dict[str, DialogueManager] = {}
+
+
 def get_or_create_manager(sid: str) -> DialogueManager:
-    """获取或创建会话专属的 DialogueManager 实例"""
+    """获取或创建会话专属的 DialogueManager 实例（并发安全，防止暴露半初始化对象）"""
     with _sessions_lock:
-        if sid not in _sessions_manager:
-            _sessions_manager[sid] = DialogueManager(_shared_llm, _shared_kb)
-        return _sessions_manager[sid]
+        if _shared_llm is None or _shared_kb is None:
+            raise ServiceNotInitializedError("后端 AI 服务未初始化 (LLMClient 或 KnowledgeBase 未加载)")
+
+        if sid not in _sessions_entries:
+            entry = SessionManagerEntry()
+            _sessions_entries[sid] = entry
+            must_init = True
+        else:
+            entry = _sessions_entries[sid]
+            must_init = False
+
+    if must_init:
+        try:
+            mgr = DialogueManager(_shared_llm, _shared_kb)
+            mgr.session_id = sid
+            mgr.load_session_state(sid)
+            with entry.lock:
+                entry.manager = mgr
+                entry.state = "ready"
+                entry.cond.notify_all()
+            with _sessions_lock:
+                _sessions_manager[sid] = mgr
+            return mgr
+        except Exception as e:
+            with entry.lock:
+                entry.state = "failed"
+                entry.cond.notify_all()
+            with _sessions_lock:
+                _sessions_entries.pop(sid, None)
+                _sessions_manager.pop(sid, None)
+            raise e
+    else:
+        with entry.lock:
+            while entry.state == "initializing":
+                entry.cond.wait()
+            if entry.state == "ready" and entry.manager is not None:
+                return entry.manager
+            else:
+                raise RuntimeError(f"Session {sid} initialization failed in another thread")
 
 
 def print_status(manager: DialogueManager):
@@ -409,8 +459,21 @@ def api_asr():
             "retryable": True
         }), 500
 
+
 from src.slot_store import SlotVersionConflict
-from src.exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
+from src.exceptions import (
+    TaskPersistenceError,
+    TaskRollbackError,
+    IntentIdConflict,
+    IdReservationError,
+    ControlAuditPersistenceError,
+    ControlAuditConflictError,
+    ControlAuditConflict,
+    ControlAuditCommitUncertainError,
+    ControlAuditCommitUncertain,
+    ControlAuditCorruptionError,
+    ServiceNotInitializedError,
+)
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
@@ -435,22 +498,71 @@ def api_chat():
             if sid not in _sessions:
                 _sessions[sid] = Session(sid)
 
-        reply = mgr.process(msg)
+        def _persist_callback(manager, outcome, before_state):
+            # 控制审计事件（停止/暂停/终止/草稿取消）
+            if outcome.control_event_created:
+                try:
+                    save_conversation(
+                        session_id=sid,
+                        conversation_history=manager.conversation_history,
+                        task_state=manager.task_state,
+                        built_json=manager._last_built_json,
+                        mode=manager.mode,
+                        phase=manager.phase,
+                        intent_id=manager.task_state.get('intent_id') if isinstance(manager.task_state, dict) else None,
+                        slot_store=manager.slot_store,
+                        dialogue_mode=manager.dialogue_mode,
+                        control_state=manager.control_state,
+                        last_control_request=manager.last_control_request,
+                        request_id=request_id,
+                        user_message=msg,
+                        reply=outcome.reply,
+                        control_action=outcome.control_action,
+                        parent_revision=outcome.parent_revision,
+                        manager=manager,
+                    )
+                except (ControlAuditConflictError, ControlAuditCommitUncertainError):
+                    raise
+                except Exception as e:
+                    logging.error("保存控制审计事件失败: %s", e, exc_info=True)
+                    raise ControlAuditPersistenceError(f"控制审计事件保存失败: {e}") from e
+
+            # 主历史快照（普通任务完成 done / 阶段变更快照）
+            if outcome.history_snapshot_required:
+                try:
+                    save_conversation(
+                        session_id=sid,
+                        conversation_history=manager.conversation_history,
+                        task_state=manager.task_state,
+                        built_json=manager._last_built_json,
+                        mode=manager.mode,
+                        phase=manager.phase,
+                        intent_id=manager.task_state.get('intent_id') if isinstance(manager.task_state, dict) else None,
+                        slot_store=manager.slot_store,
+                        dialogue_mode=manager.dialogue_mode,
+                        control_state=manager.control_state,
+                        last_control_request=manager.last_control_request,
+                        request_id=None,  # 主历史快照不携带 request_id
+                        user_message=None,
+                        reply=None,
+                        control_action=None,
+                        parent_revision=outcome.parent_revision,
+                        manager=manager,
+                    )
+                except (ControlAuditCommitUncertainError,):
+                    raise
+                except Exception as e:
+                    logging.error("保存主历史快照失败: %s", e, exc_info=True)
+                    raise ControlAuditPersistenceError(f"主历史快照保存失败: {e}") from e
+
+        outcome = mgr.process_with_audit(msg, request_id=request_id, session_id=sid, persist_callback=_persist_callback)
+
+        # 幂等重试：直接返回第一次提交保存的不可变 HTTP response snapshot！
+        if outcome.is_retry and outcome.response_snapshot:
+            return jsonify(outcome.response_snapshot)
+
+        reply = outcome.reply
         print_status(mgr)
-        if mgr.phase == "done":
-            try:
-                save_conversation(
-                    session_id=sid,
-                    conversation_history=mgr.conversation_history,
-                    task_state=mgr.task_state,
-                    built_json=mgr._last_built_json,
-                    mode=mgr.mode,
-                    phase=mgr.phase,
-                    intent_id=mgr.task_state.get('intent_id'),
-                    slot_store=mgr.slot_store,
-                )
-            except Exception as e:
-                logging.error("保存历史快照失败: %s", e, exc_info=True)
 
         resp_data = {
             "code": 200,
@@ -459,11 +571,15 @@ def api_chat():
             "reply": reply,
             "done": mgr.phase == "done",
             "rejected": mgr.phase == "rejected",
+            "dialogue_mode": mgr.dialogue_mode,
+            "control_state": mgr.control_state,
+            "last_control_request": mgr.last_control_request,
             "collected": mgr._last_built_json,
             "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
             "task_type": mgr.task_state.get("task_type_key"),
             "emergency": mgr.mode == "emergency",
-            "final_json": mgr._last_built_json if mgr.phase == "done" else None
+            "final_json": mgr._last_built_json if mgr.phase == "done" else None,
+            "is_retry": outcome.is_retry,
         }
         for k, v in resp_data.items():
             try:
@@ -472,6 +588,46 @@ def api_chat():
                 raise TypeError(f"Field '{k}' is not JSON serializable: {type(v)} -> {v}") from e
 
         return jsonify(resp_data)
+    except ControlAuditCorruptionError as cace:
+        logging.error(f"Control audit corruption in /api/chat: {cace}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 503,
+            "error": "ControlAuditCorruption",
+            "msg": f"控制审计事件文件存在但内容损坏，无法安全判断重试语义: {str(cace)}",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": False
+        }), 503
+    except (ControlAuditConflictError, ControlAuditConflict) as cac:
+        logging.warning(f"Control audit conflict in /api/chat: {cac}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 409,
+            "error": "ControlAuditConflict",
+            "msg": f"控制审计事件冲突: {str(cac)}",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": False
+        }), 409
+    except (ControlAuditCommitUncertainError, ControlAuditCommitUncertain) as descu:
+        logging.error(f"Control audit commit uncertain in /api/chat: {descu}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "error": "ControlAuditCommitUncertain",
+            "msg": f"控制事务落盘状态无法确认: {str(descu)}",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": False
+        }), 500
+    except ServiceNotInitializedError as sne:
+        logging.error(f"Service uninitialized in /api/chat: {sne}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 503,
+            "error": "ServiceNotInitializedError",
+            "msg": "后端 AI 服务尚未初始化，请稍后再试。",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": True
+        }), 503
     except SlotVersionConflict as svc:
         logging.error(f"Slot version conflict in /api/chat: {svc}", exc_info=True)
         return jsonify({
@@ -492,6 +648,16 @@ def api_chat():
             "request_id": request_id if 'request_id' in locals() else "req_unknown",
             "retryable": True
         }), 409
+    except ControlAuditPersistenceError as cae:
+        logging.error(f"Control audit persistence error in /api/chat: {cae}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "error": "ControlAuditPersistenceError",
+            "msg": "控制审计日志保存失败，控制请求未生成。",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": True
+        }), 500
     except (TaskPersistenceError, IdReservationError, TaskRollbackError) as tpe:
         logging.error(f"Task persistence error in /api/chat: {tpe}", exc_info=True)
         return jsonify({
@@ -529,6 +695,7 @@ def api_reset():
     sid = (request.json or {}).get("session_id")
     if sid:
         with _sessions_lock:
+            _sessions_entries.pop(sid, None)
             mgr = _sessions_manager.pop(sid, None)
             if mgr:
                 mgr.reset()
@@ -543,11 +710,7 @@ def get_session_state():
     if not sid:
         return jsonify({"ok": False, "code": 400, "error": "MissingSessionId", "msg": "session_id 不能为空", "retryable": False}), 400
 
-    with _sessions_lock:
-        mgr = _sessions_manager.get(sid)
-
-    if not mgr:
-        return jsonify({"ok": True, "code": 200, "exists": False}), 200
+    mgr = get_or_create_manager(sid)
 
     return jsonify({
         "ok": True,
@@ -556,6 +719,9 @@ def get_session_state():
         "session_id": sid,
         "done": mgr.phase == "done",
         "rejected": mgr.phase == "rejected",
+        "dialogue_mode": mgr.dialogue_mode,
+        "control_state": mgr.control_state,
+        "last_control_request": mgr.last_control_request,
         "collected": mgr._last_built_json,
         "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
         "task_type": mgr.task_state.get("task_type_key"),

@@ -598,3 +598,68 @@ class TaskIntentBuilder:
         allowed_robots = TASK_ALLOWED_ROBOT_TYPES.get(top_task_type, set())
         if robot_type not in allowed_robots:
             raise TaskPersistenceError(f"任务类型 {top_task_type} 不支持机器人类型 {robot_type}")
+
+
+def validate_task_intent(intent: Dict[str, Any]) -> bool:
+    """顶级 TaskIntent Schema 校验函数。"""
+    if not isinstance(intent, dict):
+        return False
+    required_keys = {
+        "intent_id",
+        "task_type",
+        "priority",
+        "time",
+        "location",
+        "task",
+        "equipment",
+        "conditions",
+    }
+    if required_keys - intent.keys():
+        return False
+    if not validate_intent_id(intent.get("intent_id")):
+        return False
+    top_task_type = intent.get("task_type")
+    if top_task_type not in TASK_ALLOWED_ROBOT_TYPES:
+        return False
+    if intent.get("task", {}).get("type") != top_task_type:
+        return False
+    priority = intent.get("priority")
+    if isinstance(priority, bool) or not isinstance(priority, int) or priority not in range(1, 11):
+        return False
+    for section in ("time", "location", "task", "equipment", "conditions"):
+        if not isinstance(intent.get(section), dict):
+            return False
+    robot_type = intent.get("equipment", {}).get("robot_type")
+    allowed_robots = TASK_ALLOWED_ROBOT_TYPES.get(top_task_type, set())
+    if robot_type not in allowed_robots:
+        return False
+    return True
+
+
+def validate_task_intent_artifact(task_dir: Path, intent_id: str) -> bool:
+    """验证已发布 TaskIntent 正式产物文件的存在性、非符号链接性、schema 与 intent_id 一致性。"""
+    from .exceptions import ControlAuditCorruptionError
+    if not intent_id or not isinstance(intent_id, str):
+        raise ControlAuditCorruptionError(f"Invalid intent_id for done task verification: {intent_id!r}")
+
+    target_path = task_dir / f"task_intent_{intent_id}.json"
+    if not target_path.exists() or not target_path.is_file():
+        raise ControlAuditCorruptionError(f"TaskIntent file missing for intent_id={intent_id}: {target_path.name}")
+
+    if target_path.is_symlink():
+        raise ControlAuditCorruptionError(f"TaskIntent file is a symlink: {target_path.name}")
+
+    try:
+        with open(target_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        raise ControlAuditCorruptionError(f"TaskIntent file {target_path.name} cannot be read/parsed: {e}") from e
+
+    if not validate_task_intent(data):
+        raise ControlAuditCorruptionError(f"TaskIntent file {target_path.name} failed schema validation")
+
+    if data.get("intent_id") != intent_id:
+        raise ControlAuditCorruptionError(
+            f"TaskIntent file {target_path.name} intent_id mismatch: file has {data.get('intent_id')!r}, expected {intent_id!r}"
+        )
+    return True

@@ -28,7 +28,8 @@ import os
 import stat
 import logging
 import threading
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Callable
 from zoneinfo import ZoneInfo
 from datetime import datetime
 
@@ -55,13 +56,180 @@ from . import task_intent_builder as _ti_builder_module
 from .id_sequence import validate_intent_id, next_daily_id
 from .slot_store import SlotStore, Slot, normalize_slot_value_type
 
-from .exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError
+from .exceptions import (
+    TaskPersistenceError,
+    IntentIdConflict,
+    IdReservationError,
+    ControlAuditPersistenceError,
+    ControlAuditConflictError,
+    ControlAuditCommitUncertainError,
+    ControlAuditCorruptionError,
+)
 from .intent_router import IntentRouter, IntentRouteResult
 from .task_request_guard import analyze_task_request
-from .result_paths import get_task_dir
+from .result_paths import get_task_dir, get_history_dir
+from .history_manager import (
+    compute_request_fingerprint,
+    load_control_event,
+    get_control_event_path,
+    load_latest_session_snapshot,
+    validate_control_event,
+    read_session_head,
+    _get_session_lock,
+    _get_request_lock,
+    _safe_request_id,
+)
 
+
+@dataclass
+class ProcessOutcome:
+    reply: str
+    control_event_created: bool
+    control_action: Optional[str]
+    draft_cancelled: bool
+    request_id: str
+    history_snapshot_required: bool = False
+    control_event_data: Optional[Dict[str, Any]] = None
+    is_retry: bool = False
+    response_snapshot: Optional[Dict[str, Any]] = None
+    parent_revision: int = 0
+
+
+import math
 
 HARD_REFUSAL_LIMIT = 4   # 连续拒绝上限
+
+DRAFT_PHASES = {
+    "collecting",
+    "confirming",
+    "blocked_soft",
+    "blocked_hard",
+}
+
+VALID_DIALOGUE_MODES = {
+    "task_collection",
+    "knowledge_qa",
+    "emergency_intervention",
+    "uncertain",
+}
+VALID_CONTROL_STATES = {
+    "idle",
+    "pause_requested",
+    "stop_requested",
+    "abort_requested",
+    "cancel_requested",
+}
+ACTION_TO_CONTROL_STATE = {
+    "pause": "pause_requested",
+    "stop": "stop_requested",
+    "abort": "abort_requested",
+    "cancel": "cancel_requested",
+}
+VALID_CONTROL_SOURCES = {"rule", "llm", "fallback"}
+VALID_CONTROL_ACTIONS = {"pause", "stop", "abort", "cancel"}
+
+
+def _validate_control_snapshot(
+    control_state: Any,
+    last_control_request: Any,
+) -> tuple[str, dict | None]:
+    if control_state is None:
+        clean_c_state = "idle"
+    elif isinstance(control_state, str) and control_state.strip() in VALID_CONTROL_STATES:
+        clean_c_state = control_state.strip()
+    else:
+        raise ValueError(f"Invalid control_state in snapshot: {control_state!r}")
+
+    if clean_c_state == "idle":
+        if last_control_request is not None:
+            raise ValueError("control_state is idle but last_control_request is not None")
+        return ("idle", None)
+
+    # 非 idle 状态
+    if not isinstance(last_control_request, dict):
+        raise ValueError(f"control_state is {clean_c_state!r} but last_control_request is not a dictionary")
+
+    # 旧快照降级策略：非 idle 但缺少新增元数据字段 (request_id / requested_at / phase_at_request) 时默认降级为 idle，不伪造伪假元数据
+    if (
+        "request_id" not in last_control_request
+        or "requested_at" not in last_control_request
+        or "phase_at_request" not in last_control_request
+    ):
+        return ("idle", None)
+
+    action = last_control_request.get("action")
+    status = last_control_request.get("status")
+    source = last_control_request.get("source")
+    confidence = last_control_request.get("confidence")
+    reason = last_control_request.get("reason")
+    request_id = last_control_request.get("request_id")
+    requested_at = last_control_request.get("requested_at")
+    phase_at_request = last_control_request.get("phase_at_request")
+    task_id = last_control_request.get("task_id")
+    intent_id = last_control_request.get("intent_id")
+
+    if action not in VALID_CONTROL_ACTIONS:
+        raise ValueError(f"Invalid action in last_control_request: {action!r}")
+
+    if ACTION_TO_CONTROL_STATE[action] != clean_c_state:
+        raise ValueError(f"Action {action!r} does not match control_state {clean_c_state!r}")
+
+    if status != "requested":
+        raise ValueError(f"Invalid status in last_control_request: {status!r}")
+
+    if not isinstance(source, str) or source.strip() not in VALID_CONTROL_SOURCES:
+        raise ValueError(f"Invalid source in last_control_request: {source!r}")
+
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not (0.0 <= float(confidence) <= 1.0)
+        or math.isnan(float(confidence))
+    ):
+        raise ValueError(f"Invalid confidence in last_control_request: {confidence!r}")
+
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError(f"Invalid or empty reason in last_control_request: {reason!r}")
+
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise ValueError(f"Invalid or empty request_id in last_control_request: {request_id!r}")
+
+    if not isinstance(requested_at, str) or not requested_at.strip():
+        raise ValueError(f"Invalid or empty requested_at in last_control_request: {requested_at!r}")
+
+    try:
+        dt = datetime.fromisoformat(requested_at.strip())
+        if dt.tzinfo is None:
+            raise ValueError(f"requested_at must be timezone-aware: {requested_at!r}")
+    except Exception as e:
+        if isinstance(e, ValueError) and "timezone" in str(e):
+            raise e
+        raise ValueError(f"Invalid ISO 8601 requested_at in last_control_request: {requested_at!r}") from e
+
+    if not isinstance(phase_at_request, str) or not phase_at_request.strip():
+        raise ValueError(f"Invalid or empty phase_at_request in last_control_request: {phase_at_request!r}")
+
+    task_id = last_control_request.get("task_id")
+    if task_id is not None and not isinstance(task_id, str):
+        raise ValueError(f"Invalid task_id in last_control_request: {task_id!r}")
+
+    intent_id = last_control_request.get("intent_id")
+    if intent_id is not None and not isinstance(intent_id, str):
+        raise ValueError(f"Invalid intent_id in last_control_request: {intent_id!r}")
+
+    clean_req = {
+        "action": action,
+        "status": "requested",
+        "source": source.strip(),
+        "confidence": float(confidence),
+        "reason": reason.strip(),
+        "request_id": request_id.strip(),
+        "requested_at": requested_at.strip(),
+        "phase_at_request": phase_at_request.strip(),
+        "task_id": task_id.strip() if isinstance(task_id, str) else None,
+        "intent_id": intent_id.strip() if isinstance(intent_id, str) else None,
+    }
+    return (clean_c_state, clean_req)
 
 
 FIELD_LABELS = {
@@ -107,6 +275,9 @@ class DialogueManager:
         self.slot_store = SlotStore(kb)
         self.task_state: dict = self.slot_store.get_task_state()
         self.mode: str = "normal"
+        self.dialogue_mode: str = "task_collection"
+        self.control_state: str = "idle"
+        self.last_control_request: dict | None = None
         self.phase: str = "collecting"
         self.final_result: dict | None = None
         self.awaiting_final_confirm = False
@@ -124,8 +295,79 @@ class DialogueManager:
         self._last_built_json: dict = {}
         self._last_missing: list[dict] = []
 
+        # 单调 Session Revision (版本号)
+        self.session_revision: int = 0
+
         # 会话锁（按 session 隔离并发控制）
         self._session_lock = threading.RLock()
+
+    def _export_runtime_state(self) -> dict[str, Any]:
+        """导出纯内存状态快照，用于控制/审计事务失败时的零副作用回滚。"""
+        return {
+            "conversation_history": copy.deepcopy(self.conversation_history),
+            "slot_store_snapshot": self.slot_store.export_snapshot(),
+            "task_state": copy.deepcopy(self.task_state),
+            "_last_built_json": copy.deepcopy(self._last_built_json),
+            "_last_missing": copy.deepcopy(self._last_missing),
+            "phase": self.phase,
+            "mode": self.mode,
+            "dialogue_mode": self.dialogue_mode,
+            "control_state": self.control_state,
+            "last_control_request": copy.deepcopy(self.last_control_request),
+            "final_result": copy.deepcopy(self.final_result),
+            "_blocking_violations": copy.deepcopy(self._blocking_violations),
+            "_soft_whitelist": copy.deepcopy(self._soft_whitelist),
+            "_pending_rov_candidates": copy.deepcopy(self._pending_rov_candidates),
+            "_hard_refusal_counts": copy.deepcopy(self._hard_refusal_counts),
+            "awaiting_final_confirm": self.awaiting_final_confirm,
+            "task_start_now": self.task_start_now,
+            "session_revision": self.session_revision,
+        }
+
+    def _restore_runtime_state(self, state: dict[str, Any]) -> None:
+        """从内存快照完全恢复运行时状态（零磁盘与 ID 副作用）。"""
+        self.conversation_history = copy.deepcopy(state.get("conversation_history", self.conversation_history))
+        if "slot_store_snapshot" in state:
+            self.slot_store = SlotStore.from_snapshot(state["slot_store_snapshot"], self.kb)
+        self.task_state = copy.deepcopy(state.get("task_state", self.task_state))
+        self._last_built_json = copy.deepcopy(state.get("_last_built_json", self._last_built_json))
+        self._last_missing = copy.deepcopy(state.get("_last_missing", self._last_missing))
+        self.phase = state.get("phase", self.phase)
+        self.mode = state.get("mode", self.mode)
+        self.dialogue_mode = state.get("dialogue_mode", self.dialogue_mode)
+        self.control_state = state.get("control_state", self.control_state)
+        self.last_control_request = copy.deepcopy(state.get("last_control_request", self.last_control_request))
+        self.final_result = copy.deepcopy(state.get("final_result", self.final_result))
+        self._blocking_violations = copy.deepcopy(state.get("_blocking_violations", self._blocking_violations))
+        soft = state.get("_soft_whitelist", set())
+        if isinstance(soft, list):
+            self._soft_whitelist = {tuple(x) if isinstance(x, list) else x for x in soft}
+        else:
+            self._soft_whitelist = copy.deepcopy(soft)
+        self._pending_rov_candidates = copy.deepcopy(state.get("_pending_rov_candidates", self._pending_rov_candidates))
+        self._hard_refusal_counts = copy.deepcopy(state.get("_hard_refusal_counts", self._hard_refusal_counts))
+        self.awaiting_final_confirm = state.get("awaiting_final_confirm", self.awaiting_final_confirm)
+        self.task_start_now = state.get("task_start_now", self.task_start_now)
+        self.session_revision = state.get("session_revision", self.session_revision)
+
+    def _switch_dialogue_mode(
+        self,
+        new_mode: str,
+        source: str = "rule",
+        confidence: float = 1.0,
+        reason: str = "",
+    ) -> None:
+        old_mode = self.dialogue_mode
+        if old_mode != new_mode:
+            logger.info(
+                "[DialogueManager] Mode switch: %s -> %s | source=%s | confidence=%.2f | reason=%s",
+                old_mode,
+                new_mode,
+                source,
+                confidence,
+                reason,
+            )
+            self.dialogue_mode = new_mode
 
 
 
@@ -133,9 +375,236 @@ class DialogueManager:
     # 主入口
     # --------------------------------------------------------------------------
 
+    def _find_existing_control_event(
+        self,
+        request_id: str,
+        session_id: str = "default_session",
+    ) -> Optional[Dict[str, Any]]:
+        """精确路径查找控制事件（(session_id, request_id) 作用域，不使用 glob）。
+
+        返回语义：
+        - None: 文件不存在（可安全处理新请求）
+        - dict: 文件存在且合法（用于幂等重试或冲突检测）
+        - ControlAuditCorruptionError: 文件存在但损坏/不可读 → fail closed，不可当作未找到
+        """
+        if not request_id:
+            return None
+        history_dir = get_history_dir(create=False)
+        if not history_dir.exists():
+            return None
+        # intent_id 不参与文件路径，只作为 JSON 元数据
+        return load_control_event(history_dir, session_id, request_id)
+
+    def load_session_state(self, session_id: str) -> bool:
+        """在 Manager 初始化或服务重启后装载指定 session_id 的最新持久化状态。"""
+        with self._session_lock:
+            self.session_id = session_id
+            latest_snap = load_latest_session_snapshot(session_id)
+            if latest_snap:
+                self._restore_state_from_snapshot(latest_snap)
+                logger.info(
+                    "[DialogueManager] Loaded session %s latest state: phase=%s control_state=%s",
+                    session_id, self.phase, self.control_state,
+                )
+                return True
+            return False
+
+    def _restore_state_from_snapshot(self, snapshot: Dict[str, Any]) -> None:
+        """从 snapshot 字典完整恢复 DialogueManager 内存状态。"""
+        raw_soft = snapshot.get("_soft_whitelist") or snapshot.get("soft_whitelist") or []
+        if isinstance(raw_soft, list):
+            soft_set = {tuple(x) if isinstance(x, list) else x for x in raw_soft}
+        elif isinstance(raw_soft, set):
+            soft_set = raw_soft
+        else:
+            soft_set = set()
+
+        mem_state = {
+            "conversation_history": copy.deepcopy(snapshot.get("conversation_history", self.conversation_history)),
+            "slot_store_snapshot": snapshot.get("slot_store", self.slot_store.export_snapshot()),
+            "task_state": copy.deepcopy(snapshot.get("task_state", self.task_state)),
+            "_last_built_json": copy.deepcopy(snapshot.get("_last_built_json") or snapshot.get("built_json", self._last_built_json)),
+            "_last_missing": copy.deepcopy(snapshot.get("_last_missing", self._last_missing)),
+            "phase": snapshot.get("phase", self.phase),
+            "mode": snapshot.get("mode", self.mode),
+            "dialogue_mode": snapshot.get("dialogue_mode", self.dialogue_mode),
+            "control_state": snapshot.get("control_state", self.control_state),
+            "last_control_request": copy.deepcopy(snapshot.get("last_control_request", self.last_control_request)),
+            "final_result": copy.deepcopy(snapshot.get("final_result", self.final_result)),
+            "_blocking_violations": copy.deepcopy(snapshot.get("_blocking_violations", self._blocking_violations)),
+            "_soft_whitelist": soft_set,
+            "_pending_rov_candidates": copy.deepcopy(snapshot.get("_pending_rov_candidates", self._pending_rov_candidates)),
+            "_hard_refusal_counts": copy.deepcopy(snapshot.get("_hard_refusal_counts", self._hard_refusal_counts)),
+            "awaiting_final_confirm": snapshot.get("awaiting_final_confirm", self.awaiting_final_confirm),
+            "task_start_now": snapshot.get("task_start_now", self.task_start_now),
+            "session_revision": snapshot.get("session_revision", 0),
+        }
+        self._restore_runtime_state(mem_state)
+
+    def _restore_state_from_event_snapshot(self, event: Dict[str, Any]) -> None:
+        """兼容接口：从控制审计事件恢复状态。"""
+        snapshot = event.get("snapshot") if isinstance(event, dict) else None
+        if isinstance(snapshot, dict):
+            self._restore_state_from_snapshot(snapshot)
+
     def process(self, user_message: str, request_id: str = "req_default") -> str:
         with self._session_lock:
             return self._process_internal(user_message, request_id)
+
+    def process_with_audit(
+        self,
+        user_message: str,
+        request_id: str = "req_default",
+        session_id: str = "default_session",
+        persist_callback: Optional[Callable[["DialogueManager", ProcessOutcome, Dict[str, Any]], None]] = None,
+    ) -> ProcessOutcome:
+        """全流程控制事务（R10 版）：
+
+        锁顺序：
+        1. 跨进程 per-session 锁
+        2. 跨进程 per-request 锁
+        3. 线程 session 锁
+        4. 文件 history 锁
+        """
+        try:
+            _safe_request_id(request_id)
+        except ValueError:
+            raise ControlAuditConflictError(f"Invalid request_id format: {request_id!r}")
+
+        import fcntl as _fcntl
+        history_dir = get_history_dir(create=True)
+        sess_lock = _get_session_lock(history_dir, session_id)
+        req_lock = _get_request_lock(history_dir, session_id, request_id)
+
+        try:
+            # 1. 跨进程 per-session 锁（保证同 session 不同 request 串行执行，防分叉）
+            _fcntl.flock(sess_lock.fileno(), _fcntl.LOCK_EX)
+            try:
+                # 2. 跨进程 per-request 锁（精确请求去重）
+                _fcntl.flock(req_lock.fileno(), _fcntl.LOCK_EX)
+
+                with self._session_lock:
+                    self.session_id = session_id
+
+                    # 检查权威磁盘 Session Head 指针：若 Head revision 大于等于本地，防分叉强制重新加载最新磁盘状态！
+                    head_data = read_session_head(history_dir, session_id)
+                    if head_data is not None:
+                        head_rev = head_data["current_revision"]
+                        if head_rev >= self.session_revision or not self.conversation_history:
+                            self.load_session_state(session_id)
+                        expected_parent_rev = self.session_revision
+                    else:
+                        if not self.conversation_history:
+                            self.session_revision = 0
+                        expected_parent_rev = self.session_revision
+
+                    try:
+                        existing_event = self._find_existing_control_event(request_id, session_id)
+                    except ControlAuditCorruptionError:
+                        raise
+
+                    if existing_event is not None:
+                        validate_control_event(existing_event, expected_session_id=session_id, expected_request_id=request_id)
+                        existing_fp = existing_event.get("request_fingerprint")
+                        eff_action = existing_event.get("action")
+
+                        incoming_fp = compute_request_fingerprint(
+                            session_id=session_id,
+                            request_id=request_id,
+                            user_message=user_message,
+                            action=eff_action,
+                        )
+
+                        if existing_fp and existing_fp == incoming_fp:
+                            resp_snap = existing_event.get("response_snapshot")
+                            if isinstance(resp_snap, dict):
+                                resp_snap = copy.deepcopy(resp_snap)
+                                resp_snap["is_retry"] = True
+                            else:
+                                raise ControlAuditCorruptionError("Control event missing valid response_snapshot")
+
+                            return ProcessOutcome(
+                                reply=resp_snap.get("reply", ""),
+                                control_event_created=False,
+                                control_action=existing_event.get("action"),
+                                draft_cancelled=(existing_event.get("event_type") == "draft_cancel_event"),
+                                request_id=request_id,
+                                history_snapshot_required=False,
+                                control_event_data=existing_event,
+                                is_retry=True,
+                                response_snapshot=resp_snap,
+                            )
+                        else:
+                            raise ControlAuditConflictError(
+                                f"Control audit event for request_id={request_id!r} session={session_id!r} "
+                                f"already exists with conflicting fingerprint"
+                            )
+
+                    # 导出 pre-state
+                    before_state = self._export_runtime_state()
+                    pre_control_state = before_state["control_state"]
+                    pre_phase = before_state["phase"]
+
+                    try:
+                        self.session_revision = expected_parent_rev + 1
+                        reply = self.process(user_message, request_id=request_id)
+
+                        after_state = self._export_runtime_state()
+                        state_changed = (after_state != before_state) or (bool(user_message))
+
+                        is_control_transition = (self.control_state != pre_control_state)
+                        is_draft_cancellation = (
+                            pre_phase in ("collecting", "confirming", "blocked_soft", "blocked_hard")
+                            and self.phase == "rejected"
+                        )
+                        requires_control_audit = is_control_transition or is_draft_cancellation
+
+                        requires_history_snapshot = state_changed and not requires_control_audit
+
+                        control_action = self.last_control_request.get("action") if isinstance(self.last_control_request, dict) else None
+
+                        outcome = ProcessOutcome(
+                            reply=reply,
+                            control_event_created=requires_control_audit,
+                            control_action=control_action,
+                            draft_cancelled=is_draft_cancellation,
+                            request_id=request_id,
+                            history_snapshot_required=requires_history_snapshot,
+                            parent_revision=expected_parent_rev,
+                        )
+
+                        if persist_callback:
+                            persist_callback(self, outcome, before_state)
+
+                        return outcome
+                    except Exception:
+                        self._restore_runtime_state(before_state)
+                        raise
+            finally:
+                try:
+                    _fcntl.flock(req_lock.fileno(), _fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                try:
+                    req_lock.close()
+                except Exception:
+                    pass
+        finally:
+            try:
+                _fcntl.flock(sess_lock.fileno(), _fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                sess_lock.close()
+            except Exception:
+                pass
+            try:
+                req_lock.close()
+            except Exception:
+                pass
+
+
+
 
     def _handle_non_task_route(self, user_message: str, route: IntentRouteResult, request_id: str) -> str:
         # 1. 记录前置快照镜像（用于严格的只读状态不变性断言）
@@ -286,6 +755,190 @@ class DialogueManager:
 
     def _handle_unknown_intent(self, user_message: str, route: IntentRouteResult) -> str:
         return "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数，还是查询设备工具与系统功能？"
+
+    def _has_active_task(self) -> bool:
+        """判定当前会话是否存在活动任务或有效任务草稿（严格依据阶段与任务数据）。"""
+        if self.phase in ("done", "confirming", "blocked_soft", "blocked_hard"):
+            return True
+        if self.phase == "rejected":
+            return False
+
+        valid_slots = [
+            s for k, s in self.slot_store.slots.items()
+            if getattr(s, "status", None) in ("valid", "pending_confirmation") and getattr(s, "value", None) is not None
+        ]
+        if valid_slots:
+            return True
+
+        if any(k != "intent_id" and v is not None for k, v in self.task_state.items()):
+            return True
+
+        if any(k not in ("intent_id", "session_id") and v is not None for k, v in self._last_built_json.items()):
+            return True
+
+        return False
+
+    def _clear_draft_state_preserving_history(self) -> None:
+        """清空未发布任务草稿数据，但完整保留对话历史。"""
+        self.slot_store = SlotStore(self.kb)
+        self.task_state = {}
+        self._last_built_json = {}
+        self._last_missing = []
+        self._blocking_violations = []
+        self._soft_whitelist = set()
+        self._pending_rov_candidates = []
+        self._hard_refusal_counts = {}
+        self.final_result = None
+        self.awaiting_final_confirm = False
+        self.task_start_now = False
+        self.control_state = "idle"
+        self.last_control_request = None
+
+    def _handle_emergency_intervention(
+        self, user_message: str, route: IntentRouteResult, request_id: str = "req_default"
+    ) -> str:
+        action = route.emergency_action
+        if not action or action not in ("stop", "pause", "abort", "cancel"):
+            self._switch_dialogue_mode(
+                "uncertain",
+                source=route.source,
+                confidence=route.confidence,
+                reason="紧急动作不明确，请求用户澄清",
+            )
+            reply = "请明确您是要停止当前任务、暂停当前任务，还是取消未发布任务草稿。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        # ── 1. 无活动任务或草稿时的 fail-closed 拦截 ──
+        if not self._has_active_task():
+            self.control_state = "idle"
+            self.last_control_request = None
+            self._switch_dialogue_mode(
+                "emergency_intervention",
+                source=route.source,
+                confidence=route.confidence,
+                reason=route.reason,
+            )
+            if action == "cancel":
+                reply = "当前没有可取消的未发布任务。"
+            else:
+                reply = "当前没有活动任务或可取消的任务草稿，无法执行控制指令。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        # ── 2. 未发布草稿阶段的 cancel 处理 ──
+        if action == "cancel" and self.phase in DRAFT_PHASES:
+            self._clear_draft_state_preserving_history()
+            self.phase = "rejected"
+            self.control_state = "idle"
+            self.last_control_request = None
+            self._switch_dialogue_mode(
+                "emergency_intervention",
+                source=route.source,
+                confidence=route.confidence,
+                reason=route.reason,
+            )
+            reply = "当前未发布任务草稿已取消。如需重新规划，请重新开始。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        # ── 3. 已处于 rejected 阶段的 cancel 处理 ──
+        if action == "cancel" and self.phase == "rejected":
+            self.control_state = "idle"
+            self.last_control_request = None
+            self._switch_dialogue_mode(
+                "emergency_intervention",
+                source=route.source,
+                confidence=route.confidence,
+                reason=route.reason,
+            )
+            reply = "当前没有可取消的未发布任务。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        # ── 4. 已发布阶段 (phase == "done") 的 cancel 以及所有阶段的 pause, stop, abort ──
+        initial_version = self.slot_store.version
+        initial_snapshot = copy.deepcopy(self.slot_store.export_snapshot())
+        initial_unresolved = list(self.slot_store.unresolved)
+        initial_task_state = copy.deepcopy(self.task_state)
+        initial_built_json = copy.deepcopy(self._last_built_json)
+        initial_missing = copy.deepcopy(self._last_missing)
+        initial_phase = self.phase
+        initial_mode = self.mode
+        initial_rov_candidates = copy.deepcopy(self._pending_rov_candidates)
+        initial_soft_whitelist = copy.deepcopy(self._soft_whitelist)
+        initial_blocking_violations = copy.deepcopy(self._blocking_violations)
+
+        tz_now = get_current_datetime()
+        if tz_now.tzinfo is None:
+            tz_now = tz_now.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+        iso_requested_at = tz_now.isoformat()
+
+        task_id_val = self.task_state.get("task_id") or (
+            self.final_result.get("task_id") if isinstance(self.final_result, dict) else None
+        )
+        intent_id_val = self.task_state.get("intent_id") or (
+            self.final_result.get("intent_id") if isinstance(self.final_result, dict) else None
+        )
+
+        self.control_state = f"{action}_requested"
+        self.last_control_request = {
+            "action": action,
+            "status": "requested",
+            "source": route.source,
+            "confidence": float(route.confidence),
+            "reason": route.reason,
+            "request_id": request_id,
+            "requested_at": iso_requested_at,
+            "phase_at_request": self.phase,
+            "task_id": str(task_id_val) if task_id_val else None,
+            "intent_id": str(intent_id_val) if intent_id_val else None,
+        }
+        self._switch_dialogue_mode(
+            "emergency_intervention",
+            source=route.source,
+            confidence=route.confidence,
+            reason=route.reason,
+        )
+
+        if action == "pause":
+            reply = "已识别暂停请求。当前系统尚未接入实际机器人执行控制接口，因此尚未确认设备已实际暂停。"
+        elif action == "stop":
+            reply = "已识别停止请求。当前系统尚未接入实际机器人执行控制接口，因此尚未确认设备已实际停止。"
+        elif action == "abort":
+            reply = "已识别终止请求。当前系统尚未接入实际机器人执行控制接口，因此尚未确认设备已实际终止。"
+        elif action == "cancel":
+            reply = "已识别取消请求。当前系统尚未接入实际机器人执行控制接口，因此尚未确认设备已实际取消。"
+        else:
+            reply = "已记录紧急控制指令。"
+
+        self.conversation_history.append({"role": "user", "content": user_message})
+        self.conversation_history.append({"role": "assistant", "content": reply})
+
+        # 状态不变性校验 (彻底防范数据污染或静默 wipe)
+        v_ok = (self.slot_store.version == initial_version)
+        s_ok = (self.slot_store.export_snapshot() == initial_snapshot)
+        u_ok = (self.slot_store.unresolved == initial_unresolved)
+        t_ok = (self.task_state == initial_task_state)
+        b_ok = (self._last_built_json == initial_built_json)
+        m_ok = (self._last_missing == initial_missing)
+        p_ok = (self.phase == initial_phase)
+        mo_ok = (self.mode == initial_mode)
+        r_ok = (self._pending_rov_candidates == initial_rov_candidates)
+        w_ok = (self._soft_whitelist == initial_soft_whitelist)
+        bv_ok = (self._blocking_violations == initial_blocking_violations)
+
+        if not (v_ok and s_ok and u_ok and t_ok and b_ok and m_ok and p_ok and mo_ok and r_ok and w_ok and bv_ok):
+            logger.critical(
+                f"[CRITICAL] State invariance violation in emergency_intervention action '{action}'!"
+            )
+            raise RuntimeError(f"State invariance violation in emergency_intervention action {action}")
+
+        return reply
 
     # --------------------------------------------------------------------------
     # TASK_CONFIRM 独立控制指令处理（彻底隔离于槽位抽取流水线）
@@ -562,16 +1215,12 @@ class DialogueManager:
             return self._handle_task_confirm(user_message, request_id)
 
 
-        if self.phase in ("blocked_hard", "blocked_soft", "confirming", "collecting") and self._user_cancelled(user_message):
-            self.reset()
-            self.phase = "rejected"
-            reply = "任务已取消。如需重新规划，请重新开始。"
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.conversation_history.append({"role": "assistant", "content": reply})
-            return reply
-
-        # ── 独立意图路由分流阶段 ──
-        expected_slots = [m["key"] for m in self._last_missing if isinstance(m, dict) and "key" in m]
+        # ── 三级独立意图路由分流阶段 ──
+        expected_slots = [
+            m["key"]
+            for m in self._last_missing
+            if isinstance(m, dict) and "key" in m
+        ]
         route = self.intent_router.route(
             user_message=user_message,
             conversation_history=self.conversation_history,
@@ -580,8 +1229,43 @@ class DialogueManager:
             expected_slots=expected_slots,
         )
 
-        if route.interaction_type == "QUERY":
+        # 1. 紧急干预线路拦截 (在 SlotStore 抽取与写入之前拦截)
+        if route.dialogue_mode == "emergency_intervention":
+            return self._handle_emergency_intervention(user_message, route, request_id)
+
+        # 2. 知识问答线路 (只读，不修改 SlotStore 与任务状态)
+        if route.dialogue_mode == "knowledge_qa":
+            self._switch_dialogue_mode(
+                "knowledge_qa",
+                source=route.source,
+                confidence=route.confidence,
+                reason=route.reason,
+            )
             return self._handle_non_task_route(user_message, route, request_id)
+
+        # 3. 安全澄清状态 (uncertain)
+        if route.dialogue_mode == "uncertain":
+            self._switch_dialogue_mode(
+                "uncertain",
+                source=route.source,
+                confidence=route.confidence,
+                reason=route.reason,
+            )
+            if route.reason and ("紧急" in route.reason or "动作" in route.reason):
+                reply = "请明确您是要停止当前任务、暂停当前任务，还是取消未发布任务草稿。"
+            else:
+                reply = "对不起，我没有完全理解您的需求。请问您是希望【创建/修改任务】，还是想【查询系统与设备知识】？"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        # 4. 任务收集线路 (task_collection)
+        self._switch_dialogue_mode(
+            "task_collection",
+            source=route.source,
+            confidence=route.confidence,
+            reason=route.reason,
+        )
 
         compound_request = analyze_task_request(
             user_message,
@@ -2079,6 +2763,9 @@ class DialogueManager:
         return {
             "phase": self.phase,
             "mode": self.mode,
+            "dialogue_mode": self.dialogue_mode,
+            "control_state": self.control_state,
+            "last_control_request": copy.deepcopy(self.last_control_request),
             "filled": filled,
             "missing": missing_display,
             "whitelisted_soft": sorted({e[2] for e in self._soft_whitelist}),
@@ -2092,6 +2779,9 @@ class DialogueManager:
         self.slot_store = SlotStore(self.kb)
         self.task_state = self.slot_store.get_task_state()
         self.mode = "normal"
+        self.dialogue_mode = "task_collection"
+        self.control_state = "idle"
+        self.last_control_request = None
         self.phase = "collecting"
         self.final_result = None
         self.awaiting_final_confirm = False
@@ -2211,6 +2901,18 @@ class DialogueManager:
         if not isinstance(snapshot, dict):
             raise ValueError("History snapshot must be a dictionary")
 
+        raw_d_mode = snapshot.get("dialogue_mode")
+        if raw_d_mode is None:
+            dialogue_mode = "task_collection"
+        elif isinstance(raw_d_mode, str) and raw_d_mode.strip() in VALID_DIALOGUE_MODES:
+            dialogue_mode = raw_d_mode.strip()
+        else:
+            raise ValueError(f"Invalid dialogue_mode in snapshot: {raw_d_mode!r}")
+
+        raw_c_state = snapshot.get("control_state")
+        raw_last_req = snapshot.get("last_control_request")
+        control_state, clean_last_req = _validate_control_snapshot(raw_c_state, raw_last_req)
+
         conversation_history = snapshot.get("conversation_history", [])
         if not isinstance(conversation_history, list):
             raise ValueError("conversation_history must be a list")
@@ -2249,12 +2951,14 @@ class DialogueManager:
                     )
             candidate_store.commit_transaction(new_slots, [])
 
-
         # 候选 SlotStore 完整构建后再一次性替换，避免半恢复状态泄漏。
         self.conversation_history = copy.deepcopy(conversation_history)
         self.slot_store = candidate_store
         self.task_state = self.slot_store.get_task_state()
         self.mode = mode
+        self.dialogue_mode = dialogue_mode
+        self.control_state = control_state
+        self.last_control_request = copy.deepcopy(clean_last_req)
         self.final_result = None
         self.task_start_now = False
         # 清空阻塞与白名单，重新构建缓存

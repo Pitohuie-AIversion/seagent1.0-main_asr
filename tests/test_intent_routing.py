@@ -22,6 +22,19 @@ class DummyLLM(LLMClient):
         self.default_reply = default_reply
         self.called_chats = []
 
+    def extract_json(self, messages: list[dict], max_tokens: int = 800) -> dict:
+        content = ""
+        if isinstance(messages, list) and messages:
+            content = str(messages[-1].get("content", ""))
+        if "巡检" in content or "管缆" in content or "创建" in content:
+            res = {"task_type_key": "pipeline_inspection", "task_type": "管缆巡检"}
+            if "500" in content:
+                res["water_depth"] = 500.0
+            elif "300" in content:
+                res["water_depth"] = 300.0
+            return res
+        return {}
+
     def chat(self, messages: list[dict], temperature: float = 0.7, max_tokens: int = 800) -> str:
         self.called_chats.append(messages)
         res = super().chat(messages, temperature, max_tokens)
@@ -53,6 +66,7 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
         self.llm = DummyLLM()
         self.router = IntentRouter(self.llm)
         self.dm = DialogueManager(self.llm, self.kb)
+        web_backend.init_manager(self.dm)
 
     # ══════════════════════════════════════════════════════════════════════
     # 一、基础路由测试（保留原有测试）
@@ -747,6 +761,504 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
         reply = self.dm.process("超光速神潜器9000有什么能力？")
         # 不应该胡编乱造
         self.assertNotIn("超光速神潜器9000可以", reply)
+
+
+class TestIssue10ThreeModeRouting(unittest.TestCase):
+    def setUp(self):
+        self.kb = KnowledgeBase()
+        self.llm = DummyLLM()
+        self.router = IntentRouter(self.llm)
+        self.dm = DialogueManager(self.llm, self.kb)
+        web_backend.init_manager(self.dm)
+
+    def test_basic_three_mode_routing(self):
+        """1. 基础三级路由测试"""
+        # task_collection
+        res_task = self.router.route("帮我创建一个海底巡检任务", [], {})
+        self.assertEqual(res_task.dialogue_mode, "task_collection")
+        self.assertEqual(res_task.interaction_type, "WRITE")
+
+        # knowledge_qa
+        res_qa = self.router.route("ROV 最大作业水深是多少？", [], {})
+        self.assertEqual(res_qa.dialogue_mode, "knowledge_qa")
+        self.assertEqual(res_qa.query_intent, "DEVICE_CAPABILITY")
+
+        # emergency_intervention
+        res_em = self.router.route("立即停止当前任务", [], {})
+        self.assertEqual(res_em.dialogue_mode, "emergency_intervention")
+        self.assertEqual(res_em.emergency_action, "stop")
+
+        # uncertain
+        res_unc = self.router.route("我想问一下机器人……", [], {})
+        self.assertEqual(res_unc.dialogue_mode, "uncertain")
+        self.assertEqual(res_unc.query_intent, "CLARIFICATION")
+
+    def test_emergency_priority_and_slot_isolation(self):
+        """2. 紧急模式优先级与槽位隔离测试"""
+        self.dm.process("帮我创建一个管缆巡检任务")
+
+        reply = self.dm.process("马上停止，不要再下潜500米")
+        self.assertIn("停止请求", reply)
+        self.assertEqual(self.dm.dialogue_mode, "emergency_intervention")
+        self.assertEqual(self.dm.control_state, "stop_requested")
+
+        # 水深 500m 绝对不能被写进 SlotStore
+        wd = self.dm.slot_store.slots.get("water_depth")
+        self.assertTrue(wd is None or wd.value is None or wd.value != 500.0)
+
+    def test_negation_safety(self):
+        """3. 否定句安全测试：不要停止当前任务 -> 不触发紧急干预"""
+        self.dm.phase = "collecting"
+        res = self.router.route("不要停止当前任务", [], {})
+        self.assertNotEqual(res.dialogue_mode, "emergency_intervention")
+
+    def test_question_and_conditional_safety(self):
+        """4. 疑问句与条件句安全测试"""
+        # 如何停止当前任务？ -> 不执行实际停止
+        res_q = self.router.route("如何停止当前任务？", [], {})
+        self.assertNotEqual(res_q.dialogue_mode, "emergency_intervention")
+        reply_q = self.dm.process("如何停止当前任务？")
+        self.assertNotEqual(self.dm.phase, "rejected")
+
+        # 如果现在停止会怎么样？ -> 不执行实际停止
+        res_c = self.router.route("如果现在停止会怎么样？", [], {})
+        self.assertNotEqual(res_c.dialogue_mode, "emergency_intervention")
+        reply_c = self.dm.process("如果现在停止会怎么样？")
+        self.assertNotEqual(self.dm.phase, "rejected")
+
+    def _seed_pipeline_task(self):
+        self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+        self.dm.slot_store.slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
+        self.dm.slot_store.slots["water_depth"] = Slot("water_depth", value=300.0, status="valid")
+        self.dm.slot_store.slots["equipment_type"] = Slot("equipment_type", value="Haida_ROV_3000", status="valid")
+        self.dm.slot_store.slots["payload"] = Slot("payload", value=["camera"], status="valid", value_type="list")
+        self.dm._rebuild_cache()
+
+    def test_01_pause_preserves_task(self):
+        """测试 1：pause 保留任务"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+        task_state_before = copy.deepcopy(self.dm.task_state)
+        phase_before = self.dm.phase
+
+        reply = self.dm.process("暂停当前任务")
+        self.assertIn("暂停", reply)
+        self.assertIn("尚未确认设备已实际暂停", reply)
+        self.assertEqual(self.dm.control_state, "pause_requested")
+        self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+        self.assertEqual(self.dm.task_state, task_state_before)
+        self.assertEqual(self.dm.phase, phase_before)
+        self.assertNotEqual(self.dm.phase, "rejected")
+
+    def test_02_stop_preserves_task(self):
+        """测试 2：stop 保留任务"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+        task_state_before = copy.deepcopy(self.dm.task_state)
+        phase_before = self.dm.phase
+
+        with patch.object(self.dm.extractor, 'extract_updates') as mock_ext:
+            reply = self.dm.process("立即停止当前任务")
+            mock_ext.assert_not_called()
+
+        self.assertIn("停止", reply)
+        self.assertIn("尚未确认设备已实际停止", reply)
+        self.assertEqual(self.dm.control_state, "stop_requested")
+        self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+        self.assertEqual(self.dm.task_state, task_state_before)
+        self.assertEqual(self.dm.phase, phase_before)
+        self.assertNotEqual(self.dm.phase, "rejected")
+
+    def test_03_abort_preserves_audit_state(self):
+        """测试 3：abort 保留审计状态"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+        task_state_before = copy.deepcopy(self.dm.task_state)
+
+        reply = self.dm.process("终止当前任务")
+        self.assertIn("终止", reply)
+        self.assertEqual(self.dm.control_state, "abort_requested")
+        self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+        self.assertEqual(self.dm.task_state, task_state_before)
+        self.assertNotEqual(self.dm.phase, "rejected")
+
+    def test_04_compound_emergency_no_slot_pollution(self):
+        """测试 4：复合紧急指令不污染槽位"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+
+        reply = self.dm.process("马上停止，不要再下倾500米")
+        self.assertEqual(self.dm.control_state, "stop_requested")
+        self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 300.0)
+        self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+
+    def test_05_question_safety(self):
+        """测试 5：疑问句安全测试"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+
+        queries = [
+            "如何停止当前任务？",
+            "怎么取消任务？",
+            "取消任务需要哪些权限？",
+            "暂停任务需要确认吗？",
+        ]
+        for q in queries:
+            res = self.router.route(q, [], self.dm.task_state)
+            self.assertNotEqual(res.dialogue_mode, "emergency_intervention")
+            reply = self.dm.process(q)
+            self.assertEqual(self.dm.control_state, "idle")
+            self.assertNotEqual(self.dm.phase, "rejected")
+            self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+
+    def test_06_conditional_safety(self):
+        """测试 6：条件句安全测试"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+
+        conditionals = [
+            "如果停止任务会怎样？",
+            "假如终止任务有什么后果？",
+            "要是暂停任务还能恢复吗？",
+        ]
+        for c in conditionals:
+            res = self.router.route(c, [], self.dm.task_state)
+            self.assertNotEqual(res.dialogue_mode, "emergency_intervention")
+            reply = self.dm.process(c)
+            self.assertEqual(self.dm.control_state, "idle")
+            self.assertNotEqual(self.dm.phase, "rejected")
+            self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+
+    def test_07_negation_safety(self):
+        """测试 7：否定句安全测试"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+
+        negations = [
+            "不要停止当前任务",
+            "别取消任务",
+            "现在不需要暂停",
+            "我不想终止任务",
+        ]
+        for n in negations:
+            res = self.router.route(n, [], self.dm.task_state)
+            self.assertNotEqual(res.dialogue_mode, "emergency_intervention")
+            reply = self.dm.process(n)
+            self.assertEqual(self.dm.control_state, "idle")
+            self.assertNotEqual(self.dm.phase, "rejected")
+            self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+
+    def test_08_deterministic_safety_veto_over_llm(self):
+        """测试 8：确定性安全规则否决错误 LLM 输出"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+
+        mock_llm_res = {
+            "dialogue_mode": "emergency_intervention",
+            "emergency_action": "stop",
+            "confidence": 0.99,
+            "reason": "用户提及停止",
+        }
+        with patch.object(self.dm.llm, 'extract_json', return_value=mock_llm_res):
+            res = self.router.route("如何停止当前任务？", [], self.dm.task_state)
+            self.assertNotEqual(res.dialogue_mode, "emergency_intervention")
+            self.assertEqual(res.dialogue_mode, "knowledge_qa")
+
+            reply = self.dm.process("如何停止当前任务？")
+            self.assertEqual(self.dm.control_state, "idle")
+
+    def test_09_missing_emergency_action_fails_closed(self):
+        """测试 9：缺少 emergency_action 降级为 uncertain 澄清"""
+        mock_llm_res = {
+            "dialogue_mode": "emergency_intervention",
+            "confidence": 0.95,
+            "reason": "紧急干预模式但缺失动作",
+        }
+        with patch.object(self.dm.llm, 'extract_json', return_value=mock_llm_res):
+            res = self.router.route("一些紧急的输入", [], {})
+            self.assertEqual(res.dialogue_mode, "uncertain")
+            self.assertEqual(res.query_intent, "CLARIFICATION")
+            self.assertIsNone(res.emergency_action)
+
+    def test_10_invalid_emergency_action_fails_closed(self):
+        """测试 10：非法 emergency_action 安全回退"""
+        mock_llm_res = {
+            "dialogue_mode": "emergency_intervention",
+            "emergency_action": "shutdown_everything",
+            "confidence": 0.95,
+            "reason": "非法紧急动作",
+        }
+        with patch.object(self.dm.llm, 'extract_json', return_value=mock_llm_res):
+            res = self.router.route("系统命令", [], {})
+            self.assertEqual(res.dialogue_mode, "uncertain")
+            self.assertEqual(res.query_intent, "CLARIFICATION")
+            self.assertIsNone(res.emergency_action)
+
+    def test_11_snapshot_dialogue_mode_and_control_state_validation(self):
+        """测试 11：snapshot dialogue_mode 与 control_state 合法性校验"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+        snap = {
+            "conversation_history": [],
+            "mode": "normal",
+            "dialogue_mode": "knowledge_qa",
+            "control_state": "pause_requested",
+            "last_control_request": {
+                "action": "pause",
+                "status": "requested",
+                "source": "rule",
+                "confidence": 0.98,
+                "reason": "pause",
+                "request_id": "req_snap_11",
+                "requested_at": "2026-07-31T14:30:00+08:00",
+                "phase_at_request": "collecting",
+            },
+            "task_state": copy.deepcopy(self.dm.task_state),
+        }
+        # 1. 正常恢复
+        self.dm.load_snapshot(snap)
+        self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
+        self.assertEqual(self.dm.control_state, "pause_requested")
+
+        # 2. 缺省字段默认值
+        snap_legacy = {
+            "conversation_history": [],
+            "task_state": copy.deepcopy(self.dm.task_state),
+        }
+        self.dm.load_snapshot(snap_legacy)
+        self.assertEqual(self.dm.dialogue_mode, "task_collection")
+        self.assertEqual(self.dm.control_state, "idle")
+
+        # 3. 非法字符串 / 空字符串 / 非字符串类型抛出 ValueError 且状态不变
+        state_before = copy.deepcopy(self.dm.get_status())
+        invalid_modes = ["", "invalid_mode", 123, ["task_collection"], {"mode": "task_collection"}]
+        for inv in invalid_modes:
+            invalid_snap = {"dialogue_mode": inv}
+            with self.assertRaises(ValueError):
+                self.dm.load_snapshot(invalid_snap)
+            self.assertEqual(self.dm.get_status(), state_before)
+
+        invalid_controls = ["", "invalid_control", 456, ["idle"]]
+        for inv_c in invalid_controls:
+            invalid_snap_c = {"control_state": inv_c}
+            with self.assertRaises(ValueError):
+                self.dm.load_snapshot(invalid_snap_c)
+            self.assertEqual(self.dm.get_status(), state_before)
+
+    def test_draft_cancel_phases(self):
+        """草稿取消：collecting, confirming, blocked_soft, blocked_hard 阶段输入取消当前任务清空草稿"""
+        draft_phases = ["collecting", "confirming", "blocked_soft", "blocked_hard"]
+        for p in draft_phases:
+            self.dm.reset()
+            self._seed_pipeline_task()
+            self.dm.phase = p
+
+            with patch.object(self.dm.extractor, 'extract_updates') as mock_ext:
+                reply = self.dm.process("取消当前任务")
+                mock_ext.assert_not_called()
+
+            self.assertEqual(self.dm.phase, "rejected")
+            self.assertEqual(self.dm.task_state, {})
+            self.assertEqual(self.dm._last_built_json, {})
+            self.assertEqual(self.dm._last_missing, [])
+            self.assertIsNone(self.dm.final_result)
+            self.assertIn("未发布任务草稿已取消", reply)
+
+    def test_pending_oilfield_draft_cancel(self):
+        """存在 pending oilfield 时输入'取消当前任务'：必须清空整个草稿"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+        from src.slot_store import Slot
+        self.dm.slot_store.slots["oilfield_name"] = Slot("oilfield_name", value="流花11-1油田", status="valid")
+        self.dm.slot_store.slots["oilfield_name"].status = "pending_confirmation"
+        self.dm.slot_store.slots["oilfield_name"].candidate_value = "流花11-1油田"
+
+        with patch.object(self.dm.extractor, 'extract_updates') as mock_ext:
+            reply = self.dm.process("取消当前任务")
+            mock_ext.assert_not_called()
+
+        self.assertEqual(self.dm.phase, "rejected")
+        self.assertEqual(self.dm.task_state, {})
+        self.assertIsNone(self.dm.final_result)
+
+    def test_done_phase_cancel(self):
+        """done 阶段输入取消当前任务：保留已发布任务数据并记录 control_state = cancel_requested"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+        self.dm.phase = "done"
+        self.dm.final_result = {"task_id": "TSK_001", "task_type": "管缆巡检"}
+
+        reply = self.dm.process("取消当前任务")
+        self.assertEqual(self.dm.phase, "done")
+        self.assertEqual(self.dm.control_state, "cancel_requested")
+        self.assertIsNotNone(self.dm.final_result)
+        self.assertIn("尚未确认设备已实际取消", reply)
+
+    def test_negation_plus_parameter_update(self):
+        """否定控制动作 + 参数修改：确定性走 task_collection，更新参数，不进入 emergency_intervention，且不调用 LLM"""
+        inputs_and_expected = [
+            ("不要停止任务，水深改成500米", "water_depth", 500.0),
+            ("不要取消任务，水深改成600米", "water_depth", 600.0),
+            ("别终止任务，水深改成700米", "water_depth", 700.0),
+        ]
+        for inp, target_key, target_val in inputs_and_expected:
+            self.dm.reset()
+            self._seed_pipeline_task()
+
+            with patch.object(self.dm.llm, 'extract_json') as mock_llm:
+                with patch.object(self.dm.extractor, 'extract_updates', return_value={
+                    "intent": "TASK_UPDATE",
+                    "slot_candidates": [
+                        {"canonical_key": target_key, "normalized_value": target_val, "raw_value": str(target_val), "confidence": 1.0}
+                    ]
+                }):
+                    reply = self.dm.process(inp)
+                    mock_llm.assert_not_called()
+
+            self.assertEqual(self.dm.dialogue_mode, "task_collection")
+            self.assertEqual(self.dm.control_state, "idle")
+            self.assertNotEqual(self.dm.phase, "rejected")
+            self.assertEqual(self.dm.slot_store.slots[target_key].value, target_val)
+
+    def test_wrong_llm_cannot_upgrade_negation_update(self):
+        """模拟 LLM 错误返回 emergency_intervention：仍然强行判定为 task_collection"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+
+        mock_llm_err = {
+            "dialogue_mode": "emergency_intervention",
+            "emergency_action": "stop",
+            "confidence": 0.99,
+            "reason": "误判为停止",
+        }
+        with patch.object(self.dm.llm, 'extract_json', return_value=mock_llm_err):
+            res = self.router.route("不要停止任务，水深改成500米", [], self.dm.task_state)
+            self.assertEqual(res.dialogue_mode, "task_collection")
+            self.assertIsNone(res.emergency_action)
+
+    def test_bare_action_words(self):
+        """裸动作词：停止、暂停、终止、取消 -> uncertain 澄清且无 control_state 变化"""
+        bare_words = ["停止", "暂停", "终止", "取消"]
+        for bw in bare_words:
+            self.dm.reset()
+            self._seed_pipeline_task()
+            snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+
+            res = self.router.route(bw, [], self.dm.task_state)
+            self.assertEqual(res.dialogue_mode, "uncertain")
+            self.assertIsNone(res.emergency_action)
+
+            reply = self.dm.process(bw)
+            self.assertEqual(self.dm.control_state, "idle")
+            self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+            self.assertIn("请明确您是要", reply)
+
+    def test_non_task_objects(self):
+        """非任务对象：停止回答、停止生成、取消告警、暂停功能、取消载荷修改、终止说明输出 -> 不进入 emergency"""
+        non_task_inputs = [
+            "停止回答",
+            "停止生成",
+            "取消告警",
+            "暂停功能",
+            "终止说明输出",
+        ]
+        for nti in non_task_inputs:
+            res = self.router.route(nti, [], {})
+            self.assertNotEqual(res.dialogue_mode, "emergency_intervention")
+            self.assertIsNone(res.emergency_action)
+
+        # 取消载荷修改 -> 走槽位更新/修改线路，不进入全局取消
+        self.dm.reset()
+        self._seed_pipeline_task()
+        res_payload = self.router.route("取消载荷修改", [], self.dm.task_state)
+        self.assertNotEqual(res_payload.dialogue_mode, "emergency_intervention")
+
+    def test_explicit_emergency_actions(self):
+        """明确紧急动作：识别为对应控制请求，保留任务状态，不调用 extractor"""
+        actions_inputs = [
+            ("立即停止当前任务", "stop_requested"),
+            ("暂停当前任务", "pause_requested"),
+            ("终止当前任务", "abort_requested"),
+        ]
+        for inp, expected_cstate in actions_inputs:
+            self.dm.reset()
+            self._seed_pipeline_task()
+            self.dm.phase = "done"  # done 阶段测试 control_state 记录
+            snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+
+            with patch.object(self.dm.extractor, 'extract_updates') as mock_ext:
+                reply = self.dm.process(inp)
+                mock_ext.assert_not_called()
+
+            self.assertEqual(self.dm.control_state, expected_cstate)
+            self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+            self.assertIn("尚未确认设备已实际", reply)
+
+    def test_control_snapshot_consistency_validation(self):
+        """control snapshot 一致性校验：全面测试合法 round-trip 与各种非法 snapshot 的拒绝与状态完好性"""
+        self.dm.reset()
+        self._seed_pipeline_task()
+        status_before = copy.deepcopy(self.dm.get_status())
+
+        # 1. 合法 round-trip
+        valid_snap = {
+            "conversation_history": [],
+            "mode": "normal",
+            "dialogue_mode": "emergency_intervention",
+            "control_state": "pause_requested",
+            "last_control_request": {
+                "action": "pause",
+                "status": "requested",
+                "source": "rule",
+                "confidence": 0.98,
+                "reason": "规则识别",
+                "request_id": "req_snap_test",
+                "requested_at": "2026-07-31T14:30:00+08:00",
+                "phase_at_request": "collecting",
+            },
+            "task_state": copy.deepcopy(self.dm.task_state),
+        }
+        self.dm.load_snapshot(valid_snap)
+        self.assertEqual(self.dm.control_state, "pause_requested")
+        self.assertEqual(self.dm.last_control_request["action"], "pause")
+
+        # 2. 非法 snapshot
+        invalid_snapshots = [
+            # action 与 control_state 不匹配
+            {"control_state": "stop_requested", "last_control_request": {"action": "pause", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
+            # non-dict last_control_request
+            {"control_state": "pause_requested", "last_control_request": ["invalid"]},
+            # idle 但 last_control_request 不为 None
+            {"control_state": "idle", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
+            # 非 idle 但 last_control_request 缺失 (None)
+            {"control_state": "stop_requested", "last_control_request": None},
+            # confidence 为 bool
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": True, "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
+            # confidence 为 NaN
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": float("nan"), "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
+            # confidence 越界 (> 1.0)
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": 1.5, "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
+            # status 非 requested
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "completed", "source": "rule", "confidence": 0.9, "reason": "test", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
+            # reason 为空
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "requested", "source": "rule", "confidence": 0.9, "reason": "  ", "request_id": "r1", "requested_at": "2026-07-31T14:30:00+08:00", "phase_at_request": "collecting"}},
+        ]
+
+        for inv in invalid_snapshots:
+            self.dm.reset()
+            self._seed_pipeline_task()
+            state_before = copy.deepcopy(self.dm.get_status())
+
+            with self.assertRaises(ValueError):
+                self.dm.load_snapshot(inv)
+            self.assertEqual(self.dm.get_status(), state_before)
 
 
 if __name__ == "__main__":

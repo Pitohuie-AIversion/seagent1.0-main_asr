@@ -3,6 +3,36 @@ src/exceptions.py — 自定义异常类声明
 """
 
 
+class ControlAuditPersistenceError(RuntimeError):
+    """控制请求或草稿取消的历史审计持久化失败。"""
+
+
+class ControlAuditConflictError(RuntimeError):
+    """控制请求 ID 已存在且内容冲突。"""
+
+
+class ControlAuditConflict(ControlAuditConflictError):
+    """ControlAuditConflictError 的简写别名。"""
+
+
+class ControlAuditCommitUncertainError(RuntimeError):
+    """控制请求原子替换完成后落盘验证或父目录同步失败，落盘状态无法确定。"""
+
+
+class ControlAuditCommitUncertain(ControlAuditCommitUncertainError):
+    """ControlAuditCommitUncertainError 的简写别名。"""
+
+
+class ControlAuditCorruptionError(RuntimeError):
+    """控制审计事件文件存在但内容损坏、不可解析或 schema 非法。
+    语义：文件存在但不可信 → fail closed（不得当作未找到）。"""
+
+
+
+class ServiceNotInitializedError(RuntimeError):
+    """全局 AI 服务或知识库未初始化。"""
+
+
 class TaskPersistenceError(Exception):
     """TaskIntent 文件持久化失败。"""
 
