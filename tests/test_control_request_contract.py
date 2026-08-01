@@ -2894,6 +2894,14 @@ class TestControlRequestContract(unittest.TestCase):
                 "conversation_history": [],
                 "slot_store": {},
                 "task_state": {},
+            },
+            "response_snapshot": {
+                "code": 200,
+                "session_id": "sess_rollback_inode",
+                "request_id": "req_rb_01",
+                "reply": "OK",
+                "done": False,
+                "rejected": False,
             }
         }
         expected_hash = _canonical_payload_hash(audit_data)
@@ -2933,6 +2941,14 @@ class TestControlRequestContract(unittest.TestCase):
                 "conversation_history": [],
                 "slot_store": {},
                 "task_state": {},
+            },
+            "response_snapshot": {
+                "code": 200,
+                "session_id": "sess_diff_inode",
+                "request_id": "req_diff_01",
+                "reply": "OK",
+                "done": False,
+                "rejected": False,
             }
         }
         expected_hash = _canonical_payload_hash(audit_data)
