@@ -2755,15 +2755,15 @@ class TestControlRequestContract(unittest.TestCase):
         target_file = history_dir / "head_symlink_target.json"
         target_file.write_bytes(b"{}")
 
-        orig_os_replace = os.replace
-        def mock_os_replace(src, dst):
-            orig_os_replace(src, dst)
-            if str(head_path) in str(dst):
+        import pathlib
+        def mock_path_replace(self_obj, target):
+            os.replace(str(self_obj), str(target))
+            if str(head_path) in str(target):
                 head_path.unlink(missing_ok=True)
                 head_path.symlink_to(target_file)
 
         try:
-            with patch("os.replace", side_effect=mock_os_replace):
+            with patch.object(pathlib.Path, "replace", autospec=True, side_effect=mock_path_replace):
                 with self.assertRaises(ControlAuditCommitUncertainError):
                     update_session_head(history_dir, sid, 1, rev1_path.name)
         finally:
@@ -2917,7 +2917,7 @@ class TestControlRequestContract(unittest.TestCase):
             "session_id": "sess_diff_inode",
             "request_id": "req_diff_01",
             "request_fingerprint": "b" * 64,
-            "snapshot": {"phase": "collecting", "control_state": "idle"}
+            "snapshot": {"phase": "collecting", "control_state": "idle", "session_revision": 1}
         }
         expected_hash = _canonical_payload_hash(audit_data)
         audit_data["payload_sha256"] = expected_hash
