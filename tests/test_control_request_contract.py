@@ -2243,18 +2243,25 @@ class TestControlRequestContract(unittest.TestCase):
         snap_data["payload_sha256"] = _canonical_payload_hash(snap_data)
         snap_path.write_text(json.dumps(snap_data), encoding="utf-8")
 
+        head_path = get_session_head_path(history_dir, sid)
         orig_stat = os.stat
-        call_count = [0]
+        orig_replace = Path.replace
+        replaced = [False]
+
+        def fake_replace(self, target):
+            res = orig_replace(self, target)
+            replaced[0] = True
+            return res
 
         def fake_stat(path, *args, **kwargs):
-            call_count[0] += 1
-            if call_count[0] > 1:
-                raise OSError("Permission denied on stat")
+            if replaced[0] and str(path) == str(head_path):
+                raise OSError("Permission denied on stat post-replace")
             return orig_stat(path, *args, **kwargs)
 
-        with patch("os.stat", side_effect=fake_stat):
-            with self.assertRaises(ControlAuditCommitUncertainError):
-                update_session_head(history_dir, sid, 1, snap_path.name, snap_data["payload_sha256"])
+        with patch.object(Path, "replace", side_effect=fake_replace, autospec=True):
+            with patch("os.stat", side_effect=fake_stat):
+                with self.assertRaises(ControlAuditCommitUncertainError):
+                    update_session_head(history_dir, sid, 1, snap_path.name, snap_data["payload_sha256"])
 
     def test_post_replace_stat_failure_performs_no_destructive_rollback(self):
         """5. post-replace os.stat 失败时，绝不执行 destructive rollback (不 unlink 或不篡改已替换 Head)"""
@@ -2272,20 +2279,25 @@ class TestControlRequestContract(unittest.TestCase):
         snap_data["payload_sha256"] = _canonical_payload_hash(snap_data)
         snap_path.write_text(json.dumps(snap_data), encoding="utf-8")
 
+        head_path = get_session_head_path(history_dir, sid)
         orig_stat = os.stat
-        call_count = [0]
+        orig_replace = Path.replace
+        replaced = [False]
+
+        def fake_replace(self, target):
+            res = orig_replace(self, target)
+            replaced[0] = True
+            return res
 
         def fake_stat(path, *args, **kwargs):
-            call_count[0] += 1
-            if call_count[0] > 1:  # 写入 temp 后第一次获取 stat 时抛错
+            if replaced[0] and str(path) == str(head_path):
                 raise OSError("Stat failed post replace")
             return orig_stat(path, *args, **kwargs)
 
-        head_path = get_session_head_path(history_dir, sid)
-
-        with patch("os.stat", side_effect=fake_stat):
-            with self.assertRaises(ControlAuditCommitUncertainError):
-                update_session_head(history_dir, sid, 1, snap_path.name, snap_data["payload_sha256"])
+        with patch.object(Path, "replace", side_effect=fake_replace, autospec=True):
+            with patch("os.stat", side_effect=fake_stat):
+                with self.assertRaises(ControlAuditCommitUncertainError):
+                    update_session_head(history_dir, sid, 1, snap_path.name, snap_data["payload_sha256"])
 
         # 确定未发生物理 unlink 破坏
         self.assertTrue(head_path.exists())
