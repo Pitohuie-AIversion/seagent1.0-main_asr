@@ -2875,6 +2875,191 @@ class TestControlRequestContract(unittest.TestCase):
         path_stat = os.lstat(target)
         self.assertEqual((fd_stat.st_dev, fd_stat.st_ino), (path_stat.st_dev, path_stat.st_ino))
 
+    def test_control_event_rollback_requires_committed_inode(self):
+        """Round 15.1: control event post-commit 失败清理前必须校验 committed inode"""
+        from src.history_manager import _create_control_event_no_overwrite, ControlAuditPersistenceError, _canonical_payload_hash, validate_control_event, ControlAuditCorruptionError
+        history_dir = get_history_dir(create=True)
+        target = history_dir / "control_test_rollback_committed_inode.json"
+        audit_data = {
+            "snapshot_version": SNAPSHOT_VERSION,
+            "event_type": "control_audit_event",
+            "session_id": "sess_rollback_inode",
+            "request_id": "req_rb_01",
+            "request_fingerprint": "a" * 64,
+            "snapshot": {"phase": "collecting", "control_state": "idle"}
+        }
+        expected_hash = _canonical_payload_hash(audit_data)
+        audit_data["payload_sha256"] = expected_hash
+
+        orig_validate = validate_control_event
+        val_cnt = 0
+        def mock_validate(data, *args, **kwargs):
+            nonlocal val_cnt
+            val_cnt += 1
+            if val_cnt == 1:
+                raise ControlAuditCorruptionError("Post-commit validate trigger error")
+            return orig_validate(data, *args, **kwargs)
+
+        with patch("src.history_manager.validate_control_event", side_effect=mock_validate):
+            with self.assertRaises(ControlAuditPersistenceError):
+                _create_control_event_no_overwrite(target, audit_data, expected_hash)
+
+        self.assertFalse(target.exists(), "属于本事务的已提交 inode 在 post-commit 失败后应被正确 unlink")
+
+    def test_control_event_same_bytes_different_inode_is_not_unlinked(self):
+        """Round 15.1: control event post-commit 被替换为相同内容但不同 inode 的文件，绝不得被 unlink 且抛出 ControlAuditCommitUncertainError"""
+        from src.history_manager import _create_control_event_no_overwrite, ControlAuditCommitUncertainError, _canonical_payload_hash
+        history_dir = get_history_dir(create=True)
+        target = history_dir / "control_test_same_bytes_diff_inode.json"
+        audit_data = {
+            "snapshot_version": SNAPSHOT_VERSION,
+            "event_type": "control_audit_event",
+            "session_id": "sess_diff_inode",
+            "request_id": "req_diff_01",
+            "request_fingerprint": "b" * 64,
+            "snapshot": {"phase": "collecting", "control_state": "idle"}
+        }
+        expected_hash = _canonical_payload_hash(audit_data)
+        audit_data["payload_sha256"] = expected_hash
+
+        from src.history_manager import _fsync_directory
+        orig_fsync = _fsync_directory
+        def mock_fsync(h_dir):
+            orig_fsync(h_dir)
+            if target.exists():
+                content = target.read_bytes()
+                target.unlink()
+                target.write_bytes(content)
+
+        with patch("src.history_manager._fsync_directory", side_effect=mock_fsync):
+            with self.assertRaises(ControlAuditCommitUncertainError):
+                _create_control_event_no_overwrite(target, audit_data, expected_hash)
+
+        self.assertTrue(target.exists(), "不属于本事务 inode 的同内容文件绝对不得被 unlink")
+
+    def test_main_snapshot_rollback_requires_committed_inode(self):
+        """Round 15.1: main snapshot post-replace 恢复前必须校验 committed inode"""
+        from src.history_manager import _replace_main_snapshot_with_recovery, ControlAuditPersistenceError, _canonical_payload_hash
+        history_dir = get_history_dir(create=True)
+        target = history_dir / "history_test_rollback_committed_inode.json"
+        old_data = {"snapshot_version": SNAPSHOT_VERSION, "session_id": "sess_main_rb_inode", "phase": "collecting"}
+        target.write_bytes(json.dumps(old_data).encode("utf-8"))
+
+        new_data = {"snapshot_version": SNAPSHOT_VERSION, "session_id": "sess_main_rb_inode", "phase": "done"}
+        expected_hash = _canonical_payload_hash(new_data)
+        new_data["payload_sha256"] = expected_hash
+
+        orig_loads = json.loads
+        loads_cnt = 0
+        def mock_loads(s, *args, **kwargs):
+            nonlocal loads_cnt
+            loads_cnt += 1
+            if loads_cnt == 1:
+                raise ValueError("Readback corrupted json")
+            return orig_loads(s, *args, **kwargs)
+
+        with patch("json.loads", side_effect=mock_loads):
+            with self.assertRaises(ControlAuditPersistenceError):
+                _replace_main_snapshot_with_recovery(target, new_data, expected_hash)
+
+        recovered = json.loads(target.read_bytes().decode("utf-8"))
+        self.assertEqual(recovered.get("phase"), "collecting", "校验匹配本事务 inode 时，旧快照成功恢复")
+
+    def test_main_snapshot_same_bytes_different_inode_is_not_restored(self):
+        """Round 15.1: main snapshot post-replace 后 inode 被替换为同内容新文件，绝不得被恢复且抛出 ControlAuditCommitUncertainError"""
+        from src.history_manager import _replace_main_snapshot_with_recovery, ControlAuditCommitUncertainError, _canonical_payload_hash
+        history_dir = get_history_dir(create=True)
+        target = history_dir / "history_test_same_bytes_diff_inode.json"
+        old_data = {"snapshot_version": SNAPSHOT_VERSION, "session_id": "sess_main_diff_inode", "phase": "collecting"}
+        target.write_bytes(json.dumps(old_data).encode("utf-8"))
+
+        new_data = {"snapshot_version": SNAPSHOT_VERSION, "session_id": "sess_main_diff_inode", "phase": "done"}
+        expected_hash = _canonical_payload_hash(new_data)
+        new_data["payload_sha256"] = expected_hash
+
+        from src.history_manager import _fsync_directory
+        orig_fsync = _fsync_directory
+        def mock_fsync(h_dir):
+            orig_fsync(h_dir)
+            if target.exists():
+                content = target.read_bytes()
+                target.unlink()
+                target.write_bytes(content)
+
+        with patch("src.history_manager._fsync_directory", side_effect=mock_fsync):
+            with self.assertRaises(ControlAuditCommitUncertainError):
+                _replace_main_snapshot_with_recovery(target, new_data, expected_hash)
+
+    def test_read_session_head_broken_symlink_fails_closed(self):
+        """Round 15.1: read_session_head 遇到 broken symlink 必须抛出 ControlAuditCorruptionError 坚决不返回 None (fail closed)"""
+        from src.history_manager import read_session_head, ControlAuditCorruptionError, get_session_head_path
+        history_dir = get_history_dir(create=True)
+        sid = "test_head_broken_symlink"
+        head_path = get_session_head_path(history_dir, sid)
+        non_existent_target = history_dir / "non_existent_target.json"
+
+        if head_path.is_symlink() or head_path.exists():
+            head_path.unlink()
+        head_path.symlink_to(non_existent_target)
+
+        try:
+            with self.assertRaises(ControlAuditCorruptionError):
+                read_session_head(history_dir, sid)
+        finally:
+            if head_path.is_symlink() or head_path.exists():
+                head_path.unlink()
+
+    def test_read_session_head_missing_path_returns_none(self):
+        """Round 15.1: read_session_head 在路径真正不存在 (且非 symlink) 时正确返回 None"""
+        from src.history_manager import read_session_head, get_session_head_path
+        history_dir = get_history_dir(create=True)
+        sid = "test_head_truly_missing"
+        head_path = get_session_head_path(history_dir, sid)
+
+        if head_path.is_symlink() or head_path.exists():
+            head_path.unlink()
+
+        self.assertIsNone(read_session_head(history_dir, sid))
+
+    def test_no_o_nofollow_fallback_compares_lstat_and_fstat(self):
+        """Round 15.1: 当系统不具备 O_NOFOLLOW 时，_read_regular_file_no_follow 校验 pre_stat 与 fstat 的 (st_dev, st_ino)，拒绝 symlink 与中途偷换"""
+        from src.history_manager import _read_regular_file_no_follow, ControlAuditPersistenceError
+        history_dir = get_history_dir(create=True)
+        target = history_dir / "test_no_nofollow_target.json"
+        target.write_bytes(b'{"fallback": true}')
+
+        symlink = history_dir / "test_no_nofollow_link.json"
+        if symlink.is_symlink() or symlink.exists():
+            symlink.unlink()
+        symlink.symlink_to(target)
+
+        with patch("os.O_NOFOLLOW", 0, create=True):
+            try:
+                with self.assertRaises(ControlAuditPersistenceError):
+                    _read_regular_file_no_follow(symlink)
+            finally:
+                if symlink.is_symlink() or symlink.exists():
+                    symlink.unlink()
+
+    def test_head_revision_session_id_mismatch_fails_closed(self):
+        """Round 15.1: Head 引用的 Revision 文件包含不匹配的 session_id 时抛出 ControlAuditCorruptionError"""
+        from src.history_manager import read_session_head, update_session_head, ControlAuditCorruptionError, get_session_head_path, get_session_revision_path, _canonical_payload_hash
+        history_dir = get_history_dir(create=True)
+        sid = "test_sid_mismatch_head"
+        rev1_path = get_session_revision_path(history_dir, sid, 1)
+        payload = {"session_id": sid, "session_revision": 1, "data": "valid_rev"}
+        payload["payload_sha256"] = _canonical_payload_hash(payload)
+        rev1_path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+        update_session_head(history_dir, sid, 1, rev1_path.name)
+
+        bad_payload = {"session_id": "other_session_id", "session_revision": 1, "data": "valid_rev"}
+        bad_payload["payload_sha256"] = _canonical_payload_hash(bad_payload)
+        rev1_path.write_bytes(json.dumps(bad_payload).encode("utf-8"))
+
+        with self.assertRaises(ControlAuditCorruptionError):
+            read_session_head(history_dir, sid)
+
 
 if __name__ == "__main__":
     unittest.main()

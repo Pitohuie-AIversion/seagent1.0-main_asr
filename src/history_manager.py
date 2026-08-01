@@ -142,28 +142,43 @@ def _read_regular_file_no_follow(
     expected_stat: Optional[os.stat_result] = None,
     error_cls: type[Exception] = ControlAuditPersistenceError,
 ) -> Tuple[bytes, os.stat_result]:
-    """使用文件描述符绑定(FD-bound)与 O_NOFOLLOW 打开并读取普通文件。
+    """使用文件描述符绑定(FD-bound)、O_CLOEXEC 与 O_NOFOLLOW (及无 NOFOLLOW 平台回退校验) 打开并读取普通文件。
 
     在打开前、打开后(fstat)及读取后(lstat)全面验证文件类型与 (st_dev, st_ino)，防止 TOCTOU 竞争与符号链接绕过。
     """
+    path_str = str(path)
+    err_cls = ControlAuditCommitUncertainError if expected_stat is not None else error_cls
+
+    has_nofollow = hasattr(os, "O_NOFOLLOW") and bool(os.O_NOFOLLOW)
+    pre_stat: Optional[os.stat_result] = None
+    if not has_nofollow:
+        try:
+            pre_stat = os.lstat(path_str)
+            if stat.S_ISLNK(pre_stat.st_mode) or not stat.S_ISREG(pre_stat.st_mode):
+                raise err_cls(f"{path.name} is a symlink or non-regular file")
+        except OSError as e:
+            raise err_cls(f"Cannot stat {path.name} before open: {e}") from e
+
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
 
     try:
-        fd = os.open(str(path), flags)
+        fd = os.open(path_str, flags)
     except OSError as e:
-        if expected_stat is not None:
-            raise ControlAuditCommitUncertainError(f"Cannot open {path.name} without following symlinks: {e}") from e
-        raise error_cls(f"Cannot open {path.name} without following symlinks: {e}") from e
+        raise err_cls(f"Cannot open {path.name} without following symlinks: {e}") from e
 
     try:
         fd_stat = os.fstat(fd)
 
         if stat.S_ISLNK(fd_stat.st_mode) or not stat.S_ISREG(fd_stat.st_mode):
-            if expected_stat is not None:
-                raise ControlAuditCommitUncertainError(f"{path.name} is not a regular file")
-            raise error_cls(f"{path.name} is not a regular file")
+            raise err_cls(f"{path.name} is not a regular file")
+
+        if pre_stat is not None:
+            if (fd_stat.st_dev, fd_stat.st_ino) != (pre_stat.st_dev, pre_stat.st_ino):
+                raise err_cls(f"{path.name} inode swapped between pre-lstat and open")
 
         if expected_stat is not None:
             if (
@@ -175,15 +190,13 @@ def _read_regular_file_no_follow(
         with os.fdopen(os.dup(fd), "rb") as handle:
             content = handle.read()
 
-        path_stat = os.lstat(str(path))
+        path_stat = os.lstat(path_str)
         if (
             path_stat.st_dev != fd_stat.st_dev
             or path_stat.st_ino != fd_stat.st_ino
             or stat.S_ISLNK(path_stat.st_mode)
         ):
-            if expected_stat is not None:
-                raise ControlAuditCommitUncertainError(f"{path.name} changed during read")
-            raise error_cls(f"{path.name} changed during read")
+            raise err_cls(f"{path.name} changed during read")
 
         return content, fd_stat
     finally:
@@ -218,14 +231,13 @@ def _verify_path_ownership(
     expected_payload_bytes: bytes,
     expected_stat: Optional[os.stat_result] = None,
 ) -> bool:
-    """验证 target_path 当前文件的 (st_dev, st_ino) 和字节内容是否与本事务一致。"""
-    if expected_stat is not None:
-        return _verify_owned_committed_path(target_path, expected_payload_bytes, expected_stat)
-    try:
-        content, _ = _read_regular_file_no_follow(target_path)
-        return content == expected_payload_bytes
-    except Exception:
+    """验证 target_path 当前文件的 (st_dev, st_ino) 和字节内容是否与本事务一致。
+
+    绝不允许在 expected_stat 为 None 时认定所有权（拒绝 byte-only 所有权判定）。
+    """
+    if expected_stat is None or not isinstance(expected_stat, os.stat_result):
         return False
+    return _verify_owned_committed_path(target_path, expected_payload_bytes, expected_stat)
 
 
 _SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
@@ -324,7 +336,7 @@ def _validate_session_head_data(
     if computed != payload_hash:
         raise ControlAuditCorruptionError(f"Session head payload_sha256 mismatch")
 
-    # 3. 校验 Head 关联的 snapshot 文件存在且 revision/hash 精确匹配 (FD-bound no-follow 读取)
+    # 3. 校验 Head 关联的 snapshot 文件存在且 session_id/revision/hash 精确匹配 (FD-bound no-follow 读取)
     try:
         snap_content, _ = _read_regular_file_no_follow(
             expected_snap_path,
@@ -342,6 +354,12 @@ def _validate_session_head_data(
 
     if not isinstance(snap_json, dict):
         raise ControlAuditCorruptionError(f"Head referenced snapshot file {snap_file} is not a JSON object")
+
+    snap_sid = snap_json.get("session_id")
+    if snap_sid != expected_session_id:
+        raise ControlAuditCorruptionError(
+            f"Snapshot file {snap_file} session_id {snap_sid!r} does not match Head session_id {expected_session_id!r}"
+        )
 
     snap_rev = snap_json.get("session_revision")
     if snap_rev != cur_rev:
@@ -361,20 +379,29 @@ def _validate_session_head_data(
 def read_session_head(history_dir: Path, session_id: str) -> Optional[Dict[str, Any]]:
     """读取指定 session_id 的权威 Session Head 文件。
 
-    如果 Head 文件存在但为 symlink、解析/校验失败，抛出 ControlAuditCorruptionError (fail closed)。
+    如果 Head 文件不存在，返回 None。
+    如果 Head 文件为 symlink (包含 broken symlink)、非普通文件、解析/校验失败，抛出 ControlAuditCorruptionError (fail closed)。
     """
     head_path = get_session_head_path(history_dir, session_id)
-    if not head_path.exists():
+    try:
+        head_stat = os.lstat(str(head_path))
+    except FileNotFoundError:
         return None
+    except OSError as e:
+        raise ControlAuditCorruptionError(f"Session head stat failed for {head_path.name}: {e}") from e
+
+    if stat.S_ISLNK(head_stat.st_mode) or not stat.S_ISREG(head_stat.st_mode):
+        raise ControlAuditCorruptionError(
+            f"Session head file {head_path.name} is a symlink or non-regular file"
+        )
 
     try:
         content, _ = _read_regular_file_no_follow(
             head_path,
+            expected_stat=head_stat,
             error_cls=ControlAuditCorruptionError,
         )
     except Exception as e:
-        if not head_path.exists():
-            return None
         raise ControlAuditCorruptionError(
             f"Session head file {head_path.name} exists but cannot be read without following symlinks: {e}"
         ) from e
@@ -855,9 +882,11 @@ def _create_control_event_no_overwrite(
     temp_path = _write_temp_and_fsync(history_dir, target_path, payload_bytes)
 
     committed_via_link = False
+    committed_stat: Optional[os.stat_result] = None
     try:
         os.link(str(temp_path), str(target_path))
         committed_via_link = True
+        committed_stat = os.lstat(str(target_path))
     except FileExistsError:
         try:
             temp_path.unlink(missing_ok=True)
@@ -900,7 +929,13 @@ def _create_control_event_no_overwrite(
 
     try:
         _fsync_directory(history_dir)
-        content, _ = _read_regular_file_no_follow(target_path)
+        if committed_stat is None:
+            committed_stat = os.lstat(str(target_path))
+        content, _ = _read_regular_file_no_follow(
+            target_path,
+            expected_stat=committed_stat,
+            error_cls=ControlAuditCommitUncertainError,
+        )
         read_back = json.loads(content.decode("utf-8"))
         validate_control_event(read_back, audit_data.get("session_id"), audit_data.get("request_id"))
         actual_hash = _canonical_payload_hash(read_back)
@@ -911,7 +946,7 @@ def _create_control_event_no_overwrite(
             )
     except Exception as post_err:
         logger.error("Post-commit failure for control event %s: %s", target_path.name, post_err)
-        if _verify_path_ownership(target_path, payload_bytes):
+        if committed_stat is not None and _verify_owned_committed_path(target_path, payload_bytes, committed_stat):
             rollback_proven = False
             try:
                 target_path.unlink(missing_ok=True)
@@ -949,8 +984,10 @@ def _replace_main_snapshot_with_recovery(
     payload_bytes = json.dumps(snapshot_data, ensure_ascii=False, indent=2).encode("utf-8")
     temp_path = _write_temp_and_fsync(history_dir, target_path, payload_bytes)
 
+    committed_stat: Optional[os.stat_result] = None
     try:
         temp_path.replace(target_path)
+        committed_stat = os.lstat(str(target_path))
     except Exception:
         try:
             temp_path.unlink(missing_ok=True)
@@ -960,7 +997,11 @@ def _replace_main_snapshot_with_recovery(
 
     try:
         _fsync_directory(history_dir)
-        content, _ = _read_regular_file_no_follow(target_path)
+        content, _ = _read_regular_file_no_follow(
+            target_path,
+            expected_stat=committed_stat,
+            error_cls=ControlAuditCommitUncertainError,
+        )
         read_back = json.loads(content.decode("utf-8"))
         actual_hash = _canonical_payload_hash(read_back)
         if actual_hash != expected_payload_hash:
@@ -970,7 +1011,11 @@ def _replace_main_snapshot_with_recovery(
             )
     except Exception as post_err:
         logger.error("Post-replace failure for main snapshot %s: %s", target_path.name, post_err)
-        if _verify_path_ownership(target_path, payload_bytes) and old_content_bytes is not None:
+        if (
+            committed_stat is not None
+            and _verify_owned_committed_path(target_path, payload_bytes, committed_stat)
+            and old_content_bytes is not None
+        ):
             recovery_proven = False
             try:
                 recovery_temp = _write_temp_and_fsync(
