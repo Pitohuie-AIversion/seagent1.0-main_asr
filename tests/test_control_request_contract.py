@@ -2886,7 +2886,14 @@ class TestControlRequestContract(unittest.TestCase):
             "session_id": "sess_rollback_inode",
             "request_id": "req_rb_01",
             "request_fingerprint": "a" * 64,
-            "snapshot": {"phase": "collecting", "control_state": "idle"}
+            "snapshot": {
+                "phase": "collecting",
+                "control_state": "idle",
+                "session_revision": 1,
+                "parent_revision": 0,
+                "conversation_history": [],
+                "slot_store": {},
+            }
         }
         expected_hash = _canonical_payload_hash(audit_data)
         audit_data["payload_sha256"] = expected_hash
@@ -2917,7 +2924,14 @@ class TestControlRequestContract(unittest.TestCase):
             "session_id": "sess_diff_inode",
             "request_id": "req_diff_01",
             "request_fingerprint": "b" * 64,
-            "snapshot": {"phase": "collecting", "control_state": "idle", "session_revision": 1}
+            "snapshot": {
+                "phase": "collecting",
+                "control_state": "idle",
+                "session_revision": 1,
+                "parent_revision": 0,
+                "conversation_history": [],
+                "slot_store": {},
+            }
         }
         expected_hash = _canonical_payload_hash(audit_data)
         audit_data["payload_sha256"] = expected_hash
