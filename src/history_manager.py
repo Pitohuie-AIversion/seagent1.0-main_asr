@@ -137,6 +137,59 @@ def _canonical_payload_hash(data: Dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _read_regular_file_no_follow(
+    path: Path,
+    expected_stat: Optional[os.stat_result] = None,
+    error_cls: type[Exception] = ControlAuditPersistenceError,
+) -> Tuple[bytes, os.stat_result]:
+    """使用文件描述符绑定(FD-bound)与 O_NOFOLLOW 打开并读取普通文件。
+
+    在打开前、打开后(fstat)及读取后(lstat)全面验证文件类型与 (st_dev, st_ino)，防止 TOCTOU 竞争与符号链接绕过。
+    """
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+
+    try:
+        fd = os.open(str(path), flags)
+    except OSError as e:
+        if expected_stat is not None:
+            raise ControlAuditCommitUncertainError(f"Cannot open {path.name} without following symlinks: {e}") from e
+        raise error_cls(f"Cannot open {path.name} without following symlinks: {e}") from e
+
+    try:
+        fd_stat = os.fstat(fd)
+
+        if stat.S_ISLNK(fd_stat.st_mode) or not stat.S_ISREG(fd_stat.st_mode):
+            if expected_stat is not None:
+                raise ControlAuditCommitUncertainError(f"{path.name} is not a regular file")
+            raise error_cls(f"{path.name} is not a regular file")
+
+        if expected_stat is not None:
+            if (
+                fd_stat.st_dev != expected_stat.st_dev
+                or fd_stat.st_ino != expected_stat.st_ino
+            ):
+                raise ControlAuditCommitUncertainError(f"{path.name} inode changed")
+
+        with os.fdopen(os.dup(fd), "rb") as handle:
+            content = handle.read()
+
+        path_stat = os.lstat(str(path))
+        if (
+            path_stat.st_dev != fd_stat.st_dev
+            or path_stat.st_ino != fd_stat.st_ino
+            or stat.S_ISLNK(path_stat.st_mode)
+        ):
+            if expected_stat is not None:
+                raise ControlAuditCommitUncertainError(f"{path.name} changed during read")
+            raise error_cls(f"{path.name} changed during read")
+
+        return content, fd_stat
+    finally:
+        os.close(fd)
+
+
 def _verify_owned_committed_path(
     target_path: Path,
     expected_payload_bytes: bytes,
@@ -145,27 +198,17 @@ def _verify_owned_committed_path(
     """验证 target_path 当前文件的 (st_dev, st_ino) 和字节内容与本事务已提交节点完全一致。
 
     如果 expected_stat 为 None 或非 os.stat_result，坚决拒绝并返回 False (禁止仅凭字节匹配假定所有权)。
-    使用 os.lstat 且明确拒绝 symlink，仅接受普通文件。
+    使用 _read_regular_file_no_follow 进行 FD 绑定与 no-follow 校验，消除 TOCTOU 竞争。
     """
     if expected_stat is None or not isinstance(expected_stat, os.stat_result):
         return False
     try:
-        stat_result = os.lstat(target_path)
-    except Exception:
-        return False
-
-    if stat.S_ISLNK(stat_result.st_mode):
-        return False
-
-    if not stat.S_ISREG(stat_result.st_mode):
-        return False
-
-    if (stat_result.st_dev, stat_result.st_ino) != (expected_stat.st_dev, expected_stat.st_ino):
-        return False
-
-    try:
-        actual_bytes = target_path.read_bytes()
-        return actual_bytes == expected_payload_bytes
+        content, _ = _read_regular_file_no_follow(
+            target_path,
+            expected_stat=expected_stat,
+            error_cls=ControlAuditCommitUncertainError,
+        )
+        return content == expected_payload_bytes
     except Exception:
         return False
 
@@ -179,11 +222,8 @@ def _verify_path_ownership(
     if expected_stat is not None:
         return _verify_owned_committed_path(target_path, expected_payload_bytes, expected_stat)
     try:
-        stat_result = os.lstat(target_path)
-        if stat.S_ISLNK(stat_result.st_mode) or not stat.S_ISREG(stat_result.st_mode):
-            return False
-        actual_bytes = target_path.read_bytes()
-        return actual_bytes == expected_payload_bytes
+        content, _ = _read_regular_file_no_follow(target_path)
+        return content == expected_payload_bytes
     except Exception:
         return False
 
@@ -284,12 +324,19 @@ def _validate_session_head_data(
     if computed != payload_hash:
         raise ControlAuditCorruptionError(f"Session head payload_sha256 mismatch")
 
-    # 3. 校验 Head 关联的 snapshot 文件存在且 revision/hash 精确匹配 (完整引用链校验)
-    if not expected_snap_path.exists() or not expected_snap_path.is_file():
-        raise ControlAuditCorruptionError(f"Head references snapshot file {snap_file} which does not exist in history dir")
+    # 3. 校验 Head 关联的 snapshot 文件存在且 revision/hash 精确匹配 (FD-bound no-follow 读取)
+    try:
+        snap_content, _ = _read_regular_file_no_follow(
+            expected_snap_path,
+            error_cls=ControlAuditCorruptionError,
+        )
+    except Exception as e:
+        raise ControlAuditCorruptionError(
+            f"Head referenced snapshot file {snap_file} cannot be read without following symlinks: {e}"
+        ) from e
 
     try:
-        snap_json = json.loads(expected_snap_path.read_text(encoding="utf-8"))
+        snap_json = json.loads(snap_content.decode("utf-8"))
     except Exception as e:
         raise ControlAuditCorruptionError(f"Head referenced snapshot file {snap_file} cannot be parsed: {e}") from e
 
@@ -314,16 +361,26 @@ def _validate_session_head_data(
 def read_session_head(history_dir: Path, session_id: str) -> Optional[Dict[str, Any]]:
     """读取指定 session_id 的权威 Session Head 文件。
 
-    如果 Head 文件存在但解析/校验失败，抛出 ControlAuditCorruptionError (fail closed)。
-    包含所有 mandatory 字段校验、路径越界校验与关联 revision 文件一致性校验。
+    如果 Head 文件存在但为 symlink、解析/校验失败，抛出 ControlAuditCorruptionError (fail closed)。
     """
     head_path = get_session_head_path(history_dir, session_id)
-    if not head_path.exists() or not head_path.is_file():
+    if not head_path.exists():
         return None
 
     try:
-        with open(head_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        content, _ = _read_regular_file_no_follow(
+            head_path,
+            error_cls=ControlAuditCorruptionError,
+        )
+    except Exception as e:
+        if not head_path.exists():
+            return None
+        raise ControlAuditCorruptionError(
+            f"Session head file {head_path.name} exists but cannot be read without following symlinks: {e}"
+        ) from e
+
+    try:
+        data = json.loads(content.decode("utf-8"))
     except Exception as e:
         raise ControlAuditCorruptionError(
             f"Session head file {head_path.name} exists but cannot be read/parsed: {e}"
@@ -341,6 +398,7 @@ def _validate_revision_before_head_commit(
 ) -> Dict[str, Any]:
     """在更新 Session Head 之前强制验证 revision 文件的路径安全、物理存储、身份标量与 canonical hash。
 
+    使用 _read_regular_file_no_follow 进行 FD 绑定的 no-follow 读取，消除 TOCTOU 竞争。
     必须在 Head replace 之前完成所有校验。校验失败抛出 ControlAuditPersistenceError。
     """
     if not snapshot_file or not isinstance(snapshot_file, str):
@@ -355,22 +413,18 @@ def _validate_revision_before_head_commit(
             f"snapshot_file {snapshot_file!r} does not match derived revision filename {expected_snap_path.name!r}"
         )
 
-    if not expected_snap_path.exists():
-        raise ControlAuditPersistenceError(f"Revision file {snapshot_file} does not exist in history dir")
-
     try:
-        snap_stat = os.lstat(expected_snap_path)
+        content, _ = _read_regular_file_no_follow(
+            expected_snap_path,
+            error_cls=ControlAuditPersistenceError,
+        )
+    except (ControlAuditPersistenceError, ControlAuditCommitUncertainError) as e:
+        raise ControlAuditPersistenceError(f"Revision file {snapshot_file} no-follow validation failed: {e}") from e
     except OSError as e:
-        raise ControlAuditPersistenceError(f"Failed to stat revision file {snapshot_file}: {e}") from e
-
-    if stat.S_ISLNK(snap_stat.st_mode):
-        raise ControlAuditPersistenceError(f"Revision file {snapshot_file} is a symlink, which is rejected")
-
-    if not stat.S_ISREG(snap_stat.st_mode):
-        raise ControlAuditPersistenceError(f"Revision file {snapshot_file} is not a regular file")
+        raise ControlAuditPersistenceError(f"Revision file {snapshot_file} does not exist or stat failed: {e}") from e
 
     try:
-        snap_json = json.loads(expected_snap_path.read_text(encoding="utf-8"))
+        snap_json = json.loads(content.decode("utf-8"))
     except Exception as e:
         raise ControlAuditPersistenceError(f"Revision file {snapshot_file} cannot be read/parsed: {e}") from e
 
@@ -409,24 +463,18 @@ def _read_revision_payload_hash(history_dir: Path, snapshot_file: str) -> str:
     若文件不存在、无法解析或格式非 dict，抛出 ControlAuditPersistenceError（禁止零/占位 Hash）。
     """
     snap_path = history_dir / snapshot_file
-    if not snap_path.exists():
-        raise ControlAuditPersistenceError(
-            f"Cannot derive snapshot payload hash: file {snapshot_file} does not exist or is not a regular file"
-        )
     try:
-        snap_stat = os.lstat(snap_path)
-    except OSError as e:
+        content, _ = _read_regular_file_no_follow(
+            snap_path,
+            error_cls=ControlAuditPersistenceError,
+        )
+    except Exception as e:
         raise ControlAuditPersistenceError(
-            f"Cannot derive snapshot payload hash: file {snapshot_file} stat failed: {e}"
+            f"Cannot derive snapshot payload hash: file {snapshot_file} does not exist or is not a regular file: {e}"
         ) from e
 
-    if stat.S_ISLNK(snap_stat.st_mode) or not stat.S_ISREG(snap_stat.st_mode):
-        raise ControlAuditPersistenceError(
-            f"Cannot derive snapshot payload hash: file {snapshot_file} does not exist or is not a regular file"
-        )
-
     try:
-        data = json.loads(snap_path.read_text(encoding="utf-8"))
+        data = json.loads(content.decode("utf-8"))
     except Exception as e:
         raise ControlAuditPersistenceError(
             f"Cannot derive snapshot payload hash: file {snapshot_file} cannot be read/parsed: {e}"
@@ -464,10 +512,10 @@ def update_session_head(
 
     head_path = get_session_head_path(history_dir, session_id)
     old_head_bytes: Optional[bytes] = None
-    if head_path.exists() and head_path.is_file():
+    if head_path.exists():
         try:
-            old_head_bytes = head_path.read_bytes()
-        except OSError:
+            old_head_bytes, _ = _read_regular_file_no_follow(head_path)
+        except Exception:
             pass
 
     head_data = {
@@ -493,7 +541,7 @@ def update_session_head(
             pass
         raise ControlAuditPersistenceError(f"Failed to update session head for {session_id}: {e}") from e
 
-    # 替换成功后，立即获取已提交 Head 节点的 stat (st_dev, st_ino)
+    # 替换成功后，立即获取已提交 Head 节点的 stat (st_dev, st_ino) 并通过 FD 绑定 no-follow 读回
     try:
         committed_stat = os.lstat(str(head_path))
         os.stat(str(head_path))
@@ -501,14 +549,21 @@ def update_session_head(
             raise ControlAuditCommitUncertainError(
                 f"Head replace succeeded but committed path is not a regular file for {session_id}"
             )
-    except OSError as exc:
+        read_back_bytes, _ = _read_regular_file_no_follow(
+            head_path,
+            expected_stat=committed_stat,
+            error_cls=ControlAuditCommitUncertainError,
+        )
+    except Exception as exc:
+        if isinstance(exc, ControlAuditCommitUncertainError):
+            raise exc
         raise ControlAuditCommitUncertainError(
             f"Head replace succeeded but committed inode cannot be proven for {session_id}: {exc}"
         ) from exc
 
     try:
         _fsync_directory(history_dir)
-        read_back = json.loads(head_path.read_text(encoding="utf-8"))
+        read_back = json.loads(read_back_bytes.decode("utf-8"))
         actual_hash = _canonical_payload_hash(read_back)
         if actual_hash != expected_hash:
             raise RuntimeError(
@@ -525,7 +580,11 @@ def update_session_head(
                     rec_temp.replace(head_path)
                     _fsync_directory(history_dir)
                     # 恢复旧 Head 后的完整 Head -> Revision 引用链校验
-                    restored_readback = json.loads(head_path.read_text(encoding="utf-8"))
+                    restored_readback_bytes, _ = _read_regular_file_no_follow(
+                        head_path,
+                        error_cls=ControlAuditCorruptionError,
+                    )
+                    restored_readback = json.loads(restored_readback_bytes.decode("utf-8"))
                     _validate_session_head_data(history_dir, session_id, restored_readback)
                     recovered = True
                 else:
@@ -544,6 +603,8 @@ def update_session_head(
         raise ControlAuditCommitUncertainError(
             f"Session head commit uncertain for {session_id}: {post_err}"
         ) from post_err
+
+
 
 
 def validate_response_snapshot(
@@ -804,8 +865,8 @@ def _create_control_event_no_overwrite(
             pass
 
         try:
-            with open(target_path, "r", encoding="utf-8") as fh:
-                existing = json.load(fh)
+            content, _ = _read_regular_file_no_follow(target_path, error_cls=ControlAuditCorruptionError)
+            existing = json.loads(content.decode("utf-8"))
             validate_control_event(existing, audit_data.get("session_id"), audit_data.get("request_id"))
         except ControlAuditCorruptionError:
             raise
@@ -839,8 +900,8 @@ def _create_control_event_no_overwrite(
 
     try:
         _fsync_directory(history_dir)
-        with open(target_path, "r", encoding="utf-8") as f:
-            read_back = json.load(f)
+        content, _ = _read_regular_file_no_follow(target_path)
+        read_back = json.loads(content.decode("utf-8"))
         validate_control_event(read_back, audit_data.get("session_id"), audit_data.get("request_id"))
         actual_hash = _canonical_payload_hash(read_back)
         if actual_hash != expected_payload_hash:
@@ -881,7 +942,7 @@ def _replace_main_snapshot_with_recovery(
     old_content_bytes: Optional[bytes] = None
     if target_path.exists():
         try:
-            old_content_bytes = target_path.read_bytes()
+            old_content_bytes, _ = _read_regular_file_no_follow(target_path)
         except OSError as e:
             logger.warning("Cannot read old main snapshot %s for backup: %s", target_path.name, e)
 
@@ -899,8 +960,8 @@ def _replace_main_snapshot_with_recovery(
 
     try:
         _fsync_directory(history_dir)
-        with open(target_path, "r", encoding="utf-8") as f:
-            read_back = json.load(f)
+        content, _ = _read_regular_file_no_follow(target_path)
+        read_back = json.loads(content.decode("utf-8"))
         actual_hash = _canonical_payload_hash(read_back)
         if actual_hash != expected_payload_hash:
             raise RuntimeError(
@@ -983,8 +1044,8 @@ def load_control_event(
             if not target_path.exists() or not target_path.is_file():
                 break
             try:
-                with open(target_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                content, _ = _read_regular_file_no_follow(target_path, error_cls=ControlAuditCorruptionError)
+                data = json.loads(content.decode("utf-8"))
             except Exception as e:
                 raise ControlAuditCorruptionError(
                     f"Revision file {curr_file} in head chain cannot be read/parsed: {e}"
@@ -1005,8 +1066,8 @@ def load_control_event(
     target = get_control_event_path(history_dir, session_id, request_id, intent_id)
     if target.exists() and target.is_file():
         try:
-            with open(target, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            content, _ = _read_regular_file_no_follow(target, error_cls=ControlAuditCorruptionError)
+            data = json.loads(content.decode("utf-8"))
         except Exception as e:
             raise ControlAuditCorruptionError(
                 f"Control event {target.name} exists but cannot be read/parsed: {e}"
@@ -1037,8 +1098,8 @@ def load_latest_session_snapshot(session_id: str) -> Optional[Dict[str, Any]]:
         )
 
     try:
-        with open(target_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        content, _ = _read_regular_file_no_follow(target_path, error_cls=ControlAuditCorruptionError)
+        data = json.loads(content.decode("utf-8"))
 
         if not isinstance(data, dict):
             raise ControlAuditCorruptionError(f"Snapshot file {target_name} is not a dict")

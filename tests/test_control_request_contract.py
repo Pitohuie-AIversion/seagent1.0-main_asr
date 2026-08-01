@@ -733,7 +733,7 @@ class TestControlRequestContract(unittest.TestCase):
         history_dir = get_history_dir(create=True)
         target = history_dir / "target_readback_test.json"
 
-        with patch("json.load", return_value={"different": "data"}):
+        with patch("json.loads", return_value={"different": "data"}):
             with self.assertRaises((RuntimeError, ControlAuditPersistenceError, ControlAuditCommitUncertainError)):
                 _atomic_durable_write(target, {"snapshot_version": 3, "data": "original"})
 
@@ -1271,7 +1271,7 @@ class TestControlRequestContract(unittest.TestCase):
         new_data = {"snapshot_version": SNAPSHOT_VERSION, "session_id": "sess_hash_main", "phase": "done"}
         expected_hash = _canonical_payload_hash(new_data)
 
-        with patch("json.load", return_value={"snapshot_version": SNAPSHOT_VERSION, "session_id": "CORRUPTED"}):
+        with patch("json.loads", return_value={"snapshot_version": SNAPSHOT_VERSION, "session_id": "CORRUPTED"}):
             with self.assertRaises((ControlAuditPersistenceError, ControlAuditCommitUncertainError, RuntimeError)):
                 _replace_main_snapshot_with_recovery(target, new_data, expected_hash)
 
@@ -1609,15 +1609,15 @@ class TestControlRequestContract(unittest.TestCase):
         }
         expected_hash = _canonical_payload_hash(audit_data)
 
-        # 模拟：在链接成功后、post-commit 读回校验前，外部进程修改了目标文件内容
-        orig_open = open
-        def mock_open_corrupt(path, mode="r", *args, **kwargs):
-            if "r" in mode and str(target) in str(path):
-                # 外部写入者替换了文件内容
-                target.write_bytes(b'{"session_id":"sess_own","request_id":"req_01","request_fingerprint":"EXTERNALLY_MUTATED","snapshot":{"phase":"collecting"}}')
-            return orig_open(path, mode, *args, **kwargs)
+        from src.history_manager import _read_regular_file_no_follow
+        orig_read = _read_regular_file_no_follow
+        def mock_read_corrupt(path, expected_stat=None, error_cls=ControlAuditPersistenceError):
+            if str(target) in str(path):
+                # 外部写入者替换了文件内容 (满足 snapshot_version 校验但 fingerprint 不匹配)
+                target.write_bytes(b'{"snapshot_version":3,"event_type":"control_audit_event","session_id":"sess_own","request_id":"req_01","request_fingerprint":"EXTERNALLY_MUTATED","snapshot":{"phase":"collecting"}}')
+            return orig_read(path, expected_stat, error_cls)
 
-        with patch("builtins.open", side_effect=mock_open_corrupt):
+        with patch("src.history_manager._read_regular_file_no_follow", side_effect=mock_read_corrupt):
             with self.assertRaises(ControlAuditCommitUncertainError):
                 _create_control_event_no_overwrite(target, audit_data, expected_hash)
 
@@ -2688,6 +2688,192 @@ class TestControlRequestContract(unittest.TestCase):
         finally:
             if link_to_target.is_symlink() or link_to_target.exists():
                 link_to_target.unlink()
+
+    def test_revision_replaced_with_symlink_between_lstat_and_read_fails_closed(self):
+        """1. Revision 文件在校验过程中被替换为 Symlink 时，读取失败并 Fail-Closed (raise ControlAuditPersistenceError)"""
+        from src.history_manager import _validate_revision_before_head_commit, ControlAuditPersistenceError, get_session_revision_path, _canonical_payload_hash
+        history_dir = get_history_dir(create=True)
+        sid = "test_toctou_symlink_rev"
+        rev1_path = get_session_revision_path(history_dir, sid, 1)
+        payload = {"session_id": sid, "session_revision": 1, "data": "valid_rev"}
+        payload["payload_sha256"] = _canonical_payload_hash(payload)
+        rev1_path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+        target_file = history_dir / "target_symlink_dest.json"
+        target_file.write_bytes(json.dumps(payload).encode("utf-8"))
+
+        orig_open = os.open
+        def mock_open(path, flags, mode=0o777):
+            if str(rev1_path) in str(path):
+                if rev1_path.exists():
+                    rev1_path.unlink()
+                rev1_path.symlink_to(target_file)
+            return orig_open(str(path), flags, mode)
+
+        try:
+            with patch("os.open", side_effect=mock_open):
+                with self.assertRaises(ControlAuditPersistenceError):
+                    _validate_revision_before_head_commit(history_dir, sid, 1, rev1_path.name)
+        finally:
+            if rev1_path.is_symlink() or rev1_path.exists():
+                rev1_path.unlink()
+
+    def test_revision_replaced_with_same_bytes_new_inode_during_read_fails_closed(self):
+        """2. Revision 文件在读取中途 inode 发生改变，校验 Fail-Closed"""
+        from src.history_manager import _validate_revision_before_head_commit, ControlAuditPersistenceError, get_session_revision_path, _canonical_payload_hash
+        history_dir = get_history_dir(create=True)
+        sid = "test_toctou_inode_rev"
+        rev1_path = get_session_revision_path(history_dir, sid, 1)
+        payload = {"session_id": sid, "session_revision": 1, "data": "valid_rev"}
+        payload["payload_sha256"] = _canonical_payload_hash(payload)
+        rev1_bytes = json.dumps(payload).encode("utf-8")
+        rev1_path.write_bytes(rev1_bytes)
+
+        orig_lstat = os.lstat
+        def mock_lstat(path):
+            st = orig_lstat(path)
+            if str(rev1_path) in str(path):
+                return os.stat_result((st.st_mode, st.st_ino + 9999, st.st_dev, st.st_nlink, st.st_uid, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime))
+            return st
+
+        with patch("os.lstat", side_effect=mock_lstat):
+            with self.assertRaises(ControlAuditPersistenceError):
+                _validate_revision_before_head_commit(history_dir, sid, 1, rev1_path.name)
+
+    def test_head_replaced_with_symlink_between_commit_stat_and_readback_is_uncertain(self):
+        """3. Head Replace 成功后，读回前 Head 被替换为 Symlink，触发 ControlAuditCommitUncertainError 且不破坏文件"""
+        from src.history_manager import update_session_head, ControlAuditCommitUncertainError, get_session_revision_path, get_session_head_path, _canonical_payload_hash
+        history_dir = get_history_dir(create=True)
+        sid = "test_toctou_head_symlink"
+        rev1_path = get_session_revision_path(history_dir, sid, 1)
+        payload = {"session_id": sid, "session_revision": 1, "data": "valid_rev"}
+        hash_val = _canonical_payload_hash(payload)
+        payload["payload_sha256"] = hash_val
+        rev1_path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+        head_path = get_session_head_path(history_dir, sid)
+        target_file = history_dir / "head_symlink_target.json"
+        target_file.write_bytes(b"{}")
+
+        orig_os_replace = os.replace
+        def mock_os_replace(src, dst):
+            orig_os_replace(src, dst)
+            if str(head_path) in str(dst):
+                head_path.unlink(missing_ok=True)
+                head_path.symlink_to(target_file)
+
+        try:
+            with patch("os.replace", side_effect=mock_os_replace):
+                with self.assertRaises(ControlAuditCommitUncertainError):
+                    update_session_head(history_dir, sid, 1, rev1_path.name)
+        finally:
+            if head_path.is_symlink() or head_path.exists():
+                head_path.unlink()
+
+    def test_head_replaced_with_same_bytes_new_inode_during_readback_is_uncertain(self):
+        """4. Head Replace 成功后，读回阶段发现 inode 被改变，触发 ControlAuditCommitUncertainError"""
+        from src.history_manager import update_session_head, ControlAuditCommitUncertainError, get_session_revision_path, get_session_head_path, _canonical_payload_hash
+        history_dir = get_history_dir(create=True)
+        sid = "test_toctou_head_inode"
+        rev1_path = get_session_revision_path(history_dir, sid, 1)
+        payload = {"session_id": sid, "session_revision": 1, "data": "valid_rev"}
+        hash_val = _canonical_payload_hash(payload)
+        payload["payload_sha256"] = hash_val
+        rev1_path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+        head_path = get_session_head_path(history_dir, sid)
+
+        orig_lstat = os.lstat
+        call_count = 0
+        def mock_lstat(path):
+            st = orig_lstat(path)
+            nonlocal call_count
+            if str(head_path) in str(path):
+                call_count += 1
+                if call_count > 1:
+                    return os.stat_result((st.st_mode, st.st_ino + 8888, st.st_dev, st.st_nlink, st.st_uid, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime))
+            return st
+
+        with patch("os.lstat", side_effect=mock_lstat):
+            with self.assertRaises(ControlAuditCommitUncertainError):
+                update_session_head(history_dir, sid, 1, rev1_path.name)
+
+    def test_ownership_path_swapped_after_lstat_is_not_owned(self):
+        """5. 所有权路径在 lstat 检查后被偷换为新 inode 文件，_verify_owned_committed_path 返回 False"""
+        from src.history_manager import _verify_owned_committed_path
+        history_dir = get_history_dir(create=True)
+        target_path = history_dir / "test_swapped_ownership.json"
+        content = b'{"data": "swapped"}'
+        target_path.write_bytes(content)
+        expected_stat = os.lstat(target_path)
+
+        orig_lstat = os.lstat
+        def mock_lstat(path):
+            st = orig_lstat(path)
+            if str(target_path) in str(path):
+                return os.stat_result((st.st_mode, st.st_ino + 7777, st.st_dev, st.st_nlink, st.st_uid, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime))
+            return st
+
+        with patch("os.lstat", side_effect=mock_lstat):
+            self.assertFalse(_verify_owned_committed_path(target_path, content, expected_stat))
+
+    def test_read_session_head_rejects_symlink(self):
+        """6. read_session_head 遇到 Head 为 Symlink 时，抛出 ControlAuditCorruptionError (fail closed)"""
+        from src.history_manager import read_session_head, ControlAuditCorruptionError, get_session_head_path
+        history_dir = get_history_dir(create=True)
+        sid = "test_head_symlink_read"
+        head_path = get_session_head_path(history_dir, sid)
+        target_file = history_dir / "real_head.json"
+        target_file.write_bytes(b'{"valid": true}')
+
+        if head_path.exists() or head_path.is_symlink():
+            head_path.unlink()
+        head_path.symlink_to(target_file)
+
+        try:
+            with self.assertRaises(ControlAuditCorruptionError):
+                read_session_head(history_dir, sid)
+        finally:
+            if head_path.is_symlink() or head_path.exists():
+                head_path.unlink()
+
+    def test_head_revision_chain_read_rejects_revision_symlink(self):
+        """7. read_session_head 校验 Head 指向的 Revision 文件为 Symlink 时，抛出 ControlAuditCorruptionError (fail closed)"""
+        from src.history_manager import read_session_head, update_session_head, ControlAuditCorruptionError, get_session_head_path, get_session_revision_path, _canonical_payload_hash
+        history_dir = get_history_dir(create=True)
+        sid = "test_rev_symlink_in_chain"
+        rev1_path = get_session_revision_path(history_dir, sid, 1)
+        payload = {"session_id": sid, "session_revision": 1, "data": "valid_rev"}
+        hash_val = _canonical_payload_hash(payload)
+        payload["payload_sha256"] = hash_val
+        rev1_path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+        update_session_head(history_dir, sid, 1, rev1_path.name)
+
+        target_file = history_dir / "target_rev_symlink.json"
+        target_file.write_bytes(json.dumps(payload).encode("utf-8"))
+        rev1_path.unlink()
+        rev1_path.symlink_to(target_file)
+
+        try:
+            with self.assertRaises(ControlAuditCorruptionError):
+                read_session_head(history_dir, sid)
+        finally:
+            if rev1_path.is_symlink() or rev1_path.exists():
+                rev1_path.unlink()
+
+    def test_no_follow_reader_reads_and_validates_same_inode(self):
+        """8. _read_regular_file_no_follow 成功读取普通文件并返回精确 (bytes, fd_stat)"""
+        from src.history_manager import _read_regular_file_no_follow
+        history_dir = get_history_dir(create=True)
+        target = history_dir / "test_no_follow_reader.json"
+        content = b'{"hello": "world"}'
+        target.write_bytes(content)
+
+        read_bytes, fd_stat = _read_regular_file_no_follow(target)
+        self.assertEqual(read_bytes, content)
+        path_stat = os.lstat(target)
+        self.assertEqual((fd_stat.st_dev, fd_stat.st_ino), (path_stat.st_dev, path_stat.st_ino))
 
 
 if __name__ == "__main__":
