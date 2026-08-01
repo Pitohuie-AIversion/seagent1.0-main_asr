@@ -176,6 +176,7 @@ def read_session_head(history_dir: Path, session_id: str) -> Optional[Dict[str, 
     """读取指定 session_id 的权威 Session Head 文件。
 
     如果 Head 文件存在但解析/校验失败，抛出 ControlAuditCorruptionError (fail closed)。
+    包含所有 mandatory 字段校验、路径越界校验与关联 revision 文件一致性校验。
     """
     head_path = get_session_head_path(history_dir, session_id)
     if not head_path.exists() or not head_path.is_file():
@@ -192,6 +193,22 @@ def read_session_head(history_dir: Path, session_id: str) -> Optional[Dict[str, 
     if not isinstance(data, dict):
         raise ControlAuditCorruptionError(f"Session head file {head_path.name} is not a dict")
 
+    # 1. 强制校验所有 mandatory 字段
+    for field in (
+        "schema_version",
+        "session_id",
+        "current_revision",
+        "snapshot_file",
+        "snapshot_payload_sha256",
+        "payload_sha256",
+        "updated_at",
+    ):
+        if field not in data:
+            raise ControlAuditCorruptionError(f"Session head missing mandatory field '{field}' in {head_path.name}")
+
+    if data.get("schema_version") != SNAPSHOT_VERSION:
+        raise ControlAuditCorruptionError(f"Session head invalid schema_version: expected {SNAPSHOT_VERSION}, got {data.get('schema_version')!r}")
+
     if data.get("session_id") != session_id:
         raise ControlAuditCorruptionError(f"Session head session_id mismatch in {head_path.name}")
 
@@ -201,13 +218,57 @@ def read_session_head(history_dir: Path, session_id: str) -> Optional[Dict[str, 
 
     snap_file = data.get("snapshot_file")
     if not snap_file or not isinstance(snap_file, str):
-        raise ControlAuditCorruptionError(f"Session head missing snapshot_file: {snap_file!r}")
+        raise ControlAuditCorruptionError(f"Session head missing or invalid snapshot_file: {snap_file!r}")
 
-    sha256 = data.get("payload_sha256")
-    if sha256:
-        computed = _canonical_payload_hash(data)
-        if computed != sha256:
-            raise ControlAuditCorruptionError(f"Session head payload_sha256 mismatch in {head_path.name}")
+    # 2. 路径安全与派生文件名精确匹配校验 (防止 path traversal 和不一致文件名)
+    if "/" in snap_file or "\\" in snap_file or ".." in snap_file or Path(snap_file).name != snap_file:
+        raise ControlAuditCorruptionError(f"Session head snapshot_file contains path traversal or dir separator: {snap_file!r}")
+
+    expected_snap_path = get_session_revision_path(history_dir, session_id, cur_rev)
+    if snap_file != expected_snap_path.name:
+        raise ControlAuditCorruptionError(
+            f"Session head snapshot_file {snap_file!r} does not match derived revision filename {expected_snap_path.name!r}"
+        )
+
+    snap_hash = data.get("snapshot_payload_sha256")
+    if not snap_hash or not isinstance(snap_hash, str) or not _SHA256_HEX_RE.match(snap_hash):
+        raise ControlAuditCorruptionError(f"Session head missing or invalid snapshot_payload_sha256 (must be 64 hex chars): {snap_hash!r}")
+
+    payload_hash = data.get("payload_sha256")
+    if not payload_hash or not isinstance(payload_hash, str) or not _SHA256_HEX_RE.match(payload_hash):
+        raise ControlAuditCorruptionError(f"Session head missing or invalid payload_sha256 (must be 64 hex chars): {payload_hash!r}")
+
+    updated_at = data.get("updated_at")
+    if not updated_at or not isinstance(updated_at, str):
+        raise ControlAuditCorruptionError(f"Session head missing or invalid updated_at: {updated_at!r}")
+
+    computed = _canonical_payload_hash(data)
+    if computed != payload_hash:
+        raise ControlAuditCorruptionError(f"Session head payload_sha256 mismatch in {head_path.name}")
+
+    # 3. 校验 Head 关联的 snapshot 文件存在且 revision/hash 精确匹配
+    if not expected_snap_path.exists() or not expected_snap_path.is_file():
+        raise ControlAuditCorruptionError(f"Head references snapshot file {snap_file} which does not exist in history dir")
+
+    try:
+        snap_json = json.loads(expected_snap_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise ControlAuditCorruptionError(f"Head referenced snapshot file {snap_file} cannot be parsed: {e}") from e
+
+    if not isinstance(snap_json, dict):
+        raise ControlAuditCorruptionError(f"Head referenced snapshot file {snap_file} is not a JSON object")
+
+    snap_rev = snap_json.get("session_revision")
+    if snap_rev != cur_rev:
+        raise ControlAuditCorruptionError(
+            f"Snapshot file {snap_file} revision {snap_rev!r} does not match Head current_revision {cur_rev}"
+        )
+
+    actual_snap_hash = _canonical_payload_hash(snap_json)
+    if actual_snap_hash != snap_hash:
+        raise ControlAuditCorruptionError(
+            f"Snapshot file {snap_file} payload hash {actual_snap_hash[:16]}... mismatch with Head snapshot_payload_sha256 {snap_hash[:16]}..."
+        )
 
     return data
 
@@ -219,20 +280,37 @@ def update_session_head(
     snapshot_file: str,
     snapshot_payload_sha256: Optional[str] = None,
 ) -> None:
-    """原子更新 session_id 的权威 Session Head 文件（带 Post-replace 安全失败语义与旧 Head 恢复）。"""
+    """原子更新 session_id 的权威 Session Head 文件（带 Post-replace 安全失败语义、inode 验证与旧 Head 强一致恢复）。"""
+    if not snapshot_payload_sha256:
+        snap_path = history_dir / snapshot_file
+        if snap_path.exists() and snap_path.is_file():
+            try:
+                snap_json = json.loads(snap_path.read_text(encoding="utf-8"))
+                snapshot_payload_sha256 = _canonical_payload_hash(snap_json)
+            except Exception:
+                snapshot_payload_sha256 = "0" * 64
+        else:
+            snapshot_payload_sha256 = "0" * 64
+
+    if not isinstance(snapshot_payload_sha256, str) or not _SHA256_HEX_RE.match(snapshot_payload_sha256):
+        raise ValueError("snapshot_payload_sha256 is required and must be a 64-hex SHA-256 string")
+
     head_path = get_session_head_path(history_dir, session_id)
     old_head_bytes: Optional[bytes] = None
+    stat_before: Optional[os.stat_result] = None
     if head_path.exists() and head_path.is_file():
         try:
+            stat_before = os.stat(str(head_path))
             old_head_bytes = head_path.read_bytes()
         except OSError:
             pass
 
     head_data = {
+        "schema_version": SNAPSHOT_VERSION,
         "session_id": session_id,
         "current_revision": current_revision,
         "snapshot_file": snapshot_file,
-        "snapshot_payload_sha256": snapshot_payload_sha256 or "",
+        "snapshot_payload_sha256": snapshot_payload_sha256,
         "updated_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
     }
     expected_hash = _canonical_payload_hash(head_data)
@@ -250,10 +328,11 @@ def update_session_head(
             pass
         raise ControlAuditPersistenceError(f"Failed to update session head for {session_id}: {e}") from e
 
+    stat_after_replace: Optional[os.stat_result] = None
     try:
+        stat_after_replace = os.stat(str(head_path))
         _fsync_directory(history_dir)
-        with open(head_path, "r", encoding="utf-8") as f:
-            read_back = json.load(f)
+        read_back = json.loads(head_path.read_text(encoding="utf-8"))
         actual_hash = _canonical_payload_hash(read_back)
         if actual_hash != expected_hash:
             raise RuntimeError(
@@ -261,17 +340,25 @@ def update_session_head(
             )
     except Exception as post_err:
         logger.error("Post-replace failure for session head %s: %s", head_path.name, post_err)
-        if _verify_path_ownership(head_path, payload_bytes):
+        # Inode 所有权校验：传入新替换后的 stat_after_replace
+        if _verify_path_ownership(head_path, payload_bytes, expected_stat=stat_after_replace):
             recovered = False
             try:
                 if old_head_bytes is not None:
                     rec_temp = _write_temp_and_fsync(history_dir, head_path, old_head_bytes)
                     rec_temp.replace(head_path)
                     _fsync_directory(history_dir)
+                    # 旧 Head 强一致读回校验
+                    restored_readback = json.loads(head_path.read_text(encoding="utf-8"))
+                    restored_hash = _canonical_payload_hash(restored_readback)
+                    old_expected_hash = _canonical_payload_hash(json.loads(old_head_bytes.decode("utf-8")))
+                    if restored_hash == old_expected_hash:
+                        recovered = True
                 else:
                     head_path.unlink(missing_ok=True)
                     _fsync_directory(history_dir)
-                recovered = True
+                    if not head_path.exists():
+                        recovered = True
             except Exception as rec_err:
                 logger.critical("Cannot restore old session head for %s: %s", session_id, rec_err)
 
@@ -283,6 +370,66 @@ def update_session_head(
         raise ControlAuditCommitUncertainError(
             f"Session head commit uncertain for {session_id}: {post_err}"
         ) from post_err
+
+
+def validate_response_snapshot(
+    resp_snap: Any,
+    expected_session_id: Optional[str] = None,
+    expected_request_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """独立严格校验不可变 HTTP response snapshot 的字段类型与身份标量。"""
+    if not isinstance(resp_snap, dict):
+        raise ControlAuditCorruptionError("response_snapshot is not a JSON object")
+
+    code = resp_snap.get("code")
+    if code != 200 or isinstance(code, bool) or not isinstance(code, int):
+        raise ControlAuditCorruptionError(f"response_snapshot code must be integer 200, got {code!r}")
+
+    sess_id = resp_snap.get("session_id")
+    if not isinstance(sess_id, str) or not sess_id.strip():
+        raise ControlAuditCorruptionError("response_snapshot missing or invalid session_id")
+    if expected_session_id and sess_id != expected_session_id:
+        raise ControlAuditCorruptionError(f"response_snapshot session_id mismatch: expected {expected_session_id!r}, got {sess_id!r}")
+
+    req_id = resp_snap.get("request_id")
+    if req_id is not None and not isinstance(req_id, str):
+        raise ControlAuditCorruptionError(f"response_snapshot request_id must be str or None, got {req_id!r}")
+    if expected_request_id and req_id != expected_request_id:
+        raise ControlAuditCorruptionError(f"response_snapshot request_id mismatch: expected {expected_request_id!r}, got {req_id!r}")
+
+    reply = resp_snap.get("reply")
+    if not isinstance(reply, str):
+        raise ControlAuditCorruptionError(f"response_snapshot reply must be str, got {type(reply).__name__}")
+
+    done = resp_snap.get("done")
+    if not isinstance(done, bool):
+        raise ControlAuditCorruptionError(f"response_snapshot done must be bool, got {type(done).__name__}")
+
+    rejected = resp_snap.get("rejected")
+    if not isinstance(rejected, bool):
+        raise ControlAuditCorruptionError(f"response_snapshot rejected must be bool, got {type(rejected).__name__}")
+
+    dlg_mode = resp_snap.get("dialogue_mode")
+    if dlg_mode not in {"task_collection", "knowledge_qa", "emergency_intervention", "uncertain"}:
+        raise ControlAuditCorruptionError(f"response_snapshot invalid dialogue_mode: {dlg_mode!r}")
+
+    ctrl_state = resp_snap.get("control_state")
+    if ctrl_state not in VALID_CONTROL_STATES:
+        raise ControlAuditCorruptionError(f"response_snapshot invalid control_state: {ctrl_state!r}")
+
+    collected = resp_snap.get("collected")
+    if not isinstance(collected, dict):
+        raise ControlAuditCorruptionError(f"response_snapshot collected must be dict, got {type(collected).__name__}")
+
+    missing = resp_snap.get("missing")
+    if not isinstance(missing, list):
+        raise ControlAuditCorruptionError(f"response_snapshot missing must be list, got {type(missing).__name__}")
+
+    is_retry = resp_snap.get("is_retry")
+    if not isinstance(is_retry, bool):
+        raise ControlAuditCorruptionError(f"response_snapshot is_retry must be bool, got {type(is_retry).__name__}")
+
+    return resp_snap
 
 
 def validate_control_event(
@@ -360,13 +507,27 @@ def validate_control_event(
     if snap_ctrl_state is not None and snap_ctrl_state not in VALID_CONTROL_STATES:
         raise ControlAuditCorruptionError(f"Control event snapshot has invalid control_state: {snap_ctrl_state!r}")
 
-    resp_snap = data.get("response_snapshot")
-    if not isinstance(resp_snap, dict):
-        raise ControlAuditCorruptionError("Control event missing or invalid 'response_snapshot' dictionary")
+    lcr = snapshot.get("last_control_request")
+    if lcr is not None:
+        if not isinstance(lcr, dict):
+            raise ControlAuditCorruptionError(f"last_control_request must be dict or None, got {type(lcr).__name__}")
+        act = lcr.get("action")
+        if act not in ("stop", "pause", "abort", "cancel"):
+            raise ControlAuditCorruptionError(f"last_control_request invalid action: {act!r}")
+        st = lcr.get("status")
+        if st != "requested":
+            raise ControlAuditCorruptionError(f"last_control_request status must be 'requested', got {st!r}")
+        conf = lcr.get("confidence")
+        if isinstance(conf, bool) or not isinstance(conf, (int, float)) or not (0.0 <= float(conf) <= 1.0):
+            raise ControlAuditCorruptionError(f"last_control_request invalid confidence: {conf!r}")
+        if snap_ctrl_state != f"{act}_requested":
+            raise ControlAuditCorruptionError(f"last_control_request action {act!r} mismatch with control_state {snap_ctrl_state!r}")
+    else:
+        if snap_ctrl_state in ("stop_requested", "pause_requested", "abort_requested", "cancel_requested"):
+            raise ControlAuditCorruptionError(f"control_state is {snap_ctrl_state!r} but last_control_request is None")
 
-    for req_field in ("code", "session_id", "request_id", "reply", "done", "rejected", "dialogue_mode", "control_state", "collected", "missing"):
-        if req_field not in resp_snap:
-            raise ControlAuditCorruptionError(f"response_snapshot missing required field: {req_field!r}")
+    resp_snap = data.get("response_snapshot")
+    validate_response_snapshot(resp_snap, sess_id, req_id)
 
     return data
 
@@ -761,9 +922,11 @@ def save_conversation(
     control_action: Optional[str] = None,
     parent_revision: Optional[int] = None,
     manager: Optional[Any] = None,
+    lock_handle: Optional[Any] = None,
 ) -> str:
     """保存不可变 session revision 并原子更新 Session Head。
     要求显式 parent_revision: int，禁止 parent_revision=None 的隐式 CAS bypass。
+    无 Head 时仅允许 parent_revision == 0。
     """
     if parent_revision is None or not isinstance(parent_revision, int) or isinstance(parent_revision, bool):
         raise ValueError("parent_revision is required and must be an explicit int (None CAS bypass prohibited)")
@@ -771,9 +934,16 @@ def save_conversation(
     history_dir = _ensure_dir()
 
     with _file_lock:
-        lock_file_handle = _get_cross_process_lock(history_dir)
+        should_close_lock = False
+        if lock_handle is None:
+            lock_file_handle = _get_cross_process_lock(history_dir)
+            should_close_lock = True
+        else:
+            lock_file_handle = lock_handle
+
         try:
-            fcntl.flock(lock_file_handle.fileno(), fcntl.LOCK_EX)
+            if should_close_lock:
+                fcntl.flock(lock_file_handle.fileno(), fcntl.LOCK_EX)
             try:
                 task_id = built_json.get("task_id", "unknown") if isinstance(built_json, dict) else "unknown"
                 task_type = task_state.get("task_type_key", "unknown") if isinstance(task_state, dict) else "unknown"
@@ -787,9 +957,9 @@ def save_conversation(
                             f"Session revision CAS conflict: disk head has {disk_cur_rev}, expected parent {parent_revision}"
                         )
                 else:
-                    if parent_revision not in (0, 1):
+                    if parent_revision != 0:
                         raise ControlAuditConflictError(
-                            f"Session revision CAS conflict: no disk head exists, expected parent {parent_revision} in (0, 1)"
+                            f"Session revision CAS conflict: no disk head exists, expected parent_revision == 0, got {parent_revision}"
                         )
 
                 session_rev = parent_revision + 1
@@ -909,9 +1079,11 @@ def save_conversation(
                 )
                 return target_path.name
             finally:
-                fcntl.flock(lock_file_handle.fileno(), fcntl.LOCK_UN)
+                if should_close_lock:
+                    fcntl.flock(lock_file_handle.fileno(), fcntl.LOCK_UN)
         finally:
-            lock_file_handle.close()
+            if should_close_lock:
+                lock_file_handle.close()
 
 
 def maintenance_append_revision(
@@ -932,39 +1104,37 @@ def maintenance_append_revision(
     control_action: Optional[str] = None,
     manager: Optional[Any] = None,
 ) -> str:
-    """维护/迁移专用的无条件追加 revision 接口。显式从 Head 提取 current_revision 作为 parent_revision。"""
+    """维护/迁移专用的无条件追加 revision 接口。显式从 Head 提取 current_revision 作为 parent_revision，全程在跨进程锁下运行。"""
     history_dir = _ensure_dir()
     with _file_lock:
         lock_file_handle = _get_cross_process_lock(history_dir)
         try:
             fcntl.flock(lock_file_handle.fileno(), fcntl.LOCK_EX)
-            try:
-                cur_head = read_session_head(history_dir, session_id)
-                parent_rev = cur_head["current_revision"] if cur_head is not None else 0
-            finally:
-                fcntl.flock(lock_file_handle.fileno(), fcntl.LOCK_UN)
+            cur_head = read_session_head(history_dir, session_id)
+            parent_rev = cur_head["current_revision"] if cur_head is not None else 0
+            return save_conversation(
+                session_id=session_id,
+                conversation_history=conversation_history,
+                task_state=task_state,
+                built_json=built_json,
+                mode=mode,
+                phase=phase,
+                intent_id=intent_id,
+                slot_store=slot_store,
+                dialogue_mode=dialogue_mode,
+                control_state=control_state,
+                last_control_request=last_control_request,
+                request_id=request_id,
+                user_message=user_message,
+                reply=reply,
+                control_action=control_action,
+                parent_revision=parent_rev,
+                manager=manager,
+                lock_handle=lock_file_handle,
+            )
         finally:
+            fcntl.flock(lock_file_handle.fileno(), fcntl.LOCK_UN)
             lock_file_handle.close()
-
-    return save_conversation(
-        session_id=session_id,
-        conversation_history=conversation_history,
-        task_state=task_state,
-        built_json=built_json,
-        mode=mode,
-        phase=phase,
-        intent_id=intent_id,
-        slot_store=slot_store,
-        dialogue_mode=dialogue_mode,
-        control_state=control_state,
-        last_control_request=last_control_request,
-        request_id=request_id,
-        user_message=user_message,
-        reply=reply,
-        control_action=control_action,
-        parent_revision=parent_rev,
-        manager=manager,
-    )
 
 
 

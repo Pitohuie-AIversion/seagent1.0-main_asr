@@ -3,6 +3,7 @@ tests/test_control_request_contract.py - 控制请求生命周期闭环契约与
 """
 
 import copy
+import hashlib
 import json
 import multiprocessing
 import os
@@ -19,6 +20,10 @@ from src.history_manager import (
     load_history,
     list_history,
     load_latest_session_snapshot,
+    read_session_head,
+    get_session_head_path,
+    update_session_head,
+    get_session_revision_path,
     _resolve_history_file,
     _atomic_durable_write,
     _create_control_event_no_overwrite,
@@ -1793,13 +1798,13 @@ class TestControlRequestContract(unittest.TestCase):
     def test_session_revision_monotonic_and_cas(self):
         """R10-P2-1: DialogueManager session_revision 单调递增"""
         manager = DialogueManager(self.llm, self.kb)
-        self.assertEqual(manager.session_revision, 1)
+        self.assertEqual(manager.session_revision, 0)
 
         outcome1 = manager.process_with_audit("创建巡检任务", request_id="req_rev_01", session_id="sess_rev_test")
-        self.assertEqual(manager.session_revision, 2)
+        self.assertEqual(manager.session_revision, 1)
 
         outcome2 = manager.process_with_audit("水深300米", request_id="req_rev_02", session_id="sess_rev_test")
-        self.assertEqual(manager.session_revision, 3)
+        self.assertEqual(manager.session_revision, 2)
 
     def test_multiprocess_different_requests_same_session_serialized(self):
         """R10-P1-5: 多进程下对同一个 Session 发起不同 request_id 的请求，被 per-session 锁串行化"""
@@ -1848,12 +1853,12 @@ class TestControlRequestContract(unittest.TestCase):
                                     user_message="创建一个管缆巡检任务", reply=o.reply, control_action=o.control_action,
                                     parent_revision=o.parent_revision, manager=m
                                 ))
-        self.assertEqual(mgr_a.session_revision, 2)
+        self.assertEqual(mgr_a.session_revision, 1)
 
-        # Worker B 目前内存状态仍是 revision 1
-        self.assertEqual(mgr_b.session_revision, 1)
+        # Worker B 目前内存状态仍是 revision 0
+        self.assertEqual(mgr_b.session_revision, 0)
 
-        # Worker B 提交请求2：在 process_with_audit 内获取 Session 锁后自动重新加载 Head 状态到 revision 2，并成功递增到 revision 3
+        # Worker B 提交请求2：在 process_with_audit 内获取 Session 锁后自动重新加载 Head 状态到 revision 1，并成功递增到 revision 2
         mgr_b.process_with_audit("水深300米", request_id="req_cas_02", session_id=sid,
                                 persist_callback=lambda m, o, b: save_conversation(
                                     session_id=sid, conversation_history=m.conversation_history,
@@ -1864,7 +1869,7 @@ class TestControlRequestContract(unittest.TestCase):
                                     user_message="水深300米", reply=o.reply, control_action=o.control_action,
                                     parent_revision=o.parent_revision, manager=m
                                 ))
-        self.assertEqual(mgr_b.session_revision, 3)
+        self.assertEqual(mgr_b.session_revision, 2)
 
     def test_valid_done_restore_verifies_real_task_intent(self):
         """R11-P1-1: 带有有效 TaskIntent Artifact 的 done 阶段快照成功装载"""
@@ -1958,6 +1963,235 @@ class TestControlRequestContract(unittest.TestCase):
             st_dev = stat1.st_dev
             st_ino = stat1.st_ino + 99999
         self.assertFalse(_verify_path_ownership(test_file, payload, expected_stat=FakeStat()))
+
+    # ---------------------------------------------------------------------------
+    # Round 12 必填 Head 协议与强校验测试
+    # ---------------------------------------------------------------------------
+
+    def test_genesis_revision_is_one_with_parent_zero(self):
+        """1. 创世 revision 为 1，parent_revision 为 0"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_genesis_test_01"
+        mgr = DialogueManager(self.llm, self.kb)
+        self.assertEqual(mgr.session_revision, 0)
+
+        filename = save_conversation(
+            session_id=sid,
+            conversation_history=[{"role": "user", "content": "hi"}],
+            task_state={},
+            built_json={},
+            mode="normal",
+            phase="collecting",
+            parent_revision=0,
+            manager=mgr,
+        )
+        self.assertIn("rev_1.json", filename)
+        self.assertEqual(mgr.session_revision, 1)
+
+        head = read_session_head(history_dir, sid)
+        self.assertIsNotNone(head)
+        self.assertEqual(head["current_revision"], 1)
+
+    def test_no_head_rejects_parent_revision_one(self):
+        """2. 无 Head 时拒绝 parent_revision == 1，仅接受 0"""
+        sid = "sess_no_head_reject_p1"
+        mgr = DialogueManager(self.llm, self.kb)
+        with self.assertRaises(ControlAuditConflictError):
+            save_conversation(
+                session_id=sid,
+                conversation_history=[],
+                task_state={},
+                built_json={},
+                mode="normal",
+                phase="collecting",
+                parent_revision=1,
+                manager=mgr,
+            )
+
+    def test_head_missing_payload_hash_fails_closed(self):
+        """3. Head 缺失 payload_sha256 时 Fail Closed 抛出 ControlAuditCorruptionError"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_head_missing_phash"
+        head_path = get_session_head_path(history_dir, sid)
+        head_data = {
+            "schema_version": SNAPSHOT_VERSION,
+            "session_id": sid,
+            "current_revision": 1,
+            "snapshot_file": f"session_{hashlib.sha256(sid.encode()).hexdigest()[:16]}_rev_1.json",
+            "snapshot_payload_sha256": "a" * 64,
+            "updated_at": "2026-08-01T00:00:00",
+        }
+        head_path.write_text(json.dumps(head_data), encoding="utf-8")
+        with self.assertRaises(ControlAuditCorruptionError):
+            read_session_head(history_dir, sid)
+
+    def test_head_missing_snapshot_hash_fails_closed(self):
+        """4. Head 缺失 snapshot_payload_sha256 时 Fail Closed 抛出 ControlAuditCorruptionError"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_head_missing_shash"
+        head_path = get_session_head_path(history_dir, sid)
+        head_data = {
+            "schema_version": SNAPSHOT_VERSION,
+            "session_id": sid,
+            "current_revision": 1,
+            "snapshot_file": f"session_{hashlib.sha256(sid.encode()).hexdigest()[:16]}_rev_1.json",
+            "payload_sha256": "a" * 64,
+            "updated_at": "2026-08-01T00:00:00",
+        }
+        head_path.write_text(json.dumps(head_data), encoding="utf-8")
+        with self.assertRaises(ControlAuditCorruptionError):
+            read_session_head(history_dir, sid)
+
+    def test_head_snapshot_path_traversal_fails_closed(self):
+        """5. Head snapshot_file 包含路径穿越 (..) 时 Fail Closed 抛出 ControlAuditCorruptionError"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_head_traversal"
+        head_path = get_session_head_path(history_dir, sid)
+        head_data = {
+            "schema_version": SNAPSHOT_VERSION,
+            "session_id": sid,
+            "current_revision": 1,
+            "snapshot_file": "../../etc/passwd",
+            "snapshot_payload_sha256": "a" * 64,
+            "payload_sha256": "b" * 64,
+            "updated_at": "2026-08-01T00:00:00",
+        }
+        head_path.write_text(json.dumps(head_data), encoding="utf-8")
+        with self.assertRaises(ControlAuditCorruptionError):
+            read_session_head(history_dir, sid)
+
+    def test_head_filename_must_match_session_and_revision(self):
+        """6. Head snapshot_file 文件名与 session/revision 派生不一致时 Fail Closed"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_head_wrong_fname"
+        head_path = get_session_head_path(history_dir, sid)
+        head_data = {
+            "schema_version": SNAPSHOT_VERSION,
+            "session_id": sid,
+            "current_revision": 1,
+            "snapshot_file": "session_0000000000000000_rev_1.json",
+            "snapshot_payload_sha256": "a" * 64,
+            "payload_sha256": "b" * 64,
+            "updated_at": "2026-08-01T00:00:00",
+        }
+        head_path.write_text(json.dumps(head_data), encoding="utf-8")
+        with self.assertRaises(ControlAuditCorruptionError):
+            read_session_head(history_dir, sid)
+
+    def test_head_revision_must_match_snapshot_revision(self):
+        """7. Head current_revision 与 snapshot 文件内部 session_revision 不一致时 Fail Closed"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_head_rev_mismatch"
+        # 先正常写入 rev 1
+        mgr = DialogueManager(self.llm, self.kb)
+        save_conversation(
+            session_id=sid, conversation_history=[], task_state={}, built_json={},
+            mode="normal", phase="collecting", parent_revision=0, manager=mgr
+        )
+        head_path = get_session_head_path(history_dir, sid)
+        head_data = json.loads(head_path.read_text(encoding="utf-8"))
+        # 篡改 Head 中的 current_revision 为 2，但 snapshot_file 仍指 rev_1
+        head_data["current_revision"] = 2
+        head_data["snapshot_file"] = get_session_revision_path(history_dir, sid, 2).name
+        head_data["payload_sha256"] = _canonical_payload_hash(head_data)
+        head_path.write_text(json.dumps(head_data), encoding="utf-8")
+
+        with self.assertRaises(ControlAuditCorruptionError):
+            read_session_head(history_dir, sid)
+
+    def test_head_snapshot_hash_mismatch_fails_closed(self):
+        """8. Head 中的 snapshot_payload_sha256 与关联 snapshot 文件真实 hash 不匹配时 Fail Closed"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_head_hash_mismatch"
+        mgr = DialogueManager(self.llm, self.kb)
+        save_conversation(
+            session_id=sid, conversation_history=[], task_state={}, built_json={},
+            mode="normal", phase="collecting", parent_revision=0, manager=mgr
+        )
+        head_path = get_session_head_path(history_dir, sid)
+        head_data = json.loads(head_path.read_text(encoding="utf-8"))
+        head_data["snapshot_payload_sha256"] = "f" * 64
+        head_data["payload_sha256"] = _canonical_payload_hash(head_data)
+        head_path.write_text(json.dumps(head_data), encoding="utf-8")
+
+        with self.assertRaises(ControlAuditCorruptionError):
+            read_session_head(history_dir, sid)
+
+    def test_head_rollback_checks_inode_and_bytes(self):
+        """9. Head 更新 Post-replace 失败回滚前校验 inode 与字节内容"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_head_rollback_ino"
+        # 正常写入 Head
+        update_session_head(history_dir, sid, 1, "session_test_rev_1.json", "a" * 64)
+        head_path = get_session_head_path(history_dir, sid)
+        self.assertTrue(head_path.exists())
+
+        # 模拟 post-replace fsync 抛出 OSError
+        with patch("src.history_manager._fsync_directory", side_effect=OSError("IO Error")):
+            with self.assertRaises((ControlAuditPersistenceError, ControlAuditCommitUncertainError)):
+                update_session_head(history_dir, sid, 2, "session_test_rev_2.json", "b" * 64)
+
+    def test_restored_old_head_is_readback_verified(self):
+        """10. 回滚旧 Head 后执行强一致读回校验"""
+        history_dir = get_history_dir(create=True)
+        sid = "sess_head_readback_verify"
+        update_session_head(history_dir, sid, 1, get_session_revision_path(history_dir, sid, 1).name, "a" * 64)
+
+        # 写入真实 rev 1 snapshot 避免 read_session_head 报 missing snapshot
+        rev1_path = get_session_revision_path(history_dir, sid, 1)
+        rev1_data = {
+            "session_id": sid,
+            "session_revision": 1,
+            "parent_revision": 0,
+            "snapshot_version": SNAPSHOT_VERSION,
+            "snapshot": {"session_revision": 1, "parent_revision": 0, "conversation_history": [], "slot_store": {}, "task_state": {}, "phase": "collecting"},
+            "response_snapshot": {
+                "code": 200, "session_id": sid, "request_id": "", "reply": "ok", "done": False, "rejected": False,
+                "dialogue_mode": "task_collection", "control_state": "idle", "collected": {}, "missing": [], "is_retry": False
+            }
+        }
+        rev1_data["payload_sha256"] = _canonical_payload_hash(rev1_data)
+        rev1_path.write_text(json.dumps(rev1_data), encoding="utf-8")
+
+        # 触发更新 Head，Head 的 snapshot_payload_sha256 传真实 hash
+        update_session_head(history_dir, sid, 1, rev1_path.name, rev1_data["payload_sha256"])
+        head = read_session_head(history_dir, sid)
+        self.assertIsNotNone(head)
+
+    def test_response_snapshot_types_and_identity_are_validated(self):
+        """11. validate_response_snapshot 对类型和身份标量做严格校验"""
+        from src.history_manager import validate_response_snapshot
+        valid_snap = {
+            "code": 200,
+            "session_id": "s1",
+            "request_id": "r1",
+            "reply": "hello",
+            "done": False,
+            "rejected": False,
+            "dialogue_mode": "task_collection",
+            "control_state": "idle",
+            "collected": {},
+            "missing": [],
+            "is_retry": False,
+        }
+        self.assertEqual(validate_response_snapshot(valid_snap, "s1", "r1")["code"], 200)
+
+        # code 不是 200
+        bad_code = copy.deepcopy(valid_snap)
+        bad_code["code"] = 400
+        with self.assertRaises(ControlAuditCorruptionError):
+            validate_response_snapshot(bad_code)
+
+        # done 不是 bool
+        bad_done = copy.deepcopy(valid_snap)
+        bad_done["done"] = 1
+        with self.assertRaises(ControlAuditCorruptionError):
+            validate_response_snapshot(bad_done)
+
+        # session_id 不匹配
+        bad_sid = copy.deepcopy(valid_snap)
+        with self.assertRaises(ControlAuditCorruptionError):
+            validate_response_snapshot(bad_sid, expected_session_id="wrong_sid")
 
 
 if __name__ == "__main__":

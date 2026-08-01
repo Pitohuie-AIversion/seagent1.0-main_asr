@@ -296,7 +296,7 @@ class DialogueManager:
         self._last_missing: list[dict] = []
 
         # 单调 Session Revision (版本号)
-        self.session_revision: int = 1
+        self.session_revision: int = 0
 
         # 会话锁（按 session 隔离并发控制）
         self._session_lock = threading.RLock()
@@ -495,7 +495,7 @@ class DialogueManager:
                         expected_parent_rev = self.session_revision
                     else:
                         if not self.conversation_history:
-                            self.session_revision = 1
+                            self.session_revision = 0
                         expected_parent_rev = self.session_revision
 
                     try:
