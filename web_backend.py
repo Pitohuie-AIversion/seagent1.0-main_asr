@@ -448,6 +448,11 @@ def api_chat():
                     phase=mgr.phase,
                     intent_id=mgr.task_state.get('intent_id'),
                     slot_store=mgr.slot_store,
+                    dialogue_mode=mgr.dialogue_mode,
+                    last_mode_transition=mgr.last_mode_transition,
+                    mode_transition_history=mgr.mode_transition_history,
+                    control_state=mgr.control_state,
+                    last_control_request=mgr.last_control_request,
                 )
             except Exception as e:
                 logging.error("保存历史快照失败: %s", e, exc_info=True)

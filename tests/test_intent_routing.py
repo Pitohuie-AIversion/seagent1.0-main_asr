@@ -1212,6 +1212,155 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
         self.assertEqual(res.interaction_type, "QUERY")
         self.assertEqual(res.query_intent, "CLARIFICATION")
 
+    # 21. 复合紧急指令中包含后续疑问/条件子句优先提取紧急动作
+    def test_compound_emergency_followed_by_question_or_conditional(self):
+        cases = [
+            ("立即停止当前任务，为什么设备还在下潜？", "stop"),
+            ("马上暂停当前任务，如果继续会怎样？", "pause"),
+            ("立刻终止当前操作，之后需要做什么？", "abort"),
+        ]
+        for msg, expected_action in cases:
+            with self.subTest(msg=msg):
+                route = self.dm.intent_router.route(
+                    user_message=msg,
+                    conversation_history=[],
+                    task_state=self.dm.task_state,
+                    phase=self.dm.phase,
+                    expected_slots=[],
+                )
+                self.assertEqual(route.dialogue_mode, "emergency_intervention")
+                self.assertEqual(route.emergency_action, expected_action)
+
+    # 22. 疑问或条件修饰控制动作本身的分支降级为知识问答
+    def test_question_or_conditional_modifying_control_action(self):
+        cases = [
+            "为什么要停止当前任务？",
+            "如果停止当前任务会怎样？",
+        ]
+        for msg in cases:
+            with self.subTest(msg=msg):
+                route = self.dm.intent_router.route(
+                    user_message=msg,
+                    conversation_history=[],
+                    task_state={},
+                    phase="collecting",
+                    expected_slots=[],
+                )
+                self.assertEqual(route.dialogue_mode, "knowledge_qa")
+                self.assertIsNone(route.emergency_action)
+
+    # 23. 草稿取消（cancel）保留模式切换审计历史
+    def test_draft_cancel_preserves_mode_transition_history(self):
+        self.dm.reset()
+        self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+        self.dm.task_state = self.dm.slot_store.get_task_state()
+        self.dm.phase = "collecting"
+
+        reply = self.dm.process("取消当前任务")
+
+        self.assertEqual(self.dm.phase, "rejected")
+        self.assertEqual(self.dm.task_state, {})
+        self.assertEqual(self.dm.dialogue_mode, "emergency_intervention")
+        self.assertIsNotNone(self.dm.last_mode_transition)
+        self.assertEqual(self.dm.last_mode_transition["to"], "emergency_intervention")
+        self.assertTrue(len(self.dm.mode_transition_history) >= 1)
+
+    # 24. 通用身份与系统时间等提前返回路径更新 dialogue_mode
+    def test_fast_path_early_returns_update_dialogue_mode(self):
+        self.dm.reset()
+        self.dm.process("你是谁")
+        self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
+
+        self.dm.reset()
+        self.dm.process("当前时间是多少？")
+        self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
+
+    # 25. 快照加载非法的 dialogue_mode / control_state / timestamp 抛出 ValueError 且状态不变
+    def test_invalid_snapshot_schema_raises_value_error_without_state_mutation(self):
+        self.dm.reset()
+        self.dm.process("ROV 最大水深是多少？")
+        state_before_mode = self.dm.dialogue_mode
+        state_before_history = list(self.dm.mode_transition_history)
+
+        bad_snapshots = [
+            {"dialogue_mode": "destroy"},
+            {"control_state": "invalid_state"},
+            {"mode_transition_history": "not-a-list"},
+            {"mode_transition_history": [{"from": "task_collection", "to": "invalid", "confidence": 1.0, "changed_at": "2026-08-02"}]},
+            {"mode_transition_history": [{"from": "task_collection", "to": "knowledge_qa", "confidence": 2.0, "changed_at": "2026-08-02"}]},
+            {"last_control_request": {"action": "invalid_action"}},
+        ]
+
+        for snap in bad_snapshots:
+            with self.subTest(snap=snap):
+                with self.assertRaises(ValueError):
+                    self.dm.load_snapshot(snap)
+
+                # 验证内存状态完全未被污染
+                self.assertEqual(self.dm.dialogue_mode, state_before_mode)
+                self.assertEqual(self.dm.mode_transition_history, state_before_history)
+
+    # 26. 非空非法 emergency_action 不得自动升级为 emergency_intervention
+    def test_unrecognized_emergency_action_demotes_to_uncertain(self):
+        res = IntentRouteResult(
+            interaction_type="QUERY",
+            confidence=0.9,
+            reason="测试非法动作",
+            dialogue_mode="knowledge_qa",
+            emergency_action="shutdown",
+        )
+        self.assertEqual(res.dialogue_mode, "uncertain")
+        self.assertIsNone(res.emergency_action)
+
+    # 27. 同模式多次调用不产生重复记录
+    def test_same_mode_transition_deduplication(self):
+        self.dm.reset()
+        self.dm._switch_dialogue_mode("knowledge_qa", reason="R1")
+        count1 = len(self.dm.mode_transition_history)
+
+        # 再次切换到相同的 mode
+        self.dm._switch_dialogue_mode("knowledge_qa", reason="R2")
+        count2 = len(self.dm.mode_transition_history)
+
+        self.assertEqual(count1, count2)
+
+    # 28. 真实 save_conversation -> load_history -> load_snapshot 端到端持久化测试
+    def test_end_to_end_history_persistence_roundtrip(self):
+        from src.history_manager import save_conversation, load_history
+        from pathlib import Path
+        import tempfile
+        from unittest.mock import patch
+
+        self.dm.reset()
+        self.dm.process("ROV 最大水深是多少？")
+        mode_before = self.dm.dialogue_mode
+        history_before = copy.deepcopy(self.dm.mode_transition_history)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("src.history_manager.get_history_dir", return_value=Path(tmpdir)):
+                fname = save_conversation(
+                    session_id="test_sess_001",
+                    conversation_history=self.dm.conversation_history,
+                    task_state=self.dm.task_state,
+                    built_json=self.dm._last_built_json,
+                    mode=self.dm.mode,
+                    phase=self.dm.phase,
+                    slot_store=self.dm.slot_store,
+                    dialogue_mode=self.dm.dialogue_mode,
+                    last_mode_transition=self.dm.last_mode_transition,
+                    mode_transition_history=self.dm.mode_transition_history,
+                    control_state=self.dm.control_state,
+                    last_control_request=self.dm.last_control_request,
+                )
+                loaded_snap = load_history(fname)
+                self.assertIsNotNone(loaded_snap)
+                self.assertEqual(loaded_snap.get("dialogue_mode"), mode_before)
+
+                new_dm = DialogueManager(self.llm, self.kb)
+                new_dm.load_snapshot(loaded_snap)
+                self.assertEqual(new_dm.dialogue_mode, mode_before)
+                self.assertEqual(new_dm.mode_transition_history, history_before)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -159,9 +159,12 @@ class DialogueManager:
         self.last_mode_transition = transition
         if not hasattr(self, "mode_transition_history") or self.mode_transition_history is None:
             self.mode_transition_history = []
-        self.mode_transition_history.append(transition)
-        if len(self.mode_transition_history) > 50:
-            self.mode_transition_history.pop(0)
+
+        # 仅当模式发生实际改变时追加到切换历史轨迹中，避免同模式重复记录
+        if old_mode != new_mode:
+            self.mode_transition_history.append(transition)
+            if len(self.mode_transition_history) > 50:
+                self.mode_transition_history.pop(0)
 
 
 
@@ -551,6 +554,24 @@ class DialogueManager:
         self.conversation_history.append({"role": "assistant", "content": reply})
         return reply
 
+    def _clear_task_draft_preserving_dialogue_audit(self) -> None:
+        """清空未发布任务草稿与约束，但保留会话历史与模式流转审计。"""
+        task_type_key = self.task_state.get("task_type_key")
+        self.slot_store = SlotStore(self.kb)
+        if task_type_key:
+            schema = self.builder.get_schema(task_type_key, self.mode)
+            self.slot_store.init_task_slots(schema)
+
+        self.task_state = self.slot_store.get_task_state()
+        self.final_result = None
+        self._blocking_violations = []
+        self._soft_whitelist = set()
+        self._pending_rov_candidates = []
+        self._last_built_json = {}
+        self._last_missing = []
+        self.control_state = "idle"
+        self.last_control_request = None
+
     def _handle_emergency_intervention(
         self,
         user_message: str,
@@ -591,7 +612,7 @@ class DialogueManager:
 
         if has_active_draft:
             if action == "cancel":
-                self.reset()
+                self._clear_task_draft_preserving_dialogue_audit()
                 self.phase = "rejected"
                 self.final_result = None
                 reply = "任务已取消。如需重新规划，请重新开始。"
@@ -613,18 +634,21 @@ class DialogueManager:
         old_phase = self.phase
 
         if self._is_business_identity_query(user_message):
+            self._switch_dialogue_mode("knowledge_qa", source="fast_path", reason="通用身份/常规对话问答")
             reply = "我是一个专业的水下多智能体任务决策大模型，可用于辅助水下任务规划、参数收集与可行性验证。请描述您的水下任务需求，我会继续帮您完善任务参数。"
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
         if is_standalone_time_query(user_message):
+            self._switch_dialogue_mode("knowledge_qa", source="fast_path", reason="系统时间/环境状态查询")
             reply = get_time_context().user_reply
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
         if self.phase == "done" and self._is_confirmation_only(user_message):
+            self._switch_dialogue_mode("task_collection", source="user_confirmation", reason="已发布任务重复确认")
             intent_id = self.task_state.get("intent_id") or self._last_built_json.get("intent_id")
             intent_detail = f"（intent_id: {intent_id}）" if intent_id else ""
             reply = f"任务已发布成功{intent_detail}，无需重复发布。"
@@ -634,6 +658,7 @@ class DialogueManager:
 
         pending_reply = self._resolve_pending_oilfield_confirmation(user_message, request_id=request_id)
         if pending_reply is not None:
+            self._switch_dialogue_mode("task_collection", source="user_confirmation", reason="待确认油田消解")
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": pending_reply})
             return pending_reply
@@ -1812,7 +1837,7 @@ class DialogueManager:
         if not self._user_confirmed_oilfield(user_message):
             return None
 
-        candidate = self._top_pending_oilfield_candidate()
+        candidate = self._top_pending_oilfield_candidate(user_message)
         if not candidate:
             return self._build_pending_oilfield_reply()
 
@@ -1820,8 +1845,9 @@ class DialogueManager:
         self._commit_internal_slot_values(
             {
                 "oilfield_name": confirmed_name,
+                "raw_oilfield_name": confirmed_name,
                 "oilfield_entity_id": candidate.get("id"),
-                "oilfield_match_status": "confirmed",
+                "oilfield_match_status": "accepted",
                 "oilfield_match_confidence": candidate.get("confidence"),
                 "oilfield_match_evidence": candidate.get("evidence", []),
             },
@@ -1850,10 +1876,14 @@ class DialogueManager:
             "请提供标准的油田名称（例如：流花11-1油田、陵水17-2油田等），或补充油田坐标。"
         )
 
-    def _top_pending_oilfield_candidate(self) -> dict | None:
+    def _top_pending_oilfield_candidate(self, user_message: str = "") -> dict | None:
         cand_slot = self.slot_store.slots.get("pending_oilfield_candidates")
         candidates = cand_slot.value if (cand_slot and cand_slot.status == "valid") else None
         if isinstance(candidates, list) and candidates:
+            if user_message:
+                for c in candidates:
+                    if isinstance(c, dict) and c.get("name") and c.get("name") in user_message:
+                        return c
             candidate = candidates[0]
             if isinstance(candidate, dict) and candidate.get("name"):
                 return candidate
@@ -2327,7 +2357,7 @@ class DialogueManager:
     # --------------------------------------------------------------------------
 
     def load_snapshot(self, snapshot: dict) -> None:
-        """兼容恢复旧版扁平快照和 snapshot_version=2 完整快照。"""
+        """兼容恢复旧版扁平快照和 snapshot_version=2 完整快照。原子验证 schema。"""
         if not isinstance(snapshot, dict):
             raise ValueError("History snapshot must be a dictionary")
 
@@ -2337,11 +2367,54 @@ class DialogueManager:
 
         mode = snapshot.get("mode", "normal")
         phase = snapshot.get("phase", "collecting")
+
+        # 校验模式与控制快照字段（原子校验，失败则不更改内存状态）
+        valid_modes = {"task_collection", "knowledge_qa", "emergency_intervention", "uncertain"}
+        valid_control = {"idle", "stop_requested", "pause_requested", "abort_requested", "cancel_requested"}
+
         dialogue_mode = snapshot.get("dialogue_mode", "task_collection")
-        last_mode_transition = snapshot.get("last_mode_transition")
-        mode_transition_history = snapshot.get("mode_transition_history", [])
+        if not isinstance(dialogue_mode, str) or dialogue_mode not in valid_modes:
+            raise ValueError(f"Invalid dialogue_mode in snapshot: {dialogue_mode}")
+
         control_state = snapshot.get("control_state", "idle")
+        if not isinstance(control_state, str) or control_state not in valid_control:
+            raise ValueError(f"Invalid control_state in snapshot: {control_state}")
+
+        mode_transition_history = snapshot.get("mode_transition_history", [])
+        if not isinstance(mode_transition_history, list):
+            raise ValueError("mode_transition_history must be a list")
+
+        def _val_trans(item: Any) -> dict:
+            if not isinstance(item, dict):
+                raise ValueError("Transition item must be a dictionary")
+            from_m = item.get("from")
+            to_m = item.get("to")
+            if not isinstance(from_m, str) or from_m not in valid_modes:
+                raise ValueError(f"Invalid 'from' mode: {from_m}")
+            if not isinstance(to_m, str) or to_m not in valid_modes:
+                raise ValueError(f"Invalid 'to' mode: {to_m}")
+            conf = item.get("confidence", 1.0)
+            if not isinstance(conf, (int, float)) or not (0.0 <= conf <= 1.0):
+                raise ValueError(f"Invalid confidence: {conf}")
+            changed_at = item.get("changed_at")
+            if not isinstance(changed_at, str) or not changed_at.strip():
+                raise ValueError("Invalid changed_at in transition")
+            return item
+
+        validated_history = [_val_trans(t) for t in mode_transition_history]
+
+        last_mode_transition = snapshot.get("last_mode_transition")
+        if last_mode_transition is not None:
+            last_mode_transition = _val_trans(last_mode_transition)
+
         last_control_request = snapshot.get("last_control_request")
+        if last_control_request is not None:
+            if not isinstance(last_control_request, dict):
+                raise ValueError("last_control_request must be a dictionary")
+            act = last_control_request.get("action")
+            if not isinstance(act, str) or act not in {"stop", "pause", "abort", "cancel"}:
+                raise ValueError(f"Invalid action in last_control_request: {act}")
+
         candidate_store = None
 
         if "slot_store" in snapshot and isinstance(snapshot.get("slot_store"), dict):
@@ -2382,7 +2455,7 @@ class DialogueManager:
         self.mode = mode
         self.dialogue_mode = dialogue_mode
         self.last_mode_transition = copy.deepcopy(last_mode_transition)
-        self.mode_transition_history = copy.deepcopy(mode_transition_history)
+        self.mode_transition_history = copy.deepcopy(validated_history)
         self.control_state = control_state
         self.last_control_request = copy.deepcopy(last_control_request)
         self.final_result = None
