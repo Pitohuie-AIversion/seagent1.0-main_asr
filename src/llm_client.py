@@ -244,10 +244,19 @@ class LLMClient:
             interaction_type = "QUERY"
             query_intent = "UNKNOWN"
             reason = "离线测试返回预设 QUERY 未知查询结果"
-        elif expected_slots:
-            reason = "离线测试返回预设 WRITE expected_slots 回答结果"
+        elif expected_slots or any(kw in text for kw in ("测试", "处理", "无法理解")):
+            interaction_type = "WRITE"
+            reason = "离线测试返回预设 WRITE 结果"
+        else:
+            interaction_type = "WRITE"
+            reason = "离线测试返回预设 WRITE 结果"
+
+        dialogue_mode = "task_collection" if interaction_type == "WRITE" else (
+            "uncertain" if query_intent in ("CLARIFICATION", "UNKNOWN") else "knowledge_qa"
+        )
 
         return {
+            "dialogue_mode": dialogue_mode,
             "interaction_type": interaction_type,
             "query_intent": query_intent,
             "confidence": 0.95,

@@ -749,5 +749,293 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
         self.assertNotIn("超光速神潜器9000可以", reply)
 
 
+class TestIssue10DialogueModeRouting(unittest.TestCase):
+    def setUp(self):
+        self.kb = KnowledgeBase()
+        self.llm = DummyLLM()
+        self.router = IntentRouter(self.llm)
+        self.dm = DialogueManager(self.llm, self.kb)
+
+    # 1. 基础路由测试
+    def test_basic_routing_modes(self):
+        res1 = self.router.route("创建一个管缆巡检任务", [], {})
+        self.assertEqual(res1.dialogue_mode, "task_collection")
+        self.assertEqual(res1.interaction_type, "WRITE")
+
+        res2 = self.router.route("ROV 最大作业水深是多少？", [], {})
+        self.assertEqual(res2.dialogue_mode, "knowledge_qa")
+        self.assertEqual(res2.query_intent, "DEVICE_CAPABILITY")
+
+        self.dm.slot_store.slots["task_type_key"] = Slot(
+            "task_type_key", value="pipeline_inspection", status="valid"
+        )
+        self.dm._rebuild_cache()
+        res3 = self.router.route(
+            "立即停止当前任务", [], self.dm.task_state, phase=self.dm.phase
+        )
+        self.assertEqual(res3.dialogue_mode, "emergency_intervention")
+        self.assertEqual(res3.emergency_action, "stop")
+
+        res4 = self.router.route("停止", [], {})
+        self.assertEqual(res4.dialogue_mode, "uncertain")
+
+    # 2. 否定加参数更新
+    def test_negation_plus_parameter_update(self):
+        self.dm.slot_store.slots["task_type_key"] = Slot(
+            "task_type_key", value="pipeline_inspection", status="valid"
+        )
+        self.dm._rebuild_cache()
+
+        with patch.object(self.llm, "extract_json") as mock_llm_ej, patch.object(
+            self.llm, "classify_interaction"
+        ) as mock_llm_ci:
+            with patch.object(
+                self.dm.extractor,
+                "extract_updates",
+                return_value={
+                    "intent": "TASK_UPDATE",
+                    "slot_candidates": [
+                        {
+                            "canonical_key": "water_depth",
+                            "normalized_value": 500.0,
+                            "raw_value": "500米",
+                            "confidence": 0.95,
+                        }
+                    ],
+                },
+            ):
+                reply = self.dm.process("不要停止任务，水深改成500米")
+                self.assertEqual(
+                    self.dm.slot_store.slots["water_depth"].value, 500.0
+                )
+                self.assertNotEqual(self.dm.phase, "rejected")
+                mock_llm_ej.assert_not_called()
+                mock_llm_ci.assert_not_called()
+
+    # 3. 无标点疑问句
+    def test_unpunctuated_questions_no_control(self):
+        questions = [
+            "取消任务是否需要确认",
+            "取消任务可以恢复吗",
+            "停止任务是否已经生效",
+            "暂停任务有什么影响",
+            "终止任务是什么意思",
+            "停止任务需不需要授权",
+        ]
+        for q in questions:
+            res = self.router.route(q, [], {})
+            self.assertNotEqual(
+                res.dialogue_mode,
+                "emergency_intervention",
+                f"Question {q} must not route to emergency",
+            )
+            v_before = self.dm.slot_store.version
+            phase_before = self.dm.phase
+            snap_before = self.dm.slot_store.export_snapshot()
+
+            self.dm.process(q)
+
+            self.assertEqual(self.dm.slot_store.version, v_before)
+            self.assertEqual(self.dm.phase, phase_before)
+            self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+
+    # 4. 条件句
+    def test_conditional_sentences_no_control(self):
+        conditionals = [
+            "如果停止任务会怎样",
+            "要是取消任务还能恢复吗",
+            "假如暂停任务有什么影响",
+        ]
+        for c in conditionals:
+            res = self.router.route(c, [], {})
+            self.assertNotEqual(res.dialogue_mode, "emergency_intervention")
+            v_before = self.dm.slot_store.version
+            phase_before = self.dm.phase
+            self.dm.process(c)
+            self.assertEqual(self.dm.slot_store.version, v_before)
+            self.assertEqual(self.dm.phase, phase_before)
+
+    # 5. 非任务对象
+    def test_non_task_objects_no_emergency(self):
+        non_task_inputs = [
+            "停止回答",
+            "停止生成",
+            "取消告警",
+            "暂停功能",
+            "取消载荷修改",
+            "终止说明输出",
+        ]
+        for item in non_task_inputs:
+            res = self.router.route(item, [], {})
+            self.assertNotEqual(res.dialogue_mode, "emergency_intervention")
+            v_before = self.dm.slot_store.version
+            self.dm.process(item)
+            self.assertEqual(self.dm.slot_store.version, v_before)
+
+    # 6. LLM 错误升级拦截 (Double validation)
+    def test_llm_emergency_escalation_double_validation(self):
+        with patch.object(
+            self.llm,
+            "extract_json",
+            return_value={
+                "dialogue_mode": "emergency_intervention",
+                "emergency_action": "stop",
+                "confidence": 0.99,
+                "reason": "用户提及停止",
+            },
+        ):
+            res = self.router._call_llm_router(
+                "停止任务有什么影响？", [], {}, "collecting", []
+            )
+            self.assertEqual(res.dialogue_mode, "uncertain")
+            self.assertIsNone(res.emergency_action)
+
+    # 7. 草稿 cancel
+    def test_draft_cancel_in_all_phases(self):
+        from tests.test_slot_consistency import seed_complete_valid_pipeline_task
+
+        phases_to_test = ["collecting", "confirming", "blocked_soft", "blocked_hard"]
+        for p in phases_to_test:
+            self.dm.reset()
+            seed_complete_valid_pipeline_task(self.dm, self.kb)
+            self.dm.phase = p
+            if p == "blocked_hard":
+                v = Violation("h1", "hard_error", "hard_error", "hard")
+                self.dm._blocking_violations = [v]
+
+            with patch.object(self.dm.extractor, "extract_updates") as mock_ext:
+                reply = self.dm.process("取消当前任务")
+                mock_ext.assert_not_called()
+
+            self.assertEqual(self.dm.phase, "rejected", f"Phase {p} cancel failed")
+            self.assertEqual(self.dm.task_state, {})
+            self.assertEqual(self.dm._last_built_json, {})
+            self.assertEqual(self.dm._last_missing, [])
+            self.assertIsNone(self.dm.final_result)
+
+    # 8. done 阶段控制
+    def test_done_phase_control_actions(self):
+        from pathlib import Path
+        import tempfile
+        from tests.test_slot_consistency import seed_complete_valid_pipeline_task
+
+        for action_phrase in ["暂停当前任务", "停止当前任务", "终止当前任务", "取消当前任务"]:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                self.dm.reset()
+                seed_complete_valid_pipeline_task(self.dm, self.kb)
+                all_v = self.dm.validator.validate(self.dm.task_state)
+                for v in all_v:
+                    if v.severity == "soft":
+                        for f in v.related_fields:
+                            val = self.dm.task_state.get(f)
+                            if val is not None:
+                                self.dm._soft_whitelist.add(
+                                    (f, str(val), v.constraint_id)
+                                )
+
+                task_dir = Path(tmp_dir) / "task"
+                task_dir.mkdir(parents=True, exist_ok=True)
+                with patch(
+                    "src.task_intent_builder.get_task_dir",
+                    return_value=task_dir,
+                ), patch(
+                    "src.id_sequence.get_result_dir", return_value=Path(tmp_dir)
+                ):
+                    self.dm.process("确认发布")
+                    self.assertEqual(self.dm.phase, "done")
+                    state_before = copy.deepcopy(self.dm.task_state)
+                    final_before = copy.deepcopy(self.dm.final_result)
+
+                    with patch.object(
+                        self.dm.extractor, "extract_updates"
+                    ) as mock_ext:
+                        reply = self.dm.process(action_phrase)
+                        mock_ext.assert_not_called()
+
+                    self.assertEqual(self.dm.phase, "done")
+                    self.assertEqual(self.dm.task_state, state_before)
+                    self.assertEqual(self.dm.final_result, final_before)
+                    self.assertIn("已识别", reply)
+                    self.assertIn("未确认设备已实际", reply)
+
+    # 9. 知识问答只读
+    def test_knowledge_qa_read_only(self):
+        self.dm.reset()
+        self.dm.slot_store.slots["task_type_key"] = Slot(
+            "task_type_key", value="pipeline_inspection", status="valid"
+        )
+        self.dm.slot_store.slots["water_depth"] = Slot(
+            "water_depth", value=300.0, status="valid"
+        )
+        self.dm._rebuild_cache()
+
+        v_before = self.dm.slot_store.version
+        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+        state_before = copy.deepcopy(self.dm.task_state)
+        phase_before = self.dm.phase
+
+        self.dm.process("500米水深机器人有哪些？")
+
+        self.assertEqual(self.dm.slot_store.version, v_before)
+        self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+        self.assertEqual(self.dm.task_state, state_before)
+        self.assertEqual(self.dm.phase, phase_before)
+
+    # 10. 多轮交错
+    def test_multi_turn_interleaved_dialogue(self):
+        with patch.object(
+            self.dm.extractor,
+            "extract_updates",
+            return_value={
+                "intent": "TASK_CREATE",
+                "slot_candidates": [
+                    {
+                        "canonical_key": "task_type_key",
+                        "normalized_value": "pipeline_inspection",
+                        "confidence": 0.95,
+                    },
+                    {
+                        "canonical_key": "task_type",
+                        "normalized_value": "管缆巡检",
+                        "confidence": 0.95,
+                    },
+                ],
+            },
+        ):
+            reply1 = self.dm.process("创建一个巡检任务")
+            self.assertEqual(
+                self.dm.task_state.get("task_type_key"), "pipeline_inspection"
+            )
+
+        snap1 = copy.deepcopy(self.dm.slot_store.export_snapshot())
+
+        reply2 = self.dm.process("ROV 最大水深是多少？")
+        snap2 = copy.deepcopy(self.dm.slot_store.export_snapshot())
+        self.assertEqual(snap1, snap2)
+
+        with patch.object(
+            self.dm.extractor,
+            "extract_updates",
+            return_value={
+                "intent": "TASK_UPDATE",
+                "slot_candidates": [
+                    {
+                        "canonical_key": "water_depth",
+                        "normalized_value": 300.0,
+                        "raw_value": "300米",
+                        "confidence": 0.95,
+                    }
+                ],
+            },
+        ):
+            reply3 = self.dm.process("水深设置为300米")
+            self.assertEqual(
+                self.dm.slot_store.slots["water_depth"].value, 300.0
+            )
+            self.assertEqual(
+                self.dm.task_state.get("task_type_key"), "pipeline_inspection"
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
