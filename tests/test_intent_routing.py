@@ -1420,6 +1420,66 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                     self.dm.load_snapshot(snap)
                 self.assertEqual(self.dm.dialogue_mode, state_before_mode)
 
+    # 32. 否定控制短语安全边界与“暂停下潜”动作映射测试
+    def test_negated_control_phrases_and_pause_dive_action(self):
+        negated_phrases = [
+            "不停止当前任务",
+            "先不暂停当前任务",
+            "暂不取消当前任务",
+            "不需要终止当前操作",
+            "不要立即停止当前任务",
+        ]
+        for msg in negated_phrases:
+            with self.subTest(msg=msg):
+                self.dm.reset()
+                self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+                self.dm.task_state = self.dm.slot_store.get_task_state()
+
+                initial_phase = self.dm.phase
+                initial_state = dict(self.dm.task_state)
+                initial_control_state = self.dm.control_state
+                slot_store_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+
+                with patch.object(self.dm.extractor, "extract_updates") as mock_ext:
+                    reply = self.dm.process(msg)
+                    mock_ext.assert_not_called()
+
+                self.assertNotEqual(self.dm.dialogue_mode, "emergency_intervention")
+                self.assertEqual(self.dm.phase, initial_phase)
+                self.assertEqual(self.dm.task_state, initial_state)
+                self.assertEqual(self.dm.control_state, initial_control_state)
+                self.assertEqual(self.dm.slot_store.export_snapshot(), slot_store_before)
+                self.assertEqual(self.dm.task_state.get("task_type_key"), "pipeline_inspection")
+
+        # 验证“暂停下潜”对应动作类型为 pause
+        route = self.dm.intent_router.route(
+            user_message="暂停下潜",
+            conversation_history=[],
+            task_state=self.dm.task_state,
+            phase=self.dm.phase,
+            expected_slots=[],
+        )
+        self.assertEqual(route.dialogue_mode, "emergency_intervention")
+        self.assertEqual(route.emergency_action, "pause")
+
+    # 33. 快照 confidence 布尔值/非有限浮点数/无时区 timestamp 严格校验测试
+    def test_snapshot_strict_confidence_and_timestamp_validation(self):
+        self.dm.reset()
+        state_before_mode = self.dm.dialogue_mode
+
+        invalid_snapshots = [
+            {"mode_transition_history": [{"from": "task_collection", "to": "knowledge_qa", "confidence": True, "changed_at": "2026-08-02T12:00:00+00:00"}]},
+            {"mode_transition_history": [{"from": "task_collection", "to": "knowledge_qa", "confidence": float("nan"), "changed_at": "2026-08-02T12:00:00+00:00"}]},
+            {"mode_transition_history": [{"from": "task_collection", "to": "knowledge_qa", "confidence": float("inf"), "changed_at": "2026-08-02T12:00:00+00:00"}]},
+            {"mode_transition_history": [{"from": "task_collection", "to": "knowledge_qa", "confidence": 0.9, "changed_at": "2026-08-02 12:00:00"}]},
+        ]
+
+        for snap in invalid_snapshots:
+            with self.subTest(snap=snap):
+                with self.assertRaises(ValueError):
+                    self.dm.load_snapshot(snap)
+                self.assertEqual(self.dm.dialogue_mode, state_before_mode)
+
 
 if __name__ == "__main__":
     unittest.main()

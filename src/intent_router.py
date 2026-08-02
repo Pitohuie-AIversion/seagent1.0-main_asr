@@ -226,13 +226,28 @@ class IntentRouter:
         ]
 
         action_map = {
-            "stop": ("停止", "暂停下潜", "停下"),
-            "pause": ("暂停", "稍停"),
+            "pause": ("暂停下潜", "暂停", "稍停"),
+            "stop": ("停止", "停下"),
             "abort": ("终止", "强行终止", "中止"),
             "cancel": ("取消", "撤销", "放弃", "不要了"),
         }
 
-        negation_kws = ("不要", "别", "不用", "无需", "免", "不许", "不能", "不可", "不是")
+        negation_kws = (
+            "不",
+            "先不",
+            "暂不",
+            "不需要",
+            "没必要",
+            "不要",
+            "别",
+            "不用",
+            "无需",
+            "免",
+            "不许",
+            "不能",
+            "不可",
+            "不是",
+        )
 
         non_task_objects = (
             "打印",
@@ -269,7 +284,7 @@ class IntentRouter:
                     neg_pos = clause.find(neg)
                     for act_kw in action_map[action_found]:
                         act_pos = clause.find(act_kw)
-                        if act_pos != -1 and neg_pos < act_pos and (act_pos - neg_pos) <= 4:
+                        if act_pos != -1 and neg_pos < act_pos and (act_pos - neg_pos) <= 6:
                             has_local_negation = True
                             break
                     if has_local_negation:
@@ -436,13 +451,22 @@ class IntentRouter:
                 "不要取消",
                 "别取消",
                 "不取消",
+                "暂不取消",
                 "不要停止",
                 "别停止",
                 "不停止",
+                "先不停止",
+                "不要立即停止",
                 "不要暂停",
                 "别暂停",
+                "不暂停",
+                "先不暂停",
+                "暂不暂停",
                 "不要终止",
                 "别终止",
+                "不终止",
+                "不需要终止",
+                "暂不终止",
             )
         ):
             if re.search(

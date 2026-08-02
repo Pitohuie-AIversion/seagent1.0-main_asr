@@ -19,9 +19,9 @@ dialogue_manager.py - 对话主控制器
 """
 
 import copy
-import copy
 import json
 import logging
+import math
 import re
 import threading
 import os
@@ -2390,12 +2390,24 @@ class DialogueManager:
                 raise ValueError(f"Invalid 'from' mode: {from_m}")
             if not isinstance(to_m, str) or to_m not in valid_modes:
                 raise ValueError(f"Invalid 'to' mode: {to_m}")
+
             conf = item.get("confidence", 1.0)
-            if not isinstance(conf, (int, float)) or not (0.0 <= conf <= 1.0):
+            if isinstance(conf, bool):
+                raise ValueError("confidence cannot be bool")
+            if not isinstance(conf, (int, float)) or not math.isfinite(float(conf)) or not (0.0 <= float(conf) <= 1.0):
                 raise ValueError(f"Invalid confidence: {conf}")
+
             changed_at = item.get("changed_at")
             if not isinstance(changed_at, str) or not changed_at.strip():
                 raise ValueError("Invalid changed_at in transition")
+
+            try:
+                parsed = datetime.fromisoformat(changed_at)
+                if parsed.tzinfo is None or parsed.utcoffset() is None:
+                    raise ValueError(f"changed_at must be timezone-aware ISO format: {changed_at}")
+            except Exception as e:
+                raise ValueError(f"Invalid timezone-aware ISO timestamp '{changed_at}': {e}")
+
             return item
 
         validated_history = [_val_trans(t) for t in mode_transition_history]
