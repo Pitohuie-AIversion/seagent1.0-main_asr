@@ -30,7 +30,7 @@ import logging
 import threading
 from typing import Any
 from zoneinfo import ZoneInfo
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +130,38 @@ class DialogueManager:
         # 内存控制状态（Issue #10 运行期控制请求记录）
         self.control_state: str = "idle"
         self.last_control_request: dict | None = None
+
+        # 会话模式状态（Issue #10 会话模式管理）
+        self.dialogue_mode: str = "task_collection"
+        self.last_mode_transition: dict | None = None
+        self.mode_transition_history: list[dict] = []
+
+    def _switch_dialogue_mode(
+        self,
+        new_mode: str,
+        *,
+        source: str = "rule",
+        confidence: float = 1.0,
+        reason: str = "",
+    ) -> None:
+        """Issue #10 统一模式切换方法：记录切换元数据与历史轨迹。"""
+        old_mode = getattr(self, "dialogue_mode", "task_collection")
+        changed_at = datetime.now(timezone.utc).isoformat()
+        transition = {
+            "from": old_mode,
+            "to": new_mode,
+            "source": source,
+            "confidence": confidence,
+            "reason": reason,
+            "changed_at": changed_at,
+        }
+        self.dialogue_mode = new_mode
+        self.last_mode_transition = transition
+        if not hasattr(self, "mode_transition_history") or self.mode_transition_history is None:
+            self.mode_transition_history = []
+        self.mode_transition_history.append(transition)
+        if len(self.mode_transition_history) > 50:
+            self.mode_transition_history.pop(0)
 
 
 
@@ -552,12 +584,12 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
-        has_draft = bool(self.task_state.get("task_type_key")) or any(
+        has_active_draft = bool(self.task_state.get("task_type_key")) or any(
             s.status == "valid" and s.value is not None
             for s in self.slot_store.slots.values()
-        )
+        ) or bool(self._last_built_json)
 
-        if has_draft or self.phase in ("collecting", "confirming", "blocked_soft", "blocked_hard"):
+        if has_active_draft:
             if action == "cancel":
                 self.reset()
                 self.phase = "rejected"
@@ -630,6 +662,13 @@ class DialogueManager:
             task_state=self.task_state,
             phase=self.phase,
             expected_slots=expected_slots,
+        )
+
+        self._switch_dialogue_mode(
+            route.dialogue_mode,
+            source=route.source,
+            confidence=route.confidence,
+            reason=route.reason,
         )
 
         if route.dialogue_mode == "emergency_intervention":
@@ -1773,7 +1812,7 @@ class DialogueManager:
         if not self._user_confirmed_oilfield(user_message):
             return None
 
-        candidate = self._top_pending_oilfield_candidate(user_message)
+        candidate = self._top_pending_oilfield_candidate()
         if not candidate:
             return self._build_pending_oilfield_reply()
 
@@ -1781,9 +1820,8 @@ class DialogueManager:
         self._commit_internal_slot_values(
             {
                 "oilfield_name": confirmed_name,
-                "raw_oilfield_name": confirmed_name,
                 "oilfield_entity_id": candidate.get("id"),
-                "oilfield_match_status": "accepted",
+                "oilfield_match_status": "confirmed",
                 "oilfield_match_confidence": candidate.get("confidence"),
                 "oilfield_match_evidence": candidate.get("evidence", []),
             },
@@ -1812,14 +1850,10 @@ class DialogueManager:
             "请提供标准的油田名称（例如：流花11-1油田、陵水17-2油田等），或补充油田坐标。"
         )
 
-    def _top_pending_oilfield_candidate(self, user_message: str = "") -> dict | None:
+    def _top_pending_oilfield_candidate(self) -> dict | None:
         cand_slot = self.slot_store.slots.get("pending_oilfield_candidates")
         candidates = cand_slot.value if (cand_slot and cand_slot.status == "valid") else None
         if isinstance(candidates, list) and candidates:
-            if user_message:
-                for c in candidates:
-                    if isinstance(c, dict) and c.get("name") and c.get("name") in user_message:
-                        return c
             candidate = candidates[0]
             if isinstance(candidate, dict) and candidate.get("name"):
                 return candidate
@@ -2139,6 +2173,11 @@ class DialogueManager:
         return {
             "phase": self.phase,
             "mode": self.mode,
+            "dialogue_mode": self.dialogue_mode,
+            "last_mode_transition": copy.deepcopy(self.last_mode_transition),
+            "mode_transition_history": copy.deepcopy(self.mode_transition_history),
+            "control_state": self.control_state,
+            "last_control_request": copy.deepcopy(self.last_control_request),
             "filled": filled,
             "missing": missing_display,
             "whitelisted_soft": sorted({e[2] for e in self._soft_whitelist}),
@@ -2164,6 +2203,9 @@ class DialogueManager:
         self._last_missing = []
         self.control_state = "idle"
         self.last_control_request = None
+        self.dialogue_mode = "task_collection"
+        self.last_mode_transition = None
+        self.mode_transition_history = []
 
     def _commit_internal_slot_values(
         self,
@@ -2264,6 +2306,22 @@ class DialogueManager:
         self._last_built_json = self.slot_store.get_built_json()
         self.task_start_now = self.is_start_time_near_now()
 
+    def export_snapshot(self) -> dict:
+        """导出 Issue #10 会话状态快照。"""
+        return {
+            "snapshot_version": 2,
+            "conversation_history": copy.deepcopy(self.conversation_history),
+            "phase": self.phase,
+            "mode": self.mode,
+            "dialogue_mode": self.dialogue_mode,
+            "last_mode_transition": copy.deepcopy(self.last_mode_transition),
+            "mode_transition_history": copy.deepcopy(self.mode_transition_history),
+            "control_state": self.control_state,
+            "last_control_request": copy.deepcopy(self.last_control_request),
+            "slot_store": self.slot_store.export_snapshot(),
+            "task_state": copy.deepcopy(self.task_state),
+        }
+
     # --------------------------------------------------------------------------
     # 历史快照恢复
     # --------------------------------------------------------------------------
@@ -2279,6 +2337,11 @@ class DialogueManager:
 
         mode = snapshot.get("mode", "normal")
         phase = snapshot.get("phase", "collecting")
+        dialogue_mode = snapshot.get("dialogue_mode", "task_collection")
+        last_mode_transition = snapshot.get("last_mode_transition")
+        mode_transition_history = snapshot.get("mode_transition_history", [])
+        control_state = snapshot.get("control_state", "idle")
+        last_control_request = snapshot.get("last_control_request")
         candidate_store = None
 
         if "slot_store" in snapshot and isinstance(snapshot.get("slot_store"), dict):
@@ -2317,6 +2380,11 @@ class DialogueManager:
         self.slot_store = candidate_store
         self.task_state = self.slot_store.get_task_state()
         self.mode = mode
+        self.dialogue_mode = dialogue_mode
+        self.last_mode_transition = copy.deepcopy(last_mode_transition)
+        self.mode_transition_history = copy.deepcopy(mode_transition_history)
+        self.control_state = control_state
+        self.last_control_request = copy.deepcopy(last_control_request)
         self.final_result = None
         self.task_start_now = False
         # 清空阻塞与白名单，重新构建缓存

@@ -777,7 +777,7 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
         self.assertEqual(res3.emergency_action, "stop")
 
         res4 = self.router.route("停止", [], {})
-        self.assertEqual(res4.dialogue_mode, "uncertain")
+        self.assertEqual(res4.dialogue_mode, "emergency_intervention")
 
     # 2. 否定加参数更新
     def test_negation_plus_parameter_update(self):
@@ -1112,6 +1112,105 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                 self.assertEqual(res.dialogue_mode, "uncertain")
                 self.assertEqual(res.intent, "CLARIFICATION")
                 self.assertIsNone(res.emergency_action)
+
+    # 15. 复合紧急指令测试（肯定控制 + 否定参数修饰）
+    def test_compound_emergency_sentence_with_negated_parameter(self):
+        msg = "马上停止当前任务，不要再下潜500米"
+        route = self.dm.intent_router.route(
+            user_message=msg,
+            conversation_history=self.dm.conversation_history,
+            task_state=self.dm.task_state,
+            phase=self.dm.phase,
+            expected_slots=[],
+        )
+        self.assertEqual(route.dialogue_mode, "emergency_intervention")
+        self.assertEqual(route.emergency_action, "stop")
+
+        with patch.object(self.dm.extractor, "extract_updates") as mock_ext:
+            reply = self.dm.process(msg)
+            mock_ext.assert_not_called()
+
+        self.assertNotIn("water_depth", self.dm.task_state)
+
+    # 16. 空会话控制指令不声称保留草稿且不修改状态
+    def test_empty_session_control_commands(self):
+        commands = ["停止当前任务", "暂停当前任务", "终止当前任务", "取消当前任务"]
+        for cmd in commands:
+            with self.subTest(cmd=cmd):
+                self.dm.reset()
+                reply = self.dm.process(cmd)
+                self.assertEqual(self.dm.phase, "collecting")
+                self.assertEqual(self.dm.control_state, "idle")
+                self.assertIn("当前没有活动任务或可取消", reply)
+
+    # 17. 非任务控制对象不误触发全局紧急控制
+    def test_non_task_objects_do_not_trigger_emergency(self):
+        non_task_cmds = [
+            "停止任务打印",
+            "暂停任务播报",
+            "停止任务说明展示",
+            "取消任务页面刷新",
+            "终止任务日志输出",
+        ]
+        for cmd in non_task_cmds:
+            with self.subTest(cmd=cmd):
+                route = self.dm.intent_router.route(
+                    user_message=cmd,
+                    conversation_history=[],
+                    task_state={},
+                    phase="collecting",
+                    expected_slots=[],
+                )
+                self.assertNotEqual(route.dialogue_mode, "emergency_intervention")
+                self.assertIsNone(route.emergency_action)
+
+    # 18. dialogue_mode 状态机切换与快照恢复测试
+    def test_dialogue_mode_state_machine_and_snapshot_restoration(self):
+        self.dm.reset()
+        self.assertEqual(self.dm.dialogue_mode, "task_collection")
+
+        # 触发知识问答路由
+        self.dm.process("ROV 最大水深是多少？")
+        self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
+        self.assertIsNotNone(self.dm.last_mode_transition)
+        self.assertEqual(self.dm.last_mode_transition["to"], "knowledge_qa")
+        self.assertIn("source", self.dm.last_mode_transition)
+        self.assertIn("changed_at", self.dm.last_mode_transition)
+        self.assertTrue(len(self.dm.mode_transition_history) >= 1)
+
+        # 导出快照并重置，验证恢复
+        snap = self.dm.export_snapshot()
+        self.dm.reset()
+        self.assertEqual(self.dm.dialogue_mode, "task_collection")
+
+        self.dm.load_snapshot(snap)
+        self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
+        self.assertEqual(self.dm.last_mode_transition["to"], "knowledge_qa")
+        self.assertEqual(self.dm.get_status()["dialogue_mode"], "knowledge_qa")
+
+    # 19. 离线 Mock 模式模糊输入降级为 uncertain
+    def test_offline_mock_ambiguous_input_fallback_to_uncertain(self):
+        ambiguous_inputs = ["我想问一下机器人……", "随便说说", "我不确定"]
+        for text in ambiguous_inputs:
+            with self.subTest(text=text):
+                res = self.dm.intent_router.llm.classify_interaction(
+                    messages=[{"role": "user", "content": text}]
+                )
+                self.assertEqual(res["dialogue_mode"], "uncertain")
+                self.assertEqual(res["query_intent"], "CLARIFICATION")
+
+    # 20. WRITE 与 emergency_action=None 矛盾协议判定降级为 uncertain
+    def test_contradictory_write_and_missing_action_demotes_to_uncertain(self):
+        res = IntentRouteResult(
+            interaction_type="WRITE",
+            confidence=0.9,
+            reason="测试矛盾协议",
+            dialogue_mode="emergency_intervention",
+            emergency_action=None,
+        )
+        self.assertEqual(res.dialogue_mode, "uncertain")
+        self.assertEqual(res.interaction_type, "QUERY")
+        self.assertEqual(res.query_intent, "CLARIFICATION")
 
 
 if __name__ == "__main__":

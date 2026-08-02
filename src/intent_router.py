@@ -126,8 +126,30 @@ class IntentRouteResult:
             raise ValueError(f"非法 interaction_type: {self.interaction_type}")
 
         dm_str = str(self.dialogue_mode).strip().lower()
-        if self.emergency_action is not None and dm_str == "emergency_intervention":
+        query_intent = (
+            str(self.query_intent).strip().upper() if self.query_intent else None
+        )
+
+        # 优先校验紧急介入模式与控制动作合法性
+        if dm_str == "emergency_intervention":
+            if (
+                not self.emergency_action
+                or self.emergency_action not in VALID_EMERGENCY_ACTIONS
+            ):
+                dm_str = "uncertain"
+                it_str = "QUERY"
+                query_intent = "CLARIFICATION"
+                object.__setattr__(self, "emergency_action", None)
+                object.__setattr__(
+                    self, "reason", "规则降级: 紧急介入模式缺少合法控制动作"
+                )
+            else:
+                it_str = "QUERY"
+                query_intent = None
+        elif self.emergency_action is not None:
             dm_str = "emergency_intervention"
+            it_str = "QUERY"
+            query_intent = None
         elif it_str == "WRITE":
             dm_str = "task_collection"
         elif it_str == "QUERY" and dm_str == "task_collection":
@@ -139,34 +161,17 @@ class IntentRouteResult:
         if dm_str not in VALID_DIALOGUE_MODES:
             raise ValueError(f"非法 dialogue_mode: {self.dialogue_mode}")
 
-        query_intent = (
-            str(self.query_intent).strip().upper() if self.query_intent else None
-        )
-
         if dm_str == "task_collection":
             it_str = "WRITE"
             query_intent = None
-        else:
+        elif dm_str == "uncertain":
             it_str = "QUERY"
-            if dm_str == "emergency_intervention":
-                if (
-                    not self.emergency_action
-                    or self.emergency_action not in VALID_EMERGENCY_ACTIONS
-                ):
-                    dm_str = "uncertain"
-                    query_intent = "CLARIFICATION"
-                    object.__setattr__(self, "emergency_action", None)
-                    object.__setattr__(
-                        self, "reason", "规则降级: 紧急介入模式缺少合法控制动作"
-                    )
-                else:
-                    query_intent = None
-            elif dm_str == "uncertain":
-                query_intent = "CLARIFICATION"
-            elif dm_str == "knowledge_qa" and (
-                not query_intent or query_intent not in VALID_QUERY_INTENTS
-            ):
-                query_intent = "KNOWLEDGE_QA"
+            query_intent = "CLARIFICATION"
+        elif dm_str == "knowledge_qa" and (
+            not query_intent or query_intent not in VALID_QUERY_INTENTS
+        ):
+            it_str = "QUERY"
+            query_intent = "KNOWLEDGE_QA"
 
         object.__setattr__(self, "dialogue_mode", dm_str)
         object.__setattr__(self, "interaction_type", it_str)
@@ -178,6 +183,7 @@ class IntentRouteResult:
             "interaction_type": self.interaction_type,
             "confidence": self.confidence,
             "reason": self.reason,
+            "source": self.source,
             "query_intent": self.query_intent,
             "emergency_action": self.emergency_action,
         }
@@ -207,39 +213,12 @@ class IntentRouter:
 
     @staticmethod
     def _parse_executable_control_action(user_message: str) -> str | None:
-        """确定性安全解析器：验证是否存在明确可执行的紧急动作。"""
+        """确定性安全解析器：分句解析是否存在明确可执行的紧急动作。"""
         msg = (user_message or "").strip()
         if not msg:
             return None
 
-        # 1. 非任务控制对象拦截
-        if any(
-            target in msg
-            for target in (
-                "回答",
-                "生成",
-                "功能",
-                "告警",
-                "说明",
-                "输出",
-                "载荷修改",
-                "说明输出",
-            )
-        ):
-            if any(
-                kw in msg
-                for kw in (
-                    "停止回答",
-                    "停止生成",
-                    "暂停功能",
-                    "取消告警",
-                    "终止说明输出",
-                    "取消载荷修改",
-                )
-            ):
-                return None
-
-        # 2. 疑问语气与条件表达否决
+        # 1. 疑问语气与条件表达整句否决
         is_question = bool(re.search(r"[呢吗？?]$", msg)) or any(
             kw in msg
             for kw in (
@@ -271,44 +250,84 @@ class IntentRouter:
         if is_question or is_conditional:
             return None
 
-        # 3. 否定动作否决
-        if any(
-            kw in msg
-            for kw in ("不要", "别", "不", "先不", "暂不", "不用", "不能", "禁止", "免")
-        ):
-            if any(
-                action_kw in msg
-                for action_kw in ("停止", "暂停", "取消", "终止", "撤销", "放弃")
-            ):
-                return None
+        # 2. 按标点符号分句解析控制子句
+        clauses = [c.strip() for c in re.split(r"[,，;；!！.。\n]", msg) if c.strip()]
 
-        # 4. 明确对象或紧急提示词要求
-        has_target_or_prompt = any(
-            cue in msg
-            for cue in (
-                "当前任务",
-                "任务",
-                "操作",
-                "流程",
-                "当前操作",
-                "草稿",
-                "立即",
-                "马上",
-                "紧急",
-                "立刻",
-            )
+        non_task_objects = (
+            "打印",
+            "播报",
+            "回答",
+            "生成",
+            "功能",
+            "告警",
+            "说明",
+            "输出",
+            "页面",
+            "刷新",
+            "载荷修改",
+            "说明输出",
+            "日志",
+            "修改",
+            "参数修改",
+            "槽位",
         )
-        if not has_target_or_prompt:
-            return None
+        negation_kws = ("不要", "别", "不", "先不", "暂不", "不用", "不能", "禁止", "免")
 
-        if "停止" in msg:
-            return "stop"
-        if "暂停" in msg:
-            return "pause"
-        if "终止" in msg:
-            return "abort"
-        if any(kw in msg for kw in ("取消", "撤销", "放弃")):
-            return "cancel"
+        for clause in clauses:
+            # 检查子句是否针对非任务控制对象
+            if any(obj in clause for obj in non_task_objects):
+                continue
+
+            action_found = None
+            if "停止" in clause:
+                action_found = "stop"
+            elif "暂停" in clause:
+                action_found = "pause"
+            elif "终止" in clause:
+                action_found = "abort"
+            elif any(kw in clause for kw in ("取消", "撤销", "放弃")):
+                action_found = "cancel"
+
+            if not action_found:
+                continue
+
+            # 检查子句内部是否存在局部否定
+            has_local_negation = False
+            for neg in negation_kws:
+                if neg in clause:
+                    # 如果否定词出现在控制动作前或直接贴合控制动作，认为该动作被局部否定
+                    neg_pos = clause.find(neg)
+                    for act_kw in ("停止", "暂停", "终止", "取消", "撤销", "放弃"):
+                        act_pos = clause.find(act_kw)
+                        if act_pos != -1 and neg_pos < act_pos and (act_pos - neg_pos) <= 4:
+                            has_local_negation = True
+                            break
+                    if has_local_negation:
+                        break
+
+            if has_local_negation:
+                continue
+
+            # 检查明确控制对象或紧急提示词（短控制指令默认视为针对当前任务）
+            has_target_or_prompt = any(
+                cue in clause
+                for cue in (
+                    "当前任务",
+                    "任务",
+                    "操作",
+                    "流程",
+                    "当前操作",
+                    "草稿",
+                    "立即",
+                    "马上",
+                    "紧急",
+                    "立刻",
+                    "机器人",
+                )
+            ) or len(clause) <= 8
+
+            if has_target_or_prompt:
+                return action_found
 
         return None
 
