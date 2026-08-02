@@ -956,7 +956,7 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                     self.assertEqual(self.dm.task_state, state_before)
                     self.assertEqual(self.dm.final_result, final_before)
                     self.assertIn("已识别", reply)
-                    self.assertIn("未确认设备已实际", reply)
+                    self.assertIn("控制请求已记录", reply)
 
     # 9. 知识问答只读
     def test_knowledge_qa_read_only(self):
@@ -1035,6 +1035,83 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
             self.assertEqual(
                 self.dm.task_state.get("task_type_key"), "pipeline_inspection"
             )
+
+    # 11. 草稿阶段暂停/停止/终止保留草稿测试
+    def test_draft_phase_pause_stop_abort_preserves_draft(self):
+        phases_to_test = ["collecting", "confirming", "blocked_soft", "blocked_hard"]
+        commands_to_test = ["暂停当前任务", "停止当前任务", "终止当前任务"]
+
+        for phase_name in phases_to_test:
+            for cmd in commands_to_test:
+                with self.subTest(phase=phase_name, cmd=cmd):
+                    self.dm.reset()
+                    self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+                    self.dm.slot_store.slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
+                    self.dm.slot_store.slots["water_depth"] = Slot("water_depth", value=500.0, status="valid")
+                    self.dm.task_state = self.dm.slot_store.get_task_state()
+                    self.dm.phase = phase_name
+
+                    snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+                    state_before = dict(self.dm.task_state)
+
+                    reply = self.dm.process(cmd)
+
+                    self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+                    self.assertEqual(self.dm.task_state, state_before)
+                    self.assertEqual(self.dm.phase, phase_name)
+                    self.assertIn("保留", reply)
+
+    # 12. 草稿阶段取消操作清除草稿
+    def test_draft_phase_cancel_clears_draft(self):
+        for phase_name in ["collecting", "confirming", "blocked_soft", "blocked_hard"]:
+            with self.subTest(phase=phase_name):
+                self.dm.reset()
+                self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+                self.dm.task_state = self.dm.slot_store.get_task_state()
+                self.dm.phase = phase_name
+
+                reply = self.dm.process("取消当前任务")
+
+                self.assertEqual(self.dm.phase, "rejected")
+                self.assertIn("取消", reply)
+
+    # 13. Done 阶段控制请求内存状态记录
+    def test_done_phase_records_memory_control_request(self):
+        actions = [
+            ("暂停当前任务", "pause"),
+            ("停止当前任务", "stop"),
+            ("终止当前任务", "abort"),
+            ("取消当前任务", "cancel"),
+        ]
+        for cmd, expected_action in actions:
+            with self.subTest(cmd=cmd):
+                self.dm.reset()
+                self.dm.phase = "done"
+                self.dm.task_state["task_type_key"] = "pipeline_inspection"
+
+                reply = self.dm.process(cmd)
+
+                self.assertEqual(self.dm.control_state, f"{expected_action}_requested")
+                self.assertIsNotNone(self.dm.last_control_request)
+                self.assertEqual(self.dm.last_control_request["action"], expected_action)
+                self.assertEqual(self.dm.last_control_request["status"], "requested")
+                self.assertIn("已识别", reply)
+
+    # 14. 缺失或非法 emergency_action 降级为 uncertain
+    def test_invalid_emergency_action_demotes_to_uncertain(self):
+        invalid_actions = [None, "", "shutdown", "invalid_cmd", "destroy"]
+        for act in invalid_actions:
+            with self.subTest(act=act):
+                res = IntentRouteResult(
+                    interaction_type="QUERY",
+                    confidence=0.9,
+                    reason="测试非法动作",
+                    dialogue_mode="emergency_intervention",
+                    emergency_action=act,
+                )
+                self.assertEqual(res.dialogue_mode, "uncertain")
+                self.assertEqual(res.intent, "CLARIFICATION")
+                self.assertIsNone(res.emergency_action)
 
 
 if __name__ == "__main__":

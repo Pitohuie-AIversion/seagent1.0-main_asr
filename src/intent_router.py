@@ -107,6 +107,9 @@ class IntentRoutingError(Exception):
     """IntentRouter 协议识别失败。"""
 
 
+VALID_EMERGENCY_ACTIONS = {"stop", "pause", "abort", "cancel"}
+
+
 @dataclass(frozen=True)
 class IntentRouteResult:
     interaction_type: InteractionType
@@ -145,10 +148,21 @@ class IntentRouteResult:
             query_intent = None
         else:
             it_str = "QUERY"
-            if dm_str == "uncertain":
+            if dm_str == "emergency_intervention":
+                if (
+                    not self.emergency_action
+                    or self.emergency_action not in VALID_EMERGENCY_ACTIONS
+                ):
+                    dm_str = "uncertain"
+                    query_intent = "CLARIFICATION"
+                    object.__setattr__(self, "emergency_action", None)
+                    object.__setattr__(
+                        self, "reason", "规则降级: 紧急介入模式缺少合法控制动作"
+                    )
+                else:
+                    query_intent = None
+            elif dm_str == "uncertain":
                 query_intent = "CLARIFICATION"
-            elif dm_str == "emergency_intervention":
-                query_intent = None
             elif dm_str == "knowledge_qa" and (
                 not query_intent or query_intent not in VALID_QUERY_INTENTS
             ):

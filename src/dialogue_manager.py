@@ -127,6 +127,10 @@ class DialogueManager:
         # 会话锁（按 session 隔离并发控制）
         self._session_lock = threading.RLock()
 
+        # 内存控制状态（Issue #10 运行期控制请求记录）
+        self.control_state: str = "idle"
+        self.last_control_request: dict | None = None
+
 
 
     # --------------------------------------------------------------------------
@@ -515,6 +519,64 @@ class DialogueManager:
         self.conversation_history.append({"role": "assistant", "content": reply})
         return reply
 
+    def _handle_emergency_intervention(
+        self,
+        user_message: str,
+        route: IntentRouteResult,
+        request_id: str = "req_default",
+    ) -> str:
+        action = route.emergency_action
+        valid_actions = {"stop", "pause", "abort", "cancel"}
+        if not action or action not in valid_actions:
+            return self._handle_non_task_route(user_message, route, request_id)
+
+        action_cn_map = {
+            "stop": "停止",
+            "pause": "暂停",
+            "abort": "终止",
+            "cancel": "取消",
+        }
+        action_cn = action_cn_map.get(action, action)
+
+        if self.phase == "done":
+            self.control_state = f"{action}_requested"
+            self.last_control_request = {
+                "action": action,
+                "status": "requested",
+                "source": route.source,
+                "confidence": route.confidence,
+                "reason": route.reason,
+            }
+            reply = f"已识别针对已发布任务的控制指令【{action_cn}】。该控制请求已记录，等待机器人控制适配器对接执行。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        has_draft = bool(self.task_state.get("task_type_key")) or any(
+            s.status == "valid" and s.value is not None
+            for s in self.slot_store.slots.values()
+        )
+
+        if has_draft or self.phase in ("collecting", "confirming", "blocked_soft", "blocked_hard"):
+            if action == "cancel":
+                self.reset()
+                self.phase = "rejected"
+                self.final_result = None
+                reply = "任务已取消。如需重新规划，请重新开始。"
+            else:
+                reply = (
+                    f"当前任务尚未发布，无正在运行的机器人实例可执行【{action_cn}】操作。"
+                    f"任务草稿已保留；如需放弃草稿，请明确指示“取消当前任务”。"
+                )
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+        else:
+            reply = "当前没有活动任务或可取消的未发布任务。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
     def _process_internal(self, user_message: str, request_id: str = "req_default") -> str:
         old_phase = self.phase
 
@@ -571,36 +633,7 @@ class DialogueManager:
         )
 
         if route.dialogue_mode == "emergency_intervention":
-            action = route.emergency_action or "stop"
-            action_map = {"stop": "停止", "pause": "暂停", "abort": "终止", "cancel": "取消"}
-            action_label = action_map.get(action, "控制")
-
-            if self.phase == "done":
-                reply = (
-                    f"已识别{action_label}请求。当前尚未接入实际机器人控制回执，"
-                    f"因此未确认设备已实际{action_label}。"
-                )
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
-
-            has_draft = bool(self.task_state.get("task_type_key")) or any(
-                s.status == "valid" and s.value is not None
-                for s in self.slot_store.slots.values()
-            )
-            if has_draft:
-                self.reset()
-                self.phase = "rejected"
-                self.final_result = None
-                reply = "任务已取消。如需重新规划，请重新开始。"
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
-            else:
-                reply = "当前没有活动任务或可取消的未发布任务。"
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
+            return self._handle_emergency_intervention(user_message, route, request_id)
 
         if route.dialogue_mode in ("knowledge_qa", "uncertain"):
             return self._handle_non_task_route(user_message, route, request_id)
@@ -848,14 +881,29 @@ class DialogueManager:
         proposed_whitelist = {item for item in self._soft_whitelist if item[0] not in changed_fields}
 
         # Normalize and validate inside transaction working dict new_slots
-        curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").value) else None
+        curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
         self._normalize_and_validate_in_transaction(new_slots, curr_task_type_key)
 
         # Auto-generate task_id inside new_slots BEFORE commit
         if curr_task_type_key:
             task_id_slot = new_slots.get("task_id")
             if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None:
-                valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status in ("valid", "candidate") and s.value is not None}
+                valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
+                tid = self.builder._generate_task_id(curr_task_type_key, valid_cand_state)
+                if "task_id" not in new_slots:
+                    new_slots["task_id"] = Slot("task_id")
+
+        proposed_whitelist = {item for item in self._soft_whitelist if item[0] not in changed_fields}
+
+        # Normalize and validate inside transaction working dict new_slots
+        curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
+        self._normalize_and_validate_in_transaction(new_slots, curr_task_type_key)
+
+        # Auto-generate task_id inside new_slots BEFORE commit
+        if curr_task_type_key:
+            task_id_slot = new_slots.get("task_id")
+            if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None:
+                valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
                 tid = self.builder._generate_task_id(curr_task_type_key, valid_cand_state)
                 if "task_id" not in new_slots:
                     new_slots["task_id"] = Slot("task_id")
@@ -1193,10 +1241,7 @@ class DialogueManager:
                 new_slots["pending_oilfield_candidates"].status = "missing"
 
         task_type_slot = new_slots.get("task_type_key")
-        task_type_key = task_type_slot.value if (task_type_slot and task_type_slot.status == "valid") else None
-        if not task_type_key and "task_type_key" in updates:
-            raw_ttk = updates.get("task_type_key")
-            task_type_key = raw_ttk.get("value") if isinstance(raw_ttk, dict) else raw_ttk
+        task_type_key = task_type_slot.value if task_type_slot else None
         if task_type_key:
             current_state = {
                 key: slot.value
@@ -1291,20 +1336,7 @@ class DialogueManager:
         return source_map.get(resolution_method, "user_input")
 
     @staticmethod
-    def _is_equivalent_value(val1: Any, val2: Any) -> bool:
-        if val1 == val2:
-            return True
-        try:
-            if str(val1).strip() == str(val2).strip():
-                return True
-            if float(val1) == float(val2):
-                return True
-        except (ValueError, TypeError):
-            pass
-        return False
-
     def _apply_slot_update_in_transaction(
-        self,
         key: str,
         value: Any,
         new_slots: dict,
@@ -1316,13 +1348,8 @@ class DialogueManager:
             slot
             and slot.status == "valid"
             and slot.value is not None
+            and slot.value != value
         ):
-            if self._is_equivalent_value(slot.value, value):
-                slot.value = value
-                slot.status = "valid"
-                slot.candidate_value = None
-                slot.validation_error = None
-                return
             if allow_overwrite:
                 slot.value = value
                 slot.status = "candidate"
@@ -1640,15 +1667,6 @@ class DialogueManager:
         if not task_type_key:
             return
 
-        if new_slots.get("task_type_key") and new_slots["task_type_key"].value:
-            new_slots["task_type_key"].status = "valid"
-            new_slots["task_type_key"].candidate_value = None
-            new_slots["task_type_key"].validation_error = None
-        if new_slots.get("task_type") and new_slots["task_type"].value:
-            new_slots["task_type"].status = "valid"
-            new_slots["task_type"].candidate_value = None
-            new_slots["task_type"].validation_error = None
-
         schema = self.builder.get_schema(task_type_key, self.mode)
 
         for field_def in schema:
@@ -1800,7 +1818,7 @@ class DialogueManager:
         if isinstance(candidates, list) and candidates:
             if user_message:
                 for c in candidates:
-                    if isinstance(c, dict) and c.get("name") and (c["name"] in user_message or user_message in c["name"]):
+                    if isinstance(c, dict) and c.get("name") and c.get("name") in user_message:
                         return c
             candidate = candidates[0]
             if isinstance(candidate, dict) and candidate.get("name"):
@@ -2144,6 +2162,8 @@ class DialogueManager:
         self._pending_rov_candidates = []
         self._last_built_json = {}
         self._last_missing = []
+        self.control_state = "idle"
+        self.last_control_request = None
 
     def _commit_internal_slot_values(
         self,
