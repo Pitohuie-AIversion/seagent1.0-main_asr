@@ -1839,7 +1839,7 @@ class DialogueManager:
         if not self._user_confirmed_oilfield(user_message):
             return None
 
-        candidate = self._top_pending_oilfield_candidate()
+        candidate = self._top_pending_oilfield_candidate(user_message)
         if not candidate:
             return self._build_pending_oilfield_reply()
 
@@ -1847,8 +1847,9 @@ class DialogueManager:
         self._commit_internal_slot_values(
             {
                 "oilfield_name": confirmed_name,
+                "raw_oilfield_name": confirmed_name,
                 "oilfield_entity_id": candidate.get("id"),
-                "oilfield_match_status": "confirmed",
+                "oilfield_match_status": "accepted",
                 "oilfield_match_confidence": candidate.get("confidence"),
                 "oilfield_match_evidence": candidate.get("evidence", []),
             },
@@ -1877,10 +1878,14 @@ class DialogueManager:
             "请提供标准的油田名称（例如：流花11-1油田、陵水17-2油田等），或补充油田坐标。"
         )
 
-    def _top_pending_oilfield_candidate(self) -> dict | None:
+    def _top_pending_oilfield_candidate(self, user_message: str = "") -> dict | None:
         cand_slot = self.slot_store.slots.get("pending_oilfield_candidates")
         candidates = cand_slot.value if (cand_slot and cand_slot.status == "valid") else None
         if isinstance(candidates, list) and candidates:
+            if user_message:
+                for c in candidates:
+                    if isinstance(c, dict) and c.get("name") and c.get("name") in user_message:
+                        return c
             candidate = candidates[0]
             if isinstance(candidate, dict) and candidate.get("name"):
                 return candidate

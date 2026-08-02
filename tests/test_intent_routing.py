@@ -1480,6 +1480,37 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                     self.dm.load_snapshot(snap)
                 self.assertEqual(self.dm.dialogue_mode, state_before_mode)
 
+    # 34. 包含“不”的状态描述句子不能误压制紧急命令测试
+    def test_status_descriptions_with_bu_do_not_suppress_emergency_actions(self):
+        cases = [
+            ("设备状态不明立即停止当前任务", "emergency_intervention", "stop"),
+            ("信号不稳马上暂停当前任务", "emergency_intervention", "pause"),
+            ("定位不可靠立即终止当前操作", "emergency_intervention", "abort"),
+        ]
+        for msg, expected_mode, expected_action in cases:
+            with self.subTest(msg=msg):
+                self.dm.reset()
+                self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+                self.dm.task_state = self.dm.slot_store.get_task_state()
+
+                route = self.dm.intent_router.route(
+                    user_message=msg,
+                    conversation_history=[],
+                    task_state=self.dm.task_state,
+                    phase=self.dm.phase,
+                    expected_slots=[],
+                )
+                self.assertEqual(route.dialogue_mode, expected_mode)
+                self.assertEqual(route.emergency_action, expected_action)
+
+                with patch.object(self.dm.extractor, "extract_updates") as mock_ext:
+                    reply = self.dm.process(msg)
+                    mock_ext.assert_not_called()
+
+                self.assertEqual(self.dm.dialogue_mode, expected_mode)
+                self.assertEqual(self.dm.control_state, "idle")
+                self.assertEqual(self.dm.task_state.get("task_type_key"), "pipeline_inspection")
+
 
 if __name__ == "__main__":
     unittest.main()

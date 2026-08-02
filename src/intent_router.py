@@ -232,22 +232,13 @@ class IntentRouter:
             "cancel": ("取消", "撤销", "放弃", "不要了"),
         }
 
-        negation_kws = (
-            "不",
-            "先不",
-            "暂不",
-            "不需要",
-            "没必要",
-            "不要",
-            "别",
-            "不用",
-            "无需",
-            "免",
-            "不许",
-            "不能",
-            "不可",
-            "不是",
+        negation_phrases = (
+            "不停止", "先不停止", "暂不停止", "不需要停止", "不要停止", "别停止", "不要立即停止", "不要马上停止", "不是要停止",
+            "不暂停", "先不暂停", "暂不暂停", "不需要暂停", "不要暂停", "别暂停", "不要立即暂停", "不要马上暂停", "不是要暂停",
+            "不取消", "先不取消", "暂不取消", "不需要取消", "不要取消", "别取消", "不要立即取消", "不要马上取消", "不是要取消",
+            "不终止", "先不终止", "暂不终止", "不需要终止", "不要终止", "别终止", "不要立即终止", "不要马上终止", "不是要终止",
         )
+        negation_prefixes = ("不要", "先不", "暂不", "不需要", "没必要", "别", "不用", "无需", "免", "不许", "不能", "不是", "不是要")
 
         non_task_objects = (
             "打印",
@@ -278,17 +269,18 @@ class IntentRouter:
                 continue
 
             # 3. 检查子句级别的否定修饰
-            has_local_negation = False
-            for neg in negation_kws:
-                if neg in clause:
-                    neg_pos = clause.find(neg)
-                    for act_kw in action_map[action_found]:
-                        act_pos = clause.find(act_kw)
-                        if act_pos != -1 and neg_pos < act_pos and (act_pos - neg_pos) <= 6:
-                            has_local_negation = True
+            has_local_negation = any(phrase in clause for phrase in negation_phrases)
+            if not has_local_negation:
+                for neg in negation_prefixes:
+                    if neg in clause:
+                        neg_pos = clause.find(neg)
+                        for act_kw in action_map[action_found]:
+                            act_pos = clause.find(act_kw)
+                            if act_pos != -1 and neg_pos < act_pos and (act_pos - neg_pos) <= 3:
+                                has_local_negation = True
+                                break
+                        if has_local_negation:
                             break
-                    if has_local_negation:
-                        break
 
             if has_local_negation:
                 continue
@@ -452,21 +444,25 @@ class IntentRouter:
                 "别取消",
                 "不取消",
                 "暂不取消",
+                "不是要取消",
                 "不要停止",
                 "别停止",
                 "不停止",
                 "先不停止",
                 "不要立即停止",
+                "不是要停止",
                 "不要暂停",
                 "别暂停",
                 "不暂停",
                 "先不暂停",
                 "暂不暂停",
+                "不是要暂停",
                 "不要终止",
                 "别终止",
                 "不终止",
                 "不需要终止",
                 "暂不终止",
+                "不是要终止",
             )
         ):
             if re.search(
