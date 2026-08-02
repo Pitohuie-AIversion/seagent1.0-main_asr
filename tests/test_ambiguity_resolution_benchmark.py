@@ -89,8 +89,8 @@ class AmbiguityResolutionBenchmarkTest(unittest.TestCase):
         reply2 = self.dm.process("确认选择陵水17-2油田")
         task_state2 = self.dm.task_state
 
-        self.assertIn(task_state2.get("oilfield_match_status"), ("accepted", "confirmed"))
-        self.assertIn(task_state2.get("raw_oilfield_name"), ("陵水17-2油田", "17-2"))
+        self.assertEqual(task_state2.get("oilfield_match_status"), "accepted")
+        self.assertEqual(task_state2.get("raw_oilfield_name"), "陵水17-2油田")
         self.assertIsNone(task_state2.get("pending_oilfield_name"))
 
     def test_unresolved_tool_extraction(self):

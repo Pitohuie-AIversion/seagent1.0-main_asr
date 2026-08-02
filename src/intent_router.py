@@ -214,13 +214,25 @@ class IntentRouter:
 
     @staticmethod
     def _parse_executable_control_action(user_message: str) -> str | None:
-        """确定性安全解析器：逐子句独立解析是否存在明确可执行的紧急动作。"""
-        msg = (user_message or "").strip()
-        if not msg:
-            return None
+        """从用户消息中提取明确可执行的紧急控制动作。"""
+        # 1. 结合标点符号及前置控制动词后的疑问/条件句界限切分子句
+        clauses = [
+            c.strip()
+            for c in re.split(
+                r"[,，;；!！.。\n]|(?<!^)(?=(?:为什么|为何|怎么|如果|要是|假如|假设|万一))",
+                user_message,
+            )
+            if c and c.strip()
+        ]
 
-        # 按标点符号拆分为独立子句
-        clauses = [c.strip() for c in re.split(r"[,，;；!！.。\n]", msg) if c.strip()]
+        action_map = {
+            "stop": ("停止", "暂停下潜", "停下"),
+            "pause": ("暂停", "稍停"),
+            "abort": ("终止", "强行终止", "中止"),
+            "cancel": ("取消", "撤销", "放弃", "不要了"),
+        }
+
+        negation_kws = ("不要", "别", "不用", "无需", "免", "不许", "不能", "不可", "不是")
 
         non_task_objects = (
             "打印",
@@ -233,40 +245,29 @@ class IntentRouter:
             "输出",
             "页面",
             "刷新",
-            "载荷修改",
-            "说明输出",
             "日志",
-            "修改",
-            "参数修改",
-            "槽位",
+            "展示",
         )
-        negation_kws = ("不要", "别", "不", "先不", "暂不", "不用", "不能", "禁止", "免")
 
         for clause in clauses:
-            # 1. 检查子句是否针对非任务控制对象
             if any(obj in clause for obj in non_task_objects):
                 continue
 
-            # 2. 识别控制动作词
             action_found = None
-            if "停止" in clause:
-                action_found = "stop"
-            elif "暂停" in clause:
-                action_found = "pause"
-            elif "终止" in clause:
-                action_found = "abort"
-            elif any(kw in clause for kw in ("取消", "撤销", "放弃")):
-                action_found = "cancel"
+            for act_key, keywords in action_map.items():
+                if any(kw in clause for kw in keywords):
+                    action_found = act_key
+                    break
 
             if not action_found:
                 continue
 
-            # 3. 检查子句内部局部否定修饰
+            # 3. 检查子句级别的否定修饰
             has_local_negation = False
             for neg in negation_kws:
                 if neg in clause:
                     neg_pos = clause.find(neg)
-                    for act_kw in ("停止", "暂停", "终止", "取消", "撤销", "放弃"):
+                    for act_kw in action_map[action_found]:
                         act_pos = clause.find(act_kw)
                         if act_pos != -1 and neg_pos < act_pos and (act_pos - neg_pos) <= 4:
                             has_local_negation = True
@@ -277,7 +278,7 @@ class IntentRouter:
             if has_local_negation:
                 continue
 
-            # 4. 检查子句自身是否为疑问语气或条件表达（例如："为什么要停止当前任务？", "如果停止当前任务会怎样"）
+            # 4. 检查子句自身是否为疑问语气或条件表达
             has_local_question = bool(re.search(r"[呢吗？?]$", clause)) or any(
                 kw in clause
                 for kw in (
@@ -324,8 +325,14 @@ class IntentRouter:
                     "紧急",
                     "立刻",
                     "机器人",
+                    "下潜",
+                    "巡检",
+                    "采集",
+                    "作业",
+                    "设备",
+                    "指令",
                 )
-            ) or len(clause) <= 8
+            )
 
             if has_target_or_prompt:
                 return action_found

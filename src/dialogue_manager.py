@@ -156,12 +156,11 @@ class DialogueManager:
             "changed_at": changed_at,
         }
         self.dialogue_mode = new_mode
-        self.last_mode_transition = transition
-        if not hasattr(self, "mode_transition_history") or self.mode_transition_history is None:
-            self.mode_transition_history = []
-
-        # 仅当模式发生实际改变时追加到切换历史轨迹中，避免同模式重复记录
+        # 仅当模式发生实际改变时更新 last_mode_transition 并追加到切换历史轨迹中，避免同模式重复记录
         if old_mode != new_mode:
+            self.last_mode_transition = transition
+            if not hasattr(self, "mode_transition_history") or self.mode_transition_history is None:
+                self.mode_transition_history = []
             self.mode_transition_history.append(transition)
             if len(self.mode_transition_history) > 50:
                 self.mode_transition_history.pop(0)
@@ -564,8 +563,11 @@ class DialogueManager:
 
         self.task_state = self.slot_store.get_task_state()
         self.final_result = None
+        self.awaiting_final_confirm = False
+        self.task_start_now = False
         self._blocking_violations = []
         self._soft_whitelist = set()
+        self._hard_refusal_counts = {}
         self._pending_rov_candidates = []
         self._last_built_json = {}
         self._last_missing = []
@@ -1837,7 +1839,7 @@ class DialogueManager:
         if not self._user_confirmed_oilfield(user_message):
             return None
 
-        candidate = self._top_pending_oilfield_candidate(user_message)
+        candidate = self._top_pending_oilfield_candidate()
         if not candidate:
             return self._build_pending_oilfield_reply()
 
@@ -1845,9 +1847,8 @@ class DialogueManager:
         self._commit_internal_slot_values(
             {
                 "oilfield_name": confirmed_name,
-                "raw_oilfield_name": confirmed_name,
                 "oilfield_entity_id": candidate.get("id"),
-                "oilfield_match_status": "accepted",
+                "oilfield_match_status": "confirmed",
                 "oilfield_match_confidence": candidate.get("confidence"),
                 "oilfield_match_evidence": candidate.get("evidence", []),
             },
@@ -1876,14 +1877,10 @@ class DialogueManager:
             "请提供标准的油田名称（例如：流花11-1油田、陵水17-2油田等），或补充油田坐标。"
         )
 
-    def _top_pending_oilfield_candidate(self, user_message: str = "") -> dict | None:
+    def _top_pending_oilfield_candidate(self) -> dict | None:
         cand_slot = self.slot_store.slots.get("pending_oilfield_candidates")
         candidates = cand_slot.value if (cand_slot and cand_slot.status == "valid") else None
         if isinstance(candidates, list) and candidates:
-            if user_message:
-                for c in candidates:
-                    if isinstance(c, dict) and c.get("name") and c.get("name") in user_message:
-                        return c
             candidate = candidates[0]
             if isinstance(candidate, dict) and candidate.get("name"):
                 return candidate
@@ -2414,6 +2411,21 @@ class DialogueManager:
             act = last_control_request.get("action")
             if not isinstance(act, str) or act not in {"stop", "pause", "abort", "cancel"}:
                 raise ValueError(f"Invalid action in last_control_request: {act}")
+            st = last_control_request.get("status")
+            if not isinstance(st, str) or st != "requested":
+                raise ValueError(f"Invalid status in last_control_request: {st}")
+
+        # 校验 control_state 与 last_control_request 的严格一致性
+        if last_control_request is None:
+            if control_state != "idle":
+                raise ValueError("control_state must be 'idle' when last_control_request is None")
+        else:
+            act = last_control_request["action"]
+            expected_state = f"{act}_requested"
+            if control_state != expected_state:
+                raise ValueError(
+                    f"Mismatched control_state '{control_state}' for action '{act}' (expected '{expected_state}')"
+                )
 
         candidate_store = None
 

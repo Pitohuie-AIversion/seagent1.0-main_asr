@@ -777,7 +777,7 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
         self.assertEqual(res3.emergency_action, "stop")
 
         res4 = self.router.route("停止", [], {})
-        self.assertEqual(res4.dialogue_mode, "emergency_intervention")
+        self.assertEqual(res4.dialogue_mode, "uncertain")
 
     # 2. 否定加参数更新
     def test_negation_plus_parameter_update(self):
@@ -1360,6 +1360,65 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                 new_dm.load_snapshot(loaded_snap)
                 self.assertEqual(new_dm.dialogue_mode, mode_before)
                 self.assertEqual(new_dm.mode_transition_history, history_before)
+
+    # 29. 裸控制词（停止/暂停/取消/终止）进入 uncertain 且不清空任务草稿
+    def test_bare_control_words_demote_to_uncertain_without_clearing_draft(self):
+        bare_words = ["停止", "暂停", "取消", "终止"]
+        for word in bare_words:
+            with self.subTest(word=word):
+                self.dm.reset()
+                self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+                self.dm.task_state = self.dm.slot_store.get_task_state()
+
+                route = self.dm.intent_router.route(
+                    user_message=word,
+                    conversation_history=[],
+                    task_state=self.dm.task_state,
+                    phase=self.dm.phase,
+                    expected_slots=[],
+                )
+                self.assertEqual(route.dialogue_mode, "uncertain")
+                self.assertIsNone(route.emergency_action)
+
+                reply = self.dm.process(word)
+                self.assertEqual(self.dm.dialogue_mode, "uncertain")
+                self.assertEqual(self.dm.task_state.get("task_type_key"), "pipeline_inspection")
+
+    # 30. 无标点 ASR 复合命令识别测试
+    def test_unpunctuated_asr_compound_commands(self):
+        cases = [
+            ("立即停止当前任务为什么设备还在下潜", "emergency_intervention", "stop"),
+            ("马上暂停当前任务如果继续会怎样", "emergency_intervention", "pause"),
+        ]
+        for msg, expected_mode, expected_action in cases:
+            with self.subTest(msg=msg):
+                route = self.dm.intent_router.route(
+                    user_message=msg,
+                    conversation_history=[],
+                    task_state={},
+                    phase="collecting",
+                    expected_slots=[],
+                )
+                self.assertEqual(route.dialogue_mode, expected_mode)
+                self.assertEqual(route.emergency_action, expected_action)
+
+    # 31. 快照 control_state 与 last_control_request 严格一致性校验测试
+    def test_snapshot_control_state_and_request_consistency_validation(self):
+        self.dm.reset()
+        state_before_mode = self.dm.dialogue_mode
+
+        inconsistent_snapshots = [
+            {"control_state": "stop_requested", "last_control_request": None},
+            {"control_state": "idle", "last_control_request": {"action": "stop", "status": "requested"}},
+            {"control_state": "pause_requested", "last_control_request": {"action": "stop", "status": "requested"}},
+            {"control_state": "stop_requested", "last_control_request": {"action": "stop", "status": "invalid_status"}},
+        ]
+
+        for snap in inconsistent_snapshots:
+            with self.subTest(snap=snap):
+                with self.assertRaises(ValueError):
+                    self.dm.load_snapshot(snap)
+                self.assertEqual(self.dm.dialogue_mode, state_before_mode)
 
 
 if __name__ == "__main__":
