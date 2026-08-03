@@ -122,7 +122,14 @@ def next_daily_task_id(
         raise IdReservationError(f"Invalid date_text for task ID: {date_text!r}")
 
     if allowed_prefixes is None:
-        allowed_prefixes = [prefix]
+        raise IdReservationError("allowed_prefixes must be provided from task schema whitelist")
+
+    valid_prefixes = {p for p in allowed_prefixes if validate_task_prefix(p)}
+    if not valid_prefixes:
+        raise IdReservationError("allowed_prefixes contains no valid task prefixes")
+
+    if prefix not in valid_prefixes:
+        raise IdReservationError(f"Task prefix {prefix!r} is not in allowed_prefixes whitelist: {sorted(valid_prefixes)}")
 
     scan_specs_list = list(scan_specs)
     counter_key = f"TASK:{date_text}"

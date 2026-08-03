@@ -73,6 +73,7 @@ def seed_complete_valid_pipeline_task(dm, kb):
     support_vessel = vessels[0] if vessels else "DSV-Oceanic"
 
     slots_to_seed = {
+        "internal_id": ("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "string"),
         "task_id": ("PI-20260718-001", "string"),
         "task_type_key": (task_type_key, "string"),
         "task_type": (task_type, "string"),
@@ -1155,8 +1156,8 @@ class SlotConsistencyTest(unittest.TestCase):
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
-                    task_state={"task_id": "PI-20260803-001", "water_depth": 300.0},
-                    built_json={"task_id": "PI-20260803-001", "water_depth": 300.0, "equipment_type": "观察级ROV"},
+                    task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},
+                    built_json={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
@@ -1171,8 +1172,8 @@ class SlotConsistencyTest(unittest.TestCase):
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
-                    task_state={"task_id": "PI-20260803-001", "water_depth": 300.0},
-                    built_json={"task_id": "PI-20260803-001", "water_depth": 300.0, "equipment_type": "观察级ROV"},
+                    task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},
+                    built_json={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
@@ -1289,8 +1290,8 @@ class SlotConsistencyTest(unittest.TestCase):
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
-                    task_state={"task_id": "PI-20260803-001", "water_depth": 300.0},
-                    built_json={"task_id": "PI-20260803-001", "water_depth": 300.0, "equipment_type": "观察级ROV"},
+                    task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},
+                    built_json={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
@@ -1433,8 +1434,8 @@ class SlotConsistencyTest(unittest.TestCase):
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent1 = builder.prepare(
-                    task_state={"task_id": "PI-20260803-001", "water_depth": 300.0},
-                    built_json={"task_id": "PI-20260803-001", "water_depth": 300.0, "equipment_type": "观察级ROV"},
+                    task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},
+                    built_json={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
@@ -1459,8 +1460,8 @@ class SlotConsistencyTest(unittest.TestCase):
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent1 = builder.prepare(
-                    task_state={"task_id": "PI-20260803-001", "water_depth": 300.0},
-                    built_json={"task_id": "PI-20260803-001", "water_depth": 300.0, "equipment_type": "观察级ROV"},
+                    task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},
+                    built_json={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
@@ -1610,6 +1611,7 @@ class SlotConsistencyTest(unittest.TestCase):
             task_dir.mkdir(parents=True, exist_ok=True)
 
             intent1 = {
+                "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
                 "task_id": "PI-20260718-001",
                 "intent_id": "TI2026071801",
                 "task_type": "pipeline_inspection",
@@ -1657,6 +1659,7 @@ class SlotConsistencyTest(unittest.TestCase):
             task_dir.mkdir(parents=True, exist_ok=True)
 
             intent1 = {
+                "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
                 "task_id": "PI-20260718-001",
                 "intent_id": "TI2026071801",
                 "task_type": "pipeline_inspection",

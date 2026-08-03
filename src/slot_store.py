@@ -25,6 +25,7 @@ BASE_SLOT_TYPES = {
     "emergency_mode": "boolean",
     "task_id": "string",
     "intent_id": "string",
+    "internal_id": "string",
     "equipment_family": "string",
     "equipment_type": "string",
     "equipment_name": "string",

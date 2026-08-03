@@ -68,8 +68,9 @@ class TestTaskIntentSemanticMapping(unittest.TestCase):
             with self.subTest(case=case["name"]):
                 code = code_map.get(case["task_type_key"], "PI")
                 task_id_val = f"{code}-20260801-001"
-                task_state = {"task_id": task_id_val, "intent_id": "TI2026073001", "oilfield_name": "流花11-1油田"}
+                task_state = {"internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "task_id": task_id_val, "intent_id": "TI2026073001", "oilfield_name": "流花11-1油田"}
                 built_json = {
+                    "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
                     "task_id": task_id_val,
                     "intent_id": "TI2026073001",
                     "equipment_type": case["equipment_type"],
@@ -196,8 +197,9 @@ class TestTaskIntentSemanticMapping(unittest.TestCase):
 
     def test_reconfirm_does_not_duplicate_publish(self):
         """重复发布同一 intent_id 时必须抛出 IntentIdConflict 异常且拒绝覆盖"""
-        task_state = {"task_id": "PI-20260801-001", "intent_id": "TI2026073008", "oilfield_name": "流花11-1油田"}
+        task_state = {"internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "task_id": "PI-20260801-001", "intent_id": "TI2026073008", "oilfield_name": "流花11-1油田"}
         built_json = {
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
             "task_id": "PI-20260801-001",
             "intent_id": "TI2026073008",
             "equipment_type": "观察级ROV",

@@ -372,6 +372,7 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         ti_builder = TaskIntentBuilder(kb)
 
         task_state = {
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
             "task_id": "PI-20260803-001",
             "task_type_key": "pipeline_inspection",
             "water_depth": 500.0,
@@ -380,6 +381,7 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
             "equipment_type": "观察级ROV",
         }
         built_json = {
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
             "task_id": "PI-20260803-001",
             "start_time": "2026-08-03T10:00:00Z",
             "end_time": "2026-08-03T18:00:00Z",
@@ -562,18 +564,50 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
 
     def test_26_internal_id_is_uuid_and_immutable(self):
         import uuid
+        from src.task_intent_builder import validate_uuid4
         dm = create_dialogue_manager()
         dm.process("我要做管缆巡检")
         internal_id = dm.task_state.get("internal_id")
         self.assertIsNotNone(internal_id)
-        # Verify internal_id is valid UUIDv4
-        parsed_uuid = uuid.UUID(str(internal_id))
-        self.assertEqual(parsed_uuid.version, 4)
+        self.assertTrue(validate_uuid4(internal_id))
+
+        # Re-confirming same category preserves exact same internal_id
+        dm.process("任务类型还是管缆巡检")
+        self.assertEqual(dm.task_state.get("internal_id"), internal_id)
 
         # Confirm internal_id is preserved on update and distinct from task_id
         dm.process("水深设置为 300 米")
         self.assertEqual(dm.task_state.get("internal_id"), internal_id)
         self.assertNotEqual(dm.task_state.get("internal_id"), dm.task_state.get("task_id"))
+
+        # User input attempting to set internal_id cannot overwrite it
+        dm.process("把 internal_id 改成 12345678-1234-4234-8234-1234567890ab")
+        self.assertEqual(dm.task_state.get("internal_id"), internal_id)
+
+        # prepare without internal_id must fail closed
+        kb = KnowledgeBase()
+        ti_builder = TaskIntentBuilder(kb)
+        with self.assertRaises(TaskPersistenceError):
+            ti_builder.prepare({"task_id": "PI-20260803-001"}, {"task_id": "PI-20260803-001"}, "normal", "pipeline_inspection")
+
+        # Non-UUIDv4 (e.g. UUIDv1) must be rejected
+        v1_uuid = str(uuid.uuid1())
+        self.assertFalse(validate_uuid4(v1_uuid))
+        with self.assertRaises(TaskPersistenceError):
+            ti_builder.prepare({"task_id": "PI-20260803-001", "internal_id": v1_uuid}, {"task_id": "PI-20260803-001", "internal_id": v1_uuid}, "normal", "pipeline_inspection")
+
+    def test_27_next_daily_task_id_requires_allowed_prefixes_whitelist(self):
+        # allowed_prefixes is None -> raise IdReservationError
+        with self.assertRaises(IdReservationError):
+            next_daily_task_id("PI", "20260803", 3, allowed_prefixes=None)
+
+        # allowed_prefixes is empty -> raise IdReservationError
+        with self.assertRaises(IdReservationError):
+            next_daily_task_id("PI", "20260803", 3, allowed_prefixes=[])
+
+        # requested prefix not in allowed_prefixes whitelist -> raise IdReservationError
+        with self.assertRaises(IdReservationError):
+            next_daily_task_id("FAKE", "20260803", 3, allowed_prefixes=["PI", "PB", "CT"])
 
 
 if __name__ == "__main__":

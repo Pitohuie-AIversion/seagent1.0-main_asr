@@ -74,9 +74,23 @@ def _atomic_commit_noreplace(temp_file: Path, final_file: Path) -> None:
         raise TaskPersistenceError(f"Atomic commit failed: {e}") from e
 
 
+def validate_uuid4(val: Any) -> bool:
+    """验证值是否为符合规范的 UUIDv4 字符串。"""
+    if type(val) is not str or not val:
+        return False
+    try:
+        parsed = uuid.UUID(val)
+        return parsed.version == 4 and str(parsed).lower() == val.lower()
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def validate_task_intent(intent: Any, task_schemas: dict | None = None) -> bool:
     """权威完整 TaskIntent 结构与交叉约束校验器"""
     if not isinstance(intent, dict):
+        return False
+    internal_id = intent.get("internal_id")
+    if not validate_uuid4(internal_id):
         return False
     task_id = intent.get("task_id")
     if not validate_task_id(task_id):
@@ -131,7 +145,7 @@ class TaskIntentBuilder:
         task_type_key: str,
         intent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """纯内存构建 TaskIntent 字典。注意：task_id 必须已在 DialogueManager 中预留并传入，本函数绝不上盘预留或覆盖 task_id。若 intent_id 尚未指定，本函数仅在内存为 TaskIntent 关联事务草稿 intent_id。"""
+        """prepare() 不预留、不上盘、不修改 task_id 与 internal_id；若 task_id 或 internal_id 缺失或非法，fail closed。注意：若 intent_id 尚未指定，本函数会为 TaskIntent 预留并上盘 counter 生成 intent_id。"""
         if intent_id is not None:
             if not validate_intent_id(intent_id):
                 raise TaskPersistenceError(f"Invalid intent_id parameter: {intent_id}")
@@ -202,14 +216,9 @@ class TaskIntentBuilder:
             raise TaskPersistenceError(f"TaskIntent prepare 失败：task_state 与 built_json 中缺少有效的 task_id。")
 
         cand_internal = built_json.get("internal_id") or task_state.get("internal_id")
-        if cand_internal:
-            try:
-                uuid.UUID(str(cand_internal))
-                internal_id = str(cand_internal)
-            except (ValueError, TypeError, AttributeError):
-                raise TaskPersistenceError(f"TaskIntent prepare 失败：internal_id 非法 UUID: {cand_internal}")
-        else:
-            internal_id = str(uuid.uuid4())
+        if not cand_internal or not validate_uuid4(cand_internal):
+            raise TaskPersistenceError(f"TaskIntent prepare 失败：task_state 与 built_json 中缺少有效的 internal_id UUIDv4: {cand_internal}")
+        internal_id = cand_internal
 
         res = {
             "internal_id": internal_id,
@@ -583,6 +592,7 @@ class TaskIntentBuilder:
             raise TaskPersistenceError("TaskIntent must be a dictionary")
 
         required_keys = {
+            "internal_id",
             "task_id",
             "intent_id",
             "task_type",
@@ -598,11 +608,8 @@ class TaskIntentBuilder:
             raise TaskPersistenceError(f"TaskIntent 缺少字段: {sorted(missing)}")
 
         internal_id = intent.get("internal_id")
-        if internal_id is not None:
-            try:
-                uuid.UUID(str(internal_id))
-            except (ValueError, TypeError, AttributeError):
-                raise TaskPersistenceError(f"internal_id 非法或非有效 UUID: {internal_id}")
+        if not validate_uuid4(internal_id):
+            raise TaskPersistenceError(f"internal_id 非法或非有效 UUIDv4: {internal_id}")
 
         top_task_type = intent.get("task_type")
         task_type_key = intent.get("task_type_key")

@@ -245,6 +245,7 @@ class P0BoundaryCloseoutTest(unittest.TestCase):
             tmp_task_dir.mkdir(parents=True, exist_ok=True)
             pub_file = tmp_task_dir / "task_intent_TI2026063001.json"
             valid_intent = {
+                "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
                 "task_id": "PI-20260630-001",
                 "intent_id": "TI2026063001",
                 "task_type": "pipeline_inspection",

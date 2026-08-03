@@ -174,6 +174,7 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
 
     def _make_valid_intent(self, intent_id="TI2026063001"):
         return {
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
             "task_id": "PI-20260630-001",
             "intent_id": intent_id,
             "task_type": "pipeline_inspection",
@@ -579,7 +580,8 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
                 selected_rov = allowed_rovs[0] if allowed_rovs else kb.get_all_rovs()[0]
 
                 slots_to_seed = {
-                    "task_id": ("PB2026071801", "string"),
+                    "internal_id": ("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "string"),
+                    "task_id": ("PB-20260718-001", "string"),
                     "task_type_key": (task_type_key, "string"),
                     "task_type": (task_type, "string"),
                     "cable_type": ("海底油气管道", "string"),

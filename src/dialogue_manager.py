@@ -1194,6 +1194,7 @@ class DialogueManager:
         ignored_keys = {
             "task_id",
             "intent_id",
+            "internal_id",
             "emergency_mode",
             "rov_description",
             "pending_oilfield_candidates",
@@ -1349,6 +1350,7 @@ class DialogueManager:
             "__clear_pending_oilfield",
             "task_id",
             "intent_id",
+            "internal_id",
             *equipment_keys,
         }
 
