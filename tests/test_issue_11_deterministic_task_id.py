@@ -609,6 +609,124 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         with self.assertRaises(IdReservationError):
             next_daily_task_id("FAKE", "20260803", 3, allowed_prefixes=["PI", "PB", "CT"])
 
+    def test_28_legacy_v1_task_intent_read_compatibility(self):
+        """Historical v1 TaskIntent without internal_id/task_id is accepted by validate_task_intent and restores done phase without downgrade."""
+        kb = KnowledgeBase()
+        legacy_v1_intent = {
+            "intent_id": "TI2026063001",
+            "task_type": "pipeline_inspection",
+            "priority": 7,
+            "time": {"start": "2026-06-30T10:00:00+08:00", "end": "2026-06-30T12:00:00+08:00"},
+            "location": {"oilfield": "南海一号", "water_depth_m": 300.0},
+            "task": {"type": "pipeline_inspection", "details": {}},
+            "equipment": {"robot_type": "observation_rov", "payload": [], "support_vessel": {"name": None}},
+            "conditions": {}
+        }
+        self.assertTrue(validate_task_intent(legacy_v1_intent, kb.task_schemas))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_task_dir = Path(tmp_dir) / "task"
+            tmp_task_dir.mkdir(parents=True, exist_ok=True)
+            pub_file = tmp_task_dir / "task_intent_TI2026063001.json"
+            with open(pub_file, "w", encoding="utf-8") as f:
+                json.dump(legacy_v1_intent, f)
+
+            snap = {
+                "phase": "done",
+                "mode": "normal",
+                "task_state": {"task_type_key": "pipeline_inspection", "intent_id": "TI2026063001"},
+                "built_json": {"task_type_key": "pipeline_inspection", "intent_id": "TI2026063001"},
+                "slot_store": {
+                    "store_version": 1,
+                    "slots": {
+                        "task_type_key": {"slot_name": "task_type_key", "value": "pipeline_inspection", "status": "valid", "version": 1},
+                        "intent_id": {"slot_name": "intent_id", "value": "TI2026063001", "status": "valid", "version": 1}
+                    },
+                    "unresolved": []
+                }
+            }
+
+            dm = create_dialogue_manager()
+            with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+                dm.load_snapshot(snap)
+
+            self.assertEqual(dm.phase, "done")
+            self.assertIsNotNone(dm.final_result)
+            self.assertEqual(dm.final_result.get("intent_id"), "TI2026063001")
+
+    def test_29_snapshot_restore_identifier_validation_and_3id_match(self):
+        """Invalid internal_id UUIDv4 in snapshot candidate raises SnapshotValidationError without mutating memory state.
+        Mismatched internal_id or task_id between snapshot and final rejects done phase."""
+        from src.slot_store import SnapshotValidationError
+        dm = create_dialogue_manager()
+        dm.process("我要做管缆巡检")
+        orig_phase = dm.phase
+        orig_internal_id = dm.task_state.get("internal_id")
+
+        # 1. Candidate snapshot with invalid internal_id -> raise SnapshotValidationError and keep state untouched
+        bad_uuid_snap = {
+            "phase": "collecting",
+            "mode": "normal",
+            "task_state": {"internal_id": "invalid-not-a-uuid"},
+            "slot_store": {
+                "store_version": 1,
+                "slots": {
+                    "internal_id": {"slot_name": "internal_id", "value": "invalid-not-a-uuid", "status": "valid", "version": 1}
+                },
+                "unresolved": []
+            }
+        }
+        with self.assertRaises(SnapshotValidationError):
+            dm.load_snapshot(bad_uuid_snap)
+
+        # Memory state remains untouched
+        self.assertEqual(dm.phase, orig_phase)
+        self.assertEqual(dm.task_state.get("internal_id"), orig_internal_id)
+
+        # 2. Done snapshot internal_id mismatch against disk final file -> fails entering done
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_task_dir = Path(tmp_dir) / "task"
+            tmp_task_dir.mkdir(parents=True, exist_ok=True)
+            pub_file = tmp_task_dir / "task_intent_TI2026080301.json"
+            valid_file_intent = {
+                "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+                "task_id": "PI-20260803-001",
+                "intent_id": "TI2026080301",
+                "task_type": "pipeline_inspection",
+                "priority": 7,
+                "time": {"start": None, "end": None},
+                "location": {"oilfield": None, "water_depth_m": 300.0},
+                "task": {"type": "pipeline_inspection", "details": {}},
+                "equipment": {"robot_type": "observation_rov", "payload": [], "support_vessel": {"name": None}},
+                "conditions": {}
+            }
+            with open(pub_file, "w", encoding="utf-8") as f:
+                json.dump(valid_file_intent, f)
+
+            mismatched_snap = {
+                "phase": "done",
+                "mode": "normal",
+                "task_state": {"internal_id": "b1ffcd88-8b0a-4fe7-aa5c-5aa8ac270a22", "task_id": "PI-20260803-001", "intent_id": "TI2026080301"},
+                "slot_store": {
+                    "store_version": 1,
+                    "slots": {
+                        "internal_id": {"slot_name": "internal_id", "value": "b1ffcd88-8b0a-4fe7-aa5c-5aa8ac270a22", "status": "valid", "version": 1},
+                        "task_id": {"slot_name": "task_id", "value": "PI-20260803-001", "status": "valid", "version": 1},
+                        "intent_id": {"slot_name": "intent_id", "value": "TI2026080301", "status": "valid", "version": 1}
+                    },
+                    "unresolved": []
+                }
+            }
+
+            with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+                dm.load_snapshot(mismatched_snap)
+
+            self.assertNotEqual(dm.phase, "done")
+
 
 if __name__ == "__main__":
     unittest.main()

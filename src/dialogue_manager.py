@@ -53,8 +53,8 @@ from .time_context import get_time_context, is_standalone_time_query
 from .coord_parser import parse_coordinate_updates
 from .oilfield_linker import OilfieldEntityLinker
 from . import task_intent_builder as _ti_builder_module
-from .id_sequence import validate_intent_id, next_daily_id
-from .slot_store import SlotStore, Slot, normalize_slot_value_type
+from .id_sequence import validate_intent_id, validate_task_id, validate_task_id_for_task_type, next_daily_id
+from .slot_store import SlotStore, Slot, normalize_slot_value_type, SnapshotValidationError
 
 from .exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError
 from .intent_router import IntentRouter, IntentRouteResult
@@ -2503,7 +2503,21 @@ class DialogueManager:
             candidate_store.commit_transaction(new_slots, [])
 
 
-        # 候选 SlotStore 完整构建后再一次性替换，避免半恢复状态泄漏。
+        # 候选 SlotStore 校验系统标识合法性，避免非法标识被恢复为 valid
+        cand_internal_slot = candidate_store.slots.get("internal_id")
+        if cand_internal_slot and cand_internal_slot.status == "valid" and cand_internal_slot.value is not None:
+            if not _ti_builder_module.validate_uuid4(str(cand_internal_slot.value)):
+                raise SnapshotValidationError(f"Invalid internal_id UUIDv4 in candidate snapshot: {cand_internal_slot.value}")
+
+        cand_task_id_slot = candidate_store.slots.get("task_id")
+        cand_task_type_key = candidate_store.slots.get("task_type_key").value if (candidate_store.slots.get("task_type_key") and candidate_store.slots.get("task_type_key").status == "valid") else None
+        if cand_task_id_slot and cand_task_id_slot.status == "valid" and cand_task_id_slot.value is not None:
+            if not validate_task_id(str(cand_task_id_slot.value)):
+                raise SnapshotValidationError(f"Invalid task_id format in candidate snapshot: {cand_task_id_slot.value}")
+            if cand_task_type_key and not validate_task_id_for_task_type(str(cand_task_id_slot.value), cand_task_type_key, self.kb.task_schemas):
+                raise SnapshotValidationError(f"task_id {cand_task_id_slot.value} does not match task_type_key {cand_task_type_key} in candidate snapshot")
+
+        # 候选 SlotStore 完整校验通过后再一次性替换，避免半恢复状态泄漏。
         self.conversation_history = copy.deepcopy(conversation_history)
         self.slot_store = candidate_store
         self.task_state = self.slot_store.get_task_state()
@@ -2547,9 +2561,22 @@ class DialogueManager:
                             if isinstance(_data, dict) and _REQUIRED_INTENT_KEYS.issubset(_data.keys()):
                                 _file_task_type = _data.get("task_type")
                                 _file_intent_id = _data.get("intent_id")
+                                _file_internal_id = _data.get("internal_id")
+                                _file_task_id = _data.get("task_id")
+
+                                snap_internal_slot = self.slot_store.slots.get("internal_id")
+                                snap_internal = snap_internal_slot.value if (snap_internal_slot and snap_internal_slot.status == "valid") else None
+
+                                snap_task_id_slot = self.slot_store.slots.get("task_id")
+                                snap_task_id = snap_task_id_slot.value if (snap_task_id_slot and snap_task_id_slot.status == "valid") else None
+
                                 if _file_intent_id != intent_id_val:
                                     logger.warning("[load_snapshot] intent_id mismatch in final file")
-                                elif not _ti_builder_module.validate_task_intent(_data):
+                                elif snap_internal and _file_internal_id and snap_internal != _file_internal_id:
+                                    logger.warning("[load_snapshot] internal_id mismatch between snapshot (%s) and final file (%s)", snap_internal, _file_internal_id)
+                                elif snap_task_id and _file_task_id and snap_task_id != _file_task_id:
+                                    logger.warning("[load_snapshot] task_id mismatch between snapshot (%s) and final file (%s)", snap_task_id, _file_task_id)
+                                elif not _ti_builder_module.validate_task_intent(_data, self.kb.task_schemas):
                                     logger.warning("[load_snapshot] invalid task_type or TaskIntent structure in final file: %r", _file_task_type)
                                 else:
                                     validated = True

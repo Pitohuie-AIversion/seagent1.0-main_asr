@@ -426,6 +426,10 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             dm_good.slot_store.slots["intent_id"].value = "TI2026063001"
             dm_good.slot_store.slots["intent_id"].status = "valid"
             dm_good.task_state["intent_id"] = "TI2026063001"
+            dm_good.slot_store.slots["task_id"].value = intent_full["task_id"]
+            dm_good.task_state["task_id"] = intent_full["task_id"]
+            dm_good.slot_store.slots["internal_id"].value = intent_full["internal_id"]
+            dm_good.task_state["internal_id"] = intent_full["internal_id"]
 
             snap_good = {
                 "phase": "done",

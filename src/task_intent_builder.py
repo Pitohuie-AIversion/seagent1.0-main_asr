@@ -75,33 +75,33 @@ def _atomic_commit_noreplace(temp_file: Path, final_file: Path) -> None:
 
 
 def validate_uuid4(val: Any) -> bool:
-    """验证值是否为符合规范的 UUIDv4 字符串。"""
+    """验证值是否为符合规范的 UUIDv4 字符串 (必须为规范小写)。"""
     if type(val) is not str or not val:
         return False
     try:
         parsed = uuid.UUID(val)
-        return parsed.version == 4 and str(parsed).lower() == val.lower()
+        return parsed.version == 4 and str(parsed) == val
     except (ValueError, TypeError, AttributeError):
         return False
 
 
 def validate_task_intent(intent: Any, task_schemas: dict | None = None) -> bool:
-    """权威完整 TaskIntent 结构与交叉约束校验器"""
+    """权威完整 TaskIntent 结构与交叉约束校验器 (兼容历史 v1 只读恢复与 v2 完整校验)"""
     if not isinstance(intent, dict):
-        return False
-    internal_id = intent.get("internal_id")
-    if not validate_uuid4(internal_id):
-        return False
-    task_id = intent.get("task_id")
-    if not validate_task_id(task_id):
         return False
     intent_id = intent.get("intent_id")
     if not validate_intent_id(intent_id):
         return False
+    internal_id = intent.get("internal_id")
+    if internal_id is not None and not validate_uuid4(internal_id):
+        return False
+    task_id = intent.get("task_id")
+    if task_id is not None and not validate_task_id(task_id):
+        return False
     top_task_type = intent.get("task_type")
     if top_task_type not in TASK_ALLOWED_ROBOT_TYPES:
         return False
-    if task_schemas is not None:
+    if task_schemas is not None and task_id is not None:
         rev_map = {"pipeline_inspection": "pipeline_inspection", "pipeline_burial": "pipeline_burial", "valve_operation": "tree_valve_operation"}
         task_type_key = intent.get("task_type_key") or rev_map.get(top_task_type, top_task_type)
         if not validate_task_id_for_task_type(task_id, task_type_key, task_schemas):
@@ -221,6 +221,7 @@ class TaskIntentBuilder:
         internal_id = cand_internal
 
         res = {
+            "schema_version": 2,
             "internal_id": internal_id,
             "task_id": task_id,
             "intent_id": intent_id,
