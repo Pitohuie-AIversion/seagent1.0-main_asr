@@ -63,10 +63,15 @@ class TestTaskIntentSemanticMapping(unittest.TestCase):
             },
         ]
 
+        code_map = {"pipeline_inspection": "PI", "pipeline_burial": "PB", "tree_valve_operation": "CT"}
         for case in cases:
             with self.subTest(case=case["name"]):
-                task_state = {"intent_id": "TI2026073001", "oilfield_name": "流花11-1油田"}
+                code = code_map.get(case["task_type_key"], "PI")
+                task_id_val = f"{code}-20260801-001"
+                task_state = {"internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "task_id": task_id_val, "intent_id": "TI2026073001", "oilfield_name": "流花11-1油田"}
                 built_json = {
+                    "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+                    "task_id": task_id_val,
                     "intent_id": "TI2026073001",
                     "equipment_type": case["equipment_type"],
                     "water_depth": 300.0,
@@ -83,7 +88,7 @@ class TestTaskIntentSemanticMapping(unittest.TestCase):
                 self.assertEqual(intent["task_type"], case["expected_task_type"])
                 self.assertEqual(intent["task"]["type"], case["expected_task_type"])
                 self.assertEqual(intent["equipment"]["robot_type"], case["expected_robot_type"])
-                self.assertTrue(validate_task_intent(intent))
+                self.assertTrue(validate_task_intent(intent, self.kb.task_schemas))
 
     def test_missing_equipment_fails_closed(self):
         """完全未提供设备型号或单机编号时必须 fail closed"""
@@ -100,8 +105,9 @@ class TestTaskIntentSemanticMapping(unittest.TestCase):
 
     def test_pipeline_burial_rejects_observation_rov(self):
         """管缆埋设任务拒绝使用观察级 ROV"""
-        task_state = {"intent_id": "TI2026073003", "oilfield_name": "流花11-1油田"}
+        task_state = {"task_id": "PB-20260801-001", "intent_id": "TI2026073003", "oilfield_name": "流花11-1油田"}
         built_json = {
+            "task_id": "PB-20260801-001",
             "intent_id": "TI2026073003",
             "equipment_type": "观察级ROV",
             "water_depth": 500.0,
@@ -117,8 +123,9 @@ class TestTaskIntentSemanticMapping(unittest.TestCase):
 
     def test_valve_operation_rejects_auv(self):
         """采油树阀门操作拒绝使用 AUV"""
-        task_state = {"intent_id": "TI2026073004", "oilfield_name": "流花11-1油田"}
+        task_state = {"task_id": "CT-20260801-001", "intent_id": "TI2026073004", "oilfield_name": "流花11-1油田"}
         built_json = {
+            "task_id": "CT-20260801-001",
             "intent_id": "TI2026073004",
             "equipment_type": "AUV",
             "water_depth": 500.0,
@@ -134,8 +141,9 @@ class TestTaskIntentSemanticMapping(unittest.TestCase):
 
     def test_pipeline_inspection_rejects_incompatible_robot(self):
         """管缆巡检任务拒绝不兼容的履带式重载作业机器人"""
-        task_state = {"intent_id": "TI2026073005", "oilfield_name": "流花11-1油田"}
+        task_state = {"task_id": "PI-20260801-001", "intent_id": "TI2026073005", "oilfield_name": "流花11-1油田"}
         built_json = {
+            "task_id": "PI-20260801-001",
             "intent_id": "TI2026073005",
             "equipment_type": "履带式海底重载作业机器人 1600HP",
             "water_depth": 500.0,
@@ -189,8 +197,10 @@ class TestTaskIntentSemanticMapping(unittest.TestCase):
 
     def test_reconfirm_does_not_duplicate_publish(self):
         """重复发布同一 intent_id 时必须抛出 IntentIdConflict 异常且拒绝覆盖"""
-        task_state = {"intent_id": "TI2026073008", "oilfield_name": "流花11-1油田"}
+        task_state = {"internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "task_id": "PI-20260801-001", "intent_id": "TI2026073008", "oilfield_name": "流花11-1油田"}
         built_json = {
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+            "task_id": "PI-20260801-001",
             "intent_id": "TI2026073008",
             "equipment_type": "观察级ROV",
             "water_depth": 200.0,

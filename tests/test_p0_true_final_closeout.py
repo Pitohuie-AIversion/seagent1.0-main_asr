@@ -147,6 +147,9 @@ class StagingContentAndSuffixValidationTest(unittest.TestCase):
 
     def _make_valid_intent(self, intent_id="TI2026072101"):
         return {
+            "schema_version": 2,
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+            "task_id": "PI-20260721-001",
             "intent_id": intent_id,
             "task_type": "pipeline_inspection",
             "priority": 7,

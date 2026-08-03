@@ -10,6 +10,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.knowledge_retriever import KnowledgeBase
 from src.task_intent_builder import validate_task_intent
 
 
@@ -276,7 +277,7 @@ def verify_publish_result(step, response):
     except (OSError, json.JSONDecodeError) as exc:
         return False, f"Expected readable publish artifacts for {intent_id}: {exc}"
 
-    if not validate_task_intent(task_intent):
+    if not validate_task_intent(task_intent, KnowledgeBase().task_schemas):
         return False, f"Invalid TaskIntent artifact: {task_file}"
     if task_intent.get("intent_id") != intent_id:
         return False, "TaskIntent intent_id does not match final_json"

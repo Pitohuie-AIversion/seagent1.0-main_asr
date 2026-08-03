@@ -26,6 +26,7 @@ import re
 import threading
 import os
 import stat
+import uuid
 import logging
 import threading
 from typing import Any
@@ -52,8 +53,8 @@ from .time_context import get_time_context, is_standalone_time_query
 from .coord_parser import parse_coordinate_updates
 from .oilfield_linker import OilfieldEntityLinker
 from . import task_intent_builder as _ti_builder_module
-from .id_sequence import validate_intent_id, next_daily_id
-from .slot_store import SlotStore, Slot, normalize_slot_value_type
+from .id_sequence import validate_intent_id, validate_task_id, validate_task_id_for_task_type, next_daily_id
+from .slot_store import SlotStore, Slot, normalize_slot_value_type, SnapshotValidationError
 
 from .exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError
 from .intent_router import IntentRouter, IntentRouteResult
@@ -947,35 +948,35 @@ class DialogueManager:
         proposed_whitelist = {item for item in self._soft_whitelist if item[0] not in changed_fields}
 
         # Normalize and validate inside transaction working dict new_slots
-        curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
+        curr_task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
         self._normalize_and_validate_in_transaction(new_slots, curr_task_type_key)
 
-        # Auto-generate task_id inside new_slots BEFORE commit
+        curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
+
+        # Auto-generate internal_id (UUIDv4) and task_id inside new_slots BEFORE commit
         if curr_task_type_key:
+            internal_id_slot = new_slots.get("internal_id")
+            if not internal_id_slot or internal_id_slot.status != "valid" or not internal_id_slot.value:
+                new_uuid = str(uuid.uuid4())
+                if "internal_id" not in new_slots:
+                    new_slots["internal_id"] = Slot("internal_id")
+                new_slots["internal_id"].value = new_uuid
+                new_slots["internal_id"].status = "valid"
+                new_slots["internal_id"].source = "auto"
+                new_slots["internal_id"].raw_value = None
+                new_slots["internal_id"].value_type = "string"
+
             task_id_slot = new_slots.get("task_id")
             if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None:
                 valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
-                tid = self.builder._generate_task_id(curr_task_type_key, valid_cand_state)
-                if "task_id" not in new_slots:
-                    new_slots["task_id"] = Slot("task_id")
-
-        proposed_whitelist = {item for item in self._soft_whitelist if item[0] not in changed_fields}
-
-        # Normalize and validate inside transaction working dict new_slots
-        curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
-        self._normalize_and_validate_in_transaction(new_slots, curr_task_type_key)
-
-        # Auto-generate task_id inside new_slots BEFORE commit
-        if curr_task_type_key:
-            task_id_slot = new_slots.get("task_id")
-            if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None:
-                valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
-                tid = self.builder._generate_task_id(curr_task_type_key, valid_cand_state)
+                tid = self.builder.reserve_task_id(curr_task_type_key)
                 if "task_id" not in new_slots:
                     new_slots["task_id"] = Slot("task_id")
                 new_slots["task_id"].value = tid
                 new_slots["task_id"].status = "valid"
                 new_slots["task_id"].source = "auto"
+                new_slots["task_id"].raw_value = None
+                new_slots["task_id"].value_type = "string"
 
         proposed_phase = self.phase
 
@@ -1193,6 +1194,7 @@ class DialogueManager:
         ignored_keys = {
             "task_id",
             "intent_id",
+            "internal_id",
             "emergency_mode",
             "rov_description",
             "pending_oilfield_candidates",
@@ -1346,6 +1348,9 @@ class DialogueManager:
             "rov_description",
             "__clear_oilfield_name",
             "__clear_pending_oilfield",
+            "task_id",
+            "intent_id",
+            "internal_id",
             *equipment_keys,
         }
 
@@ -1679,19 +1684,40 @@ class DialogueManager:
 
         target_key = None
         if value in task_type_map:
-            new_slots["task_type"].value = value
-            new_slots["task_type"].status = "valid"
             target_key = task_type_map[value]
-            new_slots["task_type_key"].value = target_key
-            new_slots["task_type_key"].status = "valid"
         elif key == "task_type_key" and value in templates:
             target_key = value
-            new_slots["task_type_key"].value = value
-            new_slots["task_type_key"].status = "valid"
-            values = templates[value].get("task_type_values", [])
-            if len(values) == 1:
-                new_slots["task_type"].value = values[0]
+
+        existing_task_id = new_slots.get("task_id")
+        old_task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
+
+        # 如果已有 valid 的 task_id，禁止原地跨类别修改任务类型 (Lock task category)
+        if existing_task_id and existing_task_id.status == "valid" and existing_task_id.value:
+            if target_key and old_task_type_key and target_key != old_task_type_key:
+                err_msg = f"任务编号已锁定 ({existing_task_id.value})，无法直接修改任务类别。如需更换类别，请先取消或新建任务。"
+                logger.warning(
+                    "[DialogueManager] Rejecting task category modification from %s to %s because task_id %s is already locked.",
+                    old_task_type_key,
+                    target_key,
+                    existing_task_id.value,
+                )
+                if "task_type_key" in new_slots:
+                    new_slots["task_type_key"].validation_error = err_msg
+                return
+
+        if target_key:
+            if value in task_type_map:
+                new_slots["task_type"].value = value
                 new_slots["task_type"].status = "valid"
+                new_slots["task_type_key"].value = target_key
+                new_slots["task_type_key"].status = "valid"
+            elif key == "task_type_key" and value in templates:
+                new_slots["task_type_key"].value = value
+                new_slots["task_type_key"].status = "valid"
+                values = templates[value].get("task_type_values", [])
+                if len(values) == 1:
+                    new_slots["task_type"].value = values[0]
+                    new_slots["task_type"].status = "valid"
 
         if target_key:
             required_fields = self.builder.get_schema(target_key, self.mode)
@@ -2477,7 +2503,33 @@ class DialogueManager:
             candidate_store.commit_transaction(new_slots, [])
 
 
-        # 候选 SlotStore 完整构建后再一次性替换，避免半恢复状态泄漏。
+        # 候选 SlotStore 校验系统标识合法性与互斥结构完整性
+        cand_internal_slot = candidate_store.slots.get("internal_id")
+        cand_internal = cand_internal_slot.value if (cand_internal_slot and cand_internal_slot.status == "valid" and cand_internal_slot.value is not None) else None
+
+        cand_task_id_slot = candidate_store.slots.get("task_id")
+        cand_task_id = cand_task_id_slot.value if (cand_task_id_slot and cand_task_id_slot.status == "valid" and cand_task_id_slot.value is not None) else None
+
+        cand_task_type_key_slot = candidate_store.slots.get("task_type_key")
+        cand_task_type_key = cand_task_type_key_slot.value if (cand_task_type_key_slot and cand_task_type_key_slot.status == "valid" and cand_task_type_key_slot.value is not None) else None
+
+        if cand_internal is not None:
+            if not _ti_builder_module.validate_uuid4(str(cand_internal)):
+                raise SnapshotValidationError(f"Invalid internal_id UUIDv4 in candidate snapshot: {cand_internal}")
+
+        if cand_task_id is not None:
+            if not validate_task_id(str(cand_task_id)):
+                raise SnapshotValidationError(f"Invalid task_id format in candidate snapshot: {cand_task_id}")
+            if not cand_task_type_key:
+                raise SnapshotValidationError(f"task_id {cand_task_id} present in candidate snapshot but task_type_key is missing")
+            if not validate_task_id_for_task_type(str(cand_task_id), cand_task_type_key, self.kb.task_schemas):
+                raise SnapshotValidationError(f"task_id {cand_task_id} does not match task_type_key {cand_task_type_key} in candidate snapshot")
+
+        if cand_task_id is not None or cand_internal is not None:
+            if cand_task_id is None or cand_internal is None or cand_task_type_key is None:
+                raise SnapshotValidationError("v2 candidate snapshot must contain internal_id, task_id, and task_type_key simultaneously")
+
+        # 候选 SlotStore 完整校验通过后再一次性替换，避免半恢复状态泄漏。
         self.conversation_history = copy.deepcopy(conversation_history)
         self.slot_store = candidate_store
         self.task_state = self.slot_store.get_task_state()
@@ -2521,9 +2573,28 @@ class DialogueManager:
                             if isinstance(_data, dict) and _REQUIRED_INTENT_KEYS.issubset(_data.keys()):
                                 _file_task_type = _data.get("task_type")
                                 _file_intent_id = _data.get("intent_id")
-                                if _file_intent_id != intent_id_val:
+                                _file_internal_id = _data.get("internal_id")
+                                _file_task_id = _data.get("task_id")
+                                _file_ver = _data.get("schema_version")
+
+                                snap_internal_slot = self.slot_store.slots.get("internal_id")
+                                snap_internal = snap_internal_slot.value if (snap_internal_slot and snap_internal_slot.status == "valid") else None
+
+                                snap_task_id_slot = self.slot_store.slots.get("task_id")
+                                snap_task_id = snap_task_id_slot.value if (snap_task_id_slot and snap_task_id_slot.status == "valid") else None
+
+                                is_snap_v2 = bool(snap_internal or snap_task_id)
+                                is_file_v2 = bool(_file_ver == 2 or _file_internal_id or _file_task_id)
+
+                                if is_snap_v2 != is_file_v2:
+                                    logger.warning("[load_snapshot] schema version mismatch: is_snap_v2=%s vs is_file_v2=%s", is_snap_v2, is_file_v2)
+                                elif _file_intent_id != intent_id_val:
                                     logger.warning("[load_snapshot] intent_id mismatch in final file")
-                                elif not _ti_builder_module.validate_task_intent(_data):
+                                elif is_snap_v2 and (not _file_internal_id or snap_internal != _file_internal_id):
+                                    logger.warning("[load_snapshot] internal_id mismatch or missing in final file: snap=%s vs file=%s", snap_internal, _file_internal_id)
+                                elif is_snap_v2 and (not _file_task_id or snap_task_id != _file_task_id):
+                                    logger.warning("[load_snapshot] task_id mismatch or missing in final file: snap=%s vs file=%s", snap_task_id, _file_task_id)
+                                elif not _ti_builder_module.validate_task_intent(_data, self.kb.task_schemas):
                                     logger.warning("[load_snapshot] invalid task_type or TaskIntent structure in final file: %r", _file_task_type)
                                 else:
                                     validated = True

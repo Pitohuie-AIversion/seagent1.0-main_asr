@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fcntl
-import fcntl
 import json
 import logging
 import os
@@ -33,6 +32,17 @@ def validate_intent_id(intent_id: Any) -> bool:
     return bool(re.fullmatch(r"TI[0-9]{10,}", intent_id))
 
 
+def validate_task_prefix(prefix: Any) -> bool:
+    """验证任务类别前缀，排除空白、路径片段及非法字符。"""
+    if type(prefix) is not str:
+        return False
+    if not prefix or prefix.strip() != prefix:
+        return False
+    if "/" in prefix or "\\" in prefix or ".." in prefix:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_]+", prefix))
+
+
 def _get_lock_file_path() -> Path:
     return get_result_dir(create=True) / ".id_sequence.lock"
 
@@ -47,12 +57,9 @@ def next_daily_id(
     width: int,
     scan_specs: Iterable[tuple[Path | Callable[[], Path], str]],
 ) -> str:
-    """生成跨进程安全、可持久化恢复的每日递增 ID。"""
+    """生成跨进程安全、可持久化恢复的每日递增 ID (专用于 intent_id 等非连接线格式)。"""
     scan_specs_list = list(scan_specs)
     counter_key = f"{prefix}{date_text}"
-    lock_file = _get_lock_file_path()
-    counter_file = _get_counter_file_path()
-
     lock_file = _get_lock_file_path()
     counter_file = _get_counter_file_path()
 
@@ -96,6 +103,79 @@ def next_daily_id(
         except Exception as exc:
             logger.error("ID reservation failed for %s: %s", counter_key, exc, exc_info=True)
             raise IdReservationError(f"ID reservation failed for {counter_key}: {exc}") from exc
+
+
+def next_daily_task_id(
+    prefix: str,
+    date_text: str,
+    width: int = 3,
+    scan_specs: Iterable[tuple[Path | Callable[[], Path], str]] = (),
+    allowed_prefixes: Iterable[str] | None = None,
+) -> str:
+    """生成确定性、跨进程安全、可持久化恢复的任务业务编号 (<PREFIX>-YYYYMMDD-NNN)。
+
+    同一天内所有任务类别共享同一个全局递增序号 counter_key `TASK:{date_text}`。
+    """
+    if not validate_task_prefix(prefix):
+        raise IdReservationError(f"Invalid task prefix: {prefix!r}")
+    if not date_text or len(date_text) != 8 or not date_text.isdigit():
+        raise IdReservationError(f"Invalid date_text for task ID: {date_text!r}")
+
+    if allowed_prefixes is None:
+        raise IdReservationError("allowed_prefixes must be provided from task schema whitelist")
+
+    valid_prefixes = {p for p in allowed_prefixes if validate_task_prefix(p)}
+    if not valid_prefixes:
+        raise IdReservationError("allowed_prefixes contains no valid task prefixes")
+
+    if prefix not in valid_prefixes:
+        raise IdReservationError(f"Task prefix {prefix!r} is not in allowed_prefixes whitelist: {sorted(valid_prefixes)}")
+
+    scan_specs_list = list(scan_specs)
+    counter_key = f"TASK:{date_text}"
+    lock_file = _get_lock_file_path()
+    counter_file = _get_counter_file_path()
+
+    with _LOCK:
+        try:
+            try:
+                lock_handle = open(lock_file, "a+", encoding="utf-8")
+            except Exception as exc:
+                logger.error("Failed to open lock file %s: %s", lock_file, exc, exc_info=True)
+                raise IdReservationError(f"Failed to open lock file {lock_file}: {exc}") from exc
+
+            try:
+                try:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+                except Exception as exc:
+                    logger.error("Failed to acquire flock on %s: %s", lock_file, exc, exc_info=True)
+                    raise IdReservationError(f"Failed to acquire flock on {lock_file}: {exc}") from exc
+
+                try:
+                    persistent_counters = _load_persistent_counters(counter_file)
+                    persistent_seq = persistent_counters.get(counter_key, 0)
+                    disk_max = _max_existing_task_sequence(date_text, width, scan_specs_list, allowed_prefixes)
+                    memory_seq = _COUNTERS.get(counter_key, 0)
+                    next_seq = max(persistent_seq, disk_max, memory_seq) + 1
+
+                    updated_counters = dict(persistent_counters)
+                    updated_counters[counter_key] = next_seq
+                    _persist_counters(counter_file, updated_counters, counter_key)
+
+                    _COUNTERS[counter_key] = next_seq
+                    return f"{prefix}-{date_text}-{next_seq:0{width}d}"
+                finally:
+                    try:
+                        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                    except Exception:
+                        pass
+            finally:
+                lock_handle.close()
+        except IdReservationError:
+            raise
+        except Exception as exc:
+            logger.error("Task ID reservation failed for %s: %s", counter_key, exc, exc_info=True)
+            raise IdReservationError(f"Task ID reservation failed for {counter_key}: {exc}") from exc
 
 
 def _load_persistent_counters(counter_file: Path) -> dict[str, int]:
@@ -161,15 +241,40 @@ def _persist_counters(counter_file: Path, counters: dict[str, int], counter_key:
 
 
 def _sync_directory(directory: Path) -> None:
+    directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
-        directory_fd = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    except Exception:
-        # 部分文件系统不支持目录 fsync；数据文件本身已经完成 fsync 和原子替换。
-        pass
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def validate_task_id(task_id: Any) -> bool:
+    """验证 task_id 格式，排除空白、路径片段并要求前缀符合确定性格式。"""
+    if type(task_id) is not str:
+        return False
+    if not task_id or task_id.strip() != task_id:
+        return False
+    if "/" in task_id or "\\" in task_id or ".." in task_id:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_]+-\d{8}-\d{3,}", task_id) or re.fullmatch(r"[A-Za-z0-9_]+\d{10,}", task_id))
+
+
+def validate_task_id_for_task_type(task_id: Any, task_type_key: str, task_schemas: dict) -> bool:
+    """验证 task_id 强符合当前 task_type_key 对应模板权威 code 前缀。"""
+    if not validate_task_id(task_id):
+        return False
+    if not isinstance(task_schemas, dict):
+        return False
+    templates = task_schemas.get("task_templates", {})
+    if task_type_key not in templates:
+        return False
+    expected_code = templates[task_type_key].get("code")
+    if not expected_code or not validate_task_prefix(expected_code):
+        return False
+    sid = str(task_id)
+    new_pattern = rf"^{re.escape(expected_code)}-\d{{8}}-\d{{3,}}$"
+    legacy_pattern = rf"^{re.escape(expected_code)}\d{{10,}}$"
+    return bool(re.fullmatch(new_pattern, sid) or re.fullmatch(legacy_pattern, sid))
 
 
 def _max_existing_sequence(
@@ -196,12 +301,54 @@ def _max_existing_sequence(
     return max_seq
 
 
+def _max_existing_task_sequence(
+    date_text: str,
+    width: int,
+    scan_specs: Iterable[tuple[Path | Callable[[], Path], str]],
+    allowed_prefixes: Iterable[str] | None = None,
+) -> int:
+    max_seq = 0
+    if allowed_prefixes:
+        prefixes_list = [p for p in allowed_prefixes if validate_task_prefix(p)]
+    else:
+        prefixes_list = []
+    if not prefixes_list:
+        raise IdReservationError("allowed_prefixes must be provided from task schemas whitelist")
+
+    escaped_prefixes = "|".join(re.escape(p) for p in sorted(set(prefixes_list)))
+    pattern_new = re.compile(rf"(?:^|[^\w])({escaped_prefixes})-{re.escape(date_text)}-(\d{{{width},}})")
+    pattern_old = re.compile(rf"(?:^|[^\w])({escaped_prefixes}){re.escape(date_text)}(\d+)")
+
+    for entry, json_key in scan_specs:
+        directory = entry() if callable(entry) else entry
+        if not directory or not directory.exists():
+            continue
+        for path in directory.iterdir():
+            if not path.is_file():
+                continue
+            max_seq = max(max_seq, _sequence_from_text(path.name, pattern_new))
+            max_seq = max(max_seq, _sequence_from_text(path.name, pattern_old))
+            if path.suffix == ".json":
+                value = _read_json_key(path, json_key)
+                if value is not None and validate_task_id(value):
+                    max_seq = max(max_seq, _sequence_from_text(value, pattern_new))
+                    max_seq = max(max_seq, _sequence_from_text(value, pattern_old))
+    return max_seq
+
+
 def _sequence_from_text(text: str, pattern: re.Pattern[str]) -> int:
     match = pattern.search(text)
     if not match:
         return 0
+    if match.lastindex and match.lastindex >= 2:
+        prefix = match.group(1)
+        if prefix in ("TI", "task_intent_TI", "history_TI") or prefix.startswith("TI") or "task_intent_TI" in text:
+            return 0
+        seq_str = match.group(2)
+    else:
+        seq_str = match.group(1)
     try:
-        return int(match.group(1))
+        return int(seq_str)
     except ValueError:
         return 0
 

@@ -101,6 +101,9 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
 
     def _make_valid_intent(self, intent_id="TI2026072101"):
         return {
+            "schema_version": 2,
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+            "task_id": "PI-20260721-001",
             "intent_id": intent_id,
             "task_type": "pipeline_inspection",
             "priority": 7,
@@ -424,6 +427,10 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             dm_good.slot_store.slots["intent_id"].value = "TI2026063001"
             dm_good.slot_store.slots["intent_id"].status = "valid"
             dm_good.task_state["intent_id"] = "TI2026063001"
+            dm_good.slot_store.slots["task_id"].value = intent_full["task_id"]
+            dm_good.task_state["task_id"] = intent_full["task_id"]
+            dm_good.slot_store.slots["internal_id"].value = intent_full["internal_id"]
+            dm_good.task_state["internal_id"] = intent_full["internal_id"]
 
             snap_good = {
                 "phase": "done",

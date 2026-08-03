@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .exceptions import IntentIdConflict, TaskPersistenceError
-from .id_sequence import next_daily_id, validate_intent_id
+from .id_sequence import next_daily_id, validate_intent_id, validate_task_id, validate_task_id_for_task_type
 from .knowledge_retriever import KnowledgeBase
 from .result_paths import get_task_dir
 from .simulated_time import get_current_datetime
@@ -74,9 +74,30 @@ def _atomic_commit_noreplace(temp_file: Path, final_file: Path) -> None:
         raise TaskPersistenceError(f"Atomic commit failed: {e}") from e
 
 
-def validate_task_intent(intent: Any) -> bool:
-    """权威完整 TaskIntent 结构与交叉约束校验器"""
+def validate_uuid4(val: Any) -> bool:
+    """验证值是否为符合规范的 UUIDv4 字符串 (必须为规范小写)。"""
+    if type(val) is not str or not val:
+        return False
+    try:
+        parsed = uuid.UUID(val)
+        return parsed.version == 4 and str(parsed) == val
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def _is_exact_schema_version(val: Any, expected: int) -> bool:
+    """严格判断值是否为精确整数类型且数值等于 expected (排除 bool、float 及 None)。"""
+    return type(val) is int and val == expected
+
+
+def validate_task_intent_v1(intent: dict) -> bool:
+    """v1 历史 TaskIntent 结构校验：schema_version 缺失或等于精确整数 1，internal_id 与 task_id 必须同时不存在。"""
     if not isinstance(intent, dict):
+        return False
+    if "schema_version" in intent:
+        if not _is_exact_schema_version(intent["schema_version"], 1):
+            return False
+    if "internal_id" in intent or "task_id" in intent:
         return False
     intent_id = intent.get("intent_id")
     if not validate_intent_id(intent_id):
@@ -111,6 +132,71 @@ def validate_task_intent(intent: Any) -> bool:
     return True
 
 
+def validate_task_intent_v2(intent: dict, task_schemas: dict | None = None) -> bool:
+    """v2 TaskIntent 结构与类别编号权威校验器：schema_version 必须为精确整数 2，task_schemas 必传，internal_id (UUIDv4) 与 task_id (前缀匹配) 必填。"""
+    if not isinstance(intent, dict):
+        return False
+    if not _is_exact_schema_version(intent.get("schema_version"), 2):
+        return False
+    if task_schemas is None:
+        return False
+    internal_id = intent.get("internal_id")
+    if not validate_uuid4(internal_id):
+        return False
+    task_id = intent.get("task_id")
+    if not validate_task_id(task_id):
+        return False
+    intent_id = intent.get("intent_id")
+    if not validate_intent_id(intent_id):
+        return False
+    top_task_type = intent.get("task_type")
+    if top_task_type not in TASK_ALLOWED_ROBOT_TYPES:
+        return False
+    rev_map = {"pipeline_inspection": "pipeline_inspection", "pipeline_burial": "pipeline_burial", "valve_operation": "tree_valve_operation"}
+    task_type_key = intent.get("task_type_key") or rev_map.get(top_task_type, top_task_type)
+    if not validate_task_id_for_task_type(task_id, task_type_key, task_schemas):
+        return False
+    priority = intent.get("priority")
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        return False
+    time_info = intent.get("time")
+    if not isinstance(time_info, dict) or "start" not in time_info or "end" not in time_info:
+        return False
+    loc_info = intent.get("location")
+    if not isinstance(loc_info, dict) or "oilfield" not in loc_info or "water_depth_m" not in loc_info:
+        return False
+    task_info = intent.get("task")
+    if not isinstance(task_info, dict) or "type" not in task_info or "details" not in task_info:
+        return False
+    if task_info.get("type") != top_task_type:
+        return False
+    eq_info = intent.get("equipment")
+    if not isinstance(eq_info, dict) or "robot_type" not in eq_info or "payload" not in eq_info or "support_vessel" not in eq_info:
+        return False
+    robot_type = eq_info.get("robot_type")
+    allowed_robots = TASK_ALLOWED_ROBOT_TYPES.get(top_task_type, set())
+    if robot_type not in allowed_robots:
+        return False
+    cond_info = intent.get("conditions")
+    if not isinstance(cond_info, dict):
+        return False
+    return True
+
+
+def validate_task_intent(intent: Any, task_schemas: dict | None = None) -> bool:
+    """权威完整 TaskIntent 结构与交叉约束校验器 (根据 schema_version 显式分派)"""
+    if not isinstance(intent, dict):
+        return False
+    if "schema_version" not in intent:
+        return validate_task_intent_v1(intent)
+    ver = intent["schema_version"]
+    if _is_exact_schema_version(ver, 1):
+        return validate_task_intent_v1(intent)
+    elif _is_exact_schema_version(ver, 2):
+        return validate_task_intent_v2(intent, task_schemas)
+    return False
+
+
 class TaskIntentBuilder:
     def __init__(self, kb: KnowledgeBase):
         self.kb = kb
@@ -123,7 +209,7 @@ class TaskIntentBuilder:
         task_type_key: str,
         intent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """纯内存构建 TaskIntent 字典，无磁盘副作用"""
+        """prepare() 不预留、不上盘、不修改 task_id 与 internal_id；若 task_id 或 internal_id 缺失或非法，fail closed。注意：若 intent_id 尚未指定，本函数会为 TaskIntent 预留并上盘 counter 生成 intent_id。"""
         if intent_id is not None:
             if not validate_intent_id(intent_id):
                 raise TaskPersistenceError(f"Invalid intent_id parameter: {intent_id}")
@@ -189,7 +275,19 @@ class TaskIntentBuilder:
 
         conditions = {}
 
+        task_id = built_json.get("task_id") or task_state.get("task_id")
+        if not task_id:
+            raise TaskPersistenceError(f"TaskIntent prepare 失败：task_state 与 built_json 中缺少有效的 task_id。")
+
+        cand_internal = built_json.get("internal_id") or task_state.get("internal_id")
+        if not cand_internal or not validate_uuid4(cand_internal):
+            raise TaskPersistenceError(f"TaskIntent prepare 失败：task_state 与 built_json 中缺少有效的 internal_id UUIDv4: {cand_internal}")
+        internal_id = cand_internal
+
         res = {
+            "schema_version": 2,
+            "internal_id": internal_id,
+            "task_id": task_id,
             "intent_id": intent_id,
             "task_type": top_task_type,
             "priority": priority,
@@ -217,9 +315,8 @@ class TaskIntentBuilder:
 
     def create_staging(self, intent: Dict[str, Any]) -> Path:
         """创建临时 staging 任务文件"""
+        self._validate_intent(intent)
         intent_id = intent.get("intent_id")
-        if not validate_intent_id(intent_id):
-            raise TaskPersistenceError(f"Invalid intent_id for create_staging: {intent_id}")
         task_dir = get_task_dir(create=True)
         unique_suffix = f"{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}"
         staging_file = task_dir / f"task_intent_{intent_id}.staging_{unique_suffix}"
@@ -242,11 +339,8 @@ class TaskIntentBuilder:
 
     def publish_staging(self, staging_file: Path | str, intent: Dict[str, Any]) -> str:
         """使用跨进程排他锁、认领隔离与内存可信原子提交发布 staging 为正式 JSON"""
-        if not isinstance(intent, dict):
-            raise TaskPersistenceError("intent must be a dictionary")
+        self._validate_intent(intent)
         intent_id = intent.get("intent_id")
-        if not validate_intent_id(intent_id):
-            raise TaskPersistenceError(f"Invalid intent_id for publish_staging: {intent_id}")
 
         try:
             staging_path = Path(staging_file)
@@ -562,7 +656,13 @@ class TaskIntentBuilder:
         if not isinstance(intent, dict):
             raise TaskPersistenceError("TaskIntent must be a dictionary")
 
+        if intent.get("schema_version") != 2:
+            raise TaskPersistenceError(f"TaskIntent schema_version 必须为 2: {intent.get('schema_version')}")
+
         required_keys = {
+            "schema_version",
+            "internal_id",
+            "task_id",
             "intent_id",
             "task_type",
             "priority",
@@ -575,6 +675,19 @@ class TaskIntentBuilder:
         missing = required_keys - intent.keys()
         if missing:
             raise TaskPersistenceError(f"TaskIntent 缺少字段: {sorted(missing)}")
+
+        internal_id = intent.get("internal_id")
+        if not validate_uuid4(internal_id):
+            raise TaskPersistenceError(f"internal_id 非法或非有效 UUIDv4: {internal_id}")
+
+        top_task_type = intent.get("task_type")
+        task_type_key = intent.get("task_type_key")
+        if not task_type_key:
+            rev_map = {"pipeline_inspection": "pipeline_inspection", "pipeline_burial": "pipeline_burial", "valve_operation": "tree_valve_operation"}
+            task_type_key = rev_map.get(top_task_type, top_task_type)
+
+        if not validate_task_id_for_task_type(intent.get("task_id"), task_type_key, self.kb.task_schemas):
+            raise TaskPersistenceError(f"task_id 非法或与任务类型 {task_type_key!r} 前缀不匹配: {intent.get('task_id')}")
 
         if not validate_intent_id(intent.get("intent_id")):
             raise TaskPersistenceError(f"intent_id 非法: {intent.get('intent_id')}")
