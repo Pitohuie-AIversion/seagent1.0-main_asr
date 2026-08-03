@@ -264,18 +264,54 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
 
             self.assertEqual(len(set(results)), num_processes)
 
-    def test_11_deleting_intermediate_file_does_not_reuse_seq(self):
-        kb = KnowledgeBase()
-        builder = OutputBuilder(kb)
+    def test_11a_counter_file_exists_deleting_file_does_not_reuse_seq(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_task_dir = Path(tmp_dir) / "task"
+            tmp_task_dir.mkdir(parents=True, exist_ok=True)
 
-        tid1 = builder.reserve_task_id("pipeline_inspection")
-        tid2 = builder.reserve_task_id("pipeline_inspection")
+            counter_file = Path(tmp_dir) / ".id_sequences.json"
+            with open(counter_file, "w", encoding="utf-8") as f:
+                json.dump({"TASK:20260803": 2}, f)
 
-        self.assertEqual(tid1, "PI-20260803-001")
-        self.assertEqual(tid2, "PI-20260803-002")
+            file1 = tmp_task_dir / "task_PI-20260803-001.json"
+            file2 = tmp_task_dir / "task_PI-20260803-002.json"
+            with open(file1, "w", encoding="utf-8") as f:
+                json.dump({"task_id": "PI-20260803-001"}, f)
+            with open(file2, "w", encoding="utf-8") as f:
+                json.dump({"task_id": "PI-20260803-002"}, f)
 
-        tid3 = builder.reserve_task_id("pipeline_inspection")
-        self.assertEqual(tid3, "PI-20260803-003")
+            # Delete file 001 from disk
+            file1.unlink()
+
+            with patch.dict(os.environ, {"SEAGENT_RESULT_DIR": tmp_dir}):
+                id_sequence._COUNTERS.clear()
+                kb = KnowledgeBase()
+                builder = OutputBuilder(kb)
+                tid = builder.reserve_task_id("pipeline_inspection")
+                # Counter file specifies 2, so next ID is 003
+                self.assertEqual(tid, "PI-20260803-003")
+
+    def test_11b_counter_file_missing_disk_max_scan_recovers_sequence(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_task_dir = Path(tmp_dir) / "task"
+            tmp_task_dir.mkdir(parents=True, exist_ok=True)
+
+            file2 = tmp_task_dir / "task_PI-20260803-002.json"
+            with open(file2, "w", encoding="utf-8") as f:
+                json.dump({"task_id": "PI-20260803-002"}, f)
+
+            # Counter file is missing
+            counter_file = Path(tmp_dir) / ".id_sequences.json"
+            if counter_file.exists():
+                counter_file.unlink()
+
+            with patch.dict(os.environ, {"SEAGENT_RESULT_DIR": tmp_dir}):
+                id_sequence._COUNTERS.clear()
+                kb = KnowledgeBase()
+                builder = OutputBuilder(kb)
+                tid = builder.reserve_task_id("pipeline_inspection")
+                # Disk scan finds 002, so next ID recovers to 003
+                self.assertEqual(tid, "PI-20260803-003")
 
     def test_12_corrupted_counter_file_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -324,7 +360,9 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         self.assertTrue(validate_task_id_for_task_type("PB-20260803-001", "pipeline_burial", schemas))
         self.assertTrue(validate_task_id_for_task_type("CT-20260803-001", "tree_valve_operation", schemas))
 
-        # Category prefix mismatch
+        # Similar prefix hijacking attempts must be rejected
+        self.assertFalse(validate_task_id_for_task_type("PIZ-20260803-001", "pipeline_inspection", schemas))
+        self.assertFalse(validate_task_id_for_task_type("PI_FAKE-20260803-001", "pipeline_inspection", schemas))
         self.assertFalse(validate_task_id_for_task_type("PI-20260803-001", "pipeline_burial", schemas))
         self.assertFalse(validate_task_id_for_task_type("TI2026080301", "pipeline_inspection", schemas))
         self.assertFalse(validate_task_id_for_task_type("FAKE-20260803-001", "pipeline_inspection", schemas))
@@ -465,9 +503,77 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         self.assertIsNone(dm.task_state.get("task_id"))
 
     def test_24_asr_input_task_id_behavior(self):
+        import io
+        import web_backend
+        client = web_backend.app.test_client()
+
+        kb = KnowledgeBase()
+        llm = FakeLLM()
+        mock_asr = MagicMock()
+        mock_asr.transcribe_file.return_value = {
+            "text": "新建管缆埋设任务",
+            "raw_text": "新建管缆埋设任务",
+            "corrected_text": "新建管缆埋设任务",
+            "language_hint": "Chinese",
+            "device": "cpu",
+            "elapsed_ms": 10,
+            "segments": [],
+            "entities": []
+        }
+
+        with patch("web_backend._shared_asr", mock_asr), \
+             patch("web_backend._shared_kb", kb), \
+             patch("web_backend._shared_llm", llm):
+            data_file = (io.BytesIO(b"dummy audio"), "test.wav")
+            res_asr = client.post("/api/asr", data={"audio": data_file}, content_type="multipart/form-data")
+            self.assertEqual(res_asr.status_code, 200)
+            corrected_text = res_asr.get_json().get("corrected_text")
+            self.assertEqual(corrected_text, "新建管缆埋设任务")
+
+            res_chat = client.post("/api/chat", json={"session_id": "sess_asr_issue11", "message": corrected_text})
+            self.assertEqual(res_chat.status_code, 200)
+            data = res_chat.get_json()
+            self.assertIn("collected", data)
+            self.assertIn("task_id", data["collected"])
+            self.assertTrue(data["collected"]["task_id"].startswith("PB-"))
+
+    def test_25_directory_fsync_failure_raises_id_reservation_error(self):
+        real_fsync = os.fsync
+        def mock_fsync(fd):
+            try:
+                st = os.fstat(fd)
+                import stat
+                if stat.S_ISDIR(st.st_mode):
+                    raise OSError("Directory sync not supported")
+            except Exception as e:
+                if "Directory sync not supported" in str(e):
+                    raise
+            return real_fsync(fd)
+
+        with patch("os.fsync", side_effect=mock_fsync):
+            with self.assertRaises(IdReservationError):
+                id_sequence.next_daily_task_id(
+                    "PI",
+                    "20260803",
+                    3,
+                    [],
+                    allowed_prefixes=["PI"],
+                )
+
+    def test_26_internal_id_is_uuid_and_immutable(self):
+        import uuid
         dm = create_dialogue_manager()
-        dm.process("新建管缆埋设任务")
-        self.assertEqual(dm.task_state.get("task_id"), "PB-20260803-001")
+        dm.process("我要做管缆巡检")
+        internal_id = dm.task_state.get("internal_id")
+        self.assertIsNotNone(internal_id)
+        # Verify internal_id is valid UUIDv4
+        parsed_uuid = uuid.UUID(str(internal_id))
+        self.assertEqual(parsed_uuid.version, 4)
+
+        # Confirm internal_id is preserved on update and distinct from task_id
+        dm.process("水深设置为 300 米")
+        self.assertEqual(dm.task_state.get("internal_id"), internal_id)
+        self.assertNotEqual(dm.task_state.get("internal_id"), dm.task_state.get("task_id"))
 
 
 if __name__ == "__main__":

@@ -1038,8 +1038,8 @@ class SlotConsistencyTest(unittest.TestCase):
         res_chat_b = self.client.post("/api/chat", json={"session_id": "sess_pipeline_b", "message": "我要执行管缆巡检"})
         data_b = res_chat_b.get_json()
 
-        coll_a = {k: v for k, v in data_a["collected"].items() if k != "task_id"}
-        coll_b = {k: v for k, v in data_b["collected"].items() if k != "task_id"}
+        coll_a = {k: v for k, v in data_a["collected"].items() if k not in ("task_id", "internal_id")}
+        coll_b = {k: v for k, v in data_b["collected"].items() if k not in ("task_id", "internal_id")}
         self.assertEqual(coll_a, coll_b)
 
     # 29. /api/chat 返回 409 时包含 request_id

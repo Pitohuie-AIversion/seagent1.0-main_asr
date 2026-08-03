@@ -26,6 +26,7 @@ import re
 import threading
 import os
 import stat
+import uuid
 import logging
 import threading
 from typing import Any
@@ -952,8 +953,19 @@ class DialogueManager:
 
         curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
 
-        # Auto-generate task_id inside new_slots BEFORE commit
+        # Auto-generate internal_id (UUIDv4) and task_id inside new_slots BEFORE commit
         if curr_task_type_key:
+            internal_id_slot = new_slots.get("internal_id")
+            if not internal_id_slot or internal_id_slot.status != "valid" or not internal_id_slot.value:
+                new_uuid = str(uuid.uuid4())
+                if "internal_id" not in new_slots:
+                    new_slots["internal_id"] = Slot("internal_id")
+                new_slots["internal_id"].value = new_uuid
+                new_slots["internal_id"].status = "valid"
+                new_slots["internal_id"].source = "auto"
+                new_slots["internal_id"].raw_value = None
+                new_slots["internal_id"].value_type = "string"
+
             task_id_slot = new_slots.get("task_id")
             if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None:
                 valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}

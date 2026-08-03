@@ -131,7 +131,7 @@ class TaskIntentBuilder:
         task_type_key: str,
         intent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """纯内存构建 TaskIntent 字典，无磁盘副作用"""
+        """纯内存构建 TaskIntent 字典。注意：task_id 必须已在 DialogueManager 中预留并传入，本函数绝不上盘预留或覆盖 task_id。若 intent_id 尚未指定，本函数仅在内存为 TaskIntent 关联事务草稿 intent_id。"""
         if intent_id is not None:
             if not validate_intent_id(intent_id):
                 raise TaskPersistenceError(f"Invalid intent_id parameter: {intent_id}")
@@ -201,7 +201,18 @@ class TaskIntentBuilder:
         if not task_id:
             raise TaskPersistenceError(f"TaskIntent prepare 失败：task_state 与 built_json 中缺少有效的 task_id。")
 
+        cand_internal = built_json.get("internal_id") or task_state.get("internal_id")
+        if cand_internal:
+            try:
+                uuid.UUID(str(cand_internal))
+                internal_id = str(cand_internal)
+            except (ValueError, TypeError, AttributeError):
+                raise TaskPersistenceError(f"TaskIntent prepare 失败：internal_id 非法 UUID: {cand_internal}")
+        else:
+            internal_id = str(uuid.uuid4())
+
         res = {
+            "internal_id": internal_id,
             "task_id": task_id,
             "intent_id": intent_id,
             "task_type": top_task_type,
@@ -585,6 +596,13 @@ class TaskIntentBuilder:
         missing = required_keys - intent.keys()
         if missing:
             raise TaskPersistenceError(f"TaskIntent 缺少字段: {sorted(missing)}")
+
+        internal_id = intent.get("internal_id")
+        if internal_id is not None:
+            try:
+                uuid.UUID(str(internal_id))
+            except (ValueError, TypeError, AttributeError):
+                raise TaskPersistenceError(f"internal_id 非法或非有效 UUID: {internal_id}")
 
         top_task_type = intent.get("task_type")
         task_type_key = intent.get("task_type_key")

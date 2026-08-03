@@ -121,6 +121,9 @@ def next_daily_task_id(
     if not date_text or len(date_text) != 8 or not date_text.isdigit():
         raise IdReservationError(f"Invalid date_text for task ID: {date_text!r}")
 
+    if allowed_prefixes is None:
+        allowed_prefixes = [prefix]
+
     scan_specs_list = list(scan_specs)
     counter_key = f"TASK:{date_text}"
     lock_file = _get_lock_file_path()
@@ -231,15 +234,11 @@ def _persist_counters(counter_file: Path, counters: dict[str, int], counter_key:
 
 
 def _sync_directory(directory: Path) -> None:
+    directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
-        directory_fd = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    except Exception:
-        # 部分文件系统不支持目录 fsync；数据文件本身已经完成 fsync 和原子替换。
-        pass
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def validate_task_id(task_id: Any) -> bool:
@@ -266,9 +265,9 @@ def validate_task_id_for_task_type(task_id: Any, task_type_key: str, task_schema
     if not expected_code or not validate_task_prefix(expected_code):
         return False
     sid = str(task_id)
-    if not (sid.startswith(f"{expected_code}-") or sid.startswith(expected_code)):
-        return False
-    return True
+    new_pattern = rf"^{re.escape(expected_code)}-\d{{8}}-\d{{3,}}$"
+    legacy_pattern = rf"^{re.escape(expected_code)}\d{{10,}}$"
+    return bool(re.fullmatch(new_pattern, sid) or re.fullmatch(legacy_pattern, sid))
 
 
 def _max_existing_sequence(
@@ -307,7 +306,7 @@ def _max_existing_task_sequence(
     else:
         prefixes_list = []
     if not prefixes_list:
-        prefixes_list = ["PI", "PB", "CT"]
+        raise IdReservationError("allowed_prefixes must be provided from task schemas whitelist")
 
     escaped_prefixes = "|".join(re.escape(p) for p in sorted(set(prefixes_list)))
     pattern_new = re.compile(rf"(?:^|[^\w])({escaped_prefixes})-{re.escape(date_text)}-(\d{{{width},}})")
