@@ -242,12 +242,47 @@ class LLMClient:
             reason = "离线测试: 设备能力查询"
         elif is_question:
             interaction_type = "QUERY"
-            query_intent = "UNKNOWN"
-            reason = "离线测试返回预设 QUERY 未知查询结果"
-        elif expected_slots:
-            reason = "离线测试返回预设 WRITE expected_slots 回答结果"
+            query_intent = "CLARIFICATION"
+            reason = "离线测试: 疑问语句缺少明确操作，降级为澄清"
+        else:
+            has_task_write_evidence = bool(expected_slots) or any(
+                kw in text
+                for kw in (
+                    "巡检",
+                    "作业",
+                    "清洗",
+                    "水深",
+                    "设置",
+                    "修改",
+                    "创建",
+                    "新建",
+                    "参数",
+                    "改成",
+                    "设为",
+                    "调整为",
+                    "替换为",
+                    "起点",
+                    "终点",
+                    "目标",
+                    "坐标",
+                    "油田",
+                )
+            )
+            if has_task_write_evidence:
+                interaction_type = "WRITE"
+                query_intent = None
+                reason = "离线测试: 识别到任务创建或参数修改意图"
+            else:
+                interaction_type = "QUERY"
+                query_intent = "CLARIFICATION"
+                reason = "离线测试: 缺少明确写入证据，降级为澄清"
+
+        dialogue_mode = "task_collection" if interaction_type == "WRITE" else (
+            "uncertain" if query_intent in ("CLARIFICATION", "UNKNOWN") else "knowledge_qa"
+        )
 
         return {
+            "dialogue_mode": dialogue_mode,
             "interaction_type": interaction_type,
             "query_intent": query_intent,
             "confidence": 0.95,
