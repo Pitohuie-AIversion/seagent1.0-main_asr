@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fcntl
-import fcntl
 import json
 import logging
 import os
@@ -33,6 +32,17 @@ def validate_intent_id(intent_id: Any) -> bool:
     return bool(re.fullmatch(r"TI[0-9]{10,}", intent_id))
 
 
+def validate_task_prefix(prefix: Any) -> bool:
+    """验证任务类别前缀，排除空白、路径片段及非法字符。"""
+    if type(prefix) is not str:
+        return False
+    if not prefix or prefix.strip() != prefix:
+        return False
+    if "/" in prefix or "\\" in prefix or ".." in prefix:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_]+", prefix))
+
+
 def _get_lock_file_path() -> Path:
     return get_result_dir(create=True) / ".id_sequence.lock"
 
@@ -47,12 +57,9 @@ def next_daily_id(
     width: int,
     scan_specs: Iterable[tuple[Path | Callable[[], Path], str]],
 ) -> str:
-    """生成跨进程安全、可持久化恢复的每日递增 ID。"""
+    """生成跨进程安全、可持久化恢复的每日递增 ID (专用于 intent_id 等非连接线格式)。"""
     scan_specs_list = list(scan_specs)
     counter_key = f"{prefix}{date_text}"
-    lock_file = _get_lock_file_path()
-    counter_file = _get_counter_file_path()
-
     lock_file = _get_lock_file_path()
     counter_file = _get_counter_file_path()
 
@@ -96,6 +103,68 @@ def next_daily_id(
         except Exception as exc:
             logger.error("ID reservation failed for %s: %s", counter_key, exc, exc_info=True)
             raise IdReservationError(f"ID reservation failed for {counter_key}: {exc}") from exc
+
+
+def next_daily_task_id(
+    prefix: str,
+    date_text: str,
+    width: int = 3,
+    scan_specs: Iterable[tuple[Path | Callable[[], Path], str]] = (),
+) -> str:
+    """生成确定性、跨进程安全、可持久化恢复的任务业务编号 (<PREFIX>-YYYYMMDD-NNN)。
+
+    同一天内所有任务类别共享同一个全局递增序号 counter_key `TASK:{date_text}`。
+    """
+    if not validate_task_prefix(prefix):
+        raise IdReservationError(f"Invalid task prefix: {prefix!r}")
+    if not date_text or len(date_text) != 8 or not date_text.isdigit():
+        raise IdReservationError(f"Invalid date_text for task ID: {date_text!r}")
+
+    scan_specs_list = list(scan_specs)
+    counter_key = f"TASK:{date_text}"
+    lock_file = _get_lock_file_path()
+    counter_file = _get_counter_file_path()
+
+    with _LOCK:
+        try:
+            try:
+                lock_handle = open(lock_file, "a+", encoding="utf-8")
+            except Exception as exc:
+                logger.error("Failed to open lock file %s: %s", lock_file, exc, exc_info=True)
+                raise IdReservationError(f"Failed to open lock file {lock_file}: {exc}") from exc
+
+            try:
+                try:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+                except Exception as exc:
+                    logger.error("Failed to acquire flock on %s: %s", lock_file, exc, exc_info=True)
+                    raise IdReservationError(f"Failed to acquire flock on {lock_file}: {exc}") from exc
+
+                try:
+                    persistent_counters = _load_persistent_counters(counter_file)
+                    persistent_seq = persistent_counters.get(counter_key, 0)
+                    disk_max = _max_existing_task_sequence(date_text, width, scan_specs_list)
+                    memory_seq = _COUNTERS.get(counter_key, 0)
+                    next_seq = max(persistent_seq, disk_max, memory_seq) + 1
+
+                    updated_counters = dict(persistent_counters)
+                    updated_counters[counter_key] = next_seq
+                    _persist_counters(counter_file, updated_counters, counter_key)
+
+                    _COUNTERS[counter_key] = next_seq
+                    return f"{prefix}-{date_text}-{next_seq:0{width}d}"
+                finally:
+                    try:
+                        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                    except Exception:
+                        pass
+            finally:
+                lock_handle.close()
+        except IdReservationError:
+            raise
+        except Exception as exc:
+            logger.error("Task ID reservation failed for %s: %s", counter_key, exc, exc_info=True)
+            raise IdReservationError(f"Task ID reservation failed for {counter_key}: {exc}") from exc
 
 
 def _load_persistent_counters(counter_file: Path) -> dict[str, int]:
@@ -193,6 +262,31 @@ def _max_existing_sequence(
                 value = _read_json_key(path, json_key)
                 if value is not None:
                     max_seq = max(max_seq, _sequence_from_text(value, pattern))
+    return max_seq
+
+
+def _max_existing_task_sequence(
+    date_text: str,
+    width: int,
+    scan_specs: Iterable[tuple[Path | Callable[[], Path], str]],
+) -> int:
+    max_seq = 0
+    pattern_new = re.compile(rf"[A-Za-z0-9_]+-{re.escape(date_text)}-(\d{{{width},}})")
+    pattern_old = re.compile(rf"[A-Za-z0-9_]+?{re.escape(date_text)}(\d+)")
+    for entry, json_key in scan_specs:
+        directory = entry() if callable(entry) else entry
+        if not directory or not directory.exists():
+            continue
+        for path in directory.iterdir():
+            if not path.is_file():
+                continue
+            max_seq = max(max_seq, _sequence_from_text(path.name, pattern_new))
+            max_seq = max(max_seq, _sequence_from_text(path.name, pattern_old))
+            if path.suffix == ".json":
+                value = _read_json_key(path, json_key)
+                if value is not None:
+                    max_seq = max(max_seq, _sequence_from_text(value, pattern_new))
+                    max_seq = max(max_seq, _sequence_from_text(value, pattern_old))
     return max_seq
 
 

@@ -14,9 +14,10 @@ output_builder.py — 标准 JSON 构建器 & 完整性检查器
 from typing import Any
 
 from .knowledge_retriever import KnowledgeBase
-from .simulated_time import get_current_date
+from .simulated_time import get_business_date
 from .coord_parser import parse_coord_value
-from .id_sequence import next_daily_id
+from .id_sequence import next_daily_task_id, validate_task_prefix
+from .exceptions import IdReservationError
 from .result_paths import get_task_dir, get_history_dir
 from .normalizer import FieldNormalizer
 
@@ -143,7 +144,7 @@ class OutputBuilder:
         task_type_key: str,
     ) -> Any:
         if ftype == "auto":
-            return self._generate_task_id(task_type_key, task_state)
+            return task_state.get(key)
 
         if ftype == "fixed":
             return field_def.get("fixed_value")
@@ -212,23 +213,43 @@ class OutputBuilder:
         return None
 
     # ══════════════════════════════════════════════════════════════════════════
-    # task_id 自动生成
+    # task_id 显式生成入口
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _generate_task_id(self, task_type_key: str, task_state: dict) -> str:
+    def reserve_task_id(self, task_type_key: str, task_state: dict) -> str:
+        """显式预留新的任务业务编号 (<PREFIX>-YYYYMMDD-NNN)。
+
+        权威前缀仅取自 KnowledgeBase.task_schemas["task_templates"][task_type_key]["code"]。
+        前缀缺失或非法时直接抛出 IdReservationError。
+        """
         existing = task_state.get("task_id")
         if existing:
-            return existing
+            return str(existing)
+
+        templates = self.kb.task_schemas.get("task_templates", {})
+        if task_type_key not in templates:
+            raise IdReservationError(f"Task type key {task_type_key!r} not found in task templates schema.")
+
+        template = templates[task_type_key]
+        code = template.get("code")
+        if not code or not validate_task_prefix(code):
+            raise IdReservationError(
+                f"Invalid or missing code prefix {code!r} for task_type_key {task_type_key!r}."
+            )
+
+        return self._generate_task_id(task_type_key, task_state)
+
+    def _generate_task_id(self, task_type_key: str, task_state: dict) -> str:
         templates = self.kb.task_schemas.get("task_templates", {})
         code = templates.get(task_type_key, {}).get("code", "XX")
-        # 使用模拟日期
-        today = get_current_date().strftime("%Y%m%d")
-        return next_daily_id(
+        today = get_business_date().strftime("%Y%m%d")
+        return next_daily_task_id(
             code,
             today,
-            2,
+            3,
             [(get_task_dir(create=False), "task_id"), (get_history_dir(create=False), "task_id")],
         )
+
 
 
     def _get_template_task_type_values(self, task_type_key: str) -> list[str]:

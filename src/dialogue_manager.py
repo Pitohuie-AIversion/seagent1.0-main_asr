@@ -947,35 +947,24 @@ class DialogueManager:
         proposed_whitelist = {item for item in self._soft_whitelist if item[0] not in changed_fields}
 
         # Normalize and validate inside transaction working dict new_slots
-        curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
+        curr_task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
         self._normalize_and_validate_in_transaction(new_slots, curr_task_type_key)
+
+        curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
 
         # Auto-generate task_id inside new_slots BEFORE commit
         if curr_task_type_key:
             task_id_slot = new_slots.get("task_id")
             if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None:
                 valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
-                tid = self.builder._generate_task_id(curr_task_type_key, valid_cand_state)
-                if "task_id" not in new_slots:
-                    new_slots["task_id"] = Slot("task_id")
-
-        proposed_whitelist = {item for item in self._soft_whitelist if item[0] not in changed_fields}
-
-        # Normalize and validate inside transaction working dict new_slots
-        curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
-        self._normalize_and_validate_in_transaction(new_slots, curr_task_type_key)
-
-        # Auto-generate task_id inside new_slots BEFORE commit
-        if curr_task_type_key:
-            task_id_slot = new_slots.get("task_id")
-            if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None:
-                valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
-                tid = self.builder._generate_task_id(curr_task_type_key, valid_cand_state)
+                tid = self.builder.reserve_task_id(curr_task_type_key, valid_cand_state)
                 if "task_id" not in new_slots:
                     new_slots["task_id"] = Slot("task_id")
                 new_slots["task_id"].value = tid
                 new_slots["task_id"].status = "valid"
                 new_slots["task_id"].source = "auto"
+                new_slots["task_id"].raw_value = None
+                new_slots["task_id"].value_type = "string"
 
         proposed_phase = self.phase
 
@@ -1346,6 +1335,8 @@ class DialogueManager:
             "rov_description",
             "__clear_oilfield_name",
             "__clear_pending_oilfield",
+            "task_id",
+            "intent_id",
             *equipment_keys,
         }
 
