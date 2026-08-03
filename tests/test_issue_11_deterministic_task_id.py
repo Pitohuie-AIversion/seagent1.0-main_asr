@@ -766,6 +766,29 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         unsupported_ver["schema_version"] = 999
         self.assertFalse(validate_task_intent(unsupported_ver, kb.task_schemas))
 
+        # schema_version = True (bool) -> False
+        bool_ver = copy.deepcopy(base_v2_intent)
+        bool_ver["schema_version"] = True
+        self.assertFalse(validate_task_intent(bool_ver, kb.task_schemas))
+
+        # schema_version = 2.0 (float) -> False
+        float_ver = copy.deepcopy(base_v2_intent)
+        float_ver["schema_version"] = 2.0
+        self.assertFalse(validate_task_intent(float_ver, kb.task_schemas))
+
+        # schema_version = None (explicit null) -> False
+        null_ver = copy.deepcopy(base_v2_intent)
+        null_ver["schema_version"] = None
+        self.assertFalse(validate_task_intent(null_ver, kb.task_schemas))
+
+        # Unversioned dict with internal_id/task_id -> False (Option A strict versioning)
+        unversioned_v2 = copy.deepcopy(base_v2_intent)
+        del unversioned_v2["schema_version"]
+        self.assertFalse(validate_task_intent(unversioned_v2, kb.task_schemas))
+
+        # v2 validation without task_schemas -> False
+        self.assertFalse(validate_task_intent(base_v2_intent, task_schemas=None))
+
         # v1 structure with internal_id attached -> False
         v1_with_internal = {
             "schema_version": 1,

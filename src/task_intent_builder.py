@@ -85,13 +85,18 @@ def validate_uuid4(val: Any) -> bool:
         return False
 
 
+def _is_exact_schema_version(val: Any, expected: int) -> bool:
+    """严格判断值是否为精确整数类型且数值等于 expected (排除 bool、float 及 None)。"""
+    return type(val) is int and val == expected
+
+
 def validate_task_intent_v1(intent: dict) -> bool:
-    """v1 历史 TaskIntent 结构校验：schema_version 缺失或等于 1，internal_id 与 task_id 必须同时不存在。"""
+    """v1 历史 TaskIntent 结构校验：schema_version 缺失或等于精确整数 1，internal_id 与 task_id 必须同时不存在。"""
     if not isinstance(intent, dict):
         return False
-    ver = intent.get("schema_version", 1)
-    if ver not in (1, None):
-        return False
+    if "schema_version" in intent:
+        if not _is_exact_schema_version(intent["schema_version"], 1):
+            return False
     if "internal_id" in intent or "task_id" in intent:
         return False
     intent_id = intent.get("intent_id")
@@ -128,10 +133,12 @@ def validate_task_intent_v1(intent: dict) -> bool:
 
 
 def validate_task_intent_v2(intent: dict, task_schemas: dict | None = None) -> bool:
-    """v2 TaskIntent 结构校验：schema_version 必须为 2，internal_id (UUIDv4) 与 task_id (前缀匹配) 必填。"""
+    """v2 TaskIntent 结构与类别编号权威校验器：schema_version 必须为精确整数 2，task_schemas 必传，internal_id (UUIDv4) 与 task_id (前缀匹配) 必填。"""
     if not isinstance(intent, dict):
         return False
-    if intent.get("schema_version") != 2:
+    if not _is_exact_schema_version(intent.get("schema_version"), 2):
+        return False
+    if task_schemas is None:
         return False
     internal_id = intent.get("internal_id")
     if not validate_uuid4(internal_id):
@@ -145,11 +152,10 @@ def validate_task_intent_v2(intent: dict, task_schemas: dict | None = None) -> b
     top_task_type = intent.get("task_type")
     if top_task_type not in TASK_ALLOWED_ROBOT_TYPES:
         return False
-    if task_schemas is not None:
-        rev_map = {"pipeline_inspection": "pipeline_inspection", "pipeline_burial": "pipeline_burial", "valve_operation": "tree_valve_operation"}
-        task_type_key = intent.get("task_type_key") or rev_map.get(top_task_type, top_task_type)
-        if not validate_task_id_for_task_type(task_id, task_type_key, task_schemas):
-            return False
+    rev_map = {"pipeline_inspection": "pipeline_inspection", "pipeline_burial": "pipeline_burial", "valve_operation": "tree_valve_operation"}
+    task_type_key = intent.get("task_type_key") or rev_map.get(top_task_type, top_task_type)
+    if not validate_task_id_for_task_type(task_id, task_type_key, task_schemas):
+        return False
     priority = intent.get("priority")
     if isinstance(priority, bool) or not isinstance(priority, int):
         return False
@@ -181,13 +187,13 @@ def validate_task_intent(intent: Any, task_schemas: dict | None = None) -> bool:
     """权威完整 TaskIntent 结构与交叉约束校验器 (根据 schema_version 显式分派)"""
     if not isinstance(intent, dict):
         return False
-    ver = intent.get("schema_version")
-    if ver == 2 or (ver is None and ("internal_id" in intent or "task_id" in intent)):
-        intent_v2 = dict(intent)
-        intent_v2["schema_version"] = 2
-        return validate_task_intent_v2(intent_v2, task_schemas)
-    elif ver is None or ver == 1:
+    if "schema_version" not in intent:
         return validate_task_intent_v1(intent)
+    ver = intent["schema_version"]
+    if _is_exact_schema_version(ver, 1):
+        return validate_task_intent_v1(intent)
+    elif _is_exact_schema_version(ver, 2):
+        return validate_task_intent_v2(intent, task_schemas)
     return False
 
 

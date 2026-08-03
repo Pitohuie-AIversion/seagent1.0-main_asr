@@ -88,7 +88,7 @@ class TestTaskIntentSemanticMapping(unittest.TestCase):
                 self.assertEqual(intent["task_type"], case["expected_task_type"])
                 self.assertEqual(intent["task"]["type"], case["expected_task_type"])
                 self.assertEqual(intent["equipment"]["robot_type"], case["expected_robot_type"])
-                self.assertTrue(validate_task_intent(intent))
+                self.assertTrue(validate_task_intent(intent, self.kb.task_schemas))
 
     def test_missing_equipment_fails_closed(self):
         """完全未提供设备型号或单机编号时必须 fail closed"""
