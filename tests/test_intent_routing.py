@@ -1511,6 +1511,65 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                 self.assertEqual(self.dm.control_state, "idle")
                 self.assertEqual(self.dm.task_state.get("task_type_key"), "pipeline_inspection")
 
+    # 35. 复合句否定+肯定动作以及非任务控制对象隔离测试
+    def test_compound_and_object_level_emergency_routing(self):
+        emergency_cases = [
+            ("不是要停止当前任务而是暂停当前任务", "emergency_intervention", "pause"),
+            ("不要暂停当前任务而是立即停止当前任务", "emergency_intervention", "stop"),
+            ("不是要取消当前任务而是终止当前任务", "emergency_intervention", "abort"),
+            ("立即停止当前任务并输出状态", "emergency_intervention", "stop"),
+            ("停止回答并立即停止当前任务", "emergency_intervention", "stop"),
+        ]
+
+        for msg, expected_mode, expected_action in emergency_cases:
+            with self.subTest(msg=msg):
+                self.dm.reset()
+                self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+                self.dm.task_state = self.dm.slot_store.get_task_state()
+
+                route = self.dm.intent_router.route(
+                    user_message=msg,
+                    conversation_history=[],
+                    task_state=self.dm.task_state,
+                    phase=self.dm.phase,
+                    expected_slots=[],
+                )
+                self.assertEqual(route.dialogue_mode, expected_mode)
+                self.assertEqual(route.emergency_action, expected_action)
+
+                with patch.object(self.dm.extractor, "extract_updates") as mock_ext:
+                    reply = self.dm.process(msg)
+                    mock_ext.assert_not_called()
+
+                self.assertEqual(self.dm.dialogue_mode, expected_mode)
+                self.assertEqual(self.dm.control_state, "idle")
+                self.assertEqual(self.dm.task_state.get("task_type_key"), "pipeline_inspection")
+
+        non_emergency_cases = [
+            "不要停止当前任务而是继续巡检",
+            "立即停止回答",
+        ]
+        for msg in non_emergency_cases:
+            with self.subTest(msg=msg):
+                self.dm.reset()
+                self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+                self.dm.task_state = self.dm.slot_store.get_task_state()
+
+                route = self.dm.intent_router.route(
+                    user_message=msg,
+                    conversation_history=[],
+                    task_state=self.dm.task_state,
+                    phase=self.dm.phase,
+                    expected_slots=[],
+                )
+                self.assertNotEqual(route.dialogue_mode, "emergency_intervention")
+
+                with patch.object(self.dm.extractor, "extract_updates", return_value={"intent": "ORDINARY_QA", "slot_candidates": []}):
+                    reply = self.dm.process(msg)
+
+                self.assertNotEqual(self.dm.dialogue_mode, "emergency_intervention")
+                self.assertEqual(self.dm.task_state.get("task_type_key"), "pipeline_inspection")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -215,11 +215,11 @@ class IntentRouter:
     @staticmethod
     def _parse_executable_control_action(user_message: str) -> str | None:
         """从用户消息中提取明确可执行的紧急控制动作。"""
-        # 1. 结合标点符号及前置控制动词后的疑问/条件句界限切分子句
+        # 1. 结合标点符号及前置控制动词后的疑问/条件句与转折连词界限切分子句
         clauses = [
             c.strip()
             for c in re.split(
-                r"[,，;；!！.。\n]|(?<!^)(?=(?:为什么|为何|怎么|如果|要是|假如|假设|万一))",
+                r"[,，;；!！.。\n]|(?<!^)(?=(?:为什么|为何|怎么|如果|要是|假如|假设|万一|而是|改为|改成|然后|接着|并且|同时|但是|但|不过))",
                 user_message,
             )
             if c and c.strip()
@@ -256,7 +256,40 @@ class IntentRouter:
         )
 
         for clause in clauses:
-            if any(obj in clause for obj in non_task_objects):
+            # 2. 检查子句是否为作用于非任务对象的控制句（如“停止回答”、“停止任务打印”）
+            is_non_task_clause = False
+            for obj in non_task_objects:
+                if obj in clause:
+                    for act_key, keywords in action_map.items():
+                        for kw in keywords:
+                            if kw in clause:
+                                kw_pos = clause.find(kw)
+                                obj_pos = clause.find(obj)
+                                if kw_pos != -1 and obj_pos != -1 and kw_pos < obj_pos and (obj_pos - kw_pos) <= 8:
+                                    has_real_robot_target = any(
+                                        t in clause
+                                        for t in (
+                                            "当前任务",
+                                            "当前操作",
+                                            "水下",
+                                            "下潜",
+                                            "巡检",
+                                            "采集",
+                                            "作业",
+                                            "设备",
+                                            "机器人",
+                                            "管道",
+                                        )
+                                    )
+                                    if not has_real_robot_target:
+                                        is_non_task_clause = True
+                                        break
+                        if is_non_task_clause:
+                            break
+                if is_non_task_clause:
+                    break
+
+            if is_non_task_clause:
                 continue
 
             action_found = None
