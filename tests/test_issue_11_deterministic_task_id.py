@@ -3,6 +3,7 @@
 本文件全面兼容 python -m unittest discover tests -v 命令（0 pytest 依赖）。
 """
 
+import copy
 import json
 import os
 import tempfile
@@ -15,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 from src.dialogue_manager import DialogueManager
 from src.exceptions import IdReservationError, TaskPersistenceError
+from src.slot_store import SnapshotValidationError
 from src import id_sequence
 from src.id_sequence import (
     next_daily_task_id,
@@ -708,12 +710,13 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
             mismatched_snap = {
                 "phase": "done",
                 "mode": "normal",
-                "task_state": {"internal_id": "b1ffcd88-8b0a-4fe7-aa5c-5aa8ac270a22", "task_id": "PI-20260803-001", "intent_id": "TI2026080301"},
+                "task_state": {"internal_id": "b1ffcd88-8b0a-4fe7-aa5c-5aa8ac270a22", "task_id": "PI-20260803-001", "task_type_key": "pipeline_inspection", "intent_id": "TI2026080301"},
                 "slot_store": {
                     "store_version": 1,
                     "slots": {
                         "internal_id": {"slot_name": "internal_id", "value": "b1ffcd88-8b0a-4fe7-aa5c-5aa8ac270a22", "status": "valid", "version": 1},
                         "task_id": {"slot_name": "task_id", "value": "PI-20260803-001", "status": "valid", "version": 1},
+                        "task_type_key": {"slot_name": "task_type_key", "value": "pipeline_inspection", "status": "valid", "version": 1},
                         "intent_id": {"slot_name": "intent_id", "value": "TI2026080301", "status": "valid", "version": 1}
                     },
                     "unresolved": []
@@ -726,6 +729,120 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
                 dm.load_snapshot(mismatched_snap)
 
             self.assertNotEqual(dm.phase, "done")
+
+    def test_30_explicit_schema_version_and_anti_tampering_closeout(self):
+        """Test explicit schema_version dispatching, mandatory schema_version: 2 on write, and anti-tampering during restoration."""
+        kb = KnowledgeBase()
+        ti_builder = TaskIntentBuilder(kb)
+
+        # 1. validator version dispatch tests
+        base_v2_intent = {
+            "schema_version": 2,
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+            "task_id": "PI-20260803-001",
+            "intent_id": "TI2026080301",
+            "task_type": "pipeline_inspection",
+            "priority": 7,
+            "time": {"start": "2026-08-03T10:00:00+08:00", "end": "2026-08-03T12:00:00+08:00"},
+            "location": {"oilfield": "南海一号", "water_depth_m": 300.0},
+            "task": {"type": "pipeline_inspection", "details": {}},
+            "equipment": {"robot_type": "observation_rov", "payload": [], "support_vessel": {"name": None}},
+            "conditions": {}
+        }
+        self.assertTrue(validate_task_intent(base_v2_intent, kb.task_schemas))
+
+        # schema_version = 2 but internal_id deleted -> False
+        no_internal = copy.deepcopy(base_v2_intent)
+        del no_internal["internal_id"]
+        self.assertFalse(validate_task_intent(no_internal, kb.task_schemas))
+
+        # schema_version = 2 but task_id deleted -> False
+        no_task_id = copy.deepcopy(base_v2_intent)
+        del no_task_id["task_id"]
+        self.assertFalse(validate_task_intent(no_task_id, kb.task_schemas))
+
+        # schema_version = 999 -> False
+        unsupported_ver = copy.deepcopy(base_v2_intent)
+        unsupported_ver["schema_version"] = 999
+        self.assertFalse(validate_task_intent(unsupported_ver, kb.task_schemas))
+
+        # v1 structure with internal_id attached -> False
+        v1_with_internal = {
+            "schema_version": 1,
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+            "intent_id": "TI2026080301",
+            "task_type": "pipeline_inspection",
+            "priority": 7,
+            "time": {"start": "2026-08-03T10:00:00+08:00", "end": "2026-08-03T12:00:00+08:00"},
+            "location": {"oilfield": "南海一号", "water_depth_m": 300.0},
+            "task": {"type": "pipeline_inspection", "details": {}},
+            "equipment": {"robot_type": "observation_rov", "payload": [], "support_vessel": {"name": None}},
+            "conditions": {}
+        }
+        self.assertFalse(validate_task_intent(v1_with_internal, kb.task_schemas))
+
+        # 2. _validate_intent requires schema_version == 2
+        no_ver_intent = copy.deepcopy(base_v2_intent)
+        del no_ver_intent["schema_version"]
+        with self.assertRaises(TaskPersistenceError):
+            ti_builder._validate_intent(no_ver_intent)
+
+        # 3. Done restoration: final deleted internal_id/task_id or v1/v2 mismatch rejects done phase
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_task_dir = Path(tmp_dir) / "task"
+            tmp_task_dir.mkdir(parents=True, exist_ok=True)
+            pub_file = tmp_task_dir / "task_intent_TI2026080301.json"
+
+            # Final file has internal_id deleted
+            file_deleted_internal = copy.deepcopy(base_v2_intent)
+            del file_deleted_internal["internal_id"]
+            with open(pub_file, "w", encoding="utf-8") as f:
+                json.dump(file_deleted_internal, f)
+
+            snap_v2 = {
+                "phase": "done",
+                "mode": "normal",
+                "task_state": {
+                    "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+                    "task_id": "PI-20260803-001",
+                    "task_type_key": "pipeline_inspection",
+                    "intent_id": "TI2026080301"
+                },
+                "slot_store": {
+                    "store_version": 1,
+                    "slots": {
+                        "internal_id": {"slot_name": "internal_id", "value": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "status": "valid", "version": 1},
+                        "task_id": {"slot_name": "task_id", "value": "PI-20260803-001", "status": "valid", "version": 1},
+                        "task_type_key": {"slot_name": "task_type_key", "value": "pipeline_inspection", "status": "valid", "version": 1},
+                        "intent_id": {"slot_name": "intent_id", "value": "TI2026080301", "status": "valid", "version": 1}
+                    },
+                    "unresolved": []
+                }
+            }
+
+            dm = create_dialogue_manager()
+            with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+                dm.load_snapshot(snap_v2)
+
+            self.assertNotEqual(dm.phase, "done")
+
+        # 4. Snapshot with task_id but missing task_type_key or internal_id raises SnapshotValidationError
+        incomplete_cand_snap = {
+            "phase": "collecting",
+            "mode": "normal",
+            "task_state": {"task_id": "PI-20260803-001"},
+            "slot_store": {
+                "store_version": 1,
+                "slots": {
+                    "task_id": {"slot_name": "task_id", "value": "PI-20260803-001", "status": "valid", "version": 1}
+                },
+                "unresolved": []
+            }
+        }
+        with self.assertRaises(SnapshotValidationError):
+            dm.load_snapshot(incomplete_cand_snap)
 
 
 if __name__ == "__main__":

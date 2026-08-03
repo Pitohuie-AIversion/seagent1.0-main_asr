@@ -329,6 +329,7 @@ class StagingSourceValidationTest(unittest.TestCase):
     def test_c18_legitimate_create_staging_to_publish_staging_succeeds(self):
         """18. 正常的 create_staging → publish_staging 流程成功发布"""
         intent = {
+            "schema_version": 2,
             "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
             "task_id": "PI-20260720-001",
             "intent_id": "TI2026072001",

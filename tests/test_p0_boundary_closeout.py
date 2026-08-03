@@ -273,11 +273,13 @@ class P0BoundaryCloseoutTest(unittest.TestCase):
             snap = {
                 "phase": "done",
                 "mode": "normal",
-                "task_state": {"task_type_key": "pipeline_inspection", "water_depth": 300.0, "intent_id": "TI2026063001"},
+                "task_state": {"internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "task_id": "PI-20260630-001", "task_type_key": "pipeline_inspection", "water_depth": 300.0, "intent_id": "TI2026063001"},
                 "built_json": {"task_type_key": "pipeline_inspection", "water_depth": 300.0, "intent_id": "TI2026063001"},
                 "slot_store": {
                     "store_version": 1,
                     "slots": {
+                        "internal_id": {"slot_name": "internal_id", "value": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "status": "valid", "version": 1},
+                        "task_id": {"slot_name": "task_id", "value": "PI-20260630-001", "status": "valid", "version": 1},
                         "task_type_key": {"slot_name": "task_type_key", "value": "pipeline_inspection", "status": "valid", "version": 1},
                         "water_depth": {"slot_name": "water_depth", "value": 300.0, "status": "valid", "version": 1},
                         "intent_id": {"slot_name": "intent_id", "value": "TI2026063001", "status": "valid", "version": 1}

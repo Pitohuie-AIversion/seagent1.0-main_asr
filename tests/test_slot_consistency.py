@@ -1611,6 +1611,7 @@ class SlotConsistencyTest(unittest.TestCase):
             task_dir.mkdir(parents=True, exist_ok=True)
 
             intent1 = {
+                "schema_version": 2,
                 "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
                 "task_id": "PI-20260718-001",
                 "intent_id": "TI2026071801",
@@ -1659,6 +1660,7 @@ class SlotConsistencyTest(unittest.TestCase):
             task_dir.mkdir(parents=True, exist_ok=True)
 
             intent1 = {
+                "schema_version": 2,
                 "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
                 "task_id": "PI-20260718-001",
                 "intent_id": "TI2026071801",

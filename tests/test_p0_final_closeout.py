@@ -156,12 +156,13 @@ class SnapshotIntentIdPreservationTest(unittest.TestCase):
             tmp_task_dir.mkdir(parents=True, exist_ok=True)
             pub_file = tmp_task_dir / "task_intent_TI2026070001.json"
             valid_intent = {
+                "schema_version": 2,
                 "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
                 "task_id": "PI-20260700-001",
                 "intent_id": "TI2026070001",
                 "task_type": "pipeline_inspection",
                 "priority": 7,
-                "time": {"start": "2026-06-30T10:00:00+08:00", "end": "2026-06-30T12:00:00+08:00"},
+                "time": {"start": "2026-07-01T10:00:00+08:00", "end": "2026-07-01T12:00:00+08:00"},
                 "location": {"oilfield": "南海一号", "water_depth_m": 300.0},
                 "task": {
                     "type": "pipeline_inspection",
@@ -187,6 +188,10 @@ class SnapshotIntentIdPreservationTest(unittest.TestCase):
                 "slot_store": {
                     "store_version": 5,
                     "slots": {
+                        "internal_id": {"slot_name": "internal_id",
+                                          "value": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "status": "valid", "version": 1},
+                        "task_id": {"slot_name": "task_id",
+                                    "value": "PI-20260700-001", "status": "valid", "version": 1},
                         "task_type_key": {"slot_name": "task_type_key",
                                           "value": "pipeline_inspection", "status": "valid", "version": 1},
                         "intent_id": {"slot_name": "intent_id", "value": "TI2026070001",

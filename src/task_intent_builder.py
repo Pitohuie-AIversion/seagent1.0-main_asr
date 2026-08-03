@@ -85,23 +85,67 @@ def validate_uuid4(val: Any) -> bool:
         return False
 
 
-def validate_task_intent(intent: Any, task_schemas: dict | None = None) -> bool:
-    """权威完整 TaskIntent 结构与交叉约束校验器 (兼容历史 v1 只读恢复与 v2 完整校验)"""
+def validate_task_intent_v1(intent: dict) -> bool:
+    """v1 历史 TaskIntent 结构校验：schema_version 缺失或等于 1，internal_id 与 task_id 必须同时不存在。"""
     if not isinstance(intent, dict):
+        return False
+    ver = intent.get("schema_version", 1)
+    if ver not in (1, None):
+        return False
+    if "internal_id" in intent or "task_id" in intent:
         return False
     intent_id = intent.get("intent_id")
     if not validate_intent_id(intent_id):
         return False
+    top_task_type = intent.get("task_type")
+    if top_task_type not in TASK_ALLOWED_ROBOT_TYPES:
+        return False
+    priority = intent.get("priority")
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        return False
+    time_info = intent.get("time")
+    if not isinstance(time_info, dict) or "start" not in time_info or "end" not in time_info:
+        return False
+    loc_info = intent.get("location")
+    if not isinstance(loc_info, dict) or "oilfield" not in loc_info or "water_depth_m" not in loc_info:
+        return False
+    task_info = intent.get("task")
+    if not isinstance(task_info, dict) or "type" not in task_info or "details" not in task_info:
+        return False
+    if task_info.get("type") != top_task_type:
+        return False
+    eq_info = intent.get("equipment")
+    if not isinstance(eq_info, dict) or "robot_type" not in eq_info or "payload" not in eq_info or "support_vessel" not in eq_info:
+        return False
+    robot_type = eq_info.get("robot_type")
+    allowed_robots = TASK_ALLOWED_ROBOT_TYPES.get(top_task_type, set())
+    if robot_type not in allowed_robots:
+        return False
+    cond_info = intent.get("conditions")
+    if not isinstance(cond_info, dict):
+        return False
+    return True
+
+
+def validate_task_intent_v2(intent: dict, task_schemas: dict | None = None) -> bool:
+    """v2 TaskIntent 结构校验：schema_version 必须为 2，internal_id (UUIDv4) 与 task_id (前缀匹配) 必填。"""
+    if not isinstance(intent, dict):
+        return False
+    if intent.get("schema_version") != 2:
+        return False
     internal_id = intent.get("internal_id")
-    if internal_id is not None and not validate_uuid4(internal_id):
+    if not validate_uuid4(internal_id):
         return False
     task_id = intent.get("task_id")
-    if task_id is not None and not validate_task_id(task_id):
+    if not validate_task_id(task_id):
+        return False
+    intent_id = intent.get("intent_id")
+    if not validate_intent_id(intent_id):
         return False
     top_task_type = intent.get("task_type")
     if top_task_type not in TASK_ALLOWED_ROBOT_TYPES:
         return False
-    if task_schemas is not None and task_id is not None:
+    if task_schemas is not None:
         rev_map = {"pipeline_inspection": "pipeline_inspection", "pipeline_burial": "pipeline_burial", "valve_operation": "tree_valve_operation"}
         task_type_key = intent.get("task_type_key") or rev_map.get(top_task_type, top_task_type)
         if not validate_task_id_for_task_type(task_id, task_type_key, task_schemas):
@@ -131,6 +175,20 @@ def validate_task_intent(intent: Any, task_schemas: dict | None = None) -> bool:
     if not isinstance(cond_info, dict):
         return False
     return True
+
+
+def validate_task_intent(intent: Any, task_schemas: dict | None = None) -> bool:
+    """权威完整 TaskIntent 结构与交叉约束校验器 (根据 schema_version 显式分派)"""
+    if not isinstance(intent, dict):
+        return False
+    ver = intent.get("schema_version")
+    if ver == 2 or (ver is None and ("internal_id" in intent or "task_id" in intent)):
+        intent_v2 = dict(intent)
+        intent_v2["schema_version"] = 2
+        return validate_task_intent_v2(intent_v2, task_schemas)
+    elif ver is None or ver == 1:
+        return validate_task_intent_v1(intent)
+    return False
 
 
 class TaskIntentBuilder:
@@ -592,7 +650,11 @@ class TaskIntentBuilder:
         if not isinstance(intent, dict):
             raise TaskPersistenceError("TaskIntent must be a dictionary")
 
+        if intent.get("schema_version") != 2:
+            raise TaskPersistenceError(f"TaskIntent schema_version 必须为 2: {intent.get('schema_version')}")
+
         required_keys = {
+            "schema_version",
             "internal_id",
             "task_id",
             "intent_id",
