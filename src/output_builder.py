@@ -226,22 +226,18 @@ class OutputBuilder:
         if existing:
             return str(existing)
 
+        return self._generate_task_id(task_type_key, task_state)
+
+    def _generate_task_id(self, task_type_key: str, task_state: dict) -> str:
         templates = self.kb.task_schemas.get("task_templates", {})
         if task_type_key not in templates:
             raise IdReservationError(f"Task type key {task_type_key!r} not found in task templates schema.")
-
         template = templates[task_type_key]
         code = template.get("code")
         if not code or not validate_task_prefix(code):
             raise IdReservationError(
                 f"Invalid or missing code prefix {code!r} for task_type_key {task_type_key!r}."
             )
-
-        return self._generate_task_id(task_type_key, task_state)
-
-    def _generate_task_id(self, task_type_key: str, task_state: dict) -> str:
-        templates = self.kb.task_schemas.get("task_templates", {})
-        code = templates.get(task_type_key, {}).get("code", "XX")
         today = get_business_date().strftime("%Y%m%d")
         return next_daily_task_id(
             code,

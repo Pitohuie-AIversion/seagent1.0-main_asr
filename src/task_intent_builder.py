@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .exceptions import IntentIdConflict, TaskPersistenceError
-from .id_sequence import next_daily_id, validate_intent_id
+from .id_sequence import next_daily_id, validate_intent_id, validate_task_id
 from .knowledge_retriever import KnowledgeBase
 from .result_paths import get_task_dir
 from .simulated_time import get_current_datetime
@@ -189,7 +189,14 @@ class TaskIntentBuilder:
 
         conditions = {}
 
+        task_id = built_json.get("task_id") or task_state.get("task_id")
+        if not task_id:
+            from .output_builder import OutputBuilder
+            out_builder = OutputBuilder(self.kb)
+            task_id = out_builder.reserve_task_id(task_type_key, task_state)
+
         res = {
+            "task_id": task_id,
             "intent_id": intent_id,
             "task_type": top_task_type,
             "priority": priority,
@@ -563,6 +570,7 @@ class TaskIntentBuilder:
             raise TaskPersistenceError("TaskIntent must be a dictionary")
 
         required_keys = {
+            "task_id",
             "intent_id",
             "task_type",
             "priority",
@@ -575,6 +583,9 @@ class TaskIntentBuilder:
         missing = required_keys - intent.keys()
         if missing:
             raise TaskPersistenceError(f"TaskIntent 缺少字段: {sorted(missing)}")
+
+        if not validate_task_id(intent.get("task_id")):
+            raise TaskPersistenceError(f"task_id 非法或缺失: {intent.get('task_id')}")
 
         if not validate_intent_id(intent.get("intent_id")):
             raise TaskPersistenceError(f"intent_id 非法: {intent.get('intent_id')}")

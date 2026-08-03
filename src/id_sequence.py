@@ -241,6 +241,17 @@ def _sync_directory(directory: Path) -> None:
         pass
 
 
+def validate_task_id(task_id: Any) -> bool:
+    """验证 task_id 格式，排除空白、路径片段并要求前缀符合确定性格式。"""
+    if type(task_id) is not str:
+        return False
+    if not task_id or task_id.strip() != task_id:
+        return False
+    if "/" in task_id or "\\" in task_id or ".." in task_id:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_]+-\d{8}-\d{3,}", task_id) or re.fullmatch(r"[A-Za-z0-9_]+\d{10,}", task_id))
+
+
 def _max_existing_sequence(
     prefix: str,
     date_text: str,
@@ -271,8 +282,8 @@ def _max_existing_task_sequence(
     scan_specs: Iterable[tuple[Path | Callable[[], Path], str]],
 ) -> int:
     max_seq = 0
-    pattern_new = re.compile(rf"[A-Za-z0-9_]+-{re.escape(date_text)}-(\d{{{width},}})")
-    pattern_old = re.compile(rf"[A-Za-z0-9_]+?{re.escape(date_text)}(\d+)")
+    pattern_new = re.compile(rf"(?:^|[^\w])([A-Za-z0-9_]+)-{re.escape(date_text)}-(\d{{{width},}})")
+    pattern_old = re.compile(rf"(?:^|[^\w])([A-Za-z0-9_]+?){re.escape(date_text)}(\d+)")
     for entry, json_key in scan_specs:
         directory = entry() if callable(entry) else entry
         if not directory or not directory.exists():
@@ -284,7 +295,7 @@ def _max_existing_task_sequence(
             max_seq = max(max_seq, _sequence_from_text(path.name, pattern_old))
             if path.suffix == ".json":
                 value = _read_json_key(path, json_key)
-                if value is not None:
+                if value is not None and validate_task_id(value):
                     max_seq = max(max_seq, _sequence_from_text(value, pattern_new))
                     max_seq = max(max_seq, _sequence_from_text(value, pattern_old))
     return max_seq
@@ -294,8 +305,15 @@ def _sequence_from_text(text: str, pattern: re.Pattern[str]) -> int:
     match = pattern.search(text)
     if not match:
         return 0
+    if match.lastindex and match.lastindex >= 2:
+        prefix = match.group(1)
+        if prefix in ("TI", "task_intent_TI", "history_TI") or prefix.startswith("TI") or "task_intent_TI" in text:
+            return 0
+        seq_str = match.group(2)
+    else:
+        seq_str = match.group(1)
     try:
-        return int(match.group(1))
+        return int(seq_str)
     except ValueError:
         return 0
 

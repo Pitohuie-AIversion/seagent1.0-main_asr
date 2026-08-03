@@ -1670,19 +1670,37 @@ class DialogueManager:
 
         target_key = None
         if value in task_type_map:
-            new_slots["task_type"].value = value
-            new_slots["task_type"].status = "valid"
             target_key = task_type_map[value]
-            new_slots["task_type_key"].value = target_key
-            new_slots["task_type_key"].status = "valid"
         elif key == "task_type_key" and value in templates:
             target_key = value
-            new_slots["task_type_key"].value = value
-            new_slots["task_type_key"].status = "valid"
-            values = templates[value].get("task_type_values", [])
-            if len(values) == 1:
-                new_slots["task_type"].value = values[0]
+
+        existing_task_id = new_slots.get("task_id")
+        old_task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
+
+        # 如果已有 valid 的 task_id，禁止原地跨类别修改任务类型 (Lock task category)
+        if existing_task_id and existing_task_id.status == "valid" and existing_task_id.value:
+            if target_key and old_task_type_key and target_key != old_task_type_key:
+                logger.warning(
+                    "[DialogueManager] Rejecting task category modification from %s to %s because task_id %s is already locked.",
+                    old_task_type_key,
+                    target_key,
+                    existing_task_id.value,
+                )
+                return
+
+        if target_key:
+            if value in task_type_map:
+                new_slots["task_type"].value = value
                 new_slots["task_type"].status = "valid"
+                new_slots["task_type_key"].value = target_key
+                new_slots["task_type_key"].status = "valid"
+            elif key == "task_type_key" and value in templates:
+                new_slots["task_type_key"].value = value
+                new_slots["task_type_key"].status = "valid"
+                values = templates[value].get("task_type_values", [])
+                if len(values) == 1:
+                    new_slots["task_type"].value = values[0]
+                    new_slots["task_type"].status = "valid"
 
         if target_key:
             required_fields = self.builder.get_schema(target_key, self.mode)
