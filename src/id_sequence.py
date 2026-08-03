@@ -110,6 +110,7 @@ def next_daily_task_id(
     date_text: str,
     width: int = 3,
     scan_specs: Iterable[tuple[Path | Callable[[], Path], str]] = (),
+    allowed_prefixes: Iterable[str] | None = None,
 ) -> str:
     """生成确定性、跨进程安全、可持久化恢复的任务业务编号 (<PREFIX>-YYYYMMDD-NNN)。
 
@@ -143,7 +144,7 @@ def next_daily_task_id(
                 try:
                     persistent_counters = _load_persistent_counters(counter_file)
                     persistent_seq = persistent_counters.get(counter_key, 0)
-                    disk_max = _max_existing_task_sequence(date_text, width, scan_specs_list)
+                    disk_max = _max_existing_task_sequence(date_text, width, scan_specs_list, allowed_prefixes)
                     memory_seq = _COUNTERS.get(counter_key, 0)
                     next_seq = max(persistent_seq, disk_max, memory_seq) + 1
 
@@ -252,6 +253,24 @@ def validate_task_id(task_id: Any) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9_]+-\d{8}-\d{3,}", task_id) or re.fullmatch(r"[A-Za-z0-9_]+\d{10,}", task_id))
 
 
+def validate_task_id_for_task_type(task_id: Any, task_type_key: str, task_schemas: dict) -> bool:
+    """验证 task_id 强符合当前 task_type_key 对应模板权威 code 前缀。"""
+    if not validate_task_id(task_id):
+        return False
+    if not isinstance(task_schemas, dict):
+        return False
+    templates = task_schemas.get("task_templates", {})
+    if task_type_key not in templates:
+        return False
+    expected_code = templates[task_type_key].get("code")
+    if not expected_code or not validate_task_prefix(expected_code):
+        return False
+    sid = str(task_id)
+    if not (sid.startswith(f"{expected_code}-") or sid.startswith(expected_code)):
+        return False
+    return True
+
+
 def _max_existing_sequence(
     prefix: str,
     date_text: str,
@@ -280,10 +299,20 @@ def _max_existing_task_sequence(
     date_text: str,
     width: int,
     scan_specs: Iterable[tuple[Path | Callable[[], Path], str]],
+    allowed_prefixes: Iterable[str] | None = None,
 ) -> int:
     max_seq = 0
-    pattern_new = re.compile(rf"(?:^|[^\w])([A-Za-z0-9_]+)-{re.escape(date_text)}-(\d{{{width},}})")
-    pattern_old = re.compile(rf"(?:^|[^\w])([A-Za-z0-9_]+?){re.escape(date_text)}(\d+)")
+    if allowed_prefixes:
+        prefixes_list = [p for p in allowed_prefixes if validate_task_prefix(p)]
+    else:
+        prefixes_list = []
+    if not prefixes_list:
+        prefixes_list = ["PI", "PB", "CT"]
+
+    escaped_prefixes = "|".join(re.escape(p) for p in sorted(set(prefixes_list)))
+    pattern_new = re.compile(rf"(?:^|[^\w])({escaped_prefixes})-{re.escape(date_text)}-(\d{{{width},}})")
+    pattern_old = re.compile(rf"(?:^|[^\w])({escaped_prefixes}){re.escape(date_text)}(\d+)")
+
     for entry, json_key in scan_specs:
         directory = entry() if callable(entry) else entry
         if not directory or not directory.exists():

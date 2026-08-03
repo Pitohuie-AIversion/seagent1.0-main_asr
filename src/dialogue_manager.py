@@ -957,7 +957,7 @@ class DialogueManager:
             task_id_slot = new_slots.get("task_id")
             if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None:
                 valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
-                tid = self.builder.reserve_task_id(curr_task_type_key, valid_cand_state)
+                tid = self.builder.reserve_task_id(curr_task_type_key)
                 if "task_id" not in new_slots:
                     new_slots["task_id"] = Slot("task_id")
                 new_slots["task_id"].value = tid
@@ -1680,12 +1680,15 @@ class DialogueManager:
         # 如果已有 valid 的 task_id，禁止原地跨类别修改任务类型 (Lock task category)
         if existing_task_id and existing_task_id.status == "valid" and existing_task_id.value:
             if target_key and old_task_type_key and target_key != old_task_type_key:
+                err_msg = f"任务编号已锁定 ({existing_task_id.value})，无法直接修改任务类别。如需更换类别，请先取消或新建任务。"
                 logger.warning(
                     "[DialogueManager] Rejecting task category modification from %s to %s because task_id %s is already locked.",
                     old_task_type_key,
                     target_key,
                     existing_task_id.value,
                 )
+                if "task_type_key" in new_slots:
+                    new_slots["task_type_key"].validation_error = err_msg
                 return
 
         if target_key:

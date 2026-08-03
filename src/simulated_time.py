@@ -34,7 +34,7 @@ class SimulatedTime:
 
     def start(self):
         """初始化模拟时间（若未设置则使用系统时间）"""
-        tz = get_business_timezone()
+        tz = ZoneInfo("Asia/Shanghai")
         with self._lock:
             if self._simulated_start is None:
                 self._simulated_start = datetime.now(tz)
@@ -46,7 +46,7 @@ class SimulatedTime:
 
     def set_current_time(self, dt: datetime):
         """设置模拟当前时间"""
-        tz = get_business_timezone()
+        tz = ZoneInfo("Asia/Shanghai")
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=tz)
         else:
@@ -57,7 +57,7 @@ class SimulatedTime:
 
     def get_current_time(self) -> datetime:
         """获取当前模拟时间"""
-        tz = get_business_timezone()
+        tz = ZoneInfo("Asia/Shanghai")
         with self._lock:
             if self._simulated_start is None or self._base_real_time is None:
                 return datetime.now(tz)
@@ -78,5 +78,5 @@ def get_simulated_time() -> SimulatedTime: return _simulated_time
 def get_current_datetime() -> datetime: return _simulated_time.get_current_time()
 def get_current_timestamp() -> float: return _simulated_time.get_current_timestamp()
 def get_current_date() -> date: return _simulated_time.get_current_date()
-def get_business_datetime() -> datetime: return _simulated_time.get_current_time()
-def get_business_date() -> date: return _simulated_time.get_current_date()
+def get_business_datetime() -> datetime: return get_current_datetime().astimezone(get_business_timezone())
+def get_business_date() -> date: return get_business_datetime().date()

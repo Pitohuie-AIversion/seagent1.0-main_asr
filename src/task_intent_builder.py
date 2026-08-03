@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .exceptions import IntentIdConflict, TaskPersistenceError
-from .id_sequence import next_daily_id, validate_intent_id, validate_task_id
+from .id_sequence import next_daily_id, validate_intent_id, validate_task_id, validate_task_id_for_task_type
 from .knowledge_retriever import KnowledgeBase
 from .result_paths import get_task_dir
 from .simulated_time import get_current_datetime
@@ -74,9 +74,12 @@ def _atomic_commit_noreplace(temp_file: Path, final_file: Path) -> None:
         raise TaskPersistenceError(f"Atomic commit failed: {e}") from e
 
 
-def validate_task_intent(intent: Any) -> bool:
+def validate_task_intent(intent: Any, task_schemas: dict | None = None) -> bool:
     """权威完整 TaskIntent 结构与交叉约束校验器"""
     if not isinstance(intent, dict):
+        return False
+    task_id = intent.get("task_id")
+    if not validate_task_id(task_id):
         return False
     intent_id = intent.get("intent_id")
     if not validate_intent_id(intent_id):
@@ -84,6 +87,11 @@ def validate_task_intent(intent: Any) -> bool:
     top_task_type = intent.get("task_type")
     if top_task_type not in TASK_ALLOWED_ROBOT_TYPES:
         return False
+    if task_schemas is not None:
+        rev_map = {"pipeline_inspection": "pipeline_inspection", "pipeline_burial": "pipeline_burial", "valve_operation": "tree_valve_operation"}
+        task_type_key = intent.get("task_type_key") or rev_map.get(top_task_type, top_task_type)
+        if not validate_task_id_for_task_type(task_id, task_type_key, task_schemas):
+            return False
     priority = intent.get("priority")
     if isinstance(priority, bool) or not isinstance(priority, int):
         return False
@@ -191,9 +199,7 @@ class TaskIntentBuilder:
 
         task_id = built_json.get("task_id") or task_state.get("task_id")
         if not task_id:
-            from .output_builder import OutputBuilder
-            out_builder = OutputBuilder(self.kb)
-            task_id = out_builder.reserve_task_id(task_type_key, task_state)
+            raise TaskPersistenceError(f"TaskIntent prepare 失败：task_state 与 built_json 中缺少有效的 task_id。")
 
         res = {
             "task_id": task_id,
@@ -224,9 +230,8 @@ class TaskIntentBuilder:
 
     def create_staging(self, intent: Dict[str, Any]) -> Path:
         """创建临时 staging 任务文件"""
+        self._validate_intent(intent)
         intent_id = intent.get("intent_id")
-        if not validate_intent_id(intent_id):
-            raise TaskPersistenceError(f"Invalid intent_id for create_staging: {intent_id}")
         task_dir = get_task_dir(create=True)
         unique_suffix = f"{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}"
         staging_file = task_dir / f"task_intent_{intent_id}.staging_{unique_suffix}"
@@ -249,11 +254,8 @@ class TaskIntentBuilder:
 
     def publish_staging(self, staging_file: Path | str, intent: Dict[str, Any]) -> str:
         """使用跨进程排他锁、认领隔离与内存可信原子提交发布 staging 为正式 JSON"""
-        if not isinstance(intent, dict):
-            raise TaskPersistenceError("intent must be a dictionary")
+        self._validate_intent(intent)
         intent_id = intent.get("intent_id")
-        if not validate_intent_id(intent_id):
-            raise TaskPersistenceError(f"Invalid intent_id for publish_staging: {intent_id}")
 
         try:
             staging_path = Path(staging_file)
@@ -584,8 +586,14 @@ class TaskIntentBuilder:
         if missing:
             raise TaskPersistenceError(f"TaskIntent 缺少字段: {sorted(missing)}")
 
-        if not validate_task_id(intent.get("task_id")):
-            raise TaskPersistenceError(f"task_id 非法或缺失: {intent.get('task_id')}")
+        top_task_type = intent.get("task_type")
+        task_type_key = intent.get("task_type_key")
+        if not task_type_key:
+            rev_map = {"pipeline_inspection": "pipeline_inspection", "pipeline_burial": "pipeline_burial", "valve_operation": "tree_valve_operation"}
+            task_type_key = rev_map.get(top_task_type, top_task_type)
+
+        if not validate_task_id_for_task_type(intent.get("task_id"), task_type_key, self.kb.task_schemas):
+            raise TaskPersistenceError(f"task_id 非法或与任务类型 {task_type_key!r} 前缀不匹配: {intent.get('task_id')}")
 
         if not validate_intent_id(intent.get("intent_id")):
             raise TaskPersistenceError(f"intent_id 非法: {intent.get('intent_id')}")

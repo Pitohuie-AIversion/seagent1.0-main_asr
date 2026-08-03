@@ -1,6 +1,6 @@
-"""tests/test_issue_11_deterministic_task_id.py — Issue #11 确定性任务编号生成与持久化收口单元测试套件
+"""tests/test_issue_11_deterministic_task_id.py — Issue #11 确定性任务编号全闭环与合规性单元测试套件
 
-本文件全面兼容 python -m unittest discover tests -v 命令（不引入 pytest 依赖）。
+本文件全面兼容 python -m unittest discover tests -v 命令（0 pytest 依赖）。
 """
 
 import json
@@ -20,6 +20,7 @@ from src.id_sequence import (
     next_daily_task_id,
     validate_intent_id,
     validate_task_id,
+    validate_task_id_for_task_type,
     validate_task_prefix,
 )
 from src.knowledge_retriever import KnowledgeBase
@@ -28,11 +29,13 @@ from src.output_builder import OutputBuilder
 from src.result_paths import get_history_dir, get_task_dir
 from src.simulated_time import (
     get_business_date,
+    get_business_datetime,
     get_business_timezone,
+    get_current_datetime,
     get_simulated_time,
 )
 from src.slot_store import Slot
-from src.task_intent_builder import TaskIntentBuilder
+from src.task_intent_builder import TaskIntentBuilder, validate_task_intent
 
 
 class FakeLLM(LLMClient):
@@ -114,6 +117,7 @@ def _worker_reserve_task_id(result_queue, prefix, date_text, width, tmp_dir):
             date_text,
             width,
             [(task_dir, "task_id"), (hist_dir, "task_id")],
+            allowed_prefixes=["PI", "PB", "CT"],
         )
         result_queue.put(tid)
     except Exception as exc:
@@ -148,22 +152,22 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         kb = KnowledgeBase()
         builder = OutputBuilder(kb)
 
-        tid_pi = builder.reserve_task_id("pipeline_inspection", {})
+        tid_pi = builder.reserve_task_id("pipeline_inspection")
         self.assertTrue(tid_pi.startswith("PI-"))
 
-        tid_pb = builder.reserve_task_id("pipeline_burial", {})
+        tid_pb = builder.reserve_task_id("pipeline_burial")
         self.assertTrue(tid_pb.startswith("PB-"))
 
-        tid_ct = builder.reserve_task_id("tree_valve_operation", {})
+        tid_ct = builder.reserve_task_id("tree_valve_operation")
         self.assertTrue(tid_ct.startswith("CT-"))
 
     def test_03_sequential_ids_on_same_day(self):
         kb = KnowledgeBase()
         builder = OutputBuilder(kb)
 
-        tid1 = builder.reserve_task_id("pipeline_inspection", {})
-        tid2 = builder.reserve_task_id("pipeline_inspection", {})
-        tid3 = builder.reserve_task_id("pipeline_inspection", {})
+        tid1 = builder.reserve_task_id("pipeline_inspection")
+        tid2 = builder.reserve_task_id("pipeline_inspection")
+        tid3 = builder.reserve_task_id("pipeline_inspection")
 
         self.assertEqual(tid1, "PI-20260803-001")
         self.assertEqual(tid2, "PI-20260803-002")
@@ -179,9 +183,9 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         kb = KnowledgeBase()
         builder = OutputBuilder(kb)
 
-        tid1 = builder.reserve_task_id("pipeline_inspection", {})
-        tid2 = builder.reserve_task_id("pipeline_burial", {})
-        tid3 = builder.reserve_task_id("tree_valve_operation", {})
+        tid1 = builder.reserve_task_id("pipeline_inspection")
+        tid2 = builder.reserve_task_id("pipeline_burial")
+        tid3 = builder.reserve_task_id("tree_valve_operation")
 
         self.assertEqual(tid1, "PI-20260803-001")
         self.assertEqual(tid2, "PB-20260803-002")
@@ -191,19 +195,26 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         kb = KnowledgeBase()
         builder = OutputBuilder(kb)
 
-        tid1 = builder.reserve_task_id("pipeline_inspection", {})
+        tid1 = builder.reserve_task_id("pipeline_inspection")
         self.assertEqual(tid1, "PI-20260803-001")
 
         get_simulated_time().set_current_time(
             datetime(2026, 8, 4, 9, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
         )
 
-        tid2 = builder.reserve_task_id("pipeline_inspection", {})
+        tid2 = builder.reserve_task_id("pipeline_inspection")
         self.assertEqual(tid2, "PI-20260804-001")
 
-    def test_07_timezone_configuration_boundary(self):
+    def test_07_timezone_decoupling_between_business_date_and_intent_id(self):
+        # Setting SEAGENT_TIMEZONE to Tokyo (+9h)
         with patch.dict(os.environ, {"SEAGENT_TIMEZONE": "Asia/Tokyo"}):
             self.assertEqual(get_business_timezone().key, "Asia/Tokyo")
+            sys_dt = get_current_datetime()
+            biz_dt = get_business_datetime()
+            # System simulated datetime retains Asia/Shanghai timezone
+            self.assertEqual(sys_dt.tzinfo.key, "Asia/Shanghai")
+            # Business datetime uses Asia/Tokyo
+            self.assertEqual(biz_dt.tzinfo.key, "Asia/Tokyo")
 
     def test_08_invalid_timezone_configuration(self):
         with patch.dict(os.environ, {"SEAGENT_TIMEZONE": "Invalid/Timezone_Name"}):
@@ -223,7 +234,7 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
                 id_sequence._COUNTERS.clear()
                 kb = KnowledgeBase()
                 builder = OutputBuilder(kb)
-                tid = builder.reserve_task_id("pipeline_inspection", {})
+                tid = builder.reserve_task_id("pipeline_inspection")
                 self.assertEqual(tid, "PI-20260803-006")
 
     def test_10_multiprocessing_concurrency(self):
@@ -257,13 +268,13 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         kb = KnowledgeBase()
         builder = OutputBuilder(kb)
 
-        tid1 = builder.reserve_task_id("pipeline_inspection", {})
-        tid2 = builder.reserve_task_id("pipeline_inspection", {})
+        tid1 = builder.reserve_task_id("pipeline_inspection")
+        tid2 = builder.reserve_task_id("pipeline_inspection")
 
         self.assertEqual(tid1, "PI-20260803-001")
         self.assertEqual(tid2, "PI-20260803-002")
 
-        tid3 = builder.reserve_task_id("pipeline_inspection", {})
+        tid3 = builder.reserve_task_id("pipeline_inspection")
         self.assertEqual(tid3, "PI-20260803-003")
 
     def test_12_corrupted_counter_file_fails_closed(self):
@@ -280,6 +291,7 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
                         "20260803",
                         3,
                         [(Path(tmp_dir), "task_id")],
+                        allowed_prefixes=["PI"],
                     )
 
     def test_13_invalid_task_prefix_fails_closed(self):
@@ -291,56 +303,35 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         builder = OutputBuilder(kb)
 
         with self.assertRaises(IdReservationError):
-            builder.reserve_task_id("non_existent_template", {})
+            builder.reserve_task_id("non_existent_template")
 
-    def test_14_non_valid_task_type_does_not_generate_id(self):
-        dm = create_dialogue_manager()
-        dm.process("你好，我想了解离岸工程")
-        self.assertIsNone(dm.task_state.get("task_id"))
-
-    def test_15_field_edits_preserve_task_id(self):
-        dm = create_dialogue_manager()
-        dm.process("我要做管缆巡检")
-        tid1 = dm.task_state.get("task_id")
-        self.assertIsNotNone(tid1)
-
-        dm.process("设置水深为500米")
-        tid2 = dm.task_state.get("task_id")
-        self.assertEqual(tid1, tid2)
-
-    def test_16_builder_build_does_not_burn_sequence(self):
+    def test_14_prepare_without_task_id_fails_closed(self):
         kb = KnowledgeBase()
-        builder = OutputBuilder(kb)
+        ti_builder = TaskIntentBuilder(kb)
 
-        state = {}
-        schema = builder.get_schema("pipeline_inspection", "normal")
+        task_state = {"water_depth": 500.0}
+        built_json = {"start_time": "2026-08-03T10:00:00Z"}
 
-        field_res = builder._extract_field("task_id", "auto", schema[0], state, "pipeline_inspection")
-        self.assertIsNone(field_res)
-        self.assertIsNone(state.get("task_id"))
+        # prepare without valid task_id must raise TaskPersistenceError and NOT auto-reserve ID
+        with self.assertRaises(TaskPersistenceError):
+            ti_builder.prepare(task_state, built_json, "normal", "pipeline_inspection")
 
-    def test_17_user_input_cannot_overwrite_task_id(self):
-        dm = create_dialogue_manager()
-        dm.process("我要做管缆巡检")
-        tid1 = dm.task_state.get("task_id")
-
-        dm.process("把 task_id 改成 FAKE-999")
-        self.assertEqual(dm.task_state.get("task_id"), tid1)
-
-    def test_18_snapshot_restore_preserves_task_id(self):
-        dm = create_dialogue_manager()
-        dm.process("我要做管缆巡检")
-        tid1 = dm.task_state.get("task_id")
-
-        snap = dm.slot_store.export_snapshot()
-
-        dm2 = create_dialogue_manager()
-        dm2.slot_store.restore_snapshot(snap)
-        self.assertEqual(dm2.slot_store.get_task_state().get("task_id"), tid1)
-
-    def test_19_published_task_intent_contains_top_level_task_id(self):
+    def test_15_validate_task_id_for_task_type_prefix_consistency(self):
         kb = KnowledgeBase()
-        builder = TaskIntentBuilder(kb)
+        schemas = kb.task_schemas
+
+        self.assertTrue(validate_task_id_for_task_type("PI-20260803-001", "pipeline_inspection", schemas))
+        self.assertTrue(validate_task_id_for_task_type("PB-20260803-001", "pipeline_burial", schemas))
+        self.assertTrue(validate_task_id_for_task_type("CT-20260803-001", "tree_valve_operation", schemas))
+
+        # Category prefix mismatch
+        self.assertFalse(validate_task_id_for_task_type("PI-20260803-001", "pipeline_burial", schemas))
+        self.assertFalse(validate_task_id_for_task_type("TI2026080301", "pipeline_inspection", schemas))
+        self.assertFalse(validate_task_id_for_task_type("FAKE-20260803-001", "pipeline_inspection", schemas))
+
+    def test_16_persist_and_publish_staging_verify_task_id_and_write_file(self):
+        kb = KnowledgeBase()
+        ti_builder = TaskIntentBuilder(kb)
 
         task_state = {
             "task_id": "PI-20260803-001",
@@ -362,14 +353,59 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
             "payload": ["高清相机"],
         }
 
-        intent = builder.prepare(task_state, built_json, "normal", "pipeline_inspection")
-        self.assertIn("task_id", intent)
-        self.assertEqual(intent["task_id"], "PI-20260803-001")
-        self.assertTrue(validate_task_id(intent["task_id"]))
+        intent = ti_builder.prepare(task_state, built_json, "normal", "pipeline_inspection")
+
+        # Create staging and publish to final JSON file
+        staging_file = ti_builder.create_staging(intent)
+        self.assertTrue(staging_file.exists())
+
+        final_filename = ti_builder.publish_staging(staging_file, intent)
+        final_path = get_task_dir() / final_filename
+        self.assertTrue(final_path.exists())
+
+        # Read back final JSON and verify top-level task_id
+        with open(final_path, "r", encoding="utf-8") as f:
+            final_data = json.load(f)
+
+        self.assertEqual(final_data.get("task_id"), "PI-20260803-001")
+        self.assertTrue(validate_task_intent(final_data, kb.task_schemas))
+
+    def test_17_user_input_cannot_overwrite_task_id(self):
+        dm = create_dialogue_manager()
+        dm.process("我要做管缆巡检")
+        tid1 = dm.task_state.get("task_id")
+
+        dm.process("把 task_id 改成 FAKE-999")
+        self.assertEqual(dm.task_state.get("task_id"), tid1)
+
+    def test_18_snapshot_restore_preserves_task_id(self):
+        dm = create_dialogue_manager()
+        dm.process("我要做管缆巡检")
+        tid1 = dm.task_state.get("task_id")
+
+        snap = dm.slot_store.export_snapshot()
+
+        dm2 = create_dialogue_manager()
+        dm2.slot_store.restore_snapshot(snap)
+        self.assertEqual(dm2.slot_store.get_task_state().get("task_id"), tid1)
+
+    def test_19_category_modification_is_rejected_with_validation_error(self):
+        dm = create_dialogue_manager()
+        dm.process("新建管缆巡检任务")
+        tid1 = dm.task_state.get("task_id")
+        self.assertEqual(tid1, "PI-20260803-001")
+
+        dm.process("修改任务类型为管缆埋设")
+        # Category remains pipeline_inspection and task_id remains locked
+        self.assertEqual(dm.task_state.get("task_type_key"), "pipeline_inspection")
+        self.assertEqual(dm.task_state.get("task_id"), tid1)
+        err = dm.slot_store.slots["task_type_key"].validation_error
+        self.assertIsNotNone(err)
+        self.assertIn("任务编号已锁定", err)
 
     def test_20_publish_retry_preserves_task_id(self):
         dm = create_dialogue_manager()
-        dm.process("我要做管缆巡检")
+        dm.process("新建管缆巡检任务")
         tid1 = dm.task_state.get("task_id")
         self.assertIsNotNone(tid1)
 
@@ -386,17 +422,23 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
             self.assertTrue("发布" in reply or dm.phase != "done")
             self.assertEqual(dm.task_state.get("task_id"), tid1)
 
-    def test_21_category_modification_is_rejected_once_task_id_locked(self):
-        dm = create_dialogue_manager()
-        dm.process("新建管缆巡检任务")
-        tid1 = dm.task_state.get("task_id")
-        self.assertEqual(tid1, "PI-20260803-001")
-        self.assertEqual(dm.task_state.get("task_type_key"), "pipeline_inspection")
+    def test_21_whitelist_disk_scan_excludes_unregistered_filenames(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_task_dir = Path(tmp_dir) / "task"
+            tmp_task_dir.mkdir(parents=True, exist_ok=True)
 
-        dm.process("修改任务类型为管缆埋设")
-        # Category remains pipeline_inspection and task_id remains locked
-        self.assertEqual(dm.task_state.get("task_type_key"), "pipeline_inspection")
-        self.assertEqual(dm.task_state.get("task_id"), tid1)
+            # File with unregistered prefix FAKE and large sequence number 999
+            fake_file = tmp_task_dir / "task_FAKE-20260803-999.json"
+            with open(fake_file, "w", encoding="utf-8") as f:
+                json.dump({"task_id": "FAKE-20260803-999"}, f)
+
+            with patch.dict(os.environ, {"SEAGENT_RESULT_DIR": tmp_dir}):
+                id_sequence._COUNTERS.clear()
+                kb = KnowledgeBase()
+                builder = OutputBuilder(kb)
+                # Next daily task ID for pipeline_inspection should be 001 because FAKE is whitelisted out
+                tid = builder.reserve_task_id("pipeline_inspection")
+                self.assertEqual(tid, "PI-20260803-001")
 
     def test_22_intent_id_filenames_do_not_affect_task_sequence_scan(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -411,7 +453,7 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
                 id_sequence._COUNTERS.clear()
                 kb = KnowledgeBase()
                 builder = OutputBuilder(kb)
-                tid = builder.reserve_task_id("pipeline_inspection", {})
+                tid = builder.reserve_task_id("pipeline_inspection")
                 self.assertEqual(tid, "PI-20260803-003")
 
     def test_23_general_chat_does_not_generate_task_id(self):

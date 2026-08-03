@@ -216,34 +216,34 @@ class OutputBuilder:
     # task_id 显式生成入口
     # ══════════════════════════════════════════════════════════════════════════
 
-    def reserve_task_id(self, task_type_key: str, task_state: dict) -> str:
+    def reserve_task_id(self, task_type_key: str) -> str:
         """显式预留新的任务业务编号 (<PREFIX>-YYYYMMDD-NNN)。
 
         权威前缀仅取自 KnowledgeBase.task_schemas["task_templates"][task_type_key]["code"]。
         前缀缺失或非法时直接抛出 IdReservationError。
         """
-        existing = task_state.get("task_id")
-        if existing:
-            return str(existing)
+        return self._generate_task_id(task_type_key)
 
-        return self._generate_task_id(task_type_key, task_state)
-
-    def _generate_task_id(self, task_type_key: str, task_state: dict) -> str:
+    def _generate_task_id(self, task_type_key: str, task_state: dict | None = None) -> str:
         templates = self.kb.task_schemas.get("task_templates", {})
         if task_type_key not in templates:
             raise IdReservationError(f"Task type key {task_type_key!r} not found in task templates schema.")
+
         template = templates[task_type_key]
         code = template.get("code")
         if not code or not validate_task_prefix(code):
             raise IdReservationError(
                 f"Invalid or missing code prefix {code!r} for task_type_key {task_type_key!r}."
             )
+
+        allowed_prefixes = [t.get("code") for t in templates.values() if t.get("code")]
         today = get_business_date().strftime("%Y%m%d")
         return next_daily_task_id(
             code,
             today,
             3,
             [(get_task_dir(create=False), "task_id"), (get_history_dir(create=False), "task_id")],
+            allowed_prefixes=allowed_prefixes,
         )
 
 

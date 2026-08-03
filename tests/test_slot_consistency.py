@@ -73,7 +73,7 @@ def seed_complete_valid_pipeline_task(dm, kb):
     support_vessel = vessels[0] if vessels else "DSV-Oceanic"
 
     slots_to_seed = {
-        "task_id": ("PI2026071801", "string"),
+        "task_id": ("PI-20260718-001", "string"),
         "task_type_key": (task_type_key, "string"),
         "task_type": (task_type, "string"),
         "cable_type": (cable_type, "string"),
@@ -1155,8 +1155,8 @@ class SlotConsistencyTest(unittest.TestCase):
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
-                    task_state={"water_depth": 300.0},
-                    built_json={"water_depth": 300.0, "equipment_type": "观察级ROV"},
+                    task_state={"task_id": "PI-20260803-001", "water_depth": 300.0},
+                    built_json={"task_id": "PI-20260803-001", "water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
@@ -1171,8 +1171,8 @@ class SlotConsistencyTest(unittest.TestCase):
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
-                    task_state={"water_depth": 300.0},
-                    built_json={"water_depth": 300.0, "equipment_type": "观察级ROV"},
+                    task_state={"task_id": "PI-20260803-001", "water_depth": 300.0},
+                    built_json={"task_id": "PI-20260803-001", "water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
@@ -1289,8 +1289,8 @@ class SlotConsistencyTest(unittest.TestCase):
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
-                    task_state={"water_depth": 300.0},
-                    built_json={"water_depth": 300.0, "equipment_type": "观察级ROV"},
+                    task_state={"task_id": "PI-20260803-001", "water_depth": 300.0},
+                    built_json={"task_id": "PI-20260803-001", "water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
@@ -1433,15 +1433,16 @@ class SlotConsistencyTest(unittest.TestCase):
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent1 = builder.prepare(
-                    task_state={"water_depth": 300.0},
-                    built_json={"water_depth": 300.0, "equipment_type": "观察级ROV"},
+                    task_state={"task_id": "PI-20260803-001", "water_depth": 300.0},
+                    built_json={"task_id": "PI-20260803-001", "water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
                 filename = builder.persist(intent1)
 
                 intent2 = copy.deepcopy(intent1)
-                intent2["task_type"] = "different_type_modified"
+                intent2["task_type"] = "pipeline_inspection"
+                intent2["priority"] = 9
                 staging2 = builder.create_staging(intent2)
                 with self.assertRaises(IntentIdConflict):
                     builder.publish_staging(staging2, intent2)
@@ -1458,8 +1459,8 @@ class SlotConsistencyTest(unittest.TestCase):
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent1 = builder.prepare(
-                    task_state={"water_depth": 300.0},
-                    built_json={"water_depth": 300.0, "equipment_type": "观察级ROV"},
+                    task_state={"task_id": "PI-20260803-001", "water_depth": 300.0},
+                    built_json={"task_id": "PI-20260803-001", "water_depth": 300.0, "equipment_type": "观察级ROV"},
                     mode="normal",
                     task_type_key="pipeline_inspection"
                 )
@@ -1609,15 +1610,18 @@ class SlotConsistencyTest(unittest.TestCase):
             task_dir.mkdir(parents=True, exist_ok=True)
 
             intent1 = {
+                "task_id": "PI-20260718-001",
                 "intent_id": "TI2026071801",
-                "task_type": "type_A_process_1",
-                "created_at": "2026-07-18T10:00:00"
+                "task_type": "pipeline_inspection",
+                "priority": 7,
+                "time": {"start": None, "end": None},
+                "location": {"oilfield": None, "water_depth_m": 300.0},
+                "task": {"type": "pipeline_inspection", "details": {}},
+                "equipment": {"robot_type": "observation_rov", "payload": [], "support_vessel": {"name": None}},
+                "conditions": {}
             }
-            intent2 = {
-                "intent_id": "TI2026071801",
-                "task_type": "type_B_process_2",
-                "created_at": "2026-07-18T10:00:00"
-            }
+            intent2 = copy.deepcopy(intent1)
+            intent2["priority"] = 8
 
             ctx = multiprocessing.get_context("spawn")
             queue = ctx.Queue()
@@ -1653,9 +1657,15 @@ class SlotConsistencyTest(unittest.TestCase):
             task_dir.mkdir(parents=True, exist_ok=True)
 
             intent1 = {
+                "task_id": "PI-20260718-001",
                 "intent_id": "TI2026071801",
-                "task_type": "identical_content",
-                "created_at": "2026-07-18T10:00:00"
+                "task_type": "pipeline_inspection",
+                "priority": 7,
+                "time": {"start": None, "end": None},
+                "location": {"oilfield": None, "water_depth_m": 300.0},
+                "task": {"type": "pipeline_inspection", "details": {}},
+                "equipment": {"robot_type": "observation_rov", "payload": [], "support_vessel": {"name": None}},
+                "conditions": {}
             }
 
             ctx = multiprocessing.get_context("spawn")
