@@ -1519,6 +1519,7 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
             ("不是要取消当前任务而是终止当前任务", "emergency_intervention", "abort"),
             ("立即停止当前任务并输出状态", "emergency_intervention", "stop"),
             ("停止回答并立即停止当前任务", "emergency_intervention", "stop"),
+            ("暂停回答并立即停止当前任务", "emergency_intervention", "stop"),
         ]
 
         for msg, expected_mode, expected_action in emergency_cases:
@@ -1569,6 +1570,31 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
 
                 self.assertNotEqual(self.dm.dialogue_mode, "emergency_intervention")
                 self.assertEqual(self.dm.task_state.get("task_type_key"), "pipeline_inspection")
+
+    def test_non_task_pause_then_task_stop_selects_stop(self):
+        msg = "暂停回答并立即停止当前任务"
+
+        self.dm.reset()
+        self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+        self.dm.task_state = self.dm.slot_store.get_task_state()
+
+        route = self.dm.intent_router.route(
+            user_message=msg,
+            conversation_history=[],
+            task_state=self.dm.task_state,
+            phase=self.dm.phase,
+            expected_slots=[],
+        )
+
+        self.assertEqual(route.dialogue_mode, "emergency_intervention")
+        self.assertEqual(route.emergency_action, "stop")
+
+        with patch.object(self.dm.extractor, "extract_updates") as mock_ext:
+            reply = self.dm.process(msg)
+            mock_ext.assert_not_called()
+
+        self.assertEqual(self.dm.dialogue_mode, "emergency_intervention")
+        self.assertEqual(self.dm.control_state, "idle")
 
 
 if __name__ == "__main__":
