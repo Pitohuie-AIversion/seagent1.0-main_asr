@@ -1850,38 +1850,33 @@ class DialogueManager:
                     # 配置数据不完整时降级：family/class 仍正常填充，规格置空
                     canonical_spec = None
 
-                # 检查是否与已有显式父级冲突
-                active_cls_slot = new_slots.get("equipment_class")
-                active_cls_val = (
-                    active_cls_slot.value
-                    if active_cls_slot and active_cls_slot.status in ("valid", "candidate")
-                    else None
-                )
-                active_fam_slot = new_slots.get("equipment_family")
-                active_fam_val = (
-                    active_fam_slot.value
-                    if active_fam_slot and active_fam_slot.status in ("valid", "candidate")
-                    else None
-                )
-                active_fam_id_for_check = (
-                    self.kb.resolve_robot_family_id(str(active_fam_val), task_type)
-                    if active_fam_val
-                    else None
-                )
+                # 仅检查同一轮次明确输入的 class/family 是否与 unit 矛盾
+                # 已有 valid 父级与 unit 的差异由 _apply_slot_update_in_transaction + allow_overwrite 处理
+                explicit_class_in_turn = equipment_updates.get("equipment_class")
+                explicit_family_in_turn = equipment_updates.get("equipment_family")
 
-                parent_mismatch = (
-                    (active_cls_val and active_cls_val != unit_robot_cls)
-                    or (active_fam_id_for_check and active_fam_id_for_check != unit_fam_id)
+                explicit_cls_mismatch = (
+                    explicit_class_in_turn is not None
+                    and self.kb._resolve_class_key(str(explicit_class_in_turn)) != unit_robot_cls
                 )
+                explicit_fam_mismatch = False
+                if explicit_family_in_turn is not None:
+                    explicit_fam_resolved = self.kb.resolve_robot_family_id(str(explicit_family_in_turn), task_type)
+                    explicit_fam_mismatch = (
+                        explicit_fam_resolved is not None
+                        and explicit_fam_resolved != unit_fam_id
+                    )
+
+                parent_mismatch = explicit_cls_mismatch or explicit_fam_mismatch
 
                 if parent_mismatch:
-                    # unit 与已有显式父级不一致：拒绝 unit，保留父级
+                    # unit 与同一轮次明确输入的父级不一致：拒绝 unit，保留父级
                     u_slot = new_slots.get("equipment_unit_id")
-                    if u_slot and u_slot.status in ("valid", "candidate") and u_slot.value:
+                    if u_slot and u_slot.status == "valid" and u_slot.value:
                         u_slot.candidate_value = unit_update
                         u_slot.validation_error = (
                             f"Unit '{unit_update}' belongs to class '{unit_robot_cls}'"
-                            f" but selected class is '{active_cls_val}'"
+                            f" but explicitly selected class is '{explicit_class_in_turn}'"
                         )
                     else:
                         u_slot = u_slot or Slot("equipment_unit_id")
@@ -1889,7 +1884,7 @@ class DialogueManager:
                         u_slot.candidate_value = unit_update
                         u_slot.validation_error = (
                             f"Unit '{unit_update}' belongs to class '{unit_robot_cls}'"
-                            f" but selected class is '{active_cls_val}'"
+                            f" but explicitly selected class is '{explicit_class_in_turn}'"
                         )
                         new_slots["equipment_unit_id"] = u_slot
                 else:
