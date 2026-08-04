@@ -146,12 +146,68 @@ class KnowledgeBase:
     def _resolve_family_key(self, value: str | None) -> str | None:
         if not value or not isinstance(value, str):
             return None
+        families = self.robot_fleet.get("robot_families", {})
+        if not isinstance(families, dict):
+            return None
+
+        # Priority 1: Exact canonical family_id
+        if value in families:
+            return value
+
+        # Priority 2: Full_name / alias matching
         value_norm = _norm(value)
-        for family_id, family in self.robot_fleet.get("robot_families", {}).items():
-            targets = [family_id, family.get("full_name", ""), *family.get("aliases", [])]
+        matches = set()
+        for family_id, family in families.items():
+            targets = [family.get("full_name", ""), *family.get("aliases", [])]
             if any(value_norm == _norm(target) for target in targets if target):
-                return family_id
+                matches.add(family_id)
+
+        if len(matches) > 1:
+            raise RobotSelectionDataError(
+                f"Family selector '{value}' is ambiguous (matches multiple families: {sorted(matches)}).",
+                error_code="AMBIGUOUS_FAMILY_SELECTOR",
+                actual_value=value,
+            )
+
+        if len(matches) == 1:
+            return next(iter(matches))
+
         return None
+
+    def _validate_model_variants_integrity(self) -> None:
+        variants = self.robot_fleet.get("model_variants")
+        if variants is None or not isinstance(variants, dict):
+            raise RobotSelectionDataError(
+                "model_variants in configuration must be a dictionary.",
+                error_code="INVALID_MODEL_VARIANTS_CONFIG",
+                expected_field="model_variants",
+                actual_value=variants,
+            )
+        families = self.robot_fleet.get("robot_families", {})
+        if not isinstance(families, dict):
+            raise RobotSelectionDataError(
+                "robot_families in configuration must be a dictionary.",
+                error_code="INVALID_ROBOT_FAMILIES_CONFIG",
+                expected_field="robot_families",
+                actual_value=families,
+            )
+        for variant_id, variant in variants.items():
+            if not isinstance(variant, dict):
+                raise RobotSelectionDataError(
+                    f"Variant '{variant_id}' must be a dictionary.",
+                    error_code="INVALID_VARIANT_CONFIG",
+                    variant_id=variant_id,
+                    actual_value=variant,
+                )
+            f_id = variant.get("family_id")
+            if not f_id or not isinstance(f_id, str) or f_id not in families:
+                raise RobotSelectionDataError(
+                    f"Variant '{variant_id}' references non-existent or missing family_id '{f_id}'.",
+                    error_code="INVALID_FAMILY_REFERENCE",
+                    variant_id=variant_id,
+                    expected_field="robot_families",
+                    actual_value=f_id,
+                )
 
     def _extract_and_validate_variant_spec(
         self,
@@ -336,6 +392,7 @@ class KnowledgeBase:
         task_type_key: str | None = None,
     ) -> list[dict]:
         self._validate_task_type_key(task_type_key)
+        self._validate_model_variants_integrity()
         class_id = self._resolve_class_key(robot_class)
         if not class_id:
             raise RobotSelectionDataError(
@@ -400,6 +457,7 @@ class KnowledgeBase:
         task_type_key: str | None = None,
     ) -> list[dict]:
         self._validate_task_type_key(task_type_key)
+        self._validate_model_variants_integrity()
         class_id = self._resolve_class_key(robot_class)
         if not class_id:
             raise RobotSelectionDataError(

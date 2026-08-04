@@ -306,20 +306,39 @@ class TestRobotCascadeRegistry(unittest.TestCase):
         self.assertEqual(cm.exception.error_code, "INVALID_ROBOT_CLASS_REFERENCE")
 
     def test_28_variant_references_non_existent_family(self):
-        """28. variant 引用不存在的 family"""
+        """28. variant 引用不存在的 family 必触发 INVALID_FAMILY_REFERENCE"""
         custom_kb = KnowledgeBase()
         custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
         custom_kb.robot_fleet["model_variants"]["general_work_class_rov_250hp"]["family_id"] = "missing_family"
-        spec = {
-            "type": "power_hp",
-            "value": 250,
-            "unit": "hp",
-            "display_value": "250HP",
-            "variant_id": "general_work_class_rov_250hp",
-        }
         with self.assertRaises(RobotSelectionDataError) as cm:
-            custom_kb.list_robot_units("work_class_rov", "general_work_class_rov", spec)
-        self.assertIn(cm.exception.error_code, ["NO_VARIANTS_FOR_FAMILY", "VARIANT_FAMILY_MISMATCH", "INVALID_FAMILY_REFERENCE"])
+            custom_kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
+        self.assertEqual(cm.exception.error_code, "INVALID_FAMILY_REFERENCE")
+
+    def test_40_sibling_variant_with_orphan_variant_fails_closed(self):
+        """40. 即使同 family 存在合法 sibling variant，存在孤儿 orphan variant 时整体查询 fail closed 触发 INVALID_FAMILY_REFERENCE"""
+        custom_kb = KnowledgeBase()
+        custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
+        # Add an orphan variant referencing non-existent family
+        custom_kb.robot_fleet["model_variants"]["orphan_variant_x"] = {
+            "family_id": "non_existent_family_xyz",
+            "full_name": "孤儿型号",
+            "hard_params": {"power_hp": 999},
+        }
+        # Attempt query for valid family 'general_work_class_rov' which has valid sibling 'general_work_class_rov_250hp'
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            custom_kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
+        self.assertEqual(cm.exception.error_code, "INVALID_FAMILY_REFERENCE")
+
+    def test_41_ambiguous_family_alias_fails_closed(self):
+        """41. family alias 存在歧义时抛出 AMBIGUOUS_FAMILY_SELECTOR"""
+        custom_kb = KnowledgeBase()
+        custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
+        # Add identical alias to two families
+        custom_kb.robot_fleet["robot_families"]["general_work_class_rov"]["aliases"].append("歧义别名")
+        custom_kb.robot_fleet["robot_families"]["crawler_heavy_seabed_robot"]["aliases"].append("歧义别名")
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            custom_kb.list_robot_specifications("work_class_rov", "歧义别名")
+        self.assertEqual(cm.exception.error_code, "AMBIGUOUS_FAMILY_SELECTOR")
 
     def test_29_fleet_unit_references_non_existent_variant(self):
         """29. fleet_units 引用不存在的 variant"""
@@ -442,6 +461,32 @@ class TestRobotCascadeRegistry(unittest.TestCase):
         resolved_unit = self.kb.resolve_robot_unit("WROV-250-001")
         self.assertIsNotNone(resolved_unit)
         self.assertEqual(resolved_unit["unit_id"], "WROV-250-001")
+
+    def test_40_sibling_variant_with_orphan_variant_fails_closed(self):
+        """40. 即使同 family 存在合法 sibling variant，存在孤儿 orphan variant 时整体查询 fail closed 触发 INVALID_FAMILY_REFERENCE"""
+        custom_kb = KnowledgeBase()
+        custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
+        # Add an orphan variant referencing non-existent family
+        custom_kb.robot_fleet["model_variants"]["orphan_variant_x"] = {
+            "family_id": "non_existent_family_xyz",
+            "full_name": "孤儿型号",
+            "hard_params": {"power_hp": 999},
+        }
+        # Attempt query for valid family 'general_work_class_rov' which has valid sibling 'general_work_class_rov_250hp'
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            custom_kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
+        self.assertEqual(cm.exception.error_code, "INVALID_FAMILY_REFERENCE")
+
+    def test_41_ambiguous_family_alias_fails_closed(self):
+        """41. family alias 存在歧义时抛出 AMBIGUOUS_FAMILY_SELECTOR"""
+        custom_kb = KnowledgeBase()
+        custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
+        # Add identical alias to two families
+        custom_kb.robot_fleet["robot_families"]["general_work_class_rov"]["aliases"].append("歧义别名")
+        custom_kb.robot_fleet["robot_families"]["crawler_heavy_seabed_robot"]["aliases"].append("歧义别名")
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            custom_kb.list_robot_specifications("work_class_rov", "歧义别名")
+        self.assertEqual(cm.exception.error_code, "AMBIGUOUS_FAMILY_SELECTOR")
 
 
 if __name__ == "__main__":
