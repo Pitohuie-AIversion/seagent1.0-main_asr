@@ -728,8 +728,11 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
         if task_type_key:
             new_slots["task_type_key"].value = task_type_key
             new_slots["task_type_key"].status = "valid"
-        self.dm._handle_equipment_updates_in_transaction(
+        self.dm._apply_updates_in_transaction(
             updates, new_slots, allow_overwrite=allow_overwrite
+        )
+        self.dm._normalize_and_validate_in_transaction(
+            new_slots, task_type_key
         )
         self.dm.slot_store.commit_transaction(new_slots, [])
         self.dm.task_state = self.dm.slot_store.get_task_state()
@@ -1041,30 +1044,32 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
         self.assertEqual(spec_slot.status, "invalid")
         self.assertIn("positive finite number", spec_slot.validation_error or "")
 
-    # ── 55 ─ 已有 valid 级联切换到规格缺失设备，保留旧级联 (P1-1 & Round 4) ───
+    # ── 55 ─ 已有 valid 级联切换到规格缺失设备，保留旧级联 (P1-1 & Round 5) ───
     def test_55_existing_valid_cascade_switch_to_spec_missing_unit_preserves_cascade(self):
-        """55. 已有完整 valid 级联时，尝试切换到规格缺失设备 (OBSROV--001) 保留原 valid 级联，将 unit 标为 conflict。"""
-        # 1. 建立完整 valid AUV 级联
+        """55. 真实 pipeline: 已有完整 valid 级联时，尝试切换到规格缺失设备 (OBSROV--001) 保留原 valid 级联，将 unit 标为 conflict。"""
+        # 1. 真实完整 pipeline 建立 valid AUV 级联
         self._apply_updates({"equipment_unit_id": "AUV-324cc-001"}, task_type_key="pipeline_inspection")
-        for k in ("equipment_class", "equipment_family", "equipment_specification", "equipment_type", "equipment_unit_id", "equipment_name"):
-            if k in self.dm.slot_store.slots and self.dm.slot_store.slots[k].value:
-                self.dm.slot_store.slots[k].status = "valid"
+        self.assertEqual(self.dm.slot_store.slots["equipment_class"].status, "valid")
+        self.assertEqual(self.dm.slot_store.slots["equipment_unit_id"].status, "valid")
 
-        # 2. 尝试切换为规格缺失设备 OBSROV--001
+        # 2. 真实完整 pipeline 尝试切换为规格缺失设备 OBSROV--001
         self._apply_updates({"equipment_unit_id": "OBSROV--001"}, task_type_key="pipeline_inspection")
 
         slots = self.dm.slot_store.slots
         # 原 AUV 槽位保留，不得出现 observation_rov class 与 AUV name 的混合状态
         self.assertEqual(slots["equipment_class"].value, "auv")
+        self.assertEqual(slots["equipment_class"].status, "valid")
         self.assertEqual(slots["equipment_family"].value, "水下无人自主航行器")
+        self.assertEqual(slots["equipment_family"].status, "valid")
         self.assertEqual(slots["equipment_unit_id"].value, "AUV-324cc-001")
         self.assertEqual(slots["equipment_unit_id"].status, "conflict")
         self.assertEqual(slots["equipment_unit_id"].candidate_value, "OBSROV--001")
         self.assertEqual(slots["equipment_name"].value, "水下无人自主航行器-324cc-001")
 
-    # ── 56 ─ 同轮四级输入，validator 失败时零半提交 (P1-2 & Round 4) ────────────
+    # ── 56 ─ 同轮四级输入，validator 失败时零半提交 (P1-2 & Round 5) ────────────
     def test_56_same_turn_four_level_input_validator_failure_no_partial_commit(self):
-        """56. 同一轮次输入 class+family+spec+unit，若 validate_static_robot_selection 失败，无父级被提交为 valid。"""
+        """56. 真实完整 pipeline: 同一轮次输入 class+family+spec+unit，若 validate_static_robot_selection 失败，
+        经 normalize_and_validate 后无父级被提升为 valid。"""
         from unittest.mock import patch
         from src.knowledge_retriever import RobotSelectionDataError
         four_level_input = {
@@ -1086,21 +1091,20 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
             self._apply_updates(four_level_input, task_type_key="pipeline_inspection")
 
         slots = self.dm.slot_store.slots
-        # validator 失败后，父级 class/family/spec 绝对不得成为 valid
+        # 经真实 normalize_and_validate 之后，父级 class/family/spec 绝对不得成为 valid
         self.assertNotEqual(slots.get("equipment_class", Slot("")).status, "valid")
         self.assertNotEqual(slots.get("equipment_family", Slot("")).status, "valid")
         self.assertNotEqual(slots.get("equipment_specification", Slot("")).status, "valid")
+        self.assertNotEqual(slots.get("equipment_type", Slot("")).status, "valid")
         self.assertEqual(slots.get("equipment_unit_id").status, "invalid")
 
     # ── 57 ─ 已有 valid unit 校验失败，保持 valid 值并置 status=conflict (P2-1) ───
     def test_57_existing_valid_unit_failed_validator_sets_conflict_status(self):
-        """57. 已有 valid unit 时，新 unit 校验失败保持原 unit value，status 置为 conflict。"""
+        """57. 真实完整 pipeline: 已有 valid unit 时，新 unit 校验失败保持原 unit value，status 置为 conflict。"""
         from unittest.mock import patch
         from src.knowledge_retriever import RobotSelectionDataError
         self._apply_updates({"equipment_unit_id": "AUV-324cc-001"}, task_type_key="pipeline_inspection")
-        for k in ("equipment_class", "equipment_family", "equipment_specification", "equipment_type", "equipment_unit_id", "equipment_name"):
-            if k in self.dm.slot_store.slots and self.dm.slot_store.slots[k].value:
-                self.dm.slot_store.slots[k].status = "valid"
+        self.assertEqual(self.dm.slot_store.slots["equipment_unit_id"].status, "valid")
 
         with patch.object(
             self.kb,
@@ -1117,11 +1121,9 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
 
     # ── 58 ─ 改变父级 class 时，旧 equipment_name 自动失效不留遗留物 (P2-3) ────────
     def test_58_changing_class_clears_orphan_equipment_name(self):
-        """58. 已有 valid AUV 级联时，切换 class 为 workclass_rov (allow_overwrite=True) 清理旧 AUV name。"""
+        """58. 真实完整 pipeline: 已有 valid AUV 级联时，切换 class 为 work_class_rov (allow_overwrite=True) 清理旧 AUV name。"""
         self._apply_updates({"equipment_unit_id": "AUV-324cc-001"}, task_type_key="pipeline_inspection")
-        for k in ("equipment_class", "equipment_family", "equipment_specification", "equipment_type", "equipment_unit_id", "equipment_name"):
-            if k in self.dm.slot_store.slots and self.dm.slot_store.slots[k].value:
-                self.dm.slot_store.slots[k].status = "valid"
+        self.assertEqual(self.dm.slot_store.slots["equipment_name"].status, "valid")
 
         self._apply_updates(
             {"equipment_class": "work_class_rov"},
@@ -1137,7 +1139,7 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
     # ── 59 ─ 统一 specification 输入校验器契约验证 (P2-2) ─────────────────────────
     def test_59_specification_selector_input_validator_unification(self):
         """59. 验证 validate_specification_selector_input 的契约一致性。"""
-        from src.slot_store import validate_specification_selector_input, validate_specification_object, SnapshotValidationError
+        from src.slot_store import validate_specification_selector_input, SnapshotValidationError
 
         # 1. 最小 selector 对象校验成功
         valid_selector = {"type": "power_hp", "value": 150, "variant_id": "workclass_rov_250hp"}
@@ -1154,6 +1156,50 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
         with self.assertRaises(SnapshotValidationError) as ctx2:
             validate_specification_selector_input(invalid_val_selector)
         self.assertIn("positive finite number", str(ctx2.exception))
+
+    # ── 60 ─ 同轮父级修改 + 规格缺失 unit 零混合状态 (P1-3 & Round 5) ─────────────
+    def test_60_same_turn_parent_change_with_spec_missing_unit_no_hybrid_state(self):
+        """60. 已有 valid AUV 级联时，同轮次提交新父级 (observation_rov) + 规格缺失 unit (OBSROV--001)，
+        验证在 allow_overwrite=False 和 True 下均不会形成混合状态，完整保留 AUV 级联并将 unit 记为 conflict。"""
+        for allow_ov in (False, True):
+            with self.subTest(allow_overwrite=allow_ov):
+                self.setUp()  # 重置环境
+                self._apply_updates({"equipment_unit_id": "AUV-324cc-001"}, task_type_key="pipeline_inspection")
+
+                same_turn_input = {
+                    "equipment_class": "observation_rov",
+                    "equipment_family": "观察级深海机器人",
+                    "equipment_unit_id": "OBSROV--001",
+                }
+                self._apply_updates(same_turn_input, allow_overwrite=allow_ov, task_type_key="pipeline_inspection")
+
+                slots = self.dm.slot_store.slots
+                # 原 valid AUV 级联全量保留，绝无任何 observation_rov 混入
+                self.assertEqual(slots["equipment_class"].value, "auv")
+                self.assertEqual(slots["equipment_class"].status, "valid")
+                self.assertEqual(slots["equipment_family"].value, "水下无人自主航行器")
+                self.assertEqual(slots["equipment_family"].status, "valid")
+                self.assertEqual(slots["equipment_unit_id"].value, "AUV-324cc-001")
+                self.assertEqual(slots["equipment_unit_id"].status, "conflict")
+                self.assertEqual(slots["equipment_unit_id"].candidate_value, "OBSROV--001")
+
+    # ── 61 ─ 生产路径真实复用 validate_specification_selector_input ──────────────
+    def test_61_dm_production_path_reuses_specification_selector_validator(self):
+        """61. 验证 DialogueManager 生产路径真实调用并复用 validate_specification_selector_input。"""
+        from unittest.mock import patch
+        from src.slot_store import validate_specification_selector_input
+
+        spec_selector = {
+            "type": "diameter_mm",
+            "value": 324,
+            "variant_id": "autonomous_underwater_vehicle_324cc",
+        }
+
+        with patch("src.slot_store.validate_specification_selector_input", wraps=validate_specification_selector_input) as mock_val:
+            self._apply_updates({"equipment_specification": spec_selector}, task_type_key="pipeline_inspection")
+
+        self.assertTrue(mock_val.called, "DialogueManager production path MUST call validate_specification_selector_input")
+        self.assertGreaterEqual(mock_val.call_count, 1)
 
 
 if __name__ == "__main__":

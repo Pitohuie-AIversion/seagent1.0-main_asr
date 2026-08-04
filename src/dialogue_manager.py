@@ -54,7 +54,14 @@ from .coord_parser import parse_coordinate_updates
 from .oilfield_linker import OilfieldEntityLinker
 from . import task_intent_builder as _ti_builder_module
 from .id_sequence import validate_intent_id, validate_task_id, validate_task_id_for_task_type, next_daily_id
-from .slot_store import SlotStore, Slot, normalize_slot_value_type, SnapshotValidationError
+from .slot_store import (
+    Slot,
+    SlotStore,
+    SnapshotValidationError,
+    normalize_slot_value_type,
+    validate_specification_object,
+    validate_specification_selector_input,
+)
 
 from .exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError
 from .intent_router import IntentRouter, IntentRouteResult
@@ -1456,17 +1463,25 @@ class DialogueManager:
         allow_overwrite: bool,
     ) -> None:
         """统一处理机器人类别、系列、规格、型号、设备全称和单机编号的层级联动与依赖失效。"""
-        from src.slot_store import invalidate_robot_cascade_dependents
+        import copy
+        from src.slot_store import (
+            ROBOT_CASCADE_DEPENDENCIES,
+            reset_slot_to_missing,
+            validate_specification_selector_input,
+            SnapshotValidationError,
+        )
 
-        equipment_updates = {}
-        for key in (
+        EQUIPMENT_KEYS = (
             "equipment_class",
             "equipment_family",
             "equipment_specification",
             "equipment_type",
-            "equipment_name",
             "equipment_unit_id",
-        ):
+            "equipment_name",
+        )
+
+        equipment_updates = {}
+        for key in EQUIPMENT_KEYS:
             val = updates.get(key)
             if isinstance(val, dict):
                 if key == "equipment_specification" and ("type" in val or "display_value" in val or "variant_id" in val):
@@ -1474,13 +1489,19 @@ class DialogueManager:
                 elif "value" in val and len(val) <= 4 and ("raw_value" in val or "source" in val or "confidence" in val):
                     val = val.get("value")
             if val not in (None, ""):
+                if isinstance(val, str):
+                    val = val.strip()
                 equipment_updates[key] = val
 
         if not equipment_updates:
             return
 
-        preserve_keys = set(equipment_updates.keys())
-        changed_parents = []
+        # 保存 6 槽完整前置快照
+        equipment_before = {
+            k: copy.deepcopy(new_slots[k])
+            for k in EQUIPMENT_KEYS
+            if k in new_slots
+        }
 
         task_type = (
             new_slots.get("task_type_key").value
@@ -1490,6 +1511,38 @@ class DialogueManager:
 
         def _unwrap(v):
             return v.get("value") if isinstance(v, dict) else v
+
+        # 辅助函数：校验/推演失败时，原子回滚 new_slots 并标记目标 Slot
+        def _rollback_and_fail(target_key: str, candidate_val: Any, error_msg: str, force_conflict: bool = False):
+            for k in EQUIPMENT_KEYS:
+                if k in equipment_before:
+                    new_slots[k] = copy.deepcopy(equipment_before[k])
+                elif k in new_slots:
+                    del new_slots[k]
+
+            prior_slot = equipment_before.get(target_key)
+            has_prior_valid_value = (
+                prior_slot is not None
+                and prior_slot.status in ("valid", "conflict")
+                and prior_slot.value is not None
+            )
+            if force_conflict and has_prior_valid_value:
+                target_slot = copy.deepcopy(prior_slot)
+                target_slot.status = "conflict"
+                target_slot.candidate_value = candidate_val
+                target_slot.validation_error = error_msg
+                new_slots[target_key] = target_slot
+            else:
+                target_slot = Slot(slot_name=target_key)
+                target_slot.status = "invalid"
+                target_slot.value = None
+                target_slot.candidate_value = candidate_val
+                target_slot.validation_error = error_msg
+                new_slots[target_key] = target_slot
+
+        # 在沙盒中推演
+        sandbox_slots = copy.deepcopy(new_slots)
+        changed_parents = []
 
         # 1. equipment_class 更新
         class_update = equipment_updates.get("equipment_class")
@@ -1508,7 +1561,7 @@ class DialogueManager:
                     resolved_class_id = None
 
             if resolved_class_id:
-                class_slot = new_slots.get("equipment_class")
+                class_slot = sandbox_slots.get("equipment_class")
                 old_class = (
                     class_slot.value
                     if class_slot and class_slot.status in ("valid", "candidate")
@@ -1519,22 +1572,16 @@ class DialogueManager:
                 self._apply_slot_update_in_transaction(
                     "equipment_class",
                     resolved_class_id,
-                    new_slots,
+                    sandbox_slots,
                     allow_overwrite,
                 )
             else:
-                c_slot = new_slots.get("equipment_class")
-                if c_slot and c_slot.status == "valid" and c_slot.value:
-                    # 已 commit 的 valid 值保留，将非法输入写入 candidate_value
-                    c_slot.candidate_value = class_update
-                    c_slot.validation_error = f"Robot class '{class_update}' is unknown or not allowed for task '{task_type}'"
-                else:
-                    c_slot = c_slot or Slot("equipment_class")
-                    c_slot.status = "invalid"
-                    c_slot.value = None
-                    c_slot.candidate_value = class_update
-                    c_slot.validation_error = f"Robot class '{class_update}' is unknown or not allowed for task '{task_type}'"
-                    new_slots["equipment_class"] = c_slot
+                _rollback_and_fail(
+                    "equipment_class",
+                    class_update,
+                    f"Robot class '{class_update}' is unknown or not allowed for task '{task_type}'",
+                )
+                return
 
         # 2. equipment_family 更新
         family_update = equipment_updates.get("equipment_family")
@@ -1545,7 +1592,7 @@ class DialogueManager:
                 resolved_family = self.kb.resolve_robot_family(str(family_update), None)
             if resolved_family:
                 explicit_class_in_turn = "equipment_class" in equipment_updates
-                active_class_slot = new_slots.get("equipment_class")
+                active_class_slot = sandbox_slots.get("equipment_class")
                 active_class = (
                     active_class_slot.value
                     if active_class_slot and active_class_slot.status in ("valid", "candidate")
@@ -1554,31 +1601,30 @@ class DialogueManager:
                 target_class = resolved_family.get("robot_class")
 
                 if explicit_class_in_turn and active_class and target_class != active_class:
-                    f_slot = new_slots.get("equipment_family")
-                    if f_slot and f_slot.status in ("valid", "candidate") and f_slot.value:
-                        f_slot.candidate_value = family_update
-                        f_slot.validation_error = f"Family '{family_update}' does not belong to selected class '{active_class}'"
-                    else:
-                        f_slot = f_slot or Slot("equipment_family")
-                        f_slot.status = "invalid"
-                        f_slot.candidate_value = family_update
-                        f_slot.validation_error = f"Family '{family_update}' does not belong to selected class '{active_class}'"
-                        new_slots["equipment_family"] = f_slot
-                elif not allow_overwrite and active_class and target_class != active_class:
-                    f_slot = new_slots.get("equipment_family") or Slot("equipment_family")
-                    f_slot.status = "conflict"
+                    f_slot = sandbox_slots.get("equipment_family") or Slot(slot_name="equipment_family")
+                    f_slot.status = "invalid"
+                    f_slot.value = None
                     f_slot.candidate_value = family_update
-                    new_slots["equipment_family"] = f_slot
+                    f_slot.validation_error = f"Family '{family_update}' does not belong to selected class '{active_class}'"
+                    sandbox_slots["equipment_family"] = f_slot
+                elif not allow_overwrite and active_class and target_class != active_class:
+                    _rollback_and_fail(
+                        "equipment_family",
+                        family_update,
+                        f"Family '{family_update}' conflicts with active class '{active_class}'",
+                        force_conflict=True,
+                    )
+                    return
                 else:
                     if active_class and active_class != target_class:
                         changed_parents.append("equipment_class")
                     self._apply_slot_update_in_transaction(
                         "equipment_class",
                         target_class,
-                        new_slots,
+                        sandbox_slots,
                         allow_overwrite,
                     )
-                    family_slot = new_slots.get("equipment_family")
+                    family_slot = sandbox_slots.get("equipment_family")
                     current_family_id = (
                         self.kb.resolve_robot_family_id(str(family_slot.value), task_type)
                         if family_slot and family_slot.value and family_slot.status in ("valid", "candidate")
@@ -1593,45 +1639,36 @@ class DialogueManager:
                     self._apply_slot_update_in_transaction(
                         "equipment_family",
                         resolved_family.get("full_name", family_update),
-                        new_slots,
+                        sandbox_slots,
                         allow_overwrite,
                     )
             else:
-                f_slot = new_slots.get("equipment_family")
-                if f_slot and f_slot.status == "valid" and f_slot.value:
-                    # 已 commit 的 valid 值保留，将非法输入写入 candidate_value
-                    f_slot.candidate_value = family_update
-                    f_slot.validation_error = f"Unknown robot family '{family_update}' for task '{task_type}'"
-                else:
-                    f_slot = f_slot or Slot("equipment_family")
-                    f_slot.status = "invalid"
-                    f_slot.value = None
-                    f_slot.candidate_value = family_update
-                    f_slot.validation_error = f"Unknown robot family '{family_update}' for task '{task_type}'"
-                    new_slots["equipment_family"] = f_slot
+                _rollback_and_fail(
+                    "equipment_family",
+                    family_update,
+                    f"Unknown robot family '{family_update}' for task '{task_type}'",
+                )
+                return
 
         # 3. equipment_type (model_variant) 更新
         variant_update = equipment_updates.get("equipment_type")
         selected_variant = None
         if variant_update:
-            active_fam_slot = new_slots.get("equipment_family")
+            active_fam_slot = sandbox_slots.get("equipment_family")
             active_family = (
                 active_fam_slot.value
                 if active_fam_slot and active_fam_slot.status in ("valid", "candidate")
                 else None
             )
+            active_fam_info = self.kb.resolve_robot_family(str(active_family), task_type) if active_family else None
+            active_fam_id = active_fam_info.get("family_id") if active_fam_info else None
+
+            # 全局解算 target variant
             selected_variant = self.kb.get_rov_for_task(
                 str(variant_update),
                 task_type,
-                str(active_family) if active_family else None,
+                None,
             )
-            # allow_overwrite 或 family hint 导致 None 时，尝试授权忽略 family hint
-            if not selected_variant and active_family and (allow_overwrite or not task_type):
-                selected_variant = self.kb.get_rov_for_task(
-                    str(variant_update),
-                    task_type,
-                    None,
-                )
             if not selected_variant and not task_type:
                 selected_variant = self.kb.get_rov_for_task(
                     str(variant_update),
@@ -1643,147 +1680,110 @@ class DialogueManager:
                 fam_id = selected_variant.get("family_id")
                 fam_full = selected_variant.get("family_full_name")
 
+                explicit_fam_in_turn = "equipment_family" in equipment_updates
                 explicit_fam_id = (
                     resolved_family.get("family_id") if resolved_family else None
                 )
-                if explicit_fam_id and explicit_fam_id != fam_id:
-                    v_slot = new_slots.get("equipment_type")
-                    if v_slot and v_slot.status in ("valid", "candidate") and v_slot.value:
-                        v_slot.candidate_value = variant_update
-                        v_slot.validation_error = f"Variant '{variant_update}' does not belong to selected family '{family_update}'"
+                if explicit_fam_in_turn and explicit_fam_id and explicit_fam_id != fam_id:
+                    t_slot = sandbox_slots.get("equipment_type") or Slot(slot_name="equipment_type")
+                    t_slot.status = "invalid"
+                    t_slot.value = None
+                    t_slot.candidate_value = variant_update
+                    t_slot.validation_error = f"Variant '{variant_update}' does not belong to selected family '{family_update}'"
+                    sandbox_slots["equipment_type"] = t_slot
+                    for k in EQUIPMENT_KEYS:
+                        if k in sandbox_slots:
+                            new_slots[k] = sandbox_slots[k]
+                    return
+                elif not allow_overwrite and active_fam_id and active_fam_id != fam_id:
+                    _rollback_and_fail(
+                        "equipment_type",
+                        variant_update,
+                        f"Variant '{variant_update}' conflicts with active family '{active_family}'",
+                        force_conflict=True,
+                    )
+                    return
+
+                canonical_spec = None
+                try:
+                    specs = self.kb.list_robot_specifications(robot_cls, fam_id, task_type)
+                    matching_specs = [
+                        s for s in specs if s.get("variant_id") == selected_variant.get("variant_id")
+                    ]
+                    canonical_spec = matching_specs[0] if matching_specs else None
+                except RobotSelectionDataError as _exc:
+                    if _exc.error_code == "MISSING_SPECIFICATION_VALUE":
+                        canonical_spec = None
                     else:
-                        v_slot = v_slot or Slot("equipment_type")
-                        v_slot.status = "invalid"
-                        v_slot.candidate_value = variant_update
-                        v_slot.validation_error = f"Variant '{variant_update}' does not belong to selected family '{family_update}'"
-                        new_slots["equipment_type"] = v_slot
-                    selected_variant = None
-                else:
-                    canonical_spec = None
-                    try:
-                        specs = self.kb.list_robot_specifications(robot_cls, fam_id, task_type)
-                        matching_specs = [
-                            s for s in specs if s.get("variant_id") == selected_variant.get("variant_id")
-                        ]
-                        canonical_spec = matching_specs[0] if matching_specs else None
-                    except RobotSelectionDataError as _exc:
-                        if _exc.error_code == "MISSING_SPECIFICATION_VALUE":
-                            # 该变体不具备该规格字段（如观察级 ROV 无 HP）：正常限制，允许强等写入 class/family/type
-                            canonical_spec = None
-                        else:
-                            # 真实配置损坏：fail closed，不继续写入任何级联 slot
-                            v_slot = new_slots.get("equipment_type")
-                            if v_slot and v_slot.status == "valid" and v_slot.value:
-                                v_slot.candidate_value = variant_update
-                                v_slot.validation_error = f"{_exc.error_code}: {_exc}"
-                            else:
-                                v_slot = v_slot or Slot("equipment_type")
-                                v_slot.status = "invalid"
-                                v_slot.candidate_value = variant_update
-                                v_slot.validation_error = f"{_exc.error_code}: {_exc}"
-                                new_slots["equipment_type"] = v_slot
-                            selected_variant = None  # 终止后续所有写入
-
-                    if selected_variant:
-                        # 如果 equipment_type 实际发生变更，标记为 changed_parents 以触发下级 unit 失效
-                        old_variant_slot = new_slots.get("equipment_type")
-                        old_variant_val = (
-                            old_variant_slot.value
-                            if old_variant_slot and old_variant_slot.status in ("valid", "candidate")
-                            else None
-                        )
-                        new_variant_val = selected_variant.get("full_name", variant_update)
-                        if allow_overwrite and old_variant_val and old_variant_val != new_variant_val:
-                            changed_parents.append("equipment_type")
-                        self._apply_slot_update_in_transaction(
-                            "equipment_class",
-                            robot_cls,
-                            new_slots,
-                            allow_overwrite,
-                        )
-                        self._apply_slot_update_in_transaction(
-                            "equipment_family",
-                            fam_full,
-                            new_slots,
-                            allow_overwrite,
-                        )
-                        if canonical_spec:
-                            self._apply_slot_update_in_transaction(
-                                "equipment_specification",
-                                canonical_spec,
-                                new_slots,
-                                allow_overwrite,
-                            )
-                        self._apply_slot_update_in_transaction(
+                        _rollback_and_fail(
                             "equipment_type",
-                            new_variant_val,
-                            new_slots,
-                            allow_overwrite,
+                            variant_update,
+                            f"{_exc.error_code}: {_exc}",
                         )
-            else:
-                v_slot = new_slots.get("equipment_type")
-                if v_slot and v_slot.status == "valid" and v_slot.value:
-                    # 已 commit 的 valid 值保留，将非法输入写入 candidate_value
-                    v_slot.candidate_value = variant_update
-                    v_slot.validation_error = f"Unknown model variant '{variant_update}'"
-                else:
-                    v_slot = v_slot or Slot("equipment_type")
-                    v_slot.status = "invalid"
-                    v_slot.value = None
-                    v_slot.candidate_value = variant_update
-                    v_slot.validation_error = f"Unknown model variant '{variant_update}'"
-                    new_slots["equipment_type"] = v_slot
+                        return
 
-        # 4. equipment_specification 直接更新
-        # P1-3 & P1-5: 必须是 typed dict，且含 type / value / variant_id 三个必要字段，且 value 必须为严格正数
-        spec_update = equipment_updates.get("equipment_specification")
-        if spec_update is not None:
-            _spec_reject_reason = None
-            if not isinstance(spec_update, dict):
-                _spec_reject_reason = (
-                    f"Specification must be a typed dict with 'type', 'value', 'variant_id';"
-                    f" got {type(spec_update).__name__}: {spec_update!r}"
+                old_variant_slot = sandbox_slots.get("equipment_type")
+                old_variant_val = (
+                    old_variant_slot.value
+                    if old_variant_slot and old_variant_slot.status in ("valid", "candidate")
+                    else None
+                )
+                new_variant_val = selected_variant.get("full_name", variant_update)
+                if allow_overwrite and old_variant_val and old_variant_val != new_variant_val:
+                    changed_parents.append("equipment_type")
+                self._apply_slot_update_in_transaction(
+                    "equipment_class",
+                    robot_cls,
+                    sandbox_slots,
+                    allow_overwrite,
+                )
+                self._apply_slot_update_in_transaction(
+                    "equipment_family",
+                    fam_full,
+                    sandbox_slots,
+                    allow_overwrite,
+                )
+                if canonical_spec:
+                    self._apply_slot_update_in_transaction(
+                        "equipment_specification",
+                        canonical_spec,
+                        sandbox_slots,
+                        allow_overwrite,
+                    )
+                self._apply_slot_update_in_transaction(
+                    "equipment_type",
+                    new_variant_val,
+                    sandbox_slots,
+                    allow_overwrite,
                 )
             else:
-                _missing_keys = {"type", "value", "variant_id"} - spec_update.keys()
-                if _missing_keys:
-                    _spec_reject_reason = (
-                        f"Specification missing required keys: {sorted(_missing_keys)}"
-                    )
-                else:
-                    _s_val = spec_update.get("value")
-                    if (
-                        isinstance(_s_val, bool)
-                        or not isinstance(_s_val, (int, float))
-                        or not math.isfinite(_s_val)
-                        or _s_val <= 0
-                    ):
-                        _spec_reject_reason = (
-                            f"Specification value must be a positive finite number; got {type(_s_val).__name__}: {_s_val!r}"
-                        )
+                _rollback_and_fail(
+                    "equipment_type",
+                    variant_update,
+                    f"Unknown model variant '{variant_update}'",
+                )
+                return
 
-            if _spec_reject_reason:
-                sp_slot = new_slots.get("equipment_specification")
-                if sp_slot and sp_slot.status == "valid" and sp_slot.value:
-                    sp_slot.candidate_value = spec_update
-                    sp_slot.validation_error = _spec_reject_reason
-                else:
-                    sp_slot = sp_slot or Slot("equipment_specification")
-                    sp_slot.status = "invalid"
-                    sp_slot.value = None
-                    sp_slot.candidate_value = spec_update
-                    sp_slot.validation_error = _spec_reject_reason
-                    new_slots["equipment_specification"] = sp_slot
-                spec_update = None  # 不继续匹配
+        # 4. equipment_specification 直接更新
+        spec_update = equipment_updates.get("equipment_specification")
+        if spec_update is not None:
+            try:
+                validate_specification_selector_input(spec_update, "equipment_specification")
+            except SnapshotValidationError as _spec_err:
+                _rollback_and_fail(
+                    "equipment_specification",
+                    spec_update,
+                    str(_spec_err),
+                )
+                return
 
-        if spec_update:
-            active_class_slot = new_slots.get("equipment_class")
+            active_class_slot = sandbox_slots.get("equipment_class")
             active_class = (
                 active_class_slot.value
                 if active_class_slot and active_class_slot.status in ("valid", "candidate")
                 else None
             )
-            active_fam_slot = new_slots.get("equipment_family")
+            active_fam_slot = sandbox_slots.get("equipment_family")
             active_fam = (
                 active_fam_slot.value
                 if active_fam_slot and active_fam_slot.status in ("valid", "candidate")
@@ -1799,7 +1799,6 @@ class DialogueManager:
                 avail_specs = self.kb.list_robot_specifications(
                     active_class, active_fam_id, task_type
                 )
-                # P1-5: 严格匹配 variant_id + type + 严格数值 equality (不使用 str())
                 req_vid = spec_update["variant_id"]
                 req_type = spec_update["type"]
                 req_val = spec_update["value"]
@@ -1816,7 +1815,7 @@ class DialogueManager:
                         break
 
             if matched_canonical_spec:
-                old_spec_slot = new_slots.get("equipment_specification")
+                old_spec_slot = sandbox_slots.get("equipment_specification")
                 old_vid = (
                     old_spec_slot.value.get("variant_id")
                     if old_spec_slot
@@ -1833,7 +1832,7 @@ class DialogueManager:
                 self._apply_slot_update_in_transaction(
                     "equipment_specification",
                     matched_canonical_spec,
-                    new_slots,
+                    sandbox_slots,
                     allow_overwrite,
                 )
                 variant_info = self.kb.get_rov_for_task(matched_canonical_spec.get("variant_id"), task_type)
@@ -1843,21 +1842,16 @@ class DialogueManager:
                     self._apply_slot_update_in_transaction(
                         "equipment_type",
                         variant_info.get("full_name"),
-                        new_slots,
+                        sandbox_slots,
                         allow_overwrite,
                     )
             else:
-                sp_slot = new_slots.get("equipment_specification")
-                if sp_slot and sp_slot.status == "valid" and sp_slot.value:
-                    sp_slot.candidate_value = spec_update
-                    sp_slot.validation_error = "Specification does not match current class/family"
-                else:
-                    sp_slot = sp_slot or Slot("equipment_specification")
-                    sp_slot.status = "invalid"
-                    sp_slot.value = None
-                    sp_slot.candidate_value = spec_update
-                    sp_slot.validation_error = "Specification does not match current class/family"
-                    new_slots["equipment_specification"] = sp_slot
+                _rollback_and_fail(
+                    "equipment_specification",
+                    spec_update,
+                    "Specification does not match current class/family",
+                )
+                return
 
         # 5. equipment_unit_id / equipment_name 更新
         unit_update = (
@@ -1865,7 +1859,7 @@ class DialogueManager:
             or _unwrap(equipment_updates.get("equipment_name"))
         )
         if unit_update:
-            variant_slot = new_slots.get("equipment_type")
+            variant_slot = sandbox_slots.get("equipment_type")
             variant_context = (
                 selected_variant.get("full_name")
                 if selected_variant
@@ -1893,7 +1887,6 @@ class DialogueManager:
                 unit_fam_full = unit_variant.get("family_full_name")
                 unit_vid = unit_variant.get("variant_id")
 
-                # 查询 task-scoped 规格（P1-1: fail closed on RobotSelectionDataError）
                 canonical_spec = None
                 _unit_spec_error: RobotSelectionDataError | None = None
                 try:
@@ -1901,206 +1894,165 @@ class DialogueManager:
                     unit_matching_specs = [s for s in unit_specs if s.get("variant_id") == unit_vid]
                     canonical_spec = unit_matching_specs[0] if unit_matching_specs else None
                 except RobotSelectionDataError as _exc:
-                    if _exc.error_code == "MISSING_SPECIFICATION_VALUE":
-                        # 该变体不具备该规格字段（如观察级 ROV 无 HP）：允许 class/family/type 写入，spec 置空
-                        canonical_spec = None
-                        _unit_spec_error = _exc
-                    else:
-                        # 真实配置损坏：fail closed，不继续写入任何级联 slot
-                        _unit_spec_error = _exc
+                    _unit_spec_error = _exc
 
-                # P1-1: Registry 配置损坏错误时 fail closed
                 if _unit_spec_error is not None and _unit_spec_error.error_code != "MISSING_SPECIFICATION_VALUE":
-                    u_slot = new_slots.get("equipment_unit_id")
-                    if u_slot and u_slot.status == "valid" and u_slot.value:
-                        u_slot.candidate_value = unit_update
-                        u_slot.validation_error = f"{_unit_spec_error.error_code}: {_unit_spec_error}"
+                    _rollback_and_fail(
+                        "equipment_unit_id",
+                        unit_update,
+                        f"{_unit_spec_error.error_code}: {_unit_spec_error}",
+                    )
+                    return
+
+                explicit_class_in_turn = equipment_updates.get("equipment_class")
+                explicit_family_in_turn = equipment_updates.get("equipment_family")
+                explicit_spec_in_turn = equipment_updates.get("equipment_specification")
+
+                explicit_cls_mismatch = (
+                    explicit_class_in_turn is not None
+                    and self.kb._resolve_class_key(str(explicit_class_in_turn)) != unit_robot_cls
+                )
+                explicit_fam_mismatch = False
+                if explicit_family_in_turn is not None:
+                    explicit_fam_resolved = self.kb.resolve_robot_family_id(str(explicit_family_in_turn), task_type)
+                    explicit_fam_mismatch = (
+                        explicit_fam_resolved is not None
+                        and explicit_fam_resolved != unit_fam_id
+                    )
+                explicit_spec_mismatch = False
+                if isinstance(explicit_spec_in_turn, dict):
+                    explicit_spec_vid = explicit_spec_in_turn.get("variant_id")
+                    if explicit_spec_vid and explicit_spec_vid != unit_vid:
+                        explicit_spec_mismatch = True
+
+                parent_mismatch = explicit_cls_mismatch or explicit_fam_mismatch or explicit_spec_mismatch
+
+                if parent_mismatch:
+                    _rollback_and_fail(
+                        "equipment_unit_id",
+                        unit_update,
+                        f"Unit '{unit_update}' belongs to class '{unit_robot_cls}' but explicitly selected class/family/spec is mismatched",
+                    )
+                    return
+
+                if not canonical_spec:
+                    has_prior_valid_cascade = any(
+                        s and s.status in ("valid", "conflict") and s.value is not None
+                        for s in equipment_before.values()
+                    )
+                    if has_prior_valid_cascade:
+                        _rollback_and_fail(
+                            "equipment_unit_id",
+                            unit_update,
+                            "MISSING_SPECIFICATION_VALUE: Cannot validate 4-level selection without specification",
+                            force_conflict=True,
+                        )
+                        return
                     else:
-                        u_slot = u_slot or Slot("equipment_unit_id")
+                        self._apply_slot_update_in_transaction(
+                            "equipment_class",
+                            unit_robot_cls,
+                            sandbox_slots,
+                            allow_overwrite,
+                        )
+                        self._apply_slot_update_in_transaction(
+                            "equipment_family",
+                            unit_fam_full,
+                            sandbox_slots,
+                            allow_overwrite,
+                        )
+                        self._apply_slot_update_in_transaction(
+                            "equipment_type",
+                            unit_variant.get("full_name"),
+                            sandbox_slots,
+                            allow_overwrite,
+                        )
+                        sp_slot = Slot(slot_name="equipment_specification")
+                        sp_slot.status = "invalid"
+                        sp_slot.validation_error = "MISSING_SPECIFICATION_VALUE: Specification value missing for unit"
+                        sandbox_slots["equipment_specification"] = sp_slot
+
+                        u_slot = Slot(slot_name="equipment_unit_id")
                         u_slot.status = "invalid"
                         u_slot.candidate_value = unit_update
-                        u_slot.validation_error = f"{_unit_spec_error.error_code}: {_unit_spec_error}"
-                        new_slots["equipment_unit_id"] = u_slot
-                    # fail closed：不继续任何级联写入
+                        u_slot.validation_error = "MISSING_SPECIFICATION_VALUE: Cannot validate 4-level selection without specification"
+                        sandbox_slots["equipment_unit_id"] = u_slot
                 else:
-                    # P1-2: 仅检查同一轮次明确输入的 class/family/specification 是否与 unit 矛盾
-                    explicit_class_in_turn = equipment_updates.get("equipment_class")
-                    explicit_family_in_turn = equipment_updates.get("equipment_family")
-                    explicit_spec_in_turn = equipment_updates.get("equipment_specification")
+                    # P1-1: 完整四级组合形成，权威校验
+                    try:
+                        self.kb.validate_static_robot_selection(
+                            unit_robot_cls,
+                            unit_fam_id,
+                            canonical_spec,
+                            resolved_unit["unit_id"],
+                            task_type,
+                        )
+                    except RobotSelectionDataError as _v_exc:
+                        _rollback_and_fail(
+                            "equipment_unit_id",
+                            unit_update,
+                            f"{_v_exc.error_code}: {_v_exc}",
+                            force_conflict=True,
+                        )
+                        return
 
-                    explicit_cls_mismatch = (
-                        explicit_class_in_turn is not None
-                        and self.kb._resolve_class_key(str(explicit_class_in_turn)) != unit_robot_cls
+                    # 四级校验通过，更新 sandbox
+                    self._apply_slot_update_in_transaction(
+                        "equipment_class",
+                        unit_robot_cls,
+                        sandbox_slots,
+                        allow_overwrite,
                     )
-                    explicit_fam_mismatch = False
-                    if explicit_family_in_turn is not None:
-                        explicit_fam_resolved = self.kb.resolve_robot_family_id(str(explicit_family_in_turn), task_type)
-                        explicit_fam_mismatch = (
-                            explicit_fam_resolved is not None
-                            and explicit_fam_resolved != unit_fam_id
-                        )
-                    # P1-2: 同轮显式 specification 的 variant_id 与 unit 不一致
-                    explicit_spec_mismatch = False
-                    if isinstance(explicit_spec_in_turn, dict):
-                        explicit_spec_vid = explicit_spec_in_turn.get("variant_id")
-                        if explicit_spec_vid and explicit_spec_vid != unit_vid:
-                            explicit_spec_mismatch = True
-
-                    parent_mismatch = explicit_cls_mismatch or explicit_fam_mismatch or explicit_spec_mismatch
-
-                    if parent_mismatch:
-                        # unit 与同一轮次明确输入的父级不一致：拒绝 unit，保留父级
-                        u_slot = new_slots.get("equipment_unit_id")
-                        if u_slot and u_slot.status == "valid" and u_slot.value:
-                            u_slot.candidate_value = unit_update
-                            u_slot.validation_error = (
-                                f"Unit '{unit_update}' belongs to class '{unit_robot_cls}'"
-                                f" but explicitly selected class/family/spec is mismatched"
-                            )
-                        else:
-                            u_slot = u_slot or Slot("equipment_unit_id")
-                            u_slot.status = "invalid"
-                            u_slot.candidate_value = unit_update
-                            u_slot.validation_error = (
-                                f"Unit '{unit_update}' belongs to class '{unit_robot_cls}'"
-                                f" but explicitly selected class/family/spec is mismatched"
-                            )
-                            new_slots["equipment_unit_id"] = u_slot
-                    elif canonical_spec is None:
-                        # P1-4: 规格数据缺失 (MISSING_SPECIFICATION_VALUE)
-                        # 如果当前已有 valid 的级联（例如已有 AUV-324cc-001），不得覆写旧有效级联，必须报 conflict！
-                        has_prior_valid_cascade = any(
-                            s and s.status == "valid" and s.value is not None
-                            for k, s in new_slots.items()
-                            if k in ("equipment_class", "equipment_specification", "equipment_unit_id")
-                        )
-                        if has_prior_valid_cascade:
-                            u_slot = new_slots.get("equipment_unit_id") or Slot("equipment_unit_id")
-                            if u_slot.status == "valid" and u_slot.value:
-                                u_slot.status = "conflict"
-                                u_slot.candidate_value = unit_update
-                                u_slot.validation_error = "MISSING_SPECIFICATION_VALUE: Cannot validate 4-level selection without specification"
-                            else:
-                                u_slot.status = "invalid"
-                                u_slot.candidate_value = unit_update
-                                u_slot.validation_error = "MISSING_SPECIFICATION_VALUE: Cannot validate 4-level selection without specification"
-                                new_slots["equipment_unit_id"] = u_slot
-                        else:
-                            # 空白任务：允许 class/family/type 写入，spec 与 unit_id 标注为 invalid
-                            self._apply_slot_update_in_transaction(
-                                "equipment_class",
-                                unit_robot_cls,
-                                new_slots,
-                                allow_overwrite,
-                            )
-                            self._apply_slot_update_in_transaction(
-                                "equipment_family",
-                                unit_fam_full,
-                                new_slots,
-                                allow_overwrite,
-                            )
-                            self._apply_slot_update_in_transaction(
-                                "equipment_type",
-                                unit_variant.get("full_name"),
-                                new_slots,
-                                allow_overwrite,
-                            )
-                            sp_slot = Slot("equipment_specification")
-                            sp_slot.status = "invalid"
-                            sp_slot.validation_error = "MISSING_SPECIFICATION_VALUE: Specification value missing for unit"
-                            new_slots["equipment_specification"] = sp_slot
-
-                            u_slot = Slot("equipment_unit_id")
-                            u_slot.status = "invalid"
-                            u_slot.candidate_value = unit_update
-                            u_slot.validation_error = "MISSING_SPECIFICATION_VALUE: Cannot validate 4-level selection without specification"
-                            new_slots["equipment_unit_id"] = u_slot
-                    else:
-                        # P1-1: 完整四级组合形成，必须调用 self.kb.validate_static_robot_selection 校验
-                        _validation_failed = False
-                        _val_error_msg = None
-                        try:
-                            self.kb.validate_static_robot_selection(
-                                unit_robot_cls,
-                                unit_fam_id,
-                                canonical_spec,
-                                resolved_unit["unit_id"],
-                                task_type,
-                            )
-                        except RobotSelectionDataError as _v_exc:
-                            _validation_failed = True
-                            _val_error_msg = f"{_v_exc.error_code}: {_v_exc}"
-
-                        if _validation_failed:
-                            u_slot = new_slots.get("equipment_unit_id")
-                            if u_slot and u_slot.status == "valid" and u_slot.value:
-                                u_slot.status = "conflict"
-                                u_slot.candidate_value = unit_update
-                                u_slot.validation_error = _val_error_msg
-                            else:
-                                u_slot = u_slot or Slot("equipment_unit_id")
-                                u_slot.status = "invalid"
-                                u_slot.candidate_value = unit_update
-                                u_slot.validation_error = _val_error_msg
-                                new_slots["equipment_unit_id"] = u_slot
-                        else:
-                            # 校验完全通过，统一写入全部六个槽位
-                            self._apply_slot_update_in_transaction(
-                                "equipment_class",
-                                unit_robot_cls,
-                                new_slots,
-                                allow_overwrite,
-                            )
-                            self._apply_slot_update_in_transaction(
-                                "equipment_family",
-                                unit_fam_full,
-                                new_slots,
-                                allow_overwrite,
-                            )
-                            self._apply_slot_update_in_transaction(
-                                "equipment_specification",
-                                canonical_spec,
-                                new_slots,
-                                allow_overwrite,
-                            )
-                            self._apply_slot_update_in_transaction(
-                                "equipment_type",
-                                unit_variant.get("full_name"),
-                                new_slots,
-                                allow_overwrite,
-                            )
-                            self._apply_slot_update_in_transaction(
-                                "equipment_unit_id",
-                                resolved_unit.get("unit_id"),
-                                new_slots,
-                                allow_overwrite,
-                            )
-                            self._apply_slot_update_in_transaction(
-                                "equipment_name",
-                                resolved_unit.get("display_name", unit_variant.get("full_name")),
-                                new_slots,
-                                allow_overwrite,
-                            )
-
+                    self._apply_slot_update_in_transaction(
+                        "equipment_family",
+                        unit_fam_full,
+                        sandbox_slots,
+                        allow_overwrite,
+                    )
+                    self._apply_slot_update_in_transaction(
+                        "equipment_specification",
+                        canonical_spec,
+                        sandbox_slots,
+                        allow_overwrite,
+                    )
+                    self._apply_slot_update_in_transaction(
+                        "equipment_type",
+                        unit_variant.get("full_name"),
+                        sandbox_slots,
+                        allow_overwrite,
+                    )
+                    self._apply_slot_update_in_transaction(
+                        "equipment_unit_id",
+                        resolved_unit.get("unit_id"),
+                        sandbox_slots,
+                        allow_overwrite,
+                    )
+                    self._apply_slot_update_in_transaction(
+                        "equipment_name",
+                        resolved_unit.get("display_name", unit_variant.get("full_name")),
+                        sandbox_slots,
+                        allow_overwrite,
+                    )
             else:
-                u_slot = new_slots.get("equipment_unit_id")
-                if u_slot and u_slot.status in ("valid", "candidate") and u_slot.value:
-                    u_slot.candidate_value = unit_update
-                    u_slot.validation_error = f"Unknown unit ID '{unit_update}'"
-                else:
-                    u_slot = u_slot or Slot("equipment_unit_id")
-                    u_slot.status = "invalid"
-                    u_slot.candidate_value = unit_update
-                    u_slot.validation_error = f"Unknown unit ID '{unit_update}'"
-                    new_slots["equipment_unit_id"] = u_slot
+                _rollback_and_fail(
+                    "equipment_unit_id",
+                    unit_update,
+                    f"Unknown unit or robot name '{unit_update}'",
+                )
+                return
 
-        # 6. 统一执行层级依赖失效
+        # 6. 如果层级变更（changed_parents），使相关下级槽位失效
         if changed_parents:
-            invalidate_robot_cascade_dependents(
-                new_slots,
-                changed_parents,
-                preserve_keys=preserve_keys,
-            )
+            for p_key in changed_parents:
+                dep_slots = ROBOT_CASCADE_DEPENDENCIES.get(p_key, [])
+                for d_key in dep_slots:
+                    if d_key in sandbox_slots and d_key not in equipment_updates:
+                        reset_slot_to_missing(sandbox_slots[d_key], source="system_dependency_invalidation")
+
+        # 7. 全部推演校验成功，一次性将 sandbox_slots 提交至 new_slots
+        for k in EQUIPMENT_KEYS:
+            if k in sandbox_slots:
+                new_slots[k] = sandbox_slots[k]
 
 
     def _handle_task_type_update_in_transaction(self, key: str, value: str, new_slots: dict):
@@ -2190,7 +2142,7 @@ class DialogueManager:
             key = field_def["key"]
             ftype = field_def["type"]
             slot = new_slots.get(key)
-            if not slot or slot.status in ("fixed", "auto", "conflict", "invalid"):
+            if not slot or slot.status in ("fixed", "auto", "conflict", "invalid") or key.startswith("equipment_"):
                 continue
 
             target_val = slot.candidate_value if slot.candidate_value is not None else slot.value
