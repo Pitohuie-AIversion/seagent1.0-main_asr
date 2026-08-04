@@ -228,15 +228,6 @@ class KnowledgeBase:
                 actual_value=v_family_id,
             )
 
-        if robot_class_id == "auv":
-            expected_field = "diameter_mm"
-            unit_str = "mm"
-            display_suffix = "CC"
-        else:
-            expected_field = "power_hp"
-            unit_str = "hp"
-            display_suffix = "HP"
-
         hard_params = variant.get("hard_params")
         if hard_params is None or not isinstance(hard_params, dict):
             raise RobotSelectionDataError(
@@ -245,9 +236,42 @@ class KnowledgeBase:
                 robot_class=robot_class_id,
                 family_id=family_id,
                 variant_id=variant_id,
-                expected_field=expected_field,
+                expected_field="hard_params",
                 actual_value=hard_params,
             )
+
+        if robot_class_id == "auv":
+            expected_field = "diameter_mm"
+            unit_str = "mm"
+            display_suffix = "CC"
+            incompatible_field = "power_hp"
+            incompatible_val = hard_params.get(incompatible_field)
+            if incompatible_val is not None:
+                raise RobotSelectionDataError(
+                    f"Variant '{variant_id}' for AUV class cannot specify incompatible field '{incompatible_field}'={incompatible_val}.",
+                    error_code="INCOMPATIBLE_SPECIFICATION_FIELD",
+                    robot_class=robot_class_id,
+                    family_id=family_id,
+                    variant_id=variant_id,
+                    expected_field=expected_field,
+                    actual_value=incompatible_val,
+                )
+        else:
+            expected_field = "power_hp"
+            unit_str = "hp"
+            display_suffix = "HP"
+            incompatible_field = "diameter_mm"
+            incompatible_val = hard_params.get(incompatible_field)
+            if incompatible_val is not None and incompatible_val != "不适用":
+                raise RobotSelectionDataError(
+                    f"Variant '{variant_id}' for non-AUV class cannot specify incompatible field '{incompatible_field}'={incompatible_val}.",
+                    error_code="INCOMPATIBLE_SPECIFICATION_FIELD",
+                    robot_class=robot_class_id,
+                    family_id=family_id,
+                    variant_id=variant_id,
+                    expected_field=expected_field,
+                    actual_value=incompatible_val,
+                )
 
         if expected_field not in hard_params:
             raise RobotSelectionDataError(
