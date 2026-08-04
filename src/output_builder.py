@@ -413,7 +413,8 @@ class OutputBuilder:
                             "parent": None,
                         })
                 return catalog
-            except Exception:
+            except RobotSelectionDataError as exc:
+                logger.warning("Robot candidate catalog resolution failed: ref=%s task=%s error=%s", ref, task_type_key, exc)
                 return []
 
         if ref == "robot_family_full_names":
@@ -431,7 +432,8 @@ class OutputBuilder:
                                 "parent": {"field": "equipment_class", "value": class_selector},
                             })
                     return catalog
-                except Exception:
+                except RobotSelectionDataError as exc:
+                    logger.warning("Robot candidate catalog resolution failed: ref=%s task=%s error=%s", ref, task_type_key, exc)
                     return []
             for _, family in self.kb.get_robot_families_for_task(task_type_key):
                 standard = family.get("full_name")
@@ -462,7 +464,8 @@ class OutputBuilder:
                                 "parent": {"field": "equipment_family", "value": family_selector},
                             })
                     return catalog
-                except Exception:
+                except RobotSelectionDataError as exc:
+                    logger.warning("Robot candidate catalog resolution failed: ref=%s task=%s error=%s", ref, task_type_key, exc)
                     return []
             return []
 

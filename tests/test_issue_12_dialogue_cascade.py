@@ -192,9 +192,9 @@ class TestIssue12DialogueCascade(unittest.TestCase):
         self.assertEqual(snap_before, snap_after)
         self.assertEqual(ver_before, ver_after)
 
-    # ── Test 9: 真实 ASR 转写流程与文本一致 ────────────────────────────────────
-    def test_09_asr_text_and_direct_text_produce_identical_result(self):
-        """9. ASR 显式来源手递与普通文本输入在 DialogueManager 中产生完全相同的结果。"""
+    # ── Test 9: ASR handoff 文本与普通文本一致性契约 ─────────────────────────
+    def test_09_asr_handoff_text_and_direct_text_produce_identical_result(self):
+        """9. ASR handoff 转写文本与文本输入在 DialogueManager 中产生完全相同的结果。"""
         msg = "使用 AUV-324cc-001 执行管缆巡检"
 
         dm1 = DialogueManager(self.llm, self.kb)
@@ -214,7 +214,9 @@ class TestIssue12DialogueCascade(unittest.TestCase):
 
     # ── Test 10: Registry 错误 fail closed 并提示用户 ──────────────────────────
     def test_10_registry_error_fails_closed(self):
-        """10. Registry 抛出 RobotSelectionDataError 时 fail closed，不产生虚假候选且给用户错误提示。"""
+        """10. Registry 抛出 RobotSelectionDataError 时 fail closed，不产生虚假候选且提示用户候选暂不可用。"""
+        from src.prompts import build_responder_messages
+
         self._init_task("pipeline_inspection")
 
         err = RobotSelectionDataError("Database corrupted", error_code="DATABASE_CORRUPTED")
@@ -224,6 +226,15 @@ class TestIssue12DialogueCascade(unittest.TestCase):
 
             self.dm._apply_updates_in_transaction({"equipment_class": "invalid_class"}, self.dm.slot_store.slots, allow_overwrite=True)
             self.assertEqual(self.dm.slot_store.slots["equipment_class"].status, "invalid")
+
+            missing_empty = [{"key": "equipment_specification", "label": "机器人规格", "type": "object", "allowed_values": []}]
+            msg = build_responder_messages(
+                task_state={"equipment_class": "auv", "equipment_family": "水下无人自主航行器"},
+                built_json={"equipment_class": "auv", "equipment_family": "水下无人自主航行器"},
+                missing_fields=missing_empty,
+                mode="normal", phase="collecting", knowledge_context="", constraint_context={"type": "none"}, conversation_history=[], latest_user_message="继续", ROV2type={}, support_task=[]
+            )[0]["content"]
+            self.assertIn("候选暂不可用", msg)
 
     # ── Test 11 (P1-1): 切换父级 class 绕过/不使用旧 family 缓存 ─────────────────
     def test_11_parent_class_change_bypasses_stale_cache(self):
@@ -265,6 +276,45 @@ class TestIssue12DialogueCascade(unittest.TestCase):
         extracted = self.dm.builder._extract_field("cable_type", "string", field_def, self.dm.task_state, "pipeline_inspection")
         self.assertNotIsInstance(extracted, dict)
         self.assertIsNone(extracted)
+
+    # ── Test 14 (P1-1): get_required -> _resolve_candidate_catalog 不吞 TypeError ──
+    def test_14_candidate_catalog_resolution_does_not_swallow_type_error(self):
+        """14 (P1-1). get_required() 经过 _resolve_candidate_catalog() 时不吞掉 TypeError 等程序异常。"""
+        self._init_task("pipeline_inspection")
+        with patch.object(self.kb, "list_robot_classes", side_effect=TypeError("Programming bug in catalog")):
+            with self.assertRaises(TypeError):
+                self.dm.builder.get_required("pipeline_inspection", task_state=self.dm.task_state)
+
+    # ── Test 15 (P1-2): Prompts 明确按 CC / HP 规格追问 ────────────────────────
+    def test_15_prompt_instructions_for_auv_and_non_auv_specifications(self):
+        """15 (P1-2). prompts 按 equipment_specification 单独追问：AUV 询问 CC 口径，非 AUV 询问 HP 马力。"""
+        from src.prompts import build_responder_messages
+
+        # AUV
+        missing_auv = [
+            {"key": "equipment_specification", "label": "机器人规格", "type": "object", "allowed_values": ["324CC"]},
+        ]
+        msg_auv = build_responder_messages(
+            task_state={"equipment_class": "auv", "equipment_family": "水下无人自主航行器"},
+            built_json={"equipment_class": "auv", "equipment_family": "水下无人自主航行器"},
+            missing_fields=missing_auv,
+            mode="normal", phase="collecting", knowledge_context="", constraint_context={"type": "none"}, conversation_history=[], latest_user_message="继续", ROV2type={}, support_task=[]
+        )[0]["content"]
+        self.assertIn("CC 口径规格", msg_auv)
+        self.assertIn("324CC", msg_auv)
+
+        # 非 AUV
+        missing_rov = [
+            {"key": "equipment_specification", "label": "机器人规格", "type": "object", "allowed_values": ["250HP"]},
+        ]
+        msg_rov = build_responder_messages(
+            task_state={"equipment_class": "work_class_rov", "equipment_family": "通用工作级深海机器人"},
+            built_json={"equipment_class": "work_class_rov", "equipment_family": "通用工作级深海机器人"},
+            missing_fields=missing_rov,
+            mode="normal", phase="collecting", knowledge_context="", constraint_context={"type": "none"}, conversation_history=[], latest_user_message="继续", ROV2type={}, support_task=[]
+        )[0]["content"]
+        self.assertIn("HP 马力规格", msg_rov)
+        self.assertIn("250HP", msg_rov)
 
 
 if __name__ == "__main__":

@@ -201,16 +201,32 @@ def build_responder_messages(
             "也不得询问或展示具体机器人编号 equipment_unit_id。"
         )
     elif ("equipment_specification" in missing_keys or "equipment_type" in missing_keys) and not equipment_spec and not equipment_type:
-        if str(equipment_class).lower() == "auv":
+        spec_field = next(
+            (field for field in missing_fields if field.get("key") in ("equipment_specification", "equipment_type")),
+            None,
+        )
+        spec_candidates = (
+            spec_field.get("allowed_values", [])
+            if spec_field
+            else []
+        )
+
+        if not spec_candidates:
             field_dependency_instruction = (
-                f"\n【字段依赖提示】当前作业机器人系列 equipment_family 已确认：{equipment_family}。"
-                "本轮只询问作业设备型号与 CC 口径规格；不得询问马力或 HP 规格，不得询问具体机器人编号。"
+                "\n【字段依赖提示】当前后端未返回合法机器人规格候选。"
+                "请如实告知用户候选暂不可用，不得猜测或自行生成规格。"
+            )
+        elif str(equipment_class).lower() == "auv":
+            field_dependency_instruction = (
+                f"\n【字段依赖提示】当前机器人系列已确认：{equipment_family}。"
+                f"本轮只询问作业设备型号/CC 口径规格，合法候选仅为：{spec_candidates}。"
+                "不得询问 HP、马力，不得询问具体机器人编号。"
             )
         else:
             field_dependency_instruction = (
-                f"\n【字段依赖提示】当前作业机器人系列 equipment_family 已确认：{equipment_family}。"
-                "本轮只询问作业设备型号；不得询问具体机器人编号，"
-                "不得把多个设备型号下的机器人编号混合展示。"
+                f"\n【字段依赖提示】当前机器人系列已确认：{equipment_family}。"
+                f"本轮只询问作业设备型号/HP 马力规格，合法候选仅为：{spec_candidates}。"
+                "不得询问 CC，不得询问具体机器人编号。"
             )
     elif "equipment_unit_id" in missing_keys and not equipment_unit:
         unit_field = next((m for m in missing_fields if m.get("key") == "equipment_unit_id"), None)
