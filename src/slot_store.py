@@ -184,8 +184,21 @@ def validate_specification_object(
         or val <= 0
     ):
         raise SnapshotValidationError(
-            f"Slot '{slot_key}' specification value must be a finite positive number, got {val}."
+            f"Specification value must be a finite positive number, got {val}."
         )
+
+
+def _validate_spec_slot_data(value: Any, candidate_val: Any, slot_key: str = "equipment_specification") -> None:
+    if value is not None:
+        validate_specification_object(value, slot_key=slot_key)
+    if candidate_val is not None:
+        if isinstance(candidate_val, dict) and ("type" in candidate_val or "display_value" in candidate_val or "variant_id" in candidate_val):
+            try:
+                validate_specification_selector_input(candidate_val, slot_key=slot_key)
+            except SnapshotValidationError:
+                validate_specification_object(candidate_val, slot_key=slot_key)
+        else:
+            validate_specification_object(candidate_val, slot_key=slot_key)
 
 
 INTERNAL_SLOT_TYPES = {
@@ -522,8 +535,7 @@ class SlotStore:
 
                     candidate_val = copy.deepcopy(sdict.get("candidate_value"))
                     if key == "equipment_specification":
-                        validate_specification_object(value, slot_key=key)
-                        validate_specification_object(candidate_val, slot_key=key)
+                        _validate_spec_slot_data(value, candidate_val, slot_key=key)
 
                     new_slots[key] = Slot(
                         slot_name=key,
@@ -568,8 +580,7 @@ class SlotStore:
                     if sdict.status == "valid" and sdict.value is None:
                         raise SnapshotValidationError(f"Valid slot '{key}' cannot have null value.")
                     if key == "equipment_specification":
-                        validate_specification_object(sdict.value, key)
-                        validate_specification_object(sdict.candidate_value, key)
+                        _validate_spec_slot_data(sdict.value, sdict.candidate_value, slot_key=key)
                     new_slots[key] = sdict.copy()
                     new_slots[key].slot_name = key
 

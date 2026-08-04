@@ -55,6 +55,7 @@ from .oilfield_linker import OilfieldEntityLinker
 from . import task_intent_builder as _ti_builder_module
 from .id_sequence import validate_intent_id, validate_task_id, validate_task_id_for_task_type, next_daily_id
 from .slot_store import (
+    BASE_SLOT_TYPES,
     Slot,
     SlotStore,
     SnapshotValidationError,
@@ -1526,19 +1527,101 @@ class DialogueManager:
                 and prior_slot.status in ("valid", "conflict")
                 and prior_slot.value is not None
             )
-            if force_conflict and has_prior_valid_value:
-                target_slot = copy.deepcopy(prior_slot)
+            # P1-1: 只要原目标槽位存在有效值，任何失败输入均自动将目标槽位标记为 conflict 保持旧值，绝不安吞或降级为 invalid/None
+            if force_conflict or has_prior_valid_value:
+                target_slot = copy.deepcopy(prior_slot) if prior_slot else Slot(slot_name=target_key)
                 target_slot.status = "conflict"
                 target_slot.candidate_value = candidate_val
                 target_slot.validation_error = error_msg
                 new_slots[target_key] = target_slot
             else:
-                target_slot = Slot(slot_name=target_key)
+                default_vtype = BASE_SLOT_TYPES.get(target_key, "string")
+                if target_key == "equipment_specification":
+                    default_vtype = "object"
+                target_slot = copy.deepcopy(prior_slot) if prior_slot else Slot(slot_name=target_key, value_type=default_vtype)
                 target_slot.status = "invalid"
                 target_slot.value = None
+                target_slot.value_type = default_vtype
                 target_slot.candidate_value = candidate_val
                 target_slot.validation_error = error_msg
                 new_slots[target_key] = target_slot
+
+        # P1-2: Conflict Fence (冲突隔离壁障)
+        # 当 allow_overwrite=False 时，检查任意输入的显式设备字段是否与已有的有效前置级联发生冲突。
+        # 一旦发现冲突，立即恢复 6 槽完整前置级联，仅将发生冲突的最高层字段标记为 conflict 保持旧值，并终止后续推演。
+        if not allow_overwrite:
+            highest_conflict_key = None
+            highest_candidate_val = None
+            highest_conflict_reason = None
+
+            # 1. 检查 equipment_class
+            cls_in = equipment_updates.get("equipment_class")
+            if cls_in:
+                active_cls_slot = equipment_before.get("equipment_class")
+                if active_cls_slot and active_cls_slot.status in ("valid", "conflict") and active_cls_slot.value is not None:
+                    res_cls_id = self.kb._resolve_class_key(str(cls_in))
+                    if res_cls_id and res_cls_id != active_cls_slot.value:
+                        highest_conflict_key = "equipment_class"
+                        highest_candidate_val = cls_in
+                        highest_conflict_reason = f"Robot class '{cls_in}' conflicts with active valid class '{active_cls_slot.value}'"
+
+            # 2. 检查 equipment_family (若 class 未冲突)
+            if not highest_conflict_key:
+                fam_in = equipment_updates.get("equipment_family")
+                if fam_in:
+                    active_fam_slot = equipment_before.get("equipment_family")
+                    if active_fam_slot and active_fam_slot.status in ("valid", "conflict") and active_fam_slot.value is not None:
+                        res_fam = self.kb.resolve_robot_family(str(fam_in), task_type)
+                        if res_fam:
+                            active_fam_id = self.kb.resolve_robot_family_id(str(active_fam_slot.value), task_type)
+                            if res_fam.get("family_id") != active_fam_id:
+                                highest_conflict_key = "equipment_family"
+                                highest_candidate_val = fam_in
+                                highest_conflict_reason = f"Robot family '{fam_in}' conflicts with active valid family '{active_fam_slot.value}'"
+
+            # 3. 检查 equipment_type (若 class/family 未冲突)
+            if not highest_conflict_key:
+                type_in = equipment_updates.get("equipment_type")
+                if type_in and "equipment_specification" not in equipment_updates and "equipment_unit_id" not in equipment_updates:
+                    active_type_slot = equipment_before.get("equipment_type")
+                    if active_type_slot and active_type_slot.status in ("valid", "conflict") and active_type_slot.value is not None:
+                        res_var = self.kb.get_rov_for_task(str(type_in), task_type)
+                        if res_var and res_var.get("full_name") != active_type_slot.value:
+                            highest_conflict_key = "equipment_type"
+                            highest_candidate_val = type_in
+                            highest_conflict_reason = f"Robot variant '{type_in}' conflicts with active valid type '{active_type_slot.value}'"
+
+            # 4. 检查 equipment_specification (若 class/family/type 未冲突)
+            if not highest_conflict_key:
+                spec_in = equipment_updates.get("equipment_specification")
+                if spec_in:
+                    active_spec_slot = equipment_before.get("equipment_specification")
+                    if active_spec_slot and active_spec_slot.status in ("valid", "conflict") and active_spec_slot.value is not None:
+                        if spec_in != active_spec_slot.value:
+                            highest_conflict_key = "equipment_specification"
+                            highest_candidate_val = spec_in
+                            highest_conflict_reason = f"Specification '{spec_in}' conflicts with active valid specification"
+
+            # 5. 检查 equipment_unit_id (若上方无冲突)
+            if not highest_conflict_key:
+                unit_in = equipment_updates.get("equipment_unit_id")
+                if unit_in:
+                    active_unit_slot = equipment_before.get("equipment_unit_id")
+                    if active_unit_slot and active_unit_slot.status in ("valid", "conflict") and active_unit_slot.value is not None:
+                        res_unit = self.kb.resolve_robot_unit(str(unit_in), task_type)
+                        if res_unit and res_unit.get("unit_id") != active_unit_slot.value:
+                            highest_conflict_key = "equipment_unit_id"
+                            highest_candidate_val = unit_in
+                            highest_conflict_reason = f"Robot unit '{unit_in}' conflicts with active valid unit '{active_unit_slot.value}'"
+
+            if highest_conflict_key:
+                _rollback_and_fail(
+                    highest_conflict_key,
+                    highest_candidate_val,
+                    highest_conflict_reason,
+                    force_conflict=True,
+                )
+                return
 
         # 在沙盒中推演
         sandbox_slots = copy.deepcopy(new_slots)
@@ -1691,6 +1774,15 @@ class DialogueManager:
                     t_slot.candidate_value = variant_update
                     t_slot.validation_error = f"Variant '{variant_update}' does not belong to selected family '{family_update}'"
                     sandbox_slots["equipment_type"] = t_slot
+
+                    # 清理/作废旧下级槽位，防止形成跨类目混合状态
+                    for key_to_clear in ("equipment_specification", "equipment_unit_id", "equipment_name"):
+                        if key_to_clear in sandbox_slots:
+                            s = sandbox_slots[key_to_clear]
+                            s.value = None
+                            s.status = "missing"
+                            s.validation_error = None
+
                     for k in EQUIPMENT_KEYS:
                         if k in sandbox_slots:
                             new_slots[k] = sandbox_slots[k]
