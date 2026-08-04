@@ -168,12 +168,14 @@ class OutputBuilder:
         if ftype == "datetime":
             return self._validate_datetime(raw)
 
-        if ftype == "raw":
+        if ftype in ("object", "raw"):
             return raw if raw else None
 
         if ftype == "string":
             if raw is None:
                 return None
+            if isinstance(raw, dict):
+                return raw
             allowed = self._resolve_allowed(field_def, task_type_key, task_state)
             if not allowed:
                 return str(raw)
@@ -182,10 +184,11 @@ class OutputBuilder:
                 return raw
 
             # 新增逻辑：去除所有空格后匹配，返回 allowed 中的原始值
-            raw_stripped = raw.replace(" ", "")  # 去掉所有空格
-            for item in allowed:
-                if isinstance(item, str) and item.replace(" ", "") == raw_stripped:
-                    return item  # 返回 allowed 里的原始值
+            if isinstance(raw, str):
+                raw_stripped = raw.replace(" ", "")  # 去掉所有空格
+                for item in allowed:
+                    if isinstance(item, str) and item.replace(" ", "") == raw_stripped:
+                        return item  # 返回 allowed 里的原始值
 
             return None  # 未规范化，交给 normalizer 处理
 
@@ -397,7 +400,39 @@ class OutputBuilder:
                 for value in self._resolve_allowed(field_def, task_type_key, task_state)
             ]
 
+        if ref in ("robot_category_labels", "robot_class_labels", "robot_classes"):
+            try:
+                classes = self.kb.list_robot_classes(task_type_key)
+                for c in classes:
+                    name = c.get("full_name") or c.get("class_id")
+                    if name:
+                        catalog.append({
+                            "canonical_value": name,
+                            "aliases": [],
+                            "display_name": c.get("full_name"),
+                            "parent": None,
+                        })
+                return catalog
+            except Exception:
+                return []
+
         if ref == "robot_family_full_names":
+            class_selector = str(task_state.get("equipment_class") or "") if task_state else ""
+            if class_selector:
+                try:
+                    families = self.kb.list_robot_families(class_selector, task_type_key)
+                    for family in families:
+                        standard = family.get("full_name")
+                        if standard:
+                            catalog.append({
+                                "canonical_value": standard,
+                                "aliases": list(family.get("aliases", []) or []),
+                                "display_name": family.get("display_name"),
+                                "parent": {"field": "equipment_class", "value": class_selector},
+                            })
+                    return catalog
+                except Exception:
+                    return []
             for _, family in self.kb.get_robot_families_for_task(task_type_key):
                 standard = family.get("full_name")
                 if standard:
@@ -410,6 +445,26 @@ class OutputBuilder:
                         }
                     )
             return catalog
+
+        if ref in ("robot_specifications", "equipment_specification"):
+            class_selector = str(task_state.get("equipment_class") or "") if task_state else ""
+            family_selector = str(task_state.get("equipment_family") or "") if task_state else ""
+            if class_selector and family_selector:
+                try:
+                    specs = self.kb.list_robot_specifications(class_selector, family_selector, task_type_key)
+                    for spec in specs:
+                        disp = spec.get("display_value")
+                        if disp:
+                            catalog.append({
+                                "canonical_value": disp,
+                                "aliases": [],
+                                "display_name": disp,
+                                "parent": {"field": "equipment_family", "value": family_selector},
+                            })
+                    return catalog
+                except Exception:
+                    return []
+            return []
 
         if ref in ("robot_full_names", "robot_variant_full_names"):
             family_selector = str(task_state.get("equipment_family") or "") if task_state else ""
@@ -565,11 +620,33 @@ class OutputBuilder:
           payload_options.tree_valve_operation
           vessel_ids
         """
-        if ref == "robot_category_labels":
-            return self.kb.get_robot_class_labels()
+        if ref in ("robot_category_labels", "robot_class_labels", "robot_classes"):
+            try:
+                classes = self.kb.list_robot_classes(task_type_key)
+                return [c.get("full_name") or c.get("class_id") for c in classes if c]
+            except Exception:
+                return []
 
         if ref == "robot_family_full_names":
+            class_selector = str(task_state.get("equipment_class") or "") if task_state else ""
+            if class_selector:
+                try:
+                    families = self.kb.list_robot_families(class_selector, task_type_key)
+                    return [f.get("full_name") for f in families if f and f.get("full_name")]
+                except Exception:
+                    return []
             return self.kb.get_task_allowed_robot_family_names(task_type_key)
+
+        if ref in ("robot_specifications", "equipment_specification"):
+            class_selector = str(task_state.get("equipment_class") or "") if task_state else ""
+            family_selector = str(task_state.get("equipment_family") or "") if task_state else ""
+            if class_selector and family_selector:
+                try:
+                    specs = self.kb.list_robot_specifications(class_selector, family_selector, task_type_key)
+                    return [s.get("display_value") for s in specs if s and s.get("display_value")]
+                except Exception:
+                    return []
+            return []
 
         if ref in ("robot_full_names", "robot_variant_full_names"):
             family_selector = ""
@@ -584,6 +661,16 @@ class OutputBuilder:
             ]
 
         if ref == "robot_unit_ids":
+            class_selector = str(task_state.get("equipment_class") or "") if task_state else ""
+            family_selector = str(task_state.get("equipment_family") or "") if task_state else ""
+            spec_selector = task_state.get("equipment_specification") if task_state else None
+            if class_selector and family_selector and spec_selector:
+                try:
+                    units = self.kb.list_robot_units(class_selector, family_selector, spec_selector, task_type_key)
+                    if units:
+                        return [u.get("unit_id") for u in units if u and u.get("unit_id")]
+                except Exception:
+                    return []
             return self._get_robot_unit_ids(task_type_key, task_state)
 
         if ref == "vessel_ids":

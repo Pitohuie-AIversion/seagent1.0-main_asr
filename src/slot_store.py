@@ -141,8 +141,7 @@ def validate_specification_object(
     if isinstance(spec_val, bool) or not isinstance(spec_val, dict):
         raise SnapshotValidationError(f"Slot '{slot_key}' specification value must be a dictionary.")
 
-    required_fields = ("type", "value", "unit", "display_value", "variant_id")
-    for f in required_fields:
+    for f in ("type", "value", "variant_id"):
         if f not in spec_val:
             raise SnapshotValidationError(
                 f"Slot '{slot_key}' specification object missing required field '{f}'."
@@ -154,7 +153,7 @@ def validate_specification_object(
             f"Slot '{slot_key}' specification type must be 'power_hp' or 'diameter_mm', got '{spec_type}'."
         )
 
-    unit = spec_val.get("unit")
+    unit = spec_val.get("unit") or ("hp" if spec_type == "power_hp" else "mm")
     if spec_type == "power_hp" and unit != "hp":
         raise SnapshotValidationError(
             f"Slot '{slot_key}' power_hp specification unit must be 'hp', got '{unit}'."
@@ -164,7 +163,8 @@ def validate_specification_object(
             f"Slot '{slot_key}' diameter_mm specification unit must be 'mm', got '{unit}'."
         )
 
-    disp = spec_val.get("display_value")
+    val = spec_val.get("value")
+    disp = spec_val.get("display_value") or (f"{val}HP" if spec_type == "power_hp" else f"{val}CC")
     if not isinstance(disp, str) or not disp:
         raise SnapshotValidationError(
             f"Slot '{slot_key}' specification display_value must be a non-empty string."
