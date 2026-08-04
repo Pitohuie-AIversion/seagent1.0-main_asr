@@ -93,6 +93,7 @@ class KnowledgeBase:
         return templates[task_type_key]
 
     def _validate_fleet_units_integrity(self) -> None:
+        self._validate_model_variants_integrity()
         fleet_units = self.robot_fleet.get("fleet_units")
         if fleet_units is None or not isinstance(fleet_units, list):
             raise RobotSelectionDataError(

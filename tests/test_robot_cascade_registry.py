@@ -480,6 +480,23 @@ class TestRobotCascadeRegistry(unittest.TestCase):
             custom_kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
         self.assertEqual(cm.exception.error_code, "INCOMPATIBLE_SPECIFICATION_FIELD")
 
+    def test_44_unit_query_rejects_invalid_model_variants_shape(self):
+        """44. model_variants 结构为 None/list/非 dict 时，unit 查询不会泄漏原生 TypeError，稳定返回 INVALID_MODEL_VARIANTS_CONFIG"""
+        spec = {
+            "type": "power_hp",
+            "value": 250,
+            "unit": "hp",
+            "display_value": "250HP",
+            "variant_id": "general_work_class_rov_250hp",
+        }
+        for bad_variants in [None, [], "invalid_shape"]:
+            custom_kb = KnowledgeBase()
+            custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
+            custom_kb.robot_fleet["model_variants"] = bad_variants
+            with self.assertRaises(RobotSelectionDataError) as cm:
+                custom_kb.list_robot_units("work_class_rov", "general_work_class_rov", spec)
+            self.assertEqual(cm.exception.error_code, "INVALID_MODEL_VARIANTS_CONFIG")
+
 
 if __name__ == "__main__":
     unittest.main()
