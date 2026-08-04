@@ -300,7 +300,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         )
         missing = [
             {"key": "equipment_family", "label": "作业机器人系列", "type": "string", "allowed_values": ["观察级深海机器人"]},
-            {"key": "equipment_type", "label": "作业设备型号", "type": "string", "allowed_values": ["观察级深海机器人"]},
+            {"key": "equipment_specification", "label": "机器人规格", "type": "object", "allowed_values": ["250HP"]},
             {"key": "equipment_unit_id", "label": "具体机器人编号", "type": "string", "allowed_values": []},
         ]
         system = build_responder_messages(
@@ -315,8 +315,8 @@ class DialogueManagerROVTest(unittest.TestCase):
             missing_fields=missing[1:],
             **common,
         )[0]["content"]
-        self.assertIn("本轮只询问作业设备型号", system)
-        self.assertIn("不得询问具体机器人编号", system)
+        self.assertIn("本轮只询问 HP 马力规格", system)
+        self.assertIn("不得询问设备型号、CC 口径或具体机器人编号", system)
 
     def test_prompt_requires_allowed_values_to_be_rendered_verbatim_for_all_fields(self):
         messages = build_responder_messages(

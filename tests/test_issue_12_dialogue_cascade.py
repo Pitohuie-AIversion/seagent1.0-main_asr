@@ -300,8 +300,10 @@ class TestIssue12DialogueCascade(unittest.TestCase):
             missing_fields=missing_auv,
             mode="normal", phase="collecting", knowledge_context="", constraint_context={"type": "none"}, conversation_history=[], latest_user_message="继续", ROV2type={}, support_task=[]
         )[0]["content"]
-        self.assertIn("CC 口径规格", msg_auv)
+        self.assertIn("本轮只询问 CC 口径规格", msg_auv)
         self.assertIn("324CC", msg_auv)
+        self.assertNotIn("作业设备型号/", msg_auv)
+        self.assertNotIn("HP 马力规格", msg_auv)
 
         # 非 AUV
         missing_rov = [
@@ -313,8 +315,54 @@ class TestIssue12DialogueCascade(unittest.TestCase):
             missing_fields=missing_rov,
             mode="normal", phase="collecting", knowledge_context="", constraint_context={"type": "none"}, conversation_history=[], latest_user_message="继续", ROV2type={}, support_task=[]
         )[0]["content"]
-        self.assertIn("HP 马力规格", msg_rov)
+        self.assertIn("本轮只询问 HP 马力规格", msg_rov)
         self.assertIn("250HP", msg_rov)
+        self.assertNotIn("作业设备型号/", msg_rov)
+        self.assertNotIn("CC 口径规格", msg_rov)
+
+    def test_equipment_type_missing_alone_does_not_trigger_spec_prompt(self):
+        """equipment_type 单独缺失时（specification 已有效），不得生成 CC/HP specification 提示。"""
+        from src.prompts import build_responder_messages
+
+        missing_fields = [
+            {
+                "key": "equipment_type",
+                "label": "作业设备型号",
+                "type": "string",
+                "allowed_values": ["通用工作级深海机器人 250HP"],
+            }
+        ]
+
+        msg = build_responder_messages(
+            task_state={
+                "equipment_class": "work_class_rov",
+                "equipment_family": "通用工作级深海机器人",
+                "equipment_specification": {
+                    "type": "power_hp",
+                    "value": 250,
+                    "unit": "hp",
+                    "display_value": "250HP",
+                    "variant_id": "general_work_class_rov_250hp",
+                },
+            },
+            built_json={
+                "equipment_class": "work_class_rov",
+                "equipment_family": "通用工作级深海机器人",
+                "equipment_specification": "250HP",
+            },
+            missing_fields=missing_fields,
+            mode="normal",
+            phase="collecting",
+            knowledge_context="",
+            constraint_context={"type": "none"},
+            conversation_history=[],
+            latest_user_message="继续",
+            ROV2type={},
+            support_task=[],
+        )[0]["content"]
+
+        self.assertNotIn("HP 马力规格", msg)
+        self.assertNotIn("CC 口径规格", msg)
 
 
 if __name__ == "__main__":
