@@ -64,7 +64,7 @@ from .slot_store import (
     validate_specification_selector_input,
 )
 
-from .exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError
+from .exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError, TaskRollbackError
 from .intent_router import IntentRouter, IntentRouteResult
 from .task_request_guard import analyze_task_request
 from .result_paths import get_task_dir
@@ -1631,17 +1631,25 @@ class DialogueManager:
         class_update = equipment_updates.get("equipment_class")
         if class_update:
             resolved_class_id = self.kb._resolve_class_key(str(class_update))
-            if not resolved_class_id:
-                classes = self.kb.list_robot_classes(task_type)
-                for c in classes:
-                    if c.get("class_id") == class_update or c.get("display_name") == class_update:
-                        resolved_class_id = c.get("class_id")
-                        break
+            try:
+                if not resolved_class_id:
+                    classes = self.kb.list_robot_classes(task_type)
+                    for c in classes:
+                        if c.get("class_id") == class_update or c.get("display_name") == class_update:
+                            resolved_class_id = c.get("class_id")
+                            break
 
-            if task_type:
-                allowed_classes = [c.get("class_id") for c in self.kb.list_robot_classes(task_type)]
-                if resolved_class_id not in allowed_classes:
-                    resolved_class_id = None
+                if task_type:
+                    allowed_classes = [c.get("class_id") for c in self.kb.list_robot_classes(task_type)]
+                    if resolved_class_id not in allowed_classes:
+                        resolved_class_id = None
+            except RobotSelectionDataError as _err:
+                _rollback_and_fail(
+                    "equipment_class",
+                    class_update,
+                    f"{_err.error_code}: {_err}",
+                )
+                return
 
             if resolved_class_id:
                 class_slot = sandbox_slots.get("equipment_class")
@@ -1859,6 +1867,44 @@ class DialogueManager:
         # 4. equipment_specification 直接更新
         spec_update = equipment_updates.get("equipment_specification")
         if spec_update is not None:
+            if isinstance(spec_update, str):
+                active_class_slot = sandbox_slots.get("equipment_class")
+                active_class = (
+                    active_class_slot.value
+                    if active_class_slot and active_class_slot.status in ("valid", "candidate")
+                    else ""
+                )
+                active_fam_slot = sandbox_slots.get("equipment_family")
+                active_fam_val = (
+                    active_fam_slot.value
+                    if active_fam_slot and active_fam_slot.status in ("valid", "candidate")
+                    else None
+                )
+                active_fam_id = self.kb._resolve_family_key(str(active_fam_val)) if active_fam_val else None
+
+                try:
+                    available_specs = self.kb.list_robot_specifications(
+                        str(active_class),
+                        active_fam_id,
+                        task_type,
+                    )
+                    matches = [
+                        spec for spec in available_specs
+                        if spec.get("display_value") == spec_update
+                    ]
+                except RobotSelectionDataError:
+                    matches = []
+
+                if len(matches) != 1:
+                    _rollback_and_fail(
+                        "equipment_specification",
+                        spec_update,
+                        f"Specification candidate '{spec_update}' is unknown or ambiguous for active class '{active_class}' and family '{active_fam_val}'",
+                    )
+                    return
+
+                spec_update = matches[0]
+
             try:
                 validate_specification_selector_input(spec_update, "equipment_specification")
             except SnapshotValidationError as _spec_err:

@@ -182,41 +182,65 @@ def build_responder_messages(
         missing_desc = "  （无，所有必填字段已收集 ✓）"
 
     missing_keys = {m.get("key") for m in missing_fields}
+    equipment_class = built_json.get("equipment_class") or task_state.get("equipment_class")
     equipment_family = built_json.get("equipment_family") or task_state.get("equipment_family")
+    equipment_spec = built_json.get("equipment_specification") or task_state.get("equipment_specification")
     equipment_type = built_json.get("equipment_type") or task_state.get("equipment_type")
-    equipment_family_confirmed = bool(equipment_family)
-    equipment_type_confirmed = bool(equipment_type)
-    equipment_unit_field = next(
-        (m for m in missing_fields if m.get("key") == "equipment_unit_id"),
-        None,
-    )
+    equipment_unit = built_json.get("equipment_unit_id") or task_state.get("equipment_unit_id")
+
     field_dependency_instruction = ""
-    if "equipment_family" in missing_keys and not equipment_family_confirmed:
+    if "equipment_class" in missing_keys and not equipment_class:
+        field_dependency_instruction = (
+            "\n【字段依赖提示】当前机器人类别 equipment_class 尚未确认，"
+            "本轮只询问机器人类别；不得询问后续系列、型号或编号。"
+        )
+    elif "equipment_family" in missing_keys and not equipment_family:
         field_dependency_instruction = (
             "\n【字段依赖提示】当前作业机器人系列 equipment_family 尚未确认，"
-            "本轮只询问作业机器人系列；不得询问或展示作业设备型号 equipment_type，"
+            "本轮只询问作业机器人系列；不得询问或展示作业设备型号，"
             "也不得询问或展示具体机器人编号 equipment_unit_id。"
         )
-    elif "equipment_type" in missing_keys and not equipment_type_confirmed:
-        field_dependency_instruction = (
-            f"\n【字段依赖提示】当前作业机器人系列 equipment_family 已确认：{equipment_family}。"
-            "本轮只询问作业设备型号；不得询问具体机器人编号 equipment_unit_id，"
-            "不得把多个设备型号下的机器人编号混合展示。"
+    elif "equipment_specification" in missing_keys and not equipment_spec:
+        spec_field = next(
+            (field for field in missing_fields if field.get("key") == "equipment_specification"),
+            None,
         )
-    elif equipment_unit_field is not None and equipment_type_confirmed:
-        unit_candidates = equipment_unit_field.get("allowed_values") or []
-        if unit_candidates:
+        spec_candidates = (
+            spec_field.get("allowed_values", [])
+            if spec_field
+            else []
+        )
+
+        if not spec_candidates:
             field_dependency_instruction = (
-                f"\n【字段依赖提示】当前作业设备型号 equipment_type 已确认：{equipment_type}。"
-                f"\nequipment_unit_id 的合法候选仅为：{unit_candidates}。"
-                "当用户询问机器人编号时，必须直接、完整列出上述候选；"
-                "不得使用通用知识或其他型号的编号补齐。"
+                "\n【字段依赖提示】当前后端未返回合法机器人规格候选。"
+                "请如实告知用户候选暂不可用，不得猜测或自行生成规格。"
+            )
+        elif str(equipment_class).lower() == "auv":
+            field_dependency_instruction = (
+                f"\n【字段依赖提示】当前机器人系列已确认：{equipment_family}。"
+                f"本轮只询问 CC 口径规格，合法候选仅为：{spec_candidates}。"
+                "不得询问设备型号、HP、马力或具体机器人编号。"
             )
         else:
             field_dependency_instruction = (
-                f"\n【字段依赖提示】当前作业设备型号 equipment_type 已确认：{equipment_type}。"
-                "当前型号暂无可用机器人编号，必须如实告知用户；"
-                "不得推荐其他型号的编号，也不得使用通用知识补齐。"
+                f"\n【字段依赖提示】当前机器人系列已确认：{equipment_family}。"
+                f"本轮只询问 HP 马力规格，合法候选仅为：{spec_candidates}。"
+                "不得询问设备型号、CC 口径或具体机器人编号。"
+            )
+    elif "equipment_unit_id" in missing_keys and not equipment_unit:
+        unit_field = next((m for m in missing_fields if m.get("key") == "equipment_unit_id"), None)
+        unit_candidates = unit_field.get("allowed_values") if unit_field else []
+        if unit_candidates:
+            field_dependency_instruction = (
+                f"\n【字段依赖提示】前三级机器人信息已确认。"
+                f"\nequipment_unit_id 的合法候选仅为：{unit_candidates}。"
+                "请向用户询问具体机器人编号；不得推荐其他分支的编号。"
+            )
+        else:
+            field_dependency_instruction = (
+                f"\n【字段依赖提示】前三级机器人信息已确认。"
+                "当前分支暂无可用具体机器人编号，请如实告知用户。"
             )
 
     # ── 约束指令 ─────────────────────────────────────────────────────────────
