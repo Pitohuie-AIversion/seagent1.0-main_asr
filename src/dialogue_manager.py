@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 from .llm_client import LLMClient
-from .knowledge_retriever import KnowledgeBase
+from .knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from .extractor import ParameterExtractor
 from .normalizer import FieldNormalizer
 from .output_builder import OutputBuilder
@@ -1280,8 +1280,13 @@ class DialogueManager:
         # 在事务入口拆开二者，既保留确定性归一化，也保留槽位审计信息。
         update_meta: dict[str, dict] = {}
         plain_updates: dict = {}
+        # equipment_specification 是结构化 typed dict，其 "value" 字段是规格量值，不是 meta 包装。
+        # 所有 equipment_specification 值应直接透传，不拆包。
+        _spec_passthrough_keys = {"equipment_specification"}
         for key, item in updates.items():
-            if isinstance(item, dict) and "value" in item:
+            if key in _spec_passthrough_keys:
+                plain_updates[key] = item
+            elif isinstance(item, dict) and "value" in item:
                 value = item.get("value")
                 plain_updates[key] = value
                 update_meta[key] = {
@@ -1661,45 +1666,60 @@ class DialogueManager:
                             s for s in specs if s.get("variant_id") == selected_variant.get("variant_id")
                         ]
                         canonical_spec = matching_specs[0] if matching_specs else None
-                    except Exception:
-                        # 配置数据不完整（如 power_hp=null）时降级：family/class 仍正常填充，规格置空
-                        canonical_spec = None
+                    except RobotSelectionDataError as _exc:
+                        if _exc.error_code == "MISSING_SPECIFICATION_VALUE":
+                            # 该变体不具备该规格字段（如观察级 ROV 无 HP）：正常限制，允许强等写入 class/family/type
+                            canonical_spec = None
+                        else:
+                            # 真实配置损坏：fail closed，不继续写入任何级联 slot
+                            v_slot = new_slots.get("equipment_type")
+                            if v_slot and v_slot.status == "valid" and v_slot.value:
+                                v_slot.candidate_value = variant_update
+                                v_slot.validation_error = f"{_exc.error_code}: {_exc}"
+                            else:
+                                v_slot = v_slot or Slot("equipment_type")
+                                v_slot.status = "invalid"
+                                v_slot.candidate_value = variant_update
+                                v_slot.validation_error = f"{_exc.error_code}: {_exc}"
+                                new_slots["equipment_type"] = v_slot
+                            selected_variant = None  # 终止后续所有写入
 
-                    # 如果 equipment_type 实际发生变更，标记为 changed_parents 以触发下级 unit 失效
-                    old_variant_slot = new_slots.get("equipment_type")
-                    old_variant_val = (
-                        old_variant_slot.value
-                        if old_variant_slot and old_variant_slot.status in ("valid", "candidate")
-                        else None
-                    )
-                    new_variant_val = selected_variant.get("full_name", variant_update)
-                    if allow_overwrite and old_variant_val and old_variant_val != new_variant_val:
-                        changed_parents.append("equipment_type")
-                    self._apply_slot_update_in_transaction(
-                        "equipment_class",
-                        robot_cls,
-                        new_slots,
-                        allow_overwrite,
-                    )
-                    self._apply_slot_update_in_transaction(
-                        "equipment_family",
-                        fam_full,
-                        new_slots,
-                        allow_overwrite,
-                    )
-                    if canonical_spec:
+                    if selected_variant:
+                        # 如果 equipment_type 实际发生变更，标记为 changed_parents 以触发下级 unit 失效
+                        old_variant_slot = new_slots.get("equipment_type")
+                        old_variant_val = (
+                            old_variant_slot.value
+                            if old_variant_slot and old_variant_slot.status in ("valid", "candidate")
+                            else None
+                        )
+                        new_variant_val = selected_variant.get("full_name", variant_update)
+                        if allow_overwrite and old_variant_val and old_variant_val != new_variant_val:
+                            changed_parents.append("equipment_type")
                         self._apply_slot_update_in_transaction(
-                            "equipment_specification",
-                            canonical_spec,
+                            "equipment_class",
+                            robot_cls,
                             new_slots,
                             allow_overwrite,
                         )
-                    self._apply_slot_update_in_transaction(
-                        "equipment_type",
-                        new_variant_val,
-                        new_slots,
-                        allow_overwrite,
-                    )
+                        self._apply_slot_update_in_transaction(
+                            "equipment_family",
+                            fam_full,
+                            new_slots,
+                            allow_overwrite,
+                        )
+                        if canonical_spec:
+                            self._apply_slot_update_in_transaction(
+                                "equipment_specification",
+                                canonical_spec,
+                                new_slots,
+                                allow_overwrite,
+                            )
+                        self._apply_slot_update_in_transaction(
+                            "equipment_type",
+                            new_variant_val,
+                            new_slots,
+                            allow_overwrite,
+                        )
             else:
                 v_slot = new_slots.get("equipment_type")
                 if v_slot and v_slot.status == "valid" and v_slot.value:
@@ -1715,7 +1735,36 @@ class DialogueManager:
                     new_slots["equipment_type"] = v_slot
 
         # 4. equipment_specification 直接更新
+        # P1-3: 必须是 typed dict，且含 type / value / variant_id 三个必要字段
         spec_update = equipment_updates.get("equipment_specification")
+        if spec_update is not None:
+            _spec_reject_reason = None
+            if not isinstance(spec_update, dict):
+                _spec_reject_reason = (
+                    f"Specification must be a typed dict with 'type', 'value', 'variant_id';"
+                    f" got {type(spec_update).__name__}: {spec_update!r}"
+                )
+            else:
+                _missing_keys = {"type", "value", "variant_id"} - spec_update.keys()
+                if _missing_keys:
+                    _spec_reject_reason = (
+                        f"Specification missing required keys: {sorted(_missing_keys)}"
+                    )
+
+            if _spec_reject_reason:
+                sp_slot = new_slots.get("equipment_specification")
+                if sp_slot and sp_slot.status == "valid" and sp_slot.value:
+                    sp_slot.candidate_value = spec_update
+                    sp_slot.validation_error = _spec_reject_reason
+                else:
+                    sp_slot = sp_slot or Slot("equipment_specification")
+                    sp_slot.status = "invalid"
+                    sp_slot.value = None
+                    sp_slot.candidate_value = spec_update
+                    sp_slot.validation_error = _spec_reject_reason
+                    new_slots["equipment_specification"] = sp_slot
+                spec_update = None  # 不继续匹配
+
         if spec_update:
             active_class_slot = new_slots.get("equipment_class")
             active_class = (
@@ -1739,29 +1788,19 @@ class DialogueManager:
                 avail_specs = self.kb.list_robot_specifications(
                     active_class, active_fam_id, task_type
                 )
-                req_vid = spec_update.get("variant_id") if isinstance(spec_update, dict) else None
-                req_type = spec_update.get("type") if isinstance(spec_update, dict) else None
-                req_val = spec_update.get("value") if isinstance(spec_update, dict) else spec_update
-                req_disp = spec_update.get("display_value") if isinstance(spec_update, dict) else str(spec_update)
+                # P1-3: 严格匹配 variant_id + type + value，不再按 display_value 或裸值猜测
+                req_vid = spec_update["variant_id"]   # 已确认 dict 且含三个字段
+                req_type = spec_update["type"]
+                req_val = spec_update["value"]
 
-                expected_type = "diameter_mm" if active_class == "auv" else "power_hp"
-                if req_type and req_type != expected_type:
-                    matched_canonical_spec = None
-                else:
-                    for s in avail_specs:
-                        if req_vid and s.get("variant_id") == req_vid:
-                            if req_type and s.get("type") != req_type:
-                                continue
-                            if req_val is not None and str(s.get("value")) != str(req_val):
-                                continue
-                            matched_canonical_spec = s
-                            break
-                        elif req_type and s.get("type") == req_type and (s.get("value") == req_val or str(s.get("value")) == str(req_val)):
-                            matched_canonical_spec = s
-                            break
-                        elif not req_type and (s.get("display_value") == req_disp or s.get("value") == req_val or str(s.get("value")) == str(req_val)):
-                            matched_canonical_spec = s
-                            break
+                for s in avail_specs:
+                    if (
+                        s.get("variant_id") == req_vid
+                        and s.get("type") == req_type
+                        and str(s.get("value")) == str(req_val)
+                    ):
+                        matched_canonical_spec = s
+                        break
 
             if matched_canonical_spec:
                 old_spec_slot = new_slots.get("equipment_specification")
@@ -1796,12 +1835,13 @@ class DialogueManager:
                     )
             else:
                 sp_slot = new_slots.get("equipment_specification")
-                if sp_slot and sp_slot.status in ("valid", "candidate") and sp_slot.value:
+                if sp_slot and sp_slot.status == "valid" and sp_slot.value:
                     sp_slot.candidate_value = spec_update
                     sp_slot.validation_error = "Specification does not match current class/family"
                 else:
                     sp_slot = sp_slot or Slot("equipment_specification")
                     sp_slot.status = "invalid"
+                    sp_slot.value = None
                     sp_slot.candidate_value = spec_update
                     sp_slot.validation_error = "Specification does not match current class/family"
                     new_slots["equipment_specification"] = sp_slot
@@ -1840,91 +1880,117 @@ class DialogueManager:
                 unit_fam_full = unit_variant.get("family_full_name")
                 unit_vid = unit_variant.get("variant_id")
 
-                # 查询 task-scoped 规格
+                # 查询 task-scoped 规格（P1-1: fail closed on RobotSelectionDataError）
                 canonical_spec = None
+                _unit_spec_error: RobotSelectionDataError | None = None
                 try:
                     unit_specs = self.kb.list_robot_specifications(unit_robot_cls, unit_fam_id, task_type)
                     unit_matching_specs = [s for s in unit_specs if s.get("variant_id") == unit_vid]
                     canonical_spec = unit_matching_specs[0] if unit_matching_specs else None
-                except Exception:
-                    # 配置数据不完整时降级：family/class 仍正常填充，规格置空
-                    canonical_spec = None
+                except RobotSelectionDataError as _exc:
+                    if _exc.error_code == "MISSING_SPECIFICATION_VALUE":
+                        # 该变体不具备该规格字段（如观察级 ROV 无 HP）：允许强等 class/family/type 写入，spec 置空
+                        canonical_spec = None
+                    else:
+                        # 真实配置损坏：fail closed，不继续写入任何级联 slot
+                        _unit_spec_error = _exc
 
-                # 仅检查同一轮次明确输入的 class/family 是否与 unit 矛盾
-                # 已有 valid 父级与 unit 的差异由 _apply_slot_update_in_transaction + allow_overwrite 处理
-                explicit_class_in_turn = equipment_updates.get("equipment_class")
-                explicit_family_in_turn = equipment_updates.get("equipment_family")
-
-                explicit_cls_mismatch = (
-                    explicit_class_in_turn is not None
-                    and self.kb._resolve_class_key(str(explicit_class_in_turn)) != unit_robot_cls
-                )
-                explicit_fam_mismatch = False
-                if explicit_family_in_turn is not None:
-                    explicit_fam_resolved = self.kb.resolve_robot_family_id(str(explicit_family_in_turn), task_type)
-                    explicit_fam_mismatch = (
-                        explicit_fam_resolved is not None
-                        and explicit_fam_resolved != unit_fam_id
-                    )
-
-                parent_mismatch = explicit_cls_mismatch or explicit_fam_mismatch
-
-                if parent_mismatch:
-                    # unit 与同一轮次明确输入的父级不一致：拒绝 unit，保留父级
+                # P1-1: Registry 配置错误时 fail closed，不继续写入级联 slot
+                if _unit_spec_error is not None:
                     u_slot = new_slots.get("equipment_unit_id")
                     if u_slot and u_slot.status == "valid" and u_slot.value:
                         u_slot.candidate_value = unit_update
-                        u_slot.validation_error = (
-                            f"Unit '{unit_update}' belongs to class '{unit_robot_cls}'"
-                            f" but explicitly selected class is '{explicit_class_in_turn}'"
-                        )
+                        u_slot.validation_error = f"{_unit_spec_error.error_code}: {_unit_spec_error}"
                     else:
                         u_slot = u_slot or Slot("equipment_unit_id")
                         u_slot.status = "invalid"
                         u_slot.candidate_value = unit_update
-                        u_slot.validation_error = (
-                            f"Unit '{unit_update}' belongs to class '{unit_robot_cls}'"
-                            f" but explicitly selected class is '{explicit_class_in_turn}'"
-                        )
+                        u_slot.validation_error = f"{_unit_spec_error.error_code}: {_unit_spec_error}"
                         new_slots["equipment_unit_id"] = u_slot
+                    # fail closed：不继续任何级联写入
                 else:
-                    self._apply_slot_update_in_transaction(
-                        "equipment_class",
-                        unit_robot_cls,
-                        new_slots,
-                        allow_overwrite,
+                    # P1-2: 仅检查同一轮次明确输入的 class/family/specification 是否与 unit 矛盾
+                    # 已有 valid 父级与 unit 的差异由 _apply_slot_update_in_transaction + allow_overwrite 处理
+                    explicit_class_in_turn = equipment_updates.get("equipment_class")
+                    explicit_family_in_turn = equipment_updates.get("equipment_family")
+                    explicit_spec_in_turn = equipment_updates.get("equipment_specification")
+
+                    explicit_cls_mismatch = (
+                        explicit_class_in_turn is not None
+                        and self.kb._resolve_class_key(str(explicit_class_in_turn)) != unit_robot_cls
                     )
-                    self._apply_slot_update_in_transaction(
-                        "equipment_family",
-                        unit_fam_full,
-                        new_slots,
-                        allow_overwrite,
-                    )
-                    if canonical_spec:
+                    explicit_fam_mismatch = False
+                    if explicit_family_in_turn is not None:
+                        explicit_fam_resolved = self.kb.resolve_robot_family_id(str(explicit_family_in_turn), task_type)
+                        explicit_fam_mismatch = (
+                            explicit_fam_resolved is not None
+                            and explicit_fam_resolved != unit_fam_id
+                        )
+                    # P1-2: 同轮显式 specification 的 variant_id 与 unit 不一致
+                    explicit_spec_mismatch = False
+                    if isinstance(explicit_spec_in_turn, dict):
+                        explicit_spec_vid = explicit_spec_in_turn.get("variant_id")
+                        if explicit_spec_vid and explicit_spec_vid != unit_vid:
+                            explicit_spec_mismatch = True
+
+                    parent_mismatch = explicit_cls_mismatch or explicit_fam_mismatch or explicit_spec_mismatch
+
+                    if parent_mismatch:
+                        # unit 与同一轮次明确输入的父级不一致：拒绝 unit，保留父级
+                        u_slot = new_slots.get("equipment_unit_id")
+                        if u_slot and u_slot.status == "valid" and u_slot.value:
+                            u_slot.candidate_value = unit_update
+                            u_slot.validation_error = (
+                                f"Unit '{unit_update}' belongs to class '{unit_robot_cls}'"
+                                f" but explicitly selected class is '{explicit_class_in_turn}'"
+                            )
+                        else:
+                            u_slot = u_slot or Slot("equipment_unit_id")
+                            u_slot.status = "invalid"
+                            u_slot.candidate_value = unit_update
+                            u_slot.validation_error = (
+                                f"Unit '{unit_update}' belongs to class '{unit_robot_cls}'"
+                                f" but explicitly selected class is '{explicit_class_in_turn}'"
+                            )
+                            new_slots["equipment_unit_id"] = u_slot
+                    else:
                         self._apply_slot_update_in_transaction(
-                            "equipment_specification",
-                            canonical_spec,
+                            "equipment_class",
+                            unit_robot_cls,
                             new_slots,
                             allow_overwrite,
                         )
-                    self._apply_slot_update_in_transaction(
-                        "equipment_type",
-                        unit_variant.get("full_name"),
-                        new_slots,
-                        allow_overwrite,
-                    )
-                    self._apply_slot_update_in_transaction(
-                        "equipment_unit_id",
-                        resolved_unit.get("unit_id"),
-                        new_slots,
-                        allow_overwrite,
-                    )
-                    self._apply_slot_update_in_transaction(
-                        "equipment_name",
-                        resolved_unit.get("display_name", unit_variant.get("full_name")),
-                        new_slots,
-                        allow_overwrite,
-                    )
+                        self._apply_slot_update_in_transaction(
+                            "equipment_family",
+                            unit_fam_full,
+                            new_slots,
+                            allow_overwrite,
+                        )
+                        if canonical_spec:
+                            self._apply_slot_update_in_transaction(
+                                "equipment_specification",
+                                canonical_spec,
+                                new_slots,
+                                allow_overwrite,
+                            )
+                        self._apply_slot_update_in_transaction(
+                            "equipment_type",
+                            unit_variant.get("full_name"),
+                            new_slots,
+                            allow_overwrite,
+                        )
+                        self._apply_slot_update_in_transaction(
+                            "equipment_unit_id",
+                            resolved_unit.get("unit_id"),
+                            new_slots,
+                            allow_overwrite,
+                        )
+                        self._apply_slot_update_in_transaction(
+                            "equipment_name",
+                            resolved_unit.get("display_name", unit_variant.get("full_name")),
+                            new_slots,
+                            allow_overwrite,
+                        )
             else:
                 u_slot = new_slots.get("equipment_unit_id")
                 if u_slot and u_slot.status in ("valid", "candidate") and u_slot.value:
