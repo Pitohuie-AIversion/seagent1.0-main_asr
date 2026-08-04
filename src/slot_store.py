@@ -1,5 +1,6 @@
 import copy
 import logging
+import math
 import threading
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -26,10 +27,120 @@ BASE_SLOT_TYPES = {
     "task_id": "string",
     "intent_id": "string",
     "internal_id": "string",
+    "equipment_class": "string",
     "equipment_family": "string",
+    "equipment_specification": "object",
     "equipment_type": "string",
     "equipment_name": "string",
+    "equipment_unit_id": "string",
 }
+
+ROBOT_CASCADE_DEPENDENCIES = {
+    "equipment_class": (
+        "equipment_family",
+        "equipment_specification",
+        "equipment_type",
+        "equipment_unit_id",
+        "equipment_name",
+    ),
+    "equipment_family": (
+        "equipment_specification",
+        "equipment_type",
+        "equipment_unit_id",
+        "equipment_name",
+    ),
+    "equipment_specification": (
+        "equipment_type",
+        "equipment_unit_id",
+        "equipment_name",
+    ),
+}
+
+
+def reset_slot_to_missing(
+    slot: "Slot",
+    source: str = "system_dependency_invalidation",
+) -> None:
+    """Reset a slot completely to missing state during dependency invalidation."""
+    slot.value = None
+    slot.status = "missing"
+    slot.candidate_value = None
+    slot.raw_value = None
+    slot.confidence = None
+    slot.validation_error = None
+    slot.source = source
+
+
+def invalidate_robot_cascade_dependents(
+    target_slots: Dict[str, "Slot"],
+    changed_parent_keys: Any,
+    preserve_keys: Optional[Any] = None,
+) -> None:
+    """Reset downstream dependent slots when a parent cascade slot changes."""
+    preserve_set = set(preserve_keys) if preserve_keys else set()
+    for parent_key in changed_parent_keys:
+        dependents = ROBOT_CASCADE_DEPENDENCIES.get(parent_key, ())
+        for dep_key in dependents:
+            if dep_key in preserve_set:
+                continue
+            if dep_key in target_slots:
+                reset_slot_to_missing(target_slots[dep_key], source="system_dependency_invalidation")
+
+
+def _validate_specification_object(
+    spec_val: Any,
+    slot_key: str = "equipment_specification",
+) -> None:
+    if spec_val is None:
+        return
+    if isinstance(spec_val, bool) or not isinstance(spec_val, dict):
+        raise SnapshotValidationError(f"Slot '{slot_key}' specification value must be a dictionary.")
+
+    required_fields = ("type", "value", "unit", "display_value", "variant_id")
+    for f in required_fields:
+        if f not in spec_val:
+            raise SnapshotValidationError(
+                f"Slot '{slot_key}' specification object missing required field '{f}'."
+            )
+
+    spec_type = spec_val.get("type")
+    if spec_type not in ("power_hp", "diameter_mm"):
+        raise SnapshotValidationError(
+            f"Slot '{slot_key}' specification type must be 'power_hp' or 'diameter_mm', got '{spec_type}'."
+        )
+
+    unit = spec_val.get("unit")
+    if spec_type == "power_hp" and unit != "hp":
+        raise SnapshotValidationError(
+            f"Slot '{slot_key}' power_hp specification unit must be 'hp', got '{unit}'."
+        )
+    if spec_type == "diameter_mm" and unit != "mm":
+        raise SnapshotValidationError(
+            f"Slot '{slot_key}' diameter_mm specification unit must be 'mm', got '{unit}'."
+        )
+
+    disp = spec_val.get("display_value")
+    if not isinstance(disp, str) or not disp:
+        raise SnapshotValidationError(
+            f"Slot '{slot_key}' specification display_value must be a non-empty string."
+        )
+
+    vid = spec_val.get("variant_id")
+    if not isinstance(vid, str) or not vid:
+        raise SnapshotValidationError(
+            f"Slot '{slot_key}' specification variant_id must be a non-empty string."
+        )
+
+    val = spec_val.get("value")
+    if (
+        isinstance(val, bool)
+        or not isinstance(val, (int, float))
+        or not math.isfinite(val)
+        or val <= 0
+    ):
+        raise SnapshotValidationError(
+            f"Slot '{slot_key}' specification value must be a finite positive number, got {val}."
+        )
 
 
 INTERNAL_SLOT_TYPES = {
@@ -364,6 +475,11 @@ class SlotStore:
                     if status == "valid" and value is None:
                         raise SnapshotValidationError(f"Valid slot '{key}' cannot have null value.")
 
+                    candidate_val = copy.deepcopy(sdict.get("candidate_value"))
+                    if key == "equipment_specification":
+                        _validate_specification_object(value, key)
+                        _validate_specification_object(candidate_val, key)
+
                     new_slots[key] = Slot(
                         slot_name=key,
                         value=value,
@@ -375,7 +491,7 @@ class SlotStore:
                         validation_error=sdict.get("validation_error"),
                         updated_at=updated_at,
                         version=version,
-                        candidate_value=copy.deepcopy(sdict.get("candidate_value")),
+                        candidate_value=candidate_val,
                     )
                 elif isinstance(sdict, Slot):
                     if sdict.slot_name != key:
@@ -406,6 +522,9 @@ class SlotStore:
                             )
                     if sdict.status == "valid" and sdict.value is None:
                         raise SnapshotValidationError(f"Valid slot '{key}' cannot have null value.")
+                    if key == "equipment_specification":
+                        _validate_specification_object(sdict.value, key)
+                        _validate_specification_object(sdict.candidate_value, key)
                     new_slots[key] = sdict.copy()
                     new_slots[key].slot_name = key
 
