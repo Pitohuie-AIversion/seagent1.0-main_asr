@@ -1041,6 +1041,120 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
         self.assertEqual(spec_slot.status, "invalid")
         self.assertIn("positive finite number", spec_slot.validation_error or "")
 
+    # ── 55 ─ 已有 valid 级联切换到规格缺失设备，保留旧级联 (P1-1 & Round 4) ───
+    def test_55_existing_valid_cascade_switch_to_spec_missing_unit_preserves_cascade(self):
+        """55. 已有完整 valid 级联时，尝试切换到规格缺失设备 (OBSROV--001) 保留原 valid 级联，将 unit 标为 conflict。"""
+        # 1. 建立完整 valid AUV 级联
+        self._apply_updates({"equipment_unit_id": "AUV-324cc-001"}, task_type_key="pipeline_inspection")
+        for k in ("equipment_class", "equipment_family", "equipment_specification", "equipment_type", "equipment_unit_id", "equipment_name"):
+            if k in self.dm.slot_store.slots and self.dm.slot_store.slots[k].value:
+                self.dm.slot_store.slots[k].status = "valid"
+
+        # 2. 尝试切换为规格缺失设备 OBSROV--001
+        self._apply_updates({"equipment_unit_id": "OBSROV--001"}, task_type_key="pipeline_inspection")
+
+        slots = self.dm.slot_store.slots
+        # 原 AUV 槽位保留，不得出现 observation_rov class 与 AUV name 的混合状态
+        self.assertEqual(slots["equipment_class"].value, "auv")
+        self.assertEqual(slots["equipment_family"].value, "水下无人自主航行器")
+        self.assertEqual(slots["equipment_unit_id"].value, "AUV-324cc-001")
+        self.assertEqual(slots["equipment_unit_id"].status, "conflict")
+        self.assertEqual(slots["equipment_unit_id"].candidate_value, "OBSROV--001")
+        self.assertEqual(slots["equipment_name"].value, "水下无人自主航行器-324cc-001")
+
+    # ── 56 ─ 同轮四级输入，validator 失败时零半提交 (P1-2 & Round 4) ────────────
+    def test_56_same_turn_four_level_input_validator_failure_no_partial_commit(self):
+        """56. 同一轮次输入 class+family+spec+unit，若 validate_static_robot_selection 失败，无父级被提交为 valid。"""
+        from unittest.mock import patch
+        from src.knowledge_retriever import RobotSelectionDataError
+        four_level_input = {
+            "equipment_class": "auv",
+            "equipment_family": "水下无人自主航行器",
+            "equipment_specification": {
+                "type": "diameter_mm",
+                "value": 324,
+                "variant_id": "autonomous_underwater_vehicle_324cc",
+            },
+            "equipment_unit_id": "AUV-324cc-001",
+        }
+
+        with patch.object(
+            self.kb,
+            "validate_static_robot_selection",
+            side_effect=RobotSelectionDataError("Mock static selection failure", error_code="INVALID_SELECTION"),
+        ):
+            self._apply_updates(four_level_input, task_type_key="pipeline_inspection")
+
+        slots = self.dm.slot_store.slots
+        # validator 失败后，父级 class/family/spec 绝对不得成为 valid
+        self.assertNotEqual(slots.get("equipment_class", Slot("")).status, "valid")
+        self.assertNotEqual(slots.get("equipment_family", Slot("")).status, "valid")
+        self.assertNotEqual(slots.get("equipment_specification", Slot("")).status, "valid")
+        self.assertEqual(slots.get("equipment_unit_id").status, "invalid")
+
+    # ── 57 ─ 已有 valid unit 校验失败，保持 valid 值并置 status=conflict (P2-1) ───
+    def test_57_existing_valid_unit_failed_validator_sets_conflict_status(self):
+        """57. 已有 valid unit 时，新 unit 校验失败保持原 unit value，status 置为 conflict。"""
+        from unittest.mock import patch
+        from src.knowledge_retriever import RobotSelectionDataError
+        self._apply_updates({"equipment_unit_id": "AUV-324cc-001"}, task_type_key="pipeline_inspection")
+        for k in ("equipment_class", "equipment_family", "equipment_specification", "equipment_type", "equipment_unit_id", "equipment_name"):
+            if k in self.dm.slot_store.slots and self.dm.slot_store.slots[k].value:
+                self.dm.slot_store.slots[k].status = "valid"
+
+        with patch.object(
+            self.kb,
+            "validate_static_robot_selection",
+            side_effect=RobotSelectionDataError("Mock unit failure", error_code="UNIT_REJECTED"),
+        ):
+            self._apply_updates({"equipment_unit_id": "WROV-250-001"}, task_type_key="pipeline_inspection")
+
+        unit_slot = self.dm.slot_store.slots["equipment_unit_id"]
+        self.assertEqual(unit_slot.value, "AUV-324cc-001")
+        self.assertEqual(unit_slot.status, "conflict")
+        self.assertEqual(unit_slot.candidate_value, "WROV-250-001")
+        self.assertIn("UNIT_REJECTED", unit_slot.validation_error or "")
+
+    # ── 58 ─ 改变父级 class 时，旧 equipment_name 自动失效不留遗留物 (P2-3) ────────
+    def test_58_changing_class_clears_orphan_equipment_name(self):
+        """58. 已有 valid AUV 级联时，切换 class 为 workclass_rov (allow_overwrite=True) 清理旧 AUV name。"""
+        self._apply_updates({"equipment_unit_id": "AUV-324cc-001"}, task_type_key="pipeline_inspection")
+        for k in ("equipment_class", "equipment_family", "equipment_specification", "equipment_type", "equipment_unit_id", "equipment_name"):
+            if k in self.dm.slot_store.slots and self.dm.slot_store.slots[k].value:
+                self.dm.slot_store.slots[k].status = "valid"
+
+        self._apply_updates(
+            {"equipment_class": "work_class_rov"},
+            allow_overwrite=True,
+            task_type_key="tree_valve_operation",
+        )
+
+        slots = self.dm.slot_store.slots
+        self.assertEqual(slots["equipment_class"].value, "work_class_rov")
+        # 下级 AUV name 必须已失效为 missing
+        self.assertEqual(slots["equipment_name"].status, "missing")
+
+    # ── 59 ─ 统一 specification 输入校验器契约验证 (P2-2) ─────────────────────────
+    def test_59_specification_selector_input_validator_unification(self):
+        """59. 验证 validate_specification_selector_input 的契约一致性。"""
+        from src.slot_store import validate_specification_selector_input, validate_specification_object, SnapshotValidationError
+
+        # 1. 最小 selector 对象校验成功
+        valid_selector = {"type": "power_hp", "value": 150, "variant_id": "workclass_rov_250hp"}
+        validate_specification_selector_input(valid_selector)
+
+        # 2. 缺失 required key (如 value) 抛 SnapshotValidationError
+        invalid_selector = {"type": "power_hp", "variant_id": "workclass_rov_250hp"}
+        with self.assertRaises(SnapshotValidationError) as ctx:
+            validate_specification_selector_input(invalid_selector)
+        self.assertIn("missing required keys", str(ctx.exception))
+
+        # 3. 非数值 value 抛 SnapshotValidationError
+        invalid_val_selector = {"type": "power_hp", "value": "150", "variant_id": "workclass_rov_250hp"}
+        with self.assertRaises(SnapshotValidationError) as ctx2:
+            validate_specification_selector_input(invalid_val_selector)
+        self.assertIn("positive finite number", str(ctx2.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

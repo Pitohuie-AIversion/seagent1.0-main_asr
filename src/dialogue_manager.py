@@ -1967,36 +1967,54 @@ class DialogueManager:
                             )
                             new_slots["equipment_unit_id"] = u_slot
                     elif canonical_spec is None:
-                        # P1-4: 规格数据缺失 (MISSING_SPECIFICATION_VALUE)，class/family/type 可写入，
-                        # 但 specification 和 unit_id / name 绝对不得写入 valid 状态！
-                        self._apply_slot_update_in_transaction(
-                            "equipment_class",
-                            unit_robot_cls,
-                            new_slots,
-                            allow_overwrite,
+                        # P1-4: 规格数据缺失 (MISSING_SPECIFICATION_VALUE)
+                        # 如果当前已有 valid 的级联（例如已有 AUV-324cc-001），不得覆写旧有效级联，必须报 conflict！
+                        has_prior_valid_cascade = any(
+                            s and s.status == "valid" and s.value is not None
+                            for k, s in new_slots.items()
+                            if k in ("equipment_class", "equipment_specification", "equipment_unit_id")
                         )
-                        self._apply_slot_update_in_transaction(
-                            "equipment_family",
-                            unit_fam_full,
-                            new_slots,
-                            allow_overwrite,
-                        )
-                        self._apply_slot_update_in_transaction(
-                            "equipment_type",
-                            unit_variant.get("full_name"),
-                            new_slots,
-                            allow_overwrite,
-                        )
-                        sp_slot = Slot("equipment_specification")
-                        sp_slot.status = "invalid"
-                        sp_slot.validation_error = "MISSING_SPECIFICATION_VALUE: Specification value missing for unit"
-                        new_slots["equipment_specification"] = sp_slot
+                        if has_prior_valid_cascade:
+                            u_slot = new_slots.get("equipment_unit_id") or Slot("equipment_unit_id")
+                            if u_slot.status == "valid" and u_slot.value:
+                                u_slot.status = "conflict"
+                                u_slot.candidate_value = unit_update
+                                u_slot.validation_error = "MISSING_SPECIFICATION_VALUE: Cannot validate 4-level selection without specification"
+                            else:
+                                u_slot.status = "invalid"
+                                u_slot.candidate_value = unit_update
+                                u_slot.validation_error = "MISSING_SPECIFICATION_VALUE: Cannot validate 4-level selection without specification"
+                                new_slots["equipment_unit_id"] = u_slot
+                        else:
+                            # 空白任务：允许 class/family/type 写入，spec 与 unit_id 标注为 invalid
+                            self._apply_slot_update_in_transaction(
+                                "equipment_class",
+                                unit_robot_cls,
+                                new_slots,
+                                allow_overwrite,
+                            )
+                            self._apply_slot_update_in_transaction(
+                                "equipment_family",
+                                unit_fam_full,
+                                new_slots,
+                                allow_overwrite,
+                            )
+                            self._apply_slot_update_in_transaction(
+                                "equipment_type",
+                                unit_variant.get("full_name"),
+                                new_slots,
+                                allow_overwrite,
+                            )
+                            sp_slot = Slot("equipment_specification")
+                            sp_slot.status = "invalid"
+                            sp_slot.validation_error = "MISSING_SPECIFICATION_VALUE: Specification value missing for unit"
+                            new_slots["equipment_specification"] = sp_slot
 
-                        u_slot = Slot("equipment_unit_id")
-                        u_slot.status = "invalid"
-                        u_slot.candidate_value = unit_update
-                        u_slot.validation_error = "MISSING_SPECIFICATION_VALUE: Cannot validate 4-level selection without specification"
-                        new_slots["equipment_unit_id"] = u_slot
+                            u_slot = Slot("equipment_unit_id")
+                            u_slot.status = "invalid"
+                            u_slot.candidate_value = unit_update
+                            u_slot.validation_error = "MISSING_SPECIFICATION_VALUE: Cannot validate 4-level selection without specification"
+                            new_slots["equipment_unit_id"] = u_slot
                     else:
                         # P1-1: 完整四级组合形成，必须调用 self.kb.validate_static_robot_selection 校验
                         _validation_failed = False
@@ -2016,6 +2034,7 @@ class DialogueManager:
                         if _validation_failed:
                             u_slot = new_slots.get("equipment_unit_id")
                             if u_slot and u_slot.status == "valid" and u_slot.value:
+                                u_slot.status = "conflict"
                                 u_slot.candidate_value = unit_update
                                 u_slot.validation_error = _val_error_msg
                             else:

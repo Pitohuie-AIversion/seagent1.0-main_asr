@@ -91,6 +91,47 @@ def invalidate_robot_cascade_dependents(
                 reset_slot_to_missing(target_slots[dep_key], source="system_dependency_invalidation")
 
 
+def validate_specification_selector_input(
+    spec_val: Any,
+    slot_key: str = "equipment_specification",
+) -> None:
+    """验证用户/运行时输入的最小 Specification 选择器对象（必需字段：type, value, variant_id）。"""
+    if spec_val is None:
+        return
+    if isinstance(spec_val, bool) or not isinstance(spec_val, dict):
+        raise SnapshotValidationError(f"Specification must be a typed dict with 'type', 'value', 'variant_id'; got {type(spec_val).__name__}: {spec_val!r}")
+
+    required_fields = ("type", "value", "variant_id")
+    for f in required_fields:
+        if f not in spec_val:
+            raise SnapshotValidationError(
+                f"Specification missing required keys: ['{f}']"
+            )
+
+    spec_type = spec_val.get("type")
+    if spec_type not in ("power_hp", "diameter_mm"):
+        raise SnapshotValidationError(
+            f"Slot '{slot_key}' specification type must be 'power_hp' or 'diameter_mm', got '{spec_type}'."
+        )
+
+    vid = spec_val.get("variant_id")
+    if not isinstance(vid, str) or not vid:
+        raise SnapshotValidationError(
+            f"Slot '{slot_key}' specification variant_id must be a non-empty string."
+        )
+
+    val = spec_val.get("value")
+    if (
+        isinstance(val, bool)
+        or not isinstance(val, (int, float))
+        or not math.isfinite(val)
+        or val <= 0
+    ):
+        raise SnapshotValidationError(
+            f"Specification value must be a positive finite number; got {type(val).__name__}: {val!r}"
+        )
+
+
 def validate_specification_object(
     spec_val: Any,
     slot_key: str = "equipment_specification",
