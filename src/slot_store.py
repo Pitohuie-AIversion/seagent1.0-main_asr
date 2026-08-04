@@ -54,6 +54,10 @@ ROBOT_CASCADE_DEPENDENCIES = {
         "equipment_unit_id",
         "equipment_name",
     ),
+    "equipment_type": (
+        "equipment_unit_id",
+        "equipment_name",
+    ),
 }
 
 
