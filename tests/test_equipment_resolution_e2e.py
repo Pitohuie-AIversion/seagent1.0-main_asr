@@ -37,14 +37,23 @@ class EquipmentResolutionE2ELLM:
         return text
 
     def extract_json(self, messages, max_tokens=800):
+        task_type_key = "pipeline_inspection"
+        raw_task_type = "管缆巡检"
+        if "通用工作级" in self.alias_input:
+            task_type_key = "tree_valve_operation"
+            raw_task_type = "采油树控制面板插入"
+        elif "金牛座" in self.alias_input:
+            task_type_key = "pipeline_burial"
+            raw_task_type = "管缆埋设"
+
         return {
-            "task_type_key": "pipeline_inspection",
+            "task_type_key": task_type_key,
             "slot_candidates": [
                 {
                     "raw_key": "任务类型",
                     "canonical_key": "task_type_key",
-                    "raw_value": "管缆巡检",
-                    "normalized_value": "pipeline_inspection",
+                    "raw_value": raw_task_type,
+                    "normalized_value": task_type_key,
                     "confidence": 0.99,
                 },
                 {
@@ -71,34 +80,34 @@ class EquipmentResolutionE2ETest(unittest.TestCase):
         self.kb = KnowledgeBase()
 
     def test_alias_to_unit_variant_family_e2e_flow(self):
-        """1. 验证口语别名 '观察级一号机' 完整解析链"""
-        llm = EquipmentResolutionE2ELLM("观察级一号机")
+        """1. 验证口语别名 '通用工作级一号机' 完整解析链"""
+        llm = EquipmentResolutionE2ELLM("通用工作级一号机")
         dm = DialogueManager(llm, self.kb)
 
-        reply = dm.process("执行紧急管缆巡检，配备观察级一号机，水深300米")
+        reply = dm.process("执行采油树控制面板插入，配备通用工作级一号机，水深300米")
 
         # 验证单机 ID 映射正确
-        self.assertEqual(dm.task_state.get("equipment_unit_id"), "OBSROV--001")
+        self.assertEqual(dm.task_state.get("equipment_unit_id"), "WROV-250-001")
         # 验证设备展示名正确
-        self.assertEqual(dm.task_state.get("equipment_name"), "观察级深海机器人-001")
+        self.assertEqual(dm.task_state.get("equipment_name"), "通用工作级深海机器人250HP-001")
         # 验证型号全称映射正确
-        self.assertEqual(dm.task_state.get("equipment_type"), "观察级深海机器人")
+        self.assertEqual(dm.task_state.get("equipment_type"), "通用工作级深海机器人 250HP")
         # 验证设备族群全称映射正确
-        self.assertEqual(dm.task_state.get("equipment_family"), "观察级深海机器人")
+        self.assertEqual(dm.task_state.get("equipment_family"), "通用工作级深海机器人")
         # 验证 SSOT 一致性
         self.assertEqual(dm.task_state, dm.slot_store.get_task_state())
 
     def test_alias_tianying_to_unit_variant_e2e_flow(self):
-        """2. 验证口语别名 '天鹰座001' 完整解析链"""
-        llm = EquipmentResolutionE2ELLM("天鹰座001")
+        """2. 验证口语别名 '金牛座001' 完整解析链"""
+        llm = EquipmentResolutionE2ELLM("金牛座001")
         dm = DialogueManager(llm, self.kb)
 
-        reply = dm.process("执行紧急管缆巡检，配备天鹰座001，水深300米")
+        reply = dm.process("执行管缆埋设作业，配备金牛座001，水深300米")
 
         # 验证单机 ID 映射正确
-        self.assertEqual(dm.task_state.get("equipment_unit_id"), "LROV--001")
+        self.assertEqual(dm.task_state.get("equipment_unit_id"), "CRAWLER-1600-001")
         # 验证型号全称映射正确
-        self.assertIn("轻型工作级深海机器人", dm.task_state.get("equipment_type", ""))
+        self.assertIn("履带式海底重载作业机器人 1600HP", dm.task_state.get("equipment_type", ""))
         # 验证 SSOT 一致性
         self.assertEqual(dm.task_state, dm.slot_store.get_task_state())
 
