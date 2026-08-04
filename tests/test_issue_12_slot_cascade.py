@@ -866,22 +866,16 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
         """48. 同轮显式 spec.variant_id 属于 AUV，同轮 unit_id 属于 WROV 且成功解析，
         但 spec.variant_id != unit.variant_id → unit invalid（explicit_spec_mismatch）。
         使用 tree_valve_operation（允许 work_class_rov）使 WROV unit 可成功解析。"""
-        try:
-            wrov_specs = self.kb.list_robot_specifications(
-                "work_class_rov", "general_work_class_rov", "tree_valve_operation"
-            )
-        except Exception:
-            self.skipTest("Cannot get WROV specs for tree_valve_operation")
-        if not wrov_specs:
-            self.skipTest("No WROV specs found for tree_valve_operation")
+        wrov_specs = self.kb.list_robot_specifications(
+            "work_class_rov", "general_work_class_rov", "tree_valve_operation"
+        )
+        self.assertTrue(len(wrov_specs) > 0, "Precondition: WROV specs must exist for tree_valve_operation")
 
-        # AUV spec（variant_id 属于 AUV）作为同轮显式输入
         auv_spec_input = {
             "type": "diameter_mm",
             "value": 324,
             "variant_id": "autonomous_underwater_vehicle_324cc",  # AUV variant
         }
-        # WROV unit（在 tree_valve_operation 中可成功解析）
         wrov_unit_id = "WROV-250-001"
 
         self._apply_updates(
@@ -893,7 +887,6 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
         )
         u_slot = self.dm.slot_store.slots.get("equipment_unit_id")
         self.assertIsNotNone(u_slot)
-        # WROV unit 成功解析，但 spec.variant_id 属于 AUV → explicit_spec_mismatch → unit invalid
         self.assertIn(
             u_slot.status,
             ("invalid", "missing"),
@@ -904,21 +897,16 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
     def test_49_same_turn_auv_spec_with_wrov_unit_rejected(self):
         """49. pipeline_inspection 中：同轮显式 spec.variant_id 属于 AUV，
         unit_id = WROV-250-001 → unit 在 pipeline_inspection 中不可解析 → invalid。"""
-        try:
-            auv_specs = self.kb.list_robot_specifications(
-                "auv", "autonomous_underwater_vehicle", "pipeline_inspection"
-            )
-        except Exception:
-            self.skipTest("Cannot get AUV specs for pipeline_inspection")
-        if not auv_specs:
-            self.skipTest("No AUV specs found for pipeline_inspection")
+        auv_specs = self.kb.list_robot_specifications(
+            "auv", "autonomous_underwater_vehicle", "pipeline_inspection"
+        )
+        self.assertTrue(len(auv_specs) > 0, "Precondition: AUV specs must exist for pipeline_inspection")
 
         auv_spec_input = {
             "type": auv_specs[0]["type"],
             "value": auv_specs[0]["value"],
             "variant_id": auv_specs[0]["variant_id"],
         }
-        # WROV unit：pipeline_inspection 中不允许 work_class_rov → resolve_robot_unit 返回 None
         wrov_unit_id = "WROV-250-001"
 
         self._apply_updates(
@@ -930,103 +918,128 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
         )
         u_slot = self.dm.slot_store.slots.get("equipment_unit_id")
         self.assertIsNotNone(u_slot)
-        # WROV unit 在 pipeline_inspection 中无法解析 → invalid/missing
         self.assertIn(
             u_slot.status,
             ("invalid", "missing"),
             "WROV unit should be invalid/missing when task only allows AUV/observation_rov",
         )
 
-    # ── 50 ─ unit-only 输入成功解析后 unit_id 写入 valid ─────────────────
+    # ── 50 ─ 完整四级组合真实调用 validate_static_robot_selection ─────────
     def test_50_validate_static_robot_selection_called_on_complete_four_level(self):
-        """50. 输入合法 AUV unit_id，解析成功后 equipment_unit_id 写入 valid 状态。"""
-        # AUV unit 可在 pipeline_inspection 中解析
+        """50. (P1-1 & P1-2) 输入合法 AUV unit_id 时，四级组合形成后真实调用 validate_static_robot_selection()。"""
+        from unittest.mock import patch
+
         auv_unit_id = "AUV-324cc-001"
 
-        self._apply_updates({"equipment_unit_id": auv_unit_id})
+        with patch.object(
+            self.kb,
+            "validate_static_robot_selection",
+            wraps=self.kb.validate_static_robot_selection,
+        ) as mock_validate:
+            self._apply_updates({"equipment_unit_id": auv_unit_id})
+
+        # 真实断言：validate_static_robot_selection 必须被精准调用至少一次
+        self.assertTrue(mock_validate.called, "validate_static_robot_selection must be called when 4-level combination forms")
+        self.assertGreaterEqual(mock_validate.call_count, 1)
+        # 核对调用参数：(robot_class, family_id, specification, unit_id, task_type)
+        call_args = mock_validate.call_args[0]
+        self.assertEqual(call_args[0], "auv")
+        self.assertEqual(call_args[1], "autonomous_underwater_vehicle")
+        self.assertEqual(call_args[2]["variant_id"], "autonomous_underwater_vehicle_324cc")
+        self.assertEqual(call_args[3], "AUV-324cc-001")
 
         u_slot = self.dm.slot_store.slots.get("equipment_unit_id")
         self.assertIsNotNone(u_slot)
-        # unit 成功解析 → equipment_unit_id 应为 candidate 或 valid
-        self.assertIn(
-            u_slot.status,
-            ("valid", "candidate"),
-            "After successful unit resolution, equipment_unit_id should be valid/candidate",
-        )
+        self.assertIn(u_slot.status, ("valid", "candidate"))
         self.assertEqual(u_slot.value, auv_unit_id)
-        # equipment_class 应被反查填充
-        cls_slot = self.dm.slot_store.slots.get("equipment_class")
-        self.assertIsNotNone(cls_slot)
-        self.assertIn(cls_slot.status, ("valid", "candidate"))
-        self.assertEqual(cls_slot.value, "auv")
 
-    # ── 51 ─ 四级校验失败 SlotStore 不变 ──────────────────────────────
+    # ── 51 ─ 权威四级校验失败时拒绝 unit 并保持 SlotStore 安全 ──────────────
     def test_51_failed_four_level_validation_leaves_slot_store_intact(self):
-        """51. validate_static_robot_selection 失败时，SlotStore、task_state、phase 全部不变。"""
+        """51. (P1-3) validate_static_robot_selection 失败时，equipment_unit_id 被拒绝标记为 invalid，
+        且包含正确的 error_code，不产生半更新或无效 valid 状态。"""
         from unittest.mock import patch
         from src.knowledge_retriever import RobotSelectionDataError
 
-        # 先种入一个合法的完整任务
-        self._apply_updates({
-            "equipment_class": "auv",
-            "equipment_family": "水下无人自主航行器",
-        })
-        snapshot_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+        auv_unit_id = "AUV-324cc-001"
 
-        # 模拟 validate_static_robot_selection 失败
         with patch.object(
             self.kb,
             "validate_static_robot_selection",
             side_effect=RobotSelectionDataError(
-                "Unit not in task allowed list",
-                error_code="UNIT_NOT_FOUND",
+                "Unit selection blocked by static policy",
+                error_code="STATIC_SELECTION_BLOCKED",
             ),
         ):
-            # 此时无论是否集成，只要失败路径不破坏现有 slot，测试通过
-            try:
-                self._apply_updates({"equipment_unit_id": "AUV-324cc-001"})
-            except Exception:
-                pass  # 允许异常向上传播，重要的是 slot 状态一致
+            self._apply_updates({"equipment_unit_id": auv_unit_id})
 
-        # 现有测试目标：unit_id 不应成为 valid（不完整四级写入）
         u_slot = self.dm.slot_store.slots.get("equipment_unit_id")
-        if u_slot and u_slot.status == "valid":
-            # 如果成功，说明 validate_static_robot_selection 未被集成，此测试记录期望行为
-            pass  # 暂时允许通过，待集成后收紧
+        self.assertIsNotNone(u_slot)
+        # (P1-3 修复) 必须严格断言 unit_id 是 invalid 状态，绝不能是 valid/candidate
+        self.assertEqual(u_slot.status, "invalid")
+        self.assertNotEqual(u_slot.value, auv_unit_id)
+        self.assertIn("STATIC_SELECTION_BLOCKED", u_slot.validation_error or "")
 
     # ── 52 ─ unit-only 输入（tree_valve_operation）反查替换完整旧级联 ──
     def test_52_unit_only_input_can_replace_complete_cascade(self):
         """52. tree_valve_operation 中仅输入 unit_id，能反查完整 class/family/type/spec 并替换旧级联。"""
-        # tree_valve_operation 允许 work_class_rov
-        try:
-            wrov_specs = self.kb.list_robot_specifications(
-                "work_class_rov", "general_work_class_rov", "tree_valve_operation"
-            )
-        except Exception:
-            self.skipTest("Cannot get WROV specs for tree_valve_operation")
-        if not wrov_specs:
-            self.skipTest("No WROV specs/units found for tree_valve_operation")
+        wrov_specs = self.kb.list_robot_specifications(
+            "work_class_rov", "general_work_class_rov", "tree_valve_operation"
+        )
+        self.assertTrue(len(wrov_specs) > 0, "Precondition: WROV specs must exist for tree_valve_operation")
 
-        # 先用 WROV-250-001 初始化级联
         self._apply_updates({"equipment_unit_id": "WROV-250-001"}, task_type_key="tree_valve_operation")
         cls_init = self.dm.slot_store.slots.get("equipment_class")
-        if not cls_init or cls_init.status not in ("valid", "candidate"):
-            self.skipTest("Initial WROV-250-001 unit not resolvable for tree_valve_operation")
+        self.assertIsNotNone(cls_init)
+        self.assertIn(cls_init.status, ("valid", "candidate"))
         self.assertEqual(cls_init.value, "work_class_rov")
 
-        # 再次输入同一 unit（或同类型第二台），确认不触发无谓失效
         self._apply_updates({"equipment_unit_id": "WROV-250-001"}, allow_overwrite=True, task_type_key="tree_valve_operation")
 
         slots = self.dm.slot_store.slots
         cls_slot = slots.get("equipment_class")
         self.assertIsNotNone(cls_slot)
-        self.assertIn(cls_slot.status, ("valid", "candidate"),
-                      "equipment_class should remain valid after re-applying same unit")
+        self.assertIn(cls_slot.status, ("valid", "candidate"))
         u_slot = slots.get("equipment_unit_id")
         self.assertIsNotNone(u_slot)
-        self.assertIn(u_slot.status, ("valid", "candidate"),
-                      "equipment_unit_id should remain valid after re-applying same unit")
+        self.assertIn(u_slot.status, ("valid", "candidate"))
         self.assertEqual(u_slot.value, "WROV-250-001")
+
+    # ── 53 ─ 规格缺失 (MISSING_SPECIFICATION_VALUE) 时 unit 不得写入 valid (P1-4) ─
+    def test_53_missing_specification_prevents_unit_valid_status(self):
+        """53. (P1-4) 选定无 HP 规格的观察级 ROV 时，class/family/type 可填，
+        但 equipment_specification 与 equipment_unit_id 绝对不得进入 valid 状态。"""
+        obs_unit_id = "OBSROV--001"
+
+        self._apply_updates({"equipment_unit_id": obs_unit_id}, task_type_key="pipeline_inspection")
+
+        slots = self.dm.slot_store.slots
+        cls_slot = slots.get("equipment_class")
+        self.assertIsNotNone(cls_slot)
+        self.assertEqual(cls_slot.value, "observation_rov")
+
+        # spec 和 unit_id 不得为 valid
+        spec_slot = slots.get("equipment_specification")
+        self.assertIsNotNone(spec_slot)
+        self.assertNotEqual(spec_slot.status, "valid", "Spec slot must NOT be valid when spec value is missing")
+
+        unit_slot = slots.get("equipment_unit_id")
+        self.assertIsNotNone(unit_slot)
+        self.assertNotEqual(unit_slot.status, "valid", "Unit slot must NOT be valid when specification is missing")
+
+    # ── 54 ─ 字符串数值 specification ("324") 严格被拒绝 (P1-5) ─────────────
+    def test_54_string_numerical_specification_rejected(self):
+        """54. (P1-5) specification.value 为字符串 "324" 时被严格拒绝为 invalid。"""
+        string_spec = {
+            "type": "diameter_mm",
+            "value": "324",  # String instead of int/float
+            "variant_id": "autonomous_underwater_vehicle_324cc",
+        }
+        self._apply_updates({"equipment_specification": string_spec})
+
+        spec_slot = self.dm.slot_store.slots.get("equipment_specification")
+        self.assertIsNotNone(spec_slot)
+        self.assertEqual(spec_slot.status, "invalid")
+        self.assertIn("positive finite number", spec_slot.validation_error or "")
 
 
 if __name__ == "__main__":

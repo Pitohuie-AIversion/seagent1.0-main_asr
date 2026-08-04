@@ -63,8 +63,8 @@ class FaultyLLM:
                     {"raw_key": "作业类型标识", "canonical_key": "task_type_key", "raw_value": "管缆巡检", "normalized_value": "pipeline_inspection", "confidence": 0.99},
                     {"raw_key": "作业类型", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 0.99},
                     {"raw_key": "加急", "canonical_key": "emergency_mode", "raw_value": "紧急", "normalized_value": True, "confidence": 0.99},
-                    {"raw_key": "使用设备", "canonical_key": "equipment_type", "raw_value": "工作级ROV", "normalized_value": "工作级ROV", "confidence": 0.99},
-                    {"raw_key": "使用设备", "canonical_key": "equipment_name", "raw_value": "轻型工作级深海机器人HP-001", "normalized_value": "轻型工作级深海机器人HP-001", "confidence": 0.99},
+                    {"raw_key": "使用设备", "canonical_key": "equipment_type", "raw_value": "AUV", "normalized_value": "AUV", "confidence": 0.99},
+                    {"raw_key": "使用设备", "canonical_key": "equipment_name", "raw_value": "水下无人自主航行器-324cc-001", "normalized_value": "水下无人自主航行器-324cc-001", "confidence": 0.99},
                     {"raw_key": "目标油田", "canonical_key": "raw_oilfield_name", "raw_value": "流花11-1油田", "normalized_value": "流花11-1油田", "confidence": 0.99},
                     {"raw_key": "开始时间", "canonical_key": "start_time", "raw_value": "2026-07-27T15:00:00", "normalized_value": "2026-07-27T15:00:00", "confidence": 0.99},
                     {"raw_key": "起点坐标", "canonical_key": "start_point", "raw_value": "(20.0, 115.0)", "normalized_value": "(20.0, 115.0)", "confidence": 0.99},
@@ -96,7 +96,7 @@ class FailureRecoveryBenchmarkTest(unittest.TestCase):
         # 手动将 equipment_type 设为合法大类值以推进到 confirming 阶段。
         eq_slot = self.dm.slot_store.slots.get("equipment_type")
         if eq_slot and eq_slot.status != "valid":
-            eq_slot.value = "观察级ROV"
+            eq_slot.value = "AUV"
             eq_slot.status = "valid"
             self.dm.task_state = self.dm.slot_store.get_task_state()
             self.dm.phase = "confirming"

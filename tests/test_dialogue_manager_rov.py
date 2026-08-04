@@ -163,10 +163,12 @@ class DialogueManagerROVTest(unittest.TestCase):
             "管缆巡检",
             {"equipment_name": "观察级"},
         )
-        self.assertEqual(dm.task_state.get("equipment_name"), "观察级深海机器人-001")
         self.assertEqual(dm.task_state.get("equipment_family"), "观察级深海机器人")
         self.assertEqual(dm.task_state.get("equipment_type"), "观察级深海机器人")
-        self.assertEqual(dm.task_state.get("equipment_unit_id"), "OBSROV--001")
+        # P1-4: 观察级 ROV 缺失 HP 规格 (MISSING_SPECIFICATION_VALUE)，specification 与 unit_id / name 不得进入 valid
+        self.assertIsNone(dm.task_state.get("equipment_unit_id"))
+        self.assertIsNone(dm.task_state.get("equipment_name"))
+        self.assertEqual(dm.slot_store.slots["equipment_unit_id"].status, "invalid")
 
     def test_equipment_transaction_with_rov_alias_work(self):
         dm = self._commit_equipment_update(

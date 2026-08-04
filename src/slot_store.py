@@ -91,7 +91,7 @@ def invalidate_robot_cascade_dependents(
                 reset_slot_to_missing(target_slots[dep_key], source="system_dependency_invalidation")
 
 
-def _validate_specification_object(
+def validate_specification_object(
     spec_val: Any,
     slot_key: str = "equipment_specification",
 ) -> None:
@@ -481,8 +481,8 @@ class SlotStore:
 
                     candidate_val = copy.deepcopy(sdict.get("candidate_value"))
                     if key == "equipment_specification":
-                        _validate_specification_object(value, key)
-                        _validate_specification_object(candidate_val, key)
+                        validate_specification_object(value, slot_key=key)
+                        validate_specification_object(candidate_val, slot_key=key)
 
                     new_slots[key] = Slot(
                         slot_name=key,
@@ -527,8 +527,8 @@ class SlotStore:
                     if sdict.status == "valid" and sdict.value is None:
                         raise SnapshotValidationError(f"Valid slot '{key}' cannot have null value.")
                     if key == "equipment_specification":
-                        _validate_specification_object(sdict.value, key)
-                        _validate_specification_object(sdict.candidate_value, key)
+                        validate_specification_object(sdict.value, key)
+                        validate_specification_object(sdict.candidate_value, key)
                     new_slots[key] = sdict.copy()
                     new_slots[key].slot_name = key
 
