@@ -11,15 +11,18 @@ output_builder.py — 标准 JSON 构建器 & 完整性检查器
 - 唯一例外：type=coord 的字段值为 {"lat": float, "lon": float}
 """
 
+import logging
 from typing import Any
 
-from .knowledge_retriever import KnowledgeBase
+from .knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from .simulated_time import get_business_date
 from .coord_parser import parse_coord_value
 from .id_sequence import next_daily_task_id, validate_task_prefix
 from .exceptions import IdReservationError
 from .result_paths import get_task_dir, get_history_dir
 from .normalizer import FieldNormalizer
+
+logger = logging.getLogger(__name__)
 
 
 class OutputBuilder:
@@ -172,23 +175,20 @@ class OutputBuilder:
             return raw if raw else None
 
         if ftype == "string":
-            if raw is None:
+            if raw is None or not isinstance(raw, str):
                 return None
-            if isinstance(raw, dict):
-                return raw
             allowed = self._resolve_allowed(field_def, task_type_key, task_state)
             if not allowed:
-                return str(raw)
+                return raw
             # 必须是 allowed_values 中的值，否则视为未规范化（缺失）
-            if isinstance(raw, str) and raw in allowed:
+            if raw in allowed:
                 return raw
 
             # 新增逻辑：去除所有空格后匹配，返回 allowed 中的原始值
-            if isinstance(raw, str):
-                raw_stripped = raw.replace(" ", "")  # 去掉所有空格
-                for item in allowed:
-                    if isinstance(item, str) and item.replace(" ", "") == raw_stripped:
-                        return item  # 返回 allowed 里的原始值
+            raw_stripped = raw.replace(" ", "")  # 去掉所有空格
+            for item in allowed:
+                if isinstance(item, str) and item.replace(" ", "") == raw_stripped:
+                    return item  # 返回 allowed 里的原始值
 
             return None  # 未规范化，交给 normalizer 处理
 
@@ -581,26 +581,26 @@ class OutputBuilder:
         if not ref:
             return []
 
-        selector = ""
-        if task_state and ref in ("robot_full_names", "robot_variant_full_names"):
-            selector = str(task_state.get("equipment_family") or "")
-        elif ref == "robot_unit_ids" and task_state:
-            selector = str(task_state.get("equipment_type") or "")
-        cache_key = (
-            f"{ref}:{task_type_key}:{selector}"
-            if ref in (
-                "robot_family_full_names",
-                "robot_full_names",
-                "robot_variant_full_names",
-                "robot_unit_ids",
-            )
-            else ref
-        )
-        if cache_key in self._ref_cache:
-            return self._ref_cache[cache_key]
+        dynamic_robot_refs = {
+            "robot_category_labels",
+            "robot_class_labels",
+            "robot_classes",
+            "robot_family_full_names",
+            "robot_specifications",
+            "equipment_specification",
+            "robot_full_names",
+            "robot_variant_full_names",
+            "robot_unit_ids",
+        }
+
+        if ref in dynamic_robot_refs:
+            return self._lookup_ref(ref, task_type_key, task_state)
+
+        if ref in self._ref_cache:
+            return self._ref_cache[ref]
 
         result = self._lookup_ref(ref, task_type_key, task_state)
-        self._ref_cache[cache_key] = result
+        self._ref_cache[ref] = result
         return result
 
     def _lookup_ref(
@@ -624,7 +624,8 @@ class OutputBuilder:
             try:
                 classes = self.kb.list_robot_classes(task_type_key)
                 return [c.get("full_name") or c.get("class_id") for c in classes if c]
-            except Exception:
+            except RobotSelectionDataError as exc:
+                logger.warning("Robot category resolution failed: ref=%s task=%s error=%s", ref, task_type_key, exc)
                 return []
 
         if ref == "robot_family_full_names":
@@ -633,7 +634,8 @@ class OutputBuilder:
                 try:
                     families = self.kb.list_robot_families(class_selector, task_type_key)
                     return [f.get("full_name") for f in families if f and f.get("full_name")]
-                except Exception:
+                except RobotSelectionDataError as exc:
+                    logger.warning("Robot family resolution failed: ref=%s task=%s error=%s", ref, task_type_key, exc)
                     return []
             return self.kb.get_task_allowed_robot_family_names(task_type_key)
 
@@ -644,7 +646,8 @@ class OutputBuilder:
                 try:
                     specs = self.kb.list_robot_specifications(class_selector, family_selector, task_type_key)
                     return [s.get("display_value") for s in specs if s and s.get("display_value")]
-                except Exception:
+                except RobotSelectionDataError as exc:
+                    logger.warning("Robot spec resolution failed: ref=%s task=%s error=%s", ref, task_type_key, exc)
                     return []
             return []
 
@@ -669,7 +672,8 @@ class OutputBuilder:
                     units = self.kb.list_robot_units(class_selector, family_selector, spec_selector, task_type_key)
                     if units:
                         return [u.get("unit_id") for u in units if u and u.get("unit_id")]
-                except Exception:
+                except RobotSelectionDataError as exc:
+                    logger.warning("Robot unit resolution failed: ref=%s task=%s error=%s", ref, task_type_key, exc)
                     return []
             return self._get_robot_unit_ids(task_type_key, task_state)
 

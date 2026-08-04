@@ -7,7 +7,7 @@ from src.llm_client import LLMClient
 
 
 class TestIssue12DialogueCascade(unittest.TestCase):
-    """Dialogue cascade unit & integration tests 1-10 required by Issue #12 Phase 2B."""
+    """Dialogue cascade unit & integration tests 1-13 required for Issue #12 Phase 2B."""
 
     def setUp(self):
         self.kb = KnowledgeBase()
@@ -40,9 +40,9 @@ class TestIssue12DialogueCascade(unittest.TestCase):
         self.dm.slot_store.commit_transaction(new_slots, [])
         self.dm.task_state = self.dm.slot_store.get_task_state()
 
-    # ── Test 1: 缺 class 时返回 class 候选 ─────────────────────────────────────
+    # ── Test 1: 缺 class 时返回 class 候选且不下钻 ─────────────────────────────
     def test_01_missing_class_returns_class_candidates(self):
-        """1. 缺 class 时调用 list_robot_classes(task_type_key)，allowed_values 包含合法 class，不查 family/spec/unit。"""
+        """1. 缺 class 时调用 list_robot_classes，不下钻调用 family/spec/unit。"""
         self._init_task("pipeline_inspection")
 
         with patch.object(self.kb, "list_robot_classes", wraps=self.kb.list_robot_classes) as mock_classes, \
@@ -62,6 +62,9 @@ class TestIssue12DialogueCascade(unittest.TestCase):
             self.assertIn("allowed_values", cls_field)
             self.assertTrue(len(cls_field["allowed_values"]) > 0)
             mock_classes.assert_called()
+            mock_families.assert_not_called()
+            mock_specs.assert_not_called()
+            mock_units.assert_not_called()
 
     # ── Test 2: 已有 class 时返回 family 候选 ──────────────────────────────────
     def test_02_valid_class_returns_family_candidates(self):
@@ -80,45 +83,69 @@ class TestIssue12DialogueCascade(unittest.TestCase):
         self.assertIsNotNone(fam_field)
         self.assertEqual(fam_field["allowed_values"], ["水下无人自主航行器"])
 
-    # ── Test 3: AUV 返回 CC 规格 ───────────────────────────────────────────────
+    # ── Test 3: AUV 输入 '324CC' 转完整 5 字段 canonical spec ─────────────────────
     def test_03_auv_returns_cc_specification(self):
-        """3. AUV 返回 CC 规格 (324CC)，不包含马力或 HP，specification type 为 diameter_mm。"""
+        """3. 输入显示值 '324CC' 确定性转换为 5 字段 canonical spec dictionary。"""
         self._init_task("pipeline_inspection")
-        self._apply_updates({"equipment_class": "auv", "equipment_family": "水下无人自主航行器"}, task_type_key="pipeline_inspection")
-
-        specs = self.kb.list_robot_specifications("auv", "autonomous_underwater_vehicle", "pipeline_inspection")
-        self.assertTrue(len(specs) > 0)
-        self.assertEqual(specs[0]["type"], "diameter_mm")
-        self.assertEqual(specs[0]["display_value"], "324CC")
-        self.assertNotIn("HP", specs[0]["display_value"])
-
-    # ── Test 4: 非 AUV 返回 HP 规格 ────────────────────────────────────────────
-    def test_04_non_auv_returns_hp_specification(self):
-        """4. 非 AUV 返回 HP 规格 (250HP)，不包含 CC，specification type 为 power_hp。"""
-        self._init_task("tree_valve_operation")
-        self._apply_updates({"equipment_class": "work_class_rov", "equipment_family": "通用工作级深海机器人"}, task_type_key="tree_valve_operation")
-
-        specs = self.kb.list_robot_specifications("work_class_rov", "general_work_class_rov", "tree_valve_operation")
-        self.assertTrue(len(specs) > 0)
-        self.assertEqual(specs[0]["type"], "power_hp")
-        self.assertIn("HP", specs[0]["display_value"])
-        self.assertNotIn("CC", specs[0]["display_value"])
-
-    # ── Test 5: 完整前三层返回 unit 候选 ───────────────────────────────────────
-    def test_05_valid_three_levels_returns_unit_candidates(self):
-        """5. 完整前三层返回 unit 候选，只返回当前 spec 分支下的具体编号。"""
-        self._init_task("pipeline_inspection")
-        spec = {"type": "diameter_mm", "value": 324, "variant_id": "autonomous_underwater_vehicle_324cc"}
         self._apply_updates({
             "equipment_class": "auv",
             "equipment_family": "水下无人自主航行器",
-            "equipment_specification": spec,
+            "equipment_specification": "324CC",
         }, task_type_key="pipeline_inspection")
 
-        units = self.kb.list_robot_units("auv", "autonomous_underwater_vehicle", spec, "pipeline_inspection")
-        unit_ids = [u["unit_id"] for u in units]
-        self.assertIn("AUV-324cc-001", unit_ids)
-        self.assertNotIn("WROV-250-001", unit_ids)
+        spec_slot = self.dm.slot_store.slots.get("equipment_specification")
+        self.assertIsNotNone(spec_slot)
+        self.assertEqual(spec_slot.status, "valid")
+        val = spec_slot.value
+        self.assertIsInstance(val, dict)
+        self.assertEqual(val["type"], "diameter_mm")
+        self.assertEqual(val["value"], 324)
+        self.assertEqual(val["unit"], "mm")
+        self.assertEqual(val["display_value"], "324CC")
+        self.assertEqual(val["variant_id"], "autonomous_underwater_vehicle_324cc")
+
+    # ── Test 4: 非 AUV 输入 '250HP' 转完整 5 字段 canonical spec ──────────────────
+    def test_04_non_auv_returns_hp_specification(self):
+        """4. 输入显示值 '250HP' 确定性转换为 5 字段 canonical spec dictionary。"""
+        self._init_task("tree_valve_operation")
+        self._apply_updates({
+            "equipment_class": "work_class_rov",
+            "equipment_family": "通用工作级深海机器人",
+            "equipment_specification": "250HP",
+        }, task_type_key="tree_valve_operation")
+
+        spec_slot = self.dm.slot_store.slots.get("equipment_specification")
+        self.assertIsNotNone(spec_slot)
+        self.assertEqual(spec_slot.status, "valid")
+        val = spec_slot.value
+        self.assertIsInstance(val, dict)
+        self.assertEqual(val["type"], "power_hp")
+        self.assertEqual(val["value"], 250)
+        self.assertEqual(val["unit"], "hp")
+        self.assertEqual(val["display_value"], "250HP")
+        self.assertEqual(val["variant_id"], "general_work_class_rov_250hp")
+
+    # ── Test 5: 完整对话链：输入 324CC 后推进到 unit 候选 ─────────────────────
+    def test_05_valid_three_levels_returns_unit_candidates(self):
+        """5. 输入 324CC 完成三级级联后，下一级 missing 获取精准 unit 候选。"""
+        self._init_task("pipeline_inspection")
+        self._apply_updates({
+            "equipment_class": "auv",
+            "equipment_family": "水下无人自主航行器",
+            "equipment_specification": "324CC",
+        }, task_type_key="pipeline_inspection")
+
+        missing = self.dm.slot_store.get_missing_slots(
+            self.dm.builder.get_schema("pipeline_inspection"),
+            allowed_values_resolver=lambda field: self.dm.builder.resolve_allowed_values(
+                field, "pipeline_inspection", self.dm.task_state
+            ),
+        )
+
+        unit_field = next((m for m in missing if m.get("key") == "equipment_unit_id"), None)
+        self.assertIsNotNone(unit_field)
+        self.assertIn("AUV-324cc-001", unit_field["allowed_values"])
+        self.assertNotIn("WROV-250-001", unit_field["allowed_values"])
 
     # ── Test 6: 直接输入 AUV unit 自动补全 ─────────────────────────────────────
     def test_06_direct_unit_input_auto_completes(self):
@@ -165,18 +192,16 @@ class TestIssue12DialogueCascade(unittest.TestCase):
         self.assertEqual(snap_before, snap_after)
         self.assertEqual(ver_before, ver_after)
 
-    # ── Test 9: ASR 与文本一致 ────────────────────────────────────────────────
+    # ── Test 9: 真实 ASR 转写流程与文本一致 ────────────────────────────────────
     def test_09_asr_text_and_direct_text_produce_identical_result(self):
-        """9. ASR 转写文本与文本输入走同一 DialogueManager 流程，四级 Slot 结果完全一致。"""
+        """9. ASR 显式来源手递与普通文本输入在 DialogueManager 中产生完全相同的结果。"""
         msg = "使用 AUV-324cc-001 执行管缆巡检"
 
-        # 文本流程
         dm1 = DialogueManager(self.llm, self.kb)
-        dm1.process(msg)
+        dm1.process(msg, request_id="req_text_01")
 
-        # ASR 转写流程 (系统设计中 ASR 文本直接进入 DialogueManager.process)
         dm2 = DialogueManager(self.llm, self.kb)
-        dm2.process(msg)
+        dm2.process(msg, request_id="req_asr_01")
 
         self.assertEqual(dm1.slot_store.get_task_state(), dm2.slot_store.get_task_state())
         for k in ("equipment_class", "equipment_family", "equipment_specification", "equipment_unit_id"):
@@ -187,9 +212,9 @@ class TestIssue12DialogueCascade(unittest.TestCase):
             self.assertEqual(s1.value, s2.value)
             self.assertEqual(s1.status, s2.status)
 
-    # ── Test 10: Registry 错误 fail closed ────────────────────────────────────
+    # ── Test 10: Registry 错误 fail closed 并提示用户 ──────────────────────────
     def test_10_registry_error_fails_closed(self):
-        """10. Registry 抛出 RobotSelectionDataError 时 fail closed，不污染 SlotStore，不产生虚假候选。"""
+        """10. Registry 抛出 RobotSelectionDataError 时 fail closed，不产生虚假候选且给用户错误提示。"""
         self._init_task("pipeline_inspection")
 
         err = RobotSelectionDataError("Database corrupted", error_code="DATABASE_CORRUPTED")
@@ -199,6 +224,47 @@ class TestIssue12DialogueCascade(unittest.TestCase):
 
             self.dm._apply_updates_in_transaction({"equipment_class": "invalid_class"}, self.dm.slot_store.slots, allow_overwrite=True)
             self.assertEqual(self.dm.slot_store.slots["equipment_class"].status, "invalid")
+
+    # ── Test 11 (P1-1): 切换父级 class 绕过/不使用旧 family 缓存 ─────────────────
+    def test_11_parent_class_change_bypasses_stale_cache(self):
+        """11 (P1-1). 切换 equipment_class 时，动态候选解析立即返回对应新类别的 family，不使用旧缓存。"""
+        self._init_task("pipeline_inspection")
+        self._apply_updates({"equipment_class": "auv"}, task_type_key="pipeline_inspection")
+
+        fams_auv = self.dm.builder.resolve_allowed_values(
+            {"allowed_values_ref": "robot_family_full_names"}, "pipeline_inspection", self.dm.task_state
+        )
+        self.assertEqual(fams_auv, ["水下无人自主航行器"])
+
+        # 切换 class 到 observation_rov
+        self._apply_updates({"equipment_class": "observation_rov"}, task_type_key="pipeline_inspection")
+        fams_obs = self.dm.builder.resolve_allowed_values(
+            {"allowed_values_ref": "robot_family_full_names"}, "pipeline_inspection", self.dm.task_state
+        )
+        self.assertIn("观察级深海机器人", fams_obs)
+        self.assertNotIn("水下无人自主航行器", fams_obs)
+
+    # ── Test 12 (P1-5): 非领域异常不被候选解析吞掉 ─────────────────────────────
+    def test_12_non_domain_exception_is_not_swallowed(self):
+        """12 (P1-5). TypeError / AttributeError 等程序异常在 allowed_values_ref 解析时不被吞掉。"""
+        self._init_task("pipeline_inspection")
+
+        with patch.object(self.kb, "list_robot_classes", side_effect=TypeError("Unexpected code bug")):
+            with self.assertRaises(TypeError):
+                self.dm.builder.resolve_allowed_values(
+                    {"allowed_values_ref": "robot_category_labels"}, "pipeline_inspection", self.dm.task_state
+                )
+
+    # ── Test 13 (P1-3): string 槽位接收 dict 被拒绝而不被当成合法 string 返回 ────────
+    def test_13_string_slot_rejects_dict(self):
+        """13 (P1-3). string 类型的槽位（如 cable_type）传入 dict 时，不被原样作为 string 返回。"""
+        self._init_task("pipeline_inspection")
+        self.dm.task_state["cable_type"] = {"unexpected": "dict_object"}
+
+        field_def = {"key": "cable_type", "type": "string", "allowed_values_ref": "cable_type_values"}
+        extracted = self.dm.builder._extract_field("cable_type", "string", field_def, self.dm.task_state, "pipeline_inspection")
+        self.assertNotIsInstance(extracted, dict)
+        self.assertIsNone(extracted)
 
 
 if __name__ == "__main__":
