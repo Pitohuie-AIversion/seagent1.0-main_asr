@@ -3,6 +3,7 @@ test_robot_cascade_registry.py — 4-level robot cascade registry and specificat
 """
 
 import copy
+import math
 import unittest
 from src.knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 
@@ -247,7 +248,7 @@ class TestRobotCascadeRegistry(unittest.TestCase):
         custom_kb.robot_fleet["model_variants"]["general_work_class_rov_250hp"]["hard_params"]["power_hp"] = "abc"
         with self.assertRaises(RobotSelectionDataError) as cm2:
             custom_kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
-        self.assertEqual(cm2.exception.error_code, "NON_NUMERIC_SPECIFICATION_VALUE")
+        self.assertEqual(cm2.exception.error_code, "INVALID_SPECIFICATION_TYPE")
 
     def test_23_config_references_non_existent_parent(self):
         """23. 配置引用不存在的父级"""
@@ -267,6 +268,180 @@ class TestRobotCascadeRegistry(unittest.TestCase):
         with self.assertRaises(RobotSelectionDataError) as cm:
             custom_kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
         self.assertEqual(cm.exception.error_code, "NON_POSITIVE_SPECIFICATION_VALUE")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 审查补充强化测试 (25-39)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def test_25_unknown_task_type_key_returns_task_template_not_found(self):
+        """25. 所有带 task_type_key 的接口在未知任务模板时统一返回 TASK_TEMPLATE_NOT_FOUND"""
+        methods = [
+            lambda: self.kb.list_robot_classes(task_type_key="invalid_task_key"),
+            lambda: self.kb.list_robot_families("work_class_rov", task_type_key="invalid_task_key"),
+            lambda: self.kb.list_robot_specifications("work_class_rov", "general_work_class_rov", task_type_key="invalid_task_key"),
+            lambda: self.kb.list_robot_units("work_class_rov", "general_work_class_rov", {"type": "power_hp", "value": 250, "variant_id": "general_work_class_rov_250hp"}, task_type_key="invalid_task_key"),
+            lambda: self.kb.validate_static_robot_selection("work_class_rov", "general_work_class_rov", {"type": "power_hp", "value": 250, "variant_id": "general_work_class_rov_250hp"}, "WROV-250-001", task_type_key="invalid_task_key"),
+        ]
+        for m in methods:
+            with self.assertRaises(RobotSelectionDataError) as cm:
+                m()
+            self.assertEqual(cm.exception.error_code, "TASK_TEMPLATE_NOT_FOUND")
+
+    def test_26_family_missing_robot_class(self):
+        """26. family 缺失 robot_class 或指向不存在的 class 彻底阻断"""
+        custom_kb = KnowledgeBase()
+        custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
+        custom_kb.robot_fleet["robot_families"]["general_work_class_rov"]["robot_class"] = None
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            custom_kb.list_robot_families("work_class_rov")
+        self.assertEqual(cm.exception.error_code, "INVALID_ROBOT_CLASS_REFERENCE")
+
+    def test_27_family_references_non_existent_robot_class(self):
+        """27. family 引用不存在的 robot_class"""
+        custom_kb = KnowledgeBase()
+        custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
+        custom_kb.robot_fleet["robot_families"]["general_work_class_rov"]["robot_class"] = "missing_class"
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            custom_kb.list_robot_families("work_class_rov")
+        self.assertEqual(cm.exception.error_code, "INVALID_ROBOT_CLASS_REFERENCE")
+
+    def test_28_variant_references_non_existent_family(self):
+        """28. variant 引用不存在的 family"""
+        custom_kb = KnowledgeBase()
+        custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
+        custom_kb.robot_fleet["model_variants"]["general_work_class_rov_250hp"]["family_id"] = "missing_family"
+        spec = {
+            "type": "power_hp",
+            "value": 250,
+            "unit": "hp",
+            "display_value": "250HP",
+            "variant_id": "general_work_class_rov_250hp",
+        }
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            custom_kb.list_robot_units("work_class_rov", "general_work_class_rov", spec)
+        self.assertIn(cm.exception.error_code, ["NO_VARIANTS_FOR_FAMILY", "VARIANT_FAMILY_MISMATCH", "INVALID_FAMILY_REFERENCE"])
+
+    def test_29_fleet_unit_references_non_existent_variant(self):
+        """29. fleet_units 引用不存在的 variant"""
+        custom_kb = KnowledgeBase()
+        custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
+        custom_kb.robot_fleet["fleet_units"].append({
+            "unit_id": "TEST-UNIT-999",
+            "variant_id": "non_existent_variant",
+        })
+        specs = custom_kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            custom_kb.list_robot_units("work_class_rov", "general_work_class_rov", specs[0])
+        self.assertEqual(cm.exception.error_code, "INVALID_VARIANT_REFERENCE")
+
+    def test_30_duplicate_unit_id(self):
+        """30. 配置中存在重复 unit_id 时阻断"""
+        custom_kb = KnowledgeBase()
+        custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
+        custom_kb.robot_fleet["fleet_units"].append({
+            "unit_id": "WROV-250-001",
+            "variant_id": "general_work_class_rov_250hp",
+        })
+        specs = custom_kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            custom_kb.list_robot_units("work_class_rov", "general_work_class_rov", specs[0])
+        self.assertEqual(cm.exception.error_code, "DUPLICATE_UNIT_ID")
+
+    def test_31_power_hp_is_nan(self):
+        """31. power_hp=float('nan') 明确阻断"""
+        custom_kb = KnowledgeBase()
+        custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
+        custom_kb.robot_fleet["model_variants"]["general_work_class_rov_250hp"]["hard_params"]["power_hp"] = float("nan")
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            custom_kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
+        self.assertEqual(cm.exception.error_code, "NON_FINITE_SPECIFICATION_VALUE")
+
+    def test_32_power_hp_is_positive_inf(self):
+        """32. power_hp=float('inf') 明确阻断"""
+        custom_kb = KnowledgeBase()
+        custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
+        custom_kb.robot_fleet["model_variants"]["general_work_class_rov_250hp"]["hard_params"]["power_hp"] = float("inf")
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            custom_kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
+        self.assertEqual(cm.exception.error_code, "NON_FINITE_SPECIFICATION_VALUE")
+
+    def test_33_diameter_mm_is_negative_inf(self):
+        """33. diameter_mm=float('-inf') 明确阻断"""
+        custom_kb = KnowledgeBase()
+        custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
+        custom_kb.robot_fleet["model_variants"]["autonomous_underwater_vehicle_324cc"]["hard_params"]["diameter_mm"] = float("-inf")
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            custom_kb.list_robot_specifications("auv", "autonomous_underwater_vehicle")
+        self.assertEqual(cm.exception.error_code, "NON_FINITE_SPECIFICATION_VALUE")
+
+    def test_34_specification_value_is_bool(self):
+        """34. 调用方传入 specification value 为 bool 时校验失败"""
+        specs = self.kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
+        forged_spec = copy.deepcopy(specs[0])
+        forged_spec["value"] = True
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            self.kb.list_robot_units("work_class_rov", "general_work_class_rov", forged_spec)
+        self.assertEqual(cm.exception.error_code, "SPECIFICATION_VALUE_MISMATCH")
+
+    def test_35_specification_value_is_nan(self):
+        """35. 调用方传入 specification value 为 NaN 时校验失败"""
+        specs = self.kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
+        forged_spec = copy.deepcopy(specs[0])
+        forged_spec["value"] = float("nan")
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            self.kb.list_robot_units("work_class_rov", "general_work_class_rov", forged_spec)
+        self.assertEqual(cm.exception.error_code, "SPECIFICATION_VALUE_MISMATCH")
+
+    def test_36_caller_forged_display_value_does_not_affect_canonical_result(self):
+        """36. 调用方伪造 display_value 不影响后端重构的权威 canonical 结果"""
+        specs = self.kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
+        forged_spec = copy.deepcopy(specs[0])
+        forged_spec["display_value"] = "FORGED_999HP"
+        res = self.kb.validate_static_robot_selection("work_class_rov", "general_work_class_rov", forged_spec, "WROV-250-001")
+        self.assertEqual(res["specification"]["display_value"], "250HP")
+
+    def test_37_variant_id_exists_but_belongs_to_other_class_family(self):
+        """37. specification 的 variant_id 存在但属于其他 class/family"""
+        spec = {
+            "type": "power_hp",
+            "value": 1600,
+            "unit": "hp",
+            "display_value": "1600HP",
+            "variant_id": "crawler_heavy_seabed_robot_1600hp",
+        }
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            self.kb.list_robot_units("work_class_rov", "general_work_class_rov", spec)
+        self.assertEqual(cm.exception.error_code, "VARIANT_FAMILY_MISMATCH")
+
+    def test_38_family_with_one_valid_and_one_invalid_variant_fails_closed(self):
+        """38. 同一 family 下若存在一个非法 variant，整体查询立即 fail closed 报错"""
+        custom_kb = KnowledgeBase()
+        custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
+        # Add an invalid second variant to general_work_class_rov
+        custom_kb.robot_fleet["model_variants"]["general_work_class_rov_broken"] = {
+            "family_id": "general_work_class_rov",
+            "full_name": "坏掉的通用工作级ROV",
+            "hard_params": {
+                "power_hp": None,
+            },
+        }
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            custom_kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
+        self.assertEqual(cm.exception.error_code, "MISSING_SPECIFICATION_VALUE")
+
+    def test_39_existing_knowledge_base_methods_backward_compatibility(self):
+        """39. 现有 KnowledgeBase 公共方法行为保持兼容无回归"""
+        rovs = self.kb.get_all_rovs()
+        self.assertGreater(len(rovs), 0)
+        classes = self.kb.get_robot_classes()
+        self.assertIn("work_class_rov", classes)
+        families = self.kb.get_robot_families_for_task("tree_valve_operation")
+        self.assertGreater(len(families), 0)
+        variants = self.kb.get_task_allowed_robot_variants("tree_valve_operation")
+        self.assertGreater(len(variants), 0)
+        resolved_unit = self.kb.resolve_robot_unit("WROV-250-001")
+        self.assertIsNotNone(resolved_unit)
+        self.assertEqual(resolved_unit["unit_id"], "WROV-250-001")
 
 
 if __name__ == "__main__":

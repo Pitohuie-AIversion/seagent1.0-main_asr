@@ -5,6 +5,7 @@ knowledge_retriever.py — 知识库加载与按需检索
 """
 
 import yaml
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 import re
@@ -78,6 +79,61 @@ class KnowledgeBase:
     # 新机器人索引：robot_classes -> robot_families -> model_variants -> fleet_units
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _validate_task_type_key(self, task_type_key: str | None) -> dict | None:
+        if task_type_key is None:
+            return None
+        templates = self.task_schemas.get("task_templates", {})
+        if not isinstance(templates, dict) or task_type_key not in templates:
+            raise RobotSelectionDataError(
+                f"Task template '{task_type_key}' not found in task_schemas.",
+                error_code="TASK_TEMPLATE_NOT_FOUND",
+                expected_field="task_templates",
+                actual_value=task_type_key,
+            )
+        return templates[task_type_key]
+
+    def _validate_fleet_units_integrity(self) -> None:
+        fleet_units = self.robot_fleet.get("fleet_units")
+        if fleet_units is None or not isinstance(fleet_units, list):
+            raise RobotSelectionDataError(
+                "fleet_units in configuration must be a list.",
+                error_code="INVALID_FLEET_UNITS_CONFIG",
+                expected_field="fleet_units",
+                actual_value=fleet_units,
+            )
+        seen_units = set()
+        all_variants = self.robot_fleet.get("model_variants", {})
+        for unit in fleet_units:
+            if not isinstance(unit, dict):
+                raise RobotSelectionDataError(
+                    "fleet_units item must be a dictionary.",
+                    error_code="INVALID_UNIT_CONFIG",
+                    actual_value=unit,
+                )
+            uid = unit.get("unit_id")
+            if not uid or not isinstance(uid, str):
+                raise RobotSelectionDataError(
+                    "Fleet unit is missing unit_id.",
+                    error_code="MISSING_UNIT_ID",
+                    actual_value=uid,
+                )
+            if uid in seen_units:
+                raise RobotSelectionDataError(
+                    f"Duplicate unit_id '{uid}' found in fleet_units.",
+                    error_code="DUPLICATE_UNIT_ID",
+                    actual_value=uid,
+                )
+            seen_units.add(uid)
+
+            vid = unit.get("variant_id")
+            if not vid or vid not in all_variants:
+                raise RobotSelectionDataError(
+                    f"Fleet unit '{uid}' references non-existent variant_id '{vid}'.",
+                    error_code="INVALID_VARIANT_REFERENCE",
+                    expected_field="model_variants",
+                    actual_value=vid,
+                )
+
     def _resolve_class_key(self, value: str | None) -> str | None:
         if not value or not isinstance(value, str):
             return None
@@ -104,6 +160,18 @@ class KnowledgeBase:
         variant_id: str,
         variant: dict,
     ) -> dict:
+        v_family_id = variant.get("family_id")
+        if not v_family_id or v_family_id not in self.robot_fleet.get("robot_families", {}):
+            raise RobotSelectionDataError(
+                f"Variant '{variant_id}' references non-existent or missing family_id '{v_family_id}'.",
+                error_code="INVALID_FAMILY_REFERENCE",
+                robot_class=robot_class_id,
+                family_id=v_family_id,
+                variant_id=variant_id,
+                expected_field="robot_families",
+                actual_value=v_family_id,
+            )
+
         if robot_class_id == "auv":
             expected_field = "diameter_mm"
             unit_str = "mm"
@@ -171,10 +239,10 @@ class KnowledgeBase:
                 actual_value=raw_val,
             )
 
-        if isinstance(raw_val, str) and raw_val.strip() == "":
+        if isinstance(raw_val, str):
             raise RobotSelectionDataError(
-                f"Variant '{variant_id}' field '{expected_field}' is empty string.",
-                error_code="EMPTY_SPECIFICATION_VALUE",
+                f"Variant '{variant_id}' field '{expected_field}' cannot be string ('{raw_val}'). Must be YAML numeric.",
+                error_code="INVALID_SPECIFICATION_TYPE",
                 robot_class=robot_class_id,
                 family_id=family_id,
                 variant_id=variant_id,
@@ -182,22 +250,7 @@ class KnowledgeBase:
                 actual_value=raw_val,
             )
 
-        if isinstance(raw_val, (int, float)):
-            num_val = raw_val
-        elif isinstance(raw_val, str):
-            try:
-                num_val = float(raw_val)
-            except ValueError:
-                raise RobotSelectionDataError(
-                    f"Variant '{variant_id}' field '{expected_field}' is non-numeric string '{raw_val}'.",
-                    error_code="NON_NUMERIC_SPECIFICATION_VALUE",
-                    robot_class=robot_class_id,
-                    family_id=family_id,
-                    variant_id=variant_id,
-                    expected_field=expected_field,
-                    actual_value=raw_val,
-                )
-        else:
+        if not isinstance(raw_val, (int, float)):
             raise RobotSelectionDataError(
                 f"Variant '{variant_id}' field '{expected_field}' has invalid type {type(raw_val).__name__}.",
                 error_code="INVALID_SPECIFICATION_TYPE",
@@ -208,9 +261,20 @@ class KnowledgeBase:
                 actual_value=raw_val,
             )
 
-        if num_val <= 0:
+        if not math.isfinite(raw_val):
             raise RobotSelectionDataError(
-                f"Variant '{variant_id}' field '{expected_field}' must be positive, got {num_val}.",
+                f"Variant '{variant_id}' field '{expected_field}' must be a finite number, got {raw_val}.",
+                error_code="NON_FINITE_SPECIFICATION_VALUE",
+                robot_class=robot_class_id,
+                family_id=family_id,
+                variant_id=variant_id,
+                expected_field=expected_field,
+                actual_value=raw_val,
+            )
+
+        if raw_val <= 0:
+            raise RobotSelectionDataError(
+                f"Variant '{variant_id}' field '{expected_field}' must be positive, got {raw_val}.",
                 error_code="NON_POSITIVE_SPECIFICATION_VALUE",
                 robot_class=robot_class_id,
                 family_id=family_id,
@@ -219,7 +283,8 @@ class KnowledgeBase:
                 actual_value=raw_val,
             )
 
-        if isinstance(num_val, float) and num_val.is_integer():
+        num_val = float(raw_val)
+        if num_val.is_integer():
             final_val = int(num_val)
         else:
             final_val = num_val
@@ -235,16 +300,9 @@ class KnowledgeBase:
         }
 
     def list_robot_classes(self, task_type_key: str | None = None) -> list[dict]:
+        template = self._validate_task_type_key(task_type_key)
         robot_classes = self.get_robot_classes()
-        if task_type_key is not None:
-            template = self.task_schemas.get("task_templates", {}).get(task_type_key)
-            if not template:
-                raise RobotSelectionDataError(
-                    f"Task template '{task_type_key}' not found in task_schemas.",
-                    error_code="TASK_TEMPLATE_NOT_FOUND",
-                    expected_field="task_templates",
-                    actual_value=task_type_key,
-                )
+        if template is not None:
             allowed_classes = template.get("allowed_robot_classes", [])
             result = []
             for class_id in allowed_classes:
@@ -277,6 +335,7 @@ class KnowledgeBase:
         robot_class: str,
         task_type_key: str | None = None,
     ) -> list[dict]:
+        self._validate_task_type_key(task_type_key)
         class_id = self._resolve_class_key(robot_class)
         if not class_id:
             raise RobotSelectionDataError(
@@ -298,17 +357,38 @@ class KnowledgeBase:
             required_caps = set()
 
         result = []
+        robot_classes = self.get_robot_classes()
         for family_id, family in self.robot_fleet.get("robot_families", {}).items():
-            if family.get("robot_class") != class_id:
+            f_class = family.get("robot_class")
+            if not f_class or f_class not in robot_classes:
+                raise RobotSelectionDataError(
+                    f"Family '{family_id}' references missing or invalid robot_class '{f_class}'.",
+                    error_code="INVALID_ROBOT_CLASS_REFERENCE",
+                    expected_field="robot_classes",
+                    actual_value=f_class,
+                )
+
+            if f_class != class_id:
                 continue
-            if required_caps and not required_caps.issubset(set(family.get("capabilities", []))):
+
+            caps = family.get("capabilities")
+            if caps is None or not isinstance(caps, list):
+                raise RobotSelectionDataError(
+                    f"Family '{family_id}' capabilities must be a list.",
+                    error_code="INVALID_FAMILY_CAPABILITIES",
+                    family_id=family_id,
+                    actual_value=caps,
+                )
+
+            if required_caps and not required_caps.issubset(set(caps)):
                 continue
+
             result.append({
                 "family_id": family_id,
                 "full_name": family.get("full_name", family_id),
                 "robot_class": class_id,
                 "aliases": list(family.get("aliases", [])),
-                "capabilities": list(family.get("capabilities", [])),
+                "capabilities": list(caps),
                 "brief": family.get("brief", ""),
             })
         return result
@@ -319,6 +399,7 @@ class KnowledgeBase:
         family: str,
         task_type_key: str | None = None,
     ) -> list[dict]:
+        self._validate_task_type_key(task_type_key)
         class_id = self._resolve_class_key(robot_class)
         if not class_id:
             raise RobotSelectionDataError(
@@ -337,9 +418,18 @@ class KnowledgeBase:
             )
 
         family_data = self.robot_fleet.get("robot_families", {}).get(family_id, {})
-        if family_data.get("robot_class") != class_id:
+        f_class = family_data.get("robot_class")
+        if not f_class or f_class not in self.get_robot_classes():
             raise RobotSelectionDataError(
-                f"Family '{family_id}' belongs to class '{family_data.get('robot_class')}', not '{class_id}'.",
+                f"Family '{family_id}' references missing or invalid robot_class '{f_class}'.",
+                error_code="INVALID_ROBOT_CLASS_REFERENCE",
+                expected_field="robot_classes",
+                actual_value=f_class,
+            )
+
+        if f_class != class_id:
+            raise RobotSelectionDataError(
+                f"Family '{family_id}' belongs to class '{f_class}', not '{class_id}'.",
                 error_code="FAMILY_CLASS_MISMATCH",
                 robot_class=class_id,
                 family_id=family_id,
@@ -355,7 +445,15 @@ class KnowledgeBase:
                     family_id=family_id,
                 )
             required_caps = set(self.get_task_required_capabilities(task_type_key))
-            if required_caps and not required_caps.issubset(set(family_data.get("capabilities", []))):
+            family_caps = family_data.get("capabilities", [])
+            if not isinstance(family_caps, list):
+                raise RobotSelectionDataError(
+                    f"Family '{family_id}' capabilities must be a list.",
+                    error_code="INVALID_FAMILY_CAPABILITIES",
+                    family_id=family_id,
+                    actual_value=family_caps,
+                )
+            if required_caps and not required_caps.issubset(set(family_caps)):
                 raise RobotSelectionDataError(
                     f"Family '{family_id}' does not satisfy required capabilities {required_caps} for task '{task_type_key}'.",
                     error_code="FAMILY_CAPABILITY_MISMATCH",
@@ -386,6 +484,8 @@ class KnowledgeBase:
         specification: dict | Any,
         task_type_key: str | None = None,
     ) -> list[dict]:
+        self._validate_task_type_key(task_type_key)
+        self._validate_fleet_units_integrity()
         specifications = self.list_robot_specifications(robot_class, family, task_type_key)
         class_id = self._resolve_class_key(robot_class)
         family_id = self._resolve_family_key(family)
@@ -416,7 +516,7 @@ class KnowledgeBase:
             )
 
         all_variants = self.robot_fleet.get("model_variants", {})
-        if spec_variant_id not in all_variants:
+        if not spec_variant_id or spec_variant_id not in all_variants:
             raise RobotSelectionDataError(
                 f"Variant '{spec_variant_id}' does not exist.",
                 error_code="VARIANT_NOT_FOUND",
@@ -450,9 +550,9 @@ class KnowledgeBase:
                 variant_id=spec_variant_id,
             )
 
-        if spec_value is None:
+        if spec_value is None or isinstance(spec_value, bool) or not isinstance(spec_value, (int, float)) or not math.isfinite(spec_value):
             raise RobotSelectionDataError(
-                "Specification value is missing.",
+                f"Specification value '{spec_value}' is invalid.",
                 error_code="SPECIFICATION_VALUE_MISMATCH",
                 robot_class=class_id,
                 family_id=family_id,
@@ -461,12 +561,7 @@ class KnowledgeBase:
                 actual_value=spec_value,
             )
 
-        try:
-            val_diff = abs(float(spec_value) - float(matched_spec["value"]))
-        except (ValueError, TypeError):
-            val_diff = 1.0
-
-        if val_diff > 1e-6:
+        if abs(float(spec_value) - float(matched_spec["value"])) > 1e-6:
             raise RobotSelectionDataError(
                 f"Specification value '{spec_value}' does not match variant value '{matched_spec['value']}'.",
                 error_code="SPECIFICATION_VALUE_MISMATCH",
@@ -498,19 +593,21 @@ class KnowledgeBase:
         unit_id: str,
         task_type_key: str | None = None,
     ) -> dict:
+        self._validate_task_type_key(task_type_key)
+        self._validate_fleet_units_integrity()
         units = self.list_robot_units(robot_class, family, specification, task_type_key)
         class_id = self._resolve_class_key(robot_class)
         family_id = self._resolve_family_key(family)
         spec_variant_id = specification.get("variant_id") if isinstance(specification, dict) else None
 
-        all_units = self.robot_fleet.get("fleet_units", [])
-        target_unit = None
-        for u in all_units:
-            if u.get("unit_id") == unit_id:
-                target_unit = u
-                break
-
-        if not target_unit:
+        matching_units = [u for u in self.robot_fleet.get("fleet_units", []) if u.get("unit_id") == unit_id]
+        if len(matching_units) > 1:
+            raise RobotSelectionDataError(
+                f"Duplicate unit_id '{unit_id}' found in fleet configuration.",
+                error_code="DUPLICATE_UNIT_ID",
+                actual_value=unit_id,
+            )
+        if not matching_units:
             raise RobotSelectionDataError(
                 f"Fleet unit '{unit_id}' does not exist.",
                 error_code="UNIT_NOT_FOUND",
@@ -520,6 +617,7 @@ class KnowledgeBase:
                 actual_value=unit_id,
             )
 
+        target_unit = matching_units[0]
         if target_unit.get("variant_id") != spec_variant_id:
             raise RobotSelectionDataError(
                 f"Fleet unit '{unit_id}' belongs to variant '{target_unit.get('variant_id')}', not '{spec_variant_id}'.",
