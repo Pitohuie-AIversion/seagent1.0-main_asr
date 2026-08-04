@@ -1407,6 +1407,9 @@ class KnowledgeBase:
             return state
         return empty_state
 
+    def check_runtime_availability(self, unit_id: str, *, max_age_seconds: int = 300) -> dict:
+        return self.state_info.check_runtime_availability(unit_id, max_age_seconds=max_age_seconds)
+
     # ──────────────────────────────────────────────────────────────────────────
     # 动态设备词表与强类型只读查询
     # ──────────────────────────────────────────────────────────────────────────

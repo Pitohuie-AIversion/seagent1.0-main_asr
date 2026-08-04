@@ -489,6 +489,21 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
+        # 运行时设备可用性重新校验 (Issue #12)
+        unit_id = cand_state.get("equipment_unit_id") or cand_built.get("equipment_unit_id")
+        if not unit_id and self.slot_store.slots.get("equipment_unit_id"):
+            unit_slot = self.slot_store.slots.get("equipment_unit_id")
+            if unit_slot and unit_slot.status == "valid":
+                unit_id = unit_slot.value
+
+        if unit_id:
+            runtime_res = self.kb.state_info.check_runtime_availability(str(unit_id))
+            if not runtime_res.get("available"):
+                reply = runtime_res.get("message") or f"无法发布任务：机器人 {unit_id} 当前不可用。"
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
+
         # 准备发布
         ti_builder = TaskIntentBuilder(self.kb)
         ti_json_artifact = ti_builder.prepare(
