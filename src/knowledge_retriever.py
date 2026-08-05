@@ -1597,11 +1597,12 @@ class KnowledgeBase:
         list_keywords = ("哪些", "列表", "所有", "有哪些", "推荐", "选择", "可用", "什么型号", "查询", "查看", "列出")
         is_list_query = any(keyword in user_message for keyword in list_keywords)
 
-        generic_terms = {"设备", "机器人", "潜水器", "rov", "auv", "hov", "单机", "型号", "工具"}
+        generic_terms = {"设备", "机器人", "潜水器", "rov", "auv", "hov", "单机", "型号", "工具", "支持", "具备", "配备", "搭载"}
         query_strip_words = (
             "查询", "查看", "列出", "检索", "显示", "获取", "了解", "我要", "我想", "帮我",
             "可以", "能否", "请", "列表", "清单", "可用", "所有", "有哪些", "什么", "哪些",
-            "推荐", "选择", "的", "一下", "看看", "知道", "信息", "能力", "状态", "目前", "现在"
+            "推荐", "选择", "的", "一下", "看看", "知道", "信息", "能力", "状态", "目前", "现在",
+            "支持", "具备", "配备", "搭载"
         )
         cleaned_msg = _norm(user_message)
         for w in query_strip_words:

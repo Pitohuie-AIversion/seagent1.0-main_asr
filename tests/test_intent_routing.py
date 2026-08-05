@@ -1683,6 +1683,30 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
         self.assertEqual(self.dm.phase, phase_before)
         self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
 
+    def test_issue24_payload_and_tool_query_regressions(self):
+        cases = [
+            ("payload", "TOOL_QUERY"),
+            ("机器人的负载有哪些", "TOOL_QUERY"),
+            ("机器人的 payload 有哪些", "TOOL_QUERY"),
+            ("机器人支持的设备有哪些", ("TOOL_QUERY", "DEVICE_CAPABILITY")),
+            ("机器人可以使用哪些工具？", "TOOL_QUERY"),
+        ]
+        for query, expected_intent in cases:
+            with self.subTest(query=query):
+                route = self.dm.intent_router.route(query, [], {})
+                self.assertEqual(route.dialogue_mode, "knowledge_qa")
+                if isinstance(expected_intent, tuple):
+                    self.assertIn(route.query_intent, expected_intent)
+                else:
+                    self.assertEqual(route.query_intent, expected_intent)
+
+                self.dm.reset()
+                reply = self.dm.process(query)
+                self.assertNotIn("可能是在提交任务信息", reply)
+                self.assertNotIn("当前知识库未提供该信息", reply)
+                self.assertNotIn("{", reply)
+                self.assertTrue(len(reply) > 5)
+
 
 if __name__ == "__main__":
     unittest.main()

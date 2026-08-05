@@ -233,9 +233,20 @@ class DialogueManager:
         return reply
 
     def _build_knowledge_fallback(self, kb_evidence: dict) -> str:
+        query_type = kb_evidence.get("query_type")
+        query_mode = kb_evidence.get("query_mode")
+        if query_type == "TOOL_QUERY" or query_mode == "tool_list":
+            tools = []
+            for item in kb_evidence.get("results", []):
+                if isinstance(item, dict) and item.get("category") == "all_supported_tools":
+                    tools = item.get("tools", [])
+                    break
+            if tools:
+                return "当前机器人可搭载的工具与负载包括：" + "、".join(map(str, tools)) + "。"
+
         if (
-            kb_evidence.get("query_type") == "DEVICE_CAPABILITY"
-            and kb_evidence.get("query_mode") == "device_list"
+            query_type == "DEVICE_CAPABILITY"
+            and query_mode == "device_list"
         ):
             results = kb_evidence.get("results", [])
             names = [
