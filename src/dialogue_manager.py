@@ -232,6 +232,23 @@ class DialogueManager:
 
         return reply
 
+    def _build_knowledge_fallback(self, kb_evidence: dict) -> str:
+        if (
+            kb_evidence.get("query_type") == "DEVICE_CAPABILITY"
+            and kb_evidence.get("query_mode") == "device_list"
+        ):
+            results = kb_evidence.get("results", [])
+            names = [
+                item.get("full_name") or item.get("display_name") or item.get("robot_class_name")
+                for item in results
+                if isinstance(item, dict) and (item.get("full_name") or item.get("display_name") or item.get("robot_class_name"))
+            ]
+            unique_names = list(dict.fromkeys(names))
+            if unique_names:
+                return "当前可查询的设备包括：" + "、".join(unique_names) + "。"
+
+        return "当前知识库已检索到相关信息，但暂时无法生成完整回答。"
+
     def _handle_knowledge_query(self, user_message: str, route: IntentRouteResult) -> str:
         context = {
             "task_type_key": self.task_state.get("task_type_key"),
@@ -268,6 +285,8 @@ class DialogueManager:
                     max_d = dev.get("max_depth_m")
                     target_d = kb_evidence.get("depth_condition", {}).get("depth_m")
                     return f"已识别设备【{dev_name}】，其最大作业水深为 {max_d}米，无法满足您询问的 {target_d}米 作业要求。"
+            if kb_evidence.get("found"):
+                return self._build_knowledge_fallback(kb_evidence)
             return "当前知识库未提供该信息。"
         return self.llm.filter_reply(reply)
 

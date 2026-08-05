@@ -1100,7 +1100,7 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                 self.assertIn("已识别", reply)
 
     # 14. 缺失或非法 emergency_action 降级为 knowledge_qa / CLARIFICATION
-    def test_invalid_emergency_action_demotes_to_uncertain(self):
+    def test_invalid_emergency_action_demotes_to_clarification(self):
         invalid_actions = [None, "", "shutdown", "invalid_cmd", "destroy"]
         for act in invalid_actions:
             with self.subTest(act=act):
@@ -1191,7 +1191,7 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
         self.assertEqual(self.dm.get_status()["dialogue_mode"], "knowledge_qa")
 
     # 19. 离线 Mock 模式模糊输入降级为 knowledge_qa / CLARIFICATION
-    def test_offline_mock_ambiguous_input_fallback_to_uncertain(self):
+    def test_offline_mock_ambiguous_input_fallback_to_clarification(self):
         ambiguous_inputs = ["我想问一下机器人……", "随便说说", "我不确定"]
         for text in ambiguous_inputs:
             with self.subTest(text=text):
@@ -1202,7 +1202,7 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                 self.assertEqual(res["query_intent"], "CLARIFICATION")
 
     # 20. WRITE 与 emergency_action=None 矛盾协议判定降级为 knowledge_qa / CLARIFICATION
-    def test_contradictory_write_and_missing_action_demotes_to_uncertain(self):
+    def test_contradictory_write_and_missing_action_demotes_to_clarification(self):
         res = IntentRouteResult(
             interaction_type="WRITE",
             confidence=0.9,
@@ -1303,7 +1303,7 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                 self.assertEqual(self.dm.mode_transition_history, state_before_history)
 
     # 26. 非空非法 emergency_action 不得自动升级为 emergency_intervention
-    def test_unrecognized_emergency_action_demotes_to_uncertain(self):
+    def test_unrecognized_emergency_action_demotes_to_clarification(self):
         res = IntentRouteResult(
             interaction_type="QUERY",
             confidence=0.9,
@@ -1365,7 +1365,7 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                 self.assertEqual(new_dm.mode_transition_history, history_before)
 
     # 29. 裸控制词（停止/暂停/取消/终止）进入 knowledge_qa/CLARIFICATION 且不清空任务草稿
-    def test_bare_control_words_demote_to_uncertain_without_clearing_draft(self):
+    def test_bare_control_words_demote_to_clarification_without_clearing_draft(self):
         bare_words = ["停止", "暂停", "取消", "终止"]
         for word in bare_words:
             with self.subTest(word=word):
@@ -1646,6 +1646,42 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
         self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
         self.assertEqual(self.dm.task_state.get("task_type_key"), "pipeline_inspection")
         self.assertEqual(self.dm.phase, "collecting")
+
+    def test_broad_device_query_uses_llm_evidence(self):
+        with patch.object(self.llm, "chat", return_value="系统当前支持天鹰座与金牛座系列机器人作业。") as mock_chat:
+            self.dm.reset()
+            reply = self.dm.process("查询设备")
+            mock_chat.assert_called_once()
+            call_args = mock_chat.call_args[0][0]
+            prompt_str = str(call_args)
+            self.assertTrue("equipment_payload_mapping" in prompt_str or "model_variants" in prompt_str or "full_name" in prompt_str or "ROV" in prompt_str or "device_list" in prompt_str or "all_rovs" in prompt_str or "天鹰座" in prompt_str or "金牛座" in prompt_str or "OBSROV" in prompt_str)
+            self.assertEqual(reply, "系统当前支持天鹰座与金牛座系列机器人作业。")
+            self.assertNotIn("{", reply)
+
+    def test_broad_device_query_empty_llm_uses_evidence_fallback(self):
+        with patch.object(self.llm, "chat", return_value=""):
+            self.dm.reset()
+            reply = self.dm.process("查看可用设备列表")
+            self.assertNotEqual(reply, "当前知识库未提供该信息。")
+            self.assertIn("当前可查询的设备包括：", reply)
+            self.assertTrue(any(name in reply for name in ("履带式", "机器人", "ROV", "AUV", "金牛座", "天鹰座")))
+            self.assertNotIn("{", reply)
+
+    def test_device_query_packaging_is_read_only(self):
+        v_before = self.dm.slot_store.version
+        state_before = dict(self.dm.task_state)
+        phase_before = self.dm.phase
+        snap_before = self.dm.slot_store.export_snapshot()
+
+        with patch.object(self.dm.extractor, "extract_updates") as mock_ext, patch.object(self.dm.slot_store, "commit_transaction") as mock_commit:
+            reply = self.dm.process("查看设备列表")
+            mock_ext.assert_not_called()
+            mock_commit.assert_not_called()
+
+        self.assertEqual(self.dm.slot_store.version, v_before)
+        self.assertEqual(self.dm.task_state, state_before)
+        self.assertEqual(self.dm.phase, phase_before)
+        self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
 
 
 if __name__ == "__main__":
