@@ -777,7 +777,8 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
         self.assertEqual(res3.emergency_action, "stop")
 
         res4 = self.router.route("停止", [], {})
-        self.assertEqual(res4.dialogue_mode, "uncertain")
+        self.assertEqual(res4.dialogue_mode, "knowledge_qa")
+        self.assertEqual(res4.query_intent, "CLARIFICATION")
 
     # 2. 否定加参数更新
     def test_negation_plus_parameter_update(self):
@@ -887,7 +888,8 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
             res = self.router._call_llm_router(
                 "停止任务有什么影响？", [], {}, "collecting", []
             )
-            self.assertEqual(res.dialogue_mode, "uncertain")
+            self.assertEqual(res.dialogue_mode, "knowledge_qa")
+            self.assertEqual(res.query_intent, "CLARIFICATION")
             self.assertIsNone(res.emergency_action)
 
     # 7. 草稿 cancel
@@ -1097,7 +1099,7 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                 self.assertEqual(self.dm.last_control_request["status"], "requested")
                 self.assertIn("已识别", reply)
 
-    # 14. 缺失或非法 emergency_action 降级为 uncertain
+    # 14. 缺失或非法 emergency_action 降级为 knowledge_qa / CLARIFICATION
     def test_invalid_emergency_action_demotes_to_uncertain(self):
         invalid_actions = [None, "", "shutdown", "invalid_cmd", "destroy"]
         for act in invalid_actions:
@@ -1109,7 +1111,7 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                     dialogue_mode="emergency_intervention",
                     emergency_action=act,
                 )
-                self.assertEqual(res.dialogue_mode, "uncertain")
+                self.assertEqual(res.dialogue_mode, "knowledge_qa")
                 self.assertEqual(res.intent, "CLARIFICATION")
                 self.assertIsNone(res.emergency_action)
 
@@ -1188,7 +1190,7 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
         self.assertEqual(self.dm.last_mode_transition["to"], "knowledge_qa")
         self.assertEqual(self.dm.get_status()["dialogue_mode"], "knowledge_qa")
 
-    # 19. 离线 Mock 模式模糊输入降级为 uncertain
+    # 19. 离线 Mock 模式模糊输入降级为 knowledge_qa / CLARIFICATION
     def test_offline_mock_ambiguous_input_fallback_to_uncertain(self):
         ambiguous_inputs = ["我想问一下机器人……", "随便说说", "我不确定"]
         for text in ambiguous_inputs:
@@ -1196,10 +1198,10 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                 res = self.dm.intent_router.llm.classify_interaction(
                     messages=[{"role": "user", "content": text}]
                 )
-                self.assertEqual(res["dialogue_mode"], "uncertain")
+                self.assertEqual(res["dialogue_mode"], "knowledge_qa")
                 self.assertEqual(res["query_intent"], "CLARIFICATION")
 
-    # 20. WRITE 与 emergency_action=None 矛盾协议判定降级为 uncertain
+    # 20. WRITE 与 emergency_action=None 矛盾协议判定降级为 knowledge_qa / CLARIFICATION
     def test_contradictory_write_and_missing_action_demotes_to_uncertain(self):
         res = IntentRouteResult(
             interaction_type="WRITE",
@@ -1208,7 +1210,7 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
             dialogue_mode="emergency_intervention",
             emergency_action=None,
         )
-        self.assertEqual(res.dialogue_mode, "uncertain")
+        self.assertEqual(res.dialogue_mode, "knowledge_qa")
         self.assertEqual(res.interaction_type, "QUERY")
         self.assertEqual(res.query_intent, "CLARIFICATION")
 
@@ -1309,7 +1311,8 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
             dialogue_mode="knowledge_qa",
             emergency_action="shutdown",
         )
-        self.assertEqual(res.dialogue_mode, "uncertain")
+        self.assertEqual(res.dialogue_mode, "knowledge_qa")
+        self.assertEqual(res.query_intent, "CLARIFICATION")
         self.assertIsNone(res.emergency_action)
 
     # 27. 同模式多次调用不产生重复记录
@@ -1361,7 +1364,7 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                 self.assertEqual(new_dm.dialogue_mode, mode_before)
                 self.assertEqual(new_dm.mode_transition_history, history_before)
 
-    # 29. 裸控制词（停止/暂停/取消/终止）进入 uncertain 且不清空任务草稿
+    # 29. 裸控制词（停止/暂停/取消/终止）进入 knowledge_qa/CLARIFICATION 且不清空任务草稿
     def test_bare_control_words_demote_to_uncertain_without_clearing_draft(self):
         bare_words = ["停止", "暂停", "取消", "终止"]
         for word in bare_words:
@@ -1377,11 +1380,12 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                     phase=self.dm.phase,
                     expected_slots=[],
                 )
-                self.assertEqual(route.dialogue_mode, "uncertain")
+                self.assertEqual(route.dialogue_mode, "knowledge_qa")
+                self.assertEqual(route.query_intent, "CLARIFICATION")
                 self.assertIsNone(route.emergency_action)
 
                 reply = self.dm.process(word)
-                self.assertEqual(self.dm.dialogue_mode, "uncertain")
+                self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
                 self.assertEqual(self.dm.task_state.get("task_type_key"), "pipeline_inspection")
 
     # 30. 无标点 ASR 复合命令识别测试
@@ -1595,6 +1599,53 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
 
         self.assertEqual(self.dm.dialogue_mode, "emergency_intervention")
         self.assertEqual(self.dm.control_state, "idle")
+
+
+    def test_mode_definitions_exclude_uncertain(self):
+        from src.intent_router import VALID_DIALOGUE_MODES
+        self.assertNotIn("uncertain", VALID_DIALOGUE_MODES)
+
+    def test_broad_device_queries_return_device_list(self):
+        queries = [
+            "查询设备",
+            "我要查询设备",
+            "查看设备",
+            "查看设备列表",
+            "列出设备",
+            "列出可用设备",
+            "查询机器人",
+            "查看机器人",
+        ]
+        for q in queries:
+            with self.subTest(query=q):
+                route = self.dm.intent_router.route(q, [], {})
+                self.assertEqual(route.dialogue_mode, "knowledge_qa")
+                self.assertEqual(route.query_intent, "DEVICE_CAPABILITY")
+
+                kb_res = self.kb.execute_typed_query("DEVICE_CAPABILITY", q)
+                self.assertEqual(kb_res.get("query_mode"), "device_list")
+                self.assertTrue(kb_res.get("found"))
+                self.assertTrue(len(kb_res.get("results", [])) > 0)
+
+                self.dm.reset()
+                reply = self.dm.process(q)
+                self.assertNotIn("当前知识库未提供该信息", reply)
+                self.assertEqual(self.dm.task_state, {})
+
+    def test_legacy_uncertain_snapshot_compatibility(self):
+        self.dm.reset()
+        self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+        self.dm.task_state = self.dm.slot_store.get_task_state()
+
+        snap = self.dm.export_snapshot()
+        snap["dialogue_mode"] = "uncertain"
+
+        self.dm.reset()
+        self.dm.load_snapshot(snap)
+
+        self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
+        self.assertEqual(self.dm.task_state.get("task_type_key"), "pipeline_inspection")
+        self.assertEqual(self.dm.phase, "collecting")
 
 
 if __name__ == "__main__":

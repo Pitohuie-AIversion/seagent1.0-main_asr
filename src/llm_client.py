@@ -277,9 +277,7 @@ class LLMClient:
                 query_intent = "CLARIFICATION"
                 reason = "离线测试: 缺少明确写入证据，降级为澄清"
 
-        dialogue_mode = "task_collection" if interaction_type == "WRITE" else (
-            "uncertain" if query_intent in ("CLARIFICATION", "UNKNOWN") else "knowledge_qa"
-        )
+        dialogue_mode = "task_collection" if interaction_type == "WRITE" else "knowledge_qa"
 
         return {
             "dialogue_mode": dialogue_mode,

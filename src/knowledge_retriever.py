@@ -1594,8 +1594,22 @@ class KnowledgeBase:
                 if entity_targets:
                     matched_alias = str(context_selector)
 
-        list_keywords = ("哪些", "列表", "所有", "有哪些", "推荐", "选择", "可用", "什么型号")
+        list_keywords = ("哪些", "列表", "所有", "有哪些", "推荐", "选择", "可用", "什么型号", "查询", "查看", "列出")
         is_list_query = any(keyword in user_message for keyword in list_keywords)
+
+        generic_terms = {"设备", "机器人", "潜水器", "rov", "auv", "hov", "单机", "型号", "工具"}
+        query_strip_words = (
+            "查询", "查看", "列出", "检索", "显示", "获取", "了解", "我要", "我想", "帮我",
+            "可以", "能否", "请", "列表", "清单", "可用", "所有", "有哪些", "什么", "哪些",
+            "推荐", "选择", "的", "一下", "看看", "知道", "信息", "能力", "状态", "目前", "现在"
+        )
+        cleaned_msg = _norm(user_message)
+        for w in query_strip_words:
+            cleaned_msg = cleaned_msg.replace(_norm(w), "")
+
+        is_broad_device_list_query = bool(cleaned_msg) and all(
+            token in generic_terms for token in re.findall(r"[a-zA-Z0-9]+|[\u4e00-\u9fa5]+", cleaned_msg)
+        )
 
         if entity_targets and len(entity_targets) > 1:
             family_ids = set()
@@ -1640,7 +1654,11 @@ class KnowledgeBase:
                 if entity_kind == "class" or (entity_kind == "family" and is_list_query)
                 else "device_check"
             )
-        elif is_list_query:
+        elif is_broad_device_list_query or is_list_query:
+            if not is_broad_device_list_query and cleaned_msg and not depth_condition.get("has_depth_expression"):
+                response["reason"] = "device_not_resolved"
+                response["query_mode"] = "device_check"
+                return response
             robots = (
                 self.get_task_allowed_robot_variants(task_type_key)
                 if task_type_key

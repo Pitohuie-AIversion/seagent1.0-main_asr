@@ -725,7 +725,7 @@ class DialogueManager:
         if route.dialogue_mode == "emergency_intervention":
             return self._handle_emergency_intervention(user_message, route, request_id)
 
-        if route.dialogue_mode in ("knowledge_qa", "uncertain"):
+        if route.dialogue_mode == "knowledge_qa":
             return self._handle_non_task_route(user_message, route, request_id)
 
         compound_request = analyze_task_request(
@@ -2950,6 +2950,8 @@ class DialogueManager:
         dialogue_mode = snapshot.get("dialogue_mode", "task_collection")
         if not isinstance(dialogue_mode, str) or dialogue_mode not in valid_modes:
             raise ValueError(f"Invalid dialogue_mode in snapshot: {dialogue_mode}")
+        if dialogue_mode == "uncertain":
+            dialogue_mode = "knowledge_qa"
 
         control_state = snapshot.get("control_state", "idle")
         if not isinstance(control_state, str) or control_state not in valid_control:

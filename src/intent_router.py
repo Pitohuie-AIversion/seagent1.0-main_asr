@@ -1,11 +1,10 @@
 """
 src/intent_router.py - 结构化交互路由器
 
-IntentRouter 将用户输入路由至四种对话模式之一：
+IntentRouter 将用户输入路由至三种对话模式之一：
 - task_collection：任务数据收集与参数修改
-- knowledge_qa：知识问答、能力/状态查询与普通聊天
+- knowledge_qa：知识问答、能力/状态查询与普通聊天（含意图澄清 CLARIFICATION）
 - emergency_intervention：紧急控制干预（需二次确定性验证）
-- uncertain：意图澄清与否定/控制保护
 """
 
 from __future__ import annotations
@@ -26,7 +25,6 @@ DialogueMode = Literal[
     "task_collection",
     "knowledge_qa",
     "emergency_intervention",
-    "uncertain",
 ]
 
 VALID_INTERACTION_TYPES = {"WRITE", "QUERY"}
@@ -34,7 +32,6 @@ VALID_DIALOGUE_MODES = {
     "task_collection",
     "knowledge_qa",
     "emergency_intervention",
-    "uncertain",
 }
 VALID_QUERY_INTENTS = {
     "TASK_STATUS",
@@ -59,15 +56,12 @@ INTENT_ROUTER_SYSTEM = """\
 
 2. knowledge_qa:
 用户正在索取信息、查询设备能力/工具/状态、查询环境/任务规则、
-进行普通聊天，或对控制操作进行解释性询问（如"如何取消任务"、"如果停止任务会怎样"）。
+进行普通聊天，或对控制操作进行解释性询问（如"如何取消任务"、"如果停止任务会怎样"），
+或在表达模糊、包含歧义裸词或否定控制指令时进行意图澄清 (query_intent: CLARIFICATION)。
 知识问答严禁修改任务状态。
 
 3. emergency_intervention:
 用户发出明确的紧急控制动作命令，要求暂停、停止、终止或取消当前任务。
-
-4. uncertain:
-用户表达模糊、包含歧义裸词（如单独发送"停止"、"取消"），
-或否定控制指令，无法确定具体模式。
 
 【输出要求】
 
@@ -135,7 +129,7 @@ class IntentRouteResult:
         if act is not None and act not in VALID_EMERGENCY_ACTIONS:
             object.__setattr__(self, "emergency_action", None)
             act = None
-            dm_str = "uncertain"
+            dm_str = "knowledge_qa"
             it_str = "QUERY"
             query_intent = "CLARIFICATION"
 
@@ -144,7 +138,7 @@ class IntentRouteResult:
             it_str = "QUERY"
             query_intent = None
         elif dm_str == "emergency_intervention":
-            dm_str = "uncertain"
+            dm_str = "knowledge_qa"
             it_str = "QUERY"
             query_intent = "CLARIFICATION"
             object.__setattr__(self, "emergency_action", None)
@@ -154,10 +148,7 @@ class IntentRouteResult:
         elif it_str == "WRITE":
             dm_str = "task_collection"
         elif it_str == "QUERY" and dm_str == "task_collection":
-            if self.query_intent == "CLARIFICATION":
-                dm_str = "uncertain"
-            else:
-                dm_str = "knowledge_qa"
+            dm_str = "knowledge_qa"
 
         if dm_str not in VALID_DIALOGUE_MODES:
             raise ValueError(f"非法 dialogue_mode: {self.dialogue_mode}")
@@ -165,9 +156,6 @@ class IntentRouteResult:
         if dm_str == "task_collection":
             it_str = "WRITE"
             query_intent = None
-        elif dm_str == "uncertain":
-            it_str = "QUERY"
-            query_intent = "CLARIFICATION"
         elif dm_str == "knowledge_qa" and (
             not query_intent or query_intent not in VALID_QUERY_INTENTS
         ):
@@ -195,8 +183,6 @@ class IntentRouteResult:
             return "TASK_UPDATE"
         elif self.dialogue_mode == "emergency_intervention":
             return "EMERGENCY_INTERVENTION"
-        elif self.dialogue_mode == "uncertain":
-            return "CLARIFICATION"
         return self.query_intent or self.interaction_type
 
     @property
@@ -510,7 +496,7 @@ class IntentRouter:
                     query_intent=None,
                 )
             return IntentRouteResult(
-                dialogue_mode="uncertain",
+                dialogue_mode="knowledge_qa",
                 interaction_type="QUERY",
                 confidence=0.85,
                 reason="规则拦截: 否决控制动作",
@@ -531,7 +517,7 @@ class IntentRouter:
                 )
             if msg in ("停止", "暂停", "取消", "终止", "撤销", "放弃"):
                 return IntentRouteResult(
-                    dialogue_mode="uncertain",
+                    dialogue_mode="knowledge_qa",
                     interaction_type="QUERY",
                     confidence=0.85,
                     reason="规则拦截: 模糊裸词控制动作",
@@ -569,8 +555,13 @@ class IntentRouter:
                     query_intent=None,
                 )
 
-        # 6. 设备能力、工具、状态与业务知识查询 (必须是疑问句且无显式创建/赋值动词)
-        is_query_sentence = is_question or any(
+        # 6. 设备能力、工具、状态与业务知识查询 (必须是疑问句且无显式创建/赋值动词，或为宽泛设备列表查询)
+        is_broad_device_query = (
+            any(verb in msg for verb in ("查询", "查看", "列出", "检索", "显示", "获取", "了解"))
+            and any(noun in msg for noun in ("设备", "机器人", "潜水器", "ROV", "AUV", "HOV"))
+        )
+
+        is_query_sentence = is_question or is_broad_device_query or any(
             kw in msg for kw in ("哪些", "如何", "为什么", "是否", "能否", "有没有", "怎么", "什么", "几", "多少", "支持", "适合")
         )
 
@@ -578,7 +569,7 @@ class IntentRouter:
             kw in msg for kw in ("创建", "新建", "发起", "新建任务", "创建任务", "改成", "设为", "设置为", "替换为", "调整为")
         )
 
-        if is_query_sentence and not has_creation_or_update_verb:
+        if (is_query_sentence or is_broad_device_query) and not has_creation_or_update_verb:
             # 歧义设备别名拦截 (如 "一号机" / "001" 未带具体系列名 "天鹰座"/"金牛座"/"CRAWLER"/"LROV" 等)
             is_device_context = any(dev in msg for dev in ("机", "设备", "水深", "深度", "作业", "下潜", "机器人", "能力", "搭载", "模式"))
             is_ambiguous_alias = ("一号机" in msg or "二号机" in msg or ("001" in msg and is_device_context))
@@ -594,7 +585,7 @@ class IntentRouter:
                     confidence=0.85,
                     reason=reason,
                     query_intent="CLARIFICATION",
-                    dialogue_mode="uncertain",
+                    dialogue_mode="knowledge_qa",
                 )
 
             # 实时设备状态/遥测深度查询
@@ -609,7 +600,7 @@ class IntentRouter:
                     dialogue_mode="knowledge_qa",
                 )
 
-            if any(
+            if is_broad_device_query or any(
                 kw in msg
                 for kw in (
                     "水深",
@@ -625,6 +616,8 @@ class IntentRouter:
                     "米级",
                     "作业",
                     "下潜",
+                    "设备",
+                    "机器人",
                 )
             ):
                 return IntentRouteResult(
@@ -779,7 +772,7 @@ class IntentRouter:
                 confidence=0.5,
                 reason="规则兜底: 澄清意图",
                 query_intent="CLARIFICATION",
-                dialogue_mode="uncertain",
+                dialogue_mode="knowledge_qa",
             )
 
     def _call_llm_router(
@@ -848,6 +841,7 @@ class IntentRouter:
 
         _has_slot_candidates = bool(parsed.get("slot_candidates"))
 
+        is_unknown_or_bogus = False
         raw_mode = parsed.get("dialogue_mode")
         if not raw_mode:
             raw_it = parsed.get("interaction_type") or parsed.get("intent")
@@ -862,9 +856,13 @@ class IntentRouter:
             elif it_str == "EMERGENCY":
                 raw_mode = "emergency_intervention"
             else:
-                raw_mode = "uncertain"
+                raw_mode = "knowledge_qa"
+                is_unknown_or_bogus = True
 
         dialogue_mode = str(raw_mode).strip().lower()
+        if dialogue_mode == "uncertain":
+            dialogue_mode = "knowledge_qa"
+            is_unknown_or_bogus = True
         if dialogue_mode not in VALID_DIALOGUE_MODES:
             logger.warning("[IntentRouter] 非法 dialogue_mode: %r", dialogue_mode)
             raise IntentRoutingError("LLM 返回 dialogue_mode 非法")
@@ -903,61 +901,64 @@ class IntentRouter:
         )
 
         if dialogue_mode == "knowledge_qa" and (
-            not query_intent or query_intent == "UNKNOWN"
+            not query_intent or query_intent == "UNKNOWN" or is_unknown_or_bogus
         ):
-            msg = user_message.strip()
-            if any(
-                kw in msg
-                for kw in (
-                    "当前任务",
-                    "进度",
-                    "缺",
-                    "缺少",
-                    "状态",
-                    "已有",
-                    "步骤",
-                    "进行到",
-                    "一步",
-                )
-            ):
-                query_intent = "TASK_STATUS"
-            elif any(
-                kw in msg
-                for kw in ("哪些参数", "包含哪些", "包含什么", "模板", "知识", "定义", "规则")
-            ):
-                query_intent = "KNOWLEDGE_QA"
-            elif any(
-                kw in msg
-                for kw in (
-                    "水深",
-                    "深度",
-                    "作业模式",
-                    "能力",
-                    "不能在",
-                    "支持哪些",
-                    "适合作业",
-                    "哪些机器人",
-                    "哪些设备",
-                    "机器人有哪些",
-                    "米级",
-                )
-            ):
-                query_intent = "DEVICE_CAPABILITY"
-            elif any(
-                kw in msg for kw in ("工具", "载荷", "抓手", "传感器", "机械臂", "配备")
-            ):
-                query_intent = "TOOL_QUERY"
-            elif any(kw in msg for kw in ("海况", "水温", "底质", "海床")):
-                query_intent = "ENVIRONMENT_QUERY"
+            if is_unknown_or_bogus:
+                query_intent = "CLARIFICATION"
             else:
-                query_intent = "KNOWLEDGE_QA"
+                msg = user_message.strip()
+                if any(
+                    kw in msg
+                    for kw in (
+                        "当前任务",
+                        "进度",
+                        "缺",
+                        "缺少",
+                        "状态",
+                        "已有",
+                        "步骤",
+                        "进行到",
+                        "一步",
+                    )
+                ):
+                    query_intent = "TASK_STATUS"
+                elif any(
+                    kw in msg
+                    for kw in ("哪些参数", "包含哪些", "包含什么", "模板", "知识", "定义", "规则")
+                ):
+                    query_intent = "KNOWLEDGE_QA"
+                elif any(
+                    kw in msg
+                    for kw in (
+                        "水深",
+                        "深度",
+                        "作业模式",
+                        "能力",
+                        "不能在",
+                        "支持哪些",
+                        "适合作业",
+                        "哪些机器人",
+                        "哪些设备",
+                        "机器人有哪些",
+                        "米级",
+                    )
+                ):
+                    query_intent = "DEVICE_CAPABILITY"
+                elif any(
+                    kw in msg for kw in ("工具", "载荷", "抓手", "传感器", "机械臂", "配备")
+                ):
+                    query_intent = "TOOL_QUERY"
+                elif any(kw in msg for kw in ("海况", "水温", "底质", "海床")):
+                    query_intent = "ENVIRONMENT_QUERY"
+                else:
+                    query_intent = "KNOWLEDGE_QA"
 
         emergency_action = None
         if dialogue_mode == "emergency_intervention":
             validated_action = self._parse_executable_control_action(user_message)
             if validated_action is None:
                 return IntentRouteResult(
-                    dialogue_mode="uncertain",
+                    dialogue_mode="knowledge_qa",
                     interaction_type="QUERY",
                     confidence=confidence_float,
                     reason="LLM 识别为紧急干预，但缺乏确定性可执行紧急命令依据，安全降级为澄清",
@@ -972,9 +973,7 @@ class IntentRouter:
             interaction_type="WRITE" if dialogue_mode == "task_collection" else "QUERY",
             confidence=confidence_float,
             reason=reason.strip(),
-            query_intent=query_intent if dialogue_mode == "knowledge_qa" else (
-                "CLARIFICATION" if dialogue_mode == "uncertain" else None
-            ),
+            query_intent=query_intent if dialogue_mode == "knowledge_qa" else None,
             source="llm",
             emergency_action=emergency_action,
         )
