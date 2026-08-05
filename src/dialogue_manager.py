@@ -1049,7 +1049,7 @@ class DialogueManager:
                 new_slots["internal_id"].value_type = "string"
 
             task_id_slot = new_slots.get("task_id")
-            if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None:
+            if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None or not validate_task_id_for_task_type(str(task_id_slot.value), curr_task_type_key, self.kb.task_schemas):
                 valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
                 tid = self.builder.reserve_task_id(curr_task_type_key)
                 if "task_id" not in new_slots:

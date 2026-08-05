@@ -648,7 +648,9 @@ Please describe your task request or ask a question directly.`,
 
       const localizedTaskType = translateValue('task_type', taskTypeDisplay);
       const emergencyBadge = data.emergency ? `<span class="badge emergency">${I18N[currentLang].emergencyBadge}</span>` : '';
-      document.getElementById('taskInfo').innerHTML = `<strong>${localizedTaskType}</strong> ${emergencyBadge}`;
+      const taskIdStr = (collected && collected.task_id) ? collected.task_id : (data.task_id || '');
+      const taskIdBadge = taskIdStr ? `<span class="badge task-id" style="background: rgba(0, 240, 255, 0.15); border: 1px solid rgba(0, 240, 255, 0.4); color: var(--accent-color, #00f0ff); margin-left: 6px; font-family: monospace; font-size: 0.85em; padding: 2px 6px; border-radius: 4px;">${escapeHtml(taskIdStr)}</span>` : '';
+      document.getElementById('taskInfo').innerHTML = `<strong>${localizedTaskType}</strong>${taskIdBadge} ${emergencyBadge}`;
 
       const collectedDiv = document.getElementById('collectedFields');
       if (Object.keys(collected).length === 0) {

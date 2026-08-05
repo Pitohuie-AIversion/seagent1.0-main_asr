@@ -123,7 +123,7 @@ def save_conversation(
         "mode_transition_history": mode_transition_history or [],
         "control_state": control_state or "idle",
         "last_control_request": last_control_request,
-        "task_id": built_json.get("task_id", "unknown"),
+        "task_id": built_json.get("task_id") or task_state.get("task_id") or "unknown",
         "task_type": task_state.get("task_type_key", "unknown"),
         "intent_id": intent_id,
     }
