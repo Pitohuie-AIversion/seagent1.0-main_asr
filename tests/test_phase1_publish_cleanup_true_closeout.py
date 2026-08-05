@@ -606,6 +606,12 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
                 for key, (val, vtype) in slots_to_seed.items():
                     dm.slot_store.slots[key] = Slot(slot_name=key, value=val, value_type=vtype, status="valid", source="user_input")
 
+                unit_id = selected_rov.get("unit_ids", ["WCROV-STD-001"])[0]
+                try:
+                    kb.state_info.set_status(unit_id, {"overall_status": "available"})
+                except Exception:
+                    pass
+
                 dm._rebuild_cache()
 
                 # Whitelist any soft constraint warnings
