@@ -236,11 +236,20 @@ class DialogueManager:
         query_type = kb_evidence.get("query_type")
         query_mode = kb_evidence.get("query_mode")
         if query_type == "TOOL_QUERY" or query_mode == "tool_list":
+            matched_payloads = []
             tools = []
             for item in kb_evidence.get("results", []):
-                if isinstance(item, dict) and item.get("category") == "all_supported_tools":
-                    tools = item.get("tools", [])
-                    break
+                if isinstance(item, dict):
+                    if item.get("category") == "payload_catalog" and item.get("matched_payloads"):
+                        matched_payloads = item.get("matched_payloads")
+                    elif item.get("category") == "all_supported_tools":
+                        tools = item.get("tools", [])
+
+            if matched_payloads:
+                p_desc = "；".join(f"【{p.get('name')}】：{p.get('description')}" for p in matched_payloads if p.get("name"))
+                if p_desc:
+                    return f"已查询到相关载荷说明：{p_desc}"
+
             if tools:
                 return "当前机器人可搭载的工具与负载包括：" + "、".join(map(str, tools)) + "。"
 
@@ -267,7 +276,20 @@ class DialogueManager:
         }
         kb_evidence = self.kb.execute_typed_query(route.query_intent, user_message, context=context)
         if not kb_evidence.get("found"):
-            return "当前知识库未提供该信息。"
+            reason = kb_evidence.get("reason")
+            if reason == "device_not_resolved":
+                return "项目知识库中未找到该设备信息，请说明具体的机器人型号或名称；您也可以查询当前支持的所有机器人。"
+
+            elif reason == "ambiguous_device_alias":
+                alias = kb_evidence.get("matched_alias", "该设备")
+                cands = kb_evidence.get("candidate_entities", [])
+                return f"设备别名【{alias}】对应多个候选设备，请明确说明具体型号系列。"
+            elif reason == "no_matching_device":
+                return "当前知识库中未检索到符合您询问条件的机器人设备。"
+            elif reason == "unsupported_relation":
+                return "当前暂不支持该维度的查询，您可以查询机器人的能力、载荷、所属系列或适合作业水深。"
+            else:
+                return "当前知识库未提供该信息。"
 
         if route.query_intent == "DEVICE_CAPABILITY" and kb_evidence.get("query_mode") == "device_check":
             results = kb_evidence.get("results", [])
@@ -300,6 +322,7 @@ class DialogueManager:
                 return self._build_knowledge_fallback(kb_evidence)
             return "当前知识库未提供该信息。"
         return self.llm.filter_reply(reply)
+
 
     def _handle_status_query(self, user_message: str, route: IntentRouteResult) -> str:
         if route.query_intent == "TASK_STATUS":
@@ -691,10 +714,11 @@ class DialogueManager:
 
         if self._is_business_identity_query(user_message):
             self._switch_dialogue_mode("knowledge_qa", source="fast_path", reason="通用身份/常规对话问答")
-            reply = "我是一个专业的水下多智能体任务决策大模型，可用于辅助水下任务规划、参数收集与可行性验证。请描述您的水下任务需求，我会继续帮您完善任务参数。"
+            reply = "我是一个专业的水下多智能体任务决策大模型，可以协助您进行水下任务规划、参数收集与可行性验证。请描述您的水下任务需求，我会继续帮您完善任务参数。"
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
+
 
         if is_standalone_time_query(user_message):
             self._switch_dialogue_mode("knowledge_qa", source="fast_path", reason="系统时间/环境状态查询")
@@ -956,10 +980,15 @@ class DialogueManager:
                                 slot.status = "valid"
                                 slot.candidate_value = None
                                 slot.validation_error = None
+                                if k in stage2_updates:
+                                    del stage2_updates[k]
                             elif is_cancel_k:
                                 slot.status = "valid"
                                 slot.candidate_value = None
                                 slot.validation_error = None
+                                if k in stage2_updates:
+                                    del stage2_updates[k]
+
 
             self._apply_updates_in_transaction(
                 stage2_updates,
@@ -2660,8 +2689,9 @@ class DialogueManager:
         text = message.strip().lower()
         identity_patterns = (
             "你是什么", "你是谁", "你是啥", "你的身份", "你叫什么",
-            "介绍一下你自己", "自我介绍", "what are you", "who are you",
+            "介绍一下你自己", "自我介绍", "你能做什么", "你有什么功能", "what are you", "who are you",
         )
+
         return any(pattern in text for pattern in identity_patterns)
 
 

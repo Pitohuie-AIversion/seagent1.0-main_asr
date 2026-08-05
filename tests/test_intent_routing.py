@@ -1708,5 +1708,69 @@ class TestIssue10DialogueModeRouting(unittest.TestCase):
                 self.assertTrue(len(reply) > 5)
 
 
+class TestReadOnlyPriorityFullMatrix(unittest.TestCase):
+    def setUp(self):
+        self.kb = KnowledgeBase()
+        self.llm = DummyLLM()
+        self.dm = DialogueManager(self.llm, self.kb)
+
+    def test_read_only_routing_and_reply_matrix(self):
+        test_matrix = [
+            ("什么是软约束？", "KNOWLEDGE_QA", ["软约束", "警告"], ["可能是在提交任务信息"]),
+            ("水下机器人为什么需要定位？", "KNOWLEDGE_QA", ["定位"], ["可能是在提交任务信息"]),
+            ("侧扫声呐有什么作用？", "TOOL_QUERY", ["侧扫声呐", "成像", "地貌", "声学", "扫测"], ["可能是在提交任务信息", "当前知识库未提供该信息"]),
+            ("介绍一下金牛座机器人", "DEVICE_CAPABILITY", ["金牛座", "机器人"], ["可能是在提交任务信息"]),
+            ("金牛座能执行什么任务？", "DEVICE_CAPABILITY", ["金牛座", "任务", "巡检", "埋设", "采油树"], ["可能是在提交任务信息"]),
+            ("AUV 和 ROV 有什么区别？", "KNOWLEDGE_QA", ["AUV", "ROV"], ["可能是在提交任务信息"]),
+            ("有哪些机器人可以搭载机械臂？", "DEVICE_CAPABILITY", ["机械臂", "机器人"], ["可能是在提交任务信息"]),
+            ("这个 payload 是干什么的？", "TOOL_QUERY", ["工具", "载荷", "能力", "说明"], ["可能是在提交任务信息"]),
+            ("目前有哪些机器人？", "DEVICE_CAPABILITY", ["天鹰座", "金牛座", "机器人"], ["可能是在提交任务信息"]),
+            ("金牛座属于哪个 class/family？", "DEVICE_CAPABILITY", ["金牛座", "class", "family", "类", "族"], ["可能是在提交任务信息"]),
+            ("金牛座的载荷、能力和限制是什么？", "DEVICE_CAPABILITY", ["金牛座", "水深", "能力"], ["可能是在提交任务信息"]),
+            ("当前任务还缺哪些信息？", "TASK_STATUS", ["任务", "阶段", "收集"], ["可能是在提交任务信息"]),
+            ("刚才填写了哪些任务参数？", "TASK_STATUS", ["任务", "字段"], ["可能是在提交任务信息"]),
+            ("怎么创建一个巡检任务？", "KNOWLEDGE_QA", ["巡检", "任务"], ["可能是在提交任务信息"]),
+            ("为什么任务被硬约束阻断？", "KNOWLEDGE_QA", ["硬约束", "阻断"], ["可能是在提交任务信息"]),
+            ("如何忽略软警告？", "KNOWLEDGE_QA", ["软警告", "确认", "忽略"], ["可能是在提交任务信息"]),
+            ("任务发布后保存在哪里？", "KNOWLEDGE_QA", ["staging", "final", "发布", "保存"], ["可能是在提交任务信息"]),
+        ]
+
+        for msg, expected_intent, must_include, must_not_include in test_matrix:
+            with self.subTest(msg=msg):
+                route = self.dm.intent_router.route(msg, [], {})
+                self.assertEqual(route.dialogue_mode, "knowledge_qa")
+                self.assertEqual(route.query_intent, expected_intent)
+
+                self.dm.reset()
+                reply = self.dm.process(msg)
+                for exc in must_not_include:
+                    self.assertNotIn(exc, reply)
+                self.assertTrue(len(reply) > 5)
+
+    def test_boundary_and_action_routing_matrix(self):
+        boundary_cases = [
+            ("让机器人 A 去检查管道", "task_collection", "WRITE", None),
+            ("把机器人换成 B", "task_collection", "WRITE", None),
+            ("立即停止机器人", "emergency_intervention", "QUERY", "stop"),
+            ("机器人 A 当前电量是多少", "knowledge_qa", "QUERY", "DEVICE_STATUS"),
+            ("帮我看看机器人", "knowledge_qa", "QUERY", "CLARIFICATION"),
+            ("payload", "knowledge_qa", "QUERY", "TOOL_QUERY"),
+            ("机器人的负载有哪些", "knowledge_qa", "QUERY", "TOOL_QUERY"),
+            ("机器人的 payload 有哪些", "knowledge_qa", "QUERY", "TOOL_QUERY"),
+            ("机器人支持的设备有哪些", "knowledge_qa", "QUERY", "TOOL_QUERY"),
+        ]
+
+        for msg, expected_mode, expected_it, expected_sub in boundary_cases:
+            with self.subTest(msg=msg):
+                route = self.dm.intent_router.route(msg, [], {})
+                self.assertEqual(route.dialogue_mode, expected_mode)
+                self.assertEqual(route.interaction_type, expected_it)
+                if expected_mode == "emergency_intervention":
+                    self.assertEqual(route.emergency_action, expected_sub)
+                elif expected_mode == "knowledge_qa":
+                    self.assertEqual(route.query_intent, expected_sub)
+
+
 if __name__ == "__main__":
     unittest.main()
+

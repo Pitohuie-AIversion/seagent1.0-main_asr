@@ -361,9 +361,13 @@ class IntentRouter:
             )
 
             if has_target_or_prompt:
+                # 若控制动作作用于特定槽位/字段修改（如"取消支持船修改"），不误判为全局紧急干预
+                if any(k in clause for k in ("修改", "更新", "槽位", "填写的")):
+                    return None
                 return action_found
 
         return None
+
 
     def _rule_deterministic_route(
         self,
@@ -555,26 +559,59 @@ class IntentRouter:
                     query_intent=None,
                 )
 
-        # 6. 设备能力、工具、状态与业务知识查询 (必须是疑问句且无显式创建/赋值动词，或为宽泛设备列表查询)
-        is_broad_device_query = (
-            any(verb in msg for verb in ("查询", "查看", "列出", "检索", "显示", "获取", "了解"))
-            and any(noun in msg for noun in ("设备", "机器人", "潜水器", "ROV", "AUV", "HOV"))
+        # 0. 纯标点符号/非词汇输入拦截
+        if not re.search(r"[\u4e00-\u9fa5a-zA-Z0-9]", msg.strip()):
+            return IntentRouteResult(
+                interaction_type="QUERY",
+                confidence=0.85,
+                reason="规则拦截: 纯标点符号/非词汇输入",
+                query_intent="CLARIFICATION",
+                dialogue_mode="knowledge_qa",
+            )
+
+        # 6. 只读查询与意图分流
+        msg_for_query_check = msg.replace("支持船", "")
+        is_query_sentence = is_question or any(
+            kw in msg_for_query_check for kw in (
+                "哪些", "如何", "为什么", "是否", "能否", "有没有", "怎么", "什么", "几", "多少",
+                "支持", "适合", "区别", "作用", "介绍", "说明", "解释", "属于", "干什么", "保存在哪", "在哪", "怎么样"
+            )
         )
 
-        is_query_sentence = is_question or is_broad_device_query or any(
-            kw in msg for kw in ("哪些", "如何", "为什么", "是否", "能否", "有没有", "怎么", "什么", "几", "多少", "支持", "适合")
+
+        # 显式任务写入动词
+        has_write_verb = any(
+            kw in msg for kw in (
+                "创建", "新建", "发起", "改成", "设为", "设置为",
+                "替换为", "调整为", "切换为", "换成", "去检查", "去巡检", "去操作", "去埋设", "让", "取消", "撤销"
+            )
         )
 
-        has_creation_or_update_verb = any(
-            kw in msg for kw in ("创建", "新建", "发起", "新建任务", "创建任务", "改成", "设为", "设置为", "替换为", "调整为")
+        is_meta_workflow_query = is_query_sentence and any(
+            kw in msg for kw in ("怎么", "如何", "为什么", "流程", "说明", "帮助", "规则", "介绍")
         )
 
-        # 单个领域名词无创建/写操作时，确定性判定为只读查询
+        has_explicit_write_action = has_write_verb and not is_meta_workflow_query and not is_query_sentence
+
         msg_clean = msg.lower().strip()
-        if not has_creation_or_update_verb and msg_clean in (
-            "payload", "负载", "载荷", "工具", "抓手", "传感器", "机械臂", "摄像机", "声呐", "软约束", "硬约束", "设备", "机器人"
-        ):
-            if msg_clean in ("payload", "负载", "载荷", "工具", "抓手", "传感器", "机械臂", "摄像机", "声呐"):
+        is_bare_domain_noun = msg_clean in (
+            "payload", "负载", "载荷", "工具", "抓手", "传感器", "机械臂", "摄像机", "声呐", "声纳",
+            "软约束", "硬约束", "设备", "机器人"
+        )
+
+        # 6.1 显式写入动作直接进入 task_collection
+        if has_explicit_write_action:
+            return IntentRouteResult(
+                dialogue_mode="task_collection",
+                interaction_type="WRITE",
+                confidence=0.95,
+                reason="规则识别: 显式任务写入或参数/设备修改指令",
+                query_intent=None,
+            )
+
+        # 6.2 裸领域名词只读处理
+        if is_bare_domain_noun:
+            if msg_clean in ("payload", "负载", "载荷", "工具", "抓手", "传感器", "机械臂", "摄像机", "声呐", "声纳"):
                 return IntentRouteResult(
                     interaction_type="QUERY",
                     confidence=0.9,
@@ -599,8 +636,14 @@ class IntentRouter:
                     dialogue_mode="knowledge_qa",
                 )
 
-        if (is_query_sentence or is_broad_device_query) and not has_creation_or_update_verb:
-            # 歧义设备别名拦截 (如 "一号机" / "001" 未带具体系列名 "天鹰座"/"金牛座"/"CRAWLER"/"LROV" 等)
+        # 6.3 广义只读查询意图分流
+        is_broad_device_query = (
+            any(verb in msg for verb in ("查询", "查看", "列出", "检索", "显示", "获取", "了解", "介绍", "说明", "解释"))
+            and any(noun in msg for noun in ("设备", "机器人", "潜水器", "ROV", "AUV", "HOV", "负载", "载荷", "工具", "抓手", "传感器"))
+        )
+
+        if is_query_sentence or is_broad_device_query or is_meta_workflow_query:
+            # A. 歧义设备别名拦截 (如 "一号机" / "001" 未带具体系列名)
             is_device_context = any(dev in msg for dev in ("机", "设备", "水深", "深度", "作业", "下潜", "机器人", "能力", "搭载", "模式"))
             is_ambiguous_alias = ("一号机" in msg or "二号机" in msg or ("001" in msg and is_device_context))
             has_family = any(fam in msg for fam in ("天鹰座", "金牛座", "水蛟", "海马", "CRAWLER", "LROV", "1600", "WORK"))
@@ -618,10 +661,42 @@ class IntentRouter:
                     dialogue_mode="knowledge_qa",
                 )
 
-            # 实时设备状态/遥测深度查询
-            if any(
-                kw in msg for kw in ("当前深度", "当前水深", "当前状态", "实时深度", "实时状态", "当前位置")
-            ):
+            # B. 极度模糊的查看/处理类只读澄清 ("帮我看看机器人", "处理一下设备", "看一下A")
+            if any(p in msg for p in ("帮我看看机器人", "处理一下设备", "这个怎么样", "看一下")) and not any(k in msg for k in ("水深", "能力", "工具", "电量", "状态")):
+                return IntentRouteResult(
+                    interaction_type="QUERY",
+                    confidence=0.85,
+                    reason="规则拦截: 模糊只读意图澄清",
+                    query_intent="CLARIFICATION",
+                    dialogue_mode="knowledge_qa",
+                )
+
+            # C. 规则、概念与差异比较问答 (KNOWLEDGE_QA)
+            # 如 "AUV 和 ROV 有什么区别？", "什么是软约束？", "如何忽略软警告？", "任务发布后保存在哪里？"
+            if any(kw in msg for kw in (
+                "区别", "差异", "不同", "软约束", "硬约束", "忽略警告", "忽略软警告", "硬约束阻断",
+                "保存在哪", "保存位置", "存储位置", "原理", "含义", "概念", "为什么需要"
+            )):
+                return IntentRouteResult(
+                    interaction_type="QUERY",
+                    confidence=0.85,
+                    reason="规则兜底: 业务规则与概念知识查询",
+                    query_intent="KNOWLEDGE_QA",
+                    dialogue_mode="knowledge_qa",
+                )
+
+            # D. 海洋环境与海况查询 (ENVIRONMENT_QUERY)
+            if any(kw in msg for kw in ("海况", "水温", "底质", "海床")):
+                return IntentRouteResult(
+                    interaction_type="QUERY",
+                    confidence=0.85,
+                    reason="规则兜底: 环境海况查询",
+                    query_intent="ENVIRONMENT_QUERY",
+                    dialogue_mode="knowledge_qa",
+                )
+
+            # E. 实时设备状态/遥测深度/电量查询 (DEVICE_STATUS)
+            if any(kw in msg for kw in ("当前深度", "当前水深", "当前状态", "实时深度", "实时状态", "当前位置", "当前电量", "电量")):
                 return IntentRouteResult(
                     interaction_type="QUERY",
                     confidence=0.85,
@@ -630,18 +705,49 @@ class IntentRouter:
                     dialogue_mode="knowledge_qa",
                 )
 
-            # 工具/载荷优先判断：若问句关注工具/载荷/负载/payload/传感器/搭载设备等
-            is_tool_query = any(
-                kw in msg.lower()
-                for kw in (
-                    "payload", "负载", "载荷", "工具", "抓手", "传感器", "机械臂", "配备", "摄像机", "声呐",
-                    "支持的设备", "配备的设备", "搭载的设备", "可用工具"
+            # F. 会话任务状态/进度/缺啥参数查询 (TASK_STATUS)
+            if any(kw in msg for kw in ("还缺", "缺少", "缺失", "填写了哪些", "有哪些参数", "当前任务", "进度", "步骤")):
+                return IntentRouteResult(
+                    interaction_type="QUERY",
+                    confidence=0.85,
+                    reason="规则兜底: 任务状态查询",
+                    query_intent="TASK_STATUS",
+                    dialogue_mode="knowledge_qa",
+                )
+
+            # G. 特定型号/族机器人的能力与限制查询 (DEVICE_CAPABILITY)
+            # 若包含具体型号/族名称 (如 "金牛座"、"亚特兰蒂斯"、"观察级ROV") 或明确询问机器人列表 ("哪些机器人可以搭载机械臂", "能在1000米作业吗")
+            has_specific_family_mention = any(
+                fam in msg for fam in ("天鹰座", "金牛座", "水蛟", "海马", "CRAWLER", "LROV", "1600", "WORK", "观察级", "工作级", "亚特兰蒂斯", "深海")
+            )
+            asks_which_robots = any(
+                kw in msg for kw in (
+                    "哪些机器人", "哪些设备可以", "哪些潜水器", "哪些rov", "哪些auv", "什么机器人", "能够在", "能在"
                 )
             )
-            # 只有明确询问“哪些机器人/哪些设备”可搭载某工具时，才定向为设备能力列表；否则询问负载本身归为 TOOL_QUERY
-            asks_which_robots = any(kw in msg for kw in ("哪些机器人", "哪些潜水器"))
 
-            if is_tool_query and not asks_which_robots:
+            if has_specific_family_mention or asks_which_robots or any(
+                kw in msg for kw in ("属于哪个", "能执行什么", "class", "family", "族", "能力和限制", "限制是什么", "作业吗", "水深是", "最大水深")
+            ):
+                return IntentRouteResult(
+                    interaction_type="QUERY",
+                    confidence=0.85,
+                    reason="规则兜底: 特定设备能力与关系查询",
+                    query_intent="DEVICE_CAPABILITY",
+                    dialogue_mode="knowledge_qa",
+                )
+
+
+            # H. 工具/载荷查询 (TOOL_QUERY)
+            # 如果问句关注载荷/工具/设备 ("机器人的负载有哪些", "机器人支持的设备有哪些", "侧扫声呐有什么作用")
+            is_tool_focused = any(
+                kw in msg.lower()
+                for kw in (
+                    "payload", "负载", "载荷", "工具", "抓手", "传感器", "机械臂", "电液机械臂",
+                    "摄像机", "声呐", "声纳", "配", "搭载的设备", "支持的设备", "可用工具"
+                )
+            )
+            if is_tool_focused:
                 return IntentRouteResult(
                     interaction_type="QUERY",
                     confidence=0.85,
@@ -650,42 +756,30 @@ class IntentRouter:
                     dialogue_mode="knowledge_qa",
                 )
 
+            # I. 宽泛设备列表或水深能力查询 (DEVICE_CAPABILITY)
             if is_broad_device_query or any(
-                kw in msg
-                for kw in (
-                    "水深",
-                    "深度",
-                    "作业模式",
-                    "能力",
-                    "不能在",
-                    "支持哪些",
-                    "适合作业",
-                    "哪些机器人",
-                    "哪些设备",
-                    "机器人有哪些",
-                    "米级",
-                    "作业",
-                    "下潜",
-                    "设备",
-                    "机器人",
-                )
+                kw in msg for kw in ("水深", "深度", "作业模式", "能力", "不能在", "支持哪些", "适合作业", "目前有哪些机器人", "机器人有哪些")
             ):
                 return IntentRouteResult(
                     interaction_type="QUERY",
                     confidence=0.85,
-                    reason="规则兜底: 设备能力查询",
+                    reason="规则兜底: 广义设备能力查询",
                     query_intent="DEVICE_CAPABILITY",
                     dialogue_mode="knowledge_qa",
                 )
 
-            if any(kw in msg for kw in ("工具", "载荷", "抓手", "传感器", "机械臂", "配备")):
-                return IntentRouteResult(
-                    interaction_type="QUERY",
-                    confidence=0.85,
-                    reason="规则兜底: 工具查询",
-                    query_intent="TOOL_QUERY",
-                    dialogue_mode="knowledge_qa",
-                )
+            # J. 规则/流程/通用概念知识问答 (KNOWLEDGE_QA)
+            return IntentRouteResult(
+                interaction_type="QUERY",
+                confidence=0.85,
+                reason="规则兜底: 业务规则与概念知识查询",
+                query_intent="KNOWLEDGE_QA",
+                dialogue_mode="knowledge_qa",
+            )
+
+
+
+
 
         if any(
             kw in msg
@@ -920,9 +1014,12 @@ class IntentRouter:
         if "confidence" not in parsed or parsed["confidence"] is None:
             if dialogue_mode == "task_collection" and _has_slot_candidates:
                 parsed["confidence"] = 0.9
+            elif is_unknown_or_bogus or parsed.get("intent") == "UNKNOWN":
+                parsed["confidence"] = 0.85
             else:
                 logger.warning("[IntentRouter] LLM response missing confidence")
                 raise IntentRoutingError("LLM 缺少 confidence 字段")
+
 
         confidence = parsed["confidence"]
         if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):

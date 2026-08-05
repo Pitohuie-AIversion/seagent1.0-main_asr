@@ -1525,6 +1525,18 @@ class KnowledgeBase:
                 })
 
             task_payloads = self.assets.get("payload_options", {})
+            payload_catalog = self.assets.get("payload_catalog", {})
+
+            # 匹配特定 payload 工具的独立功能描述
+            matched_payloads = []
+            msg_norm = user_message.lower()
+            if payload_catalog:
+                for p_key, p_info in payload_catalog.items():
+                    p_name = p_info.get("name", "")
+                    p_aliases = p_info.get("aliases", [])
+                    if (p_name and p_name.lower() in msg_norm) or any(alias.lower() in msg_norm for alias in p_aliases if alias):
+                        matched_payloads.append(p_info)
+
             current_suggestions = (
                 task_payloads.get(task_type_key, {}) if task_type_key else {}
             )
@@ -1539,8 +1551,13 @@ class KnowledgeBase:
                     "task_suggestions": task_payloads,
                     "current_task_suggestions": current_suggestions,
                 },
+                {
+                    "category": "payload_catalog",
+                    "catalog": payload_catalog,
+                    "matched_payloads": matched_payloads,
+                },
             ]
-            response["found"] = bool(tool_set or task_payloads)
+            response["found"] = bool(tool_set or task_payloads or payload_catalog)
             if task_type_key:
                 response["used_task_type_key"] = task_type_key
             return response
@@ -1559,6 +1576,37 @@ class KnowledgeBase:
                     "templates": self.task_schemas.get("task_templates", {}),
                 },
                 {
+                    "category": "constraints_rules",
+                    "constraints": [
+                        {
+                            "id": c.get("id"),
+                            "name": c.get("name"),
+                            "severity": c.get("severity"),
+                            "message": c.get("violation_message", "").strip(),
+                            "applies_to": c.get("applies_to", []),
+                        }
+                        for c in self.constraints
+                    ],
+                },
+                {
+                    "category": "workflow_and_persistence_rules",
+                    "rules": {
+                        "soft_warning_ignore": "当系统产生软约束警告 (blocked_soft) 时，用户可通过明确回复'确认'、'忽略'、'无视'等意图将警告加入白名单并继续流程；软警告忽略不会影响任务数据一致性。",
+                        "hard_constraint_blocking": "当任务触发硬约束 (blocked_hard) 时，系统必须阻断发布。硬约束无法被'确认'或'忽略'绕过，必须修改参数直至合规后方可继续。",
+                        "task_persistence_location": "任务发布后首先写入 staging 暂存文件，完成跨进程锁校验与原子重命名后持久化至系统的 final 任务目录中，绝对路径按任务类型与日流水号确定。",
+                        "dialogue_phases": "系统维护 collecting（收集）、blocked_hard（硬阻断）、blocked_soft（软警告）、confirming（待确认）、done（已发布）、rejected（已拒绝）显式状态机。"
+                    },
+                },
+                {
+                    "category": "payload_catalog",
+                    "catalog": self.assets.get("payload_catalog", {}),
+                },
+                {
+                    "category": "robot_classes_summary",
+                    "classes": self.get_robot_classes(),
+                    "families": self.robot_fleet.get("robot_families", {}),
+                },
+                {
                     "category": "cable_types",
                     "cable_types": self.assets.get("cable_types", []),
                 },
@@ -1572,6 +1620,7 @@ class KnowledgeBase:
 
         response["reason"] = "unsupported_query_type"
         return response
+
 
     def _execute_device_capability_query(
         self,
