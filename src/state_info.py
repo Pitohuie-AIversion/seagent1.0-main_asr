@@ -43,6 +43,24 @@ def _normalize_selector(value: object) -> str:
     return str(value or "").strip().lower().replace(" ", "")
 
 
+def _parse_bool(val: Any) -> bool | None:
+    """严格解析布尔值或字符串形式的布尔标志 ("true"/"false"/"1"/"0" 等)，避免 Python 字符串 truthiness 错误。"""
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        if val in (1, 1.0):
+            return True
+        if val in (0, 0.0):
+            return False
+    if isinstance(val, str):
+        clean = val.strip().lower()
+        if clean in ("true", "1", "yes", "online"):
+            return True
+        if clean in ("false", "0", "no", "offline"):
+            return False
+    return None
+
+
 class RobotStateInfo:
     def __init__(
         self,
@@ -212,12 +230,62 @@ class RobotStateInfo:
 
         state_updated_at_str = state.get("updated_at") or state.get("update_timestamp")
 
-        # 3 & 4. 严格检查状态指标 (Fail Closed)
-        raw_status = state.get("overall_status")
-        if raw_status is None:
-            raw_status = state.get("status") or state.get("work_status") or state.get("task_status")
+        # 3 & 4. 严格检查所有存在的状态指标 (Fail Closed: 任何负面/矛盾信号均阻断)
+        OFFLINE_STATUSES = {"offline", "disconnected"}
+        BUSY_STATUSES = {"busy", "working", "operating", "executing", "unavailable", "maintenance", "fault"}
+        AVAILABLE_STATUSES = {"available", "idle", "ready"}
 
-        if raw_status is None:
+        # 校验 is_online 显式布尔字段
+        if "is_online" in state:
+            online_bool = _parse_bool(state["is_online"])
+            if online_bool is False:
+                return {
+                    "available": False,
+                    "reason_code": "OFFLINE",
+                    "message": f"无法发布任务：机器人 {clean_unit_id} 当前离线。\n请更换机器人，或在设备恢复在线后重新确认发布。",
+                    "unit_id": clean_unit_id,
+                    "checked_at": checked_at_str,
+                    "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
+                }
+            elif online_bool is None:
+                return {
+                    "available": False,
+                    "reason_code": "INVALID_STATE_DATA",
+                    "message": f"无法发布任务：机器人 {clean_unit_id} is_online 指标无法解析为有效布尔值。\n请刷新设备状态后重新确认发布。",
+                    "unit_id": clean_unit_id,
+                    "checked_at": checked_at_str,
+                    "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
+                }
+
+        # 校验 is_busy 显式布尔字段
+        if "is_busy" in state:
+            busy_bool = _parse_bool(state["is_busy"])
+            if busy_bool is True:
+                return {
+                    "available": False,
+                    "reason_code": "BUSY",
+                    "message": f"无法发布任务：机器人 {clean_unit_id} 当前正在执行其他任务（处于忙碌状态）。\n请更换机器人，或在设备空闲后重新确认发布。",
+                    "unit_id": clean_unit_id,
+                    "checked_at": checked_at_str,
+                    "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
+                }
+            elif busy_bool is None:
+                return {
+                    "available": False,
+                    "reason_code": "INVALID_STATE_DATA",
+                    "message": f"无法发布任务：机器人 {clean_unit_id} is_busy 指标无法解析为有效布尔值。\n请刷新设备状态后重新确认发布。",
+                    "unit_id": clean_unit_id,
+                    "checked_at": checked_at_str,
+                    "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
+                }
+
+        # 收集所有存在的状态指标字段 (包含 overall_status, status, work_status, task_status, connection_status, online_status, busy)
+        status_entries = []
+        for key in ("overall_status", "status", "work_status", "task_status", "connection_status", "online_status", "busy"):
+            if key in state and state[key] is not None:
+                status_entries.append((key, state[key]))
+
+        if not status_entries and "is_online" not in state and "is_busy" not in state:
             return {
                 "available": False,
                 "reason_code": "INVALID_STATE_DATA",
@@ -227,53 +295,76 @@ class RobotStateInfo:
                 "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
             }
 
-        status_val = str(raw_status).strip().lower()
+        # 遍历所有状态字段，任何一个负面/矛盾信号即阻断
+        has_positive_available = False
+        for key, raw_val in status_entries:
+            parsed_bool = _parse_bool(raw_val)
+            if key in ("connection_status", "online_status"):
+                if parsed_bool is False:
+                    return {
+                        "available": False,
+                        "reason_code": "OFFLINE",
+                        "message": f"无法发布任务：机器人 {clean_unit_id} 当前离线。\n请更换机器人，或在设备恢复在线后重新确认发布。",
+                        "unit_id": clean_unit_id,
+                        "checked_at": checked_at_str,
+                        "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
+                    }
+                elif parsed_bool is True:
+                    has_positive_available = True
+                    continue
 
-        if status_val in ("offline", "disconnected"):
-            return {
-                "available": False,
-                "reason_code": "OFFLINE",
-                "message": f"无法发布任务：机器人 {clean_unit_id} 当前离线。\n请更换机器人，或在设备恢复在线后重新确认发布。",
-                "unit_id": clean_unit_id,
-                "checked_at": checked_at_str,
-                "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-            }
+            if key == "busy":
+                if parsed_bool is True:
+                    return {
+                        "available": False,
+                        "reason_code": "BUSY",
+                        "message": f"无法发布任务：机器人 {clean_unit_id} 当前正在执行其他任务（处于忙碌状态）。\n请更换机器人，或在设备空闲后重新确认发布。",
+                        "unit_id": clean_unit_id,
+                        "checked_at": checked_at_str,
+                        "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
+                    }
+                elif parsed_bool is False:
+                    has_positive_available = True
+                    continue
 
-        if status_val in ("busy", "working", "operating", "executing", "unavailable", "maintenance", "fault"):
-            return {
-                "available": False,
-                "reason_code": "BUSY",
-                "message": f"无法发布任务：机器人 {clean_unit_id} 当前正在执行其他任务（处于忙碌状态）。\n请更换机器人，或在设备空闲后重新确认发布。",
-                "unit_id": clean_unit_id,
-                "checked_at": checked_at_str,
-                "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-            }
+            val_str = str(raw_val).strip().lower()
+            if val_str in OFFLINE_STATUSES:
+                return {
+                    "available": False,
+                    "reason_code": "OFFLINE",
+                    "message": f"无法发布任务：机器人 {clean_unit_id} 当前离线。\n请更换机器人，或在设备恢复在线后重新确认发布。",
+                    "unit_id": clean_unit_id,
+                    "checked_at": checked_at_str,
+                    "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
+                }
 
-        if status_val not in ("available", "idle", "ready"):
+            if val_str in BUSY_STATUSES:
+                return {
+                    "available": False,
+                    "reason_code": "BUSY",
+                    "message": f"无法发布任务：机器人 {clean_unit_id} 当前正在执行其他任务（处于忙碌状态）。\n请更换机器人，或在设备空闲后重新确认发布。",
+                    "unit_id": clean_unit_id,
+                    "checked_at": checked_at_str,
+                    "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
+                }
+
+            if val_str in AVAILABLE_STATUSES:
+                has_positive_available = True
+            else:
+                return {
+                    "available": False,
+                    "reason_code": "INVALID_STATE_DATA",
+                    "message": f"无法发布任务：机器人 {clean_unit_id} 状态字段 {key} 的值 '{raw_val}' 无法识别。\n请刷新设备状态后重新确认发布。",
+                    "unit_id": clean_unit_id,
+                    "checked_at": checked_at_str,
+                    "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
+                }
+
+        if not has_positive_available and ("is_online" not in state or _parse_bool(state["is_online"]) is not True):
             return {
                 "available": False,
                 "reason_code": "INVALID_STATE_DATA",
-                "message": f"无法发布任务：机器人 {clean_unit_id} 状态值 '{raw_status}' 无法识别。\n请刷新设备状态后重新确认发布。",
-                "unit_id": clean_unit_id,
-                "checked_at": checked_at_str,
-                "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-            }
-
-        if "is_online" in state and not bool(state["is_online"]):
-            return {
-                "available": False,
-                "reason_code": "OFFLINE",
-                "message": f"无法发布任务：机器人 {clean_unit_id} 当前离线。\n请更换机器人，或在设备恢复在线后重新确认发布。",
-                "unit_id": clean_unit_id,
-                "checked_at": checked_at_str,
-                "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-            }
-
-        if "is_busy" in state and bool(state["is_busy"]):
-            return {
-                "available": False,
-                "reason_code": "BUSY",
-                "message": f"无法发布任务：机器人 {clean_unit_id} 当前正在执行其他任务（处于忙碌状态）。\n请更换机器人，或在设备空闲后重新确认发布。",
+                "message": f"无法发布任务：机器人 {clean_unit_id} 缺少明确可用的状态指标。\n请刷新设备状态后重新确认发布。",
                 "unit_id": clean_unit_id,
                 "checked_at": checked_at_str,
                 "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,

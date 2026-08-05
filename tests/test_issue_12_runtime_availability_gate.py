@@ -361,6 +361,81 @@ class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
         final_file = task_dir / f"task_intent_{intent_id}.json"
         self.assertFalse(final_file.exists(), "Final file should not be created for non-exact unit_id")
 
+    def test_11_contradictory_task_status_busy_blocks_publish(self):
+        """Test 11: overall_status=available 但 task_status=busy 矛盾状态 → 阻止发布 (BUSY)。"""
+        intent_id = self._setup_confirming_task(self.unit_id)
+        now_dt = get_current_datetime()
+        ts_fresh = now_dt.isoformat(timespec="microseconds")
+
+        self._set_raw_state(
+            self.unit_id,
+            {
+                "overall_status": "available",
+                "task_status": "busy",
+                "updated_at": ts_fresh,
+                "update_timestamp": ts_fresh,
+                "version": 1,
+            },
+        )
+
+        reply = self.dm.process("确认发布")
+
+        self.assertNotEqual(self.dm.phase, "done")
+        self.assertTrue("忙碌" in reply or "正在执行其他任务" in reply, f"Got reply: {reply}")
+        task_dir = get_task_dir("final")
+        final_file = task_dir / f"task_intent_{intent_id}.json"
+        self.assertFalse(final_file.exists(), "Final file should not be created for contradictory busy status")
+
+    def test_12_contradictory_connection_status_offline_blocks_publish(self):
+        """Test 12: overall_status=available 但 connection_status=offline 矛盾状态 → 阻止发布 (OFFLINE)。"""
+        intent_id = self._setup_confirming_task(self.unit_id)
+        now_dt = get_current_datetime()
+        ts_fresh = now_dt.isoformat(timespec="microseconds")
+
+        self._set_raw_state(
+            self.unit_id,
+            {
+                "overall_status": "available",
+                "connection_status": "offline",
+                "updated_at": ts_fresh,
+                "update_timestamp": ts_fresh,
+                "version": 1,
+            },
+        )
+
+        reply = self.dm.process("确认发布")
+
+        self.assertNotEqual(self.dm.phase, "done")
+        self.assertIn("离线", reply)
+        task_dir = get_task_dir("final")
+        final_file = task_dir / f"task_intent_{intent_id}.json"
+        self.assertFalse(final_file.exists(), "Final file should not be created for contradictory offline status")
+
+    def test_13_contradictory_is_online_string_false_blocks_publish(self):
+        """Test 13: overall_status=available 但 is_online='false' (字符串布尔) → 阻止发布 (OFFLINE)。"""
+        intent_id = self._setup_confirming_task(self.unit_id)
+        now_dt = get_current_datetime()
+        ts_fresh = now_dt.isoformat(timespec="microseconds")
+
+        self._set_raw_state(
+            self.unit_id,
+            {
+                "overall_status": "available",
+                "is_online": "false",
+                "updated_at": ts_fresh,
+                "update_timestamp": ts_fresh,
+                "version": 1,
+            },
+        )
+
+        reply = self.dm.process("确认发布")
+
+        self.assertNotEqual(self.dm.phase, "done")
+        self.assertIn("离线", reply)
+        task_dir = get_task_dir("final")
+        final_file = task_dir / f"task_intent_{intent_id}.json"
+        self.assertFalse(final_file.exists(), "Final file should not be created when is_online is 'false'")
+
 
 if __name__ == "__main__":
     unittest.main()
