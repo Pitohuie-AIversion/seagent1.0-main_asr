@@ -157,7 +157,22 @@ class TestFrontendWelcomeMessage(unittest.TestCase):
         reset_body = reset_match.group(1)
 
         self.assertIn("messageContainer.innerHTML = '';", reset_body)
-        self.assertIn("addMessage('bot', I18N[currentLang].welcomeMsg);", reset_body)
+        self.assertIn("addWelcomeMessage();", reset_body)
+
+    def test_language_switch_uses_i18n_welcome_message(self):
+        """Verify updateLanguage directly updates welcome message using I18N[currentLang].welcomeMsg."""
+        self.assertIn('document.querySelector(\'.message[data-message-kind="welcome"]\')', self.js_content)
+        self.assertIn('welcomeContent = I18N[currentLang].welcomeMsg', self.js_content)
+
+    def test_welcome_message_skips_generic_translation(self):
+        """Verify generic translation loop skips messages marked with dataset.messageKind === 'welcome'."""
+        self.assertIn("if (msgDiv.dataset.messageKind === 'welcome')", self.js_content)
+        self.assertIn("if (options.kind !== 'welcome' && currentLang === 'en' && hasChinese(content))", self.js_content)
+
+    def test_welcome_message_has_explicit_kind(self):
+        """Verify addWelcomeMessage assigns kind: 'welcome' to welcome messages."""
+        self.assertIn("function addWelcomeMessage() {", self.js_content)
+        self.assertIn("addMessage('bot', I18N[currentLang].welcomeMsg, { kind: 'welcome' })", self.js_content)
 
 if __name__ == "__main__":
     unittest.main()

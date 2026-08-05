@@ -369,7 +369,22 @@ Please describe your task request or ask a question directly.`,
         document.getElementById('collectedFields').innerHTML = I18N[currentLang].none;
       }
 
+      // 1. 优先实时跟进更新欢迎消息 (直接加载 I18N[currentLang].welcomeMsg，不调用 /api/translate 翻译)
+      const welcomeMsgDiv = document.querySelector('.message[data-message-kind="welcome"]');
+      if (welcomeMsgDiv) {
+        const welcomeContent = I18N[currentLang].welcomeMsg;
+        welcomeMsgDiv.setAttribute('data-original', welcomeContent);
+        const bubble = welcomeMsgDiv.querySelector('.bubble');
+        if (bubble) {
+          bubble.innerHTML = renderMarkdown(welcomeContent).replace(/\n/g, '<br>');
+        }
+      }
+
+      // 2. 普通对话消息翻译循环（跳过 welcome 类型的消息）
       document.querySelectorAll('.message').forEach(msgDiv => {
+        if (msgDiv.dataset.messageKind === 'welcome') {
+          return;
+        }
         const originalText = msgDiv.getAttribute('data-original');
         const btn = msgDiv.querySelector('.msg-translate-bar');
         const bubble = msgDiv.querySelector('.bubble');
@@ -569,10 +584,13 @@ Please describe your task request or ask a question directly.`,
     <path d="M4 20c0-4 4-5 8-5s8 1 8 5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" />
   </svg>`;
 
-    function addMessage(role, content) {
+    function addMessage(role, content, options = {}) {
       const div = document.createElement('div');
       const displayRole = role === 'assistant' ? 'bot' : role;
       div.className = `message ${displayRole}`;
+      if (options.kind) {
+        div.dataset.messageKind = options.kind;
+      }
       const isBot = (role === 'bot' || role === 'assistant');
       const avatarHtml = isBot ? `<div class="avatar">${botAvatarSvg}</div>` : `<div class="avatar">${userAvatarSvg}</div>`;
 
@@ -582,7 +600,7 @@ Please describe your task request or ask a question directly.`,
       const renderedContent = renderMarkdown(content).replace(/\n/g, '<br>');
 
       let translateBtn = '';
-      if (content.trim()) {
+      if (content.trim() && options.kind !== 'welcome') {
         translateBtn = `<div class="msg-translate-bar" data-action="translate-message">${I18N[currentLang].transTranslate}</div>`;
       }
 
@@ -590,11 +608,15 @@ Please describe your task request or ask a question directly.`,
       messageContainer.appendChild(div);
       messageContainer.scrollTop = messageContainer.scrollHeight;
 
-      if (currentLang === 'en' && hasChinese(content)) {
+      if (options.kind !== 'welcome' && currentLang === 'en' && hasChinese(content)) {
         autoTranslateMessage(div);
       }
 
       return div;
+    }
+
+    function addWelcomeMessage() {
+      addMessage('bot', I18N[currentLang].welcomeMsg, { kind: 'welcome' });
     }
 
 
@@ -1100,7 +1122,7 @@ Please describe your task request or ask a question directly.`,
               addMessage(m.role, m.content);
             }
           } else {
-            addMessage('bot', I18N[currentLang].welcomeMsg);
+            addWelcomeMessage();
           }
           isDone = !!data.done;
           updateSidebar(data);
@@ -1132,7 +1154,7 @@ Please describe your task request or ask a question directly.`,
       sessionId = null;
       isDone = false;
       messageContainer.innerHTML = '';
-      addMessage('bot', I18N[currentLang].welcomeMsg);
+      addWelcomeMessage();
       document.getElementById('taskInfo').innerHTML = '-';
       document.getElementById('collectedFields').innerHTML = I18N[currentLang].none;
       document.getElementById('missingFields').innerHTML = '-';

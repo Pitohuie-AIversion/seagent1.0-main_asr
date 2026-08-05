@@ -244,6 +244,42 @@ async def run_e2e():
         print(f"📄 Case 1: Page Title -> {title}")
         assert "水下多智能体" in title, f"Unexpected title: {title}"
 
+        # Case 1.5: Welcome Message & Language Switching Check
+        print("🌐 Case 1.5: Validating Welcome Message & Language Switching...")
+        welcome_count = await client.eval_js("document.querySelectorAll('#messages .message[data-message-kind=\"welcome\"]').length")
+        assert welcome_count == 1, f"Expected exactly 1 welcome message, found {welcome_count}"
+        welcome_text_zh = await client.eval_js("document.querySelector('#messages .message[data-message-kind=\"welcome\"]').innerText")
+        assert "【任务收集】" in welcome_text_zh, "Missing Chinese Task Collection title in welcome message!"
+        assert "【知识问答】" in welcome_text_zh, "Missing Chinese Knowledge Q&A title in welcome message!"
+        assert "【紧急模式】" in welcome_text_zh, "Missing Chinese Emergency Mode title in welcome message!"
+        assert "不会写入或修改任务信息" in welcome_text_zh, "Missing Knowledge Q&A data isolation note in Chinese!"
+
+        # Switch to English
+        req_count_before = len([u for u in client.request_urls if "/api/translate" in u])
+        await client.eval_js("""(() => {
+            const select = document.querySelector('#langSelect');
+            select.value = 'en';
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        })()""")
+        await asyncio.sleep(0.5)
+
+        welcome_text_en = await client.eval_js("document.querySelector('#messages .message[data-message-kind=\"welcome\"]').innerText")
+        assert "[Task Collection]" in welcome_text_en, "Missing English Task Collection title!"
+        assert "[Knowledge Q&A]" in welcome_text_en, "Missing English Knowledge Q&A title!"
+        assert "[Emergency Mode]" in welcome_text_en, "Missing English Emergency Mode title!"
+        assert "without creating or modifying task data" in welcome_text_en, "Missing English Knowledge Q&A data isolation note!"
+
+        req_count_after = len([u for u in client.request_urls if "/api/translate" in u])
+        assert req_count_after == req_count_before, "Language switch for welcome message must NOT call /api/translate!"
+
+        # Switch back to Chinese
+        await client.eval_js("""(() => {
+            const select = document.querySelector('#langSelect');
+            select.value = 'zh';
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        })()""")
+        await asyncio.sleep(0.5)
+
         # Case 2: Send "你好", confirm general chat response & empty slots
         print("💬 Case 2: Sending GENERAL_CHAT '你好'...")
         cnt_before = await client.eval_js("document.querySelectorAll('#messages .message').length")
