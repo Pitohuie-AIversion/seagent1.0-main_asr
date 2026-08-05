@@ -96,6 +96,15 @@ def seed_complete_valid_pipeline_task(dm, kb):
     for key, (val, vtype) in slots_to_seed.items():
         store.slots[key] = Slot(slot_name=key, value=val, value_type=vtype, status="valid", source="user_input")
 
+    if str(kb.state_info.state_file).endswith("config/state.yaml"):
+        temp_state_file = Path(tempfile.gettempdir()) / f"state_seeded_{os.getpid()}_{id(kb)}.yaml"
+        if not temp_state_file.exists() and Path(kb.state_info.state_file).exists():
+            import shutil
+            shutil.copy(kb.state_info.state_file, temp_state_file)
+        kb.state_info.state_file = temp_state_file
+
+    kb.state_info.set_status(equipment_unit_id, {"overall_status": "available"})
+
     dm._rebuild_cache()
     dm.phase = "confirming"
 

@@ -606,6 +606,16 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
                 for key, (val, vtype) in slots_to_seed.items():
                     dm.slot_store.slots[key] = Slot(slot_name=key, value=val, value_type=vtype, status="valid", source="user_input")
 
+                unit_id = selected_rov.get("unit_ids", ["WCROV-STD-001"])[0]
+                if str(kb.state_info.state_file).endswith("config/state.yaml"):
+                    temp_state_file = Path(tempfile.gettempdir()) / f"state_test_closeout_{os.getpid()}_{id(kb)}.yaml"
+                    if not temp_state_file.exists() and Path(kb.state_info.state_file).exists():
+                        import shutil
+                        shutil.copy(kb.state_info.state_file, temp_state_file)
+                    kb.state_info.state_file = temp_state_file
+
+                kb.state_info.set_status(unit_id, {"overall_status": "available"})
+
                 dm._rebuild_cache()
 
                 # Whitelist any soft constraint warnings
