@@ -96,6 +96,11 @@ def seed_complete_valid_pipeline_task(dm, kb):
     for key, (val, vtype) in slots_to_seed.items():
         store.slots[key] = Slot(slot_name=key, value=val, value_type=vtype, status="valid", source="user_input")
 
+    try:
+        kb.state_info.set_status(equipment_unit_id, {"overall_status": "available"})
+    except Exception:
+        pass
+
     dm._rebuild_cache()
     dm.phase = "confirming"
 

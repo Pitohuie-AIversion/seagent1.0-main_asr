@@ -153,7 +153,7 @@ class RobotStateInfo:
         *,
         max_age_seconds: int = ROBOT_STATE_MAX_AGE_SECONDS,
     ) -> Dict[str, Any]:
-        """检查机器人的实时可用性 (设备存在、在线、空闲且状态快照未过期)。"""
+        """检查机器人的实时可用性 (设备精确存在、在线、空闲且状态快照未过期)。"""
         now_dt = get_current_datetime()
         checked_at_str = now_dt.isoformat(timespec="seconds")
 
@@ -169,33 +169,30 @@ class RobotStateInfo:
 
         clean_unit_id = unit_id.strip()
 
-        # 1. 检查 unit_id 是否存在于后端 Registry (robot_fleet.yaml)
-        unit_exists_in_fleet = False
+        # 1. 严格检查 clean_unit_id 是否精确存在于后端 Registry (robot_fleet.yaml) 的 fleet_units[*].unit_id
+        matched_unit = None
         try:
             fleet = self._load_fleet()
             units = fleet.get("fleet_units", [])
             if isinstance(units, list):
                 for u in units:
                     if isinstance(u, dict) and u.get("unit_id") == clean_unit_id:
-                        unit_exists_in_fleet = True
+                        matched_unit = u
                         break
-        except Exception:
-            unit_exists_in_fleet = False
+        except (OSError, StateSnapshotValidationError, yaml.YAMLError):
+            matched_unit = None
 
-        if not unit_exists_in_fleet:
-            status_ref_candidate = self.resolve_status_ref(clean_unit_id)
-            if status_ref_candidate is None:
-                return {
-                    "available": False,
-                    "reason_code": "UNIT_NOT_FOUND",
-                    "message": f"无法发布任务：机器人 {clean_unit_id} 未在系统中注册。",
-                    "unit_id": clean_unit_id,
-                    "checked_at": checked_at_str,
-                    "state_updated_at": None,
-                }
-            status_ref = status_ref_candidate
-        else:
-            status_ref = self.resolve_status_ref(clean_unit_id) or clean_unit_id
+        if matched_unit is None:
+            return {
+                "available": False,
+                "reason_code": "UNIT_NOT_FOUND",
+                "message": f"无法发布任务：机器人 {clean_unit_id} 未在系统中注册。",
+                "unit_id": clean_unit_id,
+                "checked_at": checked_at_str,
+                "state_updated_at": None,
+            }
+
+        status_ref = str(matched_unit.get("status_ref") or matched_unit.get("unit_id") or clean_unit_id)
 
         # 2. 检查对应机器人状态记录是否存在
         with self._snapshot_lock(exclusive=False):
@@ -215,27 +212,24 @@ class RobotStateInfo:
 
         state_updated_at_str = state.get("updated_at") or state.get("update_timestamp")
 
-        # 3. 检查机器人在线状态
-        is_online = True
-        if "is_online" in state:
-            is_online = bool(state["is_online"])
-        elif "online" in state:
-            val = state["online"]
-            if isinstance(val, bool):
-                is_online = val
-            elif isinstance(val, str):
-                is_online = val.strip().lower() not in ("false", "offline", "disconnected", "0")
-        elif "online_status" in state:
-            is_online = str(state["online_status"]).strip().lower() not in ("offline", "disconnected", "false")
-        elif "connection_status" in state:
-            is_online = str(state["connection_status"]).strip().lower() not in ("offline", "disconnected", "false")
+        # 3 & 4. 严格检查状态指标 (Fail Closed)
+        raw_status = state.get("overall_status")
+        if raw_status is None:
+            raw_status = state.get("status") or state.get("work_status") or state.get("task_status")
 
-        overall_st = str(state.get("overall_status") or "").strip().lower()
-        st = str(state.get("status") or "").strip().lower()
-        if overall_st in ("offline", "disconnected") or st in ("offline", "disconnected"):
-            is_online = False
+        if raw_status is None:
+            return {
+                "available": False,
+                "reason_code": "INVALID_STATE_DATA",
+                "message": f"无法发布任务：机器人 {clean_unit_id} 缺少状态指标 (overall_status)。\n请刷新设备状态后重新确认发布。",
+                "unit_id": clean_unit_id,
+                "checked_at": checked_at_str,
+                "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
+            }
 
-        if not is_online:
+        status_val = str(raw_status).strip().lower()
+
+        if status_val in ("offline", "disconnected"):
             return {
                 "available": False,
                 "reason_code": "OFFLINE",
@@ -245,27 +239,7 @@ class RobotStateInfo:
                 "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
             }
 
-        # 4. 检查机器人空闲/可用状态
-        is_busy = False
-        if "is_busy" in state:
-            is_busy = bool(state["is_busy"])
-        elif "busy" in state:
-            val = state["busy"]
-            if isinstance(val, bool):
-                is_busy = val
-            elif isinstance(val, str):
-                is_busy = val.strip().lower() in ("true", "busy", "working", "operating", "1")
-
-        work_st = str(state.get("work_status") or "").strip().lower()
-        task_st = str(state.get("task_status") or "").strip().lower()
-
-        if (
-            is_busy
-            or overall_st in ("busy", "working", "operating", "executing", "unavailable", "maintenance", "fault")
-            or st in ("busy", "working", "operating", "executing", "unavailable", "maintenance", "fault")
-            or work_st in ("busy", "working", "operating", "executing")
-            or task_st in ("busy", "working", "operating", "executing")
-        ):
+        if status_val in ("busy", "working", "operating", "executing", "unavailable", "maintenance", "fault"):
             return {
                 "available": False,
                 "reason_code": "BUSY",
@@ -275,7 +249,37 @@ class RobotStateInfo:
                 "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
             }
 
-        # 5. 检查状态快照时间未过期
+        if status_val not in ("available", "idle", "ready"):
+            return {
+                "available": False,
+                "reason_code": "INVALID_STATE_DATA",
+                "message": f"无法发布任务：机器人 {clean_unit_id} 状态值 '{raw_status}' 无法识别。\n请刷新设备状态后重新确认发布。",
+                "unit_id": clean_unit_id,
+                "checked_at": checked_at_str,
+                "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
+            }
+
+        if "is_online" in state and not bool(state["is_online"]):
+            return {
+                "available": False,
+                "reason_code": "OFFLINE",
+                "message": f"无法发布任务：机器人 {clean_unit_id} 当前离线。\n请更换机器人，或在设备恢复在线后重新确认发布。",
+                "unit_id": clean_unit_id,
+                "checked_at": checked_at_str,
+                "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
+            }
+
+        if "is_busy" in state and bool(state["is_busy"]):
+            return {
+                "available": False,
+                "reason_code": "BUSY",
+                "message": f"无法发布任务：机器人 {clean_unit_id} 当前正在执行其他任务（处于忙碌状态）。\n请更换机器人，或在设备空闲后重新确认发布。",
+                "unit_id": clean_unit_id,
+                "checked_at": checked_at_str,
+                "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
+            }
+
+        # 5. 所有状态记录均强制校验 300 秒 TTL
         if not state_updated_at_str:
             return {
                 "available": False,
@@ -286,35 +290,32 @@ class RobotStateInfo:
                 "state_updated_at": None,
             }
 
-        # 仅对已进行过遥测更新的状态 (version > 0) 校验 300 秒 TTL，初始静态基线 (version == 0) 视为默认有效
-        state_version = state.get("version", 0)
-        if state_version > 0:
-            try:
-                updated_dt = datetime.fromisoformat(str(state_updated_at_str))
-                if updated_dt.tzinfo is None:
-                    updated_dt = updated_dt.replace(tzinfo=now_dt.tzinfo)
-                else:
-                    updated_dt = updated_dt.astimezone(now_dt.tzinfo)
+        try:
+            updated_dt = datetime.fromisoformat(str(state_updated_at_str))
+            if updated_dt.tzinfo is None:
+                updated_dt = updated_dt.replace(tzinfo=now_dt.tzinfo)
+            else:
+                updated_dt = updated_dt.astimezone(now_dt.tzinfo)
 
-                age_seconds = (now_dt - updated_dt).total_seconds()
-                if age_seconds > max_age_seconds:
-                    return {
-                        "available": False,
-                        "reason_code": "STATE_EXPIRED",
-                        "message": f"无法发布任务：机器人 {clean_unit_id} 状态信息已过期，无法确认当前可用性。\n请刷新设备状态后重新确认发布。",
-                        "unit_id": clean_unit_id,
-                        "checked_at": checked_at_str,
-                        "state_updated_at": str(state_updated_at_str),
-                    }
-            except Exception:
+            age_seconds = (now_dt - updated_dt).total_seconds()
+            if age_seconds > max_age_seconds:
                 return {
                     "available": False,
-                    "reason_code": "INVALID_STATE_DATA",
-                    "message": f"无法发布任务：机器人 {clean_unit_id} 状态格式无法解析。\n请刷新设备状态后重新确认发布。",
+                    "reason_code": "STATE_EXPIRED",
+                    "message": f"无法发布任务：机器人 {clean_unit_id} 状态信息已过期，无法确认当前可用性。\n请刷新设备状态后重新确认发布。",
                     "unit_id": clean_unit_id,
                     "checked_at": checked_at_str,
                     "state_updated_at": str(state_updated_at_str),
                 }
+        except Exception:
+            return {
+                "available": False,
+                "reason_code": "INVALID_STATE_DATA",
+                "message": f"无法发布任务：机器人 {clean_unit_id} 状态格式无法解析。\n请刷新设备状态后重新确认发布。",
+                "unit_id": clean_unit_id,
+                "checked_at": checked_at_str,
+                "state_updated_at": str(state_updated_at_str),
+            }
 
         return {
             "available": True,

@@ -277,6 +277,90 @@ class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
         final_file = task_dir / f"task_intent_{intent_id}.json"
         self.assertFalse(final_file.exists(), "Final file should not be created")
 
+    def test_7_version_0_expired_state_blocks_publish(self):
+        """Test 7: version=0 且时间戳过期 → 阻止发布 (STATE_EXPIRED)。"""
+        intent_id = self._setup_confirming_task(self.unit_id)
+        now_dt = get_current_datetime()
+        ts_expired = (now_dt - timedelta(seconds=400)).isoformat(timespec="microseconds")
+
+        self._set_raw_state(
+            self.unit_id,
+            {
+                "overall_status": "available",
+                "updated_at": ts_expired,
+                "update_timestamp": ts_expired,
+                "version": 0,
+            },
+        )
+
+        reply = self.dm.process("确认发布")
+
+        self.assertNotEqual(self.dm.phase, "done")
+        self.assertIn("状态信息已过期", reply)
+        task_dir = get_task_dir("final")
+        final_file = task_dir / f"task_intent_{intent_id}.json"
+        self.assertFalse(final_file.exists(), "Final file should not be created for version=0 expired state")
+
+    def test_8_missing_overall_status_blocks_publish(self):
+        """Test 8: 缺少 overall_status 字段 → 阻止发布 (INVALID_STATE_DATA)。"""
+        intent_id = self._setup_confirming_task(self.unit_id)
+        now_dt = get_current_datetime()
+        ts_fresh = now_dt.isoformat(timespec="microseconds")
+
+        self._set_raw_state(
+            self.unit_id,
+            {
+                "updated_at": ts_fresh,
+                "update_timestamp": ts_fresh,
+                "version": 1,
+            },
+        )
+
+        reply = self.dm.process("确认发布")
+
+        self.assertNotEqual(self.dm.phase, "done")
+        self.assertTrue("缺少状态指标" in reply or "无法确认" in reply or "无法识别" in reply)
+        task_dir = get_task_dir("final")
+        final_file = task_dir / f"task_intent_{intent_id}.json"
+        self.assertFalse(final_file.exists(), "Final file should not be created for missing status field")
+
+    def test_9_unknown_overall_status_value_blocks_publish(self):
+        """Test 9: overall_status=unknown → 阻止发布 (INVALID_STATE_DATA)。"""
+        intent_id = self._setup_confirming_task(self.unit_id)
+        now_dt = get_current_datetime()
+        ts_fresh = now_dt.isoformat(timespec="microseconds")
+
+        self._set_raw_state(
+            self.unit_id,
+            {
+                "overall_status": "unknown",
+                "updated_at": ts_fresh,
+                "update_timestamp": ts_fresh,
+                "version": 1,
+            },
+        )
+
+        reply = self.dm.process("确认发布")
+
+        self.assertNotEqual(self.dm.phase, "done")
+        self.assertTrue("无法识别" in reply or "无法确认" in reply)
+        task_dir = get_task_dir("final")
+        final_file = task_dir / f"task_intent_{intent_id}.json"
+        self.assertFalse(final_file.exists(), "Final file should not be created for unknown status value")
+
+    def test_10_non_exact_unit_id_blocks_publish(self):
+        """Test 10: family/variant/alias 不是精确 unit_id → 阻止发布 (UNIT_NOT_FOUND)。"""
+        variant_name = "light_work_class_rov_hp"
+        intent_id = self._setup_confirming_task(variant_name)
+
+        reply = self.dm.process("确认发布")
+
+        self.assertNotEqual(self.dm.phase, "done")
+        self.assertIn("未在系统中注册", reply)
+        task_dir = get_task_dir("final")
+        final_file = task_dir / f"task_intent_{intent_id}.json"
+        self.assertFalse(final_file.exists(), "Final file should not be created for non-exact unit_id")
+
 
 if __name__ == "__main__":
     unittest.main()
