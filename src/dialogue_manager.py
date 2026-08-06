@@ -802,6 +802,9 @@ class DialogueManager:
 
         merged_updates = {}
         merged_updates_meta = {}
+        payload_mutation_failed = False
+        mutation_failure_result = None
+        list_mutations = []
 
         extraction_res = {}
         proposed_pending_rov = list(self._pending_rov_candidates)
@@ -900,6 +903,39 @@ class DialogueManager:
                 merged_updates[k] = v
                 merged_updates_meta[k] = cand_info
 
+            # 处理 payload list_mutations
+            list_mutations = extraction_res.get("list_mutations", [])
+            payload_mutation_failed = False
+            mutation_failure_result = None
+
+            if list_mutations:
+                for mutation in list_mutations:
+                    m_field = mutation.get("field")
+                    if m_field == "payload":
+                        stage2_updates.pop("payload", None)
+                        merged_updates.pop("payload", None)
+                        merged_updates_meta.pop("payload", None)
+
+                        mut_res = self.slot_store.apply_list_mutation(
+                            new_slots,
+                            mutation,
+                            required_schema=required,
+                            payload_catalog=self.kb.assets.get("payload_catalog"),
+                        )
+                        if mut_res.get("success"):
+                            new_payload_val = mut_res.get("new_value")
+                            merged_updates["payload"] = new_payload_val
+                            merged_updates_meta["payload"] = {
+                                "value": new_payload_val,
+                                "raw_value": mutation.get("raw_text"),
+                                "confidence": mutation.get("confidence", 0.95),
+                                "source": mutation.get("source", "user_input"),
+                            }
+                        else:
+                            payload_mutation_failed = True
+                            mutation_failure_result = mut_res
+                            break
+
             raw_stage2 = self._merge_coordinate_updates(user_message, {k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, required)
             for k, v in raw_stage2.items():
                 if k not in stage2_updates:
@@ -918,7 +954,8 @@ class DialogueManager:
                 merged_updates[k] = v
 
             _has_conflict = any(s.status == "conflict" for s in new_slots.values())
-            if not stage2_updates and not _has_conflict and not turn_unresolved:
+            has_successful_mutation = any(m.get("field") == "payload" for m in list_mutations)
+            if not stage2_updates and not _has_conflict and not turn_unresolved and not has_successful_mutation:
                 if new_unresolved:
                     self.slot_store.commit_transaction(
                         new_slots,
@@ -1196,6 +1233,13 @@ class DialogueManager:
         reply = self.llm.filter_reply(reply)
         reply = self.llm.filter_reply(reply)
         reply = self._ensure_constraint_details(reply, constraint_context)
+
+        if payload_mutation_failed and mutation_failure_result:
+            err_msg = mutation_failure_result.get("error") or "载荷修改操作失败。"
+            if accepted_updates:
+                reply = f"{reply}\n注意：载荷操作失败：{err_msg}"
+            else:
+                reply = f"操作失败：{err_msg}"
 
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": reply})
@@ -2358,7 +2402,9 @@ class DialogueManager:
                 continue
 
             target_val = slot.candidate_value if slot.candidate_value is not None else slot.value
-            if target_val is None:
+            if target_val is None or (isinstance(target_val, list) and len(target_val) == 0):
+                if isinstance(target_val, list) and len(target_val) == 0 and slot.status != "conflict":
+                    slot.status = "missing"
                 continue
 
             temp_state = {k: (s.candidate_value if s.candidate_value is not None else s.value) for k, s in new_slots.items() if s.status not in ("invalid", "missing") and (s.value is not None or s.candidate_value is not None)}
@@ -2375,7 +2421,8 @@ class DialogueManager:
                     slot.value = normalized
                     slot.candidate_value = None
                     slot.status = "valid"
-                    slot.validation_error = None
+                    if key != "payload" or slot.validation_error is None:
+                        slot.validation_error = None
                 else:
                     slot.status = "invalid"
                     slot.candidate_value = raw

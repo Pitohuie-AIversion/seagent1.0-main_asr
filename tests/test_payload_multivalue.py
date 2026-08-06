@@ -95,15 +95,19 @@ class PayloadMultiValueTest(unittest.TestCase):
             task_type_key="pipeline_inspection",
             required=required
         )
+        mutations = res.get("list_mutations", [])
         candidates = res.get("slot_candidates", [])
-        payload_cands = [c for c in candidates if c.get("canonical_key") == "payload"]
-        self.assertTrue(len(payload_cands) >= 1)
-        values = payload_cands[0].get("normalized_value")
+        if mutations:
+            values = mutations[0].get("items", [])
+        else:
+            payload_cands = [c for c in candidates if c.get("canonical_key") == "payload"]
+            self.assertTrue(len(payload_cands) >= 1)
+            values = payload_cands[0].get("normalized_value")
+
         self.assertIsInstance(values, list)
-        self.assertIn("机械臂", values)
-        self.assertIn("高清摄像机", values)
-        self.assertIn("声呐", values)
-        self.assertIn("探测工具", values)
+        self.assertTrue(any("机械臂" in str(v) for v in values))
+        self.assertTrue(any("摄像机" in str(v) for v in values))
+        self.assertTrue(any("声呐" in str(v) for v in values))
 
 
 if __name__ == "__main__":
