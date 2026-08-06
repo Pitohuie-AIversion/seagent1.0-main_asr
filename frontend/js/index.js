@@ -733,57 +733,190 @@ Please describe your task request or ask a question directly.`,
       const collectedDiv = document.getElementById('collectedFields');
       const missingDiv = document.getElementById('missingFields');
 
+      function formatUiStateValue(slot, customVal = undefined) {
+        if (slot.display_value !== undefined && slot.display_value !== null && customVal === undefined) {
+          return String(slot.display_value);
+        }
+        const val = customVal !== undefined ? customVal : slot.value;
+        if (val === null || val === undefined) {
+          return currentLang === 'zh' ? '暂无' : 'None';
+        }
+        if (typeof val === 'boolean') {
+          return val ? (currentLang === 'zh' ? '是' : 'True') : (currentLang === 'zh' ? '否' : 'False');
+        }
+        if (typeof val === 'number' || typeof val === 'string') {
+          return String(val);
+        }
+        if (Array.isArray(val)) {
+          return val.map(v => (v !== null && typeof v === 'object') ? JSON.stringify(v) : String(v)).join(' / ');
+        }
+        if (typeof val === 'object') {
+          if (val.lat !== undefined && val.lon !== undefined) {
+            return `lat: ${val.lat}, lon: ${val.lon}`;
+          }
+          try {
+            return JSON.stringify(val);
+          } catch (e) {
+            return String(val);
+          }
+        }
+        return String(val);
+      }
+
+      function getSlotLabel(slot) {
+        const labelObj = slot.label || {};
+        return (typeof labelObj === 'string') ? labelObj : (labelObj[currentLang] || labelObj.zh || slot.key);
+      }
+
+      function renderStandardSlot(slot) {
+        const statusClass = slot.status === 'valid' ? 'valid' : (slot.status === 'invalid' ? 'invalid' : 'candidate');
+        const statusIcon = slot.status === 'valid' ? '✅' : (slot.status === 'invalid' ? '❌' : '⏳');
+        const label = getSlotLabel(slot);
+
+        const row = document.createElement('div');
+        row.className = `field-row ${statusClass}`;
+
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'field-label';
+        labelSpan.textContent = `${statusIcon} ${label}`;
+        row.appendChild(labelSpan);
+
+        const valueSpan = document.createElement('span');
+        valueSpan.className = 'field-value';
+
+        const displayVal = (slot.status === 'candidate' || slot.status === 'pending')
+          ? (slot.candidate_value !== null && slot.candidate_value !== undefined ? slot.candidate_value : slot.value)
+          : (slot.status === 'invalid' ? (slot.raw_value ?? slot.candidate_value ?? slot.value) : slot.value);
+
+        if (Array.isArray(displayVal)) {
+          const ul = document.createElement('ul');
+          for (const item of displayVal) {
+            const li = document.createElement('li');
+            li.textContent = formatUiStateValue(slot, item);
+            ul.appendChild(li);
+          }
+          valueSpan.appendChild(ul);
+        } else {
+          valueSpan.textContent = formatUiStateValue(slot, displayVal);
+        }
+        row.appendChild(valueSpan);
+
+        if (slot.validation_error) {
+          const errEl = document.createElement('div');
+          errEl.className = 'field-error';
+          errEl.style.cssText = 'color: var(--error-color, #ff4d4d); font-size: 0.8em; margin-top: 2px;';
+          errEl.textContent = slot.validation_error;
+          row.appendChild(errEl);
+        }
+        return row;
+      }
+
+      function renderConflictSlot(slot) {
+        const label = getSlotLabel(slot);
+        const row = document.createElement('div');
+        row.className = 'field-row conflict';
+
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'field-label';
+        labelSpan.textContent = `⚔️ ${label}`;
+        row.appendChild(labelSpan);
+
+        const detailDiv = document.createElement('div');
+        detailDiv.className = 'field-conflict-detail';
+        detailDiv.style.cssText = 'font-size: 0.85em; margin-top: 4px;';
+
+        const currValP = document.createElement('div');
+        currValP.style.cssText = 'color: var(--text-color, #e0e0e0);';
+        currValP.textContent = `${currentLang === 'zh' ? '当前有效值: ' : 'Current Value: '}${formatUiStateValue(slot, slot.value)}`;
+        detailDiv.appendChild(currValP);
+
+        const candValP = document.createElement('div');
+        candValP.style.cssText = 'color: var(--warning-color, #ffaa00); font-weight: 500;';
+        candValP.textContent = `${currentLang === 'zh' ? '冲突候选值: ' : 'Conflict Candidate: '}${formatUiStateValue(slot, slot.candidate_value)}`;
+        detailDiv.appendChild(candValP);
+
+        if (slot.validation_error) {
+          const errEl = document.createElement('div');
+          errEl.className = 'field-error';
+          errEl.style.cssText = 'color: var(--error-color, #ff4d4d); margin-top: 2px;';
+          errEl.textContent = slot.validation_error;
+          detailDiv.appendChild(errEl);
+        }
+
+        row.appendChild(detailDiv);
+        return row;
+      }
+
+      function renderUnresolvedSlot(slot) {
+        const label = getSlotLabel(slot);
+        const row = document.createElement('div');
+        row.className = 'field-row unresolved';
+
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'field-label';
+        labelSpan.textContent = `❓ ${label}`;
+        row.appendChild(labelSpan);
+
+        const detailDiv = document.createElement('div');
+        detailDiv.className = 'field-unresolved-detail';
+        detailDiv.style.cssText = 'font-size: 0.85em; margin-top: 4px;';
+
+        const rawP = document.createElement('div');
+        rawP.textContent = `${currentLang === 'zh' ? '原始输入: ' : 'Raw Input: '}${slot.raw_value ?? (currentLang === 'zh' ? '暂无' : 'None')}`;
+        detailDiv.appendChild(rawP);
+
+        if (slot.candidate_value !== null && slot.candidate_value !== undefined) {
+          const candP = document.createElement('div');
+          candP.textContent = `${currentLang === 'zh' ? '候选解析: ' : 'Candidate: '}${formatUiStateValue(slot, slot.candidate_value)}`;
+          detailDiv.appendChild(candP);
+        }
+
+        if (slot.allowed_values && slot.allowed_values.length > 0) {
+          const allowedP = document.createElement('div');
+          allowedP.style.cssText = 'opacity: 0.8;';
+          const allowedStr = Array.isArray(slot.allowed_values) ? slot.allowed_values.join(', ') : String(slot.allowed_values);
+          allowedP.textContent = `${currentLang === 'zh' ? '可选范围: ' : 'Allowed: '}${allowedStr}`;
+          detailDiv.appendChild(allowedP);
+        }
+
+        const hintP = document.createElement('div');
+        hintP.style.cssText = 'color: var(--warning-color, #ffaa00); margin-top: 2px;';
+        hintP.textContent = currentLang === 'zh' ? '⚠️ 存在歧义，请做出明确选择' : '⚠️ Ambiguity detected, please specify choice';
+        detailDiv.appendChild(hintP);
+
+        row.appendChild(detailDiv);
+        return row;
+      }
+
       if (uiState) {
-        // ── 新路径：按 ui_state.slots 渲染字段面板 ───────────────────────
+        // ── 新路径：按 6 个互斥集合渲染字段面板 ───────────────────────
         const slots = Array.isArray(uiState.slots) ? uiState.slots : [];
         const validSlots = slots.filter(s => s.status === 'valid');
-        const candSlots = slots.filter(s => ['candidate', 'pending', 'conflict', 'unresolved'].includes(s.status));
+        const candidateSlots = slots.filter(s => s.status === 'candidate' || s.status === 'pending');
         const invalidSlots = slots.filter(s => s.status === 'invalid');
+        const conflictSlots = slots.filter(s => s.status === 'conflict');
+        const unresolvedSlots = slots.filter(s => s.status === 'unresolved');
         const missingSlots = slots.filter(s => s.status === 'missing');
 
-        if (validSlots.length === 0 && candSlots.length === 0 && invalidSlots.length === 0 && conflictSlots.length === 0 && unresolvedSlots.length === 0) {
+        collectedDiv.innerHTML = '';
+        if (validSlots.length === 0 && candidateSlots.length === 0 && invalidSlots.length === 0 && conflictSlots.length === 0 && unresolvedSlots.length === 0) {
           collectedDiv.innerHTML = I18N[currentLang].none;
         } else {
-          let html = '';
-          for (const slot of [...validSlots, ...candSlots, ...invalidSlots, ...conflictSlots, ...unresolvedSlots]) {
-            const labelObj = slot.label || {};
-            const label = (typeof labelObj === 'string') ? labelObj : (labelObj[currentLang] || labelObj.zh || slot.key);
-            const statusClass = slot.status === 'valid' ? 'valid' : (slot.status === 'invalid' ? 'invalid' : (slot.status === 'conflict' ? 'conflict' : (slot.status === 'unresolved' ? 'unresolved' : 'candidate')));
-            const statusIcon = slot.status === 'valid' ? '✅' : (slot.status === 'invalid' ? '❌' : (slot.status === 'conflict' ? '⚔️' : (slot.status === 'unresolved' ? '❓' : '⏳')));
-
-            const isCandidate = ['candidate', 'pending', 'conflict', 'unresolved'].includes(slot.status);
-            const slotValue = isCandidate ? ((slot.candidate_value !== null && slot.candidate_value !== undefined) ? slot.candidate_value : slot.value) : slot.value;
-            const row = document.createElement('div');
-            row.className = `field-row ${statusClass}`;
-            const labelSpan = document.createElement('span');
-            labelSpan.className = 'field-label';
-            labelSpan.textContent = `${statusIcon} ${label}`;
-            const valueSpan = document.createElement('span');
-            valueSpan.className = 'field-value';
-            if (Array.isArray(slotValue)) {
-              const valueList = document.createElement('ul');
-              for (const value of slotValue) {
-                const valueItem = document.createElement('li');
-                valueItem.textContent = translateValue(slot.key, value);
-                valueList.appendChild(valueItem);
-              }
-              valueSpan.appendChild(valueList);
-            } else {
-              valueSpan.textContent = slotValue !== null && slotValue !== undefined ? translateValue(slot.key, slotValue) : (currentLang === 'zh' ? '暂无' : 'None');
-            }
-            row.appendChild(labelSpan);
-            row.appendChild(valueSpan);
-
-            if (slot.validation_error) {
-              const errEl = document.createElement('div');
-              errEl.className = 'field-error';
-              errEl.style.cssText = 'color: var(--error-color, #ff4d4d); font-size: 0.8em; margin-top: 2px;';
-              errEl.textContent = slot.validation_error;
-              row.appendChild(errEl);
-            }
-            html += row.outerHTML;
+          for (const slot of validSlots) {
+            collectedDiv.appendChild(renderStandardSlot(slot));
           }
-          collectedDiv.innerHTML = html;
+          for (const slot of candidateSlots) {
+            collectedDiv.appendChild(renderStandardSlot(slot));
+          }
+          for (const slot of invalidSlots) {
+            collectedDiv.appendChild(renderStandardSlot(slot));
+          }
+          for (const slot of conflictSlots) {
+            collectedDiv.appendChild(renderConflictSlot(slot));
+          }
+          for (const slot of unresolvedSlots) {
+            collectedDiv.appendChild(renderUnresolvedSlot(slot));
+          }
         }
 
         // 阶段 badge + 约束状态 + 缺失字段
@@ -1263,6 +1396,7 @@ Please describe your task request or ask a question directly.`,
       isSending = true;
       applyInteractionState(currentActions, currentReadOnly);
       const mySeq = ++currentRequestSeq;
+      const myGen = sessionGeneration;
       currentAbortController = new AbortController();
       addMessage('user', msg);
       messageInput.value = '';
@@ -1276,7 +1410,7 @@ Please describe your task request or ask a question directly.`,
           signal: currentAbortController.signal,
         });
 
-        if (mySeq !== currentRequestSeq) return;
+        if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
 
         let rawText = '';
         try {
@@ -1286,7 +1420,7 @@ Please describe your task request or ask a question directly.`,
           return;
         }
 
-        if (mySeq !== currentRequestSeq) return;
+        if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
 
         try {
           data = JSON.parse(rawText);
@@ -1327,11 +1461,13 @@ Please describe your task request or ask a question directly.`,
         if (err.name === 'AbortError') return;
         addMessage('bot', I18N[currentLang].networkError);
       } finally {
-        if (mySeq === currentRequestSeq) {
+        if (mySeq === currentRequestSeq && myGen === sessionGeneration) {
           isSending = false;
           currentAbortController = null;
           applyInteractionState(currentActions, currentReadOnly);
           messageInput.focus();
+        } else {
+          isSending = false;
         }
       }
     }

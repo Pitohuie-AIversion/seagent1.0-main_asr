@@ -608,7 +608,7 @@ class SlotConsistencyTest(unittest.TestCase):
         self.assertEqual(self.dm.slot_store.get_task_state(), initial_state)
         assert_ssot_consistency(self, self.dm)
 
-    # 11. UNKNOWN 不修改 SlotStore
+    # 11. UNKNOWN/CLARIFICATION 不修改 SlotStore (真实路由测试)
     def test_11_unknown_intent_leaves_slot_store_untouched(self):
         self.dm.reset()
         initial_ver = self.dm.slot_store.version
@@ -618,14 +618,11 @@ class SlotConsistencyTest(unittest.TestCase):
             "slot_candidates": [],
             "unresolved": []
         }
-        from src.intent_router import IntentRouteResult
-        with unittest.mock.patch.object(self.dm.intent_router, 'route', return_value=IntentRouteResult(
-            dialogue_mode="knowledge_qa", query_intent="UNKNOWN", confidence=1.0, interaction_type="query", reason="mock"
-        )):
-            reply = self.dm.process("???")
-            self.assertEqual(self.dm.slot_store.version, initial_ver)
-            self.assertIn("对不起", reply)
-            assert_ssot_consistency(self, self.dm)
+        reply = self.dm.process("???")
+        self.assertEqual(self.dm.slot_store.version, initial_ver)
+        self.assertEqual(self.dm.slot_store.get_task_state(), {})
+        self.assertTrue(len(reply) > 0)
+        assert_ssot_consistency(self, self.dm)
 
     # 12. Mock 模式“你好”能够正常对话
     def test_12_mock_mode_greetings(self):

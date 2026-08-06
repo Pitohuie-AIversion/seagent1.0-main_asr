@@ -194,19 +194,30 @@ class TestUIStateContract(unittest.TestCase):
             observed_value=500,
             threshold=300,
         )
+        soft_v = Violation(
+            constraint_id="C020",
+            constraint_name="天气预警",
+            message="风浪较大",
+            severity="soft",
+            related_fields=["weather"],
+        )
+        state_snap = {"status_ref": "ref_valid", "state_version": 1}
         val_result = ValidationResult(
             overall_status="blocked_hard",
-            violations=[hard_v],
             validated_at="2026-08-06T18:00:00Z",
             task_version=1,
             validation_version=3,
             validation_fingerprint="fp_abc123",
-            state_snapshot={},
+            state_snapshot=state_snap,
+            violations=[hard_v, soft_v],
         )
         ack = {
             "constraint_id": "C020",
-            "validation_fingerprint": "fp_abc123",
+            "task_version": 1,
             "validation_version": 3,
+            "validation_fingerprint": "fp_abc123",
+            "status_ref": "ref_valid",
+            "state_version": 1,
         }
         invalid_ack = {
             "constraint_id": "C021",
@@ -238,6 +249,158 @@ class TestUIStateContract(unittest.TestCase):
         self.assertIn("internal error", result["error_message"])
         self.assertTrue(result["read_only"])
         self.assertFalse(result["actions"]["can_send"])
+
+
+
+    # 九-1: conflict 状态保留 value 和 candidate_value
+    def test_conflict_slot_preserves_value_and_candidate_value(self):
+        slot_snap = {
+            "equipment_family": {
+                "value": "观察级深海机器人",
+                "candidate_value": "轻型工作级深海机器人",
+                "status": "conflict",
+                "version": 3,
+                "raw_value": "轻型工作级深海机器人",
+            }
+        }
+        mgr = make_mock_manager(schema_fields=_SIMPLE_SCHEMA, slot_snapshot=slot_snap)
+        slots = _build_slots(mgr, slot_snapshot=slot_snap)
+        conf_slot = next(s for s in slots if s["key"] == "equipment_family")
+        self.assertEqual(conf_slot["status"], "conflict")
+        self.assertEqual(conf_slot["value"], "观察级深海机器人")
+        self.assertEqual(conf_slot["candidate_value"], "轻型工作级深海机器人")
+
+    # 九-2: unresolved 状态保留 raw_value、candidate_value 和 allowed_values
+    def test_unresolved_slot_preserves_raw_candidate_and_allowed_values(self):
+        slot_snap = {
+            "equipment_family": {
+                "value": None,
+                "candidate_value": "ROV",
+                "raw_value": "机器人",
+                "status": "unresolved",
+                "version": 1,
+            }
+        }
+        mgr = make_mock_manager(schema_fields=_SIMPLE_SCHEMA, slot_snapshot=slot_snap)
+        slots = _build_slots(mgr, slot_snapshot=slot_snap)
+        unres_slot = next(s for s in slots if s["key"] == "equipment_family")
+        self.assertEqual(unres_slot["status"], "unresolved")
+        self.assertEqual(unres_slot["raw_value"], "机器人")
+        self.assertEqual(unres_slot["candidate_value"], "ROV")
+        self.assertEqual(unres_slot["allowed_values"], ["WROV", "AUV"])
+
+    # 九-3: stale acknowledgement 因 task_version 不匹配被过滤
+    def test_stale_ack_filtered_by_task_version(self):
+        val_result = ValidationResult(
+            overall_status="blocked_soft",
+            validated_at="2026-08-06T20:00:00Z",
+            task_version=2,
+            validation_version=1,
+            validation_fingerprint="fp_100",
+            state_snapshot={"status_ref": "ref1", "state_version": 1},
+            violations=[Violation("C01", "W", "Warning", "soft")],
+        )
+        stale_ack = {
+            "constraint_id": "C01",
+            "task_version": 1, # 不匹配 (当前为 2)
+            "validation_version": 1,
+            "validation_fingerprint": "fp_100",
+            "status_ref": "ref1",
+            "state_version": 1,
+        }
+        mgr = make_mock_manager(validation_result=val_result, validation_acknowledgements=[stale_ack])
+        cs = _build_constraint_state(mgr)
+        self.assertEqual(len(cs["ignored_soft_warnings"]), 0)
+        self.assertEqual(len(cs["legacy_acknowledgements"]), 1)
+
+    # 九-4: stale acknowledgement 因 fingerprint 不匹配被过滤
+    def test_stale_ack_filtered_by_fingerprint(self):
+        val_result = ValidationResult(
+            overall_status="blocked_soft",
+            validated_at="2026-08-06T20:00:00Z",
+            task_version=1,
+            validation_version=1,
+            validation_fingerprint="fp_current_999",
+            state_snapshot={"status_ref": "ref1", "state_version": 1},
+            violations=[Violation("C01", "W", "Warning", "soft")],
+        )
+        stale_ack = {
+            "constraint_id": "C01",
+            "task_version": 1,
+            "validation_version": 1,
+            "validation_fingerprint": "fp_old_000", # 不匹配
+            "status_ref": "ref1",
+            "state_version": 1,
+        }
+        mgr = make_mock_manager(validation_result=val_result, validation_acknowledgements=[stale_ack])
+        cs = _build_constraint_state(mgr)
+        self.assertEqual(len(cs["ignored_soft_warnings"]), 0)
+        self.assertEqual(len(cs["legacy_acknowledgements"]), 1)
+
+    # 九-5: stale acknowledgement 因 state_version 不匹配被过滤
+    def test_stale_ack_filtered_by_state_version(self):
+        val_result = ValidationResult(
+            overall_status="blocked_soft",
+            validated_at="2026-08-06T20:00:00Z",
+            task_version=1,
+            validation_version=1,
+            validation_fingerprint="fp_100",
+            state_snapshot={"status_ref": "ref1", "state_version": 5},
+            violations=[Violation("C01", "W", "Warning", "soft")],
+        )
+        stale_ack = {
+            "constraint_id": "C01",
+            "task_version": 1,
+            "validation_version": 1,
+            "validation_fingerprint": "fp_100",
+            "status_ref": "ref1",
+            "state_version": 2, # 不匹配 (当前为 5)
+        }
+        mgr = make_mock_manager(validation_result=val_result, validation_acknowledgements=[stale_ack])
+        cs = _build_constraint_state(mgr)
+        self.assertEqual(len(cs["ignored_soft_warnings"]), 0)
+        self.assertEqual(len(cs["legacy_acknowledgements"]), 1)
+
+    # 九-6: ValidationResult dict 形式可以正常序列化
+    def test_validation_result_dict_serialization(self):
+        val_dict = {
+            "overall_status": "blocked_soft",
+            "validated_at": "2026-08-06T20:00:00Z",
+            "task_version": 3,
+            "validation_version": 2,
+            "validation_fingerprint": "fp_dict_test",
+            "state_snapshot": {"status_ref": "ref_a", "state_version": 1},
+            "violations": [
+                {"constraint_id": "C05", "constraint_name": "超限预警", "message": "预警信息", "severity": "soft"}
+            ],
+            "error": None,
+        }
+        mgr = make_mock_manager(validation_result=val_dict)
+        cs = _build_constraint_state(mgr)
+        self.assertEqual(cs["source"], "validation_result")
+        self.assertEqual(cs["validation_fingerprint"], "fp_dict_test")
+        self.assertEqual(len(cs["soft_warnings"]), 1)
+
+    # 九-7: constraint_state 返回 task_version/state_snapshot/error 等完整契约字段
+    def test_constraint_state_returns_full_contract_fields(self):
+        val_result = ValidationResult(
+            overall_status="none",
+            validated_at="2026-08-06T20:00:00Z",
+            task_version=10,
+            validation_version=4,
+            validation_fingerprint="fp_full_contract",
+            state_snapshot={"status_ref": "ref_main", "state_version": 2},
+            violations=[],
+            error=None,
+        )
+        mgr = make_mock_manager(validation_result=val_result)
+        cs = _build_constraint_state(mgr)
+        self.assertIn("task_version", cs)
+        self.assertEqual(cs["task_version"], 10)
+        self.assertIn("state_snapshot", cs)
+        self.assertEqual(cs["state_snapshot"]["status_ref"], "ref_main")
+        self.assertIn("source", cs)
+        self.assertEqual(cs["source"], "validation_result")
 
 
 class TestFlaskAPIIntegration(unittest.TestCase):

@@ -251,15 +251,22 @@ def _serialize_violation(v: Any) -> dict[str, Any] | None:
 def _build_constraint_state(manager: "DialogueManager") -> dict:
     """
     构建约束状态。
-    P1-2 修复：优先使用 manager.slot_store.validation_result 权威结果与 acknowledgements 指纹对比。
+    P1-2 修复 & 五、六要求：优先使用 ValidationResult 权威结构，严禁 OR 匹配过宽识别 acknowledgement。
+    支持 ValidationResult 对象与 dict 结构。
     """
     hard_violations = []
     soft_warnings = []
     ignored_soft_warnings = []
+    legacy_acknowledgements = []
+    all_serialized_violations = []
     overall_status = "none"
     validated_at = None
+    task_version = 0
     validation_version = 0
     validation_fingerprint = None
+    state_snapshot = {}
+    error_msg = None
+    source = "none"
 
     # 1. 尝试使用 SlotStore 中的 ValidationResult
     val_result = None
@@ -270,45 +277,86 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
         pass
 
     if val_result is not None:
+        source = "validation_result"
         try:
-            overall_status = getattr(val_result, "overall_status", "none")
-            validated_at = getattr(val_result, "validated_at", None)
-            validation_version = getattr(val_result, "validation_version", 0)
-            validation_fingerprint = getattr(val_result, "validation_fingerprint", None)
+            if isinstance(val_result, dict):
+                overall_status = val_result.get("overall_status") or val_result.get("status", "none")
+                validated_at = val_result.get("validated_at")
+                task_version = val_result.get("task_version", 0)
+                validation_version = val_result.get("validation_version", 0)
+                validation_fingerprint = val_result.get("validation_fingerprint")
+                state_snapshot = val_result.get("state_snapshot") or {}
+                raw_violations = val_result.get("violations", []) or []
+                error_msg = val_result.get("error")
+            else:
+                overall_status = getattr(val_result, "overall_status", "none")
+                validated_at = getattr(val_result, "validated_at", None)
+                task_version = getattr(val_result, "task_version", 0)
+                validation_version = getattr(val_result, "validation_version", 0)
+                validation_fingerprint = getattr(val_result, "validation_fingerprint", None)
+                state_snapshot = getattr(val_result, "state_snapshot", {}) or {}
+                raw_violations = getattr(val_result, "violations", []) or []
+                error_msg = getattr(val_result, "error", None)
 
-            raw_violations = getattr(val_result, "violations", []) or []
             for v in raw_violations:
                 v_dict = _serialize_violation(v)
                 if v_dict is None:
                     continue
+                all_serialized_violations.append(v_dict)
                 if v_dict["severity"] == "hard":
                     hard_violations.append(v_dict)
                 else:
                     soft_warnings.append(v_dict)
 
-            # 校验确认记录：必须与当前 validation_fingerprint 或 validation_version 匹配
+            # 获取有效 acknowledgement:
+            # 优先调用 DialogueManager 独有的 _get_valid_acknowledgements 过滤逻辑
+            valid_ack_objs = []
+            if hasattr(manager, "_get_valid_acknowledgements") and callable(manager._get_valid_acknowledgements):
+                try:
+                    valid_ack_objs = manager._get_valid_acknowledgements(val_result)
+                except Exception:
+                    valid_ack_objs = []
+
+            status_ref = state_snapshot.get("status_ref", "") if isinstance(state_snapshot, dict) else ""
+            state_ver = state_snapshot.get("state_version", 0) if isinstance(state_snapshot, dict) else 0
+            violation_ids = {v["constraint_id"] for v in soft_warnings}
+
             raw_acks = getattr(manager.slot_store, "validation_acknowledgements", []) or []
             for ack in raw_acks:
-                ack_fp = None
-                ack_ver = None
-                if isinstance(ack, dict):
-                    ack_fp = ack.get("validation_fingerprint")
-                    ack_ver = ack.get("validation_version")
-                elif hasattr(ack, "validation_fingerprint"):
-                    ack_fp = getattr(ack, "validation_fingerprint", None)
-                    ack_ver = getattr(ack, "validation_version", None)
+                ack_dict = ack.to_dict() if hasattr(ack, "to_dict") else (ack if isinstance(ack, dict) else {})
+                ack_cid = ack_dict.get("constraint_id")
+                ack_tv = ack_dict.get("task_version")
+                ack_vv = ack_dict.get("validation_version")
+                ack_fp = ack_dict.get("validation_fingerprint")
+                ack_sr = ack_dict.get("status_ref")
+                ack_sv = ack_dict.get("state_version")
 
-                # 指纹或版本匹配时，认作有效忽略
-                if (validation_fingerprint and ack_fp == validation_fingerprint) or \
-                   (validation_version and ack_ver == validation_version) or \
-                   (not validation_fingerprint and not ack_fp):
-                    ignored_soft_warnings.append(ack if isinstance(ack, dict) else (ack.to_dict() if hasattr(ack, "to_dict") else dict(ack)))
+                # 严格全匹配（AND 规则），绝不使用 OR 避开校验
+                is_valid = (
+                    ack in valid_ack_objs or
+                    (
+                        ack_cid in violation_ids and
+                        ack_tv == task_version and
+                        ack_vv == validation_version and
+                        ack_fp == validation_fingerprint and
+                        ack_sr == status_ref and
+                        ack_sv == state_ver and
+                        validation_fingerprint is not None
+                    )
+                )
+
+                if is_valid:
+                    ignored_soft_warnings.append(ack_dict)
+                else:
+                    legacy_acknowledgements.append(ack_dict)
+
         except Exception as exc:
             logger.warning("解析 ValidationResult 失败，退回降级逻辑: %s", exc)
             val_result = None
 
     # 2. 降级逻辑（当 validation_result 不存在时）
     if val_result is None:
+        source = "fallback"
         violations = []
         try:
             violations = list(manager._blocking_violations or [])
@@ -319,6 +367,7 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
             v_dict = _serialize_violation(v)
             if v_dict is None:
                 continue
+            all_serialized_violations.append(v_dict)
             if v_dict["severity"] == "hard":
                 hard_violations.append(v_dict)
             else:
@@ -347,14 +396,20 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
             overall_status = "warning"
 
     return {
+        "source": source,
         "status": overall_status,
         "overall_status": overall_status,
         "validated_at": validated_at,
+        "task_version": task_version,
         "validation_version": validation_version,
         "validation_fingerprint": validation_fingerprint,
+        "state_snapshot": state_snapshot,
+        "violations": all_serialized_violations,
         "hard_violations": hard_violations,
         "soft_warnings": soft_warnings,
         "ignored_soft_warnings": ignored_soft_warnings,
+        "legacy_acknowledgements": legacy_acknowledgements,
+        "error": error_msg,
     }
 
 
