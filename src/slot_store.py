@@ -411,6 +411,195 @@ class SlotStore:
                 for key, slot in self.slots.items()
             }
 
+    def apply_list_mutation(
+        self,
+        new_slots: Dict[str, Slot],
+        mutation: Dict[str, Any],
+        required_schema: Optional[List[Dict[str, Any]]] = None,
+        payload_catalog: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """统一列表增量修改入口（add/remove/replace/clear）。"""
+        field_name = mutation.get("field", "payload")
+        op = mutation.get("operation")
+        raw_text = mutation.get("raw_text", "")
+        confidence = mutation.get("confidence", 0.95)
+        source = mutation.get("source", "user_input")
+
+        if payload_catalog is None:
+            if self.kb and hasattr(self.kb, "assets") and isinstance(self.kb.assets, dict):
+                payload_catalog = self.kb.assets.get("payload_catalog", {})
+            else:
+                try:
+                    from .extractor import _load_payload_catalog
+                    payload_catalog = _load_payload_catalog()
+                except Exception:
+                    payload_catalog = {}
+
+        allowed_values = []
+        if required_schema:
+            for f in required_schema:
+                if f.get("key") == field_name:
+                    allowed_values = f.get("allowed_values") or []
+                    break
+
+        def _resolve(item_str: str) -> Tuple[Optional[str], str]:
+            text = str(item_str or "").strip()
+            if not text:
+                return None, ""
+            for cat_id, info in payload_catalog.items():
+                name = info.get("name", "")
+                aliases = info.get("aliases") or []
+                for cand in [name, *aliases]:
+                    if cand and (cand == text or cand.lower().replace(" ", "") == text.lower().replace(" ", "")):
+                        return cat_id, name
+            for val in allowed_values:
+                if isinstance(val, str) and (val == text or val.lower().replace(" ", "") == text.lower().replace(" ", "")):
+                    return None, val
+            return None, text
+
+        def _contains(item_list: List[str], target: str) -> bool:
+            t_id, t_name = _resolve(target)
+            for item in item_list:
+                i_id, i_name = _resolve(item)
+                if t_id and i_id and t_id == i_id:
+                    return True
+                if t_name and i_name and t_name.lower().replace(" ", "") == i_name.lower().replace(" ", ""):
+                    return True
+            return False
+
+        def _find_index(item_list: List[str], target: str) -> int:
+            t_id, t_name = _resolve(target)
+            for idx, item in enumerate(item_list):
+                i_id, i_name = _resolve(item)
+                if t_id and i_id and t_id == i_id:
+                    return idx
+                if t_name and i_name and t_name.lower().replace(" ", "") == i_name.lower().replace(" ", ""):
+                    return idx
+            return -1
+
+        slot = new_slots.get(field_name)
+        if slot is None:
+            slot = Slot(slot_name=field_name, value_type="list", status="missing")
+            new_slots[field_name] = slot
+
+        old_val = slot.value
+        if isinstance(old_val, list):
+            old_value = copy.deepcopy(old_val)
+        elif isinstance(old_val, str) and old_val.strip():
+            old_value = [old_val.strip()]
+        else:
+            old_value = []
+
+        temp_list = copy.deepcopy(old_value)
+
+        if op == "add":
+            items = mutation.get("items") or []
+            for item_raw in items:
+                _, c_name = _resolve(item_raw)
+                item_to_add = c_name or item_raw
+                if item_to_add and not _contains(temp_list, item_to_add):
+                    temp_list.append(item_to_add)
+            new_value = temp_list
+
+        elif op == "remove":
+            targets = mutation.get("items") or mutation.get("target_items") or []
+            for target_raw in targets:
+                _, c_name = _resolve(target_raw)
+                target_to_remove = c_name or target_raw
+                idx = _find_index(temp_list, target_to_remove)
+                if idx < 0:
+                    err = f"待删除载荷 '{target_raw}' 不在当前列表中"
+                    slot.validation_error = err
+                    return {
+                        "success": False,
+                        "changed": False,
+                        "operation": "remove",
+                        "old_value": old_value,
+                        "new_value": old_value,
+                        "error": err,
+                    }
+                temp_list.pop(idx)
+            new_value = temp_list
+
+        elif op == "replace":
+            targets = mutation.get("target_items") or []
+            new_items_raw = mutation.get("items") or []
+
+            target_indices = []
+            for target_raw in targets:
+                _, c_name = _resolve(target_raw)
+                target_to_find = c_name or target_raw
+                idx = _find_index(temp_list, target_to_find)
+                if idx < 0:
+                    err = f"待替换的目标载荷 '{target_raw}' 不在当前列表中"
+                    slot.validation_error = err
+                    return {
+                        "success": False,
+                        "changed": False,
+                        "operation": "replace",
+                        "old_value": old_value,
+                        "new_value": old_value,
+                        "error": err,
+                    }
+                target_indices.append(idx)
+
+            new_canonicals = []
+            for n_raw in new_items_raw:
+                cat_id, n_cname = _resolve(n_raw)
+                is_valid = (cat_id is not None) or (allowed_values and (n_raw in allowed_values or n_cname in allowed_values))
+                if not is_valid:
+                    err = f"替换的新载荷 '{n_raw}' 非法或不支持"
+                    slot.validation_error = err
+                    return {
+                        "success": False,
+                        "changed": False,
+                        "operation": "replace",
+                        "old_value": old_value,
+                        "new_value": old_value,
+                        "error": err,
+                    }
+                new_canonicals.append(n_cname or n_raw)
+
+            for idx in sorted(set(target_indices), reverse=True):
+                temp_list.pop(idx)
+            for item_to_add in new_canonicals:
+                if item_to_add and not _contains(temp_list, item_to_add):
+                    temp_list.append(item_to_add)
+            new_value = temp_list
+
+        elif op == "clear":
+            new_value = []
+
+        else:
+            err = f"不支持的 list mutation 操作 '{op}'"
+            slot.validation_error = err
+            return {
+                "success": False,
+                "changed": False,
+                "operation": str(op),
+                "old_value": old_value,
+                "new_value": old_value,
+                "error": err,
+            }
+
+        slot.value = new_value
+        slot.value_type = "list"
+        slot.status = "candidate"
+        slot.source = source
+        slot.raw_value = raw_text
+        slot.confidence = confidence
+        slot.candidate_value = None
+        slot.validation_error = None
+
+        return {
+            "success": True,
+            "changed": (old_value != new_value),
+            "operation": op,
+            "old_value": old_value,
+            "new_value": new_value,
+            "error": None,
+        }
+
     def get_built_json(
         self,
         output_schema: Optional[List[Dict[str, Any]]] = None,

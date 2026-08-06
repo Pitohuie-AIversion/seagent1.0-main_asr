@@ -7,9 +7,21 @@ extractor.py — 参数提取器
 import json
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
+import yaml
 
 from .llm_client import LLMClient
 from .normalizer import FieldNormalizer
+
+_CONFIG_DIR = Path(__file__).parent.parent / "config"
+
+def _load_payload_catalog() -> dict:
+    try:
+        with open(_CONFIG_DIR / "assets.yaml", encoding="utf-8") as f:
+            assets = yaml.safe_load(f) or {}
+        return assets.get("payload_catalog", {})
+    except Exception:
+        return {}
 
 
 MAX_EXTRACTION_USER_HISTORY = 6
@@ -228,14 +240,235 @@ class ParameterExtractor:
             now,
         )
 
+        list_mutations, mutation_unresolved = self._detect_payload_mutation(
+            user_message,
+            current_state,
+            required or [],
+        )
+
+        if list_mutations:
+            normalized_candidates = [
+                cand for cand in normalized_candidates
+                if cand.get("canonical_key") != "payload"
+            ]
+
+        all_unresolved = [*unresolved, *resolver_unresolved, *mutation_unresolved]
+
         return {
             "slot_candidates": normalized_candidates,
             "unresolved": [
                 str(item).strip()
-                for item in [*unresolved, *resolver_unresolved]
+                for item in all_unresolved
                 if str(item).strip()
             ],
+            "list_mutations": list_mutations,
         }
+
+    @classmethod
+    def _detect_payload_mutation(
+        cls,
+        user_message: str,
+        current_state: dict,
+        required: list[dict],
+    ) -> tuple[list[dict], list[str]]:
+        """识别 payload 增量操作协议（add/remove/replace/clear/ambiguous）。"""
+        text = str(user_message or "").strip()
+        if not text:
+            return [], []
+
+        existing_payload_val = current_state.get("payload")
+        has_existing_payload = False
+        if isinstance(existing_payload_val, list) and len(existing_payload_val) > 0:
+            has_existing_payload = True
+        elif isinstance(existing_payload_val, str) and len(existing_payload_val.strip()) > 0:
+            has_existing_payload = True
+
+        allowed_values = []
+        for field in required:
+            if field.get("key") == "payload":
+                allowed_values = field.get("allowed_values") or []
+                break
+
+        clear_phrases = (
+            "所有载荷都不要了", "不要任何载荷", "不要载荷了", "清空载荷",
+            "清空所有载荷", "所有工具都不要了", "不要任何工具", "不要工具了",
+            "清空工具", "清空所有工具", "清空所有", "全部清空",
+            "清空载荷列表", "清空工具列表", "不需要载荷了", "不需要工具了",
+            "删除所有载荷", "删除所有工具"
+        )
+        if any(phrase in text for phrase in clear_phrases):
+            return [
+                {
+                    "field": "payload",
+                    "operation": "clear",
+                    "items": [],
+                    "target_items": [],
+                    "raw_text": text,
+                    "confidence": 0.95,
+                    "source": "user_input",
+                }
+            ], []
+
+        replace_a = re.search(
+            r"(?:把|将)\s*(?P<target>.+?)\s*(?:换成|替换成|替换为|改成)\s*(?P<new>.+)",
+            text,
+        )
+        if replace_a:
+            target_str = replace_a.group("target")
+            new_str = replace_a.group("new")
+            targets = cls._find_payload_items_in_text(target_str, allowed_values)
+            news = cls._find_payload_items_in_text(new_str, allowed_values)
+            if targets and news:
+                return [
+                    {
+                        "field": "payload",
+                        "operation": "replace",
+                        "items": news,
+                        "target_items": targets,
+                        "raw_text": text,
+                        "confidence": 0.95,
+                        "source": "user_input",
+                    }
+                ], []
+
+        replace_b = re.search(
+            r"用\s*(?P<new>.+?)\s*(?:替换掉|替换为|替换|换掉|替代)\s*(?P<target>.+)",
+            text,
+        )
+        if replace_b:
+            new_str = replace_b.group("new")
+            target_str = replace_b.group("target")
+            news = cls._find_payload_items_in_text(new_str, allowed_values)
+            targets = cls._find_payload_items_in_text(target_str, allowed_values)
+            if targets and news:
+                return [
+                    {
+                        "field": "payload",
+                        "operation": "replace",
+                        "items": news,
+                        "target_items": targets,
+                        "raw_text": text,
+                        "confidence": 0.95,
+                        "source": "user_input",
+                    }
+                ], []
+
+        remove_keywords = ("去掉", "移除", "删除", "取消", "不需要", "不要")
+        is_remove_context = any(kw in text for kw in remove_keywords)
+        if is_remove_context:
+            removed_items = cls._find_payload_items_in_text(text, allowed_values)
+            if removed_items:
+                return [
+                    {
+                        "field": "payload",
+                        "operation": "remove",
+                        "items": removed_items,
+                        "target_items": [],
+                        "raw_text": text,
+                        "confidence": 0.95,
+                        "source": "user_input",
+                    }
+                ], []
+
+        add_keywords = ("再加一个", "加一个", "再加", "添加", "增加", "还要", "加上", "还需要", "配备", "多带一个", "带上", "携带")
+        is_add_context = any(kw in text for kw in add_keywords)
+        if is_add_context:
+            added_items = cls._find_payload_items_in_text(text, allowed_values)
+            if added_items:
+                return [
+                    {
+                        "field": "payload",
+                        "operation": "add",
+                        "items": added_items,
+                        "target_items": [],
+                        "raw_text": text,
+                        "confidence": 0.95,
+                        "source": "user_input",
+                    }
+                ], []
+
+        matched_items = cls._find_payload_items_in_text(text, allowed_values)
+
+        if not has_existing_payload and matched_items:
+            return [
+                {
+                    "field": "payload",
+                    "operation": "add",
+                    "items": matched_items,
+                    "target_items": [],
+                    "raw_text": text,
+                    "confidence": 0.95,
+                    "source": "user_input",
+                }
+            ], []
+
+        if has_existing_payload and matched_items:
+            unresolved_msg = f"已有载荷列表不为空，表达“{text}”缺乏明确的增删改指令。"
+            return [], [unresolved_msg]
+
+        return [], []
+
+    @classmethod
+    def _find_payload_items_in_text(
+        cls,
+        text: str,
+        allowed_values: list[str] | None = None,
+    ) -> list[str]:
+        """从文本中找出匹配 assets.yaml payload_catalog 或 allowed_values 的规范载荷名称列表。"""
+        if not text:
+            return []
+
+        catalog = _load_payload_catalog()
+        matches: list[tuple[int, int, str]] = []
+
+        for cat_id, info in catalog.items():
+            name = info.get("name")
+            if not name:
+                continue
+            aliases = info.get("aliases") or []
+            candidates_to_check = [name, *aliases]
+            candidates_to_check.sort(key=len, reverse=True)
+            for cand in candidates_to_check:
+                if not cand:
+                    continue
+                start = 0
+                while True:
+                    idx = text.find(cand, start)
+                    if idx < 0:
+                        break
+                    matches.append((idx, idx + len(cand), name))
+                    start = idx + 1
+
+        for val in (allowed_values or []):
+            if isinstance(val, str) and val:
+                start = 0
+                while True:
+                    idx = text.find(val, start)
+                    if idx < 0:
+                        break
+                    matches.append((idx, idx + len(val), val))
+                    start = idx + 1
+
+        matches.sort(key=lambda m: (m[1] - m[0]), reverse=True)
+        non_overlapping: list[tuple[int, int, str]] = []
+        for m in matches:
+            m_start, m_end, m_name = m
+            is_subspan = False
+            for prev_start, prev_end, _ in non_overlapping:
+                if m_start >= prev_start and m_end <= prev_end:
+                    is_subspan = True
+                    break
+            if not is_subspan:
+                non_overlapping.append(m)
+
+        non_overlapping.sort(key=lambda m: m[0])
+
+        found: list[str] = []
+        for _, _, name in non_overlapping:
+            if name not in found:
+                found.append(name)
+
+        return found
 
     @staticmethod
     def _allowed_candidate_keys(

@@ -557,7 +557,24 @@ class DialogueManager:
                 self.conversation_history.append({"role": "assistant", "content": reply})
                 return reply
 
-        # 准备发布
+        # 准备发布：正式且唯一扣减/占用原子递增编码并持久化
+        task_id_slot = self.slot_store.slots.get("task_id")
+        if task_id_slot and task_id_slot.status == "valid" and task_id_slot.value and validate_task_id_for_task_type(str(task_id_slot.value), task_type_key, self.kb.task_schemas):
+            official_task_id = str(task_id_slot.value)
+            self.builder.reserve_task_id(task_type_key)
+        else:
+            official_task_id = self.builder.reserve_task_id(task_type_key)
+            if "task_id" not in self.slot_store.slots:
+                self.slot_store.slots["task_id"] = Slot("task_id")
+            self.slot_store.slots["task_id"].value = official_task_id
+            self.slot_store.slots["task_id"].status = "valid"
+            self.slot_store.slots["task_id"].source = "auto"
+
+        cand_state["task_id"] = official_task_id
+        cand_built["task_id"] = official_task_id
+        self.task_state["task_id"] = official_task_id
+        self._last_built_json["task_id"] = official_task_id
+
         ti_builder = TaskIntentBuilder(self.kb)
         ti_json_artifact = ti_builder.prepare(
             task_state=cand_state,
@@ -743,6 +760,13 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": pending_reply})
             return pending_reply
 
+        # 强制重新约束检查（用户发送"重新检查"时，刷新 robot state 并重跑约束）
+        _RECHECK_PHRASES = ("重新检查", "重新检查约束", "重新验证", "刷新检查", "recheck")
+        if user_message.strip() in _RECHECK_PHRASES and self.phase in (
+            "blocked_hard", "blocked_soft", "confirming", "collecting"
+        ):
+            return self._handle_force_recheck(user_message, request_id)
+
         # 控制动作由 DialogueManager 当前阶段处理，不再交给 IntentRouter 判断。
         if self.phase == "blocked_hard" and (
             self._is_confirmation_only(user_message)
@@ -900,6 +924,58 @@ class DialogueManager:
                 merged_updates[k] = v
                 merged_updates_meta[k] = cand_info
 
+            # 处理 payload list_mutations
+            list_mutations = extraction_res.get("list_mutations", [])
+            payload_mutation_failed = False
+            mutation_failure_result = None
+
+            if list_mutations:
+                for mutation in list_mutations:
+                    m_field = mutation.get("field")
+                    if m_field == "payload":
+                        stage2_updates.pop("payload", None)
+                        merged_updates.pop("payload", None)
+                        merged_updates_meta.pop("payload", None)
+
+                        mut_res = self.slot_store.apply_list_mutation(
+                            new_slots,
+                            mutation,
+                            required_schema=required,
+                            payload_catalog=self.kb.assets.get("payload_catalog"),
+                        )
+                        if mut_res.get("success"):
+                            new_payload_val = mut_res.get("new_value")
+                            merged_updates["payload"] = new_payload_val
+                            merged_updates_meta["payload"] = {
+                                "value": new_payload_val,
+                                "raw_value": mutation.get("raw_text"),
+                                "confidence": mutation.get("confidence", 0.95),
+                                "source": mutation.get("source", "user_input"),
+                            }
+                        else:
+                            payload_mutation_failed = True
+                            mutation_failure_result = mut_res
+                            break
+
+            if payload_mutation_failed and mutation_failure_result:
+                self.slot_store.commit_transaction(
+                    new_slots,
+                    new_unresolved,
+                    request_id=request_id,
+                    expected_version=expected_version,
+                )
+                self.task_state = self.slot_store.get_task_state()
+                self._last_built_json, self._last_missing = self.builder.build(
+                    self.task_state,
+                    task_type_key,
+                    self.mode,
+                )
+                err_msg = mutation_failure_result.get("error") or "载荷修改操作失败。"
+                reply = f"操作失败：{err_msg}"
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
+
             raw_stage2 = self._merge_coordinate_updates(user_message, {k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, required)
             for k, v in raw_stage2.items():
                 if k not in stage2_updates:
@@ -918,7 +994,8 @@ class DialogueManager:
                 merged_updates[k] = v
 
             _has_conflict = any(s.status == "conflict" for s in new_slots.values())
-            if not stage2_updates and not _has_conflict and not turn_unresolved:
+            has_successful_mutation = any(m.get("field") == "payload" for m in list_mutations) and not payload_mutation_failed
+            if not stage2_updates and not _has_conflict and not turn_unresolved and not has_successful_mutation:
                 if new_unresolved:
                     self.slot_store.commit_transaction(
                         new_slots,
@@ -1051,7 +1128,7 @@ class DialogueManager:
             task_id_slot = new_slots.get("task_id")
             if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None or not validate_task_id_for_task_type(str(task_id_slot.value), curr_task_type_key, self.kb.task_schemas):
                 valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
-                tid = self.builder.reserve_task_id(curr_task_type_key)
+                tid = self.builder.preview_task_id(curr_task_type_key)
                 if "task_id" not in new_slots:
                     new_slots["task_id"] = Slot("task_id")
                 new_slots["task_id"].value = tid
@@ -2758,6 +2835,78 @@ class DialogueManager:
 
         details = self.validator.format_violations(missing)
         return f"{reply.rstrip()}\n\n{details}" if reply.strip() else details
+
+    def _handle_force_recheck(self, user_message: str, request_id: str = "req_default") -> str:
+        """用户发送'重新检查'时，强制刷新 robot state 快照并重跑约束校验。
+
+        适用场景：外部端口更新了机器人遥测状态（如流速降低、设备恢复可用），
+        用户希望系统立即重新读取最新快照并解除或确认约束阻断。
+        """
+        logger.info("[RECHECK] 用户请求强制重新约束检查, request_id=%s, phase=%s", request_id, self.phase)
+
+        # 1. 强制刷新：从 slot_store 获取最新 task_state（含 robot state 信息）
+        current_task_state = self.slot_store.get_task_state()
+        self.task_state = dict(current_task_state)
+
+        # 2. 清除旧的阻断状态，重新执行完整约束校验
+        self._blocking_violations = []
+        all_violations = self.validator.validate(self.task_state)
+        remaining_hard = [v for v in all_violations if v.severity == "hard"]
+        remaining_soft = [v for v in all_violations if v.severity == "soft" and not self._is_whitelisted(v)]
+
+        # 3. 根据校验结果更新阶段
+        if remaining_hard:
+            self.phase = "blocked_hard"
+            self._blocking_violations = remaining_hard
+            constraint_context = {"type": "hard", "violations": remaining_hard, "hard_refusal_counts": {}}
+            logger.info("[RECHECK] 仍有硬约束违规 (%d 项), 保持 blocked_hard", len(remaining_hard))
+        elif remaining_soft:
+            self.phase = "blocked_soft"
+            self._blocking_violations = remaining_soft
+            constraint_context = {"type": "soft", "violations": remaining_soft, "hard_refusal_counts": {}}
+            logger.info("[RECHECK] 仍有软约束警告 (%d 项), 保持 blocked_soft", len(remaining_soft))
+        else:
+            # 约束已消除，判断是否可进入 confirming
+            task_type_key = self.task_state.get("task_type_key")
+            if task_type_key:
+                req_schema = self.builder.get_schema(task_type_key, self.mode)
+                missing = self.slot_store.get_missing_slots(req_schema)
+                self._last_missing = missing
+                if not missing:
+                    self.phase = "confirming"
+                    logger.info("[RECHECK] 约束已解除，所有槽位完整，进入 confirming")
+                else:
+                    self.phase = "collecting"
+                    logger.info("[RECHECK] 约束已解除，但仍有 %d 个缺失槽位，进入 collecting", len(missing))
+            else:
+                self.phase = "collecting"
+            constraint_context = {"type": "none", "violations": [], "hard_refusal_counts": {}}
+
+        # 4. 生成回复
+        knowledge_context = self.kb.get_context_for_state(self.task_state)
+        built = self._last_built_json
+        missing = self._last_missing
+        messages = build_responder_messages(
+            task_state=self.task_state,
+            built_json=built,
+            missing_fields=missing,
+            mode=self.mode,
+            phase=self.phase,
+            knowledge_context=knowledge_context,
+            constraint_context=constraint_context,
+            conversation_history=self.conversation_history,
+            latest_user_message=user_message,
+            ROV2type=self.kb.ROV2type,
+            support_task=self.kb.get_supported_task(),
+            slot_snapshot=self.slot_store.get_slot_snapshot(),
+        )
+        reply = self.llm.chat(messages, temperature=0.7, max_tokens=1200)
+        reply = self.llm.filter_reply(reply)
+        reply = self._ensure_constraint_details(reply, constraint_context)
+
+        self.conversation_history.append({"role": "user", "content": user_message})
+        self.conversation_history.append({"role": "assistant", "content": reply})
+        return reply
 
     def _reject_hard_constraint_bypass(self, user_message: str) -> str:
         """Reject confirmation/ignore commands while hard violations remain."""

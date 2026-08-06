@@ -17,7 +17,7 @@ from typing import Any
 from .knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from .simulated_time import get_business_date
 from .coord_parser import parse_coord_value
-from .id_sequence import next_daily_task_id, validate_task_prefix
+from .id_sequence import next_daily_task_id, peek_daily_task_id, validate_task_prefix
 from .exceptions import IdReservationError
 from .result_paths import get_task_dir, get_history_dir
 from .normalizer import FieldNormalizer
@@ -195,23 +195,26 @@ class OutputBuilder:
         if ftype == "list":
             if not raw:
                 return None
-            allowed = self._resolve_allowed(field_def, task_type_key, task_state)
             raw_list = [raw] if isinstance(raw, str) else (list(raw) if isinstance(raw, (list, tuple, set)) else None)
             if not raw_list:
                 return None
+            allowed = self._resolve_allowed(field_def, task_type_key, task_state)
             if not allowed:
-                return raw_list
-            valid: list[Any] = []
+                return list(raw_list)
+
             allowed_stripped_map = {str(item).replace(" ", ""): item for item in allowed}
+            valid_list = []
             for item in raw_list:
                 if item in allowed:
-                    if item not in valid:
-                        valid.append(item)
+                    valid_list.append(item)
                 elif isinstance(item, str) and item.replace(" ", "") in allowed_stripped_map:
                     matched = allowed_stripped_map[item.replace(" ", "")]
-                    if matched not in valid:
-                        valid.append(matched)
-            return valid if valid else None
+                    valid_list.append(matched)
+                else:
+                    # 任一元素非法 → 整个列表返回 None
+                    return None
+
+            return list(valid_list)
 
         return None
 
@@ -219,15 +222,19 @@ class OutputBuilder:
     # task_id 显式生成入口
     # ══════════════════════════════════════════════════════════════════════════
 
+    def preview_task_id(self, task_type_key: str) -> str:
+        """只读预览任务业务编号 (<PREFIX>-YYYYMMDD-NNN)，不更新持久化计数器。"""
+        return self._generate_task_id(task_type_key, preview=True)
+
     def reserve_task_id(self, task_type_key: str) -> str:
         """显式预留新的任务业务编号 (<PREFIX>-YYYYMMDD-NNN)。
 
         权威前缀仅取自 KnowledgeBase.task_schemas["task_templates"][task_type_key]["code"]。
         前缀缺失或非法时直接抛出 IdReservationError。
         """
-        return self._generate_task_id(task_type_key)
+        return self._generate_task_id(task_type_key, preview=False)
 
-    def _generate_task_id(self, task_type_key: str, task_state: dict | None = None) -> str:
+    def _generate_task_id(self, task_type_key: str, task_state: dict | None = None, preview: bool = False) -> str:
         templates = self.kb.task_schemas.get("task_templates", {})
         if task_type_key not in templates:
             raise IdReservationError(f"Task type key {task_type_key!r} not found in task templates schema.")
@@ -241,6 +248,14 @@ class OutputBuilder:
 
         allowed_prefixes = [t.get("code") for t in templates.values() if t.get("code")]
         today = get_business_date().strftime("%Y%m%d")
+        if preview:
+            return peek_daily_task_id(
+                code,
+                today,
+                3,
+                [(get_task_dir(create=False), "task_id"), (get_history_dir(create=False), "task_id")],
+                allowed_prefixes=allowed_prefixes,
+            )
         return next_daily_task_id(
             code,
             today,
