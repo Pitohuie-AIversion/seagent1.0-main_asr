@@ -16,8 +16,6 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: abnormal
-    version: 0
-    updated_at: '2026-07-28T16:39:25+08:00'
   sealien_cable_pipeline:
     current_velocity: 0.5
     turbidity: 10
@@ -35,8 +33,6 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    version: 0
-    updated_at: '2026-07-10T18:30:00+08:00'
   sealien_inspection:
     current_velocity: 0.45
     turbidity: 15
@@ -55,8 +51,6 @@ robots:
     acoustic_comms_status: normal
     tether_connection_status: normal
     depth: 350
-    version: 0
-    updated_at: '2026-07-28T17:25:08+08:00'
   sealien_survey_auv:
     current_velocity: 0.2
     turbidity: 3.5
@@ -74,8 +68,6 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: abnormal
     tether_connection_status: abnormal
-    version: 0
-    updated_at: '2026-07-28T16:39:25+08:00'
   crawler_heavy_seabed_robot_1600hp:
     current_velocity: 0.3
     turbidity: 3
@@ -93,14 +85,12 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    version: 0
-    updated_at: '2026-07-28T16:39:25+08:00'
   OBSROV-001:
-    current_velocity: 1.5
-    turbidity: 3
+    current_velocity: 0.3
+    turbidity: 15
     obstacle_density: low
     mothership_support: strong
-    update_timestamp: '2026-08-03T10:00:21.255743+08:00'
+    update_timestamp: '2026-07-28T17:05:36+08:00'
     confidence: 0.95
     overall_status: available
     survival_status: normal
@@ -112,8 +102,6 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    version: 182
-    updated_at: '2026-08-03T10:00:21.255743+08:00'
   WROV-250-001:
     current_velocity: 0.3
     turbidity: 3
@@ -131,8 +119,6 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    version: 0
-    updated_at: '2026-07-28T17:16:21+08:00'
   AUV-324cc-001:
     current_velocity: 0.2
     turbidity: 3.5
@@ -150,8 +136,6 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: abnormal
     tether_connection_status: abnormal
-    version: 0
-    updated_at: '2026-07-28T17:16:21+08:00'
   CRAWLER-1600-001:
     current_velocity: 0.45
     turbidity: 3
@@ -170,30 +154,13 @@ robots:
     acoustic_comms_status: normal
     tether_connection_status: normal
     depth: 350
-    version: 0
-    updated_at: '2026-07-28T18:05:03+08:00'
   LROV--001:
     depth: 350
-    update_timestamp: '2026-08-03T10:00:20.899064+08:00'
-    version: 23
-    updated_at: '2026-08-03T10:00:20.899064+08:00'
-    overall_status: available
-    current_velocity: 0.1
+    update_timestamp: '2026-07-28T17:25:08+08:00'
   金牛座一号机:
     depth: 350
     update_timestamp: '2026-07-28T17:25:08+08:00'
     overall_status: available
-    version: 0
-    updated_at: '2026-07-28T17:25:08+08:00'
   天鹰座一号机:
     depth: 350
     update_timestamp: '2026-07-28T17:59:18+08:00'
-    version: 0
-    updated_at: '2026-07-28T17:59:18+08:00'
-  LROV-002:
-    version: 23
-    overall_status: available
-    current_velocity: 1.5
-    updated_at: '2026-08-03T10:00:20.950540+08:00'
-    update_timestamp: '2026-08-03T10:00:20.950540+08:00'
-store_version: 228

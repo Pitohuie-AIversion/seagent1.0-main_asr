@@ -82,6 +82,16 @@ class FakeKnowledgeBaseForDefects:
             "update_timestamp": "2026-06-30T17:30:00+08:00",
             "overall_status": "available",
         }
+        self.robot_fleet = {
+            "fleet_units": [
+                {
+                    "unit_id": "sealien_inspection",
+                    "display_name": "sealien_inspection",
+                    "variant_id": "sealien_inspection",
+                    "status_ref": "sealien_inspection",
+                }
+            ]
+        }
         # A map of coords string to environment info dict
         self.env_map = {}
 
@@ -100,6 +110,15 @@ class FakeKnowledgeBaseForDefects:
 
     def get_robot_state_dict(self, name):
         return self.robot_state
+
+    def get_unit_state_snapshot(self, unit_id: str) -> dict:
+        return {
+            "unit_id": unit_id,
+            "status_ref": unit_id,
+            "state_version": 1,
+            "updated_at": self.robot_state.get("update_timestamp", "2026-06-30T17:30:00+08:00"),
+            "state": self.robot_state,
+        }
 
 
 class TaskValidatorDefectsTest(unittest.TestCase):
