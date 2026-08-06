@@ -178,6 +178,46 @@ def next_daily_task_id(
             raise IdReservationError(f"Task ID reservation failed for {counter_key}: {exc}") from exc
 
 
+def peek_daily_task_id(
+    prefix: str,
+    date_text: str,
+    width: int = 3,
+    scan_specs: Iterable[tuple[Path | Callable[[], Path], str]] = (),
+    allowed_prefixes: Iterable[str] | None = None,
+) -> str:
+    """预览确定性任务业务编号 (<PREFIX>-YYYYMMDD-NNN)。
+
+    只读操作：计算若现在确认发布所会分配的下一个序号，但绝不写入/更新/扣减持久化 counter 文件，也不更新内存计数器。
+    """
+    if not validate_task_prefix(prefix):
+        raise IdReservationError(f"Invalid task prefix: {prefix!r}")
+    if not date_text or len(date_text) != 8 or not date_text.isdigit():
+        raise IdReservationError(f"Invalid date_text for task ID: {date_text!r}")
+
+    if allowed_prefixes is None:
+        raise IdReservationError("allowed_prefixes must be provided from task schema whitelist")
+
+    valid_prefixes = {p for p in allowed_prefixes if validate_task_prefix(p)}
+    if not valid_prefixes:
+        raise IdReservationError("allowed_prefixes contains no valid task prefixes")
+
+    if prefix not in valid_prefixes:
+        raise IdReservationError(f"Task prefix {prefix!r} is not in allowed_prefixes whitelist: {sorted(valid_prefixes)}")
+
+    scan_specs_list = list(scan_specs)
+    counter_key = f"TASK:{date_text}"
+    counter_file = _get_counter_file_path()
+
+    with _LOCK:
+        persistent_counters = _load_persistent_counters(counter_file)
+        persistent_seq = persistent_counters.get(counter_key, 0)
+        disk_max = _max_existing_task_sequence(date_text, width, scan_specs_list, allowed_prefixes)
+        memory_seq = _COUNTERS.get(counter_key, 0)
+        next_seq = max(persistent_seq, disk_max, memory_seq) + 1
+        return f"{prefix}-{date_text}-{next_seq:0{width}d}"
+
+
+
 def _load_persistent_counters(counter_file: Path) -> dict[str, int]:
     if not counter_file.exists():
         return {}

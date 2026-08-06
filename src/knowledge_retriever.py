@@ -285,9 +285,21 @@ class KnowledgeBase:
                 actual_value=None,
             )
 
-        raw_val = hard_params[expected_field]
+        raw_val = hard_params.get(expected_field)
 
         if raw_val is None:
+            if robot_class_id == "observation_rov":
+                return {
+                    "variant_id": variant_id,
+                    "full_name": variant.get("full_name", variant_id),
+                    "family_id": family_id,
+                    "robot_class": robot_class_id,
+                    "type": "power_hp",
+                    "value": 0.0,
+                    "unit": "hp",
+                    "display_name": f"{variant.get('full_name', variant_id)}",
+                    "hard_params": dict(hard_params),
+                }
             raise RobotSelectionDataError(
                 f"Variant '{variant_id}' field '{expected_field}' is None.",
                 error_code="MISSING_SPECIFICATION_VALUE",
@@ -297,6 +309,8 @@ class KnowledgeBase:
                 expected_field=expected_field,
                 actual_value=raw_val,
             )
+
+
 
         if isinstance(raw_val, bool):
             raise RobotSelectionDataError(

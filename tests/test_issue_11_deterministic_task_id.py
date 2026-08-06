@@ -867,6 +867,63 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         with self.assertRaises(SnapshotValidationError):
             dm.load_snapshot(incomplete_cand_snap)
 
+    def test_31_unconfirmed_task_does_not_consume_id_sequence(self):
+        """验证未确认发布的草稿任务只占用预览，不扣减/更新持久化序列号；只有确认发布后才消耗编号并更新 counter。"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_task_dir = Path(tmp_dir) / "task"
+            tmp_history_dir = Path(tmp_dir) / "history"
+            tmp_task_dir.mkdir(parents=True, exist_ok=True)
+            tmp_history_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)), \
+                 patch("src.output_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.output_builder.get_history_dir", return_value=tmp_history_dir):
+
+                counter_file = Path(tmp_dir) / ".id_sequences.json"
+
+                # 1. 创建第一个草稿任务（未确认发布）
+                dm1 = create_dialogue_manager()
+                dm1.process("我要做管缆巡检")
+                tid1_preview = dm1.task_state.get("task_id")
+                self.assertEqual(tid1_preview, "PI-20260803-001")
+
+                # 验证此时持久化 counter 库文件未更新
+                if counter_file.exists():
+                    with open(counter_file, "r", encoding="utf-8") as f:
+                        c_data = json.load(f)
+                    self.assertNotIn("TASK:20260803", c_data)
+
+                # 2. 第二个草稿任务同样获得 001 预览（因第一个任务未确认发布）
+                dm2 = create_dialogue_manager()
+                dm2.process("我要做管缆巡检")
+                tid2_preview = dm2.task_state.get("task_id")
+                self.assertEqual(tid2_preview, "PI-20260803-001")
+
+                # 3. 准备第二个任务的数据并进行正式确认发布 (通过 reserve_task_id)
+                ti_builder = TaskIntentBuilder(dm2.kb)
+                intent = ti_builder.prepare(
+                    {"internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "task_id": tid2_preview, "task_type_key": "pipeline_inspection", "equipment_family": "LROV", "equipment_type": "观察级ROV"},
+                    {"internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "task_id": tid2_preview, "start_time": "2026-08-03T10:00:00Z"},
+                    "normal",
+                    "pipeline_inspection"
+                )
+                staging_file = ti_builder.create_staging(intent)
+                ti_builder.publish_staging(staging_file, intent)
+
+                official_id = dm2.builder.reserve_task_id("pipeline_inspection")
+                self.assertEqual(official_id, "PI-20260803-001")
+
+                # 4. 发布后持久化 counter 增加为 1
+                with open(counter_file, "r", encoding="utf-8") as f:
+                    c_data = json.load(f)
+                self.assertEqual(c_data.get("TASK:20260803"), 1)
+
+                # 5. 第三个草稿任务此时预览为 002
+                dm3 = create_dialogue_manager()
+                dm3.process("我要做管缆巡检")
+                tid3_preview = dm3.task_state.get("task_id")
+                self.assertEqual(tid3_preview, "PI-20260803-002")
+
 
 if __name__ == "__main__":
     unittest.main()

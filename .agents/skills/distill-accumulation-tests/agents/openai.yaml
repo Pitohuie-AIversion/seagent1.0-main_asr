@@ -1,0 +1,4 @@
+interface:
+  display_name: "Accumulation Test Distiller"
+  short_description: "Distill and migrate cumulative integration test suites"
+  default_prompt: "Use $distill-accumulation-tests to migrate this cumulative integration suite into a portable next-generation test contract."

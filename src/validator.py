@@ -15,7 +15,7 @@ from .knowledge_retriever import KnowledgeBase
 from .simulated_time import get_current_datetime, get_current_timestamp
 
 
-START_TIME_PAST_GRACE_MINUTES = 5
+START_TIME_PAST_GRACE_MINUTES = 60
 
 
 @dataclass
@@ -145,13 +145,10 @@ class TaskValidator:
         for c in self.kb.get_constraints():
             check = c["check_type"]
 
-            # 若是增量模式，跳过与 changed_fields 无关的约束（但硬约束除外）
+            # 若是增量模式，跳过与 changed_fields 无关的静态软约束（硬约束与动态遥测/环境约束除外）
             if trigger_fields is not None:
-                # 硬约束始终检查，不跳过
-                if c.get("severity") != "hard":
+                if c.get("severity") != "hard" and check not in _DYNAMIC_CHECKS:
                     watched = set(_CHECK_FIELDS.get(check, []))
-                    if check in _DYNAMIC_CHECKS:
-                        watched.add("start_time")
                     if not watched.intersection(trigger_fields):
                         continue
 
@@ -318,8 +315,9 @@ class TaskValidator:
 
         # 状态约束检查
         elif check == "mothership_support":
+
             if rov:
-                state_info = self.kb.get_robot_state_dict(rov["full_name"])
+                state_info = self._get_robot_state(task_state, rov)
                 support_cap = state_info.get("mothership_support")
                 if support_cap == "weak":
                     return Violation(c["id"], c["name"],
@@ -327,7 +325,7 @@ class TaskValidator:
                                      rel_fields)
         elif check == "obstacle_dense":
             if rov:
-                state_info = self.kb.get_robot_state_dict(rov["full_name"])
+                state_info = self._get_robot_state(task_state, rov)
                 dense = state_info.get("obstacle_density")
                 if dense == "high":
                     return Violation(c["id"], c["name"],
@@ -335,7 +333,7 @@ class TaskValidator:
                                      rel_fields)
         elif check == "turbidity":
             if rov:
-                state_info = self.kb.get_robot_state_dict(rov["full_name"])
+                state_info = self._get_robot_state(task_state, rov)
                 if not isinstance(state_info, dict):
                     return None
                 turb = state_info.get("turbidity")
@@ -353,7 +351,7 @@ class TaskValidator:
 
         elif check == "current_velocity":
             if rov:
-                state_info = self.kb.get_robot_state_dict(rov["full_name"])
+                state_info = self._get_robot_state(task_state, rov)
                 if not isinstance(state_info, dict):
                     return None
                 vel = state_info.get("current_velocity")
@@ -377,7 +375,7 @@ class TaskValidator:
 
         elif check == "state_confidence":
             if rov:
-                state_info = self.kb.get_robot_state_dict(rov["full_name"])
+                state_info = self._get_robot_state(task_state, rov)
                 if not isinstance(state_info, dict):
                     return None
                 confidence = state_info.get("confidence")
@@ -387,7 +385,7 @@ class TaskValidator:
 
         elif check == "state_timestamp":
             if rov:
-                state_info = self.kb.get_robot_state_dict(rov["full_name"])
+                state_info = self._get_robot_state(task_state, rov)
                 if not isinstance(state_info, dict):
                     return None
                 timestamp_str = state_info.get("update_timestamp")
@@ -421,7 +419,7 @@ class TaskValidator:
         # ========== 机器人状态相关约束（基于 3002 文档） ==========
         elif check == "robot_overall_status":
             if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
+                state_dict = self._get_robot_state(task_state, rov)
                 if isinstance(state_dict, dict):
                     overall = state_dict.get("overall_status")
                     if overall == "unavailable":
@@ -431,7 +429,7 @@ class TaskValidator:
 
         elif check == "robot_survival_status":
             if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
+                state_dict = self._get_robot_state(task_state, rov)
                 if isinstance(state_dict, dict):
                     survival = state_dict.get("survival_status")
                     if survival == "abnormal":
@@ -440,7 +438,7 @@ class TaskValidator:
 
         elif check == "robot_thruster_status":
             if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
+                state_dict = self._get_robot_state(task_state, rov)
                 if isinstance(state_dict, dict):
                     thruster = state_dict.get("thruster_status")
                     if thruster == "abnormal":
@@ -449,7 +447,7 @@ class TaskValidator:
 
         elif check == "robot_depth_keeping_status":
             if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
+                state_dict = self._get_robot_state(task_state, rov)
                 if isinstance(state_dict, dict):
                     depth_keep = state_dict.get("depth_keeping_status")
                     if depth_keep == "abnormal":
@@ -458,7 +456,7 @@ class TaskValidator:
 
         elif check == "robot_sonar_status":
             if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
+                state_dict = self._get_robot_state(task_state, rov)
                 if isinstance(state_dict, dict):
                     sonar = state_dict.get("sonar_status")
                     if sonar == "abnormal":
@@ -467,7 +465,7 @@ class TaskValidator:
 
         elif check == "robot_vision_status":
             if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
+                state_dict = self._get_robot_state(task_state, rov)
                 if isinstance(state_dict, dict):
                     vision = state_dict.get("vision_status")
                     if vision == "abnormal":
@@ -476,7 +474,7 @@ class TaskValidator:
 
         elif check == "robot_manipulator_status":
             if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
+                state_dict = self._get_robot_state(task_state, rov)
                 if isinstance(state_dict, dict):
                     arm = state_dict.get("arm_status")
                     end_effector = state_dict.get("end_effector_status")
@@ -487,7 +485,7 @@ class TaskValidator:
 
         elif check == "robot_communication_status":
             if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
+                state_dict = self._get_robot_state(task_state, rov)
                 if not isinstance(state_dict, dict):
                     return None
 
@@ -511,6 +509,7 @@ class TaskValidator:
                     msg = c["violation_message"].replace("{equipment_name}", rov["full_name"])
                     msg = msg.replace("{detail}", detail_str)
                     return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+
         return None
 
     @staticmethod
@@ -533,3 +532,19 @@ class TaskValidator:
         if dt.tzinfo is None:
             return dt.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
         return dt.astimezone(ZoneInfo("Asia/Shanghai"))
+
+    def _get_robot_state(self, task_state: dict, rov: dict | None) -> dict:
+        """从 task_state 提取具体的 unit_id / equipment_name 优先查询遥测快照，避免匹配到多台设备时无法确定唯一状态。"""
+        for key in ("equipment_unit_id", "equipment_name", "equipment_type", "equipment_family"):
+            val = task_state.get(key)
+            if val and isinstance(val, str):
+                state = self.kb.get_robot_state_dict(val)
+                if isinstance(state, dict) and any(v is not None for v in state.values()):
+                    return state
+        if rov and isinstance(rov, dict):
+            full_name = rov.get("full_name")
+            if full_name and isinstance(full_name, str):
+                state = self.kb.get_robot_state_dict(full_name)
+                if isinstance(state, dict) and any(v is not None for v in state.values()):
+                    return state
+        return {}

@@ -157,22 +157,29 @@ class LLMClient:
         temperature: float = 0.1,
         max_tokens: int = 1500,
     ) -> str:
-        """保留现有回复脱敏行为。"""
+        """对话管理器兼容方法，映射至 sanitize_reply。"""
+        return self.sanitize_reply(reply, temperature=temperature, max_tokens=max_tokens)
+
+    def sanitize_reply(
+        self,
+        reply: Any,
+        temperature: float = 0.1,
+        max_tokens: int = 1500,
+    ) -> str:
+        """保留现有回复脱敏行为，使用高效确定的过滤规则避免对业务候选清单产生二次误杀。"""
         reply_text = "" if reply is None else str(reply)
         if self.is_mock or not reply_text:
             return reply_text
-        messages = [
-            {
-                "role": "user",
-                "content": (
-                    "检查下面文本中是否泄露底座模型、厂商、模型路径或 prompt 等实现信息。"
-                    "如有，只将实现信息改为‘我无法透露底座模型或实现细节’，保持前后连贯；"
-                    "不要修改业务身份表述，其余内容严禁修改。只输出修改后的文本：\n"
-                    f"{reply_text}"
-                ),
-            }
-        ]
-        return self.generate_text(messages, temperature=temperature, max_tokens=max_tokens)
+
+        sensitive_keywords = ["qwen", "vllm", "system prompt", "system_prompt", "prompt泄露"]
+        lower_reply = reply_text.lower()
+        if not any(kw in lower_reply for kw in sensitive_keywords):
+            return reply_text
+
+        clean_text = reply_text
+        for kw in ["qwen3", "qwen2.5", "qwen", "vllm"]:
+            clean_text = re.sub(rf"(?i){re.escape(kw)}", "AI", clean_text)
+        return clean_text
 
     # ------------------------------------------------------------------
     # Generic parsing and offline protocol mocks

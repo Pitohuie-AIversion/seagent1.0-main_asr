@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import fcntl
 import os
+import re
 import tempfile
 import threading
 from contextlib import contextmanager
@@ -32,7 +33,6 @@ _SYSTEM_OWNED_FIELDS = {
     "version",
     "store_version",
     "updated_at",
-    "update_timestamp",
 }
 
 ROBOT_STATE_MAX_AGE_SECONDS = 300
@@ -40,7 +40,8 @@ ROBOT_STATE_MAX_AGE_SECONDS = 300
 
 
 def _normalize_selector(value: object) -> str:
-    return str(value or "").strip().lower().replace(" ", "")
+    s = str(value or "").strip().lower().replace(" ", "")
+    return re.sub(r"-+", "-", s)
 
 
 def _parse_bool(val: Any) -> bool | None:
@@ -114,7 +115,7 @@ class RobotStateInfo:
             updated_at = get_current_datetime().isoformat(timespec="microseconds")
             next_state["version"] = current_version + 1
             next_state["updated_at"] = updated_at
-            next_state["update_timestamp"] = updated_at
+            next_state["update_timestamp"] = params.get("update_timestamp", updated_at)
             snapshot["store_version"] = snapshot["store_version"] + 1
             robots[status_ref] = next_state
 
@@ -523,7 +524,7 @@ class RobotStateInfo:
             state["version"] = version
             if state.get("updated_at") is None and state.get("update_timestamp"):
                 state["updated_at"] = state["update_timestamp"]
-            elif state.get("updated_at"):
+            elif state.get("update_timestamp") is None and state.get("updated_at"):
                 state["update_timestamp"] = state["updated_at"]
         return normalized
 
