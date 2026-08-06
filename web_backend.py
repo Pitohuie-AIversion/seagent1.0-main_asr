@@ -436,46 +436,48 @@ def api_chat():
             if sid not in _sessions:
                 _sessions[sid] = Session(sid)
 
-        reply = mgr.process(msg)
-        print_status(mgr)
-        if mgr.phase == "done":
-            try:
-                save_conversation(
-                    session_id=sid,
-                    conversation_history=mgr.conversation_history,
-                    task_state=mgr.task_state,
-                    built_json=mgr._last_built_json,
-                    mode=mgr.mode,
-                    phase=mgr.phase,
-                    intent_id=mgr.task_state.get('intent_id'),
-                    slot_store=mgr.slot_store,
-                    dialogue_mode=mgr.dialogue_mode,
-                    last_mode_transition=mgr.last_mode_transition,
-                    mode_transition_history=mgr.mode_transition_history,
-                    control_state=mgr.control_state,
-                    last_control_request=mgr.last_control_request,
-                )
-            except Exception as e:
-                logging.error("保存历史快照失败: %s", e, exc_info=True)
+        with mgr._session_lock:
+            reply = mgr.process(msg)
+            print_status(mgr)
+            if mgr.phase == "done":
+                try:
+                    save_conversation(
+                        session_id=sid,
+                        conversation_history=mgr.conversation_history,
+                        task_state=mgr.task_state,
+                        built_json=mgr._last_built_json,
+                        mode=mgr.mode,
+                        phase=mgr.phase,
+                        intent_id=mgr.task_state.get('intent_id'),
+                        slot_store=mgr.slot_store,
+                        dialogue_mode=mgr.dialogue_mode,
+                        last_mode_transition=mgr.last_mode_transition,
+                        mode_transition_history=mgr.mode_transition_history,
+                        control_state=mgr.control_state,
+                        last_control_request=mgr.last_control_request,
+                    )
+                except Exception as e:
+                    logging.error("保存历史快照失败: %s", e, exc_info=True)
 
-        resp_data = {
-            "code": 200,
-            "session_id": sid,
-            "request_id": request_id,
-            "reply": reply,
-            # ui_state: 统一前端状态契约（Issue #31）
-            "ui_state": build_frontend_ui_state(mgr),
-            # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
-            "done": mgr.phase == "done",
-            "rejected": mgr.phase == "rejected",
-            "collected": mgr._last_built_json,
-            "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
-            "task_type": mgr.task_state.get("task_type_key"),
-            "task_id": mgr.task_state.get("task_id"),
-            "task_id_preview": mgr.task_id_preview,
-            "emergency": mgr.mode == "emergency",
-            "final_json": mgr._last_built_json if mgr.phase == "done" else None
-        }
+            ui_state = build_frontend_ui_state(mgr)
+            resp_data = {
+                "code": 200,
+                "session_id": sid,
+                "request_id": request_id,
+                "reply": reply,
+                # ui_state: 统一前端状态契约（Issue #31）
+                "ui_state": ui_state,
+                # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
+                "done": mgr.phase == "done",
+                "rejected": mgr.phase == "rejected",
+                "collected": mgr._last_built_json,
+                "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
+                "task_type": mgr.task_state.get("task_type_key"),
+                "task_id": mgr.task_state.get("task_id"),
+                "task_id_preview": mgr.task_id_preview,
+                "emergency": mgr.mode == "emergency",
+                "final_json": mgr._last_built_json if mgr.phase == "done" else None
+            }
         for k, v in resp_data.items():
             try:
                 json.dumps(v)
@@ -560,25 +562,27 @@ def get_session_state():
     if not mgr:
         return jsonify({"ok": True, "code": 200, "exists": False}), 200
 
-    return jsonify({
-        "ok": True,
-        "code": 200,
-        "exists": True,
-        "session_id": sid,
-        # ui_state: 统一前端状态契约（Issue #31）
-        "ui_state": build_frontend_ui_state(mgr),
-        # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
-        "done": mgr.phase == "done",
-        "rejected": mgr.phase == "rejected",
-        "collected": mgr._last_built_json,
-        "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
-        "task_type": mgr.task_state.get("task_type_key"),
-        "task_id": mgr.task_state.get("task_id"),
-        "task_id_preview": mgr.task_id_preview,
-        "emergency": mgr.mode == "emergency",
-        "history": mgr.conversation_history,
-        "final_json": mgr._last_built_json if mgr.phase == "done" else None
-    })
+    with mgr._session_lock:
+        ui_state = build_frontend_ui_state(mgr)
+        return jsonify({
+            "ok": True,
+            "code": 200,
+            "exists": True,
+            "session_id": sid,
+            # ui_state: 统一前端状态契约（Issue #31）
+            "ui_state": ui_state,
+            # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
+            "done": mgr.phase == "done",
+            "rejected": mgr.phase == "rejected",
+            "collected": mgr._last_built_json,
+            "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
+            "task_type": mgr.task_state.get("task_type_key"),
+            "task_id": mgr.task_state.get("task_id"),
+            "task_id_preview": mgr.task_id_preview,
+            "emergency": mgr.mode == "emergency",
+            "history": mgr.conversation_history,
+            "final_json": mgr._last_built_json if mgr.phase == "done" else None
+        })
 
 
 import re as _re_module
@@ -889,25 +893,27 @@ def api_history_load():
         return jsonify({"code": 404, "msg": "历史记录不存在"}), 404
 
     mgr = get_or_create_manager(sid)
-    try:
-        mgr.load_snapshot(snapshot)
-    except (TypeError, ValueError) as exc:
-        logging.warning("历史快照结构校验失败: history_id=%r, error=%s", history_id, exc)
-        return jsonify({"code": 400, "msg": f"历史快照结构非法: {exc}"}), 400
-    except Exception as exc:
-        logging.error("恢复历史快照失败: history_id=%r", history_id, exc_info=True)
-        return jsonify({"code": 500, "msg": f"恢复历史记录失败: {exc}"}), 500
+    with mgr._session_lock:
+        try:
+            mgr.load_snapshot(snapshot)
+        except (TypeError, ValueError) as exc:
+            logging.warning("历史快照结构校验失败: history_id=%r, error=%s", history_id, exc)
+            return jsonify({"code": 400, "msg": f"历史快照结构非法: {exc}"}), 400
+        except Exception as exc:
+            logging.error("恢复历史快照失败: history_id=%r", history_id, exc_info=True)
+            return jsonify({"code": 500, "msg": f"恢复历史记录失败: {exc}"}), 500
 
-    return jsonify({
-        "code": 200,
-        "session_id": sid,
-        "conversation_history": mgr.conversation_history,
-        # ui_state: 统一前端状态契约（Issue #31）
-        "ui_state": build_frontend_ui_state(mgr),
-        # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
-        "built_json": mgr._last_built_json,
-        "missing": [miss["key"] for miss in mgr._last_missing],
-        "task_type": mgr.task_state.get("task_type_key"),
-        "mode": mgr.mode,
-        "phase": mgr.phase,
-    })
+        ui_state = build_frontend_ui_state(mgr)
+        return jsonify({
+            "code": 200,
+            "session_id": sid,
+            "conversation_history": mgr.conversation_history,
+            # ui_state: 统一前端状态契约（Issue #31）
+            "ui_state": ui_state,
+            # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
+            "built_json": mgr._last_built_json,
+            "missing": [miss["key"] for miss in mgr._last_missing],
+            "task_type": mgr.task_state.get("task_type_key"),
+            "mode": mgr.mode,
+            "phase": mgr.phase,
+        })

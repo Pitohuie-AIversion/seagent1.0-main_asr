@@ -17,6 +17,7 @@
     let isSending = false;
     let currentRequestSeq = 0;
     let currentAbortController = null;
+    let sessionGeneration = 0;
     let currentActions = { can_send: true };
     let currentReadOnly = false;
     let timeUpdateInterval = null;
@@ -740,18 +741,18 @@ Please describe your task request or ask a question directly.`,
         const invalidSlots = slots.filter(s => s.status === 'invalid');
         const missingSlots = slots.filter(s => s.status === 'missing');
 
-        if (validSlots.length === 0 && candSlots.length === 0 && invalidSlots.length === 0) {
+        if (validSlots.length === 0 && candSlots.length === 0 && invalidSlots.length === 0 && conflictSlots.length === 0 && unresolvedSlots.length === 0) {
           collectedDiv.innerHTML = I18N[currentLang].none;
         } else {
           let html = '';
-          for (const slot of [...validSlots, ...candSlots, ...invalidSlots]) {
+          for (const slot of [...validSlots, ...candSlots, ...invalidSlots, ...conflictSlots, ...unresolvedSlots]) {
             const labelObj = slot.label || {};
             const label = (typeof labelObj === 'string') ? labelObj : (labelObj[currentLang] || labelObj.zh || slot.key);
-            const statusClass = slot.status === 'valid' ? 'valid' : (slot.status === 'invalid' ? 'invalid' : 'candidate');
-            const statusIcon = slot.status === 'valid' ? '✅' : (slot.status === 'invalid' ? '❌' : '⏳');
+            const statusClass = slot.status === 'valid' ? 'valid' : (slot.status === 'invalid' ? 'invalid' : (slot.status === 'conflict' ? 'conflict' : (slot.status === 'unresolved' ? 'unresolved' : 'candidate')));
+            const statusIcon = slot.status === 'valid' ? '✅' : (slot.status === 'invalid' ? '❌' : (slot.status === 'conflict' ? '⚔️' : (slot.status === 'unresolved' ? '❓' : '⏳')));
 
             const isCandidate = ['candidate', 'pending', 'conflict', 'unresolved'].includes(slot.status);
-            const slotValue = isCandidate ? (slot.candidate_value ?? slot.value) : slot.value;
+            const slotValue = isCandidate ? ((slot.candidate_value !== null && slot.candidate_value !== undefined) ? slot.candidate_value : slot.value) : slot.value;
             const row = document.createElement('div');
             row.className = `field-row ${statusClass}`;
             const labelSpan = document.createElement('span');
@@ -1110,7 +1111,12 @@ Please describe your task request or ask a question directly.`,
           return;
         }
 
-        if (directToLlm) {
+        const hasRiskOrChanges = (data.warnings && data.warnings.length > 0) ||
+                                 (data.replacements && data.replacements.length > 0) ||
+                                 !!data.normalization_changed;
+        const shouldAutoSend = directToLlm && !hasRiskOrChanges;
+
+        if (shouldAutoSend) {
           setAsrStatus(renderAsrNormalization(data, true), true);
           await sendMessage(transcript, { source: 'voice' });
         } else {
@@ -1364,6 +1370,10 @@ Please describe your task request or ask a question directly.`,
     }
 
     async function reset() {
+      if (currentAbortController) { try { currentAbortController.abort(); } catch(e){} }
+      currentRequestSeq++;
+      sessionGeneration++;
+      isSending = false;
       sendBtn.disabled = true;
       messageInput.disabled = true;
 

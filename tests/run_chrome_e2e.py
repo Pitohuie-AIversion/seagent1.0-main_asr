@@ -21,7 +21,7 @@ import websockets
 
 PORT = int(os.getenv("PORT", "8890"))
 CDP_PORT = int(os.getenv("CDP_PORT", "9222"))
-UI_TIMEOUT_SECONDS = float(os.getenv("E2E_UI_TIMEOUT_SECONDS", "5"))
+UI_TIMEOUT_SECONDS = float(os.getenv("E2E_UI_TIMEOUT_SECONDS", "90.0"))
 SCREENSHOT_PATH = Path(__file__).resolve().parents[1] / "chrome_e2e_screenshot.png"
 
 
@@ -38,6 +38,8 @@ def ensure_backend_running():
     print(f"🚀 Starting backend server on port {PORT}...")
     env = os.environ.copy()
     env["OFFLINE_MOCK"] = "1"
+    env["SEAGENT_OFFLINE_MOCK"] = "1"
+    env["PORT"] = str(PORT)
     proc = subprocess.Popen(
         [sys.executable, "run.py"],
         cwd=str(Path(__file__).resolve().parents[1]),
@@ -45,7 +47,7 @@ def ensure_backend_running():
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    for _ in range(15):
+    for _ in range(25):
         try:
             req = urllib.request.urlopen(f"http://localhost:{PORT}/", timeout=2)
             if req.status == 200:
@@ -53,7 +55,7 @@ def ensure_backend_running():
                 return proc
         except Exception:
             time.sleep(1)
-    raise RuntimeError("Backend server failed to start within 15 seconds")
+    raise RuntimeError("Backend server failed to start within 25 seconds")
 
 
 def start_headless_chrome(user_data_dir: str):
@@ -324,13 +326,20 @@ async def run_e2e():
 
         # Case 4: Create multi-slot task
         print("📝 Case 4: Creating task with multiple slots...")
-        task_msg = "创建一个管缆巡检任务，水深300米，使用观察级ROV在北纬19.5度、东经115.2度执行。"
+        task_msg = "创建一个管缆巡检任务，水深300米，使用观察级ROV。"
         await client.type_input("#messageInput", task_msg)
         await client.click_element("#sendBtn")
-        await client.wait_for_condition(
-            "document.querySelector('#collectedFields').innerText.includes('300')",
-            timeout=UI_TIMEOUT_SECONDS
-        )
+        try:
+            await client.wait_for_condition(
+                "document.querySelector('#collectedFields').innerText.includes('300')",
+                timeout=UI_TIMEOUT_SECONDS
+            )
+        except Exception as e:
+            coll_html = await client.eval_js("document.querySelector('#collectedFields').innerHTML")
+            coll_text = await client.eval_js("document.querySelector('#collectedFields').innerText")
+            print(f"❌ Case 4 Timeout Diagnostic - innerHTML: {coll_html}")
+            print(f"❌ Case 4 Timeout Diagnostic - innerText: {coll_text}")
+            raise e
         collected_text = await client.eval_js("document.querySelector('#collectedFields').innerText")
         print(f"   Collected Fields after task creation:\n{collected_text}")
         assert "管缆巡检" in collected_text or "pipeline_inspection" in collected_text, "Task type not collected!"

@@ -40,14 +40,15 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 LOCAL_MODEL_PATH = "/root/autodl-tmp/model/Qwen3.5-9B"
-PORT = 8890
+PORT = int(os.environ.get("PORT", "8890"))
 
 # ====================== 配置路径（与你的代码一致）======================
 CONFIG_DIR = Path(__file__).parent / "config"
 # ======================================================================
 
-os.system("pkill -f VLLM::EngineCore 2>/dev/null")
-os.system(f"fuser -k {PORT}/tcp 2>/dev/null")
+if not (os.environ.get("OFFLINE_MOCK") == "1" or os.environ.get("SEAGENT_OFFLINE_MOCK") == "1"):
+    os.system("pkill -f VLLM::EngineCore 2>/dev/null")
+    os.system(f"fuser -k {PORT}/tcp 2>/dev/null")
 
 
 def load_asr_service() -> ASRService:
@@ -80,7 +81,7 @@ def startup():
     sim_time.start()
     print("⏱️ 模拟时间模块已启动，当前时间:", sim_time.get_current_time().strftime("%Y-%m-%d %H:%M:%S"))
 
-    if os.environ.get("OFFLINE_MOCK") == "1":
+    if os.environ.get("OFFLINE_MOCK") == "1" or os.environ.get("SEAGENT_OFFLINE_MOCK") == "1":
         print("🛠️ OFFLINE_MOCK 模式开启，跳过 vLLM 和 ASR 模型物理加载！")
         kb = KnowledgeBase()
         llm_client = LLMClient(None, None)

@@ -216,7 +216,7 @@ class DialogueManager:
             reply = self._handle_knowledge_query(user_message, route)
         elif query_intent in ("TASK_STATUS", "DEVICE_STATUS", "ENVIRONMENT_QUERY"):
             reply = self._handle_status_query(user_message, route)
-        elif query_intent == "GENERAL_CHAT":
+        elif query_intent in ("GENERAL_CHAT", "CLARIFICATION"):
             reply = self._handle_general_chat(user_message, route)
         elif query_intent == "UNKNOWN":
             reply = self._handle_unknown_intent(user_message, route)
@@ -998,7 +998,32 @@ class DialogueManager:
                     new_unresolved.append(item)
 
         def reply_write_without_candidates() -> str:
-            reply = "我判断您可能是在提交任务信息，但本轮没有提取到可写入的合法字段。请换一种方式明确说明要创建的任务或要修改的参数。"
+            """Stage1 提取失败：引导用户明确选择支持的任务类型。"""
+            supported = self.kb.get_all_task_type_values()
+            supported_str = "、".join(supported) if supported else "管缆巡检、管缆埋设、采油树控制面板插入/拔出"
+            # 通过 Responder LLM 生成自然的引导回复，避免冷硬错误提示
+            guide_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是一个专业的水下多智能体任务决策大模型。"
+                        "用户希望创建任务，但系统暂时无法识别任务类型。"
+                        f"当前系统支持的任务类型有：{supported_str}。"
+                        "请友好、简洁地引导用户明确说明想要进行哪种具体任务类型，"
+                        "并列出所有支持的任务类型供用户选择。不要透露底座模型或实现细节。"
+                    ),
+                },
+                *self.conversation_history[-4:],
+                {"role": "user", "content": user_message},
+            ]
+            try:
+                reply = self.llm.chat(guide_messages, temperature=0.5, max_tokens=300)
+                reply = self.llm.filter_reply(reply)
+            except Exception:
+                reply = (
+                    f"您好！请问您想进行哪种水下作业任务？"
+                    f"当前系统支持：{supported_str}。请告知具体任务类型，我将帮您进一步填写参数。"
+                )
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
@@ -1452,7 +1477,6 @@ class DialogueManager:
             unresolved_inputs=turn_unresolved,
         )
         reply = self.llm.chat(messages, temperature=0.7, max_tokens=1500)
-        reply = self.llm.filter_reply(reply)
         reply = self.llm.filter_reply(reply)
         reply = self._ensure_constraint_details(reply, constraint_context)
 

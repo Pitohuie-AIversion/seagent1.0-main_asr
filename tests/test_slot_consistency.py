@@ -618,10 +618,14 @@ class SlotConsistencyTest(unittest.TestCase):
             "slot_candidates": [],
             "unresolved": []
         }
-        reply = self.dm.process("???")
-        self.assertEqual(self.dm.slot_store.version, initial_ver)
-        self.assertIn("对不起", reply)
-        assert_ssot_consistency(self, self.dm)
+        from src.intent_router import IntentRouteResult
+        with unittest.mock.patch.object(self.dm.intent_router, 'route', return_value=IntentRouteResult(
+            dialogue_mode="knowledge_qa", query_intent="UNKNOWN", confidence=1.0, interaction_type="query", reason="mock"
+        )):
+            reply = self.dm.process("???")
+            self.assertEqual(self.dm.slot_store.version, initial_ver)
+            self.assertIn("对不起", reply)
+            assert_ssot_consistency(self, self.dm)
 
     # 12. Mock 模式“你好”能够正常对话
     def test_12_mock_mode_greetings(self):
