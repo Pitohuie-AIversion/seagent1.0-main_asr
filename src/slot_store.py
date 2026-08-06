@@ -32,6 +32,48 @@ class SnapshotValidationError(ValueError):
     pass
 
 
+@dataclasses.dataclass
+class ValidationAcknowledgement:
+    constraint_id: str
+    acknowledged_at: str
+    task_version: int
+    validation_version: int
+    validation_fingerprint: str
+    status_ref: str
+    state_version: int
+    field: str = ""
+    value: Any = None
+
+    def to_dict(self) -> dict:
+        return {
+            "constraint_id": self.constraint_id,
+            "acknowledged_at": self.acknowledged_at,
+            "task_version": self.task_version,
+            "validation_version": self.validation_version,
+            "validation_fingerprint": self.validation_fingerprint,
+            "status_ref": self.status_ref,
+            "state_version": self.state_version,
+            "field": self.field,
+            "value": copy.deepcopy(self.value),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ValidationAcknowledgement":
+        if not isinstance(data, dict):
+            raise TypeError("ValidationAcknowledgement data must be a dictionary")
+        return cls(
+            constraint_id=str(data.get("constraint_id", "")),
+            acknowledged_at=str(data.get("acknowledged_at", "")),
+            task_version=int(data.get("task_version", 1)),
+            validation_version=int(data.get("validation_version", 1)),
+            validation_fingerprint=str(data.get("validation_fingerprint", "")),
+            status_ref=str(data.get("status_ref", "")),
+            state_version=int(data.get("state_version", 0)),
+            field=str(data.get("field", "")),
+            value=copy.deepcopy(data.get("value")),
+        )
+
+
 BASE_SLOT_TYPES = {
     "task_type": "string",
     "task_type_key": "string",
@@ -872,12 +914,38 @@ class SlotStore:
                     new_slots[key] = sdict.copy()
                     new_slots[key].slot_name = key
 
+            val_obj = None
+            if validation_data is not None:
+                if isinstance(validation_data, dict):
+                    try:
+                        from src.validator import ValidationResult
+                        val_obj = ValidationResult.from_dict(validation_data)
+                    except Exception as exc:
+                        raise SnapshotValidationError(f"Invalid validation_result format: {exc}")
+                elif hasattr(validation_data, "__dataclass_fields__"):
+                    val_obj = copy.deepcopy(validation_data)
+                else:
+                    raise SnapshotValidationError("validation must be a dictionary or ValidationResult.")
+
+            parsed_acks = []
+            if ack_data:
+                for a in ack_data:
+                    if isinstance(a, dict):
+                        try:
+                            parsed_acks.append(ValidationAcknowledgement.from_dict(a))
+                        except Exception as exc:
+                            raise SnapshotValidationError(f"Invalid validation_acknowledgements format: {exc}")
+                    elif hasattr(a, "__dataclass_fields__"):
+                        parsed_acks.append(copy.deepcopy(a))
+                    else:
+                        raise SnapshotValidationError("Each entry in validation_acknowledgements must be a dictionary or ValidationAcknowledgement.")
+
             self._initialize_base_slots(new_slots)
             self.slots = new_slots
             self.version = store_ver
             self.unresolved = copy.deepcopy(unresolved_data)
-            self.validation_result = copy.deepcopy(validation_data)
-            self.validation_acknowledgements = copy.deepcopy(ack_data or [])
+            self.validation_result = val_obj
+            self.validation_acknowledgements = parsed_acks
 
     @classmethod
     def from_snapshot(cls, snapshot: Dict[str, Any], kb=None):

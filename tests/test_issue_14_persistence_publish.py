@@ -16,14 +16,22 @@ from src.simulated_time import get_current_datetime
 
 
 @pytest.fixture
-def dm():
+def dm(tmp_path):
+    state_file = tmp_path / "state.yaml"
+    import shutil
+    shutil.copy("config/state.yaml", state_file)
     kb = KnowledgeBase()
+    kb.state_info.file_path = str(state_file)
     llm = LLMClient(None, None)
     return DialogueManager(llm, kb)
 
 
-def test_publish_saves_validation_traceability(dm, tmp_path):
+def test_publish_saves_validation_traceability(dm, tmp_path, monkeypatch):
     """测试最终发布的 TaskIntent 包含完整校验证据。"""
+    task_dir = tmp_path / "task_intents"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("src.task_intent_builder.get_task_dir", lambda create=True: task_dir)
+
     now_str = get_current_datetime().strftime("%Y-%m-%d %H:%M:%S")
     task_state = {
         "task_id": "PI-20260810-001",
@@ -52,16 +60,26 @@ def test_publish_saves_validation_traceability(dm, tmp_path):
         task_type_key="pipeline_inspection",
         intent_id="TI20260810001",
         validation_result=val_res,
+        validation_acknowledgements=[],
     )
 
-    assert "conditions" in prepared
-    cond = prepared["conditions"]
+    staging_path = builder.create_staging(prepared)
+    builder.publish_staging(staging_path, prepared)
+
+    # 读取最终发布在磁盘上的 JSON 文件
+    final_file = task_dir / f"task_intent_{prepared['intent_id']}.json"
+    assert final_file.exists()
+    published_json = json.loads(final_file.read_text(encoding="utf-8"))
+
+    assert "conditions" in published_json
+    cond = published_json["conditions"]
     assert "validation" in cond
     val_info = cond["validation"]
     assert val_info["overall_status"] == "valid"
     assert val_info["status_ref"] == "OBSROV-001"
     assert "state_version" in val_info
     assert "validation_version" in val_info
+    assert "validation_fingerprint" in val_info
     assert val_info["violations"] == []
 
 

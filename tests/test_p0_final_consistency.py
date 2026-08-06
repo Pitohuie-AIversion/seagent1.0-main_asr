@@ -136,7 +136,9 @@ class P0FinalConsistencyDefectTest(unittest.TestCase):
                 final_files_2 = list(tmp_path.glob("task_intent_*.json"))
                 self.assertEqual(len(final_files_2), 1)
 
+                print("REPLY:", repr(reply))
                 reply_pub = self.dm.process("确认发布")
+                print("REPLY_PUB:", repr(reply_pub))
                 self.assertEqual(self.dm.phase, "done")
                 final_files_3 = list(tmp_path.glob("task_intent_*.json"))
                 self.assertEqual(len(final_files_3), 2)

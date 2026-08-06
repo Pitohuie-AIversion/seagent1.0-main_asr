@@ -133,7 +133,7 @@ class RobotStateInfo:
         
         必须指定 unit_id 并精确匹配 fleet_units[*].unit_id。
         从匹配的 unit 获取 status_ref，读取 state。
-        不允许使用 family、型号或展示名称模糊查询。
+        不允许使用 status_ref、family、型号或展示名称模糊查询。
         状态不存在、结构非法、版本非法、时间戳非法时抛出类型化异常。
         """
         if not isinstance(unit_id, str) or not unit_id.strip():
@@ -145,14 +145,15 @@ class RobotStateInfo:
         matched_unit = None
         if isinstance(units, list):
             for u in units:
-                if isinstance(u, dict) and (u.get("unit_id") == clean_unit_id or u.get("status_ref") == clean_unit_id):
+                if isinstance(u, dict) and u.get("unit_id") == clean_unit_id:
                     matched_unit = u
                     break
         
         if matched_unit is None:
             raise StateSelectorError(f"未找到匹配的单机 ID: {clean_unit_id}")
             
-        status_ref = str(matched_unit.get("status_ref") or matched_unit.get("unit_id") or clean_unit_id)
+        canonical_unit_id = str(matched_unit["unit_id"])
+        status_ref = str(matched_unit.get("status_ref") or canonical_unit_id)
 
         with self._snapshot_lock(exclusive=False):
             snapshot = self._load_state_unlocked()
@@ -161,18 +162,23 @@ class RobotStateInfo:
             state = robots.get(status_ref)
             
         if not isinstance(state, dict):
-            raise StateSnapshotValidationError(f"单机 {clean_unit_id} (status_ref: {status_ref}) 的状态记录不存在或非字典")
+            raise StateSnapshotValidationError(f"单机 {canonical_unit_id} (status_ref: {status_ref}) 的状态记录不存在或非字典")
             
         version = state.get("version")
         if version is None or not isinstance(version, int) or isinstance(version, bool) or version < 0:
-            raise StateSnapshotValidationError(f"单机 {clean_unit_id} 状态版本非法: {version}")
+            raise StateSnapshotValidationError(f"单机 {canonical_unit_id} 状态版本非法: {version}")
             
         updated_at = state.get("updated_at") or state.get("update_timestamp")
         if not updated_at or not isinstance(updated_at, str):
-            raise StateSnapshotValidationError(f"单机 {clean_unit_id} 状态更新时间戳非法: {updated_at}")
+            raise StateSnapshotValidationError(f"单机 {canonical_unit_id} 状态更新时间戳非法: {updated_at}")
+        try:
+            clean_ts = updated_at.replace("Z", "+00:00")
+            datetime.fromisoformat(clean_ts)
+        except Exception as exc:
+            raise StateSnapshotValidationError(f"单机 {canonical_unit_id} 状态更新时间戳格式无法解析: '{updated_at}' ({exc})")
             
         return {
-            "unit_id": clean_unit_id,
+            "unit_id": canonical_unit_id,
             "status_ref": status_ref,
             "state_version": version,
             "store_version": store_version,

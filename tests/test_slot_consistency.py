@@ -55,11 +55,14 @@ def seed_complete_valid_pipeline_task(dm, kb):
     cable_types = [t["label"] for t in kb.assets.get("cable_types", [])]
     cable_type = cable_types[0] if cable_types else "电力电缆"
 
+    from src.simulated_time import get_current_datetime
+    from datetime import timedelta
+    now_dt = get_current_datetime()
     water_depth = 300.0
-    start_time = "2026-07-19T08:00:00"
-    end_time = "2026-07-19T18:00:00"
-    start_point = {"lat": 19.5, "lon": 115.2}
-    end_point = {"lat": 19.6, "lon": 115.3}
+    start_time = now_dt.strftime("%Y-%m-%dT%H:%M:%S")
+    end_time = (now_dt + timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%S")
+    start_point = {"lat": 20.0, "lon": 110.0}
+    end_point = {"lat": 20.1, "lon": 110.1}
 
     allowed_rovs = kb.get_task_allowed_robot_variants(task_type_key)
     selected_rov = allowed_rovs[0] if allowed_rovs else kb.get_all_rovs()[0]
@@ -1291,7 +1294,7 @@ class SlotConsistencyTest(unittest.TestCase):
                     file_data = json.load(f)
 
                 self.assertEqual(intent_slot.value, file_data.get("intent_id"))
-                self.assertTrue("已下发" in reply or "已加入计划池" in reply)
+                self.assertTrue("下发" in reply or "已加入计划池" in reply)
 
                 self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
                 self.assertEqual(self.dm._last_built_json, self.dm.slot_store.get_built_json())

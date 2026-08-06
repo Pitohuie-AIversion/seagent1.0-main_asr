@@ -29,7 +29,7 @@ import stat
 import uuid
 import logging
 import threading
-from typing import Any
+from typing import Any, Dict, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 from datetime import datetime, timezone
 
@@ -59,6 +59,7 @@ from .slot_store import (
     Slot,
     SlotStore,
     SnapshotValidationError,
+    ValidationAcknowledgement,
     normalize_slot_value_type,
     validate_specification_object,
     validate_specification_selector_input,
@@ -100,7 +101,11 @@ SOFT_IGNORE_KEYWORDS = {"忽略", "继续", "确认", "无视", "不管", "没�
 
 
 class DialogueManager:
-    def __init__(self, llm: LLMClient, kb: KnowledgeBase):
+    def __init__(self, llm: Optional[LLMClient] = None, kb: Optional[KnowledgeBase] = None):
+        if kb is None:
+            kb = KnowledgeBase()
+        if llm is None:
+            llm = LLMClient(None, None)
         self.llm = llm
         self.kb = kb
         self.extractor = ParameterExtractor(llm)
@@ -418,35 +423,47 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
+    def _refresh_validation(
+        self,
+        purpose: str = "interactive",
+        changed_fields: Optional[set[str]] = None,
+    ) -> Any:
+        """DialogueManager 的单一权威校验刷新入口。"""
+        task_ver = getattr(self.slot_store, "version", 1)
+        prev_res = getattr(self.slot_store, "validation_result", None)
+        res = self.validator.validate_task(
+            self.task_state,
+            task_version=task_ver,
+            previous_result=prev_res,
+            purpose=purpose,
+        )
+        self.slot_store.validation_result = res
+        return res
+
     def _handle_soft_warning_confirmation(self, user_message: str, request_id: str) -> str:
         """blocked_soft 阶段的确认/忽略处理。
 
         将已确认忽略的软警告录入 SlotStore.validation_acknowledgements 绑定快照版本，
         清除 _blocking_violations，然后根据缺失槽位决定进入 collecting 或 confirming。
         """
-        res = self.validator.validate_task(
-            self.task_state,
-            task_version=getattr(self.slot_store, "version", 1),
-            previous_result=getattr(self.slot_store, "validation_result", None),
-            purpose="interactive",
-        )
-        self.slot_store.validation_result = res
+        res = self._refresh_validation(purpose="interactive")
         status_ref = res.state_snapshot.get("status_ref") if res.state_snapshot else None
         state_ver = res.state_snapshot.get("state_version") if res.state_snapshot else None
 
         if self._blocking_violations:
             for v in self._blocking_violations:
                 if getattr(v, "severity", "soft") == "soft":
-                    ack = {
-                        "constraint_id": v.constraint_id,
-                        "task_version": res.task_version,
-                        "validation_version": res.validation_version,
-                        "validation_fingerprint": res.validation_fingerprint,
-                        "status_ref": status_ref,
-                        "state_version": state_ver,
-                        "observed_value": getattr(v, "observed_value", None),
-                        "acknowledged_at": get_current_datetime().isoformat(timespec="seconds"),
-                    }
+                    ack = ValidationAcknowledgement(
+                        constraint_id=v.constraint_id,
+                        acknowledged_at=get_current_datetime().isoformat(timespec="seconds"),
+                        task_version=res.task_version,
+                        validation_version=res.validation_version,
+                        validation_fingerprint=res.validation_fingerprint,
+                        status_ref=status_ref or "",
+                        state_version=state_ver or 0,
+                        field=getattr(v, "related_fields", [""])[0] if getattr(v, "related_fields", None) else "",
+                        value=getattr(v, "observed_value", None),
+                    )
                     if ack not in self.slot_store.validation_acknowledgements:
                         self.slot_store.validation_acknowledgements.append(ack)
                 for f in v.related_fields:
@@ -456,7 +473,8 @@ class DialogueManager:
             self._blocking_violations = []
 
         # 重新检查约束（使用白名单过滤后的结果）
-        all_violations = self.validator.validate(self.task_state)
+        res = self._refresh_validation(purpose="interactive")
+        all_violations = res.violations
         remaining_soft = [v for v in all_violations
                           if v.severity == "soft" and not self._is_whitelisted(v)]
         remaining_hard = [v for v in all_violations if v.severity == "hard"]
@@ -555,13 +573,7 @@ class DialogueManager:
                 return reply
 
         # 最终约束全量检查
-        val_res = self.validator.validate_task(
-            cand_state,
-            task_version=getattr(self.slot_store, "version", 1),
-            previous_result=getattr(self.slot_store, "validation_result", None),
-            purpose="publish",
-        )
-        self.slot_store.validation_result = val_res
+        val_res = self._refresh_validation(purpose="publish")
         all_violations = val_res.violations
         has_hard = self.validator.has_hard_violations(all_violations) or val_res.overall_status == "validation_error"
         unwhitelisted_soft = [v for v in all_violations if v.severity == "soft" and not self._is_whitelisted(v)]
@@ -636,6 +648,20 @@ class DialogueManager:
             cand_state = dict(self.task_state)
             cand_built = dict(self._last_built_json)
 
+            # TOCTOU 再次防线：在最终写盘发布前核对 state_version
+            if unit_id and val_res and getattr(val_res, "state_snapshot", None):
+                try:
+                    current_state_snap = self.kb.get_unit_state_snapshot(str(unit_id))
+                    if current_state_snap.get("state_version") != val_res.state_snapshot.get("state_version"):
+                        re_val_res = self._refresh_validation(purpose="publish")
+                        if re_val_res.overall_status in ("blocked_hard", "validation_error"):
+                            raise TaskPersistenceError(f"单机 {unit_id} 的状态遥测在确认发布过程中发生变更，触发硬性告警阻断。")
+                        val_res = re_val_res
+                except Exception as check_exc:
+                    if isinstance(check_exc, TaskPersistenceError):
+                        raise check_exc
+                    logger.warning(f"Publish state version race check skipped: {check_exc}")
+
             # 准备发布
             ti_builder = TaskIntentBuilder(self.kb)
             ti_json_artifact = ti_builder.prepare(
@@ -645,6 +671,7 @@ class DialogueManager:
                 task_type_key=task_type_key,
                 intent_id=intent_id,
                 validation_result=val_res,
+                validation_acknowledgements=self.slot_store.validation_acknowledgements,
             )
             staging_file = ti_builder.create_staging(ti_json_artifact)
             ti_builder.publish_staging(staging_file, ti_json_artifact)
@@ -2730,10 +2757,8 @@ class DialogueManager:
         if not changed_fields and self.phase not in ("blocked_hard", "blocked_soft"):
             return {"type": "none", "violations": [], "hard_refusal_counts": {}}
 
-        if self.phase in ("blocked_hard", "blocked_soft"):
-            new_violations = self.validator.validate(self.task_state)
-        else:
-            new_violations = self.validator.validate_for_fields(self.task_state, changed_fields)
+        val_res = self._refresh_validation(purpose="interactive", changed_fields=changed_fields)
+        new_violations = val_res.violations
 
         # 处理soft阻塞解除/升级为hard
         if self.phase == "blocked_soft":
@@ -2845,22 +2870,39 @@ class DialogueManager:
 
     def _is_whitelisted(self, v: Violation) -> bool:
         res = getattr(self.slot_store, "validation_result", None)
-        curr_fp = getattr(res, "validation_fingerprint", None) if res else None
-        curr_state_ver = res.state_snapshot.get("state_version") if (res and getattr(res, "state_snapshot", None)) else None
+        if res is None:
+            return False
+
+        curr_fp = getattr(res, "validation_fingerprint", None)
+        state_snap = getattr(res, "state_snapshot", None)
+        curr_state_ver = state_snap.get("state_version") if isinstance(state_snap, dict) else None
+        curr_status_ref = state_snap.get("status_ref") if isinstance(state_snap, dict) else None
+
+        if not curr_fp or curr_state_ver is None:
+            return False
 
         acks = getattr(self.slot_store, "validation_acknowledgements", [])
         for ack in acks:
-            if isinstance(ack, dict) and ack.get("constraint_id") == v.constraint_id:
-                if curr_fp and ack.get("validation_fingerprint") != curr_fp:
-                    continue
-                if curr_state_ver is not None and ack.get("state_version") != curr_state_ver:
-                    continue
+            ack_cid = getattr(ack, "constraint_id", None) if not isinstance(ack, dict) else ack.get("constraint_id")
+            if ack_cid != v.constraint_id:
+                continue
+
+            ack_tv = getattr(ack, "task_version", None) if not isinstance(ack, dict) else ack.get("task_version")
+            ack_vv = getattr(ack, "validation_version", None) if not isinstance(ack, dict) else ack.get("validation_version")
+            ack_fp = getattr(ack, "validation_fingerprint", None) if not isinstance(ack, dict) else ack.get("validation_fingerprint")
+            ack_sref = getattr(ack, "status_ref", None) if not isinstance(ack, dict) else ack.get("status_ref")
+            ack_sver = getattr(ack, "state_version", None) if not isinstance(ack, dict) else ack.get("state_version")
+
+            if (
+                ack_tv == getattr(res, "task_version", 1)
+                and ack_vv == getattr(res, "validation_version", 1)
+                and ack_fp == curr_fp
+                and ack_sref == curr_status_ref
+                and ack_sver == curr_state_ver
+            ):
                 return True
 
-        return any(
-            (f, str(self.task_state.get(f)), v.constraint_id) in self._soft_whitelist
-            for f in v.related_fields
-        )
+        return False
 
     @staticmethod
     def _is_business_identity_query(message: str) -> bool:
@@ -2945,10 +2987,10 @@ class DialogueManager:
             if violation.severity == "hard"
         ]
         if not violations:
+            val_res = self._refresh_validation(purpose="interactive")
             violations = [
-                violation
-                for violation in self.validator.validate(self.task_state)
-                if violation.severity == "hard"
+                v for v in val_res.violations
+                if v.severity == "hard"
             ]
 
         reply = "硬性约束不能通过确认或忽略警告绕过。请先修正以下问题后再发布任务。"

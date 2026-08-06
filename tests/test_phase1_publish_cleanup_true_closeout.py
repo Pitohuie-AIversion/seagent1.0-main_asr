@@ -582,6 +582,9 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
                 allowed_rovs = kb.get_task_allowed_robot_variants(task_type_key)
                 selected_rov = allowed_rovs[0] if allowed_rovs else kb.get_all_rovs()[0]
 
+                from src.simulated_time import get_current_datetime
+                from datetime import timedelta
+                now_dt = get_current_datetime()
                 slots_to_seed = {
                     "internal_id": ("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "string"),
                     "task_id": ("PB-20260718-001", "string"),
@@ -589,10 +592,11 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
                     "task_type": (task_type, "string"),
                     "cable_type": ("海底油气管道", "string"),
                     "water_depth": (150.0, "number"),
-                    "start_time": ("2026-07-19T08:00:00", "datetime"),
-                    "end_time": ("2026-07-19T18:00:00", "datetime"),
-                    "start_point": ({"lat": 19.5, "lon": 115.2}, "coord"),
-                    "end_point": ({"lat": 19.6, "lon": 115.3}, "coord"),
+                    "buried_depth": (2.0, "number"),
+                    "start_time": (now_dt.strftime("%Y-%m-%dT%H:%M:%S"), "datetime"),
+                    "end_time": ((now_dt + timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%S"), "datetime"),
+                    "start_point": ({"lat": 20.0, "lon": 110.0}, "coord"),
+                    "end_point": ({"lat": 20.1, "lon": 110.1}, "coord"),
                     "equipment_class": (selected_rov.get("robot_class") or "cable_burial_robot", "string"),
                     "equipment_family": (selected_rov.get("family_full_name") or selected_rov.get("family") or "Work Class ROV", "string"),
                     "equipment_specification": ({"type": "power_hp", "value": 1600, "unit": "hp", "display_value": "1600HP", "variant_id": selected_rov.get("variant_id", "crawler_heavy_seabed_robot_1600hp")}, "object"),

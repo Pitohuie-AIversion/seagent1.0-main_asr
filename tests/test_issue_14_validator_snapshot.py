@@ -12,8 +12,13 @@ from src.exceptions import StateSelectorError, StateSnapshotValidationError
 
 
 @pytest.fixture
-def kb():
-    return KnowledgeBase()
+def kb(tmp_path):
+    state_file = tmp_path / "state.yaml"
+    import shutil, os
+    shutil.copy("config/state.yaml", state_file)
+    kb_inst = KnowledgeBase()
+    kb_inst.state_info.file_path = str(state_file)
+    return kb_inst
 
 
 @pytest.fixture
@@ -23,14 +28,18 @@ def validator(kb):
 
 def test_get_unit_state_snapshot_strict(kb):
     """测试批次一：get_unit_state_snapshot 必须精确匹配 unit_id 且按 status_ref 读取。"""
-    # 假设 OBSROV-001 存在
-    snapshot = kb.get_unit_state_snapshot("OBSROV-001")
+    # 实体编号为 OBSROV--001
+    snapshot = kb.get_unit_state_snapshot("OBSROV--001")
     assert isinstance(snapshot, dict)
-    assert snapshot["unit_id"] == "OBSROV-001"
-    assert "status_ref" in snapshot
+    assert snapshot["unit_id"] == "OBSROV--001"
+    assert snapshot["status_ref"] == "OBSROV-001"
     assert "state_version" in snapshot
     assert "updated_at" in snapshot
     assert "state" in snapshot
+
+    # status_ref (OBSROV-001) 直接传入抛出 StateSelectorError（不再接受 status_ref 当作 unit_id 模糊入口）
+    with pytest.raises(StateSelectorError):
+        kb.get_unit_state_snapshot("OBSROV-001")
 
     # 不存在的 unit_id 抛出 StateSelectorError
     with pytest.raises(StateSelectorError):
@@ -46,7 +55,7 @@ def test_turbidity_and_velocity_thresholds(kb, validator):
     # 模拟为 OBSROV-001 设置遥测状态
     kb.state_info.set_status("OBSROV-001", {"turbidity": 7, "current_velocity": 0.7})
     task_state = {
-        "equipment_unit_id": "OBSROV-001",
+        "equipment_unit_id": "OBSROV--001",
         "task_type_key": "pipeline_inspection",
     }
     res = validator.validate_task(task_state)
@@ -88,10 +97,10 @@ def test_single_unit_isolation(kb, validator):
     assert res1.state_snapshot["unit_id"] == "LROV--001"
 
     # 选择 LROV-002，应触发 blocked_hard
-    task2 = {"equipment_unit_id": "LROV-002", "task_type_key": "pipeline_inspection"}
+    task2 = {"equipment_unit_id": "LROV--002", "task_type_key": "pipeline_inspection"}
     res2 = validator.validate_task(task2)
     assert res2.overall_status == "blocked_hard"
-    assert res2.state_snapshot["unit_id"] == "LROV-002"
+    assert res2.state_snapshot["unit_id"] == "LROV--002"
 
 
 def test_ambiguous_family_returns_validation_error(kb, validator):
@@ -114,7 +123,7 @@ def test_future_task_pending_runtime_validation(kb, validator):
     kb.state_info.set_status("OBSROV-001", {"current_velocity": 1.5})  # 当前强流
     future_time = "2099-01-01T12:00:00"
     task_state = {
-        "equipment_unit_id": "OBSROV-001",
+        "equipment_unit_id": "OBSROV--001",
         "task_type_key": "pipeline_inspection",
         "start_time": future_time,
     }

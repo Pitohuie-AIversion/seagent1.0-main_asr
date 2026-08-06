@@ -209,8 +209,9 @@ class TaskIntentBuilder:
         task_type_key: str,
         intent_id: Optional[str] = None,
         validation_result: Optional[Any] = None,
+        validation_acknowledgements: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """prepare() 不预留、不上盘、不修改 task_id 与 internal_id；若 task_id 或 internal_id 缺失或非法，fail closed。注意：若 intent_id 尚未指定，本函数会为 TaskIntent 预留并上盘 counter 生成 intent_id。"""
+        """prepare() 不预留、不上盘、不修改 task_id 与 internal_id；若 task_id 或 internal_id 缺失或非法，fail closed。"""
         if intent_id is not None:
             if not validate_intent_id(intent_id):
                 raise TaskPersistenceError(f"Invalid intent_id parameter: {intent_id}")
@@ -276,20 +277,45 @@ class TaskIntentBuilder:
 
         val_dict = {}
         if validation_result is not None:
-            if hasattr(validation_result, "overall_status"):
+            if hasattr(validation_result, "to_dict"):
+                val_dict = validation_result.to_dict()
+            elif hasattr(validation_result, "overall_status"):
                 state_snap = getattr(validation_result, "state_snapshot", None) or {}
+                raw_v = getattr(validation_result, "violations", [])
+                v_list = []
+                for v in raw_v:
+                    if hasattr(v, "to_dict"):
+                        v_list.append(v.to_dict())
+                    elif isinstance(v, dict):
+                        v_list.append(v)
+                    else:
+                        v_list.append({"constraint_id": str(v)})
                 val_dict = {
                     "overall_status": getattr(validation_result, "overall_status", "valid"),
                     "task_version": getattr(validation_result, "task_version", 1),
                     "validation_version": getattr(validation_result, "validation_version", 1),
+                    "validation_fingerprint": getattr(validation_result, "validation_fingerprint", ""),
                     "validated_at": getattr(validation_result, "validated_at", ""),
-                    "status_ref": state_snap.get("status_ref") if isinstance(state_snap, dict) else None,
-                    "state_version": state_snap.get("state_version") if isinstance(state_snap, dict) else None,
-                    "state_updated_at": state_snap.get("updated_at") if isinstance(state_snap, dict) else None,
-                    "violations": [v.constraint_id for v in getattr(validation_result, "violations", [])],
+                    "state_snapshot": copy.deepcopy(state_snap),
+                    "violations": v_list,
                 }
             elif isinstance(validation_result, dict):
-                val_dict = validation_result
+                val_dict = copy.deepcopy(validation_result)
+
+            state_snap = val_dict.get("state_snapshot") or {}
+            if isinstance(state_snap, dict):
+                val_dict["status_ref"] = state_snap.get("status_ref")
+                val_dict["state_version"] = state_snap.get("state_version")
+                val_dict["state_updated_at"] = state_snap.get("updated_at")
+
+        if validation_acknowledgements:
+            acks_list = []
+            for ack in validation_acknowledgements:
+                if hasattr(ack, "to_dict"):
+                    acks_list.append(ack.to_dict())
+                elif isinstance(ack, dict):
+                    acks_list.append(copy.deepcopy(ack))
+            val_dict["acknowledged_constraints"] = acks_list
 
         is_future = val_dict.get("overall_status") == "pending_runtime_validation"
 
