@@ -104,5 +104,19 @@ class TestFrontendIntegrity(unittest.TestCase):
         self.assertIn("</body>", self.html_content, "index.html is missing closing </body> tag")
         self.assertIn("</script>", self.html_content, "index.html is missing closing </script> tag")
 
+    def test_estimated_task_id_preview_contract(self):
+        """Assert static contract for task_id_preview rendering in frontend/js/index.js."""
+        js_path = self.root_dir / "frontend" / "js" / "index.js"
+        self.assertTrue(js_path.exists(), "frontend/js/index.js does not exist!")
+        with open(js_path, "r", encoding="utf-8") as f:
+            js_content = f.read()
+
+        self.assertIn("data.task_id_preview", js_content)
+        self.assertIn("officialTaskId", js_content)
+        self.assertIn("previewTaskId", js_content)
+        self.assertIn("预计", js_content)
+        self.assertIn("Estimated", js_content)
+        self.assertIn("const taskIdStr = officialTaskId || previewTaskId;", js_content)
+
 if __name__ == "__main__":
     unittest.main()

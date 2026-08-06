@@ -416,14 +416,18 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
                         if val is not None:
                             self.dm._soft_whitelist.add((f, str(val), v.constraint_id))
 
+            v_before = self.dm.slot_store.version
+            real_commit = self.dm.slot_store.commit_transaction
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
                  patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)), \
                  patch.object(self.dm.extractor, 'extract_updates') as mock_ext, \
-                 patch.object(self.dm.slot_store, 'commit_transaction') as mock_commit:
+                 patch.object(self.dm.slot_store, 'commit_transaction', wraps=real_commit) as mock_commit:
                 reply = self.dm.process("确认发布")
                 mock_ext.assert_not_called()
-                mock_commit.assert_not_called()
+                self.assertEqual(mock_commit.call_count, 1, "正式预约 task_id 应通过 SlotStore 单一事务提交")
                 self.assertEqual(self.dm.phase, "done")
+                self.assertEqual(self.dm.slot_store.version, v_before + 1)
+                self.assertEqual(self.dm.slot_store.slots["task_id"].status, "valid")
 
     def test_n17_non_confirming_confirm_publish_no_publish(self):
         """非确认阶段的'确认发布'不得发布"""

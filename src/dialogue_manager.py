@@ -145,6 +145,15 @@ class DialogueManager:
         self.last_mode_transition: dict | None = None
         self.mode_transition_history: list[dict] = []
 
+    @property
+    def task_id_preview(self) -> str | None:
+        """只读预览属性：草稿阶段预估的下一个任务业务编号（仅供 UI/API 展示）。"""
+        if self.slot_store:
+            slot = self.slot_store.slots.get("task_id")
+            if slot and slot.status == "candidate" and slot.candidate_value is not None:
+                return slot.candidate_value
+        return None
+
     def _switch_dialogue_mode(
         self,
         new_mode: str,
@@ -498,6 +507,7 @@ class DialogueManager:
         prev_phase = self.phase
         prev_snap = self.slot_store.export_snapshot()
         prev_whitelist = copy.deepcopy(self._soft_whitelist)
+        prev_missing = copy.deepcopy(self._last_missing)
         prev_pending_rov = copy.deepcopy(self._pending_rov_candidates)
         prev_blocking_violations = copy.deepcopy(self._blocking_violations)
         prev_hist = list(self.conversation_history)
@@ -512,10 +522,11 @@ class DialogueManager:
         has_hard = self.validator.has_hard_violations(all_violations)
         unwhitelisted_soft = [v for v in all_violations if v.severity == "soft" and not self._is_whitelisted(v)]
 
-        # 检查缺失
+        # 检查缺失（排除 auto 和 fixed 等由系统自动管理的字段，如 task_id）
         if task_type_key:
             req_schema = self.builder.get_schema(task_type_key, self.mode)
-            missing = self.slot_store.get_missing_slots(req_schema)
+            user_req_schema = [f for f in req_schema if f.get("type") not in ("auto", "fixed")]
+            missing = self.slot_store.get_missing_slots(user_req_schema)
         else:
             missing = [{"key": "task_type", "label": "任务类型"}]
 
@@ -557,21 +568,52 @@ class DialogueManager:
                 self.conversation_history.append({"role": "assistant", "content": reply})
                 return reply
 
-        # 准备发布
-        ti_builder = TaskIntentBuilder(self.kb)
-        ti_json_artifact = ti_builder.prepare(
-            task_state=cand_state,
-            built_json=cand_built,
-            mode=self.mode,
-            task_type_key=task_type_key,
-            intent_id=intent_id,
-        )
-        staging_file = ti_builder.create_staging(ti_json_artifact)
-
+        # 准备发布：正式且唯一预约任务业务编号（在跨进程锁内原子递增）。
+        # reserve_task_id() 的返回值是唯一权威正式编号，必须覆盖任何草稿阶段的 preview。
+        # 整个发布流程（reserve -> commit -> prepare -> staging -> publish）包含在单一 try...except 回滚保护块内。
         try:
+            official_task_id = self.builder.reserve_task_id(task_type_key)
+
+            # 正式编号通过 SlotStore 单一事务写入工作副本，维持 SSOT 与乐观锁 (store_version / version)
+            publish_slots = copy.deepcopy(self.slot_store.slots)
+            if "task_id" not in publish_slots:
+                publish_slots["task_id"] = Slot("task_id")
+            publish_slots["task_id"].value = official_task_id
+            publish_slots["task_id"].status = "valid"
+            publish_slots["task_id"].source = "auto_reserved"
+            publish_slots["task_id"].candidate_value = None
+            publish_slots["task_id"].raw_value = None
+            publish_slots["task_id"].value_type = "string"
+            publish_slots["task_id"].validation_error = None
+
+            expected_version = self.slot_store.version
+            self.slot_store.commit_transaction(
+                publish_slots,
+                list(self.slot_store.unresolved),
+                request_id=request_id,
+                expected_version=expected_version,
+            )
+
+            # 提交后从 SlotStore 统一重新派生权威状态，绝对不手工篡改各缓存副本
+            self.task_state = self.slot_store.get_task_state()
+            self._last_built_json = self.slot_store.get_built_json()
+
+            cand_state = dict(self.task_state)
+            cand_built = dict(self._last_built_json)
+
+            # 准备发布
+            ti_builder = TaskIntentBuilder(self.kb)
+            ti_json_artifact = ti_builder.prepare(
+                task_state=cand_state,
+                built_json=cand_built,
+                mode=self.mode,
+                task_type_key=task_type_key,
+                intent_id=intent_id,
+            )
+            staging_file = ti_builder.create_staging(ti_json_artifact)
             ti_builder.publish_staging(staging_file, ti_json_artifact)
         except Exception as exc:
-            # 回滚：保持原有回滚和错误处理
+            # 回滚：包含 reserve, commit_transaction, prepare, create_staging, publish_staging 在内的全流程失败保护
             self.phase = prev_phase
             self.final_result = None
 
@@ -592,9 +634,7 @@ class DialogueManager:
             self.conversation_history = prev_hist
             self.task_start_now = prev_task_start_now
 
-            if task_type_key:
-                required_schema = self.builder.get_schema(task_type_key, self.mode)
-                self._last_missing = self.slot_store.get_missing_slots(required_schema)
+            self._last_missing = prev_missing
 
             logger.error(
                 "TaskIntent publish failed: request_id=%s, task_id=%s, intent_id=%s, err_type=%s, err=%s, rollback_failed=%s",
@@ -858,7 +898,7 @@ class DialogueManager:
                 stage1_updates[k] = cand_info
                 merged_updates[k] = v
                 merged_updates_meta[k] = cand_info
-                
+
             self._apply_updates_in_transaction(stage1_updates, new_slots)
             record_unresolved(extraction_res)
 
@@ -1086,25 +1126,65 @@ class DialogueManager:
                 new_slots["internal_id"].value_type = "string"
 
             task_id_slot = new_slots.get("task_id")
-            if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None or not validate_task_id_for_task_type(str(task_id_slot.value), curr_task_type_key, self.kb.task_schemas):
-                valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
-                tid = self.builder.reserve_task_id(curr_task_type_key)
-                if "task_id" not in new_slots:
-                    new_slots["task_id"] = Slot("task_id")
-                new_slots["task_id"].value = tid
-                new_slots["task_id"].status = "valid"
-                new_slots["task_id"].source = "auto"
-                new_slots["task_id"].raw_value = None
-                new_slots["task_id"].value_type = "string"
+            # 草稿阶段仅预览编号：不消耗正式序号，不写 valid status。
+            # 只有当前没有任何 preview 或已有 valid 编号（来自正式 reserve）时才刷新预览。
+            # 正式编号在用户确认发布时由 _publish_confirmed_task 调用 reserve_task_id() 分配。
+            existing_valid = (
+                task_id_slot
+                and task_id_slot.status == "valid"
+                and task_id_slot.value is not None
+                and validate_task_id_for_task_type(str(task_id_slot.value), curr_task_type_key, self.kb.task_schemas)
+                and task_id_slot.source == "auto_reserved"  # 只有正式预约的才保留
+            )
+            if not existing_valid:
+                try:
+                    preview_id = self.builder.preview_task_id(curr_task_type_key)
+                except IdReservationError:
+                    # 底层 ID 序列配置错误或 counter 损坏时 Fail Closed，不吞异常
+                    raise
+                except Exception as _preview_err:
+                    logger.warning(
+                        "[DM] non-fatal preview_task_id failed for %s: %s", curr_task_type_key, _preview_err
+                    )
+                    preview_id = None
+                if preview_id is not None:
+                    if "task_id" not in new_slots:
+                        new_slots["task_id"] = Slot("task_id")
+                    # candidate_value: 预估编号，仅供展示，不进入 TaskIntent
+                    new_slots["task_id"].candidate_value = preview_id
+                    new_slots["task_id"].status = "candidate"
+                    new_slots["task_id"].source = "auto_preview"
+                    new_slots["task_id"].value = None          # 正式值为空，防止被 prepare() 误用
+                    new_slots["task_id"].raw_value = None
+                    new_slots["task_id"].value_type = "string"
+                    new_slots["task_id"].validation_error = None
 
         proposed_phase = self.phase
 
         # Check required missing in working new_slots
         if curr_task_type_key:
-            req_schema = self.builder.get_schema(curr_task_type_key, proposed_mode)
-            cand_missing = [f for f in req_schema if f.get("type") not in ("auto", "fixed") and (not new_slots.get(f["key"]) or new_slots[f["key"]].status != "valid" or new_slots[f["key"]].value is None)]
+            required_schema = self.builder.get_schema(curr_task_type_key, proposed_mode)
+            user_req_schema = [f for f in required_schema if f.get("type") not in ("auto", "fixed")]
+            built = self.slot_store.get_built_json()
+            missing = self.slot_store.get_missing_slots(
+                user_req_schema,
+                allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
+                    field,
+                    curr_task_type_key,
+                    self.task_state,
+                ),
+            )
+            self._last_missing = missing
+            cand_missing = [f for f in required_schema if f.get("type") not in ("auto", "fixed") and (not new_slots.get(f["key"]) or new_slots[f["key"]].status != "valid" or new_slots[f["key"]].value is None)]
         else:
-            cand_missing = [{"key": "task_type", "label": "任务类型", "type": "string", "allowed_values": self.kb.get_all_task_type_values()}]
+            built = {}
+            missing = [{"key": "task_type", "label": "任务类型", "type": "string",
+                        "allowed_values": self.kb.get_all_task_type_values()}]
+            self._last_missing = missing
+            cand_missing = missing
+
+        # 维持严格 SSOT：_last_built_json 完全由 self.slot_store.get_built_json() 派生
+        self._last_built_json = built
 
         # Auto-generate intent_id inside new_slots BEFORE commit when all required slots are present or when revising a done task
         if old_phase == "done" or (curr_task_type_key and not cand_missing):
@@ -1148,9 +1228,10 @@ class DialogueManager:
         self.task_state = self.slot_store.get_task_state()
         if curr_task_type_key:
             required_schema = self.builder.get_schema(curr_task_type_key, self.mode)
+            user_req_schema = [f for f in required_schema if f.get("type") not in ("auto", "fixed")]
             built = self.slot_store.get_built_json()
             missing = self.slot_store.get_missing_slots(
-                required_schema,
+                user_req_schema,
                 allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
                     field,
                     curr_task_type_key,
@@ -1166,6 +1247,7 @@ class DialogueManager:
         self._last_built_json = built
 
         self.task_start_now = self.is_start_time_near_now()
+
 
         pending_oilfield_reply = self._build_pending_oilfield_reply()
         if pending_oilfield_reply:
@@ -3172,6 +3254,8 @@ class DialogueManager:
         if cand_internal is not None:
             if not _ti_builder_module.validate_uuid4(str(cand_internal)):
                 raise SnapshotValidationError(f"Invalid internal_id UUIDv4 in candidate snapshot: {cand_internal}")
+            if cand_task_type_key is None:
+                raise SnapshotValidationError(f"internal_id {cand_internal} present in candidate snapshot but task_type_key is missing")
 
         if cand_task_id is not None:
             if not validate_task_id(str(cand_task_id)):
@@ -3180,10 +3264,8 @@ class DialogueManager:
                 raise SnapshotValidationError(f"task_id {cand_task_id} present in candidate snapshot but task_type_key is missing")
             if not validate_task_id_for_task_type(str(cand_task_id), cand_task_type_key, self.kb.task_schemas):
                 raise SnapshotValidationError(f"task_id {cand_task_id} does not match task_type_key {cand_task_type_key} in candidate snapshot")
-
-        if cand_task_id is not None or cand_internal is not None:
-            if cand_task_id is None or cand_internal is None or cand_task_type_key is None:
-                raise SnapshotValidationError("v2 candidate snapshot must contain internal_id, task_id, and task_type_key simultaneously")
+            if cand_internal is None or cand_task_type_key is None:
+                raise SnapshotValidationError("v2 candidate snapshot with valid task_id must contain internal_id, task_id, and task_type_key simultaneously")
 
         # 候选 SlotStore 完整校验通过后再一次性替换，避免半恢复状态泄漏。
         self.conversation_history = copy.deepcopy(conversation_history)
