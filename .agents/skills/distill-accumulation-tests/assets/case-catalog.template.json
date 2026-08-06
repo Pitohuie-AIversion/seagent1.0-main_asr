@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "suite": "replace-with-next-generation-suite-name",
+  "source_of_truth": "path/to/executable/runner",
+  "cases": [
+    {
+      "id": "CASE-001",
+      "title": "Replace with a concise scenario title",
+      "portable_invariant": "State the behavior without legacy endpoints, entities, coordinates, timestamps, or reply prose.",
+      "layers": ["routing"],
+      "outcome": "replace-with-stable-outcome",
+      "oracle": "structured",
+      "legacy_dependencies": ["path/to/legacy/config"],
+      "next_gen_status": "planned"
+    }
+  ]
+}

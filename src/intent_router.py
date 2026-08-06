@@ -379,23 +379,40 @@ class IntentRouter:
         """优先执行的确定性安全规则。"""
         msg = user_message.strip()
 
-        # 1. 优先提取明确的紧急干预动作（紧急控制最高优先级）
-        has_control_word = any(
-            kw in msg for kw in ("停止", "暂停", "取消", "终止", "撤销", "放弃")
+        # 0. 域外请求快速拦截：不含任何水下任务领域词，直接转知识问答
+        _DOMAIN_KEYWORDS = (
+            "ROV", "AUV", "HOV", "机器人", "潜水器", "管缆", "巡检", "埋设",
+            "采油树", "油田", "井口", "油气", "水下", "深海", "布放", "回收",
+            "任务", "发布", "slot", "槽位", "约束", "支持船", "母船", "设备",
+            "工具", "载荷", "payload", "声呐", "摄像", "推进器", "机械臂",
+            "海底", "海床", "水深", "流速", "浑浊", "障碍", "禁入区",
         )
-        if has_control_word:
-            action = self._parse_executable_control_action(msg)
-            if action is not None:
+        if not any(kw in msg for kw in _DOMAIN_KEYWORDS):
+            # 进一步排除：含有任务参数关键词的误判
+            _TASK_PATTERNS = (r"\d+米", r"\d+HP", r"优先级\s*\d", r"OBSROV", r"WROV", r"AUV-")
+            import re as _re_local
+            if not any(_re_local.search(p, msg) for p in _TASK_PATTERNS):
                 return IntentRouteResult(
                     interaction_type="QUERY",
-                    dialogue_mode="emergency_intervention",
-                    emergency_action=action,
-                    confidence=0.99,
-                    reason=f"规则确定性路由: 紧急介入动作【{action}】",
+                    dialogue_mode="knowledge_qa",
+                    confidence=0.90,
+                    reason="规则拦截: 域外请求（不含任何水下任务领域词）",
+                    query_intent="KNOWLEDGE_QA",
                     source="rule",
                 )
 
-        # 2. 非任务控制对象拦截
+        # 0b. "重新检查" 强制重新约束检查命令
+        if msg.strip() in ("重新检查", "重新检查约束", "重新验证", "刷新检查", "recheck"):
+            return IntentRouteResult(
+                interaction_type="WRITE",
+                dialogue_mode="task_collection",
+                confidence=0.95,
+                reason="规则识别: 强制重新约束检查命令",
+                query_intent=None,
+                source="rule",
+            )
+
+
         if any(
             kw in msg
             for kw in (
@@ -414,6 +431,22 @@ class IntentRouter:
                 dialogue_mode="knowledge_qa",
                 source="rule",
             )
+
+        # 1. 优先提取明确的紧急干预动作（紧急控制最高优先级）
+        has_control_word = any(
+            kw in msg for kw in ("停止", "暂停", "取消", "终止", "撤销", "放弃")
+        )
+        if has_control_word:
+            action = self._parse_executable_control_action(msg)
+            if action is not None:
+                return IntentRouteResult(
+                    interaction_type="QUERY",
+                    dialogue_mode="emergency_intervention",
+                    emergency_action=action,
+                    confidence=0.99,
+                    reason=f"规则确定性路由: 紧急介入动作【{action}】",
+                    source="rule",
+                )
 
         # 3. 含有控制词但整体为疑问/条件且未匹配独立紧急控制动作的否决分支
         is_question = bool(re.search(r"[呢吗？?]$", msg)) or any(

@@ -134,23 +134,41 @@ class FieldNormalizer:
 
     @staticmethod
     def _normalize_datetime(raw: Any) -> str | None:
-        """接受常见 ISO 日期时间写法，统一到无时区、秒级格式。"""
+        """接受常见 ISO 日期时间写法及相对时间写法，统一到无时区、秒级格式。"""
         if isinstance(raw, datetime):
             parsed = raw
         elif isinstance(raw, str):
             text = unicodedata.normalize("NFKC", raw).strip()
             if not text:
                 return None
-            try:
-                parsed = datetime.fromisoformat(text)
-            except ValueError:
-                return None
+            if text in {"现在", "当前", "立即"}:
+                parsed = get_current_datetime()
+            else:
+                rel_match = re.fullmatch(
+                    r"(?P<hours>\d+|[零〇一二两三四五六七八九十]+)(?:个)?小时后",
+                    text,
+                )
+                if rel_match:
+                    from .extractor import Extractor
+                    hours = Extractor._parse_explicit_integer(rel_match.group("hours"))
+                    if hours is not None:
+                        parsed = get_current_datetime() + timedelta(hours=hours)
+                    else:
+                        try:
+                            parsed = datetime.fromisoformat(text)
+                        except ValueError:
+                            return None
+                else:
+                    try:
+                        parsed = datetime.fromisoformat(text)
+                    except ValueError:
+                        return None
         else:
             return None
 
-        # 任务时间目前采用本地模拟时间，不允许带时区值混入后产生隐式换算。
         if parsed.tzinfo is not None:
-            return None
+            from zoneinfo import ZoneInfo
+            parsed = parsed.astimezone(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
         return parsed.replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%S")
 
     def _normalize_string(self, raw: str, allowed: list[str]) -> str | None:
