@@ -195,23 +195,26 @@ class OutputBuilder:
         if ftype == "list":
             if not raw:
                 return None
-            allowed = self._resolve_allowed(field_def, task_type_key, task_state)
             raw_list = [raw] if isinstance(raw, str) else (list(raw) if isinstance(raw, (list, tuple, set)) else None)
             if not raw_list:
                 return None
+            allowed = self._resolve_allowed(field_def, task_type_key, task_state)
             if not allowed:
-                return raw_list
-            valid: list[Any] = []
+                return list(raw_list)
+
             allowed_stripped_map = {str(item).replace(" ", ""): item for item in allowed}
+            valid_list = []
             for item in raw_list:
                 if item in allowed:
-                    if item not in valid:
-                        valid.append(item)
+                    valid_list.append(item)
                 elif isinstance(item, str) and item.replace(" ", "") in allowed_stripped_map:
                     matched = allowed_stripped_map[item.replace(" ", "")]
-                    if matched not in valid:
-                        valid.append(matched)
-            return valid if valid else None
+                    valid_list.append(matched)
+                else:
+                    # 任一元素非法 → 整个列表返回 None
+                    return None
+
+            return list(valid_list)
 
         return None
 

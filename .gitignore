@@ -27,3 +27,5 @@ outside/
 record/
 docs/regression_report.md
 full_test.log
+config/.state.yaml.lock
+config/*.lock

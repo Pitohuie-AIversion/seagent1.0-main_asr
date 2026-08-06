@@ -9,6 +9,17 @@ from src.simulated_time import get_current_datetime
 
 logger = logging.getLogger("backend.slot_store")
 
+_OPTIONAL_SUFFIXES = ("（可选）", "(可选)")
+
+
+def normalize_payload_match_key(value: str) -> str:
+    text = str(value or "").strip().lower().replace(" ", "")
+    for suffix in _OPTIONAL_SUFFIXES:
+        if text.endswith(suffix):
+            text = text[:-len(suffix)]
+            break
+    return text
+
 
 class SlotVersionConflict(RuntimeError):
     """Raised when commit_transaction detects a store version mismatch."""
@@ -410,6 +421,239 @@ class SlotStore:
                 key: copy.deepcopy(slot.to_dict())
                 for key, slot in self.slots.items()
             }
+
+    def apply_list_mutation(
+        self,
+        new_slots: Dict[str, Slot],
+        mutation: Dict[str, Any],
+        required_schema: Optional[List[Dict[str, Any]]] = None,
+        payload_catalog: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """统一列表增量修改入口（add/remove/replace/clear）。"""
+        field_name = mutation.get("field", "payload")
+        op = mutation.get("operation")
+        raw_text = mutation.get("raw_text", "")
+        confidence = mutation.get("confidence", 0.95)
+        source = mutation.get("source", "user_input")
+
+        if payload_catalog is None:
+            if self.kb and hasattr(self.kb, "assets") and isinstance(self.kb.assets, dict):
+                payload_catalog = self.kb.assets.get("payload_catalog", {})
+            else:
+                try:
+                    from .extractor import _load_payload_catalog
+                    payload_catalog = _load_payload_catalog()
+                except Exception:
+                    payload_catalog = {}
+
+        allowed_values = []
+        if required_schema:
+            for f in required_schema:
+                if f.get("key") == field_name:
+                    allowed_values = f.get("allowed_values") or []
+                    break
+
+        def _resolve(item_str: str) -> Tuple[Optional[str], Optional[str]]:
+            """解析项的 (catalog_id, task_canonical_name)。
+
+            P1-1: 第一优先级：检查 item_str 是否匹配当前任务 allowed_values（允许忽略“（可选）”等受控展示后缀）。
+            只有在用户输入未匹配 allowed_values 时，才退而使用 catalog 别名映射。
+            """
+            text = str(item_str or "").strip()
+            if not text:
+                return None, None
+
+            text_key = normalize_payload_match_key(text)
+
+            if allowed_values:
+                for a_val in allowed_values:
+                    if isinstance(a_val, str) and normalize_payload_match_key(a_val) == text_key:
+                        cat_id = None
+                        for c_id, info in payload_catalog.items():
+                            name = info.get("name", "")
+                            aliases = info.get("aliases") or []
+                            if any(cand and normalize_payload_match_key(cand) == text_key for cand in [name, *aliases]):
+                                cat_id = c_id
+                                break
+                        return cat_id, a_val
+
+            cat_id = None
+            cat_candidates = []
+            for c_id, info in payload_catalog.items():
+                name = info.get("name", "")
+                aliases = info.get("aliases") or []
+                all_cands = [name, *aliases]
+                for cand in all_cands:
+                    if cand and normalize_payload_match_key(cand) == text_key:
+                        cat_id = c_id
+                        cat_candidates = [c for c in all_cands if c]
+                        break
+                if cat_id:
+                    break
+
+            if not cat_candidates:
+                cat_candidates = [text]
+
+            if allowed_values:
+                for cand in cat_candidates:
+                    cand_key = normalize_payload_match_key(cand)
+                    for a_val in allowed_values:
+                        if isinstance(a_val, str) and normalize_payload_match_key(a_val) == cand_key:
+                            return cat_id, a_val
+                return cat_id, None
+
+            if cat_id and payload_catalog.get(cat_id, {}).get("name"):
+                return cat_id, payload_catalog[cat_id]["name"]
+            return cat_id, text
+
+        def _contains(item_list: List[str], target: str) -> bool:
+            t_id, t_name = _resolve(target)
+            for item in item_list:
+                i_id, i_name = _resolve(item)
+                if t_id and i_id and t_id == i_id:
+                    return True
+                if t_name and i_name and t_name.lower().replace(" ", "") == i_name.lower().replace(" ", ""):
+                    return True
+            return False
+
+        def _find_index(item_list: List[str], target: str) -> int:
+            t_id, t_name = _resolve(target)
+            for idx, item in enumerate(item_list):
+                i_id, i_name = _resolve(item)
+                if t_id and i_id and t_id == i_id:
+                    return idx
+                if t_name and i_name and t_name.lower().replace(" ", "") == i_name.lower().replace(" ", ""):
+                    return idx
+            return -1
+
+        slot = new_slots.get(field_name)
+        if slot is None:
+            slot = Slot(slot_name=field_name, value_type="list", status="missing")
+            new_slots[field_name] = slot
+
+        old_val = slot.value
+        if isinstance(old_val, list):
+            old_value = copy.deepcopy(old_val)
+        elif isinstance(old_val, str) and old_val.strip():
+            old_value = [old_val.strip()]
+        else:
+            old_value = []
+
+        temp_list = copy.deepcopy(old_value)
+
+        def _fail(op_name: str, err_msg: str) -> Dict[str, Any]:
+            slot.raw_value = raw_text
+            slot.source = source
+            slot.confidence = confidence
+            slot.validation_error = err_msg
+            return {
+                "success": False,
+                "changed": False,
+                "operation": op_name,
+                "old_value": old_value,
+                "new_value": old_value,
+                "error": err_msg,
+            }
+
+        if op == "add":
+            items = mutation.get("items") or []
+            new_canonicals = []
+            for item_raw in items:
+                cat_id, c_name = _resolve(item_raw)
+                if c_name is None:
+                    return _fail("add", f"添加的载荷 '{item_raw}' 非法或不属于当前任务允许范围")
+                new_canonicals.append(c_name)
+
+            for item_to_add in new_canonicals:
+                if item_to_add and not _contains(temp_list, item_to_add):
+                    temp_list.append(item_to_add)
+            new_value = temp_list
+
+        elif op == "remove":
+            targets = mutation.get("items") or mutation.get("target_items") or []
+            for target_raw in targets:
+                _, c_name = _resolve(target_raw)
+                target_to_remove = c_name or target_raw
+                idx = _find_index(temp_list, target_to_remove)
+                if idx < 0:
+                    return _fail("remove", f"待删除载荷 '{target_raw}' 不在当前列表中")
+                temp_list.pop(idx)
+            new_value = temp_list
+
+        elif op == "replace":
+            targets = mutation.get("target_items") or []
+            new_items_raw = mutation.get("items") or []
+
+            target_indices = []
+            for target_raw in targets:
+                _, c_name = _resolve(target_raw)
+                target_to_find = c_name or target_raw
+                idx = _find_index(temp_list, target_to_find)
+                if idx < 0:
+                    return _fail("replace", f"待替换的目标载荷 '{target_raw}' 不在当前列表中")
+                target_indices.append(idx)
+
+            new_canonicals = []
+            for n_raw in new_items_raw:
+                cat_id, n_cname = _resolve(n_raw)
+                if n_cname is None:
+                    return _fail("replace", f"替换的新载荷 '{n_raw}' 非法或不属于当前任务允许范围")
+                new_canonicals.append(n_cname)
+
+            for idx in sorted(set(target_indices), reverse=True):
+                temp_list.pop(idx)
+            for item_to_add in new_canonicals:
+                if item_to_add and not _contains(temp_list, item_to_add):
+                    temp_list.append(item_to_add)
+            new_value = temp_list
+
+        elif op == "clear":
+            slot.value = []
+            slot.value_type = "list"
+            slot.status = "missing"
+            slot.source = source
+            slot.raw_value = raw_text
+            slot.confidence = confidence
+            slot.candidate_value = None
+            slot.validation_error = None
+            return {
+                "success": True,
+                "changed": (old_value != []),
+                "operation": "clear",
+                "old_value": old_value,
+                "new_value": [],
+                "error": None,
+            }
+
+        else:
+            err = f"不支持的 list mutation 操作 '{op}'"
+            slot.validation_error = err
+            return {
+                "success": False,
+                "changed": False,
+                "operation": str(op),
+                "old_value": old_value,
+                "new_value": old_value,
+                "error": err,
+            }
+
+        slot.value = new_value
+        slot.value_type = "list"
+        slot.status = "candidate"
+        slot.source = source
+        slot.raw_value = raw_text
+        slot.confidence = confidence
+        slot.candidate_value = None
+        slot.validation_error = None
+
+        return {
+            "success": True,
+            "changed": (old_value != new_value),
+            "operation": op,
+            "old_value": old_value,
+            "new_value": new_value,
+            "error": None,
+        }
 
     def get_built_json(
         self,
