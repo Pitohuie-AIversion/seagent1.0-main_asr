@@ -102,6 +102,8 @@ class TestFrontendIntegrity(unittest.TestCase):
         self.assertIn("</html>", self.html_content, "index.html is missing closing </html> tag")
         self.assertIn("</head>", self.html_content, "index.html is missing closing </head> tag")
         self.assertIn("</body>", self.html_content, "index.html is missing closing </body> tag")
+        self.assertIn("</script>", self.html_content, "index.html is missing closing </script> tag")
+
     def test_estimated_task_id_preview_contract(self):
         """Assert static contract for task_id_preview rendering in frontend/js/index.js."""
         js_path = self.root_dir / "frontend" / "js" / "index.js"
