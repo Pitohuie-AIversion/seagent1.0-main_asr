@@ -40,7 +40,7 @@ from .knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from .extractor import ParameterExtractor
 from .normalizer import FieldNormalizer
 from .output_builder import OutputBuilder
-from .validator import TaskValidator, Violation
+from .validator import TaskValidator, Violation, ValidationResult
 from .prompts import (
     build_responder_messages,
     build_general_chat_messages,
@@ -440,6 +440,60 @@ class DialogueManager:
         self.slot_store.validation_result = res
         return res
 
+    def _get_valid_acknowledgements(
+        self,
+        validation_result: ValidationResult | None,
+    ) -> list[ValidationAcknowledgement]:
+        """
+        过滤并返回与当前 validation_result 完全匹配的有效确认。
+        至少匹配：
+        - constraint_id
+        - task_version
+        - validation_version
+        - validation_fingerprint
+        - status_ref
+        - state_version
+        - observed_value (or field/value)
+        """
+        if not validation_result or not self.slot_store.validation_acknowledgements:
+            return []
+
+        status_ref = (
+            validation_result.state_snapshot.get("status_ref", "")
+            if validation_result.state_snapshot
+            else ""
+        )
+        state_version = (
+            validation_result.state_snapshot.get("state_version", 0)
+            if validation_result.state_snapshot
+            else 0
+        )
+
+        violation_map = {
+            v.constraint_id: v for v in (validation_result.violations or [])
+        }
+
+        valid_acks = []
+        for ack in self.slot_store.validation_acknowledgements:
+            if not isinstance(ack, ValidationAcknowledgement):
+                continue
+            if ack.task_version != validation_result.task_version:
+                continue
+            if ack.validation_version != validation_result.validation_version:
+                continue
+            if ack.validation_fingerprint != validation_result.validation_fingerprint:
+                continue
+            if ack.status_ref != status_ref:
+                continue
+            if ack.state_version != state_version:
+                continue
+            if ack.constraint_id in violation_map:
+                v = violation_map[ack.constraint_id]
+                if ack.value != getattr(v, "observed_value", None) and ack.field not in getattr(v, "related_fields", []):
+                    continue
+            valid_acks.append(ack)
+        return valid_acks
+
     def _handle_soft_warning_confirmation(self, user_message: str, request_id: str) -> str:
         """blocked_soft 阶段的确认/忽略处理。
 
@@ -648,21 +702,36 @@ class DialogueManager:
             cand_state = dict(self.task_state)
             cand_built = dict(self._last_built_json)
 
-            # TOCTOU 再次防线：在最终写盘发布前核对 state_version
+            # TOCTOU 防线：在最终写盘发布前核对 state_version
             if unit_id and val_res and getattr(val_res, "state_snapshot", None):
                 try:
                     current_state_snap = self.kb.get_unit_state_snapshot(str(unit_id))
                     if current_state_snap.get("state_version") != val_res.state_snapshot.get("state_version"):
                         re_val_res = self._refresh_validation(purpose="publish")
+                        # 重新校验后执行全量门禁检查：
+                        # validation_error / blocked_hard -> 阻断并回滚
                         if re_val_res.overall_status in ("blocked_hard", "validation_error"):
-                            raise TaskPersistenceError(f"单机 {unit_id} 的状态遥测在确认发布过程中发生变更，触发硬性告警阻断。")
+                            raise TaskPersistenceError(f"单机 {unit_id} 的状态遥测在确认发布过程中发生变更，触发阻断告警。")
+                        elif re_val_res.overall_status == "blocked_soft":
+                            valid_acks = self._get_valid_acknowledgements(re_val_res)
+                            unacked = [
+                                v for v in (re_val_res.violations or [])
+                                if getattr(v, "severity", "") == "soft" and not any(a.constraint_id == v.constraint_id for a in valid_acks)
+                            ]
+                            if unacked:
+                                self.phase = "blocked_soft"
+                                self._blocking_violations = unacked
+                                raise TaskPersistenceError(f"单机 {unit_id} 的状态遥测在确认发布过程中发生变更，触发未确认的软性告警。")
+                        elif re_val_res.overall_status == "pending_runtime_validation" and is_now:
+                            raise TaskPersistenceError(f"单机 {unit_id} 的状态遥测在确认发布过程中发生变更，实时任务无法在缺乏遥测时发布。")
                         val_res = re_val_res
                 except Exception as check_exc:
                     if isinstance(check_exc, TaskPersistenceError):
                         raise check_exc
-                    logger.warning(f"Publish state version race check skipped: {check_exc}")
+                    raise TaskPersistenceError(f"发布前单机状态复核失败 (fail closed): {check_exc}") from check_exc
 
-            # 准备发布
+            # 准备发布：仅传入匹配当前 validation_result 的有效确认
+            valid_acknowledgements = self._get_valid_acknowledgements(val_res)
             ti_builder = TaskIntentBuilder(self.kb)
             ti_json_artifact = ti_builder.prepare(
                 task_state=cand_state,
@@ -671,13 +740,21 @@ class DialogueManager:
                 task_type_key=task_type_key,
                 intent_id=intent_id,
                 validation_result=val_res,
-                validation_acknowledgements=self.slot_store.validation_acknowledgements,
+                validation_acknowledgements=valid_acknowledgements,
             )
             staging_file = ti_builder.create_staging(ti_json_artifact)
-            ti_builder.publish_staging(staging_file, ti_json_artifact)
+
+            expected_state_ver = val_res.state_snapshot.get("state_version") if (val_res and val_res.state_snapshot) else None
+            if unit_id and expected_state_ver is not None and hasattr(self.kb, "state_info") and hasattr(self.kb.state_info, "guard_unit_state_version"):
+                with self.kb.state_info.guard_unit_state_version(str(unit_id), expected_state_ver):
+                    ti_builder.publish_staging(staging_file, ti_json_artifact)
+            else:
+                ti_builder.publish_staging(staging_file, ti_json_artifact)
         except Exception as exc:
             # 回滚：包含 reserve, commit_transaction, prepare, create_staging, publish_staging 在内的全流程失败保护
-            self.phase = prev_phase
+            target_phase = self.phase if self.phase == "blocked_soft" else prev_phase
+            target_blocking = copy.deepcopy(self._blocking_violations) if self.phase == "blocked_soft" else prev_blocking_violations
+            self.phase = target_phase
             self.final_result = None
 
             rollback_failed = False
@@ -693,7 +770,7 @@ class DialogueManager:
             self._last_built_json = self.slot_store.get_built_json()
             self._soft_whitelist = prev_whitelist
             self._pending_rov_candidates = prev_pending_rov
-            self._blocking_violations = prev_blocking_violations
+            self._blocking_violations = target_blocking
             self.conversation_history = prev_hist
             self.task_start_now = prev_task_start_now
 

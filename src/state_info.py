@@ -186,6 +186,56 @@ class RobotStateInfo:
             "state": copy.deepcopy(state),
         }
 
+    @contextmanager
+    def guard_unit_state_version(
+        self,
+        unit_id: str,
+        expected_state_version: int,
+    ) -> Iterator[None]:
+        """
+        在共享锁保护下确认 unit_id 的 state_version 与预期一致，
+        并在上下文退出前持续持有共享锁。
+        """
+        if not isinstance(unit_id, str) or not unit_id.strip():
+            raise StateSelectorError("unit_id 必须为非空字符串")
+
+        clean_unit_id = unit_id.strip()
+        fleet = self._load_fleet()
+        units = fleet.get("fleet_units", [])
+        matched_unit = None
+        if isinstance(units, list):
+            for u in units:
+                if isinstance(u, dict) and u.get("unit_id") == clean_unit_id:
+                    matched_unit = u
+                    break
+
+        if matched_unit is None:
+            raise StateSelectorError(f"未找到匹配的单机 ID: {clean_unit_id}")
+
+        canonical_unit_id = str(matched_unit["unit_id"])
+        status_ref = str(matched_unit.get("status_ref") or canonical_unit_id)
+
+        with self._snapshot_lock(exclusive=False):
+            snapshot = self._load_state_unlocked()
+            robots = snapshot.get("robots", {})
+            state = robots.get(status_ref)
+            if not isinstance(state, dict):
+                raise StateSnapshotValidationError(
+                    f"单机 {canonical_unit_id} (status_ref: {status_ref}) 的状态记录不存在或非字典"
+                )
+            current_version = state.get("version")
+            if current_version is None or not isinstance(current_version, int) or current_version < 0:
+                raise StateSnapshotValidationError(
+                    f"单机 {canonical_unit_id} 状态版本非法: {current_version}"
+                )
+            if current_version != expected_state_version:
+                raise StateVersionConflict(
+                    status_ref=status_ref,
+                    expected_version=expected_state_version,
+                    current_version=current_version,
+                )
+            yield
+
     def resolve_status_ref(self, equipment_selector: str) -> Optional[str]:
         if not isinstance(equipment_selector, str) or not equipment_selector.strip():
             return None

@@ -220,8 +220,19 @@ class TaskValidator:
                 }
 
         violations: list[Violation] = []
+        is_future_pending_telemetry = (
+            not is_now
+            and purpose != "runtime_execution"
+            and error_dict is not None
+            and error_dict.get("code") in ("INVALID_STATE_SNAPSHOT", "MISSING_TELEMETRY", "EXPIRED_TELEMETRY", "INVALID_STATE_DATA", "STATE_READ_FAILED")
+        )
+
         if error_dict is None:
             violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=state_snapshot)
+        elif is_future_pending_telemetry:
+            # 未来任务且已注册单机遥测缺失/过期：不阻断为 validation_error，按 pending_runtime_validation 处理
+            violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=None)
+            error_dict = None
         else:
             # 存在 validation_error 时，不得返回空违规列表
             err_violation = Violation(
@@ -385,33 +396,16 @@ class TaskValidator:
                         if err:
                             return None, err
                         return snapshot, None
+                except StateSelectorError as e:
+                    return None, {"code": "UNIT_NOT_FOUND", "message": f"未在系统中注册匹配单机 '{single_unit_id}': {e}"}
+                except StateSnapshotValidationError as e:
+                    return None, {"code": "INVALID_STATE_SNAPSHOT", "message": f"单机 '{single_unit_id}' 状态记录或结构不合法: {e}"}
                 except Exception as e:
                     return None, {"code": "STATE_READ_FAILED", "message": f"读取单机 '{single_unit_id}' 状态快照失败: {e}"}
             else:
                 rov_static = self.kb.get_rov(clean_selector) if hasattr(self.kb, "get_rov") else None
                 if not rov_static:
-                    # Legacy unit test fallback: self.kb.robot_state
-                    legacy_state = getattr(self.kb, "robot_state", None)
-                    if isinstance(legacy_state, dict) and legacy_state:
-                        return {
-                            "unit_id": clean_selector,
-                            "status_ref": clean_selector,
-                            "state_version": 1,
-                            "updated_at": get_current_datetime().isoformat(),
-                            "state": legacy_state,
-                        }, None
                     return None, {"code": "UNIT_NOT_FOUND", "message": f"未找到匹配的选择器或型号 '{clean_selector}'。"}
-
-        # Legacy unit test fallback: self.kb.robot_state
-        legacy_state = getattr(self.kb, "robot_state", None)
-        if isinstance(legacy_state, dict) and legacy_state:
-            return {
-                "unit_id": "legacy_robot_state",
-                "status_ref": "legacy_robot_state",
-                "state_version": 1,
-                "updated_at": get_current_datetime().isoformat(),
-                "state": legacy_state,
-            }, None
 
         return None, None
 

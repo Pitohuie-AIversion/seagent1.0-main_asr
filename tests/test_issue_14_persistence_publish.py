@@ -21,7 +21,7 @@ def dm(tmp_path):
     import shutil
     shutil.copy("config/state.yaml", state_file)
     kb = KnowledgeBase()
-    kb.state_info.file_path = str(state_file)
+    kb.state_info.state_file = state_file
     llm = LLMClient(None, None)
     return DialogueManager(llm, kb)
 

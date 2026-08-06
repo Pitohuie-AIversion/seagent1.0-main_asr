@@ -7,8 +7,19 @@ from src.knowledge_retriever import KnowledgeBase
 from src.validator import TaskValidator
 
 
-def test_future_task_missing_telemetry_returns_pending_runtime_validation():
+def test_future_task_missing_telemetry_returns_pending_runtime_validation(tmp_path):
+    state_file = tmp_path / "state.yaml"
+    import shutil
+    shutil.copy("config/state.yaml", state_file)
     kb = KnowledgeBase()
+    kb.state_info.state_file = state_file
+
+    # 明确删除目标 status_ref ("OBSROV-001") 的状态记录
+    snap = kb.state_info._load_state_unlocked()
+    if "robots" in snap and "OBSROV-001" in snap["robots"]:
+        del snap["robots"]["OBSROV-001"]
+        kb.state_info._save_state_unlocked(snap)
+
     validator = TaskValidator(kb)
 
     # 提交一个未来两周的任务
@@ -21,5 +32,5 @@ def test_future_task_missing_telemetry_returns_pending_runtime_validation():
     }
 
     res = validator.validate_task(task_state, purpose="interactive")
-    # 未来任务在缺乏当前具体执行环境时，不应当错判为 error，而应返回 pending_runtime_validation
-    assert res.overall_status in ("pending_runtime_validation", "warning", "valid")
+    # 未来任务在缺乏当前具体执行环境时，不应当错判为 error，而应精确返回 pending_runtime_validation
+    assert res.overall_status == "pending_runtime_validation"

@@ -17,7 +17,7 @@ def kb(tmp_path):
     import shutil, os
     shutil.copy("config/state.yaml", state_file)
     kb_inst = KnowledgeBase()
-    kb_inst.state_info.file_path = str(state_file)
+    kb_inst.state_info.state_file = state_file
     return kb_inst
 
 
