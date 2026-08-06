@@ -23,6 +23,7 @@ from src.dialogue_manager import DialogueManager
 from src.simulated_time import get_simulated_time
 from src.history_manager import save_conversation, list_history, load_history
 from src.asr_normalizer import normalize_terminology
+from src.ui_state_builder import build_frontend_ui_state
 from src.exceptions import (
     StatePersistenceError,
     StateSelectorError,
@@ -462,6 +463,9 @@ def api_chat():
             "session_id": sid,
             "request_id": request_id,
             "reply": reply,
+            # ui_state: 统一前端状态契约（Issue #31）
+            "ui_state": build_frontend_ui_state(mgr),
+            # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
             "done": mgr.phase == "done",
             "rejected": mgr.phase == "rejected",
             "collected": mgr._last_built_json,
@@ -561,6 +565,9 @@ def get_session_state():
         "code": 200,
         "exists": True,
         "session_id": sid,
+        # ui_state: 统一前端状态契约（Issue #31）
+        "ui_state": build_frontend_ui_state(mgr),
+        # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
         "done": mgr.phase == "done",
         "rejected": mgr.phase == "rejected",
         "collected": mgr._last_built_json,
@@ -895,6 +902,9 @@ def api_history_load():
         "code": 200,
         "session_id": sid,
         "conversation_history": mgr.conversation_history,
+        # ui_state: 统一前端状态契约（Issue #31）
+        "ui_state": build_frontend_ui_state(mgr),
+        # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
         "built_json": mgr._last_built_json,
         "missing": [miss["key"] for miss in mgr._last_missing],
         "task_type": mgr.task_state.get("task_type_key"),

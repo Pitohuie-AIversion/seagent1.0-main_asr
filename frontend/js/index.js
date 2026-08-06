@@ -13,6 +13,12 @@
 
     let sessionId = null;
     let isDone = false;
+    // Issue #31: 并发请求防重控制
+    let isSending = false;
+    let currentRequestSeq = 0;
+    let currentAbortController = null;
+    let currentActions = { can_send: true };
+    let currentReadOnly = false;
     let timeUpdateInterval = null;
     let isTimePickerEditing = false;
 
@@ -628,85 +634,252 @@ Please describe your task request or ask a question directly.`,
     <path d="M12 8v5M12 16h.01" stroke-width="2" />
   </svg>`;
 
+    /**
+     * applyInteractionState - 集中控制所有可交互元素的状态。
+     * Issue #31: 前端不再自行从 missing.length 或本地变量推断按钮状态。
+     * @param {Object} actions  - ui_state.actions
+     * @param {boolean} readOnly - ui_state.read_only
+     */
+    function applyInteractionState(actions, readOnly) {
+      currentActions = actions || { can_send: true };
+      currentReadOnly = !!readOnly;
+      const canSend = !!currentActions.can_send && !currentReadOnly && !isSending;
+      messageInput.disabled = !canSend;
+      sendBtn.disabled = !canSend;
+      voiceBtn.disabled = !canSend;
+      isDone = currentReadOnly;
+    }
+
+    function cancelActiveRequest() {
+      currentRequestSeq += 1;
+      if (currentAbortController) {
+        try { currentAbortController.abort(); } catch (e) {}
+      }
+      currentAbortController = null;
+      isSending = false;
+      applyInteractionState(currentActions, currentReadOnly);
+    }
+
+
+    /**
+     * updateSidebar - 渲染任务字段面板。
+     * Issue #31: 优先使用 data.ui_state（新路径），降级到旧 collected/missing 字段（compat 路径）。
+     */
     function updateSidebar(data) {
       lastResponseData = data;
 
-      // 任务类型显示：优先从 collected 里取 task_type 字段（已规范化的中文值）
-      // 若 collected 没有，则用后端返回的 task_type key 做映射
-      const collected = data.collected || {};
+      const uiState = data.ui_state;
+
+      // ── 任务类型和 ID ──────────────────────────────────────────────
       let taskTypeDisplay = '未识别';
-      if (collected.task_type) {
-        taskTypeDisplay = collected.task_type;
-      } else if (data.task_type === 'tree_valve_operation') {
-        taskTypeDisplay = '采油树控制面板插拔';
-      } else if (data.task_type === 'pipeline_inspection') {
-        taskTypeDisplay = '管缆巡检';
-      } else if (data.task_type) {
-        // 其他任务类型 key 直接展示
-        taskTypeDisplay = data.task_type;
+      let displayedTaskId = '';
+      let isEmergency = false;
+      let taskIdIsPreview = false;
+
+      if (uiState) {
+        const ttk = uiState.task_type_key;
+        const taskTypeSlot = Array.isArray(uiState.slots) ? uiState.slots.find(slot => slot.key === 'task_type') : null;
+        const taskTypeValue = taskTypeSlot && taskTypeSlot.status !== 'missing' ? (taskTypeSlot.candidate_value ?? taskTypeSlot.value) : null;
+        if (taskTypeValue) taskTypeDisplay = String(taskTypeValue);
+        else if (ttk) taskTypeDisplay = String(ttk);
+        if (uiState.task_id) {
+          displayedTaskId = uiState.task_id;
+        } else if (uiState.task_id_preview) {
+          displayedTaskId = uiState.task_id_preview;
+          taskIdIsPreview = true;
+        }
+        isEmergency = uiState.mode === 'emergency' || uiState.dialogue_mode === 'emergency_intervention';
+      } else {
+        const collected = data.collected || {};
+        if (collected.task_type) {
+          taskTypeDisplay = collected.task_type;
+        } else if (data.task_type === 'tree_valve_operation') {
+          taskTypeDisplay = '采油树控制面板插拔';
+        } else if (data.task_type === 'pipeline_inspection') {
+          taskTypeDisplay = '管缆巡检';
+        } else if (data.task_type) {
+          taskTypeDisplay = data.task_type;
+        }
+        const officialTaskId = (data.collected && data.collected.task_id) ? data.collected.task_id : (data.task_id || '');
+        const previewTaskId = officialTaskId ? '' : (data.task_id_preview || '');
+        const taskIdStr = officialTaskId || previewTaskId;
+        displayedTaskId = taskIdStr;
+        taskIdIsPreview = !!previewTaskId;
+        isEmergency = !!data.emergency;
       }
 
-      const localizedTaskType = translateValue('task_type', taskTypeDisplay);
-      const emergencyBadge = data.emergency ? `<span class="badge emergency">${I18N[currentLang].emergencyBadge}</span>` : '';
-      const officialTaskId =
-        (collected && collected.task_id)
-          ? collected.task_id
-          : (data.task_id || '');
-
-      const previewTaskId =
-        officialTaskId
-          ? ''
-          : (data.task_id_preview || '');
-
-      const taskIdStr = officialTaskId || previewTaskId;
-
-      const taskIdPrefix = previewTaskId
-        ? (currentLang === 'zh' ? '预计 ' : 'Estimated ')
-        : '';
-
-      const taskIdBadge = taskIdStr
-        ? `<span class="badge task-id" style="background: rgba(0, 240, 255, 0.15); border: 1px solid rgba(0, 240, 255, 0.4); color: var(--accent-color, #00f0ff); margin-left: 6px; font-family: monospace; font-size: 0.85em; padding: 2px 6px; border-radius: 4px;">${taskIdPrefix}${escapeHtml(taskIdStr)}</span>`
-        : '';
-      document.getElementById('taskInfo').innerHTML = `<strong>${localizedTaskType}</strong>${taskIdBadge} ${emergencyBadge}`;
+      const localizedTaskType = uiState ? String(taskTypeDisplay) : translateValue('task_type', taskTypeDisplay);
+      const taskIdPrefix = taskIdIsPreview ? (currentLang === 'zh' ? '预计 ' : 'Estimated ') : '';
+      const taskInfo = document.getElementById('taskInfo');
+      taskInfo.replaceChildren();
+      const typeElement = document.createElement('strong');
+      typeElement.textContent = localizedTaskType;
+      taskInfo.appendChild(typeElement);
+      if (displayedTaskId) {
+        const taskIdElement = document.createElement('span');
+        taskIdElement.className = 'badge task-id';
+        taskIdElement.style.cssText = 'background: rgba(0, 240, 255, 0.15); border: 1px solid rgba(0, 240, 255, 0.4); color: var(--accent-color, #00f0ff); margin-left: 6px; font-family: monospace; font-size: 0.85em; padding: 2px 6px; border-radius: 4px;';
+        taskIdElement.textContent = `${taskIdPrefix}${displayedTaskId}`;
+        taskInfo.appendChild(taskIdElement);
+      }
+      if (isEmergency) {
+        const emergencyElement = document.createElement('span');
+        emergencyElement.className = 'badge emergency';
+        emergencyElement.textContent = I18N[currentLang].emergencyBadge;
+        taskInfo.appendChild(emergencyElement);
+      }
 
       const collectedDiv = document.getElementById('collectedFields');
-      if (Object.keys(collected).length === 0) {
-        collectedDiv.innerHTML = I18N[currentLang].none;
-      } else {
-        let html = '';
-        for (const [k, v] of Object.entries(collected)) {
-          const label = getFieldLabel(k);
-          const translatedVal = translateValue(k, v);
-          html += `
-        <div class="field-row">
-          <span class="field-label">${label}</span>
-          <span class="field-value">${escapeHtml(translatedVal)}</span>
-        </div>
-      `;
-        }
-        collectedDiv.innerHTML = html;
-      }
-
-
-
-      const missing = data.missing || [];
       const missingDiv = document.getElementById('missingFields');
-      if (missing.length === 0 && Object.keys(collected).length > 0) {
-        missingDiv.innerHTML = I18N[currentLang].allCollected;
-      } else {
-        let html = '';
-        for (const m of missing) {
-          const label = getFieldLabel(m);
-          html += `<div class="field-row missing">${svgWarning}${label}</div>`;
+
+      if (uiState) {
+        // ── 新路径：按 ui_state.slots 渲染字段面板 ───────────────────────
+        const slots = Array.isArray(uiState.slots) ? uiState.slots : [];
+        const validSlots = slots.filter(s => s.status === 'valid');
+        const candSlots = slots.filter(s => ['candidate', 'pending', 'conflict', 'unresolved'].includes(s.status));
+        const invalidSlots = slots.filter(s => s.status === 'invalid');
+        const missingSlots = slots.filter(s => s.status === 'missing');
+
+        if (validSlots.length === 0 && candSlots.length === 0 && invalidSlots.length === 0) {
+          collectedDiv.innerHTML = I18N[currentLang].none;
+        } else {
+          let html = '';
+          for (const slot of [...validSlots, ...candSlots, ...invalidSlots]) {
+            const labelObj = slot.label || {};
+            const label = (typeof labelObj === 'string') ? labelObj : (labelObj[currentLang] || labelObj.zh || slot.key);
+            const statusClass = slot.status === 'valid' ? 'valid' : (slot.status === 'invalid' ? 'invalid' : 'candidate');
+            const statusIcon = slot.status === 'valid' ? '✅' : (slot.status === 'invalid' ? '❌' : '⏳');
+
+            const isCandidate = ['candidate', 'pending', 'conflict', 'unresolved'].includes(slot.status);
+            const slotValue = isCandidate ? (slot.candidate_value ?? slot.value) : slot.value;
+            const row = document.createElement('div');
+            row.className = `field-row ${statusClass}`;
+            const labelSpan = document.createElement('span');
+            labelSpan.className = 'field-label';
+            labelSpan.textContent = `${statusIcon} ${label}`;
+            const valueSpan = document.createElement('span');
+            valueSpan.className = 'field-value';
+            if (Array.isArray(slotValue)) {
+              const valueList = document.createElement('ul');
+              for (const value of slotValue) {
+                const valueItem = document.createElement('li');
+                valueItem.textContent = translateValue(slot.key, value);
+                valueList.appendChild(valueItem);
+              }
+              valueSpan.appendChild(valueList);
+            } else {
+              valueSpan.textContent = slotValue !== null && slotValue !== undefined ? translateValue(slot.key, slotValue) : (currentLang === 'zh' ? '暂无' : 'None');
+            }
+            row.appendChild(labelSpan);
+            row.appendChild(valueSpan);
+
+            if (slot.validation_error) {
+              const errEl = document.createElement('div');
+              errEl.className = 'field-error';
+              errEl.style.cssText = 'color: var(--error-color, #ff4d4d); font-size: 0.8em; margin-top: 2px;';
+              errEl.textContent = slot.validation_error;
+              row.appendChild(errEl);
+            }
+            html += row.outerHTML;
+          }
+          collectedDiv.innerHTML = html;
         }
-        missingDiv.innerHTML = html;
+
+        // 阶段 badge + 约束状态 + 缺失字段
+        const phase = uiState.phase;
+        const taskPhaseLabels = currentLang === 'zh' ? { collecting: '任务收集', confirming: '待确认', blocked_soft: '软警告', blocked_hard: '硬阻断', done: '已完成', rejected: '已拒绝' } : { collecting: 'Task collection', confirming: 'Confirming', blocked_soft: 'Soft warning', blocked_hard: 'Hard blocked', done: 'Done', rejected: 'Rejected' };
+        let phaseLabel = taskPhaseLabels[phase] || phase;
+        if (uiState.dialogue_mode === 'knowledge_qa') phaseLabel = currentLang === 'zh' ? '知识问答' : 'Knowledge Q&A';
+        if (uiState.dialogue_mode === 'emergency_intervention' || uiState.mode === 'emergency') phaseLabel = currentLang === 'zh' ? '紧急模式' : 'Emergency';
+        const phasePrefix = currentLang === 'zh' ? '阶段：' : 'Phase: ';
+        let missingHtml = `<div class="phase-badge" style="margin-bottom:6px; font-size:0.8em; opacity:0.7;">${phasePrefix}${phaseLabel}</div>`;
+
+        const cs = uiState.constraint_state || {};
+        if (cs.hard_violations && cs.hard_violations.length > 0) {
+          missingHtml += `<div class="constraint-block hard" style="background: rgba(255,77,77,0.1); border: 1px solid rgba(255,77,77,0.4); border-radius:6px; padding:8px; margin-bottom:6px;"><div style="color:#ff4d4d; font-weight:600; margin-bottom:4px;">⛔ 硬约束</div>`;
+          for (const v of cs.hard_violations) {
+            const nameEl = document.createElement('div');
+            nameEl.style.cssText = 'font-size:0.85em; margin-bottom:2px;';
+            nameEl.textContent = `[${v.code || ''}] ${v.message || ''}`;
+            missingHtml += nameEl.outerHTML;
+          }
+          missingHtml += '</div>';
+        }
+
+        if (cs.soft_warnings && cs.soft_warnings.length > 0) {
+          missingHtml += `<div class="constraint-block soft" style="background: rgba(255,190,0,0.1); border: 1px solid rgba(255,190,0,0.4); border-radius:6px; padding:8px; margin-bottom:6px;"><div style="color:#ffbe00; font-weight:600; margin-bottom:4px;">⚠️ 软警告</div>`;
+          for (const v of cs.soft_warnings) {
+            const nameEl = document.createElement('div');
+            nameEl.style.cssText = 'font-size:0.85em; margin-bottom:2px;';
+            nameEl.textContent = `[${v.code || ''}] ${v.message || ''}`;
+            missingHtml += nameEl.outerHTML;
+          }
+          if (uiState.actions && uiState.actions.can_ignore_soft_warning) {
+            missingHtml += `<div style="margin-top:6px; font-size:0.8em; opacity:0.7;">输入"忽略警告"可继续。</div>`;
+          }
+          missingHtml += '</div>';
+        }
+
+        if (missingSlots.length === 0 && validSlots.length > 0 && candSlots.length === 0 && invalidSlots.length === 0) {
+          missingHtml += I18N[currentLang].allCollected;
+        } else {
+          for (const slot of missingSlots) {
+            const labelObj = slot.label || {};
+            const label = (typeof labelObj === 'string') ? labelObj : (labelObj[currentLang] || labelObj.zh || slot.key);
+            const row = document.createElement('div');
+            row.className = 'field-row missing';
+            row.innerHTML = svgWarning;
+            const labelEl = document.createElement('span');
+            labelEl.textContent = label;
+            row.appendChild(labelEl);
+            missingHtml += row.outerHTML;
+          }
+        }
+        missingDiv.innerHTML = missingHtml;
+
+      } else {
+        // ── compat 路径：旧 collected/missing 字段 ────────────────────────
+        const collected = data.collected || {};
+        if (Object.keys(collected).length === 0) {
+          collectedDiv.innerHTML = I18N[currentLang].none;
+        } else {
+          let html = '';
+          for (const [k, v] of Object.entries(collected)) {
+            const label = getFieldLabel(k);
+            const translatedVal = translateValue(k, v);
+            html += `
+          <div class="field-row">
+            <span class="field-label">${label}</span>
+            <span class="field-value">${escapeHtml(translatedVal)}</span>
+          </div>
+        `;
+          }
+          collectedDiv.innerHTML = html;
+        }
+        const missing = data.missing || [];
+        if (missing.length === 0 && Object.keys(collected).length > 0) {
+          missingDiv.innerHTML = I18N[currentLang].allCollected;
+        } else {
+          let html = '';
+          for (const m of missing) {
+            const label = getFieldLabel(m);
+            html += `<div class="field-row missing">${svgWarning}${label}</div>`;
+          }
+          missingDiv.innerHTML = html;
+        }
       }
 
-      if (data.final_json) {
+      const finalJson = data.final_json || (uiState && uiState.phase === 'done' ? data.built_json : null);
+      if (finalJson) {
         document.getElementById('resultCard').style.display = 'block';
-        document.getElementById('finalJson').innerText = JSON.stringify(data.final_json, null, 2);
+        document.getElementById('finalJson').innerText = JSON.stringify(finalJson, null, 2);
       } else {
         document.getElementById('resultCard').style.display = 'none';
+      }
+
+      // Issue #31: 集中应用交互状态
+      if (uiState && uiState.actions) {
+        applyInteractionState(uiState.actions, uiState.read_only);
       }
     }
 
@@ -1008,6 +1181,11 @@ Please describe your task request or ask a question directly.`,
     }
 
     async function restoreHistory(historyId) {
+      cancelActiveRequest();
+      isSending = true;
+      applyInteractionState(currentActions, currentReadOnly);
+      const restoreSeq = currentRequestSeq;
+      currentAbortController = new AbortController();
       let effectiveSessionId = sessionId;
       if (!effectiveSessionId) {
         effectiveSessionId = 'temp_' + Date.now();
@@ -1017,9 +1195,11 @@ Please describe your task request or ask a question directly.`,
         const res = await fetch(API_BASE + '/api/history/load', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ history_id: historyId, session_id: effectiveSessionId })
+          body: JSON.stringify({ history_id: historyId, session_id: effectiveSessionId }),
+          signal: currentAbortController.signal,
         });
         const data = await res.json();
+        if (restoreSeq !== currentRequestSeq) return;
         if (data.code !== 200) {
           alert(I18N[currentLang].restoreFailed + (data.msg || 'unknown'));
           return;
@@ -1032,25 +1212,34 @@ Please describe your task request or ask a question directly.`,
           addMessage(msg.role, msg.content);
         }
 
-        const isCompleted = (data.phase === 'done');
-        updateSidebar({
-          task_type: data.task_type,
-          emergency: data.mode === 'emergency',
-          collected: data.built_json,
-          missing: data.missing,
-          final_json: isCompleted ? data.built_json : null
-        });
-
-        if (isCompleted) {
-          document.getElementById('resultCard').style.display = 'block';
-          document.getElementById('finalJson').innerText = JSON.stringify(data.built_json, null, 2);
-          messageInput.disabled = true;
-          sendBtn.disabled = true;
-          addMessage('bot', I18N[currentLang].historyLoadedReadOnly);
+        // Issue #31: 优先使用 ui_state 恢复状态
+        if (data.ui_state) {
+          updateSidebar(data);
+          // applyInteractionState 已在 updateSidebar 内调用
+          if (data.ui_state.phase === 'done' || data.ui_state.read_only) {
+            addMessage('bot', I18N[currentLang].historyLoadedReadOnly);
+          }
         } else {
-          document.getElementById('resultCard').style.display = 'none';
-          messageInput.disabled = false;
-          sendBtn.disabled = false;
+          // compat 路径
+          const isCompleted = (data.phase === 'done');
+          updateSidebar({
+            task_type: data.task_type,
+            emergency: data.mode === 'emergency',
+            collected: data.built_json,
+            missing: data.missing,
+            final_json: isCompleted ? data.built_json : null
+          });
+          if (isCompleted) {
+            document.getElementById('resultCard').style.display = 'block';
+            document.getElementById('finalJson').innerText = JSON.stringify(data.built_json, null, 2);
+            messageInput.disabled = true;
+            sendBtn.disabled = true;
+            addMessage('bot', I18N[currentLang].historyLoadedReadOnly);
+          } else {
+            document.getElementById('resultCard').style.display = 'none';
+            messageInput.disabled = false;
+            sendBtn.disabled = false;
+          }
         }
 
         document.getElementById('historyList').style.display = 'none';
@@ -1061,19 +1250,27 @@ Please describe your task request or ask a question directly.`,
     }
 
     async function sendMessage(msg, options = {}) {
-      if (!msg.trim() || isDone) return;
+      // Issue #31: isSending 防重发送
+      if (isSending || !msg.trim() || isDone) return;
       const source = options.source || 'text';
+
+      isSending = true;
+      applyInteractionState(currentActions, currentReadOnly);
+      const mySeq = ++currentRequestSeq;
+      currentAbortController = new AbortController();
       addMessage('user', msg);
       messageInput.value = '';
-      sendBtn.disabled = true;
-      voiceBtn.disabled = true;
 
+      let data = {};
       try {
         const res = await fetch(API_BASE + '/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sessionId, message: msg, source })
+          body: JSON.stringify({ session_id: sessionId, message: msg, source }),
+          signal: currentAbortController.signal,
         });
+
+        if (mySeq !== currentRequestSeq) return;
 
         let rawText = '';
         try {
@@ -1083,7 +1280,8 @@ Please describe your task request or ask a question directly.`,
           return;
         }
 
-        let data = {};
+        if (mySeq !== currentRequestSeq) return;
+
         try {
           data = JSON.parse(rawText);
         } catch (e) {
@@ -1107,22 +1305,28 @@ Please describe your task request or ask a question directly.`,
         if (data.reply) {
           addMessage('bot', data.reply);
         }
-        if (data.done) {
-          isDone = true;
-          if (data.rejected) {
-            addMessage('bot', I18N[currentLang].taskRejectedMsg);
-          } else if (data.final_json) {
+
+        const phase = data.ui_state ? data.ui_state.phase : (data.done ? 'done' : null);
+        if (phase === 'done' && !data.rejected) {
+          if (data.final_json) {
             addMessage('bot', I18N[currentLang].taskSuccessMsg);
             addMessage('bot', '```json\n' + JSON.stringify(data.final_json, null, 2) + '\n```');
           }
+        } else if (data.rejected || phase === 'rejected') {
+          addMessage('bot', I18N[currentLang].taskRejectedMsg);
         }
+
         updateSidebar(data);
       } catch (err) {
+        if (err.name === 'AbortError') return;
         addMessage('bot', I18N[currentLang].networkError);
       } finally {
-        sendBtn.disabled = isDone;
-        voiceBtn.disabled = isDone;
-        messageInput.focus();
+        if (mySeq === currentRequestSeq) {
+          isSending = false;
+          currentAbortController = null;
+          applyInteractionState(currentActions, currentReadOnly);
+          messageInput.focus();
+        }
       }
     }
 
@@ -1143,8 +1347,14 @@ Please describe your task request or ask a question directly.`,
           } else {
             addWelcomeMessage();
           }
-          isDone = !!data.done;
-          updateSidebar(data);
+          // Issue #31: 优先使用 ui_state 恢复状态
+          if (data.ui_state) {
+            updateSidebar(data);
+            // applyInteractionState 已在 updateSidebar 内调用
+          } else {
+            isDone = !!data.done;
+            updateSidebar(data);
+          }
           return true;
         }
       } catch (e) {
@@ -1192,7 +1402,13 @@ Please describe your task request or ask a question directly.`,
     }
 
     sendBtn.addEventListener('click', () => sendMessage(messageInput.value));
-    messageInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(messageInput.value); });
+    // Issue #31: 改用 keydown，检查 isComposing 防止中文输入法误提交；Shift+Enter 换行
+    messageInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        sendMessage(messageInput.value);
+      }
+    });
     voiceBtn.addEventListener('click', toggleVoiceRecording);
     resetBtn.addEventListener('click', reset);
     messageContainer.addEventListener('click', (event) => {
