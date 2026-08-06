@@ -146,7 +146,7 @@ class AdversarialP0SecurityTest(unittest.TestCase):
                  patch.object(self.dm.slot_store, 'commit_transaction') as mock_commit:
                 reply = self.dm.process("确认发布")
                 mock_ext.assert_not_called()
-                mock_commit.assert_not_called()
+                self.assertEqual(mock_commit.call_count, 1, "确认发布时正式 task_id 必须且精确通过 1 次 commit_transaction 写入 SlotStore")
                 self.assertEqual(self.dm.phase, "done")
 
             v_after = self.dm.slot_store.version

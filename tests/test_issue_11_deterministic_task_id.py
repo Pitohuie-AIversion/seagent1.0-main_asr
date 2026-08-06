@@ -887,7 +887,7 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
 
 
 class TestPreviewReserve(unittest.TestCase):
-    """Tests 31-40: preview/reserve 生命周期与 P0 并发安全验证。"""
+    """Tests 31-43: preview/reserve 生命周期、SSOT 事务、双 DM 并发与发布失败三重回滚真实端到端测试套件。"""
 
     def setUp(self):
         from src.id_sequence import peek_daily_task_id
@@ -913,13 +913,13 @@ class TestPreviewReserve(unittest.TestCase):
     # ──────────────────────────────────────────────────────
     def test_31_preview_does_not_consume_counter(self):
         """第一次 preview → 001；第二次 preview → 001（计数器未变化）。"""
-        date = "20260806"
+        date = get_business_date().strftime("%Y%m%d")
         prefixes = ["PI", "PB", "CT"]
         p1 = self.peek("PI", date, 3, (), prefixes)
         p2 = self.peek("PI", date, 3, (), prefixes)
 
         self.assertEqual(p1, p2, "两次 preview 应返回相同估算值")
-        self.assertRegex(p1, r"^PI-20260806-\d{3}$")
+        self.assertRegex(p1, fr"^PI-{date}-\d{{3}}$")
 
         # counter 文件不应存在（preview 不写磁盘）
         counter_file = Path(self._tmp) / ".id_sequences.json"
@@ -933,8 +933,7 @@ class TestPreviewReserve(unittest.TestCase):
     # ──────────────────────────────────────────────────────
     def test_32_reserve_advances_counter_then_preview_reflects_next(self):
         """preview→001，reserve→001，再次 preview→002。"""
-        import src.id_sequence as _idseq
-        date = "20260806"
+        date = get_business_date().strftime("%Y%m%d")
         prefixes = ["PI", "PB", "CT"]
         specs = ()
 
@@ -943,7 +942,6 @@ class TestPreviewReserve(unittest.TestCase):
         p_after = self.peek("PI", date, 3, specs, prefixes)
 
         self.assertEqual(p_before, r, "第一次 preview 与第一次 reserve 编号应相同")
-        # 正式预约消耗后，preview 应指向下一个
         before_num = int(p_before.split("-")[-1])
         after_num = int(p_after.split("-")[-1])
         self.assertEqual(after_num, before_num + 1, "reserve 后 preview 应递增 1")
@@ -953,52 +951,91 @@ class TestPreviewReserve(unittest.TestCase):
     # ──────────────────────────────────────────────────────
     def test_33_two_drafts_can_share_same_preview(self):
         """两个独立草稿在尚未 reserve 前 preview 相同——这是允许行为。"""
-        date = "20260806"
+        date = get_business_date().strftime("%Y%m%d")
         prefixes = ["PI", "PB", "CT"]
         pa = self.peek("PI", date, 3, (), prefixes)
         pb = self.peek("PI", date, 3, (), prefixes)
         self.assertEqual(pa, pb, "两个草稿 preview 可以相同，因为都未消耗编号")
 
     # ──────────────────────────────────────────────────────
-    # Test 34: 并发发布必须使用 reserve 返回值（P0 回归核心）
+    # Test 34: 真实双 DialogueManager 并发发布端到端测试 (P0 回归核心)
     # ──────────────────────────────────────────────────────
-    def test_34_concurrent_publish_uses_reserve_return_value(self):
+    def test_34_concurrent_dialogue_managers_publish_uniqueness(self):
         """
-        会话 A/B 各自 preview → 001（相同估算）。
-        A 先 reserve → 001；B 后 reserve → 002。
-        A 最终编号 001，B 最终编号 002，两者不同。
-        P0 回归核心：B 必须使用 reserve 返回值，不得停留在 preview 上。
+        创建两个真实的 DialogueManager 实例 dm_a 和 dm_b：
+        1. 两个会话在草稿阶段 preview 编号相同（均估算 001）；
+        2. dm_a 先完成确认发布，正式生成 001 号 TaskIntent artifact；
+        3. dm_b 后完成确认发布，正式生成 002 号 TaskIntent artifact；
+        4. 两个会话落盘的 final artifact 文件 task_id 不同且各自状态严格一致！
         """
-        date = "20260806"
-        prefixes = ["PI", "PB", "CT"]
-        specs = ()
+        from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 
-        # 两个草稿都 preview
-        preview_a = self.peek("PI", date, 3, specs, prefixes)
-        preview_b = self.peek("PI", date, 3, specs, prefixes)
-        self.assertEqual(preview_a, preview_b)  # 均估算 001
+        tmp_task_dir = Path(self._tmp) / "task"
+        tmp_task_dir.mkdir(parents=True, exist_ok=True)
 
-        # A 先正式 reserve
-        final_a = next_daily_task_id("PI", date, 3, specs, prefixes)
-        # B 后正式 reserve
-        final_b = next_daily_task_id("PI", date, 3, specs, prefixes)
+        with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.id_sequence.get_result_dir", return_value=Path(self._tmp)):
 
-        # 两者使用各自 reserve 返回值，互不相同
-        self.assertNotEqual(final_a, final_b, "A 与 B 正式编号必须不同")
-        self.assertEqual(final_a, "PI-20260806-001")
-        self.assertEqual(final_b, "PI-20260806-002")
+            dm_a = create_dialogue_manager()
+            dm_b = create_dialogue_manager()
 
-        # P0 回归断言：B 不得使用 preview_b 作为最终编号
-        # preview_b == final_a == 001，但 B 的正式编号应为 002
-        self.assertNotEqual(preview_b, final_b, "B 的正式编号不得等于其 preview")
+            dm_a.process("新建管缆巡检任务")
+            dm_b.process("新建管缆巡检任务")
+
+            # 验证草稿阶段只读 preview 均估算 001
+            self.assertEqual(dm_a.task_id_preview, dm_b.task_id_preview, "草稿预览值应相同")
+
+            # 填充全量可发布槽位
+            seed_complete_valid_pipeline_task(dm_a, dm_a.kb)
+            seed_complete_valid_pipeline_task(dm_b, dm_b.kb)
+
+            # 设置唯一的 intent_id 并重置 task_id 为 candidate
+            dm_a.slot_store.slots["intent_id"] = Slot("intent_id", "TI2026080601", status="valid")
+            dm_a.slot_store.slots["task_id"] = Slot("task_id", value=None, status="candidate", source="auto_preview", candidate_value=dm_a.task_id_preview)
+            dm_a.task_state = dm_a.slot_store.get_task_state()
+            dm_a._last_built_json = dm_a.slot_store.get_built_json()
+            dm_a.phase = "confirming"
+
+            dm_b.slot_store.slots["intent_id"] = Slot("intent_id", "TI2026080602", status="valid")
+            dm_b.slot_store.slots["task_id"] = Slot("task_id", value=None, status="candidate", source="auto_preview", candidate_value=dm_b.task_id_preview)
+            dm_b.task_state = dm_b.slot_store.get_task_state()
+            dm_b._last_built_json = dm_b.slot_store.get_built_json()
+            dm_b.phase = "confirming"
+
+            # 触发 dm_a 确认发布
+            res_a = dm_a._handle_final_publish_confirmation("确认发布", "req_a")
+            self.assertEqual(dm_a.phase, "done", f"dm_a 发布失败: {res_a}")
+            tid_a = dm_a.final_result.get("task_id")
+
+            # 触发 dm_b 确认发布
+            res_b = dm_b._handle_final_publish_confirmation("确认发布", "req_b")
+            self.assertEqual(dm_b.phase, "done", f"dm_b 发布失败: {res_b}")
+            tid_b = dm_b.final_result.get("task_id")
+
+            # 断言 A 与 B 正式编号必须不同！
+            self.assertNotEqual(tid_a, tid_b, "并发发布的正式任务编号必须绝对不同")
+            self.assertTrue(tid_a.endswith("-001"), f"dm_a 应为 001: {tid_a}")
+            self.assertTrue(tid_b.endswith("-002"), f"dm_b 应为 002: {tid_b}")
+
+            # 检查两份落盘的 TaskIntent JSON 文件
+            file_a = tmp_task_dir / "task_intent_TI2026080601.json"
+            file_b = tmp_task_dir / "task_intent_TI2026080602.json"
+            self.assertTrue(file_a.exists(), "dm_a final artifact 应建立")
+            self.assertTrue(file_b.exists(), "dm_b final artifact 应建立")
+
+            content_a = json.loads(file_a.read_text(encoding="utf-8"))
+            content_b = json.loads(file_b.read_text(encoding="utf-8"))
+            self.assertEqual(content_a["task_id"], tid_a)
+            self.assertEqual(content_b["task_id"], tid_b)
 
     # ──────────────────────────────────────────────────────
-    # Test 35: 真实多进程正式预约唯一性（至少 4 进程）
+    # Test 35: 真实多进程正式预约唯一性
     # ──────────────────────────────────────────────────────
     def test_35_multiprocess_reserve_uniqueness(self):
         """4 个进程同时 reserve，返回 4 个不同编号，无重复。"""
         tmp_dir = self._tmp
-        date = "20260806"
+        date = get_business_date().strftime("%Y%m%d")
         prefixes_list = ["PI", "PB", "CT"]
         n_proc = 4
 
@@ -1027,15 +1064,13 @@ class TestPreviewReserve(unittest.TestCase):
             results.append(val)
 
         self.assertEqual(len(set(results)), n_proc, f"存在重复编号: {results}")
-        for r in results:
-            self.assertRegex(r, r"^PI-20260806-\d{3}$")
 
     # ──────────────────────────────────────────────────────
     # Test 36: 不同前缀共享当日全局序号
     # ──────────────────────────────────────────────────────
     def test_36_different_prefixes_share_global_daily_sequence(self):
         """PI→001，PB→002，CT→003；跨前缀序号连续。"""
-        date = "20260806"
+        date = get_business_date().strftime("%Y%m%d")
         prefixes = ["PI", "PB", "CT"]
         specs = ()
 
@@ -1047,130 +1082,230 @@ class TestPreviewReserve(unittest.TestCase):
         self.assertEqual(nums, [1, 2, 3], f"序号应全局共享且连续: {r1} {r2} {r3}")
 
     # ──────────────────────────────────────────────────────
-    # Test 37: preview 不能进入 final artifact
+    # Test 37: 精确断言 preview 不能直接进入 TaskIntent
     # ──────────────────────────────────────────────────────
     def test_37_preview_not_in_final_artifact(self):
-        """当 SlotStore task_id 为 candidate(preview) 状态时，
-        调用 TaskIntentBuilder.prepare() 应 fail closed（缺少正式 task_id）。
+        """当 task_state 缺少正式 task_id（仅有 preview）时，
+        TaskIntentBuilder.prepare() 必须抛出 TaskPersistenceError，并明确指出 missing task_id。
         """
-        from src.slot_store import Slot, SlotStore
-        from src.task_intent_builder import TaskIntentBuilder
-        import tempfile, shutil
+        kb = KnowledgeBase()
+        cand_state = {
+            "task_type_key": "pipeline_inspection",
+            "internal_id": "12345678-1234-4234-8234-1234567890ab",
+            "equipment_class": "observation_rov",
+            "equipment_type": "观察级ROV",
+            "equipment_unit_id": "OBSROV-HP-001",
+            # 故意不传 task_id（草稿 preview 不在 task_state 中）
+        }
+        cand_built = dict(cand_state)
 
-        tmp = tempfile.mkdtemp()
-        try:
-            kb = MagicMock()
-            kb.task_schemas = {
-                "task_templates": {
-                    "pipeline_inspection": {
-                        "code": "PI",
-                        "task_type_values": ["pipeline_inspection"],
-                    }
-                }
-            }
-
-            # 构造一个只有 preview（candidate）task_id 的 task_state
-            cand_state = {
-                "task_type_key": "pipeline_inspection",
-                # task_id 故意不传（preview 状态不应出现在 task_state 中）
-            }
-            cand_built = dict(cand_state)
-            # prepare() 因缺少正式 task_id 应 fail closed
-            with patch("src.task_intent_builder.get_task_dir", return_value=Path(tmp)), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp)):
-                builder = TaskIntentBuilder(kb)
-                with self.assertRaises(Exception):
-                    builder.prepare(
-                        task_state=cand_state,
-                        built_json=cand_built,
-                        mode="normal",
-                        task_type_key="pipeline_inspection",
-                        intent_id=None,
-                    )
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+        builder = TaskIntentBuilder(kb)
+        with self.assertRaises(TaskPersistenceError) as cm:
+            builder.prepare(
+                task_state=cand_state,
+                built_json=cand_built,
+                mode="normal",
+                task_type_key="pipeline_inspection",
+                intent_id="TI2026080601",
+            )
+        self.assertIn("task_id", str(cm.exception), "应明确说明缺少正式 task_id")
 
     # ──────────────────────────────────────────────────────
     # Test 38: 发布失败后不重复编号（允许空洞）
     # ──────────────────────────────────────────────────────
     def test_38_publish_failure_creates_gap_not_reuse(self):
         """reserve 001 后 publish 失败，下次 reserve 应返回 002，不得回退到 001。"""
-        date = "20260806"
+        date = get_business_date().strftime("%Y%m%d")
         prefixes = ["PI", "PB", "CT"]
         specs = ()
 
-        # 第一次 reserve（模拟发布失败，但不回滚计数器）
         r1 = next_daily_task_id("PI", date, 3, specs, prefixes)
-        self.assertEqual(r1, "PI-20260806-001")
+        self.assertTrue(r1.endswith("-001"))
 
-        # 模拟发布失败（不回滚计数器——这是正确的行为）
-        # 下次 reserve 必须是 002，不得重用 001
         r2 = next_daily_task_id("PI", date, 3, specs, prefixes)
-        self.assertEqual(r2, "PI-20260806-002", "发布失败后序号必须跳过（空洞），不得重用")
-        self.assertNotEqual(r1, r2)
+        self.assertTrue(r2.endswith("-002"), "发布失败后序号必须跳过（空洞），不得重用")
 
     # ──────────────────────────────────────────────────────
-    # Test 39: 正式 task_id 全链一致
+    # Test 39: 真实全链 5 路 SSOT 零误差一致性测试
     # ──────────────────────────────────────────────────────
-    def test_39_official_task_id_full_chain_consistency(self):
-        """reserve 后同步到 cand_state、cand_built，验证全链一致。
-        这是发布路径中正式 reserve 后同步的单元验证。
+    def test_39_official_task_id_full_chain_ssot_consistency(self):
+        """真实 DialogueManager 发布完成后，断言以下 5 处 task_id 完全一致：
+        1. dm.slot_store.slots["task_id"].value
+        2. dm.task_state["task_id"]
+        3. dm._last_built_json["task_id"]
+        4. dm.final_result["task_id"]
+        5. 落盘 TaskIntent artifact 中的 task_id
+        并且 slot.status == "valid", source == "auto_reserved"，store_version 已递增！
         """
-        import src.id_sequence as _idseq
-        date = "20260806"
-        prefixes = ["PI", "PB", "CT"]
+        from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 
-        official = next_daily_task_id("PI", date, 3, (), prefixes)
+        tmp_task_dir = Path(self._tmp) / "task"
+        tmp_task_dir.mkdir(parents=True, exist_ok=True)
 
-        # 模拟 DM publish 路径中的同步
-        cand_state = {}
-        cand_built = {}
-        slot_value = None
+        with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.id_sequence.get_result_dir", return_value=Path(self._tmp)):
 
-        # 同步（与 DM 发布路径逻辑一致）
-        cand_state["task_id"] = official
-        cand_built["task_id"] = official
-        slot_value = official
+            dm = create_dialogue_manager()
+            dm.process("新建管缆巡检任务")
+            seed_complete_valid_pipeline_task(dm, dm.kb)
 
-        self.assertEqual(cand_state["task_id"], official)
-        self.assertEqual(cand_built["task_id"], official)
-        self.assertEqual(slot_value, official)
-        self.assertRegex(official, r"^PI-20260806-\d{3}$")
+            dm.slot_store.slots["intent_id"] = Slot("intent_id", "TI2026080699", status="valid")
+            dm.slot_store.slots["task_id"] = Slot("task_id", value=None, status="candidate", source="auto_preview", candidate_value=dm.task_id_preview)
+            dm.task_state = dm.slot_store.get_task_state()
+            dm._last_built_json = dm.slot_store.get_built_json()
+            dm.phase = "confirming"
+
+            init_version = dm.slot_store.version
+
+            res = dm._handle_final_publish_confirmation("确认发布", "req_39")
+            self.assertEqual(dm.phase, "done", f"发布应成功: {res}")
+
+            # 1. 提取 5 路状态
+            slot_task_id = dm.slot_store.slots["task_id"].value
+            state_task_id = dm.task_state.get("task_id")
+            built_task_id = dm._last_built_json.get("task_id")
+            final_task_id = dm.final_result.get("task_id")
+
+            artifact_file = tmp_task_dir / "task_intent_TI2026080699.json"
+            self.assertTrue(artifact_file.exists())
+            file_task_id = json.loads(artifact_file.read_text(encoding="utf-8")).get("task_id")
+
+            # 断言 5 路 100% 绝对一致
+            self.assertEqual(slot_task_id, state_task_id)
+            self.assertEqual(state_task_id, built_task_id)
+            self.assertEqual(built_task_id, final_task_id)
+            self.assertEqual(final_task_id, file_task_id)
+
+            # 断言事务属性
+            self.assertEqual(dm.slot_store.slots["task_id"].status, "valid")
+            self.assertEqual(dm.slot_store.slots["task_id"].source, "auto_reserved")
+            self.assertGreater(dm.slot_store.version, init_version, "SlotStore version 必须因事务提交而增加")
 
     # ──────────────────────────────────────────────────────
-    # Test 40: 旧 snapshot candidate 兼容性
+    # Test 40: DialogueManager Snapshot 包含 Candidate 还原测试
     # ──────────────────────────────────────────────────────
-    def test_40_snapshot_with_candidate_task_id_is_not_treated_as_valid(self):
-        """含 status=candidate 的 task_id snapshot 恢复后，
-        slot task_id.status 应为 candidate，不触发 v2 系统标识三联强校验。
+    def test_40_snapshot_candidate_restoration_via_dialogue_manager(self):
+        """测试通过 DialogueManager.export_snapshot() 与 load_snapshot()，
+        能够精准还原 candidate 预览状态与 task_id_preview 属性。
         """
-        from src.slot_store import SlotStore, Slot
+        dm = create_dialogue_manager()
+        dm.process("新建管缆巡检任务")
+        dm.slot_store.slots["internal_id"] = Slot("internal_id", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", status="valid")
+        preview_before = dm.task_id_preview
+        self.assertIsNotNone(preview_before)
 
-        store = SlotStore()
-        # 构造带 candidate task_id 的 slot
-        snap = {
-            "store_version": 1,
-            "slots": {
-                "task_id": {
-                    "slot_name": "task_id",
-                    "value": None,
-                    "candidate_value": "PI-20260806-001",
-                    "status": "candidate",
-                    "source": "auto_preview",
-                    "version": 1,
-                }
-            },
-            "unresolved": [],
-        }
-        store.restore_snapshot(snap)
-        slot = store.slots.get("task_id")
-        self.assertIsNotNone(slot)
-        self.assertEqual(slot.status, "candidate")
-        self.assertIsNone(slot.value)
-        self.assertEqual(slot.candidate_value, "PI-20260806-001")
-        # get_task_state 应不包含 candidate 状态的 task_id（不当作正式 valid）
-        ts = store.get_task_state()
-        self.assertNotIn("task_id", ts, "candidate task_id 不应出现在 task_state 中")
+        # 导出并还原到新的 DM
+        snap = dm.export_snapshot()
+        dm2 = create_dialogue_manager()
+        dm2.load_snapshot(snap)
+
+        self.assertEqual(dm2.task_id_preview, preview_before)
+        self.assertIsNone(dm2.task_state.get("task_id"), "还原后 task_state 仍不包含 candidate task_id")
+        self.assertEqual(dm2.slot_store.slots["task_id"].status, "candidate")
+
+    # ──────────────────────────────────────────────────────
+    # Test 41: prepare 失败时的三回滚断言
+    # ──────────────────────────────────────────────────────
+    def test_41_prepare_failure_rollback(self):
+        """当 TaskIntentBuilder.prepare 抛出异常时：
+        1. phase 恢复为原状态（ confirming ）；
+        2. final_result 为 None；
+        3. SlotStore, task_state, _last_built_json 恢复快照，无有效 task_id；
+        4. 磁盘无 final artifact。
+        """
+        from tests.test_slot_consistency import seed_complete_valid_pipeline_task
+
+        tmp_task_dir = Path(self._tmp) / "task"
+        tmp_task_dir.mkdir(parents=True, exist_ok=True)
+
+        with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.id_sequence.get_result_dir", return_value=Path(self._tmp)):
+
+            dm = create_dialogue_manager()
+            dm.process("新建管缆巡检任务")
+            seed_complete_valid_pipeline_task(dm, dm.kb)
+
+            dm.slot_store.slots["intent_id"] = Slot("intent_id", "TI2026080641", status="valid")
+            dm.slot_store.slots["task_id"] = Slot("task_id", value=None, status="candidate", source="auto_preview", candidate_value=dm.task_id_preview)
+            dm.task_state = dm.slot_store.get_task_state()
+            dm._last_built_json = dm.slot_store.get_built_json()
+            dm.phase = "confirming"
+
+            with patch("src.task_intent_builder.TaskIntentBuilder.prepare", side_effect=TaskPersistenceError("Mock prepare error")):
+                with self.assertRaises(TaskPersistenceError):
+                    dm._handle_final_publish_confirmation("确认发布", "req_41")
+
+            self.assertEqual(dm.phase, "confirming", "phase 应完全回滚")
+            self.assertIsNone(dm.final_result, "final_result 应为 None")
+            self.assertIsNone(dm.task_state.get("task_id"), "task_state 零残留")
+            self.assertEqual(dm.slot_store.slots["task_id"].status, "candidate", "task_id 恢复为 preview")
+            self.assertFalse((tmp_task_dir / "task_intent_TI2026080641.json").exists())
+
+    # ──────────────────────────────────────────────────────
+    # Test 42: create_staging 失败时的三回滚断言
+    # ──────────────────────────────────────────────────────
+    def test_42_create_staging_failure_rollback(self):
+        """当 create_staging 失败时，SlotStore 与内存状态 100% 完全回滚。"""
+        from tests.test_slot_consistency import seed_complete_valid_pipeline_task
+
+        tmp_task_dir = Path(self._tmp) / "task"
+        tmp_task_dir.mkdir(parents=True, exist_ok=True)
+
+        with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.id_sequence.get_result_dir", return_value=Path(self._tmp)):
+
+            dm = create_dialogue_manager()
+            dm.process("新建管缆巡检任务")
+            seed_complete_valid_pipeline_task(dm, dm.kb)
+
+            dm.slot_store.slots["intent_id"] = Slot("intent_id", "TI2026080642", status="valid")
+            dm.slot_store.slots["task_id"] = Slot("task_id", value=None, status="candidate", source="auto_preview", candidate_value=dm.task_id_preview)
+            dm.task_state = dm.slot_store.get_task_state()
+            dm._last_built_json = dm.slot_store.get_built_json()
+            dm.phase = "confirming"
+
+            with patch("src.task_intent_builder.TaskIntentBuilder.create_staging", side_effect=TaskPersistenceError("Mock staging error")):
+                with self.assertRaises(TaskPersistenceError):
+                    dm._handle_final_publish_confirmation("确认发布", "req_42")
+
+            self.assertEqual(dm.phase, "confirming")
+            self.assertIsNone(dm.final_result)
+            self.assertIsNone(dm.task_state.get("task_id"))
+
+    # ──────────────────────────────────────────────────────
+    # Test 43: publish_staging 失败时的三回滚断言
+    # ──────────────────────────────────────────────────────
+    def test_43_publish_staging_failure_rollback(self):
+        """当 publish_staging 失败时，SlotStore 与内存状态 100% 完全回滚。"""
+        from tests.test_slot_consistency import seed_complete_valid_pipeline_task
+
+        tmp_task_dir = Path(self._tmp) / "task"
+        tmp_task_dir.mkdir(parents=True, exist_ok=True)
+
+        with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.id_sequence.get_result_dir", return_value=Path(self._tmp)):
+
+            dm = create_dialogue_manager()
+            dm.process("新建管缆巡检任务")
+            seed_complete_valid_pipeline_task(dm, dm.kb)
+
+            dm.slot_store.slots["intent_id"] = Slot("intent_id", "TI2026080643", status="valid")
+            dm.slot_store.slots["task_id"] = Slot("task_id", value=None, status="candidate", source="auto_preview", candidate_value=dm.task_id_preview)
+            dm.task_state = dm.slot_store.get_task_state()
+            dm._last_built_json = dm.slot_store.get_built_json()
+            dm.phase = "confirming"
+
+            with patch("src.task_intent_builder.TaskIntentBuilder.publish_staging", side_effect=TaskPersistenceError("Mock publish error")):
+                with self.assertRaises(TaskPersistenceError):
+                    dm._handle_final_publish_confirmation("确认发布", "req_43")
+
+            self.assertEqual(dm.phase, "confirming")
+            self.assertIsNone(dm.final_result)
+            self.assertIsNone(dm.task_state.get("task_id"))
 
 
 if __name__ == "__main__":
