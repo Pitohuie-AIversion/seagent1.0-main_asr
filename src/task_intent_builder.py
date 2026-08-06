@@ -534,14 +534,31 @@ class TaskIntentBuilder:
 
         return parsed.isoformat(timespec="seconds")
 
+    def _get_task_template(self, task_type_key: str) -> Dict[str, Any]:
+        template = self.kb.get_task_schema(task_type_key)
+        if not isinstance(template, dict) or not template:
+            raise TaskPersistenceError(f"不支持的 task_type_key: {task_type_key}")
+        return template
+
+    def _get_output_schema_keys(self, task_type_key: str, mode: str = "normal") -> set[str]:
+        template = self._get_task_template(task_type_key)
+        output_schema = template.get("output_schema", {})
+        fields = output_schema.get(mode) or output_schema.get("normal") or []
+        return {
+            field.get("key")
+            for field in fields
+            if isinstance(field, dict) and field.get("key")
+        }
+
     def _resolve_output_task_type(self, task_type_key: str) -> str:
+        template = self._get_task_template(task_type_key)
         mapping = {
             "pipeline_inspection": "pipeline_inspection",
             "pipeline_burial": "pipeline_burial",
             "tree_valve_operation": "valve_operation",
             "valve_operation": "valve_operation",
         }
-        output_type = mapping.get(task_type_key)
+        output_type = template.get("output_task_type") or mapping.get(task_type_key)
         if output_type is None:
             raise TaskPersistenceError(f"不支持的 task_type_key: {task_type_key}")
         return output_type
@@ -555,9 +572,11 @@ class TaskIntentBuilder:
         """由已选型号或单机的知识库 robot_class 生成 TaskIntent robot_type。"""
         unit_selector = built_json.get("equipment_unit_id") or task_state.get("equipment_unit_id")
         variant_selector = built_json.get("equipment_type") or task_state.get("equipment_type")
+        family_selector = built_json.get("equipment_family") or task_state.get("equipment_family")
 
         if not unit_selector and not variant_selector:
-            raise TaskPersistenceError("缺少可解析的机器人型号或单机编号")
+            if not family_selector:
+                raise TaskPersistenceError("缺少可解析的机器人型号、系列或单机编号")
 
         rov = None
         if unit_selector:
@@ -566,11 +585,17 @@ class TaskIntentBuilder:
                 task_type_key,
                 str(variant_selector) if variant_selector else None,
             )
+            if not resolved_unit and variant_selector:
+                resolved_unit = self.kb.resolve_robot_unit(str(unit_selector), task_type_key)
             if not resolved_unit:
                 raise TaskPersistenceError(f"无法解析具体机器人编号: {unit_selector}")
             rov = resolved_unit.get("robot")
         elif variant_selector:
-            rov = self.kb.get_rov_for_task(str(variant_selector), task_type_key)
+            rov = self.kb.get_rov_for_task(
+                str(variant_selector),
+                task_type_key,
+                str(family_selector) if family_selector else None,
+            )
             if not rov:
                 family_info = self.kb.resolve_robot_family(str(variant_selector), task_type_key)
                 if family_info:
@@ -579,7 +604,14 @@ class TaskIntentBuilder:
                         rov = {"robot_class": robot_class}
 
         if rov is None:
-            raise TaskPersistenceError(f"无法根据设备信息确定 robot_type: {variant_selector}")
+            family_info = None
+            if family_selector:
+                family_info = self.kb.resolve_robot_family(str(family_selector), task_type_key)
+            robot_class = family_info.get("robot_class") if family_info else None
+            if robot_class:
+                rov = {"robot_class": robot_class}
+            else:
+                raise TaskPersistenceError(f"无法根据设备信息确定 robot_type: {variant_selector or family_selector}")
 
         class_map = {
             "observation_rov": "observation_rov",
@@ -599,9 +631,10 @@ class TaskIntentBuilder:
         task_state: Dict[str, Any],
         built_json: Dict[str, Any],
     ) -> Dict[str, Any]:
-        if task_type_key in ("pipeline_inspection", "pipeline_burial"):
+        schema_keys = self._get_output_schema_keys(task_type_key)
+        if {"cable_type", "start_point", "end_point"}.issubset(schema_keys):
             return self._build_pipeline_inspection_details(task_state, built_json)
-        if task_type_key == "tree_valve_operation":
+        if "wellhead_id" in schema_keys or task_type_key == "tree_valve_operation":
             return self._build_tree_valve_operation_details(task_state, built_json)
         raise TaskPersistenceError(f"没有为任务类型 {task_type_key} 配置 details 构建器")
 

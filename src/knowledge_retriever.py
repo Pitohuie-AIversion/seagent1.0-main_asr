@@ -1402,9 +1402,38 @@ class KnowledgeBase:
         if not equipment_selector or not isinstance(equipment_selector, str):
             return empty_state
 
-        state = self.state_info.get_all_info(equipment_selector)
-        if isinstance(state, dict):
-            return state
+        lookup_keys: list[str] = [equipment_selector]
+        resolved_unit = self.resolve_robot_unit(equipment_selector)
+        if resolved_unit:
+            lookup_keys.extend([
+                resolved_unit.get("status_ref", ""),
+                resolved_unit.get("unit_id", ""),
+            ])
+            rov = resolved_unit.get("robot")
+        else:
+            rov = self._find_rov(equipment_selector)
+
+        if rov:
+            if rov.get("status_ref"):
+                lookup_keys.append(str(rov.get("status_ref")))
+            if not resolved_unit:
+                for unit in rov.get("fleet_units", []):
+                    lookup_keys.extend([
+                        unit.get("status_ref", ""),
+                        unit.get("unit_id", ""),
+                    ])
+
+        deduped_keys: list[str] = []
+        seen = set()
+        for key in lookup_keys:
+            if key and key not in seen:
+                deduped_keys.append(key)
+                seen.add(key)
+
+        for key in deduped_keys:
+            state = self.state_info.get_all_info(key)
+            if isinstance(state, dict):
+                return state
         return empty_state
 
     def check_runtime_availability(self, unit_id: str, *, max_age_seconds: int = 300) -> dict:
@@ -1486,6 +1515,49 @@ class KnowledgeBase:
             if isinstance(full_name, str) and full_name.strip():
                 terms.add(full_name.strip())
         return terms
+
+    @staticmethod
+    def _is_onboard_payload_query(user_message: str) -> bool:
+        return any(term in user_message for term in ("自带", "内置", "已有", "固定设备", "默认设备"))
+
+    @staticmethod
+    def _is_robot_payload_query(user_message: str) -> bool:
+        robot_terms = ("机器人", "ROV", "rov", "设备", "型号", "单机", "这台", "该设备")
+        payload_terms = ("能携带", "可携带", "可搭载", "能搭载", "载荷", "工具", "传感器", "机械臂")
+        return any(term in user_message for term in robot_terms) and any(term in user_message for term in payload_terms)
+
+    def _resolve_tool_query_robots(
+        self,
+        user_message: str,
+        context: dict,
+        task_type_key: str | None,
+    ) -> list[dict]:
+        equipment_selector = str(context.get("equipment_type") or "")
+        if equipment_selector and any(term in user_message for term in ("这台", "该设备", "当前", "已选")):
+            robot = self.get_rov_for_task(equipment_selector, task_type_key)
+            return [robot] if robot else []
+
+        unit = self.resolve_robot_unit(user_message, task_type_key, equipment_selector or None)
+        if unit and unit.get("robot"):
+            return [unit["robot"]]
+
+        robot = self.get_rov_for_task(user_message, task_type_key)
+        if robot:
+            return [robot]
+
+        family_id = self.resolve_robot_family_id(user_message, task_type_key)
+        if family_id:
+            return [
+                robot
+                for robot in self.get_task_allowed_robot_variants(task_type_key)
+                if robot.get("family_id") == family_id
+            ]
+
+        if equipment_selector and self._is_robot_payload_query(user_message):
+            robot = self.get_rov_for_task(equipment_selector, task_type_key)
+            return [robot] if robot else []
+
+        return []
 
     def execute_typed_query(
         self,
