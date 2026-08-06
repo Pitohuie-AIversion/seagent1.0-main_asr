@@ -75,10 +75,6 @@ task_templates:
           label: "机器人规格"
           type: object
           allowed_values_ref: "robot_specifications"
-        - key: equipment_type
-          label: "作业设备型号"
-          type: string
-          allowed_values_ref: "robot_variant_full_names"
         - key: equipment_unit_id
           label: "具体机器人编号"
           type: string
@@ -86,7 +82,7 @@ task_templates:
         - key: payload
           label: "携带工具"
           type: list
-          allowed_values_ref: "payload_options.pipeline_inspection"
+          allowed_values_ref: "robot_supported_payloads"
         - key: support_vessel
           label: "支持船编号"
           type: string

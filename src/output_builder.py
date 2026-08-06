@@ -525,6 +525,24 @@ class OutputBuilder:
                     )
             return catalog
 
+        if ref == "oilfield_names":
+            for oil_field in self.kb.environment.get("oil_fields", []):
+                if not isinstance(oil_field, dict):
+                    continue
+                standard_name = oil_field.get("name")
+                if not standard_name:
+                    continue
+                catalog.append(
+                    {
+                        "canonical_value": standard_name,
+                        "aliases": list(oil_field.get("aliases", []) or []),
+                        "display_name": standard_name,
+                        "parent": None,
+                        "entity_id": oil_field.get("id"),
+                    }
+                )
+            return catalog
+
         return [
             {
                 "canonical_value": value,
@@ -597,6 +615,7 @@ class OutputBuilder:
             "robot_full_names",
             "robot_variant_full_names",
             "robot_unit_ids",
+            "robot_supported_payloads"
         }
 
         if ref in dynamic_robot_refs:
@@ -683,15 +702,50 @@ class OutputBuilder:
                     return []
             return self._get_robot_unit_ids(task_type_key, task_state)
 
+        if ref == "robot_supported_payloads":
+            return self._get_robot_supported_payloads(task_type_key, task_state)
+
         if ref == "vessel_ids":
             return [r['id'] for r in self.kb.assets.get("vessels", [])]
             # return self.kb.assets.get("vessel_ids", [])
 
         if ref.startswith("payload_options."):
             task_key = ref.split(".", 1)[1]
-            return self.kb.assets.get("payload_options", {}).get(task_key, []).get("common", [])
 
+            task_payload_options = (
+                self.kb.assets
+                .get("payload_options", {})
+                .get(task_key, {})
+            )
+
+        if not isinstance(task_payload_options, dict):
+            return []
+
+        return list(
+            task_payload_options.get("common", []) or []
+        )
         return []
+
+    def _get_robot_supported_payloads(
+        self,
+        task_type_key: str = "",
+        task_state: dict | None = None,
+    ) -> list[str]:
+        if not task_state:
+            return []
+
+        selector = str(
+            task_state.get("equipment_type")
+            or task_state.get("equipment_name")
+            or ""
+        )
+        if not selector:
+            return []
+
+        robot = self.kb.get_rov_for_task(selector, task_type_key)
+        if not robot:
+            return []
+        return list(robot.get("supported_payloads", []) or [])
 
     def _get_robot_unit_ids(
         self,

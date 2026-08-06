@@ -78,9 +78,80 @@ class OilfieldMatch:
     candidates: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class OilfieldIssue:
+    constraint_id: str
+    constraint_name: str
+    check_type: str
+    severity: str
+    message: str
+    related_fields: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "constraint_id": self.constraint_id,
+            "constraint_name": self.constraint_name,
+            "check_type": self.check_type,
+            "severity": self.severity,
+            "message": self.message,
+            "related_fields": list(self.related_fields),
+        }
+
+
+@dataclass(frozen=True)
+class OilfieldContextResult:
+    entity_id: str
+    standard_name: str
+    coordinate_range: dict[str, list[float]]
+    default_coordinates: dict[str, float] | None
+    reference_water_depth: float | int | None
+    coordinate_status: str
+    depth_status: str
+    feedback: tuple[str, ...] = ()
+    issues: tuple[OilfieldIssue, ...] = ()
+
+    @property
+    def oilfield_name(self) -> str:
+        return self.standard_name
+
+    @property
+    def defaults(self) -> dict[str, Any]:
+        defaults: dict[str, Any] = {}
+        if self.default_coordinates is not None:
+            defaults["oilfield_coordinates"] = self.default_coordinates
+        if self.reference_water_depth is not None:
+            defaults["water_depth"] = self.reference_water_depth
+        return defaults
+
+    @property
+    def reference(self) -> dict[str, Any]:
+        return {
+            "lat_range": self.coordinate_range.get("lat"),
+            "lon_range": self.coordinate_range.get("lon"),
+            "water_depth": self.reference_water_depth,
+        }
+
+    @property
+    def violations(self) -> list[dict[str, Any]]:
+        return [issue.to_dict() for issue in self.issues]
+
+
+_UNSET = object()
+
+
 class OilfieldEntityLinker:
-    def __init__(self, environment: dict):
+    def __init__(self, environment: dict, constraints: list[dict[str, Any]] | None = None):
         self.entities = environment.get("oil_fields", []) if isinstance(environment, dict) else []
+        self.entities_by_id = {
+            entity["id"]: entity
+            for entity in self.entities
+            if isinstance(entity, dict) and entity.get("id")
+        }
+        self.constraints_by_check_type = {
+            item.get("check_type"): item
+            for item in (constraints or [])
+            if isinstance(item, dict) and item.get("check_type")
+        }
 
     def link(self, raw_name: str, coords: dict[str, Any] | None = None) -> OilfieldMatch:
         raw = str(raw_name or "").strip()
@@ -134,6 +205,116 @@ class OilfieldEntityLinker:
             status="unmatched",
             evidence=best["evidence"],
             candidates=public_candidates,
+        )
+
+    def evaluate_context(
+        self,
+        *,
+        entity_id: str,
+        coordinates: object = _UNSET,
+        water_depth: object = _UNSET,
+    ) -> OilfieldContextResult:
+        entity = self.entities_by_id.get(str(entity_id or ""))
+        if not entity:
+            raise ValueError(f"未知油田实体: entity_id={entity_id}")
+
+        coordinate_range = _get_coordinate_range(entity)
+        default_coordinates = {
+            "lat": round((coordinate_range["lat"][0] + coordinate_range["lat"][1]) / 2, 6),
+            "lon": round((coordinate_range["lon"][0] + coordinate_range["lon"][1]) / 2, 6),
+        }
+        reference_depth = _get_reference_water_depth(entity)
+
+        coordinate_status = "not_provided"
+        depth_status = "not_provided"
+        feedback: list[str] = [
+            f"已匹配{entity.get('name')}。知识库记录的油田范围为北纬"
+            f"{_format_number(coordinate_range['lat'][0])}～{_format_number(coordinate_range['lat'][1])}度、"
+            f"东经{_format_number(coordinate_range['lon'][0])}～{_format_number(coordinate_range['lon'][1])}度，"
+            f"参考水深为{_format_number(reference_depth)}米。当前暂采用油田范围中心坐标"
+            f"（{_format_number(default_coordinates['lat'])}，{_format_number(default_coordinates['lon'])}）"
+            f"和参考水深{_format_number(reference_depth)}米，您后续可以提供实际作业坐标和水深进行覆盖。"
+        ]
+        issues: list[OilfieldIssue] = []
+
+        if coordinates is not _UNSET:
+            coordinate_status, coord_values = _check_coordinates(coordinates, entity)
+            if coordinate_status == "matched":
+                feedback.append(
+                    f"您提供的实际坐标位于{entity.get('name')}知识库范围内，"
+                    "已采用实际坐标覆盖默认中心坐标。"
+                )
+            elif coordinate_status == "mismatched":
+                issues.append(
+                    self._build_issue(
+                        "oilfield_coordinate_mismatch",
+                        {"oilfield_name": entity.get("name"), **coord_values},
+                        ("oilfield_name", "oilfield_coordinates"),
+                    )
+                )
+
+        if water_depth is not _UNSET:
+            depth_status, depth_values = _check_water_depth(water_depth, entity)
+            if depth_status == "within_reference":
+                feedback.append(
+                    f"实际作业水深{_format_number(depth_values['actual_depth'])}米未超过"
+                    f"{entity.get('name')}知识库参考水深{_format_number(depth_values['reference_depth'])}米，"
+                    "已采用实际水深覆盖默认值。"
+                )
+            elif depth_status == "exceeded_reference":
+                issues.append(
+                    self._build_issue(
+                        "oilfield_reference_depth_exceeded",
+                        {"oilfield_name": entity.get("name"), **depth_values},
+                        ("oilfield_name", "water_depth"),
+                    )
+                )
+
+        return OilfieldContextResult(
+            entity_id=str(entity.get("id")),
+            standard_name=str(entity.get("name")),
+            coordinate_range=coordinate_range,
+            default_coordinates=default_coordinates,
+            reference_water_depth=reference_depth,
+            coordinate_status=coordinate_status,
+            depth_status=depth_status,
+            feedback=tuple(feedback),
+            issues=tuple(issues),
+        )
+
+    def _find_entity(self, *, entity_id: str | None, oilfield_name: str | None) -> dict[str, Any] | None:
+        if entity_id:
+            for entity in self.entities:
+                if entity.get("id") == entity_id:
+                    return entity
+        if oilfield_name:
+            target = _normalize_text(str(oilfield_name))
+            for entity in self.entities:
+                names = [entity.get("name", ""), *entity.get("aliases", [])]
+                if any(_normalize_text(str(name)) == target for name in names):
+                    return entity
+        return None
+
+    def _build_issue(
+        self,
+        check_type: str,
+        values: dict[str, Any],
+        related_fields: tuple[str, ...],
+    ) -> OilfieldIssue:
+        constraint = self.constraints_by_check_type.get(check_type)
+        if not constraint:
+            raise ValueError(f"缺少油田校验约束配置: check_type={check_type}")
+
+        message = str(constraint.get("violation_message", "")).strip()
+        for key, value in values.items():
+            message = message.replace("{" + key + "}", _format_number(value))
+        return OilfieldIssue(
+            constraint_id=str(constraint.get("id")),
+            constraint_name=str(constraint.get("name")),
+            check_type=check_type,
+            severity=str(constraint.get("severity")),
+            message=message,
+            related_fields=related_fields,
         )
 
     def _score_entity(self, raw: str, entity: dict[str, Any], coords: dict[str, Any] | None) -> dict[str, Any]:
@@ -269,3 +450,111 @@ def _score_coords(coords: dict[str, Any] | None, entity: dict[str, Any]) -> tupl
     if distance <= 1.0:
         return 15.0, ["坐标接近标准油田范围"]
     return 0.0, []
+
+
+def _as_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float_pair(value: Any) -> tuple[float, float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    first = _as_float(value[0])
+    second = _as_float(value[1])
+    if first is None or second is None:
+        return None
+    return (first, second)
+
+
+def _get_coordinate_range(entity: dict[str, Any]) -> dict[str, list[float]]:
+    lat_range = _coerce_range(entity.get("lat_range"), -90.0, 90.0, "lat_range", entity)
+    lon_range = _coerce_range(entity.get("lon_range"), -180.0, 180.0, "lon_range", entity)
+    return {"lat": [lat_range[0], lat_range[1]], "lon": [lon_range[0], lon_range[1]]}
+
+
+def _get_reference_water_depth(entity: dict[str, Any]) -> float | int | None:
+    depth = entity.get("water_depth")
+    if depth in (None, ""):
+        return None
+    value = _as_float(depth)
+    if value is None:
+        raise ValueError(f"油田参考水深配置无效: entity_id={entity.get('id')}, water_depth={depth}")
+    if value < 0:
+        raise ValueError(f"油田参考水深不能为负: entity_id={entity.get('id')}, water_depth={depth}")
+    return int(value) if value.is_integer() else value
+
+
+def _check_coordinates(coords: object, entity: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    if not isinstance(coords, dict):
+        return "invalid", {}
+    lat = _as_float(coords.get("lat"))
+    lon = _as_float(coords.get("lon"))
+    if lat is None or lon is None:
+        return "invalid", {}
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return "invalid", {"actual_lat": lat, "actual_lon": lon}
+
+    ranges = _get_coordinate_range(entity)
+    lat_min, lat_max = ranges["lat"]
+    lon_min, lon_max = ranges["lon"]
+    values = {
+        "actual_lat": lat,
+        "actual_lon": lon,
+        "lat_min": lat_min,
+        "lat_max": lat_max,
+        "lon_min": lon_min,
+        "lon_max": lon_max,
+    }
+    if lat_min <= lat <= lat_max and lon_min <= lon <= lon_max:
+        return "matched", values
+    return "mismatched", values
+
+
+def _check_water_depth(water_depth: object, entity: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    actual_depth = _as_float(water_depth)
+    if actual_depth is None:
+        return "invalid", {}
+    if actual_depth < 0:
+        return "invalid", {"actual_depth": actual_depth}
+
+    reference_depth = _get_reference_water_depth(entity)
+    if reference_depth is None:
+        return "unavailable", {"actual_depth": actual_depth}
+    values = {"actual_depth": actual_depth, "reference_depth": reference_depth}
+    if actual_depth <= float(reference_depth):
+        return "within_reference", values
+    return "exceeded_reference", values
+
+
+def _coerce_range(
+    raw_range: object,
+    min_allowed: float,
+    max_allowed: float,
+    field_name: str,
+    entity: dict[str, Any],
+) -> tuple[float, float]:
+    if not isinstance(raw_range, (list, tuple)) or len(raw_range) != 2:
+        raise ValueError(f"油田{field_name}必须包含两个数值: entity_id={entity.get('id')}")
+    first = _as_float(raw_range[0])
+    second = _as_float(raw_range[1])
+    if first is None or second is None:
+        raise ValueError(f"油田{field_name}包含非数值: entity_id={entity.get('id')}")
+    if first > second:
+        raise ValueError(f"油田{field_name}最小值大于最大值: entity_id={entity.get('id')}")
+    if first < min_allowed or second > max_allowed:
+        raise ValueError(f"油田{field_name}超出合法范围: entity_id={entity.get('id')}")
+    return first, second
+
+
+def _format_number(value: Any) -> str:
+    numeric = _as_float(value)
+    if numeric is None:
+        return str(value)
+    if numeric.is_integer():
+        return str(int(numeric))
+    return f"{numeric:.6f}".rstrip("0").rstrip(".")
