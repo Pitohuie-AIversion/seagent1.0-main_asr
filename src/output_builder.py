@@ -17,7 +17,7 @@ from typing import Any
 from .knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from .simulated_time import get_business_date
 from .coord_parser import parse_coord_value
-from .id_sequence import next_daily_task_id, validate_task_prefix
+from .id_sequence import next_daily_task_id, peek_daily_task_id, validate_task_prefix
 from .exceptions import IdReservationError
 from .result_paths import get_task_dir, get_history_dir
 from .normalizer import FieldNormalizer
@@ -227,8 +227,38 @@ class OutputBuilder:
 
         权威前缀仅取自 KnowledgeBase.task_schemas["task_templates"][task_type_key]["code"]。
         前缀缺失或非法时直接抛出 IdReservationError。
+        此函数消耗正式编号，只应在最终确认发布时调用一次。
         """
         return self._generate_task_id(task_type_key)
+
+    def preview_task_id(self, task_type_key: str) -> str:
+        """预览下一个任务业务编号 (<PREFIX>-YYYYMMDD-NNN)，只读估算，不消耗编号。
+
+        用于草稿阶段向用户展示预计任务编号，对用户必须说明这是预估值。
+        权威编号以发布时 reserve_task_id() 的返回值为准。
+
+        前缀缺失或非法时直接抛出 IdReservationError。
+        """
+        templates = self.kb.task_schemas.get("task_templates", {})
+        if task_type_key not in templates:
+            raise IdReservationError(f"Task type key {task_type_key!r} not found in task templates schema.")
+
+        template = templates[task_type_key]
+        code = template.get("code")
+        if not code or not validate_task_prefix(code):
+            raise IdReservationError(
+                f"Invalid or missing code prefix {code!r} for task_type_key {task_type_key!r}."
+            )
+
+        allowed_prefixes = [t.get("code") for t in templates.values() if t.get("code")]
+        today = get_business_date().strftime("%Y%m%d")
+        return peek_daily_task_id(
+            code,
+            today,
+            3,
+            [(get_task_dir(create=False), "task_id"), (get_history_dir(create=False), "task_id")],
+            allowed_prefixes=allowed_prefixes,
+        )
 
     def _generate_task_id(self, task_type_key: str, task_state: dict | None = None) -> str:
         templates = self.kb.task_schemas.get("task_templates", {})

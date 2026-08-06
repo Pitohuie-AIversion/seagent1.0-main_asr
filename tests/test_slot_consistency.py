@@ -148,11 +148,25 @@ def assert_ssot_consistency(test_case, dm):
     """
     SSOT 校验辅助函数：验证 dm.task_state 和 dm._last_built_json 完全从 slot_store 派生，
     且包含相同的 valid 槽位事实。
+
+    注意：task_id preview（status=candidate）会被注入 _last_built_json 供 UI 展示，
+    这仍然是 SSOT 一致的（值来自 slot_store.slots["task_id"].candidate_value）。
     """
     expected_task_state = dm.slot_store.get_task_state()
     test_case.assertEqual(dm.task_state, expected_task_state)
     expected_built_json = dm.slot_store.get_built_json()
+    # task_id preview 注入：将 candidate_value 加入期望 built_json，以匹配 UI 展示层
+    _task_id_slot = dm.slot_store.slots.get("task_id")
+    if (
+        _task_id_slot
+        and _task_id_slot.status == "candidate"
+        and _task_id_slot.candidate_value is not None
+        and "task_id" not in expected_built_json
+    ):
+        expected_built_json = dict(expected_built_json)
+        expected_built_json["task_id"] = _task_id_slot.candidate_value
     test_case.assertEqual(dm._last_built_json, expected_built_json)
+
 
 
 class SlotConsistencyTest(unittest.TestCase):
@@ -729,7 +743,61 @@ class SlotConsistencyTest(unittest.TestCase):
         self.assertEqual(self.dm.slot_store.slots["water_depth"].status, "valid")
         self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 500.0)
         self.assertIsNone(self.dm.slot_store.slots["water_depth"].candidate_value)
+    def test_19_test_a_single_commit_transaction_per_request(self):
+        self.dm.reset()
+        commit_spy = MagicMock(wraps=self.dm.slot_store.commit_transaction)
+        self.dm.slot_store.commit_transaction = commit_spy
 
+        self.llm.extract_json.return_value = {
+            "intent": "TASK_CREATE",
+            "slot_candidates": [
+                {"raw_key": "任务类型", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 1.0}
+            ],
+            "unresolved": []
+        }
+
+        self.dm.process("新建管缆巡检任务")
+        # 验证事务提交仅被调用 1 次
+        self.assertEqual(commit_spy.call_count, 1)
+        # 验证 task_id 包含在当次提交中且状态为 candidate（草稿预览）
+        committed_slots = commit_spy.call_args[0][0]
+        self.assertIn("task_id", committed_slots)
+        # 草稿阶段 task_id 存在 candidate_value，.value 应为 None（未正式预约）
+        self.assertIsNotNone(committed_slots["task_id"].candidate_value)
+        self.assertIsNone(committed_slots["task_id"].value)
+        self.assertEqual(committed_slots["task_id"].status, "candidate")
+        assert_ssot_consistency(self, self.dm)
+
+    # 20. 模拟 task_id preview 失败时静默降级 (Test B)
+    def test_20_test_b_task_id_exception_leaves_state_untouched(self):
+        """preview 失败应静默降级（记录 warning），不应抛出到调用方。
+        task_id 草稿阶段为非关键读取操作，失败不影响主流程。
+        """
+        self.dm.reset()
+        initial_ver = self.dm.slot_store.version
+
+        self.llm.extract_json.return_value = {
+            "intent": "TASK_CREATE",
+            "slot_candidates": [
+                {"raw_key": "任务类型", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 1.0}
+            ],
+            "unresolved": []
+        }
+
+        # preview 失败应静默降级，不应抛出 RuntimeError
+        with patch.object(self.dm.builder, "preview_task_id", side_effect=RuntimeError("preview failed")):
+            # 不应抛出异常
+            reply = self.dm.process("新建管缆巡检任务")
+            self.assertIsNotNone(reply)  # 正常回复了对话
+
+        # 事务应已提交（主流程未受影响）
+        self.assertGreater(self.dm.slot_store.version, initial_ver, "slot_store 应已提交新状态")
+        # task_id slot 应存在但 candidate_value 为空（preview 失败）
+        task_id_slot = self.dm.slot_store.slots.get("task_id")
+        if task_id_slot:
+            self.assertIsNone(task_id_slot.value, "preview 失败后 task_id.value 不得被设置")
+            self.assertIsNone(task_id_slot.candidate_value, "preview 失败后 candidate_value 应为空")
+        assert_ssot_consistency(self, self.dm)
 
     # 6. 新值与已有值发生冲突
     def test_conflict_detection_and_resolution(self):
@@ -743,7 +811,7 @@ class SlotConsistencyTest(unittest.TestCase):
             "unresolved": []
         }
         self.dm.process("新建管缆巡检")
-        self.assertEqual(self.dm._last_built_json, self.dm.slot_store.get_built_json())
+        assert_ssot_consistency(self, self.dm)
 
     # 18. missing_slots 从 SlotStore 派生
     def test_18_missing_slots_derived_from_slot_store(self):
@@ -763,55 +831,6 @@ class SlotConsistencyTest(unittest.TestCase):
             allowed_values_resolver=lambda field: self.dm.builder.resolve_allowed_values(field, "pipeline_inspection", self.dm.task_state)
         )
         self.assertEqual(self.dm._last_missing, expected_missing)
-
-
-    # 19. 同一请求的业务槽位和 task_id 只有一次事务提交 (Test A)
-    def test_19_test_a_single_commit_transaction_per_request(self):
-        self.dm.reset()
-        commit_spy = MagicMock(wraps=self.dm.slot_store.commit_transaction)
-        self.dm.slot_store.commit_transaction = commit_spy
-
-        self.llm.extract_json.return_value = {
-            "intent": "TASK_CREATE",
-            "slot_candidates": [
-                {"raw_key": "任务类型", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 1.0}
-            ],
-            "unresolved": []
-        }
-
-        self.dm.process("新建管缆巡检任务")
-        # 验证事务提交仅被调用 1 次
-        self.assertEqual(commit_spy.call_count, 1)
-        # 验证 task_id 包含在当次提交中
-        committed_slots = commit_spy.call_args[0][0]
-        self.assertIn("task_id", committed_slots)
-        self.assertIsNotNone(committed_slots["task_id"].value)
-        assert_ssot_consistency(self, self.dm)
-
-    # 20. 模拟 task_id 生成异常时全部状态零修改 (Test B)
-    def test_20_test_b_task_id_exception_leaves_state_untouched(self):
-        self.dm.reset()
-        initial_ver = self.dm.slot_store.version
-        initial_state = self.dm.slot_store.get_task_state()
-        initial_hist_len = len(self.dm.conversation_history)
-
-        self.llm.extract_json.return_value = {
-            "intent": "TASK_CREATE",
-            "slot_candidates": [
-                {"raw_key": "任务类型", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 1.0}
-            ],
-            "unresolved": []
-        }
-
-        with patch.object(self.dm.builder, "_generate_task_id", side_effect=RuntimeError("Task ID generation failed")):
-            with self.assertRaises(RuntimeError):
-                self.dm.process("新建管缆巡检任务")
-
-        # 验证全部状态 100% 未被污染
-        self.assertEqual(self.dm.slot_store.version, initial_ver)
-        self.assertEqual(self.dm.slot_store.get_task_state(), initial_state)
-        self.assertEqual(len(self.dm.conversation_history), initial_hist_len)
-        assert_ssot_consistency(self, self.dm)
 
     # 21. 模拟主 commit 失败时全部状态零修改
     def test_21_main_commit_failure_leaves_state_untouched(self):

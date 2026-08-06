@@ -557,6 +557,36 @@ class DialogueManager:
                 self.conversation_history.append({"role": "assistant", "content": reply})
                 return reply
 
+        # 准备发布：正式且唯一预约任务业务编号（在跨进程锁内原子递增）。
+        # reserve_task_id() 的返回值是唯一权威正式编号，必须覆盖任何草稿阶段的 preview。
+        # 即使当前 SlotStore 中存在 candidate preview，也必须重新 reserve，
+        # 不得假设 preview 编号仍然可用或与 reserve 结果一致。
+        try:
+            official_task_id = self.builder.reserve_task_id(task_type_key)
+        except Exception as _reserve_err:
+            logger.error(
+                "[DM] reserve_task_id failed before publish: task_type_key=%s, err=%s",
+                task_type_key, _reserve_err, exc_info=True,
+            )
+            raise
+
+        # 将正式编号写入 SlotStore（在事务外直接更新，publish 路径已持有足够上下文）
+        if "task_id" not in self.slot_store.slots:
+            self.slot_store.slots["task_id"] = Slot("task_id")
+        self.slot_store.slots["task_id"].value = official_task_id
+        self.slot_store.slots["task_id"].status = "valid"
+        self.slot_store.slots["task_id"].source = "auto_reserved"
+        self.slot_store.slots["task_id"].candidate_value = None
+        self.slot_store.slots["task_id"].raw_value = None
+        self.slot_store.slots["task_id"].value_type = "string"
+        self.slot_store.slots["task_id"].validation_error = None
+
+        # 同步正式编号到本次事务候选数据（prepare/staging/publish 均从这里读取）
+        cand_state["task_id"] = official_task_id
+        cand_built["task_id"] = official_task_id
+        self.task_state["task_id"] = official_task_id
+        self._last_built_json["task_id"] = official_task_id
+
         # 准备发布
         ti_builder = TaskIntentBuilder(self.kb)
         ti_json_artifact = ti_builder.prepare(
@@ -567,6 +597,7 @@ class DialogueManager:
             intent_id=intent_id,
         )
         staging_file = ti_builder.create_staging(ti_json_artifact)
+
 
         try:
             ti_builder.publish_staging(staging_file, ti_json_artifact)
@@ -1086,16 +1117,35 @@ class DialogueManager:
                 new_slots["internal_id"].value_type = "string"
 
             task_id_slot = new_slots.get("task_id")
-            if not task_id_slot or task_id_slot.status != "valid" or task_id_slot.value is None or not validate_task_id_for_task_type(str(task_id_slot.value), curr_task_type_key, self.kb.task_schemas):
-                valid_cand_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
-                tid = self.builder.reserve_task_id(curr_task_type_key)
-                if "task_id" not in new_slots:
-                    new_slots["task_id"] = Slot("task_id")
-                new_slots["task_id"].value = tid
-                new_slots["task_id"].status = "valid"
-                new_slots["task_id"].source = "auto"
-                new_slots["task_id"].raw_value = None
-                new_slots["task_id"].value_type = "string"
+            # 草稿阶段仅预览编号：不消耗正式序号，不写 valid status。
+            # 只有当前没有任何 preview 或已有 valid 编号（来自正式 reserve）时才刷新预览。
+            # 正式编号在用户确认发布时由 _publish_confirmed_task 调用 reserve_task_id() 分配。
+            existing_valid = (
+                task_id_slot
+                and task_id_slot.status == "valid"
+                and task_id_slot.value is not None
+                and validate_task_id_for_task_type(str(task_id_slot.value), curr_task_type_key, self.kb.task_schemas)
+                and task_id_slot.source == "auto_reserved"  # 只有正式预约的才保留
+            )
+            if not existing_valid:
+                try:
+                    preview_id = self.builder.preview_task_id(curr_task_type_key)
+                except Exception as _preview_err:
+                    logger.warning(
+                        "[DM] preview_task_id failed for %s: %s", curr_task_type_key, _preview_err
+                    )
+                    preview_id = None
+                if preview_id is not None:
+                    if "task_id" not in new_slots:
+                        new_slots["task_id"] = Slot("task_id")
+                    # candidate_value: 预估编号，仅供展示，不进入 TaskIntent
+                    new_slots["task_id"].candidate_value = preview_id
+                    new_slots["task_id"].status = "candidate"
+                    new_slots["task_id"].source = "auto_preview"
+                    new_slots["task_id"].value = None          # 正式值为空，防止被 prepare() 误用
+                    new_slots["task_id"].raw_value = None
+                    new_slots["task_id"].value_type = "string"
+                    new_slots["task_id"].validation_error = None
 
         proposed_phase = self.phase
 
@@ -1164,8 +1214,21 @@ class DialogueManager:
                         "allowed_values": self.kb.get_all_task_type_values()}]
             self._last_missing = missing
         self._last_built_json = built
+        # 草稿阶段：将 task_id 预览值注入 _last_built_json 供 UI/API 展示。
+        # 此值来自 candidate_value（status="candidate"），不是正式 valid 值，
+        # 不会被 TaskIntentBuilder.prepare() 读取（prepare 从 cand_state/cand_built 读取）。
+        # 发布时 reserve_task_id() 返回值会覆盖所有 preview。
+        _preview_slot = self.slot_store.slots.get("task_id")
+        if (
+            _preview_slot
+            and _preview_slot.status == "candidate"
+            and _preview_slot.candidate_value is not None
+            and "task_id" not in self._last_built_json
+        ):
+            self._last_built_json["task_id"] = _preview_slot.candidate_value
 
         self.task_start_now = self.is_start_time_near_now()
+
 
         pending_oilfield_reply = self._build_pending_oilfield_reply()
         if pending_oilfield_reply:
