@@ -12,7 +12,9 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import src.id_sequence as _id_sequence
 from src.llm_client import LLMClient
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
@@ -33,9 +35,21 @@ def _make_dm(tmp_dir: Path) -> DialogueManager:
 class TestDialogueValidationGate(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.mkdtemp()
+        # 隔离 id_sequence counter 文件到临时目录，防止每次调用 reserve_task_id() 污染生产 counter
+        self._patcher_result = patch(
+            "src.id_sequence.get_result_dir",
+            return_value=Path(self._tmp),
+        )
+        self._patcher_result.start()
+        # 清除内存计数器，确保测试间不互相干扰
+        self._orig_counters = dict(_id_sequence._COUNTERS)
+        _id_sequence._COUNTERS.clear()
         self.dm = _make_dm(Path(self._tmp))
 
     def tearDown(self):
+        self._patcher_result.stop()
+        _id_sequence._COUNTERS.clear()
+        _id_sequence._COUNTERS.update(self._orig_counters)
         shutil.rmtree(self._tmp, ignore_errors=True)
 
     def test_slot_store_snapshot_schema_v2(self):

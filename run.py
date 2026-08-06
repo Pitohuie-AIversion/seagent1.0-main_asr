@@ -21,9 +21,6 @@ _ensure_positive_int_env("MKL_NUM_THREADS", "1")
 import sys
 import yaml
 from pathlib import Path
-import torch
-from vllm import LLM
-from transformers import AutoTokenizer
 from flask import request, jsonify
 
 import web_backend
@@ -95,6 +92,11 @@ def startup():
         web_backend.init_asr_service(asr_service)
         print("✅ Mock models loaded successfully (Dry Run Mode)")
         return
+
+    # 延迟导入：仅在全量启动时引入 vllm/torch，避免 mock 模式崩溃
+    import torch
+    from vllm import LLM
+    from transformers import AutoTokenizer
 
     print("Loading tokenizer...")
     tok = AutoTokenizer.from_pretrained(
