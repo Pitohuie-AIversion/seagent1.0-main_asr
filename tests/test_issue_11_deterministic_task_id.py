@@ -178,10 +178,10 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
     def test_04_first_task_must_be_001(self):
         dm = create_dialogue_manager()
         dm.process("我要做管缆巡检")
-        # 草稿阶段 task_id 存在 _last_built_json（UI 展示预览），不在 task_state（task_state 只包含 valid）
-        preview_id = dm._last_built_json.get("task_id")
+        # 草稿阶段 task_id 存在于 dm.task_id_preview（UI 展示预览），不在 _last_built_json 或 task_state
+        preview_id = dm.task_id_preview
         self.assertEqual(preview_id, "PI-20260803-001")
-        # task_state 不应包含草稿预览编号（valid slot 才入 task_state）
+        self.assertNotIn("task_id", dm._last_built_json)
         self.assertIsNone(dm.task_state.get("task_id"))
         # SlotStore 中 task_id 状态为 candidate
         slot = dm.slot_store.slots.get("task_id")
@@ -449,8 +449,9 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         slot = dm.slot_store.slots.get("task_id")
         self.assertIsNotNone(slot)
         self.assertEqual(slot.status, "candidate", "preview 应为 candidate 状态")
-        preview_id = dm._last_built_json.get("task_id")
-        self.assertIsNotNone(preview_id, "_last_built_json 应包含预览编号")
+        preview_id = dm.task_id_preview
+        self.assertIsNotNone(preview_id, "dm.task_id_preview 应包含预览编号")
+        self.assertNotIn("task_id", dm._last_built_json)
         self.assertTrue(preview_id.startswith("PI-"), f"预览编号前缀不匹配: {preview_id}")
         # candidate 状态不锁定类别，不应触发 task_type_key.validation_error="任务编号已锁定"
         err = dm.slot_store.slots.get("task_type_key") and dm.slot_store.slots["task_type_key"].validation_error
@@ -460,9 +461,10 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
     def test_20_publish_retry_preserves_task_id(self):
         dm = create_dialogue_manager()
         dm.process("新建管缆巡检任务")
-        # 草稿阶段 task_id 在 _last_built_json（preview），不在 task_state
-        tid1_preview = dm._last_built_json.get("task_id")
-        self.assertIsNotNone(tid1_preview, "_last_built_json 应包含 preview task_id")
+        # 草稿阶段 task_id 在 dm.task_id_preview，不在 _last_built_json 或 task_state
+        tid1_preview = dm.task_id_preview
+        self.assertIsNotNone(tid1_preview, "dm.task_id_preview 应包含 preview task_id")
+        self.assertNotIn("task_id", dm._last_built_json)
 
         dm.slot_store.slots["intent_id"] = Slot("intent_id", "TI2026080301", status="valid")
         dm._last_built_json["intent_id"] = "TI2026080301"
@@ -555,9 +557,10 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
             res_chat = client.post("/api/chat", json={"session_id": "sess_asr_issue11", "message": corrected_text})
             self.assertEqual(res_chat.status_code, 200)
             data = res_chat.get_json()
-            self.assertIn("collected", data)
-            self.assertIn("task_id", data["collected"])
-            self.assertTrue(data["collected"]["task_id"].startswith("PB-"))
+            self.assertIn("task_id_preview", data)
+            self.assertIsNotNone(data["task_id_preview"])
+            self.assertTrue(data["task_id_preview"].startswith("PB-"))
+            self.assertIsNone(data.get("task_id"))
 
     def test_25_directory_fsync_failure_raises_id_reservation_error(self):
         real_fsync = os.fsync
@@ -1233,15 +1236,25 @@ class TestPreviewReserve(unittest.TestCase):
             dm._last_built_json = dm.slot_store.get_built_json()
             dm.phase = "confirming"
 
+            snap_before = dm.slot_store.export_snapshot()
+            state_before = copy.deepcopy(dm.task_state)
+            built_before = copy.deepcopy(dm._last_built_json)
+            missing_before = copy.deepcopy(dm._last_missing)
+            hist_before = copy.deepcopy(dm.conversation_history)
+
             with patch("src.task_intent_builder.TaskIntentBuilder.prepare", side_effect=TaskPersistenceError("Mock prepare error")):
                 with self.assertRaises(TaskPersistenceError):
                     dm._handle_final_publish_confirmation("确认发布", "req_41")
 
             self.assertEqual(dm.phase, "confirming", "phase 应完全回滚")
             self.assertIsNone(dm.final_result, "final_result 应为 None")
-            self.assertIsNone(dm.task_state.get("task_id"), "task_state 零残留")
-            self.assertEqual(dm.slot_store.slots["task_id"].status, "candidate", "task_id 恢复为 preview")
+            self.assertEqual(dm.slot_store.export_snapshot(), snap_before, "SlotStore 快照必须 100% 完全回滚")
+            self.assertEqual(dm.task_state, state_before, "task_state 必须 100% 完全回滚")
+            self.assertEqual(dm._last_built_json, built_before, "_last_built_json 必须 100% 完全回滚")
+            self.assertEqual(dm._last_missing, missing_before, "_last_missing 必须 100% 完全回滚")
+            self.assertEqual(dm.conversation_history, hist_before, "conversation_history 必须 100% 完全回滚")
             self.assertFalse((tmp_task_dir / "task_intent_TI2026080641.json").exists())
+            self.assertEqual(len(list(tmp_task_dir.glob("*"))), 0, "磁盘无任何残留临时/staging/final文件")
 
     # ──────────────────────────────────────────────────────
     # Test 42: create_staging 失败时的三回滚断言
@@ -1267,13 +1280,24 @@ class TestPreviewReserve(unittest.TestCase):
             dm._last_built_json = dm.slot_store.get_built_json()
             dm.phase = "confirming"
 
+            snap_before = dm.slot_store.export_snapshot()
+            state_before = copy.deepcopy(dm.task_state)
+            built_before = copy.deepcopy(dm._last_built_json)
+            missing_before = copy.deepcopy(dm._last_missing)
+            hist_before = copy.deepcopy(dm.conversation_history)
+
             with patch("src.task_intent_builder.TaskIntentBuilder.create_staging", side_effect=TaskPersistenceError("Mock staging error")):
                 with self.assertRaises(TaskPersistenceError):
                     dm._handle_final_publish_confirmation("确认发布", "req_42")
 
             self.assertEqual(dm.phase, "confirming")
             self.assertIsNone(dm.final_result)
-            self.assertIsNone(dm.task_state.get("task_id"))
+            self.assertEqual(dm.slot_store.export_snapshot(), snap_before)
+            self.assertEqual(dm.task_state, state_before)
+            self.assertEqual(dm._last_built_json, built_before)
+            self.assertEqual(dm._last_missing, missing_before)
+            self.assertEqual(dm.conversation_history, hist_before)
+            self.assertEqual(len(list(tmp_task_dir.glob("*"))), 0)
 
     # ──────────────────────────────────────────────────────
     # Test 43: publish_staging 失败时的三回滚断言
@@ -1299,13 +1323,24 @@ class TestPreviewReserve(unittest.TestCase):
             dm._last_built_json = dm.slot_store.get_built_json()
             dm.phase = "confirming"
 
+            snap_before = dm.slot_store.export_snapshot()
+            state_before = copy.deepcopy(dm.task_state)
+            built_before = copy.deepcopy(dm._last_built_json)
+            missing_before = copy.deepcopy(dm._last_missing)
+            hist_before = copy.deepcopy(dm.conversation_history)
+
             with patch("src.task_intent_builder.TaskIntentBuilder.publish_staging", side_effect=TaskPersistenceError("Mock publish error")):
                 with self.assertRaises(TaskPersistenceError):
                     dm._handle_final_publish_confirmation("确认发布", "req_43")
 
             self.assertEqual(dm.phase, "confirming")
             self.assertIsNone(dm.final_result)
-            self.assertIsNone(dm.task_state.get("task_id"))
+            self.assertEqual(dm.slot_store.export_snapshot(), snap_before)
+            self.assertEqual(dm.task_state, state_before)
+            self.assertEqual(dm._last_built_json, built_before)
+            self.assertEqual(dm._last_missing, missing_before)
+            self.assertEqual(dm.conversation_history, hist_before)
+            self.assertEqual(len(list(tmp_task_dir.glob("*.json"))), 0)
 
 
 if __name__ == "__main__":

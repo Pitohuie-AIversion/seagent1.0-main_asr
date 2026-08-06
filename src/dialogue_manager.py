@@ -507,6 +507,7 @@ class DialogueManager:
         prev_phase = self.phase
         prev_snap = self.slot_store.export_snapshot()
         prev_whitelist = copy.deepcopy(self._soft_whitelist)
+        prev_missing = copy.deepcopy(self._last_missing)
         prev_pending_rov = copy.deepcopy(self._pending_rov_candidates)
         prev_blocking_violations = copy.deepcopy(self._blocking_violations)
         prev_hist = list(self.conversation_history)
@@ -585,9 +586,12 @@ class DialogueManager:
             publish_slots["task_id"].value_type = "string"
             publish_slots["task_id"].validation_error = None
 
+            expected_version = self.slot_store.version
             self.slot_store.commit_transaction(
                 publish_slots,
                 list(self.slot_store.unresolved),
+                request_id=request_id,
+                expected_version=expected_version,
             )
 
             # 提交后从 SlotStore 统一重新派生权威状态，绝对不手工篡改各缓存副本
@@ -630,9 +634,7 @@ class DialogueManager:
             self.conversation_history = prev_hist
             self.task_start_now = prev_task_start_now
 
-            if task_type_key:
-                required_schema = self.builder.get_schema(task_type_key, self.mode)
-                self._last_missing = self.slot_store.get_missing_slots(required_schema)
+            self._last_missing = prev_missing
 
             logger.error(
                 "TaskIntent publish failed: request_id=%s, task_id=%s, intent_id=%s, err_type=%s, err=%s, rollback_failed=%s",
@@ -1162,9 +1164,10 @@ class DialogueManager:
         # Check required missing in working new_slots
         if curr_task_type_key:
             required_schema = self.builder.get_schema(curr_task_type_key, proposed_mode)
+            user_req_schema = [f for f in required_schema if f.get("type") not in ("auto", "fixed")]
             built = self.slot_store.get_built_json()
             missing = self.slot_store.get_missing_slots(
-                required_schema,
+                user_req_schema,
                 allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
                     field,
                     curr_task_type_key,
@@ -1225,9 +1228,10 @@ class DialogueManager:
         self.task_state = self.slot_store.get_task_state()
         if curr_task_type_key:
             required_schema = self.builder.get_schema(curr_task_type_key, self.mode)
+            user_req_schema = [f for f in required_schema if f.get("type") not in ("auto", "fixed")]
             built = self.slot_store.get_built_json()
             missing = self.slot_store.get_missing_slots(
-                required_schema,
+                user_req_schema,
                 allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
                     field,
                     curr_task_type_key,
@@ -1241,18 +1245,6 @@ class DialogueManager:
                         "allowed_values": self.kb.get_all_task_type_values()}]
             self._last_missing = missing
         self._last_built_json = built
-        # 草稿阶段：将 task_id 预览值注入 _last_built_json 供 UI/API 展示。
-        # 此值来自 candidate_value（status="candidate"），不是正式 valid 值，
-        # 不会被 TaskIntentBuilder.prepare() 读取（prepare 从 cand_state/cand_built 读取）。
-        # 发布时 reserve_task_id() 返回值会覆盖所有 preview。
-        _preview_slot = self.slot_store.slots.get("task_id")
-        if (
-            _preview_slot
-            and _preview_slot.status == "candidate"
-            and _preview_slot.candidate_value is not None
-            and "task_id" not in self._last_built_json
-        ):
-            self._last_built_json["task_id"] = _preview_slot.candidate_value
 
         self.task_start_now = self.is_start_time_near_now()
 
@@ -3262,6 +3254,8 @@ class DialogueManager:
         if cand_internal is not None:
             if not _ti_builder_module.validate_uuid4(str(cand_internal)):
                 raise SnapshotValidationError(f"Invalid internal_id UUIDv4 in candidate snapshot: {cand_internal}")
+            if cand_task_type_key is None:
+                raise SnapshotValidationError(f"internal_id {cand_internal} present in candidate snapshot but task_type_key is missing")
 
         if cand_task_id is not None:
             if not validate_task_id(str(cand_task_id)):
@@ -3270,9 +3264,7 @@ class DialogueManager:
                 raise SnapshotValidationError(f"task_id {cand_task_id} present in candidate snapshot but task_type_key is missing")
             if not validate_task_id_for_task_type(str(cand_task_id), cand_task_type_key, self.kb.task_schemas):
                 raise SnapshotValidationError(f"task_id {cand_task_id} does not match task_type_key {cand_task_type_key} in candidate snapshot")
-
-        if cand_task_id is not None:
-            if cand_task_id is None or cand_internal is None or cand_task_type_key is None:
+            if cand_internal is None or cand_task_type_key is None:
                 raise SnapshotValidationError("v2 candidate snapshot with valid task_id must contain internal_id, task_id, and task_type_key simultaneously")
 
         # 候选 SlotStore 完整校验通过后再一次性替换，避免半恢复状态泄漏。

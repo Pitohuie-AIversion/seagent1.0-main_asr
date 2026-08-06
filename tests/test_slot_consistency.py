@@ -146,26 +146,10 @@ def _mp_publish_no_clobber_worker(result_dir: str, intent: dict, queue: multipro
 
 def assert_ssot_consistency(test_case, dm):
     """
-    SSOT 校验辅助函数：验证 dm.task_state 和 dm._last_built_json 完全从 slot_store 派生，
-    且包含相同的 valid 槽位事实。
-
-    注意：task_id preview（status=candidate）会被注入 _last_built_json 供 UI 展示，
-    这仍然是 SSOT 一致的（值来自 slot_store.slots["task_id"].candidate_value）。
+    SSOT 校验辅助函数：验证 dm.task_state 和 dm._last_built_json 完全从 slot_store 派生。
     """
-    expected_task_state = dm.slot_store.get_task_state()
-    test_case.assertEqual(dm.task_state, expected_task_state)
-    expected_built_json = dm.slot_store.get_built_json()
-    # task_id preview 注入：将 candidate_value 加入期望 built_json，以匹配 UI 展示层
-    _task_id_slot = dm.slot_store.slots.get("task_id")
-    if (
-        _task_id_slot
-        and _task_id_slot.status == "candidate"
-        and _task_id_slot.candidate_value is not None
-        and "task_id" not in expected_built_json
-    ):
-        expected_built_json = dict(expected_built_json)
-        expected_built_json["task_id"] = _task_id_slot.candidate_value
-    test_case.assertEqual(dm._last_built_json, expected_built_json)
+    test_case.assertEqual(dm.task_state, dm.slot_store.get_task_state())
+    test_case.assertEqual(dm._last_built_json, dm.slot_store.get_built_json())
 
 
 
@@ -826,8 +810,9 @@ class SlotConsistencyTest(unittest.TestCase):
         }
         self.dm.process("新建管缆巡检")
         schema = self.dm.builder.get_schema("pipeline_inspection", self.dm.mode)
+        user_req_schema = [f for f in schema if f.get("type") not in ("auto", "fixed")]
         expected_missing = self.dm.slot_store.get_missing_slots(
-            schema,
+            user_req_schema,
             allowed_values_resolver=lambda field: self.dm.builder.resolve_allowed_values(field, "pipeline_inspection", self.dm.task_state)
         )
         self.assertEqual(self.dm._last_missing, expected_missing)

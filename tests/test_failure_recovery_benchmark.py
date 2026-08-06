@@ -95,11 +95,14 @@ class FailureRecoveryBenchmarkTest(unittest.TestCase):
         # 但设备解析链写入的是型号 full_name。如果 normalizer 无法匹配，
         # 手动将 equipment_type 设为合法大类值以推进到 confirming 阶段。
         eq_slot = self.dm.slot_store.slots.get("equipment_type")
-        if eq_slot and eq_slot.status != "valid":
-            eq_slot.value = "AUV"
-            eq_slot.status = "valid"
-            self.dm.task_state = self.dm.slot_store.get_task_state()
-            self.dm.phase = "confirming"
+        if not eq_slot:
+            from src.slot_store import Slot
+            eq_slot = Slot("equipment_type", "AUV", status="valid")
+            self.dm.slot_store.slots["equipment_type"] = eq_slot
+        eq_slot.value = "AUV"
+        eq_slot.status = "valid"
+        self.dm.task_state = self.dm.slot_store.get_task_state()
+        self.dm.phase = "confirming"
         if self.dm.phase == "blocked_soft":
             self.dm.process("确认忽略警告继续")
 

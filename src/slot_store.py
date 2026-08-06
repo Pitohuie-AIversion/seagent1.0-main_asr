@@ -683,8 +683,6 @@ class SlotStore:
         with self._lock:
             missing_fields = []
             for field in required_schema:
-                if field.get("type") in ("auto", "fixed"):
-                    continue
                 key = field["key"]
                 slot = self.slots.get(key)
                 if slot and slot.status == "valid" and slot.value is not None:

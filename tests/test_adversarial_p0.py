@@ -141,9 +141,10 @@ class AdversarialP0SecurityTest(unittest.TestCase):
             snap_before = self.dm.slot_store.export_snapshot()
             ti_slot_val = self.dm.slot_store.slots["intent_id"].value
 
+            real_commit = self.dm.slot_store.commit_transaction
             with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
                  patch.object(self.dm.extractor, 'extract_updates') as mock_ext, \
-                 patch.object(self.dm.slot_store, 'commit_transaction') as mock_commit:
+                 patch.object(self.dm.slot_store, 'commit_transaction', wraps=real_commit) as mock_commit:
                 reply = self.dm.process("确认发布")
                 mock_ext.assert_not_called()
                 self.assertEqual(mock_commit.call_count, 1, "确认发布时正式 task_id 必须且精确通过 1 次 commit_transaction 写入 SlotStore")
@@ -151,8 +152,9 @@ class AdversarialP0SecurityTest(unittest.TestCase):
 
             v_after = self.dm.slot_store.version
             snap_after = self.dm.slot_store.export_snapshot()
-            self.assertEqual(v_before, v_after)
-            self.assertEqual(snap_before, snap_after)
+            self.assertEqual(v_after, v_before + 1, "事务提交后 SlotStore version 必须递增")
+            self.assertNotEqual(snap_before, snap_after, "事务提交后 snapshot 应当受控变更")
+            self.assertEqual(self.dm.slot_store.slots["task_id"].status, "valid", "task_id 应当变为 valid")
 
             final_files = list(tmp_path.glob("task_intent_*.json"))
             self.assertEqual(len(final_files), 1)

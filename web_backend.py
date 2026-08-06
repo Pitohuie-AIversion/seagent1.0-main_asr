@@ -467,7 +467,8 @@ def api_chat():
             "collected": mgr._last_built_json,
             "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
             "task_type": mgr.task_state.get("task_type_key"),
-            "task_id": mgr._last_built_json.get("task_id") or mgr.task_state.get("task_id"),
+            "task_id": mgr.task_state.get("task_id"),
+            "task_id_preview": mgr.task_id_preview,
             "emergency": mgr.mode == "emergency",
             "final_json": mgr._last_built_json if mgr.phase == "done" else None
         }
@@ -565,7 +566,8 @@ def get_session_state():
         "collected": mgr._last_built_json,
         "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
         "task_type": mgr.task_state.get("task_type_key"),
-        "task_id": mgr._last_built_json.get("task_id") or mgr.task_state.get("task_id"),
+        "task_id": mgr.task_state.get("task_id"),
+        "task_id_preview": mgr.task_id_preview,
         "emergency": mgr.mode == "emergency",
         "history": mgr.conversation_history,
         "final_json": mgr._last_built_json if mgr.phase == "done" else None
