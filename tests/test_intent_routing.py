@@ -353,7 +353,8 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
 
         self.assertNotEqual(self.dm.phase, "blocked_soft")
         self.assertEqual(self.dm.slot_store.version, v_before)
-        self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+        snap_after = self.dm.slot_store.export_snapshot()
+        self.assertEqual(snap_after.get("slots"), snap_before.get("slots"))
         self.assertEqual(self.dm.slot_store.slots["water_depth"].value, wd_before)
         # 验证白名单包含正确条目
         self.assertTrue(any(item[2] == "depth_vs_rov_limit" for item in self.dm._soft_whitelist))
@@ -373,7 +374,8 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
 
         self.assertNotEqual(self.dm.phase, "blocked_soft")
         self.assertEqual(self.dm.slot_store.version, v_before)
-        self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+        snap_after = self.dm.slot_store.export_snapshot()
+        self.assertEqual(snap_after.get("slots"), snap_before.get("slots"))
         self.assertEqual(self.dm.slot_store.slots["water_depth"].value, wd_before)
         self.assertTrue(any(item[2] == "depth_vs_rov_limit" for item in self.dm._soft_whitelist))
 

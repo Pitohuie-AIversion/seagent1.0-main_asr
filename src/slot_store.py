@@ -1,4 +1,5 @@
 import copy
+import dataclasses
 import logging
 import math
 import threading
@@ -361,6 +362,8 @@ class SlotStore:
         self.slots: Dict[str, Slot] = {}
         self.unresolved: List[Any] = []
         self.version: int = 0
+        self.validation_result: Dict[str, Any] | None = None
+        self.validation_acknowledgements: List[Dict[str, Any]] = []
         self._initialize_base_slots()
 
     def _initialize_base_slots(self, slots_dict: Optional[Dict[str, Slot]] = None):
@@ -697,13 +700,31 @@ class SlotStore:
 
     def export_snapshot(self) -> Dict[str, Any]:
         with self._lock:
+            val_data = None
+            if self.validation_result is not None:
+                if hasattr(self.validation_result, "__dataclass_fields__"):
+                    val_data = dataclasses.asdict(self.validation_result)
+                elif isinstance(self.validation_result, dict):
+                    val_data = copy.deepcopy(self.validation_result)
+
+            ack_data = []
+            if self.validation_acknowledgements:
+                for ack in self.validation_acknowledgements:
+                    if hasattr(ack, "__dataclass_fields__"):
+                        ack_data.append(dataclasses.asdict(ack))
+                    elif isinstance(ack, dict):
+                        ack_data.append(copy.deepcopy(ack))
+
             return {
+                "snapshot_schema_version": 2,
                 "store_version": self.version,
                 "slots": {
                     key: slot.to_dict()
                     for key, slot in self.slots.items()
                 },
                 "unresolved": copy.deepcopy(self.unresolved),
+                "validation": val_data,
+                "validation_acknowledgements": ack_data,
             }
 
     def restore_snapshot(self, snapshot: Dict[str, Any]):
@@ -726,6 +747,29 @@ class SlotStore:
                 unresolved_data = []
             if not isinstance(unresolved_data, list):
                 raise SnapshotValidationError("unresolved must be a list.")
+
+            validation_data = snapshot.get("validation")
+            if validation_data is None and "validation_result" in snapshot:
+                validation_data = snapshot.get("validation_result")
+            if validation_data is not None:
+                if hasattr(validation_data, "__dataclass_fields__"):
+                    validation_data = dataclasses.asdict(validation_data)
+                elif not isinstance(validation_data, dict):
+                    raise SnapshotValidationError("validation must be a dictionary or None.")
+
+            ack_data = snapshot.get("validation_acknowledgements")
+            if ack_data is not None:
+                if not isinstance(ack_data, list):
+                    raise SnapshotValidationError("validation_acknowledgements must be a list.")
+                cleaned_ack = []
+                for item in ack_data:
+                    if hasattr(item, "__dataclass_fields__"):
+                        cleaned_ack.append(dataclasses.asdict(item))
+                    elif isinstance(item, dict):
+                        cleaned_ack.append(copy.deepcopy(item))
+                    else:
+                        raise SnapshotValidationError("Each entry in validation_acknowledgements must be a dictionary.")
+                ack_data = cleaned_ack
 
 
             new_slots = {}
@@ -832,6 +876,8 @@ class SlotStore:
             self.slots = new_slots
             self.version = store_ver
             self.unresolved = copy.deepcopy(unresolved_data)
+            self.validation_result = copy.deepcopy(validation_data)
+            self.validation_acknowledgements = copy.deepcopy(ack_data or [])
 
     @classmethod
     def from_snapshot(cls, snapshot: Dict[str, Any], kb=None):

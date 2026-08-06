@@ -208,6 +208,7 @@ class TaskIntentBuilder:
         mode: str,
         task_type_key: str,
         intent_id: Optional[str] = None,
+        validation_result: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """prepare() 不预留、不上盘、不修改 task_id 与 internal_id；若 task_id 或 internal_id 缺失或非法，fail closed。注意：若 intent_id 尚未指定，本函数会为 TaskIntent 预留并上盘 counter 生成 intent_id。"""
         if intent_id is not None:
@@ -273,7 +274,32 @@ class TaskIntentBuilder:
             "longitude": None,
         }
 
-        conditions = {}
+        val_dict = {}
+        if validation_result is not None:
+            if hasattr(validation_result, "overall_status"):
+                state_snap = getattr(validation_result, "state_snapshot", None) or {}
+                val_dict = {
+                    "overall_status": getattr(validation_result, "overall_status", "valid"),
+                    "task_version": getattr(validation_result, "task_version", 1),
+                    "validation_version": getattr(validation_result, "validation_version", 1),
+                    "validated_at": getattr(validation_result, "validated_at", ""),
+                    "status_ref": state_snap.get("status_ref") if isinstance(state_snap, dict) else None,
+                    "state_version": state_snap.get("state_version") if isinstance(state_snap, dict) else None,
+                    "state_updated_at": state_snap.get("updated_at") if isinstance(state_snap, dict) else None,
+                    "violations": [v.constraint_id for v in getattr(validation_result, "violations", [])],
+                }
+            elif isinstance(validation_result, dict):
+                val_dict = validation_result
+
+        is_future = val_dict.get("overall_status") == "pending_runtime_validation"
+
+        conditions = {
+            "validation": val_dict,
+            "runtime_validation": {
+                "required": is_future,
+                "status": "pending_runtime_validation" if is_future else "completed",
+            }
+        }
 
         task_id = built_json.get("task_id") or task_state.get("task_id")
         if not task_id:

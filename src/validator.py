@@ -1,16 +1,24 @@
 """
-validator.py — 约束验证器
-- 每条 Violation 携带 related_fields，说明该违规由哪些字段触发
-- 支持按 changed_fields 精准触发检查
-- validate_for_fields() 只运行与变化字段相关的约束
+validator.py — 结构化约束验证服务 (Issue #14 增强版)
+- 支持基于具体单机 (unit_id -> status_ref) 的严格遥测状态快照提取
+- 支持 ValidationResult 结构化输出（包含指纹、版本号、快照、错误信息与违规列表）
+- 区分交互中(interactive)、预览(preview)、发布(publish)与运行时(runtime_execution)不同目的
+- 支持未来任务标记 pending_runtime_validation
 """
 
+import copy
+import hashlib
 import time
-from datetime import datetime, timedelta
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .exceptions import (
+    StatePersistenceError,
+    StateSelectorError,
+    StateSnapshotValidationError,
+)
 from .knowledge_retriever import KnowledgeBase
 from .simulated_time import get_current_datetime, get_current_timestamp
 
@@ -23,9 +31,23 @@ class Violation:
     constraint_id: str
     constraint_name: str
     message: str
-    severity: str          # "hard" | "soft"
+    severity: str          # "hard" | "soft" | "warning"
     related_fields: list[str] = field(default_factory=list)
-    # related_fields：触发本条违规的字段名列表，用于白名单 key 和失效判断
+    check_type: str = ""
+    observed_value: Any = None
+    threshold: Any = None
+
+
+@dataclass
+class ValidationResult:
+    overall_status: str     # "valid" | "pending_runtime_validation" | "warning" | "blocked_soft" | "blocked_hard" | "validation_error"
+    validated_at: str
+    task_version: int
+    validation_version: int
+    validation_fingerprint: str
+    state_snapshot: dict | None
+    violations: list[Violation] = field(default_factory=list)
+    error: dict | None = None
 
 
 # check_type → 该约束关注的字段集合
@@ -34,10 +56,7 @@ _EQUIPMENT_FIELDS = ["equipment_unit_id", "equipment_family", "equipment_type", 
 _CHECK_FIELDS: dict[str, list[str]] = {
     "robot_category":              _EQUIPMENT_FIELDS,
     "depth_vs_rov_limit":          [*_EQUIPMENT_FIELDS, "water_depth"],
-    # "sea_state":                   ["start_point", "oilfield_coordinates"],
     "vessel_availability":         ["support_vessel"],
-    # "tree_type_compatibility":     ["tree_type", *_EQUIPMENT_FIELDS],
-    # 环境约束关联字段
     "forbidden_area":              ["start_point", "end_point", "oilfield_coordinates", "cable_position"],
     "dvl_high_risk":               ["start_point", "oilfield_coordinates", "cable_position"],
     "seabed_compatibility":        [*_EQUIPMENT_FIELDS, "start_point", "oilfield_coordinates"],
@@ -76,6 +95,28 @@ _DYNAMIC_CHECKS = {
     "robot_communication_status",
 }
 
+
+def _compute_fingerprint(
+    task_version: int,
+    status_ref: str | None,
+    state_version: int | None,
+    violations: list[Violation],
+    error: dict | None,
+) -> str:
+    parts = [
+        f"tv:{task_version}",
+        f"sref:{status_ref or ''}",
+        f"sver:{state_version or 0}",
+        f"err:{error.get('code') if error else ''}",
+    ]
+    v_parts = []
+    for v in sorted(violations, key=lambda x: x.constraint_id):
+        v_parts.append(f"{v.constraint_id}:{v.severity}:{v.observed_value}")
+    parts.append("v:[" + ",".join(v_parts) + "]")
+    raw = "|".join(parts)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
 class TaskValidator:
     def __init__(self, kb: KnowledgeBase):
         self.kb = kb
@@ -84,18 +125,91 @@ class TaskValidator:
     # 公开接口
     # ──────────────────────────────────────────────────────────────────────────
 
+    def validate_task(
+        self,
+        task_state: dict,
+        *,
+        task_version: int = 1,
+        previous_result: ValidationResult | None = None,
+        purpose: str = "interactive",
+    ) -> ValidationResult:
+        """
+        结构化约束校验服务主入口。
+        """
+        validated_at = get_current_datetime().isoformat(timespec="seconds")
+        is_now = self._is_task_start_now(task_state)
+
+        # 尝试确定具体单机并提取状态快照
+        state_snapshot, error_dict = self._resolve_single_unit_snapshot(task_state, is_now=is_now)
+
+        violations: list[Violation] = []
+        if error_dict is None:
+            violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=state_snapshot)
+        else:
+            # 存在 validation_error 时，不得返回空违规列表
+            err_violation = Violation(
+                constraint_id="VAL_ERR",
+                constraint_name="单机状态校验失败",
+                message=error_dict.get("message", "单机校验错误"),
+                severity="hard",
+                related_fields=["equipment_unit_id"],
+                check_type="validation_error",
+            )
+            violations.append(err_violation)
+
+        # 状态优先级规则：
+        # validation_error > blocked_hard > blocked_soft > warning > pending_runtime_validation > valid
+        if error_dict is not None:
+            overall_status = "validation_error"
+        elif any(v.severity == "hard" for v in violations):
+            overall_status = "blocked_hard"
+        elif any(v.severity == "soft" for v in violations):
+            overall_status = "blocked_soft"
+        elif any(v.severity == "warning" for v in violations):
+            overall_status = "warning"
+        elif not is_now:
+            overall_status = "pending_runtime_validation"
+        else:
+            overall_status = "valid"
+
+        status_ref = state_snapshot.get("status_ref") if state_snapshot else None
+        state_version = state_snapshot.get("state_version") if state_snapshot else None
+
+        fingerprint = _compute_fingerprint(
+            task_version=task_version,
+            status_ref=status_ref,
+            state_version=state_version,
+            violations=violations,
+            error=error_dict,
+        )
+
+        if previous_result and previous_result.validation_fingerprint == fingerprint:
+            validation_version = previous_result.validation_version
+        else:
+            validation_version = (previous_result.validation_version + 1) if previous_result else 1
+
+        return ValidationResult(
+            overall_status=overall_status,
+            validated_at=validated_at,
+            task_version=task_version,
+            validation_version=validation_version,
+            validation_fingerprint=fingerprint,
+            state_snapshot=state_snapshot,
+            violations=violations,
+            error=error_dict,
+        )
+
     def validate(self, task_state: dict) -> list[Violation]:
-        """全量约束检查，返回所有当前违规"""
-        return self._run_checks(task_state, trigger_fields=None)
+        """全量约束检查，返回所有当前违规（兼容旧接口）"""
+        res = self.validate_task(task_state)
+        return res.violations
 
     def validate_for_fields(
         self, task_state: dict, changed_fields: set[str]
     ) -> list[Violation]:
-        """
-        只运行与 changed_fields 相关的约束。
-        用于字段变化后的增量检查，避免每轮都全量扫描。
-        """
-        return self._run_checks(task_state, trigger_fields=changed_fields)
+        """增量模式检查"""
+        snapshot, _ = self._resolve_single_unit_snapshot(task_state, is_now=self._is_task_start_now(task_state))
+        return self._run_checks(task_state, trigger_fields=changed_fields, state_snapshot=snapshot)
 
     def has_hard_violations(self, violations: list[Violation]) -> bool:
         return any(v.severity == "hard" for v in violations)
@@ -113,16 +227,117 @@ class TaskValidator:
     # 内部实现
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _resolve_single_unit_snapshot(self, task_state: dict, is_now: bool) -> tuple[dict | None, dict | None]:
+        unit_selector = task_state.get("equipment_unit_id")
+        task_type = task_state.get("task_type_key")
+        variant_selector = (
+            task_state.get("equipment_type")
+            or task_state.get("equipment_name")
+            or task_state.get("equipment_family")
+        )
+
+        # 显式提供了 unit_id
+        if unit_selector and isinstance(unit_selector, str) and unit_selector.strip():
+            clean_unit_id = unit_selector.strip()
+            try:
+                snapshot = None
+                if hasattr(self.kb, "get_unit_state_snapshot"):
+                    snapshot = self.kb.get_unit_state_snapshot(clean_unit_id)
+                elif hasattr(self.kb, "state_info") and hasattr(self.kb.state_info, "get_unit_state_snapshot"):
+                    snapshot = self.kb.state_info.get_unit_state_snapshot(clean_unit_id)
+                
+                if snapshot:
+                    err = self._validate_state_snapshot_content(clean_unit_id, snapshot)
+                    if err:
+                        return None, err
+                    return snapshot, None
+            except StateSelectorError as e:
+                return None, {"code": "UNIT_NOT_FOUND", "message": f"未在系统中注册匹配单机 '{clean_unit_id}': {e}"}
+            except StateSnapshotValidationError as e:
+                return None, {"code": "INVALID_STATE_SNAPSHOT", "message": f"单机 '{clean_unit_id}' 状态记录或结构不合法: {e}"}
+            except Exception as e:
+                return None, {"code": "STATE_READ_FAILED", "message": f"读取单机 '{clean_unit_id}' 状态失败: {e}"}
+
+        # 没有 unit_id，但有 family / variant_selector
+        if variant_selector and isinstance(variant_selector, str) and variant_selector.strip():
+            clean_selector = variant_selector.strip()
+            robot_fleet = getattr(self.kb, "robot_fleet", {}) if isinstance(getattr(self.kb, "robot_fleet", None), dict) else {}
+            fleet_units = robot_fleet.get("fleet_units", []) if isinstance(robot_fleet, dict) else []
+            matches = []
+            if isinstance(fleet_units, list):
+                for u in fleet_units:
+                    if not isinstance(u, dict):
+                        continue
+                    u_id = u.get("unit_id")
+                    u_disp = u.get("display_name", "")
+                    u_var = u.get("variant_id", "")
+                    u_fam = u.get("family_id", "")
+                    if clean_selector in (u_id, u_disp, u_var, u_fam):
+                        matches.append(u)
+                    elif hasattr(self.kb, "resolve_robot_unit"):
+                        resolved = self.kb.resolve_robot_unit(u_id or "", task_type, clean_selector)
+                        if resolved and resolved.get("unit_id") == u_id:
+                            matches.append(u)
+
+            unique_matches = {m.get("unit_id"): m for m in matches if m.get("unit_id")}
+            if len(unique_matches) > 1:
+                return None, {
+                    "code": "AMBIGUOUS_UNIT_SELECTOR",
+                    "message": f"所选设备 '{clean_selector}' 对应多台在役单机 ({sorted(unique_matches.keys())})，必须指定确切单机编号 (equipment_unit_id)。",
+                }
+            elif len(unique_matches) == 1:
+                single_unit_id = next(iter(unique_matches.keys()))
+                try:
+                    snapshot = None
+                    if hasattr(self.kb, "get_unit_state_snapshot"):
+                        snapshot = self.kb.get_unit_state_snapshot(single_unit_id)
+                    elif hasattr(self.kb, "state_info") and hasattr(self.kb.state_info, "get_unit_state_snapshot"):
+                        snapshot = self.kb.state_info.get_unit_state_snapshot(single_unit_id)
+                    if snapshot:
+                        err = self._validate_state_snapshot_content(single_unit_id, snapshot)
+                        if err:
+                            return None, err
+                        return snapshot, None
+                except Exception as e:
+                    return None, {"code": "STATE_READ_FAILED", "message": f"读取单机 '{single_unit_id}' 状态快照失败: {e}"}
+            else:
+                rov_static = self.kb.get_rov(clean_selector) if hasattr(self.kb, "get_rov") else None
+                if not rov_static:
+                    return None, {"code": "UNIT_NOT_FOUND", "message": f"未找到匹配的选择器或型号 '{clean_selector}'。"}
+
+        return None, None
+
+    @staticmethod
+    def _validate_state_snapshot_content(unit_id: str, snapshot: dict) -> dict | None:
+        if not isinstance(snapshot, dict):
+            return {"code": "INVALID_STATE_DATA", "message": f"单机 '{unit_id}' 的状态快照非字典"}
+        state_dict = snapshot.get("state")
+        if not isinstance(state_dict, dict):
+            return {"code": "INVALID_STATE_DATA", "message": f"单机 '{unit_id}' 的状态记录不存在或非字典"}
+        if "overall_status" not in state_dict:
+            return {"code": "INVALID_STATE_DATA", "message": f"单机 '{unit_id}' 缺少状态指标 (overall_status)。"}
+        overall_val = state_dict.get("overall_status")
+        if overall_val == "unknown":
+            return {"code": "INVALID_STATE_DATA", "message": f"单机 '{unit_id}' 的 overall_status 为无法识别的值 'unknown'。"}
+        return None
+
+        return None, None
+
     def _run_checks(
-        self, task_state: dict, trigger_fields: set[str] | None
+        self,
+        task_state: dict,
+        trigger_fields: set[str] | None,
+        state_snapshot: dict | None,
     ) -> list[Violation]:
         violations = []
-        task_type    = task_state.get("task_type_key")
+        task_type = task_state.get("task_type_key")
         unit_selector = task_state.get("equipment_unit_id")
         variant_selector = task_state.get("equipment_type") or task_state.get("equipment_name")
-        water_depth  = task_state.get("water_depth")
-        vessel_id    = task_state.get("support_vessel")
-        tree_type    = task_state.get("tree_type")
+        water_depth = task_state.get("water_depth")
+        vessel_id = task_state.get("support_vessel")
+        tree_type = task_state.get("tree_type")
+
+        # 尝试静态信息获取 rov spec
         resolved_unit = (
             self.kb.resolve_robot_unit(
                 str(unit_selector),
@@ -147,7 +362,6 @@ class TaskValidator:
 
             # 若是增量模式，跳过与 changed_fields 无关的约束（但硬约束除外）
             if trigger_fields is not None:
-                # 硬约束始终检查，不跳过
                 if c.get("severity") != "hard":
                     watched = set(_CHECK_FIELDS.get(check, []))
                     if check in _DYNAMIC_CHECKS:
@@ -161,7 +375,7 @@ class TaskValidator:
                 if not task_type or task_type not in applies:
                     continue
 
-            v = self._check_one(c, check, task_state, rov, water_depth, vessel_id, tree_type)
+            v = self._check_one(c, check, task_state, rov, water_depth, vessel_id, tree_type, state_snapshot)
             if v:
                 violations.append(v)
 
@@ -171,12 +385,9 @@ class TaskValidator:
         try:
             start_time_str = task_state.get("start_time")
             if not start_time_str:
-                return False
+                return True
 
-            # 使用模拟时间代替系统时间
-            from .simulated_time import get_current_datetime
-            now = get_current_datetime()
-            now = now.replace(microsecond=0)
+            now = get_current_datetime().replace(microsecond=0)
 
             start_time_str = start_time_str.replace("T", " ").replace("：", ":").strip()
             if start_time_str.endswith("Z"):
@@ -190,33 +401,46 @@ class TaskValidator:
             delta_seconds = (start_time - now).total_seconds()
             return delta_seconds <= time_window_minutes * 60
         except Exception:
-            return False
+            return True
 
     def _check_one(
-        self, c: dict, check: str, task_state: dict,
-        rov: dict | None, water_depth: Any,
-        vessel_id: str | None, tree_type: str | None,
+        self,
+        c: dict,
+        check: str,
+        task_state: dict,
+        rov: dict | None,
+        water_depth: Any,
+        vessel_id: str | None,
+        tree_type: str | None,
+        state_snapshot: dict | None,
     ) -> Violation | None:
         if check in _DYNAMIC_CHECKS and not self._is_task_start_now(task_state):
             return None
 
         rel_fields = _CHECK_FIELDS.get(check, [])
+        state_dict = state_snapshot.get("state") if state_snapshot else None
+        if state_dict is None and rov and hasattr(self.kb, "get_robot_state_dict"):
+            state_dict = self.kb.get_robot_state_dict(rov.get("full_name") or rov.get("unit_id") or str(rov))
 
         if check == "robot_category" and rov:
             task_type = task_state.get("task_type_key")
             if not self.kb.robot_matches_task(rov, task_type):
-                return Violation(c["id"], c["name"],
-                                 c["violation_message"].strip(), c["severity"],
-                                 rel_fields)
+                return Violation(
+                    c["id"], c["name"], c["violation_message"].strip(),
+                    c["severity"], rel_fields, check_type=check
+                )
         elif check == "depth_vs_rov_limit" and rov and water_depth is not None:
             try:
                 depth_val = float(water_depth)
             except (TypeError, ValueError):
-                return None  # 水深无效，跳过检查
+                return None
             max_depth = rov.get("max_depth_m", 99999)
             if depth_val > max_depth:
                 msg = c["violation_message"].replace("{rov_max_depth}", str(max_depth))
-                return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+                return Violation(
+                    c["id"], c["name"], msg.strip(), c["severity"],
+                    rel_fields, check_type=check, observed_value=depth_val, threshold=max_depth
+                )
 
         elif check == "start_time_not_in_past":
             start_time = self._parse_task_datetime(task_state.get("start_time"))
@@ -234,7 +458,10 @@ class TaskValidator:
                     .replace("{start_time}", start_time.strftime("%Y-%m-%d %H:%M:%S"))
                     .replace("{current_time}", now.strftime("%Y-%m-%d %H:%M:%S"))
                 )
-                return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+                return Violation(
+                    c["id"], c["name"], msg.strip(), c["severity"],
+                    rel_fields, check_type=check, observed_value=start_time.isoformat()
+                )
 
         elif check == "end_time_after_start_time":
             start_time = self._parse_task_datetime(task_state.get("start_time"))
@@ -246,45 +473,30 @@ class TaskValidator:
                 .replace("{start_time}", start_time.strftime("%Y-%m-%d %H:%M:%S"))
                 .replace("{end_time}", end_time.strftime("%Y-%m-%d %H:%M:%S"))
             )
-            return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
-
-
-        # elif check == "sea_state":
-        #     coords = task_state.get("start_point") or task_state.get("oilfield_coordinates")
-        #     if coords:
-        #         area = self.kb.get_environment_for_coords(coords)
-        #         if area:
-        #             cond = area["current_conditions"]
-        #             max_wave = c.get("max_wave_height_m", 999)
-        #             max_wind = c.get("max_wind_speed_knots", 999)
-        #             if cond["wave_height_m"] > max_wave or cond["wind_speed_knots"] > max_wind:
-        #                 msg = (c["violation_message"]
-        #                        .replace("{max_wave_height}", str(max_wave))
-        #                        .replace("{max_wind_speed}", str(max_wind)))
-        #                 return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+            return Violation(
+                c["id"], c["name"], msg.strip(), c["severity"],
+                rel_fields, check_type=check, observed_value=end_time.isoformat()
+            )
 
         elif check == "vessel_availability" and vessel_id:
             vessel = self.kb.get_vessel(vessel_id)
             if vessel and not vessel.get("available", True):
                 msg = c["violation_message"].replace("{vessel_id}", vessel_id)
-                return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+                return Violation(
+                    c["id"], c["name"], msg.strip(), c["severity"],
+                    rel_fields, check_type=check, observed_value=vessel_id
+                )
 
-        # 采油树不再区分立式/卧式，停用类型兼容性检查。
-        # elif check == "tree_type_compatibility" and tree_type == "卧式":
-        #     return Violation(c["id"], c["name"],
-        #                      c["violation_message"].strip(), c["severity"],
-        #                      rel_fields)
-
-        # 环境约束检查
         elif check == "forbidden_area":
             for field_name in ["start_point", "end_point", "oilfield_coordinates", "cable_position"]:
                 coords = task_state.get(field_name)
                 if coords:
                     env_info = self.kb.get_environment_info_dict(coords)
                     if env_info.get("forbidden") is True:
-                        return Violation(c["id"], c["name"],
-                                         c["violation_message"].strip(), c["severity"],
-                                         rel_fields)
+                        return Violation(
+                            c["id"], c["name"], c["violation_message"].strip(),
+                            c["severity"], rel_fields, check_type=check
+                        )
 
         elif check == "dvl_high_risk":
             for field_name in ["start_point", "oilfield_coordinates", "cable_position"]:
@@ -292,9 +504,10 @@ class TaskValidator:
                 if coords:
                     env_info = self.kb.get_environment_info_dict(coords)
                     if env_info.get("dvl_risk") is True:
-                        return Violation(c["id"], c["name"],
-                                         c["violation_message"].strip(), c["severity"],
-                                         rel_fields)
+                        return Violation(
+                            c["id"], c["name"], c["violation_message"].strip(),
+                            c["severity"], rel_fields, check_type=check
+                        )
 
         elif check == "seabed_compatibility" and rov:
             for field_name in ["start_point", "oilfield_coordinates"]:
@@ -306,91 +519,90 @@ class TaskValidator:
                         supported_raw = rov.get("supported_seabed")
                         if not supported_raw:
                             continue
-                        if isinstance(supported_raw, str):
-                            supported = [supported_raw]
-                        else:
-                            supported = supported_raw
+                        supported = [supported_raw] if isinstance(supported_raw, str) else supported_raw
                         if seabed not in supported:
                             rov_name = rov.get("full_name", str(rov))
                             msg = c["violation_message"].replace("{current_rov}", rov_name)
                             msg = msg.replace("{current_seabed}", str(seabed))
-                            return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+                            return Violation(
+                                c["id"], c["name"], msg.strip(), c["severity"],
+                                rel_fields, check_type=check, observed_value=seabed
+                            )
 
-        # 状态约束检查
+        # ────────────── 动态遥测状态检查 (依赖 state_snapshot) ──────────────
         elif check == "mothership_support":
-            if rov:
-                state_info = self.kb.get_robot_state_dict(rov["full_name"])
-                support_cap = state_info.get("mothership_support")
+            if state_dict and isinstance(state_dict, dict):
+                support_cap = state_dict.get("mothership_support")
                 if support_cap == "weak":
-                    return Violation(c["id"], c["name"],
-                                     c["violation_message"].strip(), c["severity"],
-                                     rel_fields)
+                    return Violation(
+                        c["id"], c["name"], c["violation_message"].strip(),
+                        c["severity"], rel_fields,
+                        check_type=check, observed_value=support_cap
+                    )
+
         elif check == "obstacle_dense":
-            if rov:
-                state_info = self.kb.get_robot_state_dict(rov["full_name"])
-                dense = state_info.get("obstacle_density")
+            if state_dict and isinstance(state_dict, dict):
+                dense = state_dict.get("obstacle_density")
                 if dense == "high":
-                    return Violation(c["id"], c["name"],
-                                     c["violation_message"].strip(), c["severity"],
-                                     rel_fields)
+                    return Violation(
+                        c["id"], c["name"], c["violation_message"].strip(),
+                        c["severity"], rel_fields,
+                        check_type=check, observed_value=dense
+                    )
+
         elif check == "turbidity":
-            if rov:
-                state_info = self.kb.get_robot_state_dict(rov["full_name"])
-                if not isinstance(state_info, dict):
-                    return None
-                turb = state_info.get("turbidity")
-                if turb is None:
-                    return None
-                # 浑浊度分级
-                if c["id"] == "C013":
-                    if 5 < turb <= 10:
+            if state_dict and isinstance(state_dict, dict):
+                turb = state_dict.get("turbidity")
+                if turb is not None:
+                    if c["id"] == "C013" and 5 < turb <= 10:
                         msg = c["violation_message"].replace("{turbidity}", str(turb))
-                        return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
-                elif c["id"] == "C014":
-                    if turb > 10:
+                        return Violation(
+                            c["id"], c["name"], msg.strip(), c["severity"],
+                            rel_fields, check_type=check, observed_value=turb, threshold=10
+                        )
+                    elif c["id"] == "C014" and turb > 10:
                         msg = c["violation_message"].replace("{turbidity}", str(turb))
-                        return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+                        return Violation(
+                            c["id"], c["name"], msg.strip(), c["severity"],
+                            rel_fields, check_type=check, observed_value=turb, threshold=10
+                        )
 
         elif check == "current_velocity":
-            if rov:
-                state_info = self.kb.get_robot_state_dict(rov["full_name"])
-                if not isinstance(state_info, dict):
-                    return None
-                vel = state_info.get("current_velocity")
-                if vel is None:
-                    return None
-                # 按规则ID分别判断
-                if c["id"] == "C015":
-                    if 0.5 < vel <= 0.8:
+            if state_dict and isinstance(state_dict, dict):
+                vel = state_dict.get("current_velocity")
+                if vel is not None:
+                    if c["id"] == "C015" and 0.5 < vel <= 0.8:
                         msg = c["violation_message"].replace("{current_velocity}", f"{vel:.2f}")
-                        return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
-
-                elif c["id"] == "C016":
-                    if 0.8 < vel <= 1.2:
+                        return Violation(
+                            c["id"], c["name"], msg.strip(), c["severity"],
+                            rel_fields, check_type=check, observed_value=vel, threshold=0.8
+                        )
+                    elif c["id"] == "C016" and 0.8 < vel <= 1.2:
                         msg = c["violation_message"].replace("{current_velocity}", f"{vel:.2f}")
-                        return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
-
-                elif c["id"] == "C017":
-                    if vel > 1.2:
+                        return Violation(
+                            c["id"], c["name"], msg.strip(), c["severity"],
+                            rel_fields, check_type=check, observed_value=vel, threshold=1.2
+                        )
+                    elif c["id"] == "C017" and vel > 1.2:
                         msg = c["violation_message"].replace("{current_velocity}", f"{vel:.2f}")
-                        return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+                        return Violation(
+                            c["id"], c["name"], msg.strip(), c["severity"],
+                            rel_fields, check_type=check, observed_value=vel, threshold=1.2
+                        )
 
         elif check == "state_confidence":
-            if rov:
-                state_info = self.kb.get_robot_state_dict(rov["full_name"])
-                if not isinstance(state_info, dict):
-                    return None
-                confidence = state_info.get("confidence")
+            if state_dict and isinstance(state_dict, dict):
+                confidence = state_dict.get("confidence")
                 if confidence is not None and confidence < 0.5:
                     msg = c["violation_message"].replace("{confidence}", str(confidence))
-                    return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+                    return Violation(
+                        c["id"], c["name"], msg.strip(), c["severity"],
+                        rel_fields, check_type=check, observed_value=confidence, threshold=0.5
+                    )
 
         elif check == "state_timestamp":
-            if rov:
-                state_info = self.kb.get_robot_state_dict(rov["full_name"])
-                if not isinstance(state_info, dict):
-                    return None
-                timestamp_str = state_info.get("update_timestamp")
+            if state_dict and isinstance(state_dict, dict):
+                timestamp_str = state_dict.get("update_timestamp") or state_dict.get("updated_at")
                 if timestamp_str is not None:
                     try:
                         if isinstance(timestamp_str, str):
@@ -407,110 +619,140 @@ class TaskValidator:
                             dt = dt.astimezone(ZoneInfo("Asia/Shanghai"))
 
                         now_sim = get_current_datetime()
-                        if now_sim.tzinfo is None:
-                            now_sim = now_sim.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
-                        else:
-                            now_sim = now_sim.astimezone(ZoneInfo("Asia/Shanghai"))
-
-                        if (now_sim - dt).total_seconds() > 3600:
+                        dt_ts = dt.timestamp()
+                        now_ts = now_sim.timestamp()
+                        if (now_ts - dt_ts) > 3600:
                             msg = c["violation_message"].replace("{update_timestamp}", str(timestamp_str))
-                            return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+                            return Violation(
+                                c["id"], c["name"], msg.strip(), c["severity"],
+                                rel_fields, check_type=check, observed_value=timestamp_str, threshold=3600
+                            )
                     except Exception:
                         pass
 
-        # ========== 机器人状态相关约束（基于 3002 文档） ==========
         elif check == "robot_overall_status":
-            if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
-                if isinstance(state_dict, dict):
-                    overall = state_dict.get("overall_status")
-                    if overall == "unavailable":
-                        # 机器人总体状态不可用 → 硬性违规
-                        msg = c["violation_message"].replace("{equipment_name}", rov["full_name"])
-                        return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+            if state_dict and isinstance(state_dict, dict):
+                overall = state_dict.get("overall_status")
+                is_online = state_dict.get("is_online")
+                is_busy = state_dict.get("is_busy")
+                conn_status = state_dict.get("connection_status")
+                task_status = state_dict.get("task_status")
+
+                is_offline = (
+                    overall in ("offline", "disconnected")
+                    or conn_status in ("offline", "disconnected")
+                    or is_online is False
+                    or (isinstance(is_online, str) and is_online.strip().lower() in ("false", "0"))
+                )
+                is_busy_status = (
+                    overall in ("busy", "working", "operating", "executing", "unavailable", "maintenance", "fault")
+                    or task_status in ("busy", "working", "operating", "executing")
+                    or is_busy is True
+                    or (isinstance(is_busy, str) and is_busy.strip().lower() in ("true", "1"))
+                )
+
+                if is_offline or is_busy_status or (overall and overall not in ("available", "idle", "ready")):
+                    unit_disp = state_snapshot.get("unit_id") if state_snapshot else str(rov.get("full_name") if rov else "")
+                    msg = c["violation_message"].replace("{equipment_name}", unit_disp)
+                    if is_offline:
+                        msg = f"无法发布任务：机器人 {unit_disp} 当前处于离线状态。"
+                    elif is_busy_status:
+                        msg = f"无法发布任务：机器人 {unit_disp} 当前处于忙碌状态。"
+                    return Violation(
+                        c["id"], c["name"], msg.strip(), c["severity"],
+                        rel_fields, check_type=check, observed_value=overall or ("offline" if is_offline else "busy")
+                    )
 
         elif check == "robot_survival_status":
-            if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
-                if isinstance(state_dict, dict):
-                    survival = state_dict.get("survival_status")
-                    if survival == "abnormal":
-                        msg = c["violation_message"].replace("{equipment_name}", rov["full_name"])
-                        return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+            if state_dict and isinstance(state_dict, dict):
+                survival = state_dict.get("survival_status")
+                if survival == "abnormal":
+                    unit_disp = state_snapshot.get("unit_id") if state_snapshot else str(rov.get("full_name") if rov else "")
+                    msg = c["violation_message"].replace("{equipment_name}", unit_disp)
+                    return Violation(
+                        c["id"], c["name"], msg.strip(), c["severity"],
+                        rel_fields, check_type=check, observed_value=survival
+                    )
 
         elif check == "robot_thruster_status":
-            if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
-                if isinstance(state_dict, dict):
-                    thruster = state_dict.get("thruster_status")
-                    if thruster == "abnormal":
-                        msg = c["violation_message"].replace("{equipment_name}", rov["full_name"])
-                        return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+            if state_dict and isinstance(state_dict, dict):
+                thruster = state_dict.get("thruster_status")
+                if thruster == "abnormal":
+                    unit_disp = state_snapshot.get("unit_id") if state_snapshot else str(rov.get("full_name") if rov else "")
+                    msg = c["violation_message"].replace("{equipment_name}", unit_disp)
+                    return Violation(
+                        c["id"], c["name"], msg.strip(), c["severity"],
+                        rel_fields, check_type=check, observed_value=thruster
+                    )
 
         elif check == "robot_depth_keeping_status":
-            if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
-                if isinstance(state_dict, dict):
-                    depth_keep = state_dict.get("depth_keeping_status")
-                    if depth_keep == "abnormal":
-                        msg = c["violation_message"].replace("{equipment_name}", rov["full_name"])
-                        return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+            if state_dict and isinstance(state_dict, dict):
+                depth_keep = state_dict.get("depth_keeping_status")
+                if depth_keep == "abnormal":
+                    unit_disp = state_snapshot.get("unit_id") if state_snapshot else str(rov.get("full_name") if rov else "")
+                    msg = c["violation_message"].replace("{equipment_name}", unit_disp)
+                    return Violation(
+                        c["id"], c["name"], msg.strip(), c["severity"],
+                        rel_fields, check_type=check, observed_value=depth_keep
+                    )
 
         elif check == "robot_sonar_status":
-            if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
-                if isinstance(state_dict, dict):
-                    sonar = state_dict.get("sonar_status")
-                    if sonar == "abnormal":
-                        msg = c["violation_message"].replace("{equipment_name}", rov["full_name"])
-                        return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+            if state_dict and isinstance(state_dict, dict):
+                sonar = state_dict.get("sonar_status")
+                if sonar == "abnormal":
+                    unit_disp = state_snapshot.get("unit_id") if state_snapshot else str(rov.get("full_name") if rov else "")
+                    msg = c["violation_message"].replace("{equipment_name}", unit_disp)
+                    return Violation(
+                        c["id"], c["name"], msg.strip(), c["severity"],
+                        rel_fields, check_type=check, observed_value=sonar
+                    )
 
         elif check == "robot_vision_status":
-            if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
-                if isinstance(state_dict, dict):
-                    vision = state_dict.get("vision_status")
-                    if vision == "abnormal":
-                        msg = c["violation_message"].replace("{equipment_name}", rov["full_name"])
-                        return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+            if state_dict and isinstance(state_dict, dict):
+                vision = state_dict.get("vision_status")
+                if vision == "abnormal":
+                    unit_disp = state_snapshot.get("unit_id") if state_snapshot else str(rov.get("full_name") if rov else "")
+                    msg = c["violation_message"].replace("{equipment_name}", unit_disp)
+                    return Violation(
+                        c["id"], c["name"], msg.strip(), c["severity"],
+                        rel_fields, check_type=check, observed_value=vision
+                    )
 
         elif check == "robot_manipulator_status":
-            if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
-                if isinstance(state_dict, dict):
-                    arm = state_dict.get("arm_status")
-                    end_effector = state_dict.get("end_effector_status")
-                    # 机械臂或末端执行器任一异常即触发（符合执行机构模块判断逻辑）
-                    if arm == "abnormal" or end_effector == "abnormal":
-                        msg = c["violation_message"].replace("{equipment_name}", rov["full_name"])
-                        return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+            if state_dict and isinstance(state_dict, dict):
+                arm = state_dict.get("arm_status")
+                end_effector = state_dict.get("end_effector_status")
+                if arm == "abnormal" or end_effector == "abnormal":
+                    unit_disp = state_snapshot.get("unit_id") if state_snapshot else str(rov.get("full_name") if rov else "")
+                    msg = c["violation_message"].replace("{equipment_name}", unit_disp)
+                    return Violation(
+                        c["id"], c["name"], msg.strip(), c["severity"],
+                        rel_fields, check_type=check, observed_value={"arm": arm, "end_effector": end_effector}
+                    )
 
         elif check == "robot_communication_status":
-            if rov:
-                state_dict = self.kb.get_robot_state_dict(rov["full_name"])
-                if not isinstance(state_dict, dict):
-                    return None
-
-                is_auv = rov.get("robot_class") == "auv"
-
+            if state_dict and isinstance(state_dict, dict):
+                is_auv = rov.get("robot_class") == "auv" if rov else False
                 details = []
-
                 if is_auv:
-                    # AUV：只检查水声无线通信
                     acoustic = state_dict.get("acoustic_comms_status")
                     if acoustic == "abnormal":
                         details.append("水声无线通信异常")
                 else:
-                    # ROV / 海底拖拉机：只检查与母船的脐带缆连接
                     tether = state_dict.get("tether_connection_status")
-                    if tether == "abnormal" or tether == "weak":
+                    if tether in ("abnormal", "weak"):
                         details.append("与母船连接异常")
 
                 if details:
                     detail_str = "、".join(details)
-                    msg = c["violation_message"].replace("{equipment_name}", rov["full_name"])
+                    unit_disp = state_snapshot.get("unit_id") if state_snapshot else str(rov.get("full_name") if rov else "")
+                    msg = c["violation_message"].replace("{equipment_name}", unit_disp)
                     msg = msg.replace("{detail}", detail_str)
-                    return Violation(c["id"], c["name"], msg.strip(), c["severity"], rel_fields)
+                    return Violation(
+                        c["id"], c["name"], msg.strip(), c["severity"],
+                        rel_fields, check_type=check, observed_value=details
+                    )
+
         return None
 
     @staticmethod

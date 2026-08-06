@@ -1407,6 +1407,9 @@ class KnowledgeBase:
             return state
         return empty_state
 
+    def get_unit_state_snapshot(self, unit_id: str) -> dict:
+        return self.state_info.get_unit_state_snapshot(unit_id)
+
     def check_runtime_availability(self, unit_id: str, *, max_age_seconds: int = 300) -> dict:
         return self.state_info.check_runtime_availability(unit_id, max_age_seconds=max_age_seconds)
 

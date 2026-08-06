@@ -71,6 +71,16 @@ class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
         seed_complete_valid_pipeline_task(self.dm, self.kb)
         Issue12RuntimeAvailabilityGateTest._intent_counter += 1
         intent_id = f"TI20260805{Issue12RuntimeAvailabilityGateTest._intent_counter:06d}"
+
+        task_dir = get_task_dir("final")
+        final_file = task_dir / f"task_intent_{intent_id}.json"
+        if final_file.exists():
+            try:
+                final_file.unlink()
+            except OSError:
+                pass
+        self.created_final_files.append(final_file)
+
         self.dm.slot_store.slots["intent_id"].value = intent_id
         self.dm.slot_store.slots["intent_id"].status = "valid"
         self.dm.task_state["intent_id"] = intent_id

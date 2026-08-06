@@ -421,13 +421,34 @@ class DialogueManager:
     def _handle_soft_warning_confirmation(self, user_message: str, request_id: str) -> str:
         """blocked_soft 阶段的确认/忽略处理。
 
-        将已确认忽略的软警告加入白名单，清除 _blocking_violations，
-        然后根据缺失槽位决定进入 collecting 或 confirming。
-        不触碰 slot_store 或 extractor。
+        将已确认忽略的软警告录入 SlotStore.validation_acknowledgements 绑定快照版本，
+        清除 _blocking_violations，然后根据缺失槽位决定进入 collecting 或 confirming。
         """
-        # 加入白名单
+        res = self.validator.validate_task(
+            self.task_state,
+            task_version=getattr(self.slot_store, "version", 1),
+            previous_result=getattr(self.slot_store, "validation_result", None),
+            purpose="interactive",
+        )
+        self.slot_store.validation_result = res
+        status_ref = res.state_snapshot.get("status_ref") if res.state_snapshot else None
+        state_ver = res.state_snapshot.get("state_version") if res.state_snapshot else None
+
         if self._blocking_violations:
             for v in self._blocking_violations:
+                if getattr(v, "severity", "soft") == "soft":
+                    ack = {
+                        "constraint_id": v.constraint_id,
+                        "task_version": res.task_version,
+                        "validation_version": res.validation_version,
+                        "validation_fingerprint": res.validation_fingerprint,
+                        "status_ref": status_ref,
+                        "state_version": state_ver,
+                        "observed_value": getattr(v, "observed_value", None),
+                        "acknowledged_at": get_current_datetime().isoformat(timespec="seconds"),
+                    }
+                    if ack not in self.slot_store.validation_acknowledgements:
+                        self.slot_store.validation_acknowledgements.append(ack)
                 for f in v.related_fields:
                     val = self.task_state.get(f)
                     if val is not None:
@@ -517,9 +538,32 @@ class DialogueManager:
         cand_state = copy.deepcopy(self.task_state)
         cand_built = copy.deepcopy(self._last_built_json)
 
+        # 运行时设备可用性重新校验 (Issue #12)
+        unit_id = cand_state.get("equipment_unit_id") or cand_built.get("equipment_unit_id")
+        if not unit_id and self.slot_store.slots.get("equipment_unit_id"):
+            unit_slot = self.slot_store.slots.get("equipment_unit_id")
+            if unit_slot and unit_slot.status == "valid":
+                unit_id = unit_slot.value
+
+        if unit_id:
+            runtime_res = self.kb.state_info.check_runtime_availability(str(unit_id))
+            if not runtime_res.get("available"):
+                self.phase = "blocked_hard"
+                reply = runtime_res.get("message") or f"无法发布任务：机器人 {unit_id} 当前不可用。"
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
+
         # 最终约束全量检查
-        all_violations = self.validator.validate(cand_state)
-        has_hard = self.validator.has_hard_violations(all_violations)
+        val_res = self.validator.validate_task(
+            cand_state,
+            task_version=getattr(self.slot_store, "version", 1),
+            previous_result=getattr(self.slot_store, "validation_result", None),
+            purpose="publish",
+        )
+        self.slot_store.validation_result = val_res
+        all_violations = val_res.violations
+        has_hard = self.validator.has_hard_violations(all_violations) or val_res.overall_status == "validation_error"
         unwhitelisted_soft = [v for v in all_violations if v.severity == "soft" and not self._is_whitelisted(v)]
 
         # 检查缺失（排除 auto 和 fixed 等由系统自动管理的字段，如 task_id）
@@ -533,13 +577,19 @@ class DialogueManager:
         if missing or has_hard or unwhitelisted_soft:
             if has_hard:
                 self.phase = "blocked_hard"
-                self._blocking_violations = [v for v in all_violations if v.severity == "hard"]
+                hard_violations = [v for v in all_violations if v.severity == "hard"]
+                self._blocking_violations = hard_violations
+                if hard_violations:
+                    reply = "\n".join(v.message for v in hard_violations)
+                else:
+                    reply = val_res.error.get("message") if (val_res and val_res.error) else "当前任务参数包含硬性约束冲突，无法发布。"
             elif unwhitelisted_soft:
                 self.phase = "blocked_soft"
                 self._blocking_violations = unwhitelisted_soft
+                reply = "\n".join(v.message for v in unwhitelisted_soft)
             else:
                 self.phase = "collecting"
-            reply = "当前任务参数不满足发布条件，请补充或修正参数。"
+                reply = "当前任务参数不满足发布条件，请补充或修正参数。"
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
@@ -552,21 +602,6 @@ class DialogueManager:
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
-
-        # 运行时设备可用性重新校验 (Issue #12)
-        unit_id = cand_state.get("equipment_unit_id") or cand_built.get("equipment_unit_id")
-        if not unit_id and self.slot_store.slots.get("equipment_unit_id"):
-            unit_slot = self.slot_store.slots.get("equipment_unit_id")
-            if unit_slot and unit_slot.status == "valid":
-                unit_id = unit_slot.value
-
-        if unit_id:
-            runtime_res = self.kb.state_info.check_runtime_availability(str(unit_id))
-            if not runtime_res.get("available"):
-                reply = runtime_res.get("message") or f"无法发布任务：机器人 {unit_id} 当前不可用。"
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
 
         # 准备发布：正式且唯一预约任务业务编号（在跨进程锁内原子递增）。
         # reserve_task_id() 的返回值是唯一权威正式编号，必须覆盖任何草稿阶段的 preview。
@@ -609,6 +644,7 @@ class DialogueManager:
                 mode=self.mode,
                 task_type_key=task_type_key,
                 intent_id=intent_id,
+                validation_result=val_res,
             )
             staging_file = ti_builder.create_staging(ti_json_artifact)
             ti_builder.publish_staging(staging_file, ti_json_artifact)
@@ -2808,6 +2844,19 @@ class DialogueManager:
             self._soft_whitelist -= {e for e in self._soft_whitelist if e[0] in changed_fields}
 
     def _is_whitelisted(self, v: Violation) -> bool:
+        res = getattr(self.slot_store, "validation_result", None)
+        curr_fp = getattr(res, "validation_fingerprint", None) if res else None
+        curr_state_ver = res.state_snapshot.get("state_version") if (res and getattr(res, "state_snapshot", None)) else None
+
+        acks = getattr(self.slot_store, "validation_acknowledgements", [])
+        for ack in acks:
+            if isinstance(ack, dict) and ack.get("constraint_id") == v.constraint_id:
+                if curr_fp and ack.get("validation_fingerprint") != curr_fp:
+                    continue
+                if curr_state_ver is not None and ack.get("state_version") != curr_state_ver:
+                    continue
+                return True
+
         return any(
             (f, str(self.task_state.get(f)), v.constraint_id) in self._soft_whitelist
             for f in v.related_fields

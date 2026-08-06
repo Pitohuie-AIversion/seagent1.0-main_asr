@@ -78,7 +78,7 @@ CONSTRAINT_TRIGGER_MATRIX = {
     "C009": {
         "task": {
             "task_type_key": "pipeline_burial",
-            "equipment_unit_id": None,
+            "equipment_unit_id": "CRAWLER-1600-001",
             "equipment_type": "履带式海底重载作业机器人 1600HP",
             "start_point": SOFT_SEABED_POINT,
         },
@@ -113,8 +113,32 @@ class ConstraintCoverageMatrixTest(unittest.TestCase):
     def validate(self, *, task=None, state=None):
         candidate = base_task(**(task or {}))
         robot_state = base_robot_state(**(state or {}))
+        unit_id = candidate.get("equipment_unit_id")
+        if not unit_id and candidate.get("equipment_type"):
+            res_unit = self.kb.resolve_robot_unit(candidate.get("equipment_type"), candidate.get("task_type_key"))
+            if res_unit:
+                unit_id = res_unit.get("unit_id") or (res_unit.get("unit", {}).get("unit_id") if isinstance(res_unit.get("unit"), dict) else None)
+        if not unit_id:
+            unit_id = "OBSROV--001"
+
+        matched = None
+        for u in self.kb.robot_fleet.get("fleet_units", []):
+            if u.get("unit_id") == unit_id or u.get("status_ref") == unit_id:
+                matched = u
+                break
+        status_ref = (matched.get("status_ref") if matched else None) or unit_id
+
+        fake_snapshot = {
+            "unit_id": unit_id,
+            "status_ref": status_ref,
+            "state_version": 1,
+            "store_version": 1,
+            "updated_at": NOW.isoformat(),
+            "state": robot_state,
+        }
         with (
             patch.object(self.kb, "get_robot_state_dict", return_value=robot_state),
+            patch.object(self.kb, "get_unit_state_snapshot", return_value=fake_snapshot),
             patch.object(self.validator, "_is_task_start_now", return_value=True),
             patch("src.validator.get_current_datetime", return_value=NOW),
         ):
