@@ -141,3 +141,5 @@ python -m unittest discover tests
   - 极度冷门或未录入别名表的设备俗称仍需依赖 LLM 语义解析，可能带来微小延时。
   - 遥测数据（`config/state.yaml`）超过 1 小时未更新会被校验器判定为过期数据并阻断执行。
   - TaskIntent 原子落盘依靠底层硬链接 `os.link` 保证，若在跨网络挂载盘（如 NFS）运行需确保跨文件系统链接支持。
+
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 /root/miniconda3/envs/seagent/bin/python run.py
