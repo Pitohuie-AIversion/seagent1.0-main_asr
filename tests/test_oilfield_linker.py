@@ -38,12 +38,12 @@ class OilfieldEntityLinkerTest(unittest.TestCase):
     def test_link_asr_error_lingshui_with_digits(self):
         match = self.linker.link("临水17-2")
         self.assertEqual(match.status, "accepted")
-        self.assertEqual(match.standard_name, "陵水17-2油田")
+        self.assertEqual(match.standard_name, "陵水17-2气田")
 
     def test_link_asr_error_lingshui_with_chinese_digits(self):
         match = self.linker.link("临水十七杠二油田")
         self.assertEqual(match.status, "accepted")
-        self.assertEqual(match.standard_name, "陵水17-2油田")
+        self.assertEqual(match.standard_name, "陵水17-2气田")
 
     def test_coords_can_disambiguate_name_without_digits(self):
         match = self.linker.link("硫化油田", {"lat": 20.815, "lon": 115.735})

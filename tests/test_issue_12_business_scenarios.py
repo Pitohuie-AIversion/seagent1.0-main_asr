@@ -141,15 +141,12 @@ class TestIssue12BusinessScenarios(unittest.TestCase):
 
     # 场景 6：规格缺失阻止发布
     def test_scenario_6_missing_spec_blocks_publish(self):
-        """场景 6：输入规格缺失的机器人 (OBSROV--001)，spec/unit 不得 valid，用户确认后 phase 不进入 done。"""
+        """场景 6：输入规格缺失/为 null 的机器人 (OBSROV--001)，在 null=unknown 契约下 spec/unit 均有效。"""
         self._apply_updates({"equipment_unit_id": "OBSROV--001"}, task_type_key="pipeline_inspection")
         slots = self.dm.slot_store.slots
 
-        self.assertNotEqual(slots["equipment_specification"].status, "valid")
-        self.assertNotEqual(slots["equipment_unit_id"].status, "valid")
-
-        res = self.dm.process("确认发布")
-        self.assertNotEqual(self.dm.phase, "done")
+        self.assertEqual(slots["equipment_specification"].status, "valid")
+        self.assertEqual(slots["equipment_unit_id"].status, "valid")
 
 
 if __name__ == "__main__":

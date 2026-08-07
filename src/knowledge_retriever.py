@@ -288,6 +288,14 @@ class KnowledgeBase:
         raw_val = hard_params[expected_field]
 
         if raw_val is None:
+            if expected_field == "power_hp":
+                return {
+                    "type": expected_field,
+                    "value": None,
+                    "unit": unit_str,
+                    "display_value": "未知",
+                    "variant_id": variant_id,
+                }
             raise RobotSelectionDataError(
                 f"Variant '{variant_id}' field '{expected_field}' is None.",
                 error_code="MISSING_SPECIFICATION_VALUE",
@@ -633,27 +641,39 @@ class KnowledgeBase:
                 variant_id=spec_variant_id,
             )
 
-        if spec_value is None or isinstance(spec_value, bool) or not isinstance(spec_value, (int, float)) or not math.isfinite(spec_value):
-            raise RobotSelectionDataError(
-                f"Specification value '{spec_value}' is invalid.",
-                error_code="SPECIFICATION_VALUE_MISMATCH",
-                robot_class=class_id,
-                family_id=family_id,
-                variant_id=spec_variant_id,
-                expected_field=expected_type,
-                actual_value=spec_value,
-            )
+        if matched_spec.get("value") is None:
+            if spec_value is not None:
+                raise RobotSelectionDataError(
+                    f"Specification value '{spec_value}' does not match variant value 'None'.",
+                    error_code="SPECIFICATION_VALUE_MISMATCH",
+                    robot_class=class_id,
+                    family_id=family_id,
+                    variant_id=spec_variant_id,
+                    expected_field=expected_type,
+                    actual_value=spec_value,
+                )
+        else:
+            if spec_value is None or isinstance(spec_value, bool) or not isinstance(spec_value, (int, float)) or not math.isfinite(spec_value):
+                raise RobotSelectionDataError(
+                    f"Specification value '{spec_value}' is invalid.",
+                    error_code="SPECIFICATION_VALUE_MISMATCH",
+                    robot_class=class_id,
+                    family_id=family_id,
+                    variant_id=spec_variant_id,
+                    expected_field=expected_type,
+                    actual_value=spec_value,
+                )
 
-        if abs(float(spec_value) - float(matched_spec["value"])) > 1e-6:
-            raise RobotSelectionDataError(
-                f"Specification value '{spec_value}' does not match variant value '{matched_spec['value']}'.",
-                error_code="SPECIFICATION_VALUE_MISMATCH",
-                robot_class=class_id,
-                family_id=family_id,
-                variant_id=spec_variant_id,
-                expected_field=expected_type,
-                actual_value=spec_value,
-            )
+            if abs(float(spec_value) - float(matched_spec["value"])) > 1e-6:
+                raise RobotSelectionDataError(
+                    f"Specification value '{spec_value}' does not match variant value '{matched_spec['value']}'.",
+                    error_code="SPECIFICATION_VALUE_MISMATCH",
+                    robot_class=class_id,
+                    family_id=family_id,
+                    variant_id=spec_variant_id,
+                    expected_field=expected_type,
+                    actual_value=spec_value,
+                )
 
         units = []
         for u in self.robot_fleet.get("fleet_units", []):
@@ -905,7 +925,15 @@ class KnowledgeBase:
             "unit_ids": [u.get("unit_id") for u in units if u.get("unit_id")],
         }
         robot.update(hard_params)
-        robot.setdefault("supported_payloads", hard_params.get("supported_payloads", []))
+        onboard = hard_params.get("onboard_payloads")
+        supported = hard_params.get("supported_payloads")
+        onboard_list = list(onboard) if isinstance(onboard, list) else []
+        supported_list = list(supported) if isinstance(supported, list) else []
+        robot["onboard_payloads"] = onboard_list
+        robot["raw_supported_payloads"] = supported_list
+        all_payloads = list(dict.fromkeys(onboard_list + supported_list))
+        robot["all_payloads"] = all_payloads
+        robot["supported_payloads"] = all_payloads
         return robot
 
     def _build_robot_variant_index(self) -> list[dict]:
@@ -1126,12 +1154,20 @@ class KnowledgeBase:
         rov = self._find_rov(model_or_alias)
         if not rov:
             return None
-        payloads = "、".join(rov.get("supported_payloads", []))
+        onboard_list = rov.get("onboard_payloads", [])
+        raw_supported = rov.get("raw_supported_payloads", rov.get("supported_payloads", []))
+        if onboard_list:
+            onboard_str = "、".join(onboard_list)
+            supported_str = "、".join(raw_supported)
+            payload_desc = f"自带载荷: {onboard_str}\n可选搭载载荷: {supported_str}"
+        else:
+            payloads = "、".join(rov.get("supported_payloads", []))
+            payload_desc = f"可搭载载荷: {payloads}"
         return (
             f"{rov['full_name']}\n"
             f"类型: {rov.get('robot_class_name')} | 能力: {'、'.join(rov.get('capabilities', []))} | "
             f"最大水深: {rov.get('max_depth_m')}m\n"
-            f"可搭载载荷: {payloads}\n"
+            f"{payload_desc}\n"
             f"简介: {rov.get('brief', '')}"
         )
 
@@ -1517,6 +1553,8 @@ class KnowledgeBase:
             tool_set: set[str] = set()
             equipment_mappings: list[dict] = []
             for robot in robots:
+                onboard = list(robot.get("onboard_payloads", []))
+                raw_supported = list(robot.get("raw_supported_payloads", robot.get("supported_payloads", [])))
                 payloads = list(robot.get("supported_payloads", []))
                 tool_set.update(payloads)
                 equipment_mappings.append({
@@ -1524,7 +1562,9 @@ class KnowledgeBase:
                     "variant_id": robot.get("variant_id"),
                     "family_id": robot.get("family_id"),
                     "robot_class": robot.get("robot_class_name"),
-                    "supported_payloads": payloads,
+                    "onboard_payloads": onboard,
+                    "supported_payloads": raw_supported,
+                    "all_payloads": payloads,
                 })
 
             task_payloads = self.assets.get("payload_options", {})

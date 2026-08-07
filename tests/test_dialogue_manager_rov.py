@@ -171,10 +171,8 @@ class DialogueManagerROVTest(unittest.TestCase):
         )
         self.assertEqual(dm.task_state.get("equipment_family"), "观察级深海机器人")
         self.assertEqual(dm.task_state.get("equipment_type"), "观察级深海机器人")
-        # P1-4: 观察级 ROV 缺失 HP 规格 (MISSING_SPECIFICATION_VALUE)，specification 与 unit_id / name 不得进入 valid
-        self.assertIsNone(dm.task_state.get("equipment_unit_id"))
-        self.assertIsNone(dm.task_state.get("equipment_name"))
-        self.assertEqual(dm.slot_store.slots["equipment_unit_id"].status, "invalid")
+        # 新契约: power_hp: null 为 unknown，观察级 ROV 正常分配 unit_id
+        self.assertEqual(dm.task_state.get("equipment_unit_id"), "OBSROV--001")
 
     def test_equipment_transaction_with_rov_alias_work(self):
         dm = self._commit_equipment_update(

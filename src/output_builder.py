@@ -719,7 +719,40 @@ class OutputBuilder:
 
         if ref.startswith("payload_options."):
             task_key = ref.split(".", 1)[1]
-            return self.kb.assets.get("payload_options", {}).get(task_key, []).get("common", [])
+            task_commons = list(self.kb.assets.get("payload_options", {}).get(task_key, {}).get("common", []))
+            eq_type = str(task_state.get("equipment_type") or "") if task_state else ""
+            if eq_type:
+                robot = self.kb.get_rov(eq_type)
+                if robot:
+                    robot_payloads = robot.get("all_payloads", [])
+                    return list(dict.fromkeys(task_commons + robot_payloads))
+            robots = self.kb.get_task_allowed_robot_variants(task_type_key or task_key)
+            all_r_payloads: set[str] = set(task_commons)
+            for r in robots:
+                all_r_payloads.update(r.get("all_payloads", []))
+            return sorted(all_r_payloads) if all_r_payloads else task_commons
+
+        if ref in ("supported_payloads", "onboard_payloads", "all_payloads"):
+            eq_type = str(task_state.get("equipment_type") or "") if task_state else ""
+            if eq_type:
+                robot = self.kb.get_rov(eq_type)
+                if robot:
+                    if ref == "onboard_payloads":
+                        return list(robot.get("onboard_payloads", []))
+                    elif ref == "supported_payloads":
+                        return list(robot.get("raw_supported_payloads", robot.get("supported_payloads", [])))
+                    else:
+                        return list(robot.get("supported_payloads", []))
+            robots = self.kb.get_task_allowed_robot_variants(task_type_key) if task_type_key else self.kb.get_all_rovs()
+            res: set[str] = set()
+            for r in robots:
+                if ref == "onboard_payloads":
+                    res.update(r.get("onboard_payloads", []))
+                elif ref == "supported_payloads":
+                    res.update(r.get("raw_supported_payloads", r.get("supported_payloads", [])))
+                else:
+                    res.update(r.get("supported_payloads", []))
+            return sorted(res)
 
         return []
 

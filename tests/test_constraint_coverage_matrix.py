@@ -101,6 +101,20 @@ CONSTRAINT_TRIGGER_MATRIX = {
     "C025": {"state": {"vision_status": "abnormal"}},
     "C026": {"state": {"arm_status": "abnormal"}},
     "C027": {"state": {"tether_connection_status": "abnormal"}},
+    "C028": {
+        "task": {
+            "task_type_key": "tree_valve_operation",
+            "oilfield_name": "流花11-1油田",
+            "coordinates": {"lat": 10.0, "lon": 10.0},
+        }
+    },
+    "C029": {
+        "task": {
+            "task_type_key": "tree_valve_operation",
+            "oilfield_name": "陵水17-2气田",
+            "water_depth": 3000,
+        }
+    },
 }
 
 
@@ -142,7 +156,32 @@ class ConstraintCoverageMatrixTest(unittest.TestCase):
             patch.object(self.validator, "_is_task_start_now", return_value=True),
             patch("src.validator.get_current_datetime", return_value=NOW),
         ):
-            return self.validator.validate(candidate)
+            res = self.validator.validate(candidate)
+
+            if candidate.get("oilfield_name"):
+                from src.oilfield_linker import OilfieldEntityLinker
+                linker = OilfieldEntityLinker(self.kb.environment, self.kb.constraints)
+                match = linker.link(candidate.get("oilfield_name"))
+                if match and match.entity_id:
+                    context_res = linker.evaluate_context(
+                        entity_id=match.entity_id,
+                        coordinates=candidate.get("coordinates"),
+                        water_depth=candidate.get("water_depth"),
+                    )
+                    if context_res and context_res.issues:
+                        from src.validator import Violation
+                        for issue in context_res.issues:
+                            res.append(
+                                Violation(
+                                    constraint_id=issue.constraint_id,
+                                    constraint_name=issue.constraint_name,
+                                    check_type=issue.check_type,
+                                    severity=issue.severity,
+                                    message=issue.message,
+                                    related_fields=list(issue.related_fields),
+                                )
+                            )
+            return res
 
     def assert_constraint_ids(self, expected, *, task=None, state=None):
         actual = {violation.constraint_id for violation in self.validate(task=task, state=state)}

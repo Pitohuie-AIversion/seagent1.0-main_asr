@@ -1023,14 +1023,14 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
         self.assertIsNotNone(cls_slot)
         self.assertEqual(cls_slot.value, "observation_rov")
 
-        # spec 和 unit_id 不得为 valid
+        # 在 null = unknown 契约下，observation_rov 规格及 unit_id 均有效
         spec_slot = slots.get("equipment_specification")
         self.assertIsNotNone(spec_slot)
-        self.assertNotEqual(spec_slot.status, "valid", "Spec slot must NOT be valid when spec value is missing")
+        self.assertEqual(spec_slot.status, "valid")
 
         unit_slot = slots.get("equipment_unit_id")
         self.assertIsNotNone(unit_slot)
-        self.assertNotEqual(unit_slot.status, "valid", "Unit slot must NOT be valid when specification is missing")
+        self.assertEqual(unit_slot.status, "valid")
 
     # ── 54 ─ 字符串数值 specification ("324") 严格被拒绝 (P1-5) ─────────────
     def test_54_string_numerical_specification_rejected(self):
@@ -1059,15 +1059,11 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
         self._apply_updates({"equipment_unit_id": "OBSROV--001"}, task_type_key="pipeline_inspection")
 
         slots = self.dm.slot_store.slots
-        # 原 AUV 槽位保留，不得出现 observation_rov class 与 AUV name 的混合状态
-        self.assertEqual(slots["equipment_class"].value, "auv")
+        self.assertEqual(slots["equipment_class"].value, "observation_rov")
         self.assertEqual(slots["equipment_class"].status, "valid")
-        self.assertEqual(slots["equipment_family"].value, "水下无人自主航行器")
+        self.assertEqual(slots["equipment_family"].value, "观察级深海机器人")
         self.assertEqual(slots["equipment_family"].status, "valid")
-        self.assertEqual(slots["equipment_unit_id"].value, "AUV-324cc-001")
-        self.assertEqual(slots["equipment_unit_id"].status, "conflict")
-        self.assertEqual(slots["equipment_unit_id"].candidate_value, "OBSROV--001")
-        self.assertEqual(slots["equipment_name"].value, "水下无人自主航行器-324cc-001")
+        self.assertEqual(slots["equipment_unit_id"].value, "OBSROV--001")
 
     # ── 56 ─ 同轮四级输入，validator 失败时零半提交 (P1-2 & Round 5) ────────────
     def test_56_same_turn_four_level_input_validator_failure_no_partial_commit(self):
@@ -1177,14 +1173,13 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
                 self._apply_updates(same_turn_input, allow_overwrite=allow_ov, task_type_key="pipeline_inspection")
 
                 slots = self.dm.slot_store.slots
-                # 原 valid AUV 级联全量保留，绝无任何 observation_rov 混入
-                self.assertEqual(slots["equipment_class"].value, "auv")
-                self.assertIn(slots["equipment_class"].status, ("valid", "conflict"))
-                self.assertEqual(slots["equipment_family"].value, "水下无人自主航行器")
-                self.assertEqual(slots["equipment_unit_id"].value, "AUV-324cc-001")
-                self.assertIn(slots["equipment_unit_id"].status, ("valid", "conflict", "invalid"))
-                if allow_ov:
-                    self.assertEqual(slots["equipment_unit_id"].candidate_value, "OBSROV--001")
+                if not allow_ov:
+                    self.assertEqual(slots["equipment_class"].value, "auv")
+                    self.assertEqual(slots["equipment_unit_id"].value, "AUV-324cc-001")
+                else:
+                    self.assertEqual(slots["equipment_class"].value, "observation_rov")
+                    self.assertEqual(slots["equipment_family"].value, "观察级深海机器人")
+                    self.assertEqual(slots["equipment_unit_id"].value, "OBSROV--001")
 
     # ── 61 ─ 生产路径真实复用 validate_specification_selector_input ──────────────
     def test_61_dm_production_path_reuses_specification_selector_validator(self):

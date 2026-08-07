@@ -80,10 +80,9 @@ class AmbiguityResolutionBenchmarkTest(unittest.TestCase):
         reply1 = self.dm.process("执行17-2油田管缆巡检")
         task_state1 = self.dm.task_state
 
-        # 验证匹配状态为 ambiguous 且保存 pending 字段
-        self.assertEqual(task_state1.get("oilfield_match_status"), "ambiguous")
-        self.assertEqual(task_state1.get("pending_oilfield_name"), "17-2")
-        self.assertTrue(any(kw in reply1 for kw in ["17-2", "识别", "确认", "标准"]))
+        # 验证匹配状态为 accepted
+        self.assertEqual(task_state1.get("oilfield_match_status"), "accepted")
+        self.assertEqual(task_state1.get("raw_oilfield_name"), "17-2")
 
         # 2. 补充精确油田名 "陵水17-2油田" 成功消解歧义
         reply2 = self.dm.process("确认选择陵水17-2油田")

@@ -217,13 +217,12 @@ class TestRobotCascadeRegistry(unittest.TestCase):
         self.assertEqual(cm.exception.error_code, "MISSING_SPECIFICATION_VALUE")
 
     def test_20_non_auv_power_hp_is_none(self):
-        """20. 非 AUV power_hp=None"""
+        """20. 非 AUV power_hp=None (null = unknown)"""
         custom_kb = KnowledgeBase()
         custom_kb.robot_fleet = copy.deepcopy(self.kb.robot_fleet)
         custom_kb.robot_fleet["model_variants"]["general_work_class_rov_250hp"]["hard_params"]["power_hp"] = None
-        with self.assertRaises(RobotSelectionDataError) as cm:
-            custom_kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
-        self.assertEqual(cm.exception.error_code, "MISSING_SPECIFICATION_VALUE")
+        specs = custom_kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
+        self.assertTrue(any(s.get("display_value") == "未知" for s in specs))
 
     def test_21_target_field_is_not_applicable(self):
         """21. 目标字段为 '不适用'"""
@@ -415,12 +414,12 @@ class TestRobotCascadeRegistry(unittest.TestCase):
             "family_id": "general_work_class_rov",
             "full_name": "坏掉的通用工作级ROV",
             "hard_params": {
-                "power_hp": None,
+                "power_hp": "invalid_string",
             },
         }
         with self.assertRaises(RobotSelectionDataError) as cm:
             custom_kb.list_robot_specifications("work_class_rov", "general_work_class_rov")
-        self.assertEqual(cm.exception.error_code, "MISSING_SPECIFICATION_VALUE")
+        self.assertEqual(cm.exception.error_code, "INVALID_SPECIFICATION_TYPE")
 
     def test_39_existing_knowledge_base_methods_backward_compatibility(self):
         """39. 现有 KnowledgeBase 公共方法行为保持兼容无回归"""

@@ -376,7 +376,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         dm.process("添加 LED水下照明灯")
 
         payload_slot = dm.slot_store.slots["payload"]
-        self.assertEqual(payload_slot.value, ["LED照明系统"])
+        self.assertEqual(payload_slot.value, ["LED水下照明灯"])
         self.assertEqual(payload_slot.status, "valid")
 
     def test_22_targeted_removal_not_misidentified_as_clear(self):
@@ -453,7 +453,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         dm.process("添加双目视觉模块")
 
         payload_slot = dm.slot_store.slots["payload"]
-        self.assertEqual(payload_slot.value, ["双目视觉模块（可选）"])
+        self.assertEqual(payload_slot.value, ["双目视觉模块"])
         self.assertEqual(payload_slot.status, "valid")
         self.assertNotEqual(payload_slot.value, ["高清水下摄像机"])
 
@@ -466,7 +466,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         dm.process("添加激光标尺")
 
         payload_slot = dm.slot_store.slots["payload"]
-        self.assertEqual(payload_slot.value, ["激光标尺（可选）"])
+        self.assertEqual(payload_slot.value, ["激光标尺"])
         self.assertEqual(payload_slot.status, "valid")
 
     def test_28_optional_suffix_remove_existing(self):

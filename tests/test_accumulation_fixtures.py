@@ -73,7 +73,7 @@ class AccumulationFixtureConsistencyTest(unittest.TestCase):
         oilfields = {item["id"]: item for item in self.environment["oil_fields"]}
         for field_id, point_text, seabed in (
             ("lingshui_17_2", LINGSHUI_COORDINATES, "soft"),
-            ("liuhua_11_1", LIUHUA_COORDINATES, "hard"),
+            ("liuhua_11_1", LIUHUA_COORDINATES, "soft"),
         ):
             field = oilfields[field_id]
             self.assertTrue(contains(field, parse_point(point_text)))

@@ -51,7 +51,7 @@ from .task_intent_builder import TaskIntentBuilder
 from .simulated_time import get_current_datetime
 from .time_context import get_time_context, is_standalone_time_query
 from .coord_parser import parse_coordinate_updates
-from .oilfield_linker import OilfieldEntityLinker
+from .oilfield_linker import OilfieldEntityLinker, _UNSET
 from . import task_intent_builder as _ti_builder_module
 from .id_sequence import validate_intent_id, validate_task_id, validate_task_id_for_task_type, next_daily_id
 from .slot_store import (
@@ -113,7 +113,7 @@ class DialogueManager:
         self.normalizer = FieldNormalizer()
         self.builder = OutputBuilder(kb)
         self.validator = TaskValidator(kb)
-        self.oilfield_linker = OilfieldEntityLinker(kb.environment)
+        self.oilfield_linker = OilfieldEntityLinker(kb.environment, getattr(kb, "constraints", None))
         self.intent_router = IntentRouter(llm)
 
         # 对话核心状态
@@ -2853,88 +2853,166 @@ class DialogueManager:
     # 约束检查（硬解除后检查软）
     # --------------------------------------------------------------------------
 
+    def _merge_oilfield_context_violations(self, new_violations: list[Violation]) -> list[Violation]:
+        entity_id = self.task_state.get("oilfield_entity_id")
+        if not entity_id:
+            return new_violations
+
+        coords = self.task_state.get("oilfield_coordinates") or self.task_state.get("start_point")
+        water_depth = self.task_state.get("water_depth")
+
+        try:
+            ctx_res = self.oilfield_linker.evaluate_context(
+                entity_id=entity_id,
+                coordinates=coords if coords is not None else _UNSET,
+                water_depth=water_depth if water_depth is not None else _UNSET,
+            )
+            if ctx_res and ctx_res.issues:
+                merged = list(new_violations)
+                existing_ids = {v.constraint_id for v in merged}
+                for issue in ctx_res.issues:
+                    if issue.constraint_id not in existing_ids:
+                        merged.append(
+                            Violation(
+                                constraint_id=issue.constraint_id,
+                                constraint_name=issue.constraint_name,
+                                check_type=issue.check_type,
+                                severity=issue.severity,
+                                message=issue.message,
+                                related_fields=list(issue.related_fields),
+                            )
+                        )
+                return merged
+        except Exception:
+            pass
+
+        return new_violations
+
     def _run_constraint_check(self, changed_fields: set[str]) -> dict:
         """执行约束检查，返回上下文"""
         if not changed_fields and self.phase not in ("blocked_hard", "blocked_soft"):
             return {"type": "none", "violations": [], "hard_refusal_counts": {}}
 
         val_res = self._refresh_validation(purpose="interactive", changed_fields=changed_fields)
-        new_violations = val_res.violations
+        new_violations = self._merge_oilfield_context_violations(val_res.violations)
 
-        # 处理soft阻塞解除/升级为hard
+        current_hard = [
+            v for v in new_violations
+            if v.severity == "hard"
+        ]
+        current_soft = [
+            v for v in new_violations
+            if v.severity == "soft" and not self._is_whitelisted(v)
+        ]
+        current_blockers = current_hard + current_soft
+
+        # 处理 soft 阻塞升级为 hard / 维持 / 解除
         if self.phase == "blocked_soft":
-            current_soft = [v for v in new_violations
-                            if v.severity == "soft" and not self._is_whitelisted(v)]
-            if not current_soft:
-                self._blocking_violations = []
-                self.phase = "collecting"
-                current_hard = [v for v in new_violations if v.severity == "hard"]
-                if current_hard:
-                    self.phase = "blocked_hard"
-                    self._blocking_violations = current_hard
-                    return {"type": "hard", "violations": current_hard, "hard_refusal_counts": {}}
-                return {"type": "none", "violations": [], "hard_refusal_counts": {}}
-            else:
-                self._blocking_violations = current_soft
-                return {"type": "soft", "violations": current_soft, "hard_refusal_counts": {}}
-
-        # 处理hard阻塞解除
-        if self.phase == "blocked_hard":
-            current_hard = [v for v in new_violations if v.severity == "hard"]
             if current_hard:
-                self._blocking_violations = current_hard
+                self.phase = "blocked_hard"
+                self._blocking_violations = current_blockers
+                for v in current_hard:
+                    if v.constraint_id not in self._hard_refusal_counts:
+                        self._hard_refusal_counts[v.constraint_id] = 0
+
+                return {
+                    "type": "hard",
+                    "violations": current_blockers,
+                    "hard_refusal_counts": dict(self._hard_refusal_counts),
+                }
+
+            if current_soft:
+                self._blocking_violations = current_soft
+                return {
+                    "type": "soft",
+                    "violations": current_soft,
+                    "hard_refusal_counts": {},
+                }
+
+            self._blocking_violations = []
+            self.phase = "collecting"
+            return {
+                "type": "none",
+                "violations": [],
+                "hard_refusal_counts": {},
+            }
+
+        # 处理 hard 阻塞维持 / 降级为 soft / 解除
+        if self.phase == "blocked_hard":
+            if current_hard:
+                self._blocking_violations = current_blockers
                 for v in current_hard:
                     self._hard_refusal_counts[v.constraint_id] = \
                         self._hard_refusal_counts.get(v.constraint_id, 0) + 1
-                final_ids = {cid for cid, cnt in self._hard_refusal_counts.items()
-                             if cnt >= HARD_REFUSAL_LIMIT}
+
+                final_ids = {
+                    cid for cid, cnt in self._hard_refusal_counts.items()
+                    if cnt >= HARD_REFUSAL_LIMIT
+                }
                 if final_ids:
                     self.phase = "rejected"
                     self._blocking_violations = []
-                    return {"type": "hard_rejected", "violations": current_hard,
-                            "hard_refusal_counts": dict(self._hard_refusal_counts)}
-                warn_ids = {cid for cid, cnt in self._hard_refusal_counts.items()
-                            if cnt == HARD_REFUSAL_LIMIT - 1}
+                    return {
+                        "type": "hard_rejected",
+                        "violations": current_blockers,
+                        "hard_refusal_counts": dict(self._hard_refusal_counts),
+                    }
+
+                warn_ids = {
+                    cid for cid, cnt in self._hard_refusal_counts.items()
+                    if cnt == HARD_REFUSAL_LIMIT - 1
+                }
                 ctx_type = "hard_final_warning" if warn_ids else "hard"
-                return {"type": ctx_type, "violations": current_hard,
-                        "hard_refusal_counts": dict(self._hard_refusal_counts)}
+                return {
+                    "type": ctx_type,
+                    "violations": current_blockers,
+                    "hard_refusal_counts": dict(self._hard_refusal_counts),
+                }
             else:
                 # 硬约束解除，清除计数
-                self._blocking_violations = []
-                self.phase = "collecting"
-                resolved_ids = set(self._hard_refusal_counts.keys()) - {v.constraint_id for v in new_violations if
-                                                                        v.severity == "hard"}
+                resolved_ids = set(self._hard_refusal_counts.keys())
                 for cid in resolved_ids:
                     self._hard_refusal_counts.pop(cid, None)
 
-                # 硬解除后检查软约束
-                current_soft = [v for v in new_violations
-                                if v.severity == "soft" and not self._is_whitelisted(v)]
                 if current_soft:
                     self.phase = "blocked_soft"
                     self._blocking_violations = current_soft
-                    return {"type": "soft", "violations": current_soft,
-                            "hard_refusal_counts": {}}
-                return {"type": "none", "violations": [], "hard_refusal_counts": {}}
+                    return {
+                        "type": "soft",
+                        "violations": current_soft,
+                        "hard_refusal_counts": {},
+                    }
+
+                self.phase = "collecting"
+                self._blocking_violations = []
+                return {
+                    "type": "none",
+                    "violations": [],
+                    "hard_refusal_counts": {},
+                }
 
         # collecting / confirming 状态下的新违规
         if self.phase in ("collecting", "confirming"):
-            hard_new = [v for v in new_violations if v.severity == "hard"]
-            soft_new = [v for v in new_violations
-                        if v.severity == "soft" and not self._is_whitelisted(v)]
-
-            if hard_new:
+            if current_hard:
                 self.phase = "blocked_hard"
-                self._blocking_violations = hard_new
-                for v in hard_new:
+                self._blocking_violations = current_blockers
+                for v in current_hard:
                     if v.constraint_id not in self._hard_refusal_counts:
                         self._hard_refusal_counts[v.constraint_id] = 0
-                return {"type": "hard", "violations": hard_new,
-                        "hard_refusal_counts": dict(self._hard_refusal_counts)}
-            if soft_new:
+                return {
+                    "type": "hard",
+                    "violations": current_blockers,
+                    "hard_refusal_counts": dict(self._hard_refusal_counts),
+                }
+
+            if current_soft:
                 self.phase = "blocked_soft"
-                self._blocking_violations = soft_new
-                return {"type": "soft", "violations": soft_new, "hard_refusal_counts": {}}
+                self._blocking_violations = current_soft
+                return {
+                    "type": "soft",
+                    "violations": current_soft,
+                    "hard_refusal_counts": {},
+                }
 
         return {"type": "none", "violations": [], "hard_refusal_counts": {}}
 
