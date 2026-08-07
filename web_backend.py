@@ -437,7 +437,10 @@ def api_chat():
                 _sessions[sid] = Session(sid)
 
         with mgr._session_lock:
-            reply = mgr.process(msg)
+            reply = mgr.process(
+                msg,
+                request_id=request_id,
+            )
             print_status(mgr)
             if mgr.phase == "done":
                 try:

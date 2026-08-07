@@ -1,0 +1,16 @@
+# config/features.yaml - Feature Flag Baseline Configuration
+schema_version: 1
+
+features:
+  model_profiles_v2: false
+  normalization_contract_v2: false
+  task_patch_v2: false
+  qa_scope_v2: false
+  semantic_router_v2: false
+  session_state_v2: false
+  robot_gateway_enabled: false
+  shadow_compare_enabled: false
+
+rollout:
+  percentage: 0
+  allow_session_ids: []
