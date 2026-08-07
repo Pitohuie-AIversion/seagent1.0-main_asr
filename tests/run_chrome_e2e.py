@@ -390,7 +390,10 @@ async def run_e2e():
         # Case 7: Page reload and persistence check (Deterministic Persistence Reload)
         print("🔄 Case 7: Reloading page to verify persistence...")
         await client.send("Page.reload")
-        await asyncio.sleep(3.5)
+        for _ in range(20):
+            await asyncio.sleep(0.5)
+            if await client.eval_js("typeof window.updateSidebar === 'function'"):
+                break
         res_err = await client.eval_js("""
             (() => {
                 try {
@@ -526,7 +529,8 @@ async def run_e2e():
               actions: { can_send: true, can_ignore_soft_warning: true }
             }
           });
-          return currentActions.can_ignore_soft_warning === true;
+          const ca = window.currentActions || currentActions || {};
+          return ca.can_ignore_soft_warning === true;
         })()
         """
         assert await client.eval_js(js_blocked_soft), "Case 8.6 Failed: blocked_soft did not enable soft warning override"
@@ -540,7 +544,8 @@ async def run_e2e():
               actions: { can_send: true, can_ignore_soft_warning: false }
             }
           });
-          return currentActions.can_ignore_soft_warning === false;
+          const ca = window.currentActions || currentActions || {};
+          return ca.can_ignore_soft_warning === false;
         })()
         """
         assert await client.eval_js(js_blocked_hard), "Case 8.7 Failed: blocked_hard allowed soft warning override"
@@ -548,7 +553,8 @@ async def run_e2e():
         # 8. done/rejected 禁用输入框、发送和语音
         js_done = """
         (() => {
-          applyInteractionState({ can_send: false, can_confirm: false, can_publish: false }, true);
+          const fn = window.applyInteractionState || applyInteractionState;
+          fn({ can_send: false, can_confirm: false, can_publish: false }, true);
           const sendDis = document.querySelector('#sendBtn').disabled;
           const inputDis = document.querySelector('#messageInput').disabled;
           const voiceDis = document.querySelector('#voiceBtn').disabled;
@@ -560,15 +566,21 @@ async def run_e2e():
         # 9. reset 后延迟旧响应不覆盖新页面
         js_reset_isolation = """
         (() => {
-          reset();
-          const oldGen = sessionGeneration - 1;
-          if (oldGen !== sessionGeneration) {
-            return true;
+          try {
+            const oldGen = typeof window.sessionGeneration === 'number' ? window.sessionGeneration : -1;
+            if (typeof window.reset === 'function') {
+              window.reset();
+            }
+            const newGen = typeof window.sessionGeneration === 'number' ? window.sessionGeneration : -1;
+            return newGen > oldGen;
+          } catch(e) {
+            return false;
           }
-          return false;
         })()
         """
-        assert await client.eval_js(js_reset_isolation), "Case 8.9 Failed: Reset did not isolate old generation"
+        res_89 = await client.eval_js(js_reset_isolation)
+        print(f"DEBUG Case 8.9 result: {res_89}")
+        assert res_89, "Case 8.9 Failed: Reset did not isolate old generation"
 
         # 10. ASR 存在警告/风险时不自动发送
         js_asr_risk = """

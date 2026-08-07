@@ -27,5 +27,10 @@ outside/
 record/
 docs/regression_report.md
 full_test.log
+port_forward.log
+chrome_e2e_screenshot.png
+probe_*.py
+.agents/README-summary.md
 config/.state.yaml.lock
 config/*.lock
+

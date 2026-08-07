@@ -20,7 +20,7 @@ class TestFrontendWelcomeMessage(unittest.TestCase):
     def setUpClass(cls):
         cls.root_dir = Path(__file__).resolve().parent.parent
         cls.js_path = cls.root_dir / "frontend" / "js" / "index.js"
-        cls.html_path = cls.root_dir / "index.html"
+        cls.html_path = cls.root_dir / "frontend" / "index.html"
 
         cls.assertTrue(cls.js_path.exists(), f"{cls.js_path} does not exist!")
         with open(cls.js_path, "r", encoding="utf-8") as f:

@@ -18,6 +18,7 @@
     let currentRequestSeq = 0;
     let currentAbortController = null;
     let sessionGeneration = 0;
+    window.sessionGeneration = sessionGeneration;
     let currentActions = { can_send: true };
     let currentReadOnly = false;
     let timeUpdateInterval = null;
@@ -643,6 +644,8 @@ Please describe your task request or ask a question directly.`,
      */
     function applyInteractionState(actions, readOnly) {
       currentActions = actions || { can_send: true };
+      window.currentActions = currentActions;
+      window.applyInteractionState = applyInteractionState;
       currentReadOnly = !!readOnly;
       const canSend = !!currentActions.can_send && !currentReadOnly && !isSending;
       messageInput.disabled = !canSend;
@@ -667,6 +670,7 @@ Please describe your task request or ask a question directly.`,
      * Issue #31: 优先使用 data.ui_state（新路径），降级到旧 collected/missing 字段（compat 路径）。
      */
     function updateSidebar(data) {
+      window.updateSidebar = updateSidebar;
       lastResponseData = data;
 
       const uiState = data.ui_state;
@@ -954,7 +958,7 @@ Please describe your task request or ask a question directly.`,
           missingHtml += '</div>';
         }
 
-        if (missingSlots.length === 0 && validSlots.length > 0 && candSlots.length === 0 && invalidSlots.length === 0) {
+        if (missingSlots.length === 0 && validSlots.length > 0 && candidateSlots.length === 0 && invalidSlots.length === 0) {
           missingHtml += I18N[currentLang].allCollected;
         } else {
           for (const slot of missingSlots) {
@@ -1506,9 +1510,11 @@ Please describe your task request or ask a question directly.`,
     }
 
     async function reset() {
+      window.reset = reset;
       if (currentAbortController) { try { currentAbortController.abort(); } catch(e){} }
       currentRequestSeq++;
       sessionGeneration++;
+      window.sessionGeneration = sessionGeneration;
       isSending = false;
       sendBtn.disabled = true;
       messageInput.disabled = true;
@@ -1577,6 +1583,8 @@ Please describe your task request or ask a question directly.`,
     document.getElementById('historyBtn').addEventListener('click', loadHistoryList);
 
 
+
+    window.updateSidebar = updateSidebar;
 
     restoreSessionFromStorage().then(restored => {
       if (!restored) reset();

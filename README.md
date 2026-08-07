@@ -59,8 +59,8 @@ graph TD
 │   ├── extractor.py     # 候选值提炼与三级解析
 │   ├── validator.py     # 物理/海况限制校验
 │   └── task_intent_builder.py # TaskIntent 排他锁与原子落盘
+├── frontend/            # 前端交互 Web 资源 (index.html, js/, css/)
 ├── tests/               # 自动化单元测试与回归测试套件
-├── index.html           # 前端交互 Web 页面
 ├── run.py               # 系统主入口服务
 ├── web_backend.py       # Web 后端 API 服务
 ├── CONTRIBUTING.md      # 团队协作与贡献指南
@@ -89,7 +89,7 @@ pip install -r requirements/gpu.txt
 TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python run.py
 ```
 
-服务启动后，可以通过浏览器访问根目录 [index.html](file:///root/mzy/seagent1.0-main_asr/index.html) 或通过 API 接口进行交互。
+服务启动后，可以通过浏览器访问 [frontend/index.html](file:///root/mzy/seagent1.0-main_asr/frontend/index.html) 或通过 API 接口进行交互。
 
 ---
 

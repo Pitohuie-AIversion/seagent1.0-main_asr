@@ -5,6 +5,7 @@ tests/test_intent_routing.py - 独立意图路由、控制指令隔离、深度�
 import copy
 import json
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch, PropertyMock
 
 from src.dialogue_manager import DialogueManager, SOFT_IGNORE_KEYWORDS
@@ -163,7 +164,8 @@ class TestIntentRoutingAndInvariance(unittest.TestCase):
         self.assertFalse(res.should_update_slots)
 
     def test_restored_frontend_error_parsing_elements(self):
-        with open("index.html", encoding="utf-8") as f:
+        js_path = Path(__file__).resolve().parent.parent / "frontend" / "js" / "index.js"
+        with open(js_path, encoding="utf-8") as f:
             content = f.read()
         self.assertIn("res.ok", content)
         self.assertIn("data.request_id", content)
