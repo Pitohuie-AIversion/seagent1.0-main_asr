@@ -406,12 +406,12 @@ class SlotConsistencyTest(unittest.TestCase):
         self.llm.extract_json.return_value = {
             "intent": "TASK_UPDATE",
             "slot_candidates": [
-                {"raw_key": "负载工具", "canonical_key": "payload", "raw_value": "高清水下摄像机,前视声呐", "normalized_value": ["高清水下摄像机", "前视声呐"], "confidence": 1.0}
+                {"raw_key": "负载工具", "canonical_key": "payload", "raw_value": "高清水下摄像机,成像声呐", "normalized_value": ["高清水下摄像机", "成像声呐"], "confidence": 1.0}
             ],
             "unresolved": []
         }
-        self.dm.process("携带高清水下摄像机和前视声呐")
-        self.assertEqual(self.dm.slot_store.slots["payload"].value, ["高清水下摄像机", "前视声呐"])
+        self.dm.process("携带高清水下摄像机和成像声呐")
+        self.assertEqual(self.dm.slot_store.slots["payload"].value, ["高清水下摄像机", "成像声呐"])
         assert_ssot_consistency(self, self.dm)
 
     # 4. 重复输入按明确规则处理

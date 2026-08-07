@@ -2883,8 +2883,19 @@ class DialogueManager:
                             )
                         )
                 return merged
-        except Exception:
-            pass
+        except Exception as exc:
+            merged = list(new_violations)
+            merged.append(
+                Violation(
+                    constraint_id="C029",
+                    constraint_name="油田上下文计算异常",
+                    check_type="oilfield_context_failure",
+                    severity="hard",
+                    message=f"油田上下文计算失败，安全熔断: {exc}",
+                    related_fields=["oilfield_name"],
+                )
+            )
+            return merged
 
         return new_violations
 

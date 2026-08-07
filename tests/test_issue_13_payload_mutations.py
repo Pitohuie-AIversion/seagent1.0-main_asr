@@ -55,7 +55,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.output_builder = OutputBuilder(self.kb)
 
         self.cam = "高清水下摄像机"
-        self.sonar = "前视声呐"
+        self.sonar = "成像声呐"
         self.light = "LED水下照明灯"
         self.arm = "多功能液压机械臂"
 
@@ -68,7 +68,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
                     "高清水下摄像机",
                     "LED水下照明灯",
                     "激光标尺",
-                    "前视声呐",
+                    "成像声呐",
                     "INS惯性导航系统",
                     "DVL多普勒测速仪",
                     "USBL定位设备",
@@ -85,7 +85,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
                 "allowed_values": [
                     "多功能液压机械臂",
                     "高清水下摄像机",
-                    "前视声呐",
+                    "成像声呐",
                     "专有飞天抓手",
                 ],
             }
@@ -93,7 +93,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
 
     def test_01_extractor_detect_add(self):
         res = self.extractor.extract_updates(
-            user_message="再加一个前视声呐",
+            user_message="再加一个成像声呐",
             current_state={"payload": [self.cam]},
             task_type_key="pipeline_inspection",
             required=self.pipeline_req,
@@ -105,7 +105,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
 
     def test_02_extractor_detect_remove(self):
         res = self.extractor.extract_updates(
-            user_message="去掉前视声呐",
+            user_message="去掉成像声呐",
             current_state={"payload": [self.cam, self.sonar]},
             task_type_key="pipeline_inspection",
             required=self.pipeline_req,
@@ -117,7 +117,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
 
     def test_03_extractor_detect_replace(self):
         res = self.extractor.extract_updates(
-            user_message="把高清水下摄像机换成前视声呐",
+            user_message="把高清水下摄像机换成成像声呐",
             current_state={"payload": [self.cam]},
             task_type_key="pipeline_inspection",
             required=self.pipeline_req,
@@ -151,7 +151,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
 
     def test_06_extractor_ambiguous_logged(self):
         res = self.extractor.extract_updates(
-            user_message="前视声呐",
+            user_message="成像声呐",
             current_state={"payload": [self.cam]},
             task_type_key="pipeline_inspection",
             required=self.pipeline_req,
@@ -163,7 +163,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
 
     def test_07_slot_store_add_success(self):
         slots = {"payload": Slot("payload", value=[self.cam], status="valid")}
-        mutation = {"field": "payload", "operation": "add", "items": ["前视声呐"], "raw_text": "加个前视声呐"}
+        mutation = {"field": "payload", "operation": "add", "items": ["成像声呐"], "raw_text": "加个成像声呐"}
         res = self.slot_store.apply_list_mutation(slots, mutation, required_schema=self.pipeline_req)
         self.assertTrue(res["success"])
         self.assertIn(self.cam, slots["payload"].value)
@@ -186,7 +186,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
 
     def test_10_slot_store_replace_success(self):
         slots = {"payload": Slot("payload", value=[self.cam], status="valid")}
-        mutation = {"field": "payload", "operation": "replace", "target_items": ["高清水下摄像机"], "items": ["前视声呐"], "raw_text": "换成前视声呐"}
+        mutation = {"field": "payload", "operation": "replace", "target_items": ["高清水下摄像机"], "items": ["成像声呐"], "raw_text": "换成成像声呐"}
         res = self.slot_store.apply_list_mutation(slots, mutation, required_schema=self.pipeline_req)
         self.assertTrue(res["success"])
         self.assertEqual(slots["payload"].value, [self.sonar])
@@ -257,7 +257,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertIn(self.cam, task_state_val or [])
         self.assertIn(self.cam, built_val or [])
 
-        dm.process("再加一个前视声呐")
+        dm.process("再加一个成像声呐")
 
         payload_slot = dm.slot_store.slots["payload"]
         task_state_val = dm.slot_store.get_task_state().get("payload")
@@ -269,7 +269,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertIn(self.sonar, task_state_val)
         self.assertIn(self.sonar, built_val)
 
-        dm.process("去掉前视声呐")
+        dm.process("去掉成像声呐")
 
         payload_slot = dm.slot_store.slots["payload"]
         task_state_val = dm.slot_store.get_task_state().get("payload")
@@ -318,7 +318,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
 
         dm.process("添加高清水下摄像机")
 
-        asr_transcribed_text = "再加一个前视声呐"
+        asr_transcribed_text = "再加一个成像声呐"
         dm.process(asr_transcribed_text)
 
         payload_slot = dm.slot_store.slots["payload"]
@@ -385,9 +385,9 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
         dm.phase = "collecting"
 
-        dm.process("添加高清水下摄像机和前视声呐")
+        dm.process("添加高清水下摄像机和成像声呐")
 
-        dm.process("不需要载荷中的前视声呐")
+        dm.process("不需要载荷中的成像声呐")
 
         payload_slot = dm.slot_store.slots["payload"]
         self.assertEqual(payload_slot.value, [self.cam])
@@ -430,14 +430,14 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertEqual(payload_slot.status, "valid")
 
     def test_25_natural_language_targeted_removals(self):
-        phrases = ["删除载荷里的前视声呐", "删除载荷前视声呐", "放弃工具里的前视声呐"]
+        phrases = ["删除载荷里的成像声呐", "删除载荷成像声呐", "放弃工具里的成像声呐"]
         for phrase in phrases:
             dm = DialogueManager(llm=self.llm, kb=self.kb)
             dm.task_state["task_type_key"] = "pipeline_inspection"
             dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
             dm.phase = "collecting"
 
-            dm.process("添加高清水下摄像机和前视声呐")
+            dm.process("添加高清水下摄像机和成像声呐")
             dm.process(phrase)
 
             payload_slot = dm.slot_store.slots["payload"]
@@ -463,10 +463,10 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_burial", status="valid")
         dm.phase = "collecting"
 
-        dm.process("添加激光标尺")
+        dm.process("添加机械切割开沟模块")
 
         payload_slot = dm.slot_store.slots["payload"]
-        self.assertEqual(payload_slot.value, ["激光标尺"])
+        self.assertEqual(payload_slot.value, ["机械切割开沟模块"])
         self.assertEqual(payload_slot.status, "valid")
 
     def test_28_optional_suffix_remove_existing(self):
@@ -488,8 +488,8 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
         dm.phase = "collecting"
 
-        dm.process("添加高清水下摄像机和前视声呐")
-        dm.process("删除所有载荷里的前视声呐")
+        dm.process("添加高清水下摄像机和成像声呐")
+        dm.process("删除所有载荷里的成像声呐")
 
         payload_slot = dm.slot_store.slots["payload"]
         self.assertEqual(payload_slot.value, [self.cam])
@@ -501,8 +501,8 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
         dm.phase = "collecting"
 
-        dm.process("添加高清水下摄像机和前视声呐")
-        dm.process("删除所有载荷中的前视声呐，但保留摄像机")
+        dm.process("添加高清水下摄像机和成像声呐")
+        dm.process("删除所有载荷中的成像声呐，但保留摄像机")
 
         payload_slot = dm.slot_store.slots["payload"]
         self.assertEqual(payload_slot.value, [self.cam])
@@ -514,7 +514,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
         dm.phase = "collecting"
 
-        dm.process("添加高清水下摄像机和前视声呐")
+        dm.process("添加高清水下摄像机和成像声呐")
         dm.process("删除所有载荷")
 
         payload_slot = dm.slot_store.slots["payload"]

@@ -930,10 +930,8 @@ class KnowledgeBase:
         onboard_list = list(onboard) if isinstance(onboard, list) else []
         supported_list = list(supported) if isinstance(supported, list) else []
         robot["onboard_payloads"] = onboard_list
-        robot["raw_supported_payloads"] = supported_list
-        all_payloads = list(dict.fromkeys(onboard_list + supported_list))
-        robot["all_payloads"] = all_payloads
-        robot["supported_payloads"] = all_payloads
+        robot["supported_payloads"] = supported_list
+        robot["all_payloads"] = list(dict.fromkeys(onboard_list + supported_list))
         return robot
 
     def _build_robot_variant_index(self) -> list[dict]:
@@ -1155,13 +1153,13 @@ class KnowledgeBase:
         if not rov:
             return None
         onboard_list = rov.get("onboard_payloads", [])
-        raw_supported = rov.get("raw_supported_payloads", rov.get("supported_payloads", []))
+        supported_list = rov.get("supported_payloads", [])
         if onboard_list:
             onboard_str = "、".join(onboard_list)
-            supported_str = "、".join(raw_supported)
+            supported_str = "、".join(supported_list)
             payload_desc = f"自带载荷: {onboard_str}\n可选搭载载荷: {supported_str}"
         else:
-            payloads = "、".join(rov.get("supported_payloads", []))
+            payloads = "、".join(supported_list)
             payload_desc = f"可搭载载荷: {payloads}"
         return (
             f"{rov['full_name']}\n"
@@ -1554,17 +1552,17 @@ class KnowledgeBase:
             equipment_mappings: list[dict] = []
             for robot in robots:
                 onboard = list(robot.get("onboard_payloads", []))
-                raw_supported = list(robot.get("raw_supported_payloads", robot.get("supported_payloads", [])))
-                payloads = list(robot.get("supported_payloads", []))
-                tool_set.update(payloads)
+                supported = list(robot.get("supported_payloads", []))
+                all_p = list(robot.get("all_payloads", []))
+                tool_set.update(all_p)
                 equipment_mappings.append({
                     "equipment_type": robot.get("full_name"),
                     "variant_id": robot.get("variant_id"),
                     "family_id": robot.get("family_id"),
                     "robot_class": robot.get("robot_class_name"),
                     "onboard_payloads": onboard,
-                    "supported_payloads": raw_supported,
-                    "all_payloads": payloads,
+                    "supported_payloads": supported,
+                    "all_payloads": all_p,
                 })
 
             task_payloads = self.assets.get("payload_options", {})

@@ -70,7 +70,7 @@ class FakeLLMForMultiTurnBenchmark:
             return {
                 "slot_candidates": [
                     {"raw_key": "携带工具", "canonical_key": "payload", "raw_value": "高清摄像机", "normalized_value": "高清水下摄像机", "confidence": 0.95},
-                    {"raw_key": "携带工具", "canonical_key": "payload", "raw_value": "前视声呐", "normalized_value": "前视声呐", "confidence": 0.95},
+                    {"raw_key": "携带工具", "canonical_key": "payload", "raw_value": "成像声呐", "normalized_value": "成像声呐", "confidence": 0.95},
                 ],
                 "unresolved": []
             }
@@ -117,13 +117,13 @@ class MultiTurnConsistencyBenchmarkTest(unittest.TestCase):
         self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
 
         # Turn 3: 补充 payload
-        r3 = self.dm.process("携带高清摄像机和前视声呐")
+        r3 = self.dm.process("携带高清摄像机和成像声呐")
         v3 = self.dm.slot_store.version
         self.assertGreater(v3, v2)
         payload = self.dm.task_state.get("payload")
         self.assertIsInstance(payload, list)
         self.assertIn("高清水下摄像机", payload)
-        self.assertIn("前视声呐", payload)
+        self.assertIn("成像声呐", payload)
         self.assertEqual(self.dm.task_state.get("equipment_type"), "轻型工作级深海机器人")
         self.assertEqual(self.dm.task_state.get("raw_oilfield_name"), "流花11-1油田")
         self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
