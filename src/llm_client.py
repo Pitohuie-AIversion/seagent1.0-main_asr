@@ -15,6 +15,15 @@ except ImportError:
     SamplingParams = None
 
 
+from .model_profile import (
+    ModelRole,
+    ModelProfileRegistry,
+    GenerationOptions,
+    is_model_profiles_v2_enabled,
+    ModelProfileConfigError,
+    ModelProfileNotFoundError,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,15 +44,95 @@ class LLMClient:
     def is_mock(self) -> bool:
         return self.llm is None
 
+    def _resolve_generation_options(
+        self,
+        role: ModelRole | str | None,
+        default_temp: float,
+        default_max_tokens: int,
+        default_stop: list[str] | None = None,
+        default_response_mode: Literal["text", "json"] = "text",
+        caller_temp: float | None = None,
+        caller_max_tokens: int | None = None,
+        caller_stop: list[str] | None = None,
+    ) -> GenerationOptions:
+        """根据 Feature Flag 及 ModelRole 解析统一 GenerationOptions。"""
+        use_v2 = is_model_profiles_v2_enabled()
+
+        if not use_v2:
+            # Legacy Mode (model_profiles_v2=false): 严格保持 legacy 参数与 enable_thinking=False
+            temp = caller_temp if caller_temp is not None else default_temp
+            tokens = caller_max_tokens if caller_max_tokens is not None else default_max_tokens
+            stop_tuple = tuple(caller_stop) if caller_stop is not None else tuple(default_stop or [])
+            r_enum = ModelRole(role) if role and role in ModelRole._value2member_map_ else (
+                role if isinstance(role, ModelRole) else ModelRole.GENERAL_REASONING
+            )
+            return GenerationOptions(
+                enable_thinking=False,
+                temperature=temp,
+                max_tokens=tokens,
+                stop=stop_tuple,
+                response_mode=default_response_mode,
+                profile_name="legacy",
+                role=r_enum,
+            )
+
+        # V2 Mode (model_profiles_v2=true): 根据 ModelRole 解析并校验 Profile
+        target_role = role or ModelRole.GENERAL_REASONING
+        profile = ModelProfileRegistry.get_instance().get_profile(target_role)
+
+        # 结构化协议角色防护
+        if profile.role in (ModelRole.ROUTER, ModelRole.EXTRACTOR):
+            if profile.enable_thinking is not False:
+                raise ModelProfileConfigError(
+                    f"结构化角色 '{profile.role.value}' 的 enable_thinking 必须为 False"
+                )
+            if profile.response_mode != "json":
+                raise ModelProfileConfigError(
+                    f"结构化角色 '{profile.role.value}' 的 response_mode 必须为 'json'"
+                )
+
+        options = GenerationOptions(
+            enable_thinking=profile.enable_thinking,
+            temperature=profile.temperature,
+            max_tokens=profile.max_tokens,
+            stop=profile.stop,
+            response_mode=profile.response_mode,
+            profile_name=profile.name,
+            role=profile.role,
+        )
+
+        logger.debug(
+            "[LLMClient] V2 generation options resolved: role=%s, profile=%s, enable_thinking=%s, temp=%s, max_tokens=%s, mode=%s",
+            options.role.value,
+            options.profile_name,
+            options.enable_thinking,
+            options.temperature,
+            options.max_tokens,
+            options.response_mode,
+        )
+        return options
+
     def generate_text(
         self,
         messages: list[dict],
         temperature: float = 0.7,
         max_tokens: int = 1500,
         stop: list[str] | None = None,
+        role: ModelRole | str | None = None,
     ) -> str:
         """生成自然语言文本。"""
         self._validate_request(messages, max_tokens)
+        options = self._resolve_generation_options(
+            role=role,
+            default_temp=0.7,
+            default_max_tokens=1500,
+            default_stop=stop,
+            default_response_mode="text",
+            caller_temp=temperature,
+            caller_max_tokens=max_tokens,
+            caller_stop=stop,
+        )
+
         if self.is_mock:
             return self._mock_generate_text(messages)
         if SamplingParams is None:
@@ -55,12 +144,12 @@ class LLMClient:
             messages,
             tokenize=False,
             add_generation_prompt=True,
-            enable_thinking=False,
+            enable_thinking=options.enable_thinking,
         )
         sampling_params = SamplingParams(
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop or [],
+            temperature=options.temperature,
+            max_tokens=options.max_tokens,
+            stop=list(options.stop),
         )
         with self.lock:
             outputs = self.llm.generate([prompt], sampling_params)
@@ -77,6 +166,7 @@ class LLMClient:
         messages: list[dict],
         temperature: float = 0.1,
         max_tokens: int = 800,
+        role: ModelRole | str | None = None,
     ) -> dict | list | None:
         """生成并解析首个 JSON object 或 array，不解释其业务含义。"""
         self._validate_request(messages, max_tokens)
@@ -88,6 +178,7 @@ class LLMClient:
             messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            role=role,
         )
         parsed = self._decode_first_json_value(raw)
         if parsed is None:
@@ -98,25 +189,29 @@ class LLMClient:
         self,
         messages: list[dict],
         max_tokens: int = 260,
+        role: ModelRole | str | None = None,
     ) -> dict | None:
         """交互性质分类协议：只解析 JSON，不处理业务字段映射。"""
+        target_role = role or ModelRole.ROUTER
         self._validate_request(messages, max_tokens)
         if self.is_mock:
             return self._mock_classify_interaction(messages)
-        result = self.generate_json(messages, max_tokens=max_tokens)
+        result = self.generate_json(messages, max_tokens=max_tokens, role=target_role)
         return result if isinstance(result, dict) else None
 
     def extract_slots(
         self,
         messages: list[dict],
         max_tokens: int = 800,
+        role: ModelRole | str | None = None,
     ) -> dict | None:
         """字段候选抽取协议：返回 slot_candidates 与 unresolved。"""
+        target_role = role or ModelRole.EXTRACTOR
         self._validate_request(messages, max_tokens)
         if self.is_mock:
             # Mock 不拥有业务词表或字段映射，安全返回空候选。
             return {"slot_candidates": [], "unresolved": []}
-        result = self.generate_json(messages, max_tokens=max_tokens)
+        result = self.generate_json(messages, max_tokens=max_tokens, role=target_role)
         return result if isinstance(result, dict) else None
 
     # ------------------------------------------------------------------
@@ -129,17 +224,19 @@ class LLMClient:
         temperature: float = 0.7,
         max_tokens: int = 1500,
         stop: list[str] | None = None,
+        role: ModelRole | str | None = None,
     ) -> str:
-        return self.generate_text(messages, temperature, max_tokens, stop)
+        return self.generate_text(messages, temperature, max_tokens, stop, role=role)
 
     def chat(
         self,
         messages: list[dict],
         temperature: float = 0.7,
         max_tokens: int = 1500,
+        role: ModelRole | str | None = None,
     ) -> str:
         if not self.is_mock:
-            return self.generate_text(messages, temperature, max_tokens)
+            return self.generate_text(messages, temperature, max_tokens, role=role)
         self._validate_request(messages, max_tokens)
         return self._mock_chat(messages)
 
@@ -147,17 +244,21 @@ class LLMClient:
         self,
         messages: list[dict],
         max_tokens: int = 800,
+        role: ModelRole | str | None = None,
     ) -> dict | None:
         """兼容入口；仅用于字段候选抽取协议。路由分类请使用 classify_interaction。"""
-        return self.extract_slots(messages, max_tokens=max_tokens)
+        target_role = role or ModelRole.EXTRACTOR
+        return self.extract_slots(messages, max_tokens=max_tokens, role=target_role)
 
     def filter_reply(
         self,
         reply: Any,
-        temperature: float = 0.1,
+        temperature: float = 0.7,
         max_tokens: int = 1500,
+        role: ModelRole | str | None = None,
     ) -> str:
         """保留现有回复脱敏行为。"""
+        target_role = role or ModelRole.FILTER_REPLY
         reply_text = "" if reply is None else str(reply)
         if self.is_mock or not reply_text:
             return reply_text
@@ -172,7 +273,7 @@ class LLMClient:
                 ),
             }
         ]
-        return self.generate_text(messages, temperature=temperature, max_tokens=max_tokens)
+        return self.generate_text(messages, temperature=temperature, max_tokens=max_tokens, role=target_role)
 
     # ------------------------------------------------------------------
     # Generic parsing and offline protocol mocks

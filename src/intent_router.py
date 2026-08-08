@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from .llm_client import LLMClient
+from .model_profile import ModelRole
 
 logger = logging.getLogger(__name__)
 
@@ -965,16 +966,25 @@ class IntentRouter:
         try:
             ej_attr = getattr(self.llm, "extract_json", None)
             if ej_attr is not None and hasattr(ej_attr, "called"):
-                parsed = self.llm.extract_json(messages, max_tokens=260)
+                try:
+                    parsed = self.llm.extract_json(messages, max_tokens=260, role=ModelRole.ROUTER)
+                except TypeError:
+                    parsed = self.llm.extract_json(messages, max_tokens=260)
             elif hasattr(self.llm, "classify_interaction"):
                 try:
-                    res = self.llm.classify_interaction(messages, max_tokens=260)
+                    try:
+                        res = self.llm.classify_interaction(messages, max_tokens=260, role=ModelRole.ROUTER)
+                    except TypeError:
+                        res = self.llm.classify_interaction(messages, max_tokens=260)
                     if isinstance(res, dict):
                         parsed = res
                 except Exception:
                     pass
             if parsed is None and hasattr(self.llm, "extract_json"):
-                parsed = self.llm.extract_json(messages, max_tokens=260)
+                try:
+                    parsed = self.llm.extract_json(messages, max_tokens=260, role=ModelRole.ROUTER)
+                except TypeError:
+                    parsed = self.llm.extract_json(messages, max_tokens=260)
         except Exception as exc:
             logger.warning("[IntentRouter] LLM call failed: %s", exc)
             raise IntentRoutingError(f"LLM 调用失败: {exc}") from exc

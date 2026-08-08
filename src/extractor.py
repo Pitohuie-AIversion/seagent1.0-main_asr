@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 
 from .llm_client import LLMClient
+from .model_profile import ModelRole
 from .normalizer import FieldNormalizer
 from .slot_store import normalize_payload_match_key
 
@@ -195,7 +196,10 @@ class ParameterExtractor:
             {"role": "user", "content": user_message},
         ]
 
-        result = self.llm.extract_json(messages, max_tokens=800)
+        try:
+            result = self.llm.extract_json(messages, max_tokens=800, role=ModelRole.EXTRACTOR)
+        except TypeError:
+            result = self.llm.extract_json(messages, max_tokens=800)
 
         if not isinstance(result, dict):
             result = {}

@@ -1,0 +1,59 @@
+# config/model_profiles.yaml — ModelProfile Capability Governance Configuration
+schema_version: 1
+
+profiles:
+  router:
+    role: router
+    enable_thinking: false
+    temperature: 0.1
+    max_tokens: 260
+    stop: []
+    response_mode: json
+
+  extractor:
+    role: extractor
+    enable_thinking: false
+    temperature: 0.1
+    max_tokens: 800
+    stop: []
+    response_mode: json
+
+  task_responder:
+    role: task_responder
+    enable_thinking: false
+    temperature: 0.7
+    max_tokens: 1500
+    stop: []
+    response_mode: text
+
+  knowledge_qa:
+    role: knowledge_qa
+    enable_thinking: false
+    temperature: 0.1
+    max_tokens: 1500
+    stop: []
+    response_mode: text
+
+  general_reasoning:
+    role: general_reasoning
+    enable_thinking: true
+    temperature: 0.7
+    max_tokens: 1500
+    stop: []
+    response_mode: text
+
+  filter_reply:
+    role: filter_reply
+    enable_thinking: false
+    temperature: 0.7
+    max_tokens: 1500
+    stop: []
+    response_mode: text
+
+  translation:
+    role: translation
+    enable_thinking: false
+    temperature: 0.3
+    max_tokens: 1500
+    stop: []
+    response_mode: text

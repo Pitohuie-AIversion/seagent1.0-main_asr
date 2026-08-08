@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 from .llm_client import LLMClient
+from .model_profile import ModelRole
 from .knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from .extractor import ParameterExtractor
 from .normalizer import FieldNormalizer
@@ -283,10 +284,40 @@ class DialogueManager:
 
         return "当前知识库已检索到相关信息，但暂时无法生成完整回答。"
 
-    def _handle_knowledge_query(self, user_message: str, route: IntentRouteResult) -> str:
+    def _safe_llm_chat(
+        self,
+        messages: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 1500,
+        role: ModelRole | str | None = None,
+    ) -> str:
+        try:
+            return self.llm.chat(messages, temperature=temperature, max_tokens=max_tokens, role=role)
+        except TypeError:
+            return self.llm.chat(messages, temperature=temperature, max_tokens=max_tokens)
+
+    def _safe_llm_filter_reply(
+        self,
+        reply: Any,
+        role: ModelRole | str | None = None,
+    ) -> str:
+        try:
+            return self.llm.filter_reply(reply, role=role)
+        except TypeError:
+            return self.llm.filter_reply(reply)
+
+    def _handle_knowledge_query(
+        self,
+        user_message: str,
+        route: IntentRouteResult,
+        request_id: str = "req_default",
+    ) -> str:
         context = {
             "task_type_key": self.task_state.get("task_type_key"),
-            "equipment_type": self.task_state.get("equipment_type") or self.task_state.get("equipment_name"),
+            "phase": self.phase,
+            "mode": self.mode,
+            "user_requirements": self.slot_store.get_built_json(),
+            "missing_slots": [m.get("label") for m in self._last_missing if isinstance(m, dict)],
         }
         kb_evidence = self.kb.execute_typed_query(route.query_intent, user_message, context=context)
         if not kb_evidence.get("found"):
@@ -318,7 +349,7 @@ class DialogueManager:
                 return f"已识别设备【{dev_name}】，其最大作业水深为 {max_d}米，无法满足您询问的 {target_depth}米 作业要求。"
 
         messages = build_knowledge_responder_messages(kb_evidence, self.conversation_history, user_message)
-        reply = self.llm.chat(messages, temperature=0.1)
+        reply = self._safe_llm_chat(messages, temperature=0.1, role=ModelRole.KNOWLEDGE_QA)
         result_items = kb_evidence.get("results", [])
         all_devices_unmet = bool(result_items) and all(
             item.get("matches_depth_condition") is False
@@ -335,7 +366,7 @@ class DialogueManager:
             if kb_evidence.get("found"):
                 return self._build_knowledge_fallback(kb_evidence)
             return "当前知识库未提供该信息。"
-        return self.llm.filter_reply(reply)
+        return self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
 
 
     def _handle_status_query(self, user_message: str, route: IntentRouteResult) -> str:
@@ -386,17 +417,17 @@ class DialogueManager:
                 return "当前实时状态源尚未建立或暂时不可用，无法确认设备/环境的最新状态。"
 
         messages = build_status_responder_messages(status_evidence, self.conversation_history, user_message)
-        reply = self.llm.chat(messages, temperature=0.1)
+        reply = self._safe_llm_chat(messages, temperature=0.1, role=ModelRole.KNOWLEDGE_QA)
         if not reply or not reply.strip():
             return f"当前任务处于【{self.phase}】阶段，已收集 {len(self._last_built_json)} 个字段。"
-        return self.llm.filter_reply(reply)
+        return self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
 
     def _handle_general_chat(self, user_message: str, route: IntentRouteResult) -> str:
         messages = build_general_chat_messages(self.conversation_history, user_message)
-        reply = self.llm.chat(messages, temperature=0.7)
+        reply = self._safe_llm_chat(messages, temperature=0.7, role=ModelRole.KNOWLEDGE_QA)
         if not reply or not reply.strip():
             reply = "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
-        return self.llm.filter_reply(reply)
+        return self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
 
     def _handle_unknown_intent(self, user_message: str, route: IntentRouteResult) -> str:
         return "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数，还是查询设备工具与系统功能？"
@@ -1017,8 +1048,8 @@ class DialogueManager:
                 {"role": "user", "content": user_message},
             ]
             try:
-                reply = self.llm.chat(guide_messages, temperature=0.5, max_tokens=300)
-                reply = self.llm.filter_reply(reply)
+                reply = self._safe_llm_chat(guide_messages, temperature=0.5, max_tokens=300, role=ModelRole.TASK_RESPONDER)
+                reply = self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
             except Exception:
                 reply = (
                     f"您好！请问您想进行哪种水下作业任务？"
@@ -1483,8 +1514,8 @@ class DialogueManager:
             accepted_updates=accepted_updates,
             unresolved_inputs=turn_unresolved,
         )
-        reply = self.llm.chat(messages, temperature=0.7, max_tokens=1500)
-        reply = self.llm.filter_reply(reply)
+        reply = self._safe_llm_chat(messages, temperature=0.7, max_tokens=1500, role=ModelRole.TASK_RESPONDER)
+        reply = self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
         reply = self._ensure_constraint_details(reply, constraint_context)
 
         if payload_mutation_failed and mutation_failure_result:
