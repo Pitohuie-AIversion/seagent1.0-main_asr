@@ -5,6 +5,8 @@ import copy
 import unittest
 from unittest.mock import patch, MagicMock
 
+from src.knowledge_retriever import KnowledgeBase
+from src.output_builder import OutputBuilder
 from src.task_patch import (
     ListMutationPatch,
     SlotPatch,
@@ -916,6 +918,271 @@ class TestL3PrimitiveParityMatrix(unittest.TestCase):
 
     def test_raw_parity(self):
         self._check_parity("  测试船 1 号  ", "raw")
+
+
+class TestL4RealSchemaAndPassthroughBoundary(unittest.TestCase):
+    """L4 Real Schema & Passthrough Boundary Integration Tests"""
+
+    def setUp(self):
+        self.kb = KnowledgeBase()
+        self.builder = OutputBuilder(self.kb)
+        self.real_pipeline_schema = self.builder.get_schema("pipeline_inspection", "normal")
+        self.equipment_passthrough_keys = {
+            "equipment_class",
+            "equipment_family",
+            "equipment_specification",
+            "equipment_type",
+            "equipment_name",
+            "equipment_unit_id",
+        }
+
+    def test_schema_field_explicit_passthrough_takes_precedence(self):
+        """验证即使字段属于 schema field_definitions，一旦显式声明为 passthrough_keys 则优先 Passthrough，不进入 normalizer。"""
+        field_defs = [{"key": "equipment_type", "type": "string"}]
+        patch_input = TaskPatch(
+            schema_version=1,
+            slot_updates=(
+                SlotPatch(key="equipment_type", candidate_value="ROV", raw_value="ROV", confidence=0.9, source="user_input"),
+            ),
+            list_mutations=(),
+            unresolved=(),
+        )
+
+        with patch.object(FieldNormalizer, "normalize", wraps=FieldNormalizer().normalize) as spy_normalize:
+            res = normalize_task_patch(
+                patch_input,
+                field_defs,
+                {},
+                lambda f, s: None,
+                passthrough_keys={"equipment_type"},
+            )
+
+        self.assertEqual(len(res.slot_outcomes), 0)
+        self.assertEqual(len(res.passthrough_slot_updates), 1)
+        self.assertEqual(res.passthrough_slot_updates[0].key, "equipment_type")
+        self.assertEqual(res.passthrough_slot_updates[0].candidate_value, "ROV")
+        spy_normalize.assert_not_called()
+
+    def test_real_schema_equipment_type_is_passthrough(self):
+        """验证使用真实 task_schemas.yaml 导出的 pipeline_inspection schema 时，equipment_type 正确 Passthrough。"""
+        patch_input = TaskPatch(
+            schema_version=1,
+            slot_updates=(
+                SlotPatch(key="water_depth", candidate_value="300米", raw_value="300米", confidence=0.9, source="user_input"),
+                SlotPatch(key="equipment_type", candidate_value="观测级ROV", raw_value="观测级ROV", confidence=0.9, source="user_input"),
+            ),
+            list_mutations=(),
+            unresolved=(),
+        )
+
+        resolver = lambda fdef, state: self.builder._resolve_allowed(fdef, "pipeline_inspection", state)
+
+        res = normalize_task_patch(
+            patch_input,
+            self.real_pipeline_schema,
+            {},
+            resolver,
+            passthrough_keys=self.equipment_passthrough_keys,
+        )
+
+        outcome_keys = {o.key for o in res.slot_outcomes}
+        passthrough_keys = {p.key for p in res.passthrough_slot_updates}
+
+        self.assertIn("water_depth", outcome_keys)
+        self.assertNotIn("equipment_type", outcome_keys)
+        self.assertIn("equipment_type", passthrough_keys)
+        self.assertNotIn("water_depth", passthrough_keys)
+        self.assertEqual(outcome_keys & passthrough_keys, set())
+
+    def test_real_schema_equipment_specification_is_passthrough(self):
+        """验证真实 schema 下 equipment_specification 复杂 object 结构可被 Passthrough，不触发 unsupported_field_type。"""
+        spec_dict = {"variant_id": "var_001", "type": "ROV", "value": 250}
+        patch_input = TaskPatch(
+            schema_version=1,
+            slot_updates=(
+                SlotPatch(
+                    key="equipment_specification",
+                    candidate_value=spec_dict,
+                    raw_value="ROV 250规格",
+                    confidence=0.95,
+                    source="user_input",
+                ),
+            ),
+            list_mutations=(),
+            unresolved=(),
+        )
+
+        resolver = lambda fdef, state: self.builder._resolve_allowed(fdef, "pipeline_inspection", state)
+
+        res = normalize_task_patch(
+            patch_input,
+            self.real_pipeline_schema,
+            {},
+            resolver,
+            passthrough_keys=self.equipment_passthrough_keys,
+        )
+
+        self.assertEqual(len(res.slot_outcomes), 0)
+        self.assertEqual(len(res.passthrough_slot_updates), 1)
+        p = res.passthrough_slot_updates[0]
+        self.assertEqual(p.key, "equipment_specification")
+        self.assertEqual(p.candidate_value, spec_dict)
+        self.assertEqual(p.raw_value, "ROV 250规格")
+
+    def test_real_schema_passthrough_does_not_call_normalizer(self):
+        """验证在真实 schema 下，water_depth 触发 FieldNormalizer，而 equipment_type 与 equipment_specification 不触发。"""
+        spec_dict = {"variant_id": "var_001", "type": "ROV", "value": 250}
+        patch_input = TaskPatch(
+            schema_version=1,
+            slot_updates=(
+                SlotPatch(key="water_depth", candidate_value="300米", raw_value="300米", confidence=0.9, source="user_input"),
+                SlotPatch(key="equipment_type", candidate_value="观测级ROV", raw_value="观测级ROV", confidence=0.9, source="user_input"),
+                SlotPatch(key="equipment_specification", candidate_value=spec_dict, raw_value="ROV 250", confidence=0.9, source="user_input"),
+            ),
+            list_mutations=(),
+            unresolved=(),
+        )
+
+        resolver = lambda fdef, state: self.builder._resolve_allowed(fdef, "pipeline_inspection", state)
+
+        with patch.object(FieldNormalizer, "normalize", wraps=FieldNormalizer().normalize) as spy_normalize:
+            res = normalize_task_patch(
+                patch_input,
+                self.real_pipeline_schema,
+                {},
+                resolver,
+                passthrough_keys=self.equipment_passthrough_keys,
+            )
+
+        self.assertEqual(len(res.slot_outcomes), 1)
+        self.assertEqual(res.slot_outcomes[0].key, "water_depth")
+        self.assertEqual(len(res.passthrough_slot_updates), 2)
+
+        called_first_args = [call[0][0] for call in spy_normalize.call_args_list]
+        self.assertIn("300米", called_first_args)
+        self.assertNotIn("观测级ROV", called_first_args)
+        self.assertNotIn(spec_dict, called_first_args)
+
+    def test_stage1_task_type_key_explicit_passthrough(self):
+        """验证 Stage1 产生的 task_type_key 可作为显式 passthrough_keys，与 task_type 分立。"""
+        patch_input = TaskPatch(
+            schema_version=1,
+            slot_updates=(
+                SlotPatch(key="task_type", candidate_value="管缆巡检", raw_value="管缆巡检", confidence=0.9, source="user_input"),
+                SlotPatch(key="task_type_key", candidate_value="pipeline_inspection", raw_value="pipeline_inspection", confidence=0.9, source="user_input"),
+            ),
+            list_mutations=(),
+            unresolved=(),
+        )
+
+        resolver = lambda fdef, state: self.builder._resolve_allowed(fdef, "pipeline_inspection", state)
+
+        res = normalize_task_patch(
+            patch_input,
+            self.real_pipeline_schema,
+            {},
+            resolver,
+            passthrough_keys={"task_type_key"},
+        )
+
+        self.assertEqual(len(res.slot_outcomes), 1)
+        self.assertEqual(res.slot_outcomes[0].key, "task_type")
+        self.assertTrue(res.slot_outcomes[0].success)
+
+        self.assertEqual(len(res.passthrough_slot_updates), 1)
+        self.assertEqual(res.passthrough_slot_updates[0].key, "task_type_key")
+        self.assertEqual(res.passthrough_slot_updates[0].candidate_value, "pipeline_inspection")
+
+    def test_real_schema_support_vessel_uses_string_contract(self):
+        """验证在真实 schema 下，support_vessel 按照 type=string 与 vessel_ids 校验。"""
+        patch_input_succ = TaskPatch(
+            schema_version=1,
+            slot_updates=(
+                SlotPatch(key="support_vessel", candidate_value="海洋石油681", raw_value="海洋石油681", confidence=0.9, source="user_input"),
+            ),
+            list_mutations=(),
+            unresolved=(),
+        )
+        patch_input_fail = TaskPatch(
+            schema_version=1,
+            slot_updates=(
+                SlotPatch(key="support_vessel", candidate_value="海贼王号", raw_value="海贼王号", confidence=0.9, source="user_input"),
+            ),
+            list_mutations=(),
+            unresolved=(),
+        )
+
+        resolver = lambda fdef, state: self.builder._resolve_allowed(fdef, "pipeline_inspection", state)
+
+        res_succ = normalize_task_patch(
+            patch_input_succ,
+            self.real_pipeline_schema,
+            {},
+            resolver,
+            passthrough_keys=self.equipment_passthrough_keys,
+        )
+        self.assertTrue(res_succ.slot_outcomes[0].success)
+        self.assertEqual(res_succ.slot_outcomes[0].normalized_value, "海洋石油681")
+
+        res_fail = normalize_task_patch(
+            patch_input_fail,
+            self.real_pipeline_schema,
+            {},
+            resolver,
+            passthrough_keys=self.equipment_passthrough_keys,
+        )
+        self.assertFalse(res_fail.slot_outcomes[0].success)
+        self.assertEqual(res_fail.slot_outcomes[0].error_code, "invalid_enum")
+
+    def test_unknown_field_still_fails_closed_with_passthrough_support(self):
+        """验证非 schema 字段且不在 passthrough_keys 白名单中时，依然产生 NormalizationContractError。"""
+        patch_input = TaskPatch(
+            schema_version=1,
+            slot_updates=(
+                SlotPatch(key="unauthorized_field", candidate_value="val", raw_value="val", confidence=0.9, source="user_input"),
+            ),
+            list_mutations=(),
+            unresolved=(),
+        )
+        resolver = lambda fdef, state: self.builder._resolve_allowed(fdef, "pipeline_inspection", state)
+
+        with self.assertRaises(NormalizationContractError) as ctx:
+            normalize_task_patch(
+                patch_input,
+                self.real_pipeline_schema,
+                {},
+                resolver,
+                passthrough_keys=self.equipment_passthrough_keys,
+            )
+        self.assertIn("既不在 schema field_definitions 中，也不在 passthrough_keys 白名单中", str(ctx.exception))
+
+    def test_resolver_exception_has_field_context(self):
+        """验证当 allowed_values_resolver 抛出异常时，抓取并包装为带有字段 key 上下文的 NormalizationContractError，并保留 __cause__。"""
+        field_defs = [{"key": "water_depth", "type": "number"}]
+        patch_input = TaskPatch(
+            schema_version=1,
+            slot_updates=(
+                SlotPatch(key="water_depth", candidate_value="300米", raw_value="300米", confidence=0.9, source="user_input"),
+            ),
+            list_mutations=(),
+            unresolved=(),
+        )
+
+        def faulty_resolver(fdef, state):
+            raise ValueError("Database connection failed")
+
+        with self.assertRaises(NormalizationContractError) as ctx:
+            normalize_task_patch(
+                patch_input,
+                field_defs,
+                {},
+                faulty_resolver,
+                passthrough_keys=set(),
+            )
+
+        self.assertIn("allowed_values_resolver failed for field 'water_depth'", str(ctx.exception))
+        self.assertIsInstance(ctx.exception.__cause__, ValueError)
+        self.assertEqual(str(ctx.exception.__cause__), "Database connection failed")
 
 
 if __name__ == "__main__":

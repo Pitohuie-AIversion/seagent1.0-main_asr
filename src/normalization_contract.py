@@ -259,6 +259,8 @@ def normalize_task_patch(
     # 规范化核心语义：按 field_definitions 的定义顺序进行遍历，以保持 temp_state 的链式依赖
     for fdef in field_definitions:
         key = fdef["key"]
+        if key in passthrough_keys:
+            continue
         if key not in slot_patch_by_key:
             continue
 
@@ -270,7 +272,12 @@ def normalize_task_patch(
                 f"字段 '{key}' 的 type '{field_type}' 不允许通过 TaskPatch 进行规范化更新"
             )
 
-        allowed = allowed_values_resolver(fdef, temp_state)
+        try:
+            allowed = allowed_values_resolver(fdef, temp_state)
+        except Exception as exc:
+            raise NormalizationContractError(
+                f"allowed_values_resolver failed for field {key!r}"
+            ) from exc
 
         normalized = normalizer.normalize(
             slot_patch.candidate_value,
