@@ -1687,6 +1687,7 @@ class DialogueManager:
 
         task_type_slot = new_slots.get("task_type_key")
         task_type_key = task_type_slot.value if task_type_slot else None
+        failures = {}
         if task_type_key:
             current_state = {
                 key: slot.value
@@ -1702,7 +1703,7 @@ class DialogueManager:
                 "equipment_unit_id",
             }
             non_eq_updates = {k: v for k, v in updates.items() if k not in equipment_keys}
-            norm_non_eq = self.normalizer.normalize_updates(
+            norm_res = self.normalizer.normalize_updates_with_failures(
                 non_eq_updates,
                 self.builder.get_schema(task_type_key, self.mode),
                 current_state,
@@ -1712,6 +1713,8 @@ class DialogueManager:
                     state,
                 ),
             )
+            norm_non_eq = norm_res.normalized_updates
+            failures = norm_res.failures
             eq_updates = {k: v for k, v in updates.items() if k in equipment_keys}
             updates = {**norm_non_eq, **eq_updates}
         else:
@@ -1753,6 +1756,32 @@ class DialogueManager:
                 slot.raw_value = meta["raw_value"]
                 slot.confidence = meta["confidence"]
                 slot.source = meta["source"]
+
+        for key, failure in failures.items():
+            slot = new_slots.get(key)
+            meta = update_meta.get(key)
+            raw_val = failure.raw_value
+            raw_str = str(raw_val) if raw_val is not None else ""
+            msg = failure.message
+
+            if slot and slot.status in ("valid", "conflict") and slot.value is not None:
+                slot.status = "conflict"
+                slot.candidate_value = raw_val
+                slot.raw_value = raw_str
+                slot.validation_error = msg
+            else:
+                if slot is None:
+                    slot = Slot(slot_name=key)
+                    new_slots[key] = slot
+                slot.value = None
+                slot.status = "invalid"
+                slot.candidate_value = raw_val
+                slot.raw_value = raw_str
+                slot.validation_error = msg
+
+            if meta:
+                slot.confidence = meta.get("confidence", 1.0)
+                slot.source = meta.get("source", "user_input")
 
         if updates.get("emergency_mode"):
             if "emergency_mode" in new_slots:

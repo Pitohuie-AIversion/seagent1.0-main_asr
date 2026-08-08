@@ -18,6 +18,22 @@ from typing import Any, Callable
 from .coord_parser import parse_coord_value
 
 
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class NormalizationFailure:
+    field: str
+    raw_value: Any
+    error_code: str
+    message: str
+
+
+@dataclass(frozen=True)
+class NormalizeUpdatesResult:
+    normalized_updates: dict[str, Any]
+    failures: dict[str, NormalizationFailure]
+
+
 class FieldNormalizer:
     def normalize(
         self,
@@ -57,6 +73,55 @@ class FieldNormalizer:
 
         return None
 
+    def normalize_updates_with_failures(
+        self,
+        updates: dict[str, Any],
+        field_definitions: list[dict[str, Any]],
+        current_state: dict[str, Any],
+        allowed_values_resolver: Callable[
+            [dict[str, Any], dict[str, Any]],
+            list[Any] | None,
+        ],
+    ) -> NormalizeUpdatesResult:
+        """
+        按字段定义规范化本轮候选值。
+        成功规范化的字段存入 normalized_updates；
+        规范化失败的字段记入 failures 字典，不把非法 raw_value 混入 normalized_updates。
+        """
+        normalized_updates: dict[str, Any] = {}
+        failures: dict[str, NormalizationFailure] = {}
+        temp_state = dict(current_state)
+
+        for field_def in field_definitions:
+            key = field_def["key"]
+            if key not in updates or updates[key] in (None, ""):
+                continue
+
+            raw_val = updates[key]
+            allowed = allowed_values_resolver(field_def, temp_state)
+            field_type = field_def.get("type", "string")
+
+            normalized = self.normalize(
+                raw_val,
+                allowed,
+                field_type,
+            )
+            if normalized is None:
+                failures[key] = NormalizationFailure(
+                    field=key,
+                    raw_value=raw_val,
+                    error_code="normalization_failed",
+                    message=f"无法将 '{raw_val}' 规范化为合法的 {field_type} 类型",
+                )
+            else:
+                normalized_updates[key] = normalized
+                temp_state[key] = normalized
+
+        return NormalizeUpdatesResult(
+            normalized_updates=normalized_updates,
+            failures=failures,
+        )
+
     def normalize_updates(
         self,
         updates: dict[str, Any],
@@ -67,28 +132,11 @@ class FieldNormalizer:
             list[Any] | None,
         ],
     ) -> dict[str, Any]:
-        """按字段定义规范化本轮候选值，无法规范化时保留原值供后续校验。"""
-        normalized_updates = dict(updates)
-        temp_state = dict(current_state)
-
-        for field_def in field_definitions:
-            key = field_def["key"]
-            if key not in updates or updates[key] in (None, ""):
-                continue
-
-            allowed = allowed_values_resolver(field_def, temp_state)
-            normalized = self.normalize(
-                updates[key],
-                allowed,
-                field_def["type"],
-            )
-            if normalized is None:
-                continue
-
-            normalized_updates[key] = normalized
-            temp_state[key] = normalized
-
-        return normalized_updates
+        """兼容接口：仅返回成功规范化的更新字典。"""
+        res = self.normalize_updates_with_failures(
+            updates, field_definitions, current_state, allowed_values_resolver
+        )
+        return res.normalized_updates
 
     # ──────────────────────────────────────────────────────────────────────────
 

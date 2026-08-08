@@ -180,8 +180,11 @@ class TestGovernanceInvariants(unittest.TestCase):
         self.assertNotEqual(state_after.get("water_depth"), "差不多很深")
 
         slot = self.dm.slot_store.slots.get("water_depth")
+        self.assertEqual(slot.value, 300.0)
+        self.assertEqual(slot.candidate_value, "差不多很深")
         self.assertEqual(slot.raw_value, "差不多很深")
-        self.assertIn(slot.status, ("invalid", "candidate"))
+        self.assertEqual(slot.status, "conflict")
+        self.assertIsNotNone(slot.validation_error)
 
     def test_inv05_hard_cannot_be_bypassed(self):
         """INV-05: blocked_hard 状态下，确认/继续/忽略警告无法绕过硬约束。"""
