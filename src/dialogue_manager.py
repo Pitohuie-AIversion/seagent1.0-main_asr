@@ -1300,8 +1300,14 @@ class DialogueManager:
                 merged_updates[k] = v
 
             raw_linked = self._link_oilfield_update_in_transaction({k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, new_slots)
+            if "oilfield_name" in stage2_updates and "oilfield_name" not in raw_linked:
+                stage2_updates.pop("oilfield_name", None)
+                merged_updates.pop("oilfield_name", None)
+                merged_updates_meta.pop("oilfield_name", None)
+
             for k, v in raw_linked.items():
                 if k.startswith("__"):
+                    stage2_updates[k] = v
                     continue
                 old_info = stage2_updates.get(k)
                 old_raw = old_info.get("raw_value") if isinstance(old_info, dict) else None
@@ -1391,9 +1397,19 @@ class DialogueManager:
                     new_slots,
                     allow_overwrite=had_task_type_key_at_turn_start,
                 )
+                task_type_updates = {
+                    k: v for k, v in stage2_updates.items()
+                    if k in ("task_type", "task_type_key")
+                }
+                for k, info in task_type_updates.items():
+                    val = info.get("value") if isinstance(info, dict) else info
+                    if val is not None and val != "":
+                        self._handle_task_type_update_in_transaction(k, val, new_slots)
+
                 extra_updates = {
                     k: v for k, v in stage2_updates.items()
                     if k not in apply_plan.normalized_schema_keys
+                    and k not in ("task_type", "task_type_key")
                 }
                 if extra_updates:
                     self._apply_updates_in_transaction(
