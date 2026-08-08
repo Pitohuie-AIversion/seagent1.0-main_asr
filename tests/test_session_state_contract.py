@@ -1,14 +1,16 @@
 """tests/test_session_state_contract.py
 
 Unit tests for SEAgent G3.1 State Contract (src/session_state.py).
-Validates immutability, fail-closed type/value checking, legacy snapshot adapter,
-and isolation from runtime components.
+Validates immutability, deep immutability of nested mappings, fail-closed type/value checking,
+schema_version fail-closed rules, legacy snapshot adapter, and isolation from runtime components.
 """
 
 import copy
 import dataclasses
+import json
 import unittest
 from datetime import datetime, timezone
+from types import MappingProxyType
 
 from src.session_state import (
     ConversationState,
@@ -46,7 +48,7 @@ class TestSessionStateContract(unittest.TestCase):
             mode_transition_history=[self.valid_transition],
         )
         self.assertEqual(cs_with_hist.dialogue_mode, "knowledge_qa")
-        self.assertEqual(cs_with_hist.last_mode_transition, self.valid_transition)
+        self.assertEqual(cs_with_hist.last_mode_transition["from"], "task_collection")
         self.assertEqual(len(cs_with_hist.mode_transition_history), 1)
 
     # 2. Default legal TaskLifecycleState
@@ -72,7 +74,7 @@ class TestSessionStateContract(unittest.TestCase):
             last_control_request=req,
         )
         self.assertEqual(ecs_stop.control_state, "stop_requested")
-        self.assertEqual(ecs_stop.last_control_request, req)
+        self.assertEqual(ecs_stop.last_control_request["action"], "stop")
 
     # 4. SessionState immutable
     def test_04_session_state_immutability(self) -> None:
@@ -182,7 +184,7 @@ class TestSessionStateContract(unittest.TestCase):
         self.assertFalse(ss.task.awaiting_final_confirm)  # default False
         self.assertEqual(ss.conversation.dialogue_mode, "emergency_intervention")
         self.assertEqual(ss.execution.control_state, "pause_requested")
-        self.assertEqual(ss.execution.last_control_request, {"action": "pause", "status": "requested"})
+        self.assertEqual(ss.execution.last_control_request["action"], "pause")
 
         # Test snapshot with 'uncertain' dialogue_mode -> mapped to 'knowledge_qa'
         legacy_uncertain = {"dialogue_mode": "uncertain", "phase": "collecting", "mode": "normal", "control_state": "idle"}
@@ -214,6 +216,18 @@ class TestSessionStateContract(unittest.TestCase):
         self.assertEqual(fields["control_state"], "cancel_requested")
         self.assertEqual(fields["last_control_request"], {"action": "cancel", "status": "requested"})
 
+        # Assert output contains plain serializable dict/list
+        self.assertIsInstance(fields["last_mode_transition"], dict)
+        self.assertNotIsInstance(fields["last_mode_transition"], MappingProxyType)
+        self.assertIsInstance(fields["mode_transition_history"][0], dict)
+        self.assertNotIsInstance(fields["mode_transition_history"][0], MappingProxyType)
+        self.assertIsInstance(fields["last_control_request"], dict)
+        self.assertNotIsInstance(fields["last_control_request"], MappingProxyType)
+
+        # JSON serialization sanity check
+        json_str = json.dumps(fields)
+        self.assertIn("knowledge_qa", json_str)
+
     # 12. Round-trip
     def test_12_round_trip(self) -> None:
         legacy_snap = {
@@ -239,7 +253,6 @@ class TestSessionStateContract(unittest.TestCase):
         import sys
         import src.session_state as ss_mod
 
-        # Inspect globals in session_state module
         mod_globals = dir(ss_mod)
         self.assertNotIn("SlotStore", mod_globals)
         self.assertNotIn("DialogueManager", mod_globals)
@@ -255,7 +268,6 @@ class TestSessionStateContract(unittest.TestCase):
 
         initial_dm_dict = copy.deepcopy(dm.export_snapshot())
 
-        # Construct SessionState objects and run conversions
         cs = ConversationState(dialogue_mode="knowledge_qa")
         tls = TaskLifecycleState(phase="confirming", mode="emergency", awaiting_final_confirm=True)
         ecs = ExecutionControlState(control_state="idle")
@@ -266,6 +278,57 @@ class TestSessionStateContract(unittest.TestCase):
 
         post_dm_dict = copy.deepcopy(dm.export_snapshot())
         self.assertEqual(initial_dm_dict, post_dm_dict)
+
+    # 15. Deep Immutability Tests
+    def test_15_nested_last_mode_transition_is_immutable(self) -> None:
+        cs = ConversationState(
+            dialogue_mode="knowledge_qa",
+            last_mode_transition=self.valid_transition,
+        )
+        self.assertIsInstance(cs.last_mode_transition, MappingProxyType)
+        with self.assertRaises(TypeError):
+            cs.last_mode_transition["to"] = "task_collection"  # type: ignore[index]
+
+    def test_16_nested_transition_history_is_immutable(self) -> None:
+        cs = ConversationState(
+            dialogue_mode="knowledge_qa",
+            mode_transition_history=[self.valid_transition],
+        )
+        self.assertIsInstance(cs.mode_transition_history[0], MappingProxyType)
+        with self.assertRaises(TypeError):
+            cs.mode_transition_history[0]["confidence"] = 0.5  # type: ignore[index]
+
+    def test_17_nested_control_request_is_immutable(self) -> None:
+        ecs = ExecutionControlState(
+            control_state="stop_requested",
+            last_control_request={"action": "stop", "status": "requested"},
+        )
+        self.assertIsInstance(ecs.last_control_request, MappingProxyType)
+        with self.assertRaises(TypeError):
+            ecs.last_control_request["action"] = "pause"  # type: ignore[index]
+
+    # 18. Schema Version Fail Closed Tests
+    def test_18_invalid_snapshot_version_fails_closed(self) -> None:
+        invalid_versions = ["2", None, [], True, {}]
+        for ver in invalid_versions:
+            with self.subTest(version=ver):
+                snap = {"snapshot_version": ver, "dialogue_mode": "task_collection"}
+                with self.assertRaises(StateContractError):
+                    session_state_from_legacy_snapshot(snap)
+
+    def test_19_unsupported_schema_version_fails_closed(self) -> None:
+        unsupported = [999, 1, -1, 0, 3]
+        for ver in unsupported:
+            with self.subTest(version=ver):
+                snap = {"snapshot_version": ver, "dialogue_mode": "task_collection"}
+                with self.assertRaises(StateContractError):
+                    session_state_from_legacy_snapshot(snap)
+
+                cs = ConversationState(dialogue_mode="task_collection")
+                tls = TaskLifecycleState(phase="collecting", mode="normal", awaiting_final_confirm=False)
+                ecs = ExecutionControlState(control_state="idle")
+                with self.assertRaises(StateContractError):
+                    SessionState(schema_version=ver, conversation=cs, task=tls, execution=ecs)
 
 
 if __name__ == "__main__":

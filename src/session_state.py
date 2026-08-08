@@ -1,7 +1,7 @@
 """src/session_state.py
 
-SEAgent G3.1 State Contract Definition.
-Establishes explicit, immutable, serializable, and fail-closed data contracts
+SEAgent G3.1 State Contract Definition (Hardened).
+Establishes explicit, deeply immutable, serializable, and fail-closed data contracts
 for Conversation State, Task Lifecycle State, and Execution Control State.
 Does NOT alter runtime behavior or DialogueManager state transition logic.
 """
@@ -12,12 +12,17 @@ import copy
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any
 
 
 class StateContractError(ValueError):
     """Raised when session state validation or conversion fails."""
     pass
+
+
+# Supported schema version for SessionState
+SUPPORTED_SESSION_STATE_SCHEMA_VERSION: int = 2
 
 
 # Valid value sets based on current runtime code
@@ -65,10 +70,10 @@ VALID_CONTROL_ACTIONS: frozenset[str] = frozenset({
 })
 
 
-def _validate_mode_transition(transition: Any) -> dict[str, Any]:
-    """Validate a single mode transition dict."""
-    if not isinstance(transition, dict):
-        raise StateContractError(f"Transition item must be a dictionary, got {type(transition).__name__}")
+def _validate_mode_transition(transition: Any) -> MappingProxyType[str, Any]:
+    """Validate a single mode transition dict and return a read-only MappingProxyType."""
+    if not isinstance(transition, (dict, MappingProxyType)):
+        raise StateContractError(f"Transition item must be a dictionary or MappingProxyType, got {type(transition).__name__}")
 
     from_m = transition.get("from")
     to_m = transition.get("to")
@@ -96,14 +101,15 @@ def _validate_mode_transition(transition: Any) -> dict[str, Any]:
     except Exception as exc:
         raise StateContractError(f"Invalid ISO timestamp format for changed_at: {changed_at!r} ({exc})") from exc
 
-    return copy.deepcopy(transition)
+    plain_copy = dict(copy.deepcopy(dict(transition)))
+    return MappingProxyType(plain_copy)
 
 
 @dataclass(frozen=True)
 class ConversationState:
     dialogue_mode: str
-    last_mode_transition: dict[str, Any] | None = None
-    mode_transition_history: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    last_mode_transition: MappingProxyType[str, Any] | None = None
+    mode_transition_history: tuple[MappingProxyType[str, Any], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if type(self.dialogue_mode) is not str or not self.dialogue_mode:
@@ -146,7 +152,7 @@ class TaskLifecycleState:
 @dataclass(frozen=True)
 class ExecutionControlState:
     control_state: str
-    last_control_request: dict[str, Any] | None = None
+    last_control_request: MappingProxyType[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if type(self.control_state) is not str or not self.control_state:
@@ -155,15 +161,16 @@ class ExecutionControlState:
             raise StateContractError(f"Invalid control_state: {self.control_state!r}")
 
         if self.last_control_request is not None:
-            if not isinstance(self.last_control_request, dict):
-                raise StateContractError(f"last_control_request must be dict or None, got {type(self.last_control_request).__name__}")
+            if not isinstance(self.last_control_request, (dict, MappingProxyType)):
+                raise StateContractError(f"last_control_request must be dict, MappingProxyType or None, got {type(self.last_control_request).__name__}")
             act = self.last_control_request.get("action")
             if not isinstance(act, str) or type(act) is not str or act not in VALID_CONTROL_ACTIONS:
                 raise StateContractError(f"Invalid action in last_control_request: {act!r}")
             st = self.last_control_request.get("status")
             if not isinstance(st, str) or type(st) is not str or st != "requested":
                 raise StateContractError(f"Invalid status in last_control_request: {st!r}")
-            object.__setattr__(self, "last_control_request", copy.deepcopy(self.last_control_request))
+            validated_req = MappingProxyType(dict(copy.deepcopy(dict(self.last_control_request))))
+            object.__setattr__(self, "last_control_request", validated_req)
 
         # Cross-field consistency validation between control_state and last_control_request
         if self.last_control_request is None:
@@ -188,8 +195,8 @@ class SessionState:
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int:
             raise StateContractError(f"schema_version must be int, got {type(self.schema_version).__name__}: {self.schema_version!r}")
-        if self.schema_version < 1:
-            raise StateContractError(f"schema_version must be positive integer, got {self.schema_version}")
+        if self.schema_version != SUPPORTED_SESSION_STATE_SCHEMA_VERSION:
+            raise StateContractError(f"Unsupported schema_version: {self.schema_version} (supported version: {SUPPORTED_SESSION_STATE_SCHEMA_VERSION})")
 
         if not isinstance(self.conversation, ConversationState):
             raise StateContractError(f"conversation must be ConversationState instance, got {type(self.conversation).__name__}")
@@ -200,14 +207,20 @@ class SessionState:
 
 
 def session_state_from_legacy_snapshot(snapshot: dict[str, Any]) -> SessionState:
-    """Convert a legacy snapshot dictionary into a validated SessionState object."""
+    """Convert a legacy snapshot dictionary into a validated SessionState object. Fail closed on invalid schema_version."""
     if not isinstance(snapshot, dict):
         raise StateContractError(f"Legacy snapshot must be a dictionary, got {type(snapshot).__name__}")
 
     try:
-        schema_version = snapshot.get("snapshot_version", 2)
-        if type(schema_version) is not int:
-            schema_version = 2
+        if "snapshot_version" in snapshot:
+            ver = snapshot["snapshot_version"]
+            if type(ver) is not int:
+                raise StateContractError(f"Invalid snapshot_version type: {type(ver).__name__} (expected int)")
+            if ver != SUPPORTED_SESSION_STATE_SCHEMA_VERSION:
+                raise StateContractError(f"Unsupported snapshot_version: {ver} (expected {SUPPORTED_SESSION_STATE_SCHEMA_VERSION})")
+            schema_version = ver
+        else:
+            schema_version = SUPPORTED_SESSION_STATE_SCHEMA_VERSION
 
         raw_dm = snapshot.get("dialogue_mode", "task_collection")
         if raw_dm == "uncertain":
@@ -243,9 +256,13 @@ def session_state_from_legacy_snapshot(snapshot: dict[str, Any]) -> SessionState
 
 
 def session_state_to_legacy_fields(state: SessionState) -> dict[str, Any]:
-    """Convert a SessionState object into a dictionary of legacy snapshot state fields."""
+    """Convert a SessionState object into a dictionary of legacy snapshot state fields. Outputs plain dict/list."""
     if not isinstance(state, SessionState):
         raise StateContractError(f"state must be SessionState instance, got {type(state).__name__}")
+
+    last_trans = dict(state.conversation.last_mode_transition) if state.conversation.last_mode_transition is not None else None
+    trans_hist = [dict(t) for t in state.conversation.mode_transition_history]
+    last_ctrl = dict(state.execution.last_control_request) if state.execution.last_control_request is not None else None
 
     return {
         "snapshot_version": state.schema_version,
@@ -253,8 +270,8 @@ def session_state_to_legacy_fields(state: SessionState) -> dict[str, Any]:
         "mode": state.task.mode,
         "awaiting_final_confirm": state.task.awaiting_final_confirm,
         "dialogue_mode": state.conversation.dialogue_mode,
-        "last_mode_transition": copy.deepcopy(state.conversation.last_mode_transition),
-        "mode_transition_history": [copy.deepcopy(t) for t in state.conversation.mode_transition_history],
+        "last_mode_transition": last_trans,
+        "mode_transition_history": trans_hist,
         "control_state": state.execution.control_state,
-        "last_control_request": copy.deepcopy(state.execution.last_control_request),
+        "last_control_request": last_ctrl,
     }
