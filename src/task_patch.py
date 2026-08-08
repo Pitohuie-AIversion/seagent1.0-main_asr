@@ -1,7 +1,7 @@
-"""task_patch.py — Extractor Result -> TaskPatch -> Legacy Adapter 中间协议层
+"""task_patch.py — Extractor Result -> TaskPatch -> Legacy Adapter 严格中间协议层
 
 定义 TaskPatch、SlotPatch、ListMutationPatch 不可变数据结构，
-提供严格校验、Builder 与 Legacy Adapter。
+提供严格契约校验、Builder 与 Legacy Adapter。
 解耦 Task Candidate 表示与 Downstream Normalizer/SlotStore/Transaction。
 """
 
@@ -74,11 +74,24 @@ class SlotPatch:
             raise TaskPatchValidationError(
                 f"SlotPatch key 必须为非空 str，收到 {self.key!r}"
             )
+        if self.candidate_value is None or self.candidate_value == "":
+            raise TaskPatchValidationError(
+                f"SlotPatch candidate_value 不得为 None 或空字符串，收到 {self.candidate_value!r}"
+            )
+        if self.raw_value is None or (isinstance(self.raw_value, str) and not self.raw_value.strip()):
+            raise TaskPatchValidationError(
+                f"SlotPatch raw_value 必须存在且非空，收到 {self.raw_value!r}"
+            )
         validate_confidence(self.confidence, field_name=f"SlotPatch({self.key}).confidence")
         if not isinstance(self.source, str) or not self.source.strip():
             raise TaskPatchValidationError(
                 f"SlotPatch source 必须为非空 str，收到 {self.source!r}"
             )
+        if self.resolution_method is not None:
+            if not isinstance(self.resolution_method, str) or not self.resolution_method.strip():
+                raise TaskPatchValidationError(
+                    f"SlotPatch resolution_method 若存在则必须为非空 str，收到 {self.resolution_method!r}"
+                )
 
 
 @dataclass(frozen=True)
@@ -92,9 +105,9 @@ class ListMutationPatch:
     source: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.field, str) or not self.field.strip():
+        if not isinstance(self.field, str) or self.field != "payload":
             raise TaskPatchValidationError(
-                f"ListMutationPatch field 必须为非空 str，收到 {self.field!r}"
+                f"ListMutationPatch field 必须为 'payload'，收到 {self.field!r}"
             )
         valid_ops = ("add", "remove", "replace", "clear")
         if self.operation not in valid_ops:
@@ -108,6 +121,10 @@ class ListMutationPatch:
         if not isinstance(self.target_items, tuple):
             raise TaskPatchValidationError(
                 f"ListMutationPatch target_items 必须为 tuple，收到 {type(self.target_items)}"
+            )
+        if not isinstance(self.raw_text, str) or not self.raw_text.strip():
+            raise TaskPatchValidationError(
+                f"ListMutationPatch raw_text 必须为非空 str，收到 {self.raw_text!r}"
             )
         validate_confidence(self.confidence, field_name=f"ListMutationPatch({self.field}).confidence")
         if not isinstance(self.source, str) or not self.source.strip():
@@ -189,11 +206,25 @@ def build_task_patch(
             f"extraction_result 必须为 dict 类型，收到 {type(extraction_result)}"
         )
 
-    raw_candidates = extraction_result.get("slot_candidates")
+    required_top_keys = {"slot_candidates", "list_mutations", "unresolved"}
+    missing_top = required_top_keys - extraction_result.keys()
+    if missing_top:
+        raise TaskPatchValidationError(
+            f"extraction_result 缺少必需的顶层字段: {sorted(missing_top)}"
+        )
+
+    raw_candidates = extraction_result["slot_candidates"]
     if not isinstance(raw_candidates, list):
         raise TaskPatchValidationError(
             f"extraction_result['slot_candidates'] 必须为 list 类型，收到 {type(raw_candidates)}"
         )
+
+    required_candidate_fields = {
+        "canonical_key",
+        "normalized_value",
+        "raw_value",
+        "confidence",
+    }
 
     slot_updates_list: list[SlotPatch] = []
     for cand in raw_candidates:
@@ -202,14 +233,19 @@ def build_task_patch(
                 f"slot_candidates 元素必须为 dict 类型，收到 {type(cand)}"
             )
 
-        canonical_key = cand.get("canonical_key")
+        missing_cand_fields = required_candidate_fields - cand.keys()
+        if missing_cand_fields:
+            raise TaskPatchValidationError(
+                f"candidate 缺少必需字段: {sorted(missing_cand_fields)}"
+            )
+
+        canonical_key = cand["canonical_key"]
         if not isinstance(canonical_key, str) or not canonical_key.strip():
             raise TaskPatchValidationError(
                 f"candidate canonical_key 缺失或非合法字符串，收到 {canonical_key!r}"
             )
 
         key = canonical_key.strip()
-        # 兼容 key 映射：equipment_model -> equipment_type
         if key == "equipment_model":
             key = "equipment_type"
 
@@ -218,14 +254,39 @@ def build_task_patch(
                 f"candidate key '{key}' 不在允许的 key 白名单中: {allowed_keys}"
             )
 
-        cand_val = cand.get("normalized_value")
-        raw_val = cand.get("raw_value", cand_val)
+        cand_val = cand["normalized_value"]
+        if cand_val is None or cand_val == "":
+            raise TaskPatchValidationError(
+                f"candidate('{key}').normalized_value 不得为 None 或空字符串，收到 {cand_val!r}"
+            )
+
+        raw_val = cand["raw_value"]
+        if raw_val is None or (isinstance(raw_val, str) and not raw_val.strip()):
+            raise TaskPatchValidationError(
+                f"candidate('{key}').raw_value 必须存在且非空，收到 {raw_val!r}"
+            )
+
         confidence = validate_confidence(
-            cand.get("confidence", 1.0),
+            cand["confidence"],
             field_name=f"candidate({key}).confidence",
         )
+
         res_method = cand.get("resolution_method")
-        source = cand.get("source") or _source_for_resolution_method(res_method)
+        if res_method is not None:
+            if not isinstance(res_method, str) or not res_method.strip():
+                raise TaskPatchValidationError(
+                    f"candidate('{key}').resolution_method 若存在则必须为非空 str，收到 {res_method!r}"
+                )
+
+        cand_source = cand.get("source")
+        if cand_source is not None:
+            if not isinstance(cand_source, str) or not cand_source.strip():
+                raise TaskPatchValidationError(
+                    f"candidate('{key}').source 必须为非空 str，收到 {cand_source!r}"
+                )
+            source = cand_source.strip()
+        else:
+            source = _source_for_resolution_method(res_method)
 
         slot_updates_list.append(
             SlotPatch(
@@ -238,11 +299,21 @@ def build_task_patch(
             )
         )
 
-    raw_mutations = extraction_result.get("list_mutations", [])
+    raw_mutations = extraction_result["list_mutations"]
     if not isinstance(raw_mutations, list):
         raise TaskPatchValidationError(
             f"extraction_result['list_mutations'] 必须为 list 类型，收到 {type(raw_mutations)}"
         )
+
+    required_mutation_fields = {
+        "field",
+        "operation",
+        "items",
+        "target_items",
+        "raw_text",
+        "confidence",
+        "source",
+    }
 
     list_mutations_list: list[ListMutationPatch] = []
     for mut in raw_mutations:
@@ -250,10 +321,23 @@ def build_task_patch(
             raise TaskPatchValidationError(
                 f"list_mutations 元素必须为 dict 类型，收到 {type(mut)}"
             )
-        field = mut.get("field", "payload")
-        op = mut.get("operation")
-        items_raw = mut.get("items", [])
-        target_raw = mut.get("target_items", [])
+
+        missing_mut_fields = required_mutation_fields - mut.keys()
+        if missing_mut_fields:
+            raise TaskPatchValidationError(
+                f"list_mutation 缺少必需字段: {sorted(missing_mut_fields)}"
+            )
+
+        field = mut["field"]
+        if not isinstance(field, str) or field != "payload":
+            raise TaskPatchValidationError(
+                f"list_mutation field 必须为 'payload'，收到 {field!r}"
+            )
+
+        op = mut["operation"]
+        items_raw = mut["items"]
+        target_raw = mut["target_items"]
+
         if not isinstance(items_raw, (list, tuple)):
             raise TaskPatchValidationError(
                 f"list_mutation items 必须为 list 或 tuple，收到 {type(items_raw)}"
@@ -263,37 +347,52 @@ def build_task_patch(
                 f"list_mutation target_items 必须为 list 或 tuple，收到 {type(target_raw)}"
             )
 
+        raw_t = mut["raw_text"]
+        if not isinstance(raw_t, str) or not raw_t.strip():
+            raise TaskPatchValidationError(
+                f"list_mutation raw_text 必须为非空 str，收到 {raw_t!r}"
+            )
+
         conf = validate_confidence(
-            mut.get("confidence", 0.95),
+            mut["confidence"],
             field_name=f"mutation({field}).confidence",
         )
-        src = mut.get("source", "user_input")
-        raw_t = str(mut.get("raw_text", ""))
+
+        src = mut["source"]
+        if not isinstance(src, str) or not src.strip():
+            raise TaskPatchValidationError(
+                f"list_mutation source 必须为非空 str，收到 {src!r}"
+            )
 
         list_mutations_list.append(
             ListMutationPatch(
-                field=str(field),
+                field=field,
                 operation=op,
                 items=tuple(items_raw),
                 target_items=tuple(target_raw),
                 raw_text=raw_t,
                 confidence=conf,
-                source=str(src),
+                source=src,
             )
         )
 
-    raw_unresolved = extraction_result.get("unresolved", [])
+    raw_unresolved = extraction_result["unresolved"]
     if not isinstance(raw_unresolved, list):
         raise TaskPatchValidationError(
             f"extraction_result['unresolved'] 必须为 list 类型，收到 {type(raw_unresolved)}"
         )
 
-    # 保序去重并剔除空字符串
     unresolved_clean: list[str] = []
     for item in raw_unresolved:
-        s_item = str(item).strip() if item is not None else ""
-        if s_item and s_item not in unresolved_clean:
-            unresolved_clean.append(s_item)
+        if not isinstance(item, str):
+            raise TaskPatchValidationError(
+                f"unresolved 元素必须为 str 类型，收到 {type(item)} ({item!r})"
+            )
+        cleaned = item.strip()
+        if not cleaned:
+            continue
+        if cleaned not in unresolved_clean:
+            unresolved_clean.append(cleaned)
 
     return TaskPatch(
         schema_version=1,

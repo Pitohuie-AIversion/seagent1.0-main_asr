@@ -23,7 +23,6 @@ from src.model_profile import (
     ModelProfileConfigError,
 )
 from src.dialogue_manager import DialogueManager
-from src.knowledge_retriever import KnowledgeBase
 
 
 def snapshot_effect(dm: DialogueManager) -> dict:
@@ -94,6 +93,7 @@ class TestTaskPatchUnit(unittest.TestCase):
                 {
                     "raw_key": "未知",
                     "canonical_key": "unknown_key",
+                    "raw_value": "abc",
                     "normalized_value": "abc",
                     "confidence": 1.0,
                 }
@@ -154,6 +154,335 @@ class TestTaskPatchUnit(unittest.TestCase):
                 source="user_input",
             )
 
+    # Negative Candidate Contract Tests
+    def test_reject_candidate_missing_canonical_key(self):
+        res = {
+            "slot_candidates": [
+                {
+                    "raw_value": "300米",
+                    "normalized_value": 300,
+                    "confidence": 0.95,
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_candidate_missing_normalized_value(self):
+        res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "water_depth",
+                    "raw_value": "300米",
+                    "confidence": 0.95,
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_candidate_missing_raw_value(self):
+        res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "water_depth",
+                    "normalized_value": 300,
+                    "confidence": 0.95,
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_candidate_missing_confidence(self):
+        res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "water_depth",
+                    "raw_value": "300米",
+                    "normalized_value": 300,
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_candidate_none_normalized_value(self):
+        res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "water_depth",
+                    "raw_value": "300米",
+                    "normalized_value": None,
+                    "confidence": 0.95,
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_candidate_empty_normalized_value(self):
+        res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "water_depth",
+                    "raw_value": "300米",
+                    "normalized_value": "",
+                    "confidence": 0.95,
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_non_string_resolution_method(self):
+        res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "water_depth",
+                    "raw_value": "300米",
+                    "normalized_value": 300,
+                    "confidence": 0.95,
+                    "resolution_method": 123,
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    # Negative List Mutation Contract Tests
+    def test_reject_mutation_missing_field(self):
+        res = {
+            "slot_candidates": [],
+            "list_mutations": [
+                {
+                    "operation": "add",
+                    "items": ["机械手"],
+                    "target_items": [],
+                    "raw_text": "增加机械手",
+                    "confidence": 0.95,
+                    "source": "user_input",
+                }
+            ],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_non_payload_mutation_field(self):
+        res = {
+            "slot_candidates": [],
+            "list_mutations": [
+                {
+                    "field": "water_depth",
+                    "operation": "remove",
+                    "items": ["300米"],
+                    "target_items": [],
+                    "raw_text": "删除水深",
+                    "confidence": 0.95,
+                    "source": "user_input",
+                }
+            ],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_mutation_missing_operation(self):
+        res = {
+            "slot_candidates": [],
+            "list_mutations": [
+                {
+                    "field": "payload",
+                    "items": ["机械手"],
+                    "target_items": [],
+                    "raw_text": "增加机械手",
+                    "confidence": 0.95,
+                    "source": "user_input",
+                }
+            ],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_mutation_missing_items(self):
+        res = {
+            "slot_candidates": [],
+            "list_mutations": [
+                {
+                    "field": "payload",
+                    "operation": "add",
+                    "target_items": [],
+                    "raw_text": "增加机械手",
+                    "confidence": 0.95,
+                    "source": "user_input",
+                }
+            ],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_mutation_missing_target_items(self):
+        res = {
+            "slot_candidates": [],
+            "list_mutations": [
+                {
+                    "field": "payload",
+                    "operation": "add",
+                    "items": ["机械手"],
+                    "raw_text": "增加机械手",
+                    "confidence": 0.95,
+                    "source": "user_input",
+                }
+            ],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_mutation_missing_raw_text(self):
+        res = {
+            "slot_candidates": [],
+            "list_mutations": [
+                {
+                    "field": "payload",
+                    "operation": "add",
+                    "items": ["机械手"],
+                    "target_items": [],
+                    "confidence": 0.95,
+                    "source": "user_input",
+                }
+            ],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_mutation_missing_confidence(self):
+        res = {
+            "slot_candidates": [],
+            "list_mutations": [
+                {
+                    "field": "payload",
+                    "operation": "add",
+                    "items": ["机械手"],
+                    "target_items": [],
+                    "raw_text": "增加机械手",
+                    "source": "user_input",
+                }
+            ],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_mutation_missing_source(self):
+        res = {
+            "slot_candidates": [],
+            "list_mutations": [
+                {
+                    "field": "payload",
+                    "operation": "add",
+                    "items": ["机械手"],
+                    "target_items": [],
+                    "raw_text": "增加机械手",
+                    "confidence": 0.95,
+                }
+            ],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_non_string_raw_text(self):
+        res = {
+            "slot_candidates": [],
+            "list_mutations": [
+                {
+                    "field": "payload",
+                    "operation": "add",
+                    "items": ["机械手"],
+                    "target_items": [],
+                    "raw_text": 123,
+                    "confidence": 0.95,
+                    "source": "user_input",
+                }
+            ],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_non_string_source(self):
+        res = {
+            "slot_candidates": [],
+            "list_mutations": [
+                {
+                    "field": "payload",
+                    "operation": "add",
+                    "items": ["机械手"],
+                    "target_items": [],
+                    "raw_text": "增加机械手",
+                    "confidence": 0.95,
+                    "source": 123,
+                }
+            ],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    # Negative Unresolved Contract Tests
+    def test_reject_non_string_unresolved(self):
+        res = {
+            "slot_candidates": [],
+            "list_mutations": [],
+            "unresolved": ["abc", 123],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    # Negative Top-level Contract Tests
+    def test_reject_missing_slot_candidates(self):
+        res = {
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_missing_list_mutations(self):
+        res = {
+            "slot_candidates": [],
+            "unresolved": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
+    def test_reject_missing_unresolved(self):
+        res = {
+            "slot_candidates": [],
+            "list_mutations": [],
+        }
+        with self.assertRaises(TaskPatchValidationError):
+            build_task_patch(res)
+
 
 class TestTaskPatchBuilderAndAdapter(unittest.TestCase):
     """L2: Builder & Legacy Adapter 转换逻辑测试。"""
@@ -181,18 +510,18 @@ class TestTaskPatchBuilderAndAdapter(unittest.TestCase):
                     "source": "user_input",
                 }
             ],
-            "unresolved": ["  一些未识别说明  ", "一些未识别说明", "", None],
+            "unresolved": ["  一些未识别说明  ", "一些未识别说明"],
         }
-        patch = build_task_patch(extraction_res, allowed_keys={"water_depth", "payload"})
-        self.assertEqual(len(patch.slot_updates), 1)
-        self.assertEqual(patch.slot_updates[0].key, "water_depth")
-        self.assertEqual(patch.slot_updates[0].candidate_value, 300)
+        patch_obj = build_task_patch(extraction_res, allowed_keys={"water_depth", "payload"})
+        self.assertEqual(len(patch_obj.slot_updates), 1)
+        self.assertEqual(patch_obj.slot_updates[0].key, "water_depth")
+        self.assertEqual(patch_obj.slot_updates[0].candidate_value, 300)
 
-        self.assertEqual(len(patch.list_mutations), 1)
-        self.assertEqual(patch.list_mutations[0].operation, "add")
-        self.assertEqual(patch.list_mutations[0].items, ("高精声呐",))
+        self.assertEqual(len(patch_obj.list_mutations), 1)
+        self.assertEqual(patch_obj.list_mutations[0].operation, "add")
+        self.assertEqual(patch_obj.list_mutations[0].items, ("高精声呐",))
 
-        self.assertEqual(patch.unresolved, ("一些未识别说明",))
+        self.assertEqual(patch_obj.unresolved, ("一些未识别说明",))
 
     def test_preserves_raw_value(self):
         res = {
@@ -208,8 +537,8 @@ class TestTaskPatchBuilderAndAdapter(unittest.TestCase):
             "unresolved": [],
             "list_mutations": [],
         }
-        patch = build_task_patch(res, allowed_keys={"water_depth"})
-        self.assertEqual(patch.slot_updates[0].raw_value, "差不多三百度米")
+        patch_obj = build_task_patch(res, allowed_keys={"water_depth"})
+        self.assertEqual(patch_obj.slot_updates[0].raw_value, "差不多三百度米")
 
     def test_preserves_resolution_method(self):
         res = {
@@ -225,8 +554,8 @@ class TestTaskPatchBuilderAndAdapter(unittest.TestCase):
             "unresolved": [],
             "list_mutations": [],
         }
-        patch = build_task_patch(res, allowed_keys={"cable_type"})
-        self.assertEqual(patch.slot_updates[0].resolution_method, "alias_exact")
+        patch_obj = build_task_patch(res, allowed_keys={"cable_type"})
+        self.assertEqual(patch_obj.slot_updates[0].resolution_method, "alias_exact")
 
     def test_preserves_unresolved_order(self):
         res = {
@@ -234,8 +563,8 @@ class TestTaskPatchBuilderAndAdapter(unittest.TestCase):
             "list_mutations": [],
             "unresolved": ["item_b", "item_a", "item_c"],
         }
-        patch = build_task_patch(res)
-        self.assertEqual(patch.unresolved, ("item_b", "item_a", "item_c"))
+        patch_obj = build_task_patch(res)
+        self.assertEqual(patch_obj.unresolved, ("item_b", "item_a", "item_c"))
 
     def test_deduplicates_unresolved_stably(self):
         res = {
@@ -243,8 +572,8 @@ class TestTaskPatchBuilderAndAdapter(unittest.TestCase):
             "list_mutations": [],
             "unresolved": ["abc", "", "abc", " def "],
         }
-        patch = build_task_patch(res)
-        self.assertEqual(patch.unresolved, ("abc", "def"))
+        patch_obj = build_task_patch(res)
+        self.assertEqual(patch_obj.unresolved, ("abc", "def"))
 
 
 class TestListMutationContract(unittest.TestCase):
@@ -302,10 +631,10 @@ class TestListMutationContract(unittest.TestCase):
         with self.assertRaises(TaskPatchValidationError):
             ListMutationPatch(
                 field="payload",
-                operation="ambiguous",  # 非法操作
-                items=("A",),
+                operation="invalid_op",  # type: ignore
+                items=("机械手",),
                 target_items=(),
-                raw_text="测试",
+                raw_text="无效",
                 confidence=0.95,
                 source="user_input",
             )
@@ -315,114 +644,154 @@ class TestListMutationContract(unittest.TestCase):
             ListMutationPatch(
                 field="payload",
                 operation="replace",
-                items=("A",),
-                target_items=(),  # replace 缺 target_items 拒绝
-                raw_text="测试",
+                items=("云台摄像机",),
+                target_items=(),  # replace 必须提供 target_items
+                raw_text="换成云台摄像机",
                 confidence=0.95,
                 source="user_input",
             )
 
     def test_cancel_water_depth_not_payload_mutation(self):
-        from src.extractor import ParameterExtractor
-        list_mutations, unresolved = ParameterExtractor._detect_payload_mutation(
-            user_message="取消修改水深",
-            current_state={"water_depth": 300, "payload": ["云台摄像机"]},
-            required=[{"key": "payload", "allowed_values": ["云台摄像机", "机械手"]}],
-        )
-        self.assertEqual(list_mutations, [])
-        self.assertEqual(unresolved, [])
+        """验证水深取消修改等非载荷命令不会生成 ListMutationPatch。"""
+        dm = DialogueManager(llm=MagicMock())
+        turn1_ext = {
+            "slot_candidates": [
+                {
+                    "raw_key": "任务类型",
+                    "canonical_key": "task_type",
+                    "raw_value": "管缆巡检",
+                    "normalized_value": "管缆巡检",
+                    "confidence": 0.95,
+                },
+                {
+                    "raw_key": "任务类型标识",
+                    "canonical_key": "task_type_key",
+                    "raw_value": "巡检",
+                    "normalized_value": "pipeline_inspection",
+                    "confidence": 0.95,
+                },
+            ],
+            "unresolved": [],
+            "list_mutations": [],
+        }
+        turn2_ext = {
+            "slot_candidates": [
+                {
+                    "raw_key": "水深",
+                    "canonical_key": "water_depth",
+                    "raw_value": "300米",
+                    "normalized_value": 300,
+                    "confidence": 0.95,
+                }
+            ],
+            "unresolved": [],
+            "list_mutations": [],
+        }
+        with patch.object(dm.extractor, "extract_updates", return_value=turn1_ext):
+            dm.process("创建一个管缆巡检任务")
+
+        with patch.object(dm.extractor, "extract_updates", return_value=turn2_ext):
+            dm.process("水深300米")
+
+        cancel_ext = {
+            "slot_candidates": [],
+            "unresolved": [],
+            "list_mutations": [],
+        }
+
+        with patch.object(dm.extractor, "extract_updates", return_value=cancel_ext):
+            dm.process("取消修改水深")
+
+        self.assertEqual(dm.slot_store.get_task_state()["water_depth"], 300)
 
 
 class TestTaskPatchAdapter(unittest.TestCase):
-    """Adapter 映射准确性断言测试。"""
+    """Legacy Adapter 纯函数转换逻辑测试。"""
 
     def test_task_patch_to_legacy_preserves_candidate(self):
-        patch_obj = TaskPatch(
-            schema_version=1,
-            slot_updates=(
-                SlotPatch(
-                    key="water_depth",
-                    candidate_value=500,
-                    raw_value="500米",
-                    confidence=0.95,
-                    source="user_input",
-                    resolution_method="canonical_exact",
-                ),
-            ),
-            list_mutations=(),
-            unresolved=(),
+        sp = SlotPatch(
+            key="water_depth",
+            candidate_value=300,
+            raw_value="300米",
+            confidence=0.95,
+            source="user_input",
         )
-        stage_upd, mutations, unresolved = task_patch_to_legacy_updates(patch_obj)
-        self.assertIn("water_depth", stage_upd)
-        self.assertEqual(stage_upd["water_depth"]["value"], 500)
+        patch_obj = TaskPatch(schema_version=1, slot_updates=(sp,), list_mutations=(), unresolved=())
+        stage_updates, mutations, unresolved = task_patch_to_legacy_updates(patch_obj)
+        self.assertIn("water_depth", stage_updates)
+        self.assertEqual(stage_updates["water_depth"]["value"], 300)
 
     def test_task_patch_to_legacy_preserves_raw(self):
-        patch_obj = TaskPatch(
-            schema_version=1,
-            slot_updates=(
-                SlotPatch(
-                    key="water_depth",
-                    candidate_value=500,
-                    raw_value="差不多五百米",
-                    confidence=0.95,
-                    source="user_input",
-                    resolution_method="canonical_exact",
-                ),
-            ),
-            list_mutations=(),
-            unresolved=(),
+        sp = SlotPatch(
+            key="water_depth",
+            candidate_value=300,
+            raw_value="差不多三百度米",
+            confidence=0.8,
+            source="user_input",
         )
-        stage_upd, _, _ = task_patch_to_legacy_updates(patch_obj)
-        self.assertEqual(stage_upd["water_depth"]["raw_value"], "差不多五百米")
+        patch_obj = TaskPatch(schema_version=1, slot_updates=(sp,), list_mutations=(), unresolved=())
+        stage_updates, _, _ = task_patch_to_legacy_updates(patch_obj)
+        self.assertEqual(stage_updates["water_depth"]["raw_value"], "差不多三百度米")
 
     def test_task_patch_to_legacy_preserves_confidence(self):
-        patch_obj = TaskPatch(
-            schema_version=1,
-            slot_updates=(
-                SlotPatch(
-                    key="water_depth",
-                    candidate_value=500,
-                    raw_value="500m",
-                    confidence=0.88,
-                    source="user_input",
-                ),
-            ),
-            list_mutations=(),
-            unresolved=(),
+        sp = SlotPatch(
+            key="water_depth",
+            candidate_value=300,
+            raw_value="300米",
+            confidence=0.92,
+            source="user_input",
         )
-        stage_upd, _, _ = task_patch_to_legacy_updates(patch_obj)
-        self.assertEqual(stage_upd["water_depth"]["confidence"], 0.88)
+        patch_obj = TaskPatch(schema_version=1, slot_updates=(sp,), list_mutations=(), unresolved=())
+        stage_updates, _, _ = task_patch_to_legacy_updates(patch_obj)
+        self.assertEqual(stage_updates["water_depth"]["confidence"], 0.92)
 
     def test_task_patch_to_legacy_preserves_source_semantics(self):
-        patch_obj = TaskPatch(
-            schema_version=1,
-            slot_updates=(
-                SlotPatch(
-                    key="cable_type",
-                    candidate_value="armored_cable",
-                    raw_value="铠装",
-                    confidence=0.95,
-                    source="alias_mapping",
-                    resolution_method="alias_exact",
-                ),
-            ),
-            list_mutations=(),
-            unresolved=(),
+        sp = SlotPatch(
+            key="cable_type",
+            candidate_value="armored_cable",
+            raw_value="铠装电缆",
+            confidence=0.9,
+            source="alias_mapping",
+            resolution_method="alias_exact",
         )
-        stage_upd, _, _ = task_patch_to_legacy_updates(patch_obj)
-        self.assertEqual(stage_upd["cable_type"]["source"], "alias_mapping")
+        patch_obj = TaskPatch(schema_version=1, slot_updates=(sp,), list_mutations=(), unresolved=())
+        stage_updates, _, _ = task_patch_to_legacy_updates(patch_obj)
+        self.assertEqual(stage_updates["cable_type"]["source"], "alias_mapping")
+
+    def test_provenance_retention(self):
+        cand = {
+            "canonical_key": "water_depth",
+            "raw_value": "差不多很深",
+            "normalized_value": "300abc",
+            "confidence": 0.83,
+            "resolution_method": "type_normalization",
+        }
+        res = {
+            "slot_candidates": [cand],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        patch_obj = build_task_patch(res, allowed_keys={"water_depth"})
+        self.assertEqual(patch_obj.slot_updates[0].candidate_value, "300abc")
+        self.assertEqual(patch_obj.slot_updates[0].raw_value, "差不多很深")
+        self.assertEqual(patch_obj.slot_updates[0].confidence, 0.83)
+        self.assertEqual(patch_obj.slot_updates[0].resolution_method, "type_normalization")
+
+        stage_updates, mutations, unresolved = task_patch_to_legacy_updates(patch_obj)
+        self.assertIn("water_depth", stage_updates)
+        self.assertEqual(stage_updates["water_depth"]["value"], "300abc")
+        self.assertEqual(stage_updates["water_depth"]["raw_value"], "差不多很深")
+        self.assertEqual(stage_updates["water_depth"]["confidence"], 0.83)
+        self.assertEqual(stage_updates["water_depth"]["source"], "user_input")
 
 
 class TestFeatureFlag(unittest.TestCase):
-    """Feature Flag 开关与异常行为测试。"""
+    """Feature Flag 控制与 Fail-Closed 断言测试。"""
 
     def test_task_patch_flag_defaults_false(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             yaml_path = Path(tmpdir) / "features.yaml"
-            yaml_path.write_text(
-                "schema_version: 1\nfeatures:\n  task_patch_v2: false\n",
-                encoding="utf-8",
-            )
+            yaml_path.write_text("schema_version: 1\nfeatures: {}\n", encoding="utf-8")
             self.assertFalse(is_task_patch_v2_enabled(features_path=yaml_path))
 
     def test_task_patch_flag_true_uses_task_patch(self):
@@ -459,6 +828,7 @@ class TestFeatureFlag(unittest.TestCase):
                 {
                     "canonical_key": "water_depth",
                     "normalized_value": 300,
+                    "raw_value": "300米",
                     "confidence": "INVALID_CONFIDENCE",  # 会引发 build_task_patch 校验失败
                 }
             ],
@@ -476,6 +846,76 @@ class TestFeatureFlag(unittest.TestCase):
         with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True):
             with self.assertRaises(TaskPatchError):
                 dm.process("水深300米")
+
+    def test_v2_malformed_candidate_does_not_mutate_slotstore(self):
+        dm = DialogueManager(llm=MagicMock())
+        bad_extraction = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "water_depth",
+                    "normalized_value": 300,
+                    # "raw_value" and "confidence" missing
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+
+        dm.extractor.extract_updates = MagicMock(return_value=bad_extraction)
+        dm.task_type_key = "pipeline_inspection"
+        dm.slot_store.commit_transaction(
+            {"task_type_key": MagicMock(value="pipeline_inspection", status="valid")},
+            [],
+        )
+
+        version_before = dm.slot_store.version
+        snapshot_before = copy.deepcopy(dm.slot_store.export_snapshot())
+
+        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True):
+            with self.assertRaises(TaskPatchValidationError):
+                dm.process("水深300米")
+
+        self.assertEqual(dm.slot_store.version, version_before)
+        self.assertEqual(dm.slot_store.export_snapshot(), snapshot_before)
+        self.assertIsNone(dm.final_result)
+        self.assertNotEqual(dm.phase, "done")
+
+    def test_v2_missing_mutation_field_does_not_mutate_slotstore(self):
+        dm = DialogueManager(llm=MagicMock())
+        bad_extraction = {
+            "slot_candidates": [],
+            "list_mutations": [
+                {
+                    # "field" intentionally missing
+                    "operation": "remove",
+                    "items": ["机械手"],
+                    "target_items": [],
+                    "raw_text": "去掉机械手",
+                    "confidence": 0.95,
+                    "source": "user_input",
+                }
+            ],
+            "unresolved": [],
+        }
+
+        dm.extractor.extract_updates = MagicMock(return_value=bad_extraction)
+        dm.task_type_key = "pipeline_inspection"
+        dm.slot_store.commit_transaction(
+            {"task_type_key": MagicMock(value="pipeline_inspection", status="valid")},
+            [],
+        )
+
+        version_before = dm.slot_store.version
+        snapshot_before = copy.deepcopy(dm.slot_store.export_snapshot())
+
+        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True):
+            with self.assertRaises(TaskPatchValidationError):
+                dm.process("换成机械手")
+
+        self.assertEqual(dm.slot_store.version, version_before)
+        self.assertEqual(dm.slot_store.export_snapshot(), snapshot_before)
+        self.assertIsNone(dm.final_result)
+        self.assertNotEqual(dm.phase, "done")
 
 
 class TestEffectParity(unittest.TestCase):
@@ -662,7 +1102,6 @@ class TestEffectParity(unittest.TestCase):
         self.assertEqual(eff_legacy, eff_v2)
 
     def test_parity_04_normalization_failure_with_old_valid(self):
-        # 先填入合法水深300，再填入非法水深
         dm_legacy = DialogueManager(llm=self.mock_llm)
         dm_v2 = DialogueManager(llm=self.mock_llm)
 
