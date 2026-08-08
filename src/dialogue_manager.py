@@ -36,7 +36,8 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 from .llm_client import LLMClient
-from .model_profile import ModelRole, _is_unsupported_role_keyword_error
+from .model_profile import ModelRole, _is_unsupported_role_keyword_error, is_task_patch_v2_enabled
+from .task_patch import build_task_patch, task_patch_to_legacy_updates
 from .knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from .extractor import ParameterExtractor
 from .normalizer import FieldNormalizer
@@ -1077,34 +1078,55 @@ class DialogueManager:
                 conversation_history=self.conversation_history,
             )
 
-            if not extraction_res.get("slot_candidates"):
+            if is_task_patch_v2_enabled():
+                allowed_stage1 = {"task_type", "task_type_key", "emergency_mode"}
+                patch = build_task_patch(extraction_res, allowed_keys=allowed_stage1)
+                stage1_updates, _, patch_unresolved = task_patch_to_legacy_updates(patch)
+                for u in patch_unresolved:
+                    if u not in turn_unresolved:
+                        turn_unresolved.append(u)
+                    if u not in new_unresolved:
+                        new_unresolved.append(u)
+                if not stage1_updates:
+                    if new_unresolved:
+                        self.slot_store.commit_transaction(
+                            new_slots,
+                            new_unresolved,
+                            request_id=request_id,
+                            expected_version=expected_version,
+                        )
+                    return reply_write_without_candidates()
+                for k, cand_info in stage1_updates.items():
+                    merged_updates[k] = cand_info["value"]
+                    merged_updates_meta[k] = cand_info
+            else:
+                if not extraction_res.get("slot_candidates"):
+                    record_unresolved(extraction_res)
+                    if new_unresolved:
+                        self.slot_store.commit_transaction(
+                            new_slots,
+                            new_unresolved,
+                            request_id=request_id,
+                            expected_version=expected_version,
+                        )
+                    return reply_write_without_candidates()
+
+                stage1_updates = {}
+                for candidate in extraction_res.get("slot_candidates", []):
+                    k = candidate["canonical_key"]
+                    v = candidate["normalized_value"]
+                    cand_info = {
+                        "value": v,
+                        "raw_value": candidate.get("raw_value"),
+                        "confidence": candidate.get("confidence", 1.0),
+                        "source": self._source_for_resolution_method(candidate.get("resolution_method"))
+                    }
+                    stage1_updates[k] = cand_info
+                    merged_updates[k] = v
+                    merged_updates_meta[k] = cand_info
                 record_unresolved(extraction_res)
-                if new_unresolved:
-                    self.slot_store.commit_transaction(
-                        new_slots,
-                        new_unresolved,
-                        request_id=request_id,
-                        expected_version=expected_version,
-                    )
-                return reply_write_without_candidates()
-
-
-            stage1_updates = {}
-            for candidate in extraction_res.get("slot_candidates", []):
-                k = candidate["canonical_key"]
-                v = candidate["normalized_value"]
-                cand_info = {
-                    "value": v,
-                    "raw_value": candidate.get("raw_value"),
-                    "confidence": candidate.get("confidence", 1.0),
-                    "source": self._source_for_resolution_method(candidate.get("resolution_method"))
-                }
-                stage1_updates[k] = cand_info
-                merged_updates[k] = v
-                merged_updates_meta[k] = cand_info
 
             self._apply_updates_in_transaction(stage1_updates, new_slots)
-            record_unresolved(extraction_res)
 
             task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
 
@@ -1129,26 +1151,36 @@ class DialogueManager:
                 conversation_history=self.conversation_history,
             )
 
-            record_unresolved(extraction_res)
-
-            stage2_updates = {}
-            for candidate in extraction_res.get("slot_candidates", []):
-                k = candidate["canonical_key"]
-                v = candidate["normalized_value"]
-                if k == "equipment_model":
-                    k = "equipment_type"
-                cand_info = {
-                    "value": v,
-                    "raw_value": candidate.get("raw_value"),
-                    "confidence": candidate.get("confidence", 1.0),
-                    "source": self._source_for_resolution_method(candidate.get("resolution_method"))
-                }
-                stage2_updates[k] = cand_info
-                merged_updates[k] = v
-                merged_updates_meta[k] = cand_info
-
-            # 处理 payload list_mutations
-            list_mutations = extraction_res.get("list_mutations", [])
+            if is_task_patch_v2_enabled():
+                allowed_stage2 = self.extractor._allowed_candidate_keys(task_type_key, required)
+                patch = build_task_patch(extraction_res, allowed_keys=allowed_stage2)
+                stage2_updates, list_mutations, patch_unresolved = task_patch_to_legacy_updates(patch)
+                for u in patch_unresolved:
+                    if u not in turn_unresolved:
+                        turn_unresolved.append(u)
+                    if u not in new_unresolved:
+                        new_unresolved.append(u)
+                for k, cand_info in stage2_updates.items():
+                    merged_updates[k] = cand_info["value"]
+                    merged_updates_meta[k] = cand_info
+            else:
+                record_unresolved(extraction_res)
+                stage2_updates = {}
+                for candidate in extraction_res.get("slot_candidates", []):
+                    k = candidate["canonical_key"]
+                    v = candidate["normalized_value"]
+                    if k == "equipment_model":
+                        k = "equipment_type"
+                    cand_info = {
+                        "value": v,
+                        "raw_value": candidate.get("raw_value"),
+                        "confidence": candidate.get("confidence", 1.0),
+                        "source": self._source_for_resolution_method(candidate.get("resolution_method"))
+                    }
+                    stage2_updates[k] = cand_info
+                    merged_updates[k] = v
+                    merged_updates_meta[k] = cand_info
+                list_mutations = extraction_res.get("list_mutations", [])
             payload_mutation_failed = False
             mutation_failure_result = None
 

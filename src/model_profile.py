@@ -193,11 +193,11 @@ def _is_unsupported_role_keyword_error(exc: TypeError) -> bool:
     return "unexpected keyword argument" in msg and "role" in msg
 
 
-def is_model_profiles_v2_enabled(features_path: Path | None = None) -> bool:
-    """唯一权威 Read-only Feature Flag Loader：读取 config/features.yaml 中的 model_profiles_v2。"""
+def get_feature_flag(name: str, features_path: Path | None = None, default: bool = False) -> bool:
+    """唯一权威 Read-only Feature Flag Loader：读取 config/features.yaml 中指定 Flag。"""
     path = features_path or (CONFIG_DIR / "features.yaml")
     if not path.exists():
-        return False
+        return default
 
     try:
         with open(path, encoding="utf-8") as f:
@@ -212,15 +212,24 @@ def is_model_profiles_v2_enabled(features_path: Path | None = None) -> bool:
     if not isinstance(features, dict):
         raise ModelProfileConfigError(f"features.yaml 的 features 节点必须为 dict，收到 {type(features)}")
 
-    if "model_profiles_v2" not in features:
-        return False
+    if name not in features:
+        return default
 
-    val = features["model_profiles_v2"]
+    val = features[name]
     if type(val) is not bool:
         raise ModelProfileConfigError(
-            f"features.model_profiles_v2 必须为 bool 类型，收到 {type(val)}: {val!r}"
+            f"features.{name} 必须为 bool 类型，收到 {type(val)}: {val!r}"
         )
     return val
+
+
+def is_model_profiles_v2_enabled(features_path: Path | None = None) -> bool:
+    return get_feature_flag("model_profiles_v2", features_path=features_path, default=False)
+
+
+def is_task_patch_v2_enabled(features_path: Path | None = None) -> bool:
+    return get_feature_flag("task_patch_v2", features_path=features_path, default=False)
+
 
 
 
