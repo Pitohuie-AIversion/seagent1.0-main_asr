@@ -14,7 +14,7 @@
 Frontend / ASR 接口层
        │
        ▼
-   web_backend (多 session 隔离、request_id 产生与传递)
+   web_backend (多 session 隔离、request_id 产生与透传)
        │
        ▼
  DialogueManager (主控状态机、并发锁与会话快照)
@@ -55,24 +55,25 @@ Knowledge / StateInfo           Extractor / OilfieldLinker (候选提取)
 
 ### A. 系统不变量 (INVARIANT)
 当前以及未来任何重构都**绝对不得破坏**的系统基本保证与物理性约束。
-任何对不变量的违反均视为 P0/P1 严重事故。
+对 Issue #33 定义的 11 条不变量对齐如下：
 
 1. **INV-01 QUERY_READ_ONLY**：所有 QUERY 路径（知识问答、设备查询、状态查询、普通闲聊）必须保证 `SlotStore.version`、`SlotStore.export_snapshot()`、`task_state` 不发生变动，不创建 `TaskIntent`，不进入发布流程。
 2. **INV-02 WRITE_ONLY_MUTATES_TASK**：仅明确的任务 WRITE 流程允许改变 `SlotStore` 槽位状态。常规问答或闲聊绝不产生任务槽位更新。
 3. **INV-03 VALID_SLOT_IS_FACT**：`SlotStore.get_task_state()` 仅投影 `status == "valid"` 且 `value != None` 的正式事实；`candidate`、`invalid`、`conflict`、`unresolved` 绝对不得成为正式任务状态。
-4. **INV-04 HARD_CANNOT_BE_BYPASSED**：在 `blocked_hard` 阶段，任何确认/忽略/通用肯定性词汇（如“确认”、“继续”、“忽略警告”、“没问题”）均不得绕过硬约束并发布任务。
-5. **INV-05 SOFT_ACK_IS_DISTINCT**：在 `blocked_soft` 阶段，用户明确忽略/确认软警告后可继续流程，但该确认记录（`ValidationAcknowledgement`）必须与其触发时的 `task_version`、`validation_version` 和 `validation_fingerprint` 强绑定。
-6. **INV-06 PUBLISH_FAIL_CLOSED**：发布链路中任意步骤（ reserve ID、slot transaction、validation、prepare、create_staging、publish_staging ）失败时，系统必须 Fail-Closed：不得标记 `phase="done"`，不得返回发布成功，必须触发完整状态还原。
-7. **INV-07 DUPLICATE_CONFIRM_IS_IDEMPOTENT**：任务发布成功（`phase=="done"`）后，再次输入“确认”或“确认发布”，不得生成第二个 `TaskIntent`，不得覆盖已有 `TaskIntent`，不得重新分配任务 ID。
-8. **INV-08 SESSION_ISOLATION**：不同 `session_id` 拥有各自独立的 `DialogueManager` 与 `SlotStore` 实例；Session A 的槽位修改绝对不得污染 Session B 的状态。
-9. **INV-09 FINAL_NO_OVERWRITE**：当目标 `task_intent_TIxxxx.json` 文件已存在时，系统绝对不得无条件覆盖，也不得因冲突错误删除原有正式任务文件。
-10. **INV-10 REQUEST_TRACEABILITY**：`/api/chat` 生成或接收的 `request_id` 必须真实透传至 `DialogueManager.process(message, request_id=request_id)`，保证全链路可追溯。
+4. **INV-04 INVALID_INPUT_NEVER_OVERWRITES_VALID_FACT**：无法合法规范化或校验失败的新输入，绝不能将非法值作为正式事实覆盖已有合法值（`old valid value`）。`get_task_state()` 中不得出现非法文本。
+5. **INV-05 HARD_CANNOT_BE_BYPASSED**：在 `blocked_hard` 阶段，任何确认/忽略/通用肯定性词汇（如“确认”、“继续”、“忽略警告”、“没问题”）均不得绕过硬约束并发布任务。
+6. **INV-06 SOFT_ACK_IS_DISTINCT**：在 `blocked_soft` 阶段，用户明确忽略/确认软警告后可继续流程，但该确认记录（`ValidationAcknowledgement`）必须与其触发时的 `task_version`、`validation_version` 和 `validation_fingerprint` 强绑定。
+7. **INV-07 PUBLISH_FAIL_CLOSED**：发布链路中任意步骤（ reserve ID、slot transaction、validation、prepare、create_staging、publish_staging ）失败时，系统必须 Fail-Closed：不得标记 `phase="done"`，不得返回发布成功，必须触发完整状态还原。
+8. **INV-08 DUPLICATE_CONFIRM_IDEMPOTENT**：任务发布成功（`phase=="done"`）后，再次输入“确认”或“确认发布”，不得生成第二个 `TaskIntent`，不得覆盖已有 `TaskIntent`，不得重新分配任务 ID。
+9. **INV-09 SESSION_ISOLATION**：不同 `session_id` 拥有各自独立的 `DialogueManager` 与 `SlotStore` 实例；Session A 的槽位修改绝对不得污染 Session B 的状态。
+10. **INV-10 FINAL_NO_OVERWRITE**：当目标 `task_intent_TIxxxx.json` 文件已存在时，系统绝对不得无条件覆盖，也不得因冲突错误删除原有正式任务文件。
+11. **INV-11 REQUEST_TRACEABILITY**：`/api/chat` 生成（自动生成）或接收（客户端显式传入）的 `request_id` 必须真实透传至 `DialogueManager.process(message, request_id=request_id)`，保证全链路可追溯。
 
 ### B. 期望目标行为 (EXPECTED_BEHAVIOR)
 目标架构应该具备、但在当前实现中可能尚未完全实现或需要重构优化的行为。这些行为作为后续 Phase 的设计目标。
 
 - **EXP-01**：Task 发布完成不等于 Conversation 关闭。未来架构允许任务处于 `published` 状态的同时会话保持 `active`，用户可继续提问或创建下一个新任务。
-- **EXP-02**：通用知识问答应当允许使用底座模型的推理能力；项目私有事实（如设备参数、油田坐标）必须由项目事实源强约束。
+- **EXP-02**：通用知识问答应当能够充分利用底座模型的 General Reasoning 推理能力（KB miss 时进行合理通用解答）；项目私有事实（如设备参数、油田坐标）必须由项目事实源强约束。
 - **EXP-03**：未来 Normalization Failure 不得覆盖已存在的合法旧值（`old valid value`），也不得静默丢弃用户的原始输入（`raw_value`）。
 
 ### C. 已知缺陷 (KNOWN_DEFECT)
@@ -87,7 +88,7 @@ Knowledge / StateInfo           Extractor / OilfieldLinker (候选提取)
 
 ## 3. 受保护的核心模块 (Frozen Core)
 
-为了确保治理基线的稳定性，以下模块在 G0 阶段被指定为 **FROZEN CORE**。除非发现阻断基线测试建立的严重 P0/P1 Bug，否则禁止修改其业务实现：
+为了确保治理基线的稳定性，以下模块在 G0.1 阶段被指定为 **FROZEN CORE**。本轮严禁修改其生产代码实现：
 
 | 模块 | 文件路径 | 冻结原因与安全语义 |
 | :--- | :--- | :--- |
@@ -102,7 +103,7 @@ Knowledge / StateInfo           Extractor / OilfieldLinker (候选提取)
 
 ## 4. 后续治理区域 (Governance Zone)
 
-以下模块属于后续治理与重构的目标范围（G1 ~ G4 阶段），在 G0 阶段**仅进行测量与不变量测试建立，不重写其架构**：
+以下模块属于后续治理与重构的目标范围（G1 ~ G4 阶段），在 G0.1 阶段**仅进行测量与不变量测试建立，不修改其生产逻辑**：
 
 - `src/llm_client.py`（模型 Profile 与能力封装）
 - `src/prompts.py`（Prompt 模版与提示工程）

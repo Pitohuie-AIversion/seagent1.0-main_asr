@@ -1,32 +1,41 @@
-# SEAgent Governance Acceptance Matrix
+# SEAgent 治理验收矩阵 (Governance Acceptance Matrix)
 
-本文档记录 SEAgent 治理基线的验收矩阵（Acceptance Matrix）。包含各类输入场景的期望效果、槽位变动约束、发布结果、当前验证状态（`VERIFIED` / `KNOWN_DEFECT` / `NOT_YET_VERIFIED`）及对应自动化测试用例映射。
+本文档跟踪 SEAgent 系统治理各场景的行为特征、不变量与缺陷判定、当前验证状态（`VERIFIED` / `KNOWN_DEFECT` / `NOT_YET_VERIFIED`），以及对应的真实测试用例位置。
 
 ---
 
-## 验收矩阵 (Governance Matrix)
+## 1. 验收与追溯矩阵 (Acceptance Matrix Table)
 
-| ID | Category | Input/Scenario | Expected Effect | Slot Mutation | Publish | Current Status | Test |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **GAM-01** | `general_chat` | "你好" / "谢谢" / "你能做什么" | 返回礼貌引导语，不进入任务槽位收集 | 无变动 | 否 | `VERIFIED` | `test_governance_invariants.py::test_inv02_write_only_mutates_task` |
-| **GAM-02** | `general_knowledge` | "什么是 DVL？" / "AUV 和 ROV 有什么区别？" | 返回专业水下知识解答，只读保护验证通过 | 无变动 (version不变) | 否 | `VERIFIED` | `test_governance_invariants.py::test_inv01_query_read_only` |
-| **GAM-03** | `project_fact` | "支持的最大作业水深是多少？" / "当前可用机器人列表" | 结合知识库/实体数据准确回答，无任务侧干扰 | 无变动 | 否 | `VERIFIED` | `test_governance_invariants.py::test_inv01_query_read_only` |
-| **GAM-04** | `task_create` | "创建一个管缆巡检任务" | 识别任务类型，初始化 required slots，进入 `collecting` 阶段 | 新增 `task_type` 与 `task_type_key` | 否 | `VERIFIED` | `test_governance_invariants.py::test_inv03_valid_slot_is_fact` |
-| **GAM-05** | `task_create` | "水深300米" | 抽取 `water_depth` 并规范化为 `300.0`，状态为 `valid` | 增加 `water_depth` 槽位 | 否 | `VERIFIED` | `test_governance_invariants.py::test_inv03_valid_slot_is_fact` |
-| **GAM-06** | `task_modify` | "水深改成500米" | 覆盖更新 `water_depth` 槽位值为 `500.0`，版本递增 | 更新 `water_depth` | 否 | `VERIFIED` | `test_governance_invariants.py::test_inv03_valid_slot_is_fact` |
-| **GAM-07** | `soft_warning` | 触发软警告后输入 "忽略警告" / "继续" | 生成与快照绑定的 `ValidationAcknowledgement`，解除阻塞并推进流程 | 记录 `validation_acknowledgements` | 补满后发布 | `VERIFIED` | `test_governance_invariants.py::test_inv05_soft_ack_is_distinct` |
-| **GAM-08** | `hard_constraint` | `blocked_hard` 阶段输入 "确认" / "忽略警告" / "没问题" | 拒绝绕过硬约束，保持 `blocked_hard` 阶段并提示修复 | 无合法更新 | 否 | `VERIFIED` | `test_governance_invariants.py::test_inv04_hard_cannot_be_bypassed` |
-| **GAM-09** | `confirmation` | 所有必需槽位填满后输入 "确认发布" | 触发 `TaskIntentBuilder` 原子写盘，生成 `task_intent_TIxxxx.json` | 终态锁定 | 是 | `VERIFIED` | `test_governance_invariants.py::test_inv06_publish_fail_closed` |
-| **GAM-10** | `confirmation` | 任务已在 `done` 阶段再次输入 "确认发布" | 提示任务已发布，幂等响应，无二次建单 | 无变动 | 否 | `VERIFIED` | `test_governance_invariants.py::test_inv07_duplicate_confirm_is_idempotent` |
-| **GAM-11** | `emergency_control` | 已发布任务后输入 "立即停止当前任务" | 捕获紧急控制意图，更新 `control_state="stop_requested"` | 记录 `control_state` | 否 | `VERIFIED` | `test_governance_invariants.py::test_emergency_control_routing` |
-| **GAM-12** | `emergency_control` | "如果停止当前任务会怎样？" | 识别为只读咨询查询 (Read-only query)，不触发控制动作 | 无变动 | 否 | `VERIFIED` | `test_governance_invariants.py::test_query_control_distinction` |
-| **GAM-13** | `emergency_control` | "不要停止当前任务" | 识别为否定句，不得执行 stop/cancel 动做 | 无变动 | 否 | `VERIFIED` | `test_governance_invariants.py::test_negative_control_request` |
-| **GAM-14** | `ASR` | 包含术语误读的语音转写文本 | 经过 `asr_normalizer` 纠错后送入统一 Dialogue 流水线 | 按纠错后文本处理 | 视意图定 | `VERIFIED` | `test_asr_normalizer.py` |
-| **GAM-15** | `concurrency` | Session A 修改槽位，Session B 查询/修改 | 证明两个 Session 的 `SlotStore` 与 `phase` 物理隔离 | Session A 独占更新 | Session A 独立 | `VERIFIED` | `test_governance_invariants.py::test_inv08_session_isolation` |
-| **GAM-16** | `persistence` | 目标 `task_intent_TIxxxx.json` 已存在时尝试发布 | 抛出冲突并拒绝对现有 final 文件进行无条件覆盖 | 无变动 (回滚) | 否 (Rollback) | `VERIFIED` | `test_governance_invariants.py::test_inv09_final_no_overwrite` |
-| **GAM-17** | `persistence` | 发布中途底层 IO 异常 | Fail-closed 保障，状态与内存还原至发布前 | 还原原 Snapshot | 否 | `VERIFIED` | `test_governance_invariants.py::test_inv06_publish_fail_closed` |
-| **GAM-18** | `traceability` | 客户端传入/未传入 `request_id` | HTTP 请求生成的 `request_id` 100% 传达至 `mgr.process()` | 审计记录携带 | 视流程定 | `VERIFIED` | `test_governance_invariants.py::test_inv10_request_traceability` |
-| **KD-01** | `ui_state` | 任务进入 `done` / `rejected` 阶段 | 当前 `ui_state_builder` 设置 `can_send=False` 导致输入框禁用 | 终态锁定 | 否 | `KNOWN_DEFECT` | `test_ui_state_contract.py` |
-| **KD-02** | `knowledge_qa` | KB 知识库中查无此项（`found=false`） | 当前未触发底层 LLM 独立 Reasoning 补充回答，直接弹失败文案 | 无变动 | 否 | `KNOWN_DEFECT` | `test_intent_routing.py` |
-| **KD-03** | `llm_client` | 任何 LLM 请求生成 | `apply_chat_template` 被硬编码 `enable_thinking=False` | 无变动 | 否 | `KNOWN_DEFECT` | `test_llm_client.py` |
-| **KD-04** | `normalizer` | 用户输入无法被映射为枚举或标准数值 | `normalize_updates` 保留原始输入字典，未能擦除或重置该槽位 | 保留原始 `raw` 提交 | 否 | `KNOWN_DEFECT` | `test_normalizer.py` |
+| ID | Category | Scenario | Expected Effect | Slot Mutation | Publish | Classification | Current Status | Test |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **AM-01** | `general_chat` | 问候与闲聊 ("你好") | 返回问候引导语，保持 Session 只读 (INV-01) | 无 (`SlotStore.version` 不变) | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv01_query_read_only` |
+| **AM-02** | `general_knowledge` | 通用知识问答 ("什么是 DVL？") | 期望调用 General Reasoning 解答；状态只读隔离 (INV-01 / EXP-02) | 无 (`SlotStore.version` 不变) | False | EXPECTED_BEHAVIOR | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv01_query_read_only` |
+| **AM-03** | `project_fact` | 任务或状态查询 ("当前任务进度？") | 返回当前阶段与槽位信息 (INV-01) | 无 (`SlotStore.version` 不变) | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv01_query_read_only` |
+| **AM-04** | `task_create` | 明确任务创建 ("创建一个管缆巡检任务") | 路由至 task_collection，初始化任务类型 (INV-02) | `task_type=管缆巡检`, `task_type_key=pipeline_inspection` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv02_real_write_path_task_create` |
+| **AM-05** | `task_create` | 填充具体参数 ("水深300米") | 走真实 DM WRITE 链路更新规范化水深 300.0 (INV-02 / INV-03) | `water_depth=300.0` (status=valid) | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv02_real_write_path_water_depth` |
+| **AM-06** | `task_modify` | 修改参数 ("水深改成500米") | 走真实 DM WRITE 链路覆盖更新为 500.0 (INV-02 / INV-03) | `water_depth=500.0` (version 增加) | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_real_task_modify_flow` |
+| **AM-07** | `task_modify` | 非法修改 ("水深改成差不多很深") | 非法输入绝对不作为正式事实覆盖旧 valid 300.0 (INV-04) | `get_task_state` 排除非法值；`raw_value` 保存输入 | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv04_invalid_input_never_overwrites_valid_fact` |
+| **AM-08** | `hard_constraint` | 硬约束触发时输入确认/忽略 ("没问题") | blocked_hard 下拒绝绕过发布 (INV-05) | 无 | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv05_hard_cannot_be_bypassed` |
+| **AM-09** | `soft_warning` | 软告警显式忽略 ("忽略警告") | blocked_soft 下忽略并生成绑定指纹的 ValidationAcknowledgement (INV-06) | 生成 ValidationAcknowledgement | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv06_soft_ack_is_distinct` |
+| **AM-10** | `confirmation` | 确认发布成功路径 ("确认发布") | prepare -> create_staging -> publish_staging 成功生成 final 文件 (INV-07/08) | 锁定正式槽位状态 | True | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_publish_success_path` |
+| **AM-11** | `persistence` | 发布中写盘/暂存失败 | Fail-Closed：完整还原 Snapshot 且 phase != done (INV-07) | 完整还原快照 | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv07_publish_fail_closed` |
+| **AM-12** | `confirmation` | 终态后重复确认 ("确认发布") | phase==done 时幂等响应，无二次写盘 (INV-08) | 无 | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv08_duplicate_confirm_is_idempotent` |
+| **AM-13** | `concurrency` | 多 Session 并发操作 | Session A 与 Session B 彻底物理隔离 (INV-09) | 各自更新独立 SlotStore | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv09_session_isolation` |
+| **AM-14** | `persistence` | 目标 Final 文件冲突 | 拒绝覆盖已有同名 final 文件并抛出 IntentIdConflict (INV-10) | 还原原文件状态 | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv10_final_no_overwrite` |
+| **AM-15** | `traceability` | /api/chat 透传显式 request_id | 客户端传入的 request_id 全链路透传至 DialogueManager.process (INV-11 Path A) | 无 | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv11_request_traceability_explicit` |
+| **AM-16** | `traceability` | /api/chat 自动生成 request_id | 客户端未传 request_id 时自动生成非空 req_xxx 并透传 (INV-11 Path B) | 无 | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv11_request_traceability_auto_generated` |
+| **AM-17** | `emergency_control` | 紧急停止指令 ("立即停止当前任务") | 正向识别控制指令为 stop (INV-01/02) | `control_state=stop_requested` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_emergency_control_routing` |
+| **AM-18** | `emergency_control` | 否定式控制指令 ("不要停止当前任务") | 绝对不触发 stop 控制动作 (INV-01/02) | `control_state=idle` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_negative_control_request` |
+| **AM-19** | `emergency_control` | 询问式控制 ("如果停止当前任务会怎样？") | 只读咨询，不触发控制动作 (INV-01/02) | `control_state=idle` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_query_control_distinction` |
+| **AM-20** | `known_defect` | 终态下 UIcan_send 锁定 (KD-01) | ui_state 硬编码 can_send=False 导致无法继续交互 | 无 | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_ui_state_contract.py` |
+| **AM-21** | `known_defect` | 知识库未命中缺少 LLM 兜底 (KD-02) | found=false 时直接预设拒绝，未调用 Reasoning 兜底 | 无 | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_golden_corpus_executable_cases` |
+| **AM-22** | `known_defect` | LLM 模板硬编码 enable_thinking=False (KD-03) | 禁用思维链推理模式 | 无 | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_golden_corpus_executable_cases` |
+| **AM-23** | `known_defect` | Normalization 失败时保留原始输入 (KD-04) | 归一化失败返回 None 时保留原始未处理输入 | 复制原始 updates | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_golden_corpus_executable_cases` |
+
+---
+
+## 2. 规则说明
+
+1. **Classification 字段限定**：只能使用 `INVARIANT`、`EXPECTED_BEHAVIOR` 或 `KNOWN_DEFECT`。
+2. **Current Status 字段限定**：只能使用 `VERIFIED`、`KNOWN_DEFECT` 或 `NOT_YET_VERIFIED`。
+3. **VERIFIED 的判定规则**：必须存在直接测试该场景的自动化测试用例，并且测试用例绝对存在于代码库中。测试用例名称格式必须为 `tests/test_file.py::TestClass::test_method`。
