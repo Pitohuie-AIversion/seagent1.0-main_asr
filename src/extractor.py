@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 from .llm_client import LLMClient
-from .model_profile import ModelRole
+from .model_profile import ModelRole, _is_unsupported_role_keyword_error
 from .normalizer import FieldNormalizer
 from .slot_store import normalize_payload_match_key
 
@@ -198,7 +198,9 @@ class ParameterExtractor:
 
         try:
             result = self.llm.extract_json(messages, max_tokens=800, role=ModelRole.EXTRACTOR)
-        except TypeError:
+        except TypeError as exc:
+            if not _is_unsupported_role_keyword_error(exc):
+                raise
             result = self.llm.extract_json(messages, max_tokens=800)
 
         if not isinstance(result, dict):

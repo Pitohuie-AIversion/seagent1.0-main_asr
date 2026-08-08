@@ -53,7 +53,7 @@ profiles:
   translation:
     role: translation
     enable_thinking: false
-    temperature: 0.3
+    temperature: 0.1
     max_tokens: 1500
     stop: []
     response_mode: text

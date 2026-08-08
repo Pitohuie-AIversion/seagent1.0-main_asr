@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from .llm_client import LLMClient
-from .model_profile import ModelRole
+from .model_profile import ModelRole, _is_unsupported_role_keyword_error
 
 logger = logging.getLogger(__name__)
 
@@ -968,22 +968,30 @@ class IntentRouter:
             if ej_attr is not None and hasattr(ej_attr, "called"):
                 try:
                     parsed = self.llm.extract_json(messages, max_tokens=260, role=ModelRole.ROUTER)
-                except TypeError:
+                except TypeError as exc:
+                    if not _is_unsupported_role_keyword_error(exc):
+                        raise
                     parsed = self.llm.extract_json(messages, max_tokens=260)
             elif hasattr(self.llm, "classify_interaction"):
                 try:
                     try:
                         res = self.llm.classify_interaction(messages, max_tokens=260, role=ModelRole.ROUTER)
-                    except TypeError:
+                    except TypeError as exc:
+                        if not _is_unsupported_role_keyword_error(exc):
+                            raise
                         res = self.llm.classify_interaction(messages, max_tokens=260)
                     if isinstance(res, dict):
                         parsed = res
+                except IntentRoutingError:
+                    raise
                 except Exception:
                     pass
             if parsed is None and hasattr(self.llm, "extract_json"):
                 try:
                     parsed = self.llm.extract_json(messages, max_tokens=260, role=ModelRole.ROUTER)
-                except TypeError:
+                except TypeError as exc:
+                    if not _is_unsupported_role_keyword_error(exc):
+                        raise
                     parsed = self.llm.extract_json(messages, max_tokens=260)
         except Exception as exc:
             logger.warning("[IntentRouter] LLM call failed: %s", exc)

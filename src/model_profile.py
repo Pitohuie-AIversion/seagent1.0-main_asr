@@ -187,21 +187,41 @@ def load_model_profiles(config_path: Path | None = None) -> dict[ModelRole, Mode
     return role_to_profile
 
 
+def _is_unsupported_role_keyword_error(exc: TypeError) -> bool:
+    """判断 TypeError 是否是因为旧版接口签名不支持 'role' 关键字参数引发。"""
+    msg = str(exc)
+    return "unexpected keyword argument" in msg and "role" in msg
+
+
 def is_model_profiles_v2_enabled(features_path: Path | None = None) -> bool:
     """唯一权威 Read-only Feature Flag Loader：读取 config/features.yaml 中的 model_profiles_v2。"""
     path = features_path or (CONFIG_DIR / "features.yaml")
     if not path.exists():
         return False
+
     try:
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
-        if isinstance(data, dict):
-            features = data.get("features", {})
-            if isinstance(features, dict):
-                return bool(features.get("model_profiles_v2", False))
-    except Exception:
-        pass
-    return False
+    except Exception as exc:
+        raise ModelProfileConfigError(f"解析 features.yaml 配置文件失败 ({path}): {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ModelProfileConfigError(f"features.yaml 配置文件根节点必须为 dict，收到 {type(data)}")
+
+    features = data.get("features", {})
+    if not isinstance(features, dict):
+        raise ModelProfileConfigError(f"features.yaml 的 features 节点必须为 dict，收到 {type(features)}")
+
+    if "model_profiles_v2" not in features:
+        return False
+
+    val = features["model_profiles_v2"]
+    if type(val) is not bool:
+        raise ModelProfileConfigError(
+            f"features.model_profiles_v2 必须为 bool 类型，收到 {type(val)}: {val!r}"
+        )
+    return val
+
 
 
 class ModelProfileRegistry:

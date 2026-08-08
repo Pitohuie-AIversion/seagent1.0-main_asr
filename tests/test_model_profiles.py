@@ -363,13 +363,13 @@ class TestProfileModeBehaviors(unittest.TestCase):
         client = LLMClient(None, None)
         options = client._resolve_generation_options(
             role=ModelRole.TRANSLATION,
-            default_temp=0.3,
+            default_temp=0.1,
             default_max_tokens=1500,
             default_response_mode="text",
         )
         self.assertEqual(options.role, ModelRole.TRANSLATION)
         self.assertFalse(options.enable_thinking)
-        self.assertEqual(options.temperature, 0.3)
+        self.assertEqual(options.temperature, 0.1)
 
 
 class TestFailClosedBehaviors(unittest.TestCase):
@@ -464,6 +464,197 @@ class TestPublicAPICompatibility(unittest.TestCase):
 
         filter_res = self.client.filter_reply("测试脱敏文本")
         self.assertIsInstance(filter_res, str)
+
+
+class TestFeatureFlagStrictType(unittest.TestCase):
+    """测试 model_profiles_v2 Feature Flag 严格类型校验与解析异常捕获。"""
+
+    def _write_temp_features(self, yaml_obj: object) -> Path:
+        f = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8")
+        yaml.dump(yaml_obj, f)
+        f.close()
+        return Path(f.name)
+
+    def test_feature_flag_false_boolean_is_false(self):
+        p = self._write_temp_features({"features": {"model_profiles_v2": False}})
+        try:
+            self.assertFalse(is_model_profiles_v2_enabled(p))
+        finally:
+            p.unlink()
+
+    def test_feature_flag_true_boolean_is_true(self):
+        p = self._write_temp_features({"features": {"model_profiles_v2": True}})
+        try:
+            self.assertTrue(is_model_profiles_v2_enabled(p))
+        finally:
+            p.unlink()
+
+    def test_feature_flag_missing_key_defaults_false(self):
+        p = self._write_temp_features({"features": {}})
+        try:
+            self.assertFalse(is_model_profiles_v2_enabled(p))
+        finally:
+            p.unlink()
+
+    def test_feature_flag_rejects_string_false(self):
+        p = self._write_temp_features({"features": {"model_profiles_v2": "false"}})
+        try:
+            with self.assertRaises(ModelProfileConfigError):
+                is_model_profiles_v2_enabled(p)
+        finally:
+            p.unlink()
+
+    def test_feature_flag_rejects_string_true(self):
+        p = self._write_temp_features({"features": {"model_profiles_v2": "true"}})
+        try:
+            with self.assertRaises(ModelProfileConfigError):
+                is_model_profiles_v2_enabled(p)
+        finally:
+            p.unlink()
+
+    def test_feature_flag_rejects_integer_zero(self):
+        p = self._write_temp_features({"features": {"model_profiles_v2": 0}})
+        try:
+            with self.assertRaises(ModelProfileConfigError):
+                is_model_profiles_v2_enabled(p)
+        finally:
+            p.unlink()
+
+    def test_feature_flag_rejects_integer_one(self):
+        p = self._write_temp_features({"features": {"model_profiles_v2": 1}})
+        try:
+            with self.assertRaises(ModelProfileConfigError):
+                is_model_profiles_v2_enabled(p)
+        finally:
+            p.unlink()
+
+    def test_feature_flag_rejects_null(self):
+        p = self._write_temp_features({"features": {"model_profiles_v2": None}})
+        try:
+            with self.assertRaises(ModelProfileConfigError):
+                is_model_profiles_v2_enabled(p)
+        finally:
+            p.unlink()
+
+    def test_feature_flag_yaml_parse_failure_is_explicit(self):
+        f = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8")
+        f.write("invalid: yaml: [:\n")
+        f.close()
+        p = Path(f.name)
+        try:
+            with self.assertRaises(ModelProfileConfigError):
+                is_model_profiles_v2_enabled(p)
+        finally:
+            p.unlink()
+
+
+class TestRoleTypeErrorFallback(unittest.TestCase):
+    """测试 TypeError role 兼容降级与内部 TypeError 不被吞掉的防护。"""
+
+    def test_role_compatibility_falls_back_for_old_signature(self):
+        class OldLLM:
+            def chat(self, messages, temperature=0.7, max_tokens=1500):
+                return "old_chat_response"
+
+        from src.dialogue_manager import DialogueManager
+        dm = DialogueManager()
+        dm.llm = OldLLM()
+        res = dm._safe_llm_chat([{"role": "user", "content": "hi"}], role=ModelRole.GENERAL_REASONING)
+        self.assertEqual(res, "old_chat_response")
+
+    def test_role_compatibility_does_not_swallow_internal_type_error(self):
+        class BrokenLLM:
+            def chat(self, messages, temperature=0.7, max_tokens=1500, role=None):
+                raise TypeError("Internal conversion failure: int object is not callable")
+
+        from src.dialogue_manager import DialogueManager
+        dm = DialogueManager()
+        dm.llm = BrokenLLM()
+
+        with self.assertRaises(TypeError) as ctx:
+            dm._safe_llm_chat([{"role": "user", "content": "hi"}], role=ModelRole.TASK_RESPONDER)
+        self.assertIn("Internal conversion failure", str(ctx.exception))
+
+
+class TestTranslationWiring(unittest.TestCase):
+    """测试真实 Translation 入口角色绑定与 Profile 驱动。"""
+
+    @patch("web_backend._shared_llm")
+    def test_translation_call_uses_translation_profile_when_v2_enabled(self, mock_llm):
+        mock_llm.chat.return_value = "Hello"
+        from web_backend import _translate_single_chunk
+        _translate_single_chunk("你好", "English")
+
+        mock_llm.chat.assert_called_once()
+        _, kwargs = mock_llm.chat.call_args
+        self.assertEqual(kwargs.get("role"), ModelRole.TRANSLATION)
+
+    @patch("src.llm_client.is_model_profiles_v2_enabled", return_value=False)
+    @patch("src.llm_client.SamplingParams", MagicMock())
+    def test_translation_legacy_parameters_unchanged_when_flag_false(self, mock_v2):
+        mock_tok = MagicMock()
+        mock_tok.apply_chat_template.return_value = "prompt"
+        mock_llm = MagicMock()
+        mock_output = MagicMock()
+        mock_output.outputs = [MagicMock(text="Hello")]
+        mock_llm.generate.return_value = [mock_output]
+
+        client = LLMClient(mock_llm, mock_tok)
+        res = client.chat([{"role": "user", "content": "你好"}], temperature=0.1, max_tokens=1500, role=ModelRole.TRANSLATION)
+        self.assertEqual(res, "Hello")
+
+        mock_tok.apply_chat_template.assert_called_once()
+        _, kwargs = mock_tok.apply_chat_template.call_args
+        self.assertFalse(kwargs["enable_thinking"])
+
+    @patch("src.llm_client.is_model_profiles_v2_enabled", return_value=True)
+    def test_translation_v2_uses_profile_options(self, mock_v2):
+        client = LLMClient(None, None)
+        options = client._resolve_generation_options(
+            role=ModelRole.TRANSLATION,
+            default_temp=0.1,
+            default_max_tokens=1500,
+        )
+        self.assertEqual(options.role, ModelRole.TRANSLATION)
+        self.assertFalse(options.enable_thinking)
+        self.assertEqual(options.temperature, 0.1)
+
+
+class TestKnowledgeQAContextResolution(unittest.TestCase):
+    """测试 Knowledge QA 恢复 equipment_type context 与 follow-up query 上下文解析。"""
+
+    def test_device_query_preserves_selected_equipment_context(self):
+        from src.dialogue_manager import DialogueManager
+        from src.intent_router import IntentRouteResult
+
+        dm = DialogueManager()
+        # 设置真实任务上下文：已有任务类型与设备名称
+        dm.task_state["task_type_key"] = "pipeline_inspection"
+        dm.task_state["equipment_name"] = "观察级ROV"
+
+        # 记录执行前 SlotStore 版本号
+        version_before = dm.slot_store.version
+
+        route = IntentRouteResult(
+            dialogue_mode="knowledge_qa",
+            interaction_type="QUERY",
+            query_intent="DEVICE_CAPABILITY",
+            confidence=0.95,
+            reason="测试 follow-up 设备能力询问",
+        )
+
+        user_msg = "它最大能下潜多少米？"  # 消息中不包含设备名称实体
+        reply = dm._handle_knowledge_query(user_msg, route, request_id="req_followup_test")
+
+        # 断言没返回 device_not_resolved 错误
+        self.assertNotIn("未找到该设备信息", reply)
+        self.assertNotIn("请说明具体的机器人型号或名称", reply)
+
+        # 断言使用了当前任务选中的设备信息
+        self.assertTrue("观察级" in reply or "符合条件" in reply or "600" in reply or "米" in reply)
+
+        # 断言 QUERY path 不修改 SlotStore (INV-01)
+        self.assertEqual(dm.slot_store.version, version_before)
 
 
 if __name__ == "__main__":

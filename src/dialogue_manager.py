@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 from .llm_client import LLMClient
-from .model_profile import ModelRole
+from .model_profile import ModelRole, _is_unsupported_role_keyword_error
 from .knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from .extractor import ParameterExtractor
 from .normalizer import FieldNormalizer
@@ -293,7 +293,9 @@ class DialogueManager:
     ) -> str:
         try:
             return self.llm.chat(messages, temperature=temperature, max_tokens=max_tokens, role=role)
-        except TypeError:
+        except TypeError as exc:
+            if not _is_unsupported_role_keyword_error(exc):
+                raise
             return self.llm.chat(messages, temperature=temperature, max_tokens=max_tokens)
 
     def _safe_llm_filter_reply(
@@ -303,7 +305,9 @@ class DialogueManager:
     ) -> str:
         try:
             return self.llm.filter_reply(reply, role=role)
-        except TypeError:
+        except TypeError as exc:
+            if not _is_unsupported_role_keyword_error(exc):
+                raise
             return self.llm.filter_reply(reply)
 
     def _handle_knowledge_query(
@@ -314,6 +318,10 @@ class DialogueManager:
     ) -> str:
         context = {
             "task_type_key": self.task_state.get("task_type_key"),
+            "equipment_type": (
+                self.task_state.get("equipment_type")
+                or self.task_state.get("equipment_name")
+            ),
             "phase": self.phase,
             "mode": self.mode,
             "user_requirements": self.slot_store.get_built_json(),
@@ -608,8 +616,8 @@ class DialogueManager:
             support_task=self.kb.get_supported_task(),
             slot_snapshot=self.slot_store.get_slot_snapshot(),
         )
-        reply = self.llm.chat(messages, temperature=0.7, max_tokens=1500)
-        reply = self.llm.filter_reply(reply)
+        reply = self._safe_llm_chat(messages, temperature=0.7, max_tokens=1500, role=ModelRole.TASK_RESPONDER)
+        reply = self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
         reply = self._ensure_constraint_details(reply, constraint_context)
 
         self.conversation_history.append({"role": "user", "content": user_message})

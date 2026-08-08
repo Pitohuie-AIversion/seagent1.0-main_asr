@@ -683,12 +683,19 @@ def _split_into_chunks(text: str, chunk_size: int) -> list[str]:
 
 def _translate_single_chunk(text: str, target_lang: str) -> str:
     """翻译单个文本块，不做缓存，直接走 LLM。"""
+    from src.model_profile import ModelRole
     system_instruction = _TRANSLATE_SYSTEM_PROMPT.format(target_lang=target_lang)
     messages = [
         {"role": "system", "content": system_instruction},
         {"role": "user", "content": text},
     ]
-    return _shared_llm.chat(messages, temperature=0.1, max_tokens=TRANSLATION_MAX_TOKENS)
+    return _shared_llm.chat(
+        messages,
+        temperature=0.1,
+        max_tokens=TRANSLATION_MAX_TOKENS,
+        role=ModelRole.TRANSLATION,
+    )
+
 
 
 def _translate_text_internal(text: str, target_lang: str) -> str:
