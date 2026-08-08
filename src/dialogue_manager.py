@@ -1862,6 +1862,7 @@ class DialogueManager:
         passthrough_keys = {
             "emergency_mode",
             "rov_description",
+            "oilfield_name",
             "__clear_oilfield_name",
             "__clear_pending_oilfield",
             "task_id",
@@ -2051,54 +2052,6 @@ class DialogueManager:
                 slot.confidence = failure.confidence
                 slot.source = failure.source
                 slot.validation_error = failure.error_message
-
-        # 3. Passthrough updates 依赖现有 specialized handler
-        equipment_keys = {
-            "equipment_class",
-            "equipment_family",
-            "equipment_specification",
-            "equipment_type",
-            "equipment_name",
-            "equipment_unit_id",
-        }
-        eq_updates = {}
-        pass_meta = {}
-
-        for sp in plan.passthrough_slot_updates:
-            k = sp.key
-            if k in equipment_keys:
-                eq_updates[k] = sp.candidate_value
-                pass_meta[k] = {
-                    "raw_value": sp.raw_value,
-                    "confidence": sp.confidence,
-                    "source": sp.source,
-                }
-            elif k == "emergency_mode":
-                if "emergency_mode" not in new_slots:
-                    new_slots["emergency_mode"] = Slot("emergency_mode")
-                new_slots["emergency_mode"].value = True
-                new_slots["emergency_mode"].status = "valid"
-            elif k == "rov_description":
-                if "rov_description" not in new_slots:
-                    new_slots["rov_description"] = Slot("rov_description")
-                new_slots["rov_description"].value = sp.candidate_value
-                new_slots["rov_description"].status = "candidate"
-                new_slots["rov_description"].raw_value = str(sp.raw_value)
-                new_slots["rov_description"].confidence = sp.confidence
-                new_slots["rov_description"].source = sp.source
-
-        if eq_updates:
-            self._handle_equipment_updates_in_transaction(
-                eq_updates,
-                new_slots,
-                allow_overwrite,
-            )
-            for eq_k, meta in pass_meta.items():
-                eq_slot = new_slots.get(eq_k)
-                if eq_slot:
-                    eq_slot.raw_value = str(meta["raw_value"]) if meta["raw_value"] is not None else None
-                    eq_slot.confidence = meta["confidence"]
-                    eq_slot.source = meta["source"]
 
     @staticmethod
     def _source_for_resolution_method(resolution_method: str | None) -> str:

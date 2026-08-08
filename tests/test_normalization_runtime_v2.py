@@ -162,16 +162,25 @@ class TestRuntimeSpecializedOwnership(unittest.TestCase):
         for k in eq_keys:
             self.assertIn(k, NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS)
 
-        # 控件与 entity linker intermediate 字段
+        # Task type domain
+        self.assertIn("task_type", NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS)
+        self.assertIn("task_type_key", NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS)
+
+        # Control与 Specialized Linker Input
         self.assertIn("emergency_mode", NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS)
         self.assertIn("rov_description", NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS)
-        self.assertIn("raw_oilfield_name", NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS)
+        self.assertIn("oilfield_name", NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS)
+
+        # Downstream-only Linker 内部/输出状态不得在 TaskPatch passthrough allowlist 中
+        self.assertNotIn("raw_oilfield_name", NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS)
+        self.assertNotIn("pending_oilfield_name", NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS)
+        self.assertNotIn("pending_oilfield_candidates", NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS)
 
         # Schema 字段不得存在于 passthrough allowlist
         for schema_key in ("water_depth", "start_time", "payload", "support_vessel", "cable_type"):
             self.assertNotIn(schema_key, NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS)
 
-        # Auto IDs 不得存在于 passthrough allowlist
+        # Auto / Upstream-Excluded IDs 不得存在于 passthrough allowlist
         for auto_id in ("task_id", "intent_id", "internal_id"):
             self.assertNotIn(auto_id, NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS)
 
@@ -184,10 +193,13 @@ class TestRuntimeV2Integration(unittest.TestCase):
 
     def _setup_stage2_task(self, task_type_key: str = "pipeline_inspection"):
         self.dm.task_type_key = task_type_key
-        slot = Slot(slot_name="task_type_key")
-        slot.value = task_type_key
-        slot.status = "valid"
-        self.dm.slot_store.commit_transaction({"task_type_key": slot}, [])
+        tt_slot = Slot(slot_name="task_type")
+        tt_slot.value = "管缆巡检"
+        tt_slot.status = "valid"
+        ttk_slot = Slot(slot_name="task_type_key")
+        ttk_slot.value = task_type_key
+        ttk_slot.status = "valid"
+        self.dm.slot_store.commit_transaction({"task_type": tt_slot, "task_type_key": ttk_slot}, [])
         self.dm.intent_router.route = MagicMock(
             return_value=IntentRouteResult(
                 interaction_type="WRITE",
@@ -423,6 +435,228 @@ class TestRuntimeV2Integration(unittest.TestCase):
                 if c[0] and c[0][0] in (300, "300米", "300")
             ]
             self.assertEqual(len(water_depth_calls), 1)
+
+    def test_v2_stage2_task_type_key_is_supported(self):
+        self._setup_stage2_task("pipeline_inspection")
+
+        extraction_res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "task_type_key",
+                    "normalized_value": "pipeline_inspection",
+                    "raw_value": "pipeline_inspection",
+                    "confidence": 1.0,
+                    "resolution_method": "canonical_exact",
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        self.dm.extractor.extract_updates = MagicMock(return_value=extraction_res)
+
+        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True), \
+             patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=True):
+            self.dm.process("执行管缆巡检")
+
+        tt_slot = self.dm.slot_store.slots.get("task_type_key")
+        self.assertIsNotNone(tt_slot)
+        self.assertEqual(tt_slot.value, "pipeline_inspection")
+        self.assertEqual(tt_slot.status, "valid")
+
+    def test_v2_stage2_task_type_pair_uses_special_handler(self):
+        self._setup_stage2_task("pipeline_inspection")
+
+        extraction_res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "task_type",
+                    "normalized_value": "管缆巡检",
+                    "raw_value": "管缆巡检",
+                    "confidence": 1.0,
+                    "resolution_method": "canonical_exact",
+                },
+                {
+                    "canonical_key": "task_type_key",
+                    "normalized_value": "pipeline_inspection",
+                    "raw_value": "pipeline_inspection",
+                    "confidence": 1.0,
+                    "resolution_method": "canonical_exact",
+                },
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        self.dm.extractor.extract_updates = MagicMock(return_value=extraction_res)
+
+        with patch.object(DialogueManager, "_handle_task_type_update_in_transaction", wraps=self.dm._handle_task_type_update_in_transaction) as spy_tt, \
+             patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True), \
+             patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=True):
+            self.dm.process("修改为管缆巡检作业")
+
+            self.assertTrue(spy_tt.called)
+
+    def test_v2_task_type_category_lock_matches_legacy(self):
+        # 1. 在 Legacy 模式下构建带有效锁定 task_id 的任务
+        self.dm.task_type_key = "pipeline_inspection"
+        tt_slot = Slot(slot_name="task_type_key")
+        tt_slot.value = "pipeline_inspection"
+        tt_slot.status = "valid"
+        tid_slot = Slot(slot_name="task_id")
+        tid_slot.value = "PI-20260803-001"
+        tid_slot.status = "valid"
+        self.dm.slot_store.commit_transaction({"task_type_key": tt_slot, "task_id": tid_slot}, [])
+        self.dm.intent_router.route = MagicMock(
+            return_value=IntentRouteResult(
+                interaction_type="WRITE",
+                confidence=1.0,
+                reason="test",
+            )
+        )
+
+        extraction_res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "task_type",
+                    "normalized_value": "结构物巡检",
+                    "raw_value": "结构物巡检",
+                    "confidence": 1.0,
+                    "resolution_method": "canonical_exact",
+                },
+                {
+                    "canonical_key": "task_type_key",
+                    "normalized_value": "structure_inspection",
+                    "raw_value": "structure_inspection",
+                    "confidence": 1.0,
+                    "resolution_method": "canonical_exact",
+                },
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        self.dm.extractor.extract_updates = MagicMock(return_value=extraction_res)
+
+        # 在 V2 下尝试跨类别修改
+        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True), \
+             patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=True):
+            self.dm.process("改成结构物巡检")
+
+        # 验证类别锁生效：task_type_key 保持旧值 pipeline_inspection，不被改写为 structure_inspection
+        tt_slot_after = self.dm.slot_store.slots.get("task_type_key")
+        self.assertEqual(tt_slot_after.value, "pipeline_inspection")
+
+    def test_v2_equipment_handler_called_exactly_once(self):
+        self._setup_stage2_task("pipeline_inspection")
+
+        extraction_res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "equipment_type",
+                    "normalized_value": "观察级ROV",
+                    "raw_value": "观察级ROV",
+                    "confidence": 0.95,
+                    "resolution_method": "canonical_exact",
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        self.dm.extractor.extract_updates = MagicMock(return_value=extraction_res)
+
+        with patch.object(DialogueManager, "_handle_equipment_updates_in_transaction", wraps=self.dm._handle_equipment_updates_in_transaction) as spy_eq, \
+             patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True), \
+             patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=True):
+
+            self.dm.process("使用观察级ROV")
+
+            self.assertEqual(spy_eq.call_count, 1)
+
+    def test_v2_equipment_hierarchy_effect_parity(self):
+        self._setup_stage2_task("pipeline_inspection")
+
+        extraction_res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "equipment_type",
+                    "normalized_value": "观察级ROV",
+                    "raw_value": "观察级ROV",
+                    "confidence": 0.95,
+                    "resolution_method": "canonical_exact",
+                },
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        self.dm.extractor.extract_updates = MagicMock(return_value=extraction_res)
+
+        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True), \
+             patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=True):
+            self.dm.process("配备观察级ROV")
+
+        eq_type_slot = self.dm.slot_store.slots.get("equipment_type")
+        eq_fam_slot = self.dm.slot_store.slots.get("equipment_family")
+        eq_class_slot = self.dm.slot_store.slots.get("equipment_class")
+        self.assertIsNotNone(eq_type_slot)
+        self.assertIsNotNone(eq_fam_slot)
+        self.assertIsNotNone(eq_class_slot)
+        self.assertEqual(eq_type_slot.status, "valid")
+        self.assertEqual(eq_fam_slot.status, "valid")
+        self.assertEqual(eq_class_slot.status, "valid")
+
+    def test_v2_oilfield_linker_result_not_overwritten_by_apply_plan(self):
+        self._setup_stage2_task("pipeline_inspection")
+
+        extraction_res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "oilfield_name",
+                    "normalized_value": "临水17-2",
+                    "raw_value": "临水17-2",
+                    "confidence": 1.0,
+                    "resolution_method": "canonical_exact",
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        self.dm.extractor.extract_updates = MagicMock(return_value=extraction_res)
+
+        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True), \
+             patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=True):
+            self.dm.process("作业在临水17-2")
+
+        oilfield_slot = self.dm.slot_store.slots.get("oilfield_name")
+        self.assertIsNotNone(oilfield_slot)
+        # 确认最终值为 Linker 解析出的规范名称，而非原始候选值
+        self.assertEqual(oilfield_slot.value, "陵水17-2气田")
+
+    def test_v2_oilfield_pending_state_not_overwritten(self):
+        self._setup_stage2_task("pipeline_inspection")
+
+        # 模拟模糊油田输入 "南海" 触发 Linker 生成 pending 状态
+        extraction_res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "oilfield_name",
+                    "normalized_value": "南海",
+                    "raw_value": "南海",
+                    "confidence": 0.8,
+                    "resolution_method": "canonical_exact",
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        self.dm.extractor.extract_updates = MagicMock(return_value=extraction_res)
+
+        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True), \
+             patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=True):
+            self.dm.process("作业在南海油田")
+
+        pending_name = self.dm.slot_store.slots.get("pending_oilfield_name")
+        pending_cands = self.dm.slot_store.slots.get("pending_oilfield_candidates")
+        self.assertIsNotNone(pending_name)
+        self.assertIsNotNone(pending_cands)
+        self.assertEqual(pending_name.value, "南海")
 
 
 if __name__ == "__main__":
