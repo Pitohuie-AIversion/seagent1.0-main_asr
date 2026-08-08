@@ -368,18 +368,21 @@ class ParameterExtractor:
             for keep_sep in ("但保留", "除了", "保留"):
                 if keep_sep in remove_target_text:
                     remove_target_text = remove_target_text.split(keep_sep)[0].strip()
-            removed_items = cls._find_payload_items_in_text(remove_target_text, allowed_values) or [remove_target_text]
-            return [
-                {
-                    "field": "payload",
-                    "operation": "remove",
-                    "items": removed_items,
-                    "target_items": [],
-                    "raw_text": text,
-                    "confidence": 0.95,
-                    "source": "user_input",
-                }
-            ], []
+            found_payload = cls._find_payload_items_in_text(remove_target_text, allowed_values)
+            has_payload_keyword = any(kw in text for kw in ("载荷", "工具", "payload"))
+            if found_payload or has_payload_keyword:
+                removed_items = found_payload or [remove_target_text]
+                return [
+                    {
+                        "field": "payload",
+                        "operation": "remove",
+                        "items": removed_items,
+                        "target_items": [],
+                        "raw_text": text,
+                        "confidence": 0.95,
+                        "source": "user_input",
+                    }
+                ], []
 
         add_match = re.search(
             r"(?:再加一个|加一个|再加|添加|增加|还要|加上|还需要|配备|多带一个|带上|携带)\s*(?P<item>.+)",

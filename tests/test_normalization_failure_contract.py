@@ -243,8 +243,8 @@ class TestNormalizationFailureContract(unittest.TestCase):
         self.assertIsNone(slot.candidate_value)
         self.assertEqual(self.dm.slot_store.get_task_state().get("water_depth"), 500.0)
 
-    def test_non_schema_control_fields_are_not_silently_dropped(self):
-        """Test 6: 验证非 schema 控制与中间字段（emergency_mode, rov_description, raw_oilfield_name）不被 Normalizer 误吞。"""
+    def test_internal_emergency_mode_survives_schema_normalization(self):
+        """验证内部控制字段 emergency_mode 在 Task Output Schema 规范化后依然留存并写回 SlotStore 且 status=='valid'。"""
         schema = self.dm.builder.get_schema("pipeline_inspection", self.dm.mode)
         self.dm.slot_store.init_task_slots(schema)
 
@@ -254,7 +254,6 @@ class TestNormalizationFailureContract(unittest.TestCase):
         self.dm.slot_store.commit_transaction(slots, [])
         self.dm.task_state = self.dm.slot_store.get_task_state()
 
-        # 1. emergency_mode 经过专用路径写入
         mock_route = MagicMock()
         mock_route.dialogue_mode = "task_collection"
 
@@ -274,7 +273,123 @@ class TestNormalizationFailureContract(unittest.TestCase):
             with patch.object(self.dm.extractor, "extract_updates", return_value=mock_extract_emergency):
                 self.dm.process("进入紧急模式", request_id="req_ctrl_1")
 
+        slot_em = self.dm.slot_store.slots.get("emergency_mode")
+        self.assertIsNotNone(slot_em)
+        self.assertTrue(slot_em.value)
+        self.assertEqual(slot_em.status, "valid")
         self.assertEqual(self.dm.mode, "emergency")
+
+    def test_invalid_without_old_valid_becomes_invalid(self):
+        """验证初始无旧 valid 值时（status=missing），规范化失败输入转为 status='invalid' 且 value=None。"""
+        schema = self.dm.builder.get_schema("pipeline_inspection", self.dm.mode)
+        self.dm.slot_store.init_task_slots(schema)
+
+        slots = self.dm.slot_store.clone_slots()
+        slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
+        slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+        self.dm.slot_store.commit_transaction(slots, [])
+        self.dm.task_state = self.dm.slot_store.get_task_state()
+
+        self.assertNotIn("water_depth", self.dm.slot_store.get_task_state())
+
+        mock_route = MagicMock()
+        mock_route.dialogue_mode = "task_collection"
+
+        mock_extract_invalid = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "water_depth",
+                    "normalized_value": "300abc",
+                    "raw_value": "大概很深",
+                    "confidence": 0.9,
+                    "resolution_method": "llm_semantic",
+                }
+            ]
+        }
+
+        with patch.object(self.dm.intent_router, "route", return_value=mock_route):
+            with patch.object(self.dm.extractor, "extract_updates", return_value=mock_extract_invalid):
+                self.dm.process("水深大概很深", request_id="req_inv_no_old")
+
+        slot = self.dm.slot_store.slots.get("water_depth")
+        self.assertIsNotNone(slot)
+        self.assertIsNone(slot.value)
+        self.assertEqual(slot.candidate_value, "300abc")
+        self.assertEqual(slot.raw_value, "大概很深")
+        self.assertEqual(slot.status, "invalid")
+        self.assertIsNotNone(slot.validation_error)
+        self.assertNotIn("water_depth", self.dm.slot_store.get_task_state())
+
+    def test_real_pipeline_cancel_conflict_restores_old_value(self):
+        """真实 Pipeline 端到端测试（不 Mock Router / Extractor，仅 Stub LLM）：conflict 状态下取消修改恢复旧 valid 值。"""
+        schema = self.dm.builder.get_schema("pipeline_inspection", self.dm.mode)
+        self.dm.slot_store.init_task_slots(schema)
+
+        slots = self.dm.slot_store.clone_slots()
+        slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
+        slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+        slots["water_depth"] = Slot("water_depth", value=300.0, status="valid")
+        self.dm.slot_store.commit_transaction(slots, [])
+        self.dm.task_state = self.dm.slot_store.get_task_state()
+
+        # Step 1: 提交非法修改引发 conflict
+        def stub_invalid_llm(messages, max_tokens=None):
+            return {
+                "slot_candidates": [
+                    {
+                        "canonical_key": "water_depth",
+                        "normalized_value": "300abc",
+                        "raw_value": "差不多很深",
+                        "confidence": 0.9,
+                        "resolution_method": "llm_semantic",
+                    }
+                ]
+            }
+
+        with patch.object(self.dm.llm, "extract_json", side_effect=stub_invalid_llm):
+            self.dm.process("水深改成差不多很深", request_id="req_real_cancel_step1")
+
+        slot_conflict = self.dm.slot_store.slots.get("water_depth")
+        self.assertEqual(slot_conflict.status, "conflict")
+        self.assertEqual(slot_conflict.value, 300.0)
+
+        # Step 2: 真实 Router + Extractor 管道提交 "取消修改水深"
+        def stub_empty_llm(messages, max_tokens=None):
+            return {"slot_candidates": []}
+
+        with patch.object(self.dm.llm, "extract_json", side_effect=stub_empty_llm):
+            self.dm.process("取消修改水深", request_id="req_real_cancel_step2")
+
+        slot_restored = self.dm.slot_store.slots.get("water_depth")
+        self.assertEqual(slot_restored.value, 300.0)
+        self.assertEqual(slot_restored.status, "valid")
+        self.assertIsNone(slot_restored.candidate_value)
+        self.assertIsNone(slot_restored.validation_error)
+        self.assertEqual(self.dm.slot_store.get_task_state().get("water_depth"), 300.0)
+
+    def test_cancel_task_vs_cancel_slot_modification_are_distinct(self):
+        """验证 IntentRouter 真实区分“取消当前任务”、“取消修改水深”、“不要取消当前任务”与“如果取消任务会怎样？”。"""
+        router = self.dm.intent_router
+
+        # 1. 取消当前任务 -> emergency_intervention / cancel
+        r1 = router.route("取消当前任务", [], {"task_type": "管缆巡检"}, "collecting")
+        self.assertEqual(r1.dialogue_mode, "emergency_intervention")
+        self.assertEqual(r1.emergency_action, "cancel")
+
+        # 2. 取消修改水深 -> task_collection / WRITE
+        r2 = router.route("取消修改水深", [], {"task_type": "管缆巡检"}, "collecting")
+        self.assertEqual(r2.dialogue_mode, "task_collection")
+        self.assertEqual(r2.interaction_type, "WRITE")
+
+        # 3. 不要取消当前任务 -> 只读，无紧急动作
+        r3 = router.route("不要取消当前任务", [], {"task_type": "管缆巡检"}, "collecting")
+        self.assertEqual(r3.dialogue_mode, "knowledge_qa")
+        self.assertIsNone(r3.emergency_action)
+
+        # 4. 如果取消任务会怎样？ -> 只读咨询，无紧急动作
+        r4 = router.route("如果取消任务会怎样？", [], {"task_type": "管缆巡检"}, "collecting")
+        self.assertEqual(r4.dialogue_mode, "knowledge_qa")
+        self.assertIsNone(r4.emergency_action)
 
 
 class TestFieldNormalizerUnit(unittest.TestCase):

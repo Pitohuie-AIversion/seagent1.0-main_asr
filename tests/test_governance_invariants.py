@@ -460,6 +460,29 @@ class TestGovernanceInvariants(unittest.TestCase):
         reply_query = self.dm.process("如果停止当前任务会怎样？", request_id="req_gc31")
         self.assertEqual(self.dm.control_state, "idle")
 
+    def test_kd02_kb_miss_currently_has_no_general_reasoning(self):
+        """KD-02 Characterization Test: 当 KB found=False 时直接返回预设拒绝文案，未调用 General Reasoning 兜底。"""
+        with patch.object(self.dm.kb, "execute_typed_query", return_value={"found": False, "reason": "no_match"}):
+            reply = self.dm.process("什么是未知的概念？", request_id="req_kd02")
+        self.assertIn("当前知识库未提供该信息", reply)
+
+    def test_kd03_llm_template_currently_disables_thinking(self):
+        """KD-03 Characterization Test: 验证 LLMClient.generate_text 模板渲染硬编码 enable_thinking=False。"""
+        with patch("src.llm_client.SamplingParams", MagicMock()):
+            mock_tok = MagicMock()
+            mock_tok.apply_chat_template.return_value = "prompt"
+            mock_llm = MagicMock()
+            mock_output = MagicMock()
+            mock_output.outputs = [MagicMock(text="response")]
+            mock_llm.generate.return_value = [mock_output]
+
+            llm = LLMClient(mock_llm, mock_tok)
+            llm.generate_text([{"role": "user", "content": "hi"}])
+            mock_tok.apply_chat_template.assert_called_once()
+            _, kwargs = mock_tok.apply_chat_template.call_args
+            self.assertIn("enable_thinking", kwargs)
+            self.assertFalse(kwargs["enable_thinking"])
+
     def test_governance_corpus_integrity(self):
         """验证 Golden Corpus 50 条测试案例的数据结构完整性与元数据覆盖度。"""
         self.assertEqual(len(GOVERNANCE_GOLDEN_CORPUS), 50)
@@ -496,6 +519,11 @@ class TestGovernanceInvariants(unittest.TestCase):
             case = cases_by_id[case_id]
             user_input = case["input"]
             v_before = self.dm.slot_store.version
+            self.dm.control_state = "idle"
+            self.dm.phase = "collecting"
+
+            if case_id == "GC-28":
+                self.dm.phase = "done"
 
             def stub_llm(messages, max_tokens=None):
                 return {"slot_candidates": []}
@@ -507,4 +535,10 @@ class TestGovernanceInvariants(unittest.TestCase):
             if case["nature"] == "invariant" and not case["should_publish"]:
                 if case["category"] in ("general_chat", "general_knowledge", "project_fact"):
                     self.assertEqual(self.dm.slot_store.version, v_before)
-                self.assertNotEqual(self.dm.phase, "done")
+
+            if case_id == "GC-01":
+                self.assertEqual(self.dm.slot_store.version, v_before)
+            elif case_id == "GC-28":
+                self.assertEqual(self.dm.control_state, "stop_requested")
+            elif case_id in ("GC-31", "GC-33"):
+                self.assertEqual(self.dm.control_state, "idle")

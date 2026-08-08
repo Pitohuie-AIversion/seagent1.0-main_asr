@@ -29,8 +29,8 @@
 | **AM-18** | `emergency_control` | 否定式控制指令 ("不要停止当前任务") | 绝对不触发 stop 控制动作 (INV-01/02) | `control_state=idle` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_negative_control_request` |
 | **AM-19** | `emergency_control` | 询问式控制 ("如果停止当前任务会怎样？") | 只读咨询，不触发控制动作 (INV-01/02) | `control_state=idle` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_query_control_distinction` |
 | **AM-20** | `known_defect` | 终态下 UIcan_send 锁定 (KD-01) | ui_state 硬编码 can_send=False 导致无法继续交互 | 无 | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_ui_state_contract.py` |
-| **AM-21** | `known_defect` | 知识库未命中缺少 LLM 兜底 (KD-02) | found=false 时直接预设拒绝，未调用 Reasoning 兜底 | 无 | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_governance_corpus_integrity` |
-| **AM-22** | `known_defect` | LLM 模板硬编码 enable_thinking=False (KD-03) | 禁用思维链推理模式 | 无 | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_governance_corpus_integrity` |
+| **AM-21** | `known_defect` | 知识库未命中缺少 LLM 兜底 (KD-02) | found=false 时直接预设拒绝，未调用 Reasoning 兜底 | 无 | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_kd02_kb_miss_currently_has_no_general_reasoning` |
+| **AM-22** | `known_defect` | LLM 模板硬编码 enable_thinking=False (KD-03) | 禁用思维链推理模式 | 无 | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_kd03_llm_template_currently_disables_thinking` |
 | **AM-23** | `normalization_failure` | Normalization 失败保留旧 valid 值 (INV-04) | 规范化失败时保留旧 valid 值，保存候选并置 conflict/invalid (INV-04) | 保存旧 valid 值与冲突候选 | False | INVARIANT | VERIFIED | `tests/test_normalization_failure_contract.py::TestNormalizationFailureContract::test_conflict_preserves_old_value_but_suspends_task_projection` |
 
 ---

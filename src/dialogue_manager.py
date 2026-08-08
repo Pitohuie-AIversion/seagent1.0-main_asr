@@ -1692,6 +1692,24 @@ class DialogueManager:
                 new_slots["pending_oilfield_candidates"].value = None
                 new_slots["pending_oilfield_candidates"].status = "missing"
 
+        equipment_keys = {
+            "equipment_class",
+            "equipment_family",
+            "equipment_specification",
+            "equipment_type",
+            "equipment_name",
+            "equipment_unit_id",
+        }
+        passthrough_keys = {
+            "emergency_mode",
+            "rov_description",
+            "__clear_oilfield_name",
+            "__clear_pending_oilfield",
+            "task_id",
+            "intent_id",
+            "internal_id",
+        }
+
         task_type_slot = new_slots.get("task_type_key")
         task_type_key = task_type_slot.value if task_type_slot else None
         failures = {}
@@ -1701,17 +1719,12 @@ class DialogueManager:
                 for key, slot in new_slots.items()
                 if slot.value is not None
             }
-            equipment_keys = {
-                "equipment_class",
-                "equipment_family",
-                "equipment_specification",
-                "equipment_type",
-                "equipment_name",
-                "equipment_unit_id",
+            schema_updates = {
+                k: v for k, v in updates.items()
+                if k not in equipment_keys and k not in passthrough_keys
             }
-            non_eq_updates = {k: v for k, v in updates.items() if k not in equipment_keys}
             norm_res = self.normalizer.normalize_updates_with_failures(
-                non_eq_updates,
+                schema_updates,
                 self.builder.get_schema(task_type_key, self.mode),
                 current_state,
                 lambda field_def, state: self.builder._resolve_allowed(
@@ -1720,19 +1733,11 @@ class DialogueManager:
                     state,
                 ),
             )
-            norm_non_eq = norm_res.normalized_updates
+            norm_schema = norm_res.normalized_updates
             failures = norm_res.failures
             eq_updates = {k: v for k, v in updates.items() if k in equipment_keys}
-            updates = {**norm_non_eq, **eq_updates}
-        else:
-            equipment_keys = {
-                "equipment_class",
-                "equipment_family",
-                "equipment_specification",
-                "equipment_type",
-                "equipment_name",
-                "equipment_unit_id",
-            }
+            pass_updates = {k: v for k, v in updates.items() if k in passthrough_keys}
+            updates = {**norm_schema, **pass_updates, **eq_updates}
 
         skip = {
             "emergency_mode",
