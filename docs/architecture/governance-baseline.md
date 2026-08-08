@@ -60,7 +60,7 @@ Knowledge / StateInfo           Extractor / OilfieldLinker (候选提取)
 1. **INV-01 QUERY_READ_ONLY**：所有 QUERY 路径（知识问答、设备查询、状态查询、普通闲聊）必须保证 `SlotStore.version`、`SlotStore.export_snapshot()`、`task_state` 不发生变动，不创建 `TaskIntent`，不进入发布流程。
 2. **INV-02 WRITE_ONLY_MUTATES_TASK**：仅明确的任务 WRITE 流程允许改变 `SlotStore` 槽位状态。常规问答或闲聊绝不产生任务槽位更新。
 3. **INV-03 VALID_SLOT_IS_FACT**：`SlotStore.get_task_state()` 仅投影 `status == "valid"` 且 `value != None` 的正式事实；`candidate`、`invalid`、`conflict`、`unresolved` 绝对不得成为正式任务状态。
-4. **INV-04 INVALID_INPUT_NEVER_OVERWRITES_VALID_FACT**：无法合法规范化或校验失败的新输入，绝不能将非法值作为正式事实覆盖已有合法值（`old valid value`）。`get_task_state()` 中不得出现非法文本。
+4. **INV-04 INVALID_INPUT_NEVER_OVERWRITES_VALID_FACT**：无法合法规范化或校验失败的新输入，绝不能将非法值作为正式事实覆盖已有合法值（`old valid value`）。`get_task_state()` 中不得出现非法文本。旧 valid 事实在 conflict 状态下安全保留在 Slot.value 中，但暂停进入正式 `get_task_state()` 导出，直到冲突解决或恢复。
 5. **INV-05 HARD_CANNOT_BE_BYPASSED**：在 `blocked_hard` 阶段，任何确认/忽略/通用肯定性词汇（如“确认”、“继续”、“忽略警告”、“没问题”）均不得绕过硬约束并发布任务。
 6. **INV-06 SOFT_ACK_IS_DISTINCT**：在 `blocked_soft` 阶段，用户明确忽略/确认软警告后可继续流程，但该确认记录（`ValidationAcknowledgement`）必须与其触发时的 `task_version`、`validation_version` 和 `validation_fingerprint` 强绑定。
 7. **INV-07 PUBLISH_FAIL_CLOSED**：发布链路中任意步骤（ reserve ID、slot transaction、validation、prepare、create_staging、publish_staging ）失败时，系统必须 Fail-Closed：不得标记 `phase="done"`，不得返回发布成功，必须触发完整状态还原。
@@ -69,12 +69,21 @@ Knowledge / StateInfo           Extractor / OilfieldLinker (候选提取)
 10. **INV-10 FINAL_NO_OVERWRITE**：当目标 `task_intent_TIxxxx.json` 文件已存在时，系统绝对不得无条件覆盖，也不得因冲突错误删除原有正式任务文件。
 11. **INV-11 REQUEST_TRACEABILITY**：`/api/chat` 生成（自动生成）或接收（客户端显式传入）的 `request_id` 必须真实透传至 `DialogueManager.process(message, request_id=request_id)`，保证全链路可追溯。
 
+### 详细 Slot 状态契约 (Slot Status Contract)
+
+| 状态 | `value` | `candidate_value` | `raw_value` | 投影至 `get_task_state()` | 转换条件 / 说明 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **valid** | 规范化正式事实 | `None` | 用户或系统表达 | **包含** | 成功通过规范化与校验的正式槽位事实。 |
+| **conflict** | 最近一次 confirmed old valid value | 待决规范化候选 | 真正用户原始文本 | **不包含 (暂停)** | 已有 valid 值但用户提交了非法/未规范化新候选；旧事实不丢，但暂停导出。 |
+| **invalid** | `None` | 被拒规范化候选 | 真正用户原始文本 | **不包含** | 槽位原无 valid 值且用户新输入规范化失败。 |
+| **conflict (取消恢复)** | 恢复 old valid value | `None` | 原用户表达 | **包含** | 用户对 conflict 槽位执行定向取消（如"取消修改水深"），恢复 valid 状态。 |
+| **conflict (合法替换)** | 规范化新值 | `None` | 新用户表达 | **包含** | 用户提交合法新值（如"改成500米"），直接替换并恢复为 valid 状态。 |
+
 ### B. 期望目标行为 (EXPECTED_BEHAVIOR)
 目标架构应该具备、但在当前实现中可能尚未完全实现或需要重构优化的行为。这些行为作为后续 Phase 的设计目标。
 
 - **EXP-01**：Task 发布完成不等于 Conversation 关闭。未来架构允许任务处于 `published` 状态的同时会话保持 `active`，用户可继续提问或创建下一个新任务。
 - **EXP-02**：通用知识问答应当能够充分利用底座模型的 General Reasoning 推理能力（KB miss 时进行合理通用解答）；项目私有事实（如设备参数、油田坐标）必须由项目事实源强约束。
-- **EXP-03**：未来 Normalization Failure 不得覆盖已存在的合法旧值（`old valid value`），也不得静默丢弃用户的原始输入（`raw_value`）。
 
 ### C. 已知缺陷 (KNOWN_DEFECT)
 当前代码中已知存在、需在后续治理阶段专门修复的缺陷。**严禁将 Known Defect 写入 Golden Behavior 或降级测试使其通过**。
@@ -82,7 +91,7 @@ Knowledge / StateInfo           Extractor / OilfieldLinker (候选提取)
 - **KD-01**：`src/ui_state_builder.py` 在 `phase in ("done", "rejected")` 时返回 `can_send=False`，导致任务终态与会话交互终态过紧耦合。
 - **KD-02**：`src/dialogue_manager.py` 在知识问答 `kb_evidence` 未找到（`found=false`）时直接返回预设拒绝文案，未调用底座模型 General Reasoning。
 - **KD-03**：`src/llm_client.py` 在 `apply_chat_template` 中硬编码 `enable_thinking=False`。
-- **KD-04**：`src/normalizer.py` 的 `normalize_updates` 初始时复制了原始 `updates` 字典；当 `normalize()` 失败返回 `None` 时，原始未规范化的输入值被保留了下来。
+- **KD-04 (RESOLVED)**：`src/normalizer.py` 规范化失败覆盖旧 valid 槽位缺陷已在 Commit `c50a60a` 修复，并通过双路 Normalization Failure 状态契约验证。
 
 ---
 

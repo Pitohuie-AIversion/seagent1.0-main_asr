@@ -1153,7 +1153,14 @@ class DialogueManager:
             for k, v in raw_linked.items():
                 if k.startswith("__"):
                     continue
-                c_info = {"value": v, "raw_value": str(v), "confidence": 1.0, "source": "entity_linker"}
+                old_info = stage2_updates.get(k)
+                old_raw = old_info.get("raw_value") if isinstance(old_info, dict) else None
+                c_info = {
+                    "value": v,
+                    "raw_value": old_raw if old_raw is not None else str(v),
+                    "confidence": old_info.get("confidence", 1.0) if isinstance(old_info, dict) else 1.0,
+                    "source": old_info.get("source", "entity_linker") if isinstance(old_info, dict) else "entity_linker",
+                }
                 stage2_updates[k] = c_info
                 merged_updates_meta[k] = c_info
                 merged_updates[k] = v
@@ -1761,13 +1768,19 @@ class DialogueManager:
             slot = new_slots.get(key)
             meta = update_meta.get(key)
             raw_val = failure.raw_value
-            raw_str = str(raw_val) if raw_val is not None else ""
             msg = failure.message
+
+            candidate_val = raw_val
+            original_raw = (
+                meta.get("raw_value")
+                if meta and meta.get("raw_value") is not None
+                else (str(raw_val) if raw_val is not None else "")
+            )
 
             if slot and slot.status in ("valid", "conflict") and slot.value is not None:
                 slot.status = "conflict"
-                slot.candidate_value = raw_val
-                slot.raw_value = raw_str
+                slot.candidate_value = candidate_val
+                slot.raw_value = str(original_raw)
                 slot.validation_error = msg
             else:
                 if slot is None:
@@ -1775,8 +1788,8 @@ class DialogueManager:
                     new_slots[key] = slot
                 slot.value = None
                 slot.status = "invalid"
-                slot.candidate_value = raw_val
-                slot.raw_value = raw_str
+                slot.candidate_value = candidate_val
+                slot.raw_value = str(original_raw)
                 slot.validation_error = msg
 
             if meta:
@@ -1784,9 +1797,10 @@ class DialogueManager:
                 slot.source = meta.get("source", "user_input")
 
         if updates.get("emergency_mode"):
-            if "emergency_mode" in new_slots:
-                new_slots["emergency_mode"].value = True
-                new_slots["emergency_mode"].status = "valid"
+            if "emergency_mode" not in new_slots:
+                new_slots["emergency_mode"] = Slot("emergency_mode")
+            new_slots["emergency_mode"].value = True
+            new_slots["emergency_mode"].status = "valid"
 
         self._handle_equipment_updates_in_transaction(
             updates,

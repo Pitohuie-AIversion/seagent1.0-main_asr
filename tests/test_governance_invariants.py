@@ -69,24 +69,21 @@ class TestGovernanceInvariants(unittest.TestCase):
         """INV-02: 走真实 DM -> Router -> Extractor -> Normalizer -> SlotStore 链路完成任务类型建单。"""
         v_before = self.dm.slot_store.version
 
-        mock_route = MagicMock()
-        mock_route.dialogue_mode = "task_collection"
+        def stub_llm_extract_json(messages, max_tokens=None):
+            return {
+                "slot_candidates": [
+                    {
+                        "canonical_key": "task_type",
+                        "normalized_value": "管缆巡检",
+                        "raw_value": "管缆巡检",
+                        "confidence": 1.0,
+                        "resolution_method": "canonical_exact",
+                    }
+                ]
+            }
 
-        mock_extract = {
-            "slot_candidates": [
-                {
-                    "canonical_key": "task_type",
-                    "normalized_value": "管缆巡检",
-                    "raw_value": "管缆巡检",
-                    "confidence": 1.0,
-                    "resolution_method": "canonical_exact",
-                }
-            ]
-        }
-
-        with patch.object(self.dm.intent_router, "route", return_value=mock_route):
-            with patch.object(self.dm.extractor, "extract_updates", return_value=mock_extract):
-                self.dm.process("创建一个管缆巡检任务", request_id="req_inv02_create")
+        with patch.object(self.dm.llm, "extract_json", side_effect=stub_llm_extract_json):
+            self.dm.process("创建一个管缆巡检任务", request_id="req_inv02_create")
 
         self.assertGreater(self.dm.slot_store.version, v_before)
         self.assertEqual(self.dm.slot_store.get_task_state().get("task_type"), "管缆巡检")
@@ -104,24 +101,21 @@ class TestGovernanceInvariants(unittest.TestCase):
 
         v_before = self.dm.slot_store.version
 
-        mock_route = MagicMock()
-        mock_route.dialogue_mode = "task_collection"
+        def stub_llm_extract_json(messages, max_tokens=None):
+            return {
+                "slot_candidates": [
+                    {
+                        "canonical_key": "water_depth",
+                        "normalized_value": "300",
+                        "raw_value": "300米",
+                        "confidence": 0.95,
+                        "resolution_method": "regex_rule",
+                    }
+                ]
+            }
 
-        mock_extract = {
-            "slot_candidates": [
-                {
-                    "canonical_key": "water_depth",
-                    "normalized_value": "300",
-                    "raw_value": "300米",
-                    "confidence": 0.95,
-                    "resolution_method": "regex_rule",
-                }
-            ]
-        }
-
-        with patch.object(self.dm.intent_router, "route", return_value=mock_route):
-            with patch.object(self.dm.extractor, "extract_updates", return_value=mock_extract):
-                self.dm.process("水深300米", request_id="req_inv02_depth")
+        with patch.object(self.dm.llm, "extract_json", side_effect=stub_llm_extract_json):
+            self.dm.process("水深300米", request_id="req_inv02_depth")
 
         self.assertGreater(self.dm.slot_store.version, v_before)
         self.assertEqual(self.dm.slot_store.get_task_state().get("water_depth"), 300.0)
@@ -144,7 +138,7 @@ class TestGovernanceInvariants(unittest.TestCase):
         self.assertNotIn("test_none", state)
 
     def test_inv04_invalid_input_never_overwrites_valid_fact(self):
-        """INV-04: 非法新输入绝不作为正式事实写入/覆盖已有 valid 事实 (SlotStore.get_task_state())。"""
+        """INV-04: 真实 Pipeline 端到端验证：非法新输入绝不作为正式事实写入/覆盖已有 valid 事实 (SlotStore.get_task_state())。"""
         schema = self.dm.builder.get_schema("pipeline_inspection", self.dm.mode)
         self.dm.slot_store.init_task_slots(schema)
 
@@ -157,31 +151,28 @@ class TestGovernanceInvariants(unittest.TestCase):
 
         self.assertEqual(self.dm.slot_store.get_task_state().get("water_depth"), 300.0)
 
-        mock_route = MagicMock()
-        mock_route.dialogue_mode = "task_collection"
+        def stub_llm_extract_json(messages, max_tokens=None):
+            return {
+                "slot_candidates": [
+                    {
+                        "canonical_key": "water_depth",
+                        "normalized_value": "300abc",
+                        "raw_value": "差不多很深",
+                        "confidence": 0.9,
+                        "resolution_method": "llm_semantic",
+                    }
+                ]
+            }
 
-        mock_extract = {
-            "slot_candidates": [
-                {
-                    "canonical_key": "water_depth",
-                    "normalized_value": "差不多很深",
-                    "raw_value": "差不多很深",
-                    "confidence": 0.9,
-                    "resolution_method": "llm_semantic",
-                }
-            ]
-        }
-
-        with patch.object(self.dm.intent_router, "route", return_value=mock_route):
-            with patch.object(self.dm.extractor, "extract_updates", return_value=mock_extract):
-                self.dm.process("水深改成差不多很深", request_id="req_inv04_invalid")
+        with patch.object(self.dm.llm, "extract_json", side_effect=stub_llm_extract_json):
+            self.dm.process("水深改成差不多很深", request_id="req_inv04_invalid")
 
         state_after = self.dm.slot_store.get_task_state()
-        self.assertNotEqual(state_after.get("water_depth"), "差不多很深")
+        self.assertNotIn("water_depth", state_after)
 
         slot = self.dm.slot_store.slots.get("water_depth")
         self.assertEqual(slot.value, 300.0)
-        self.assertEqual(slot.candidate_value, "差不多很深")
+        self.assertEqual(slot.candidate_value, "300abc")
         self.assertEqual(slot.raw_value, "差不多很深")
         self.assertEqual(slot.status, "conflict")
         self.assertIsNotNone(slot.validation_error)
@@ -469,8 +460,8 @@ class TestGovernanceInvariants(unittest.TestCase):
         reply_query = self.dm.process("如果停止当前任务会怎样？", request_id="req_gc31")
         self.assertEqual(self.dm.control_state, "idle")
 
-    def test_golden_corpus_executable_cases(self):
-        """验证 Golden Corpus 关键 Invariant 与 Expected Case 的可执行性。"""
+    def test_governance_corpus_integrity(self):
+        """验证 Golden Corpus 50 条测试案例的数据结构完整性与元数据覆盖度。"""
         self.assertEqual(len(GOVERNANCE_GOLDEN_CORPUS), 50)
         categories = {c["category"] for c in GOVERNANCE_GOLDEN_CORPUS}
         natures = {c["nature"] for c in GOVERNANCE_GOLDEN_CORPUS}
@@ -482,3 +473,38 @@ class TestGovernanceInvariants(unittest.TestCase):
         self.assertIn("invariant", natures)
         self.assertIn("expected_behavior", natures)
         self.assertIn("known_defect", natures)
+
+    def test_governance_corpus_executable_invariants(self):
+        """真实参数化执行 EXECUTABLE_GOVERNANCE_CASE_IDS 中的关键 Invariant 案例，断言系统不变量。"""
+        executable_case_ids = {
+            "GC-01",
+            "GC-04",
+            "GC-11",
+            "GC-12",
+            "GC-13",
+            "GC-26",
+            "GC-28",
+            "GC-31",
+            "GC-33",
+            "GC-37",
+            "GC-39",
+        }
+        cases_by_id = {c["id"]: c for c in GOVERNANCE_GOLDEN_CORPUS if c["id"] in executable_case_ids}
+        self.assertEqual(len(cases_by_id), len(executable_case_ids))
+
+        for case_id in sorted(executable_case_ids):
+            case = cases_by_id[case_id]
+            user_input = case["input"]
+            v_before = self.dm.slot_store.version
+
+            def stub_llm(messages, max_tokens=None):
+                return {"slot_candidates": []}
+
+            with patch.object(self.dm.llm, "extract_json", side_effect=stub_llm):
+                reply = self.dm.process(user_input, request_id=f"req_exec_{case_id}")
+
+            self.assertIsNotNone(reply)
+            if case["nature"] == "invariant" and not case["should_publish"]:
+                if case["category"] in ("general_chat", "general_knowledge", "project_fact"):
+                    self.assertEqual(self.dm.slot_store.version, v_before)
+                self.assertNotEqual(self.dm.phase, "done")

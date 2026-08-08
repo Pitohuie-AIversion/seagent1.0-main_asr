@@ -9,7 +9,8 @@
 | ID | Category | Scenario | Expected Effect | Slot Mutation | Publish | Classification | Current Status | Test |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **AM-01** | `general_chat` | 问候与闲聊 ("你好") | 返回问候引导语，保持 Session 只读 (INV-01) | 无 (`SlotStore.version` 不变) | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv01_query_read_only` |
-| **AM-02** | `general_knowledge` | 通用知识问答 ("什么是 DVL？") | 期望调用 General Reasoning 解答；状态只读隔离 (INV-01 / EXP-02) | 无 (`SlotStore.version` 不变) | False | EXPECTED_BEHAVIOR | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv01_query_read_only` |
+| **AM-02** | `general_knowledge` | 只读概念问答 ("什么是 DVL？") | 状态只读隔离，不产生槽位变动，不进入发布 (INV-01) | 无 (`SlotStore.version` 不变) | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv01_query_read_only` |
+| **AM-02B** | `general_knowledge` | KB Miss 底座 Reasoning 兜底 | KB 未命中时期望调用底座模型 General Reasoning (EXP-02) | 无 | False | EXPECTED_BEHAVIOR | NOT_YET_VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_governance_corpus_integrity` |
 | **AM-03** | `project_fact` | 任务或状态查询 ("当前任务进度？") | 返回当前阶段与槽位信息 (INV-01) | 无 (`SlotStore.version` 不变) | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv01_query_read_only` |
 | **AM-04** | `task_create` | 明确任务创建 ("创建一个管缆巡检任务") | 路由至 task_collection，初始化任务类型 (INV-02) | `task_type=管缆巡检`, `task_type_key=pipeline_inspection` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv02_real_write_path_task_create` |
 | **AM-05** | `task_create` | 填充具体参数 ("水深300米") | 走真实 DM WRITE 链路更新规范化水深 300.0 (INV-02 / INV-03) | `water_depth=300.0` (status=valid) | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv02_real_write_path_water_depth` |
@@ -28,9 +29,9 @@
 | **AM-18** | `emergency_control` | 否定式控制指令 ("不要停止当前任务") | 绝对不触发 stop 控制动作 (INV-01/02) | `control_state=idle` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_negative_control_request` |
 | **AM-19** | `emergency_control` | 询问式控制 ("如果停止当前任务会怎样？") | 只读咨询，不触发控制动作 (INV-01/02) | `control_state=idle` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_query_control_distinction` |
 | **AM-20** | `known_defect` | 终态下 UIcan_send 锁定 (KD-01) | ui_state 硬编码 can_send=False 导致无法继续交互 | 无 | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_ui_state_contract.py` |
-| **AM-21** | `known_defect` | 知识库未命中缺少 LLM 兜底 (KD-02) | found=false 时直接预设拒绝，未调用 Reasoning 兜底 | 无 | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_golden_corpus_executable_cases` |
-| **AM-22** | `known_defect` | LLM 模板硬编码 enable_thinking=False (KD-03) | 禁用思维链推理模式 | 无 | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_golden_corpus_executable_cases` |
-| **AM-23** | `known_defect` | Normalization 失败时保留原始输入 (KD-04) | 归一化失败返回 None 时保留原始未处理输入 | 复制原始 updates | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_golden_corpus_executable_cases` |
+| **AM-21** | `known_defect` | 知识库未命中缺少 LLM 兜底 (KD-02) | found=false 时直接预设拒绝，未调用 Reasoning 兜底 | 无 | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_governance_corpus_integrity` |
+| **AM-22** | `known_defect` | LLM 模板硬编码 enable_thinking=False (KD-03) | 禁用思维链推理模式 | 无 | False | KNOWN_DEFECT | KNOWN_DEFECT | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_governance_corpus_integrity` |
+| **AM-23** | `normalization_failure` | Normalization 失败保留旧 valid 值 (INV-04) | 规范化失败时保留旧 valid 值，保存候选并置 conflict/invalid (INV-04) | 保存旧 valid 值与冲突候选 | False | INVARIANT | VERIFIED | `tests/test_normalization_failure_contract.py::TestNormalizationFailureContract::test_conflict_preserves_old_value_but_suspends_task_projection` |
 
 ---
 
