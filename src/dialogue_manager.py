@@ -36,7 +36,19 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 from .llm_client import LLMClient
-from .model_profile import ModelRole, _is_unsupported_role_keyword_error, is_task_patch_v2_enabled
+from .model_profile import (
+    ModelRole,
+    _is_unsupported_role_keyword_error,
+    is_normalization_contract_v2_enabled,
+    is_task_patch_v2_enabled,
+)
+from .normalization_contract import (
+    NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS,
+    NormalizationApplyPlan,
+    normalize_task_patch,
+    normalized_task_patch_to_apply_plan,
+    validate_normalization_runtime_flags,
+)
 from .task_patch import build_task_patch, task_patch_to_legacy_updates
 from .knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from .extractor import ParameterExtractor
@@ -1013,6 +1025,10 @@ class DialogueManager:
             return reply
 
         # 3. Parameter Extraction & Processing Pipeline (Atomic Transaction with Optimistic Lock)
+        task_patch_v2_active = is_task_patch_v2_enabled()
+        norm_v2_active = is_normalization_contract_v2_enabled()
+        validate_normalization_runtime_flags(task_patch_v2_active, norm_v2_active)
+
         new_slots, new_unresolved, expected_version = self.slot_store.snapshot()
 
         task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
@@ -1138,9 +1154,11 @@ class DialogueManager:
             )
         )
 
+        apply_plan: NormalizationApplyPlan | None = None
+
         if should_extract_task_parameters:
             # Stage 2: Extract task parameters
-            current_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.status == "valid" and s.value is not None}
+            current_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
             required = self.builder.get_required(task_type_key, self.mode, current_state)
             extraction_res = self.extractor.extract_updates(
                 user_message, current_state,
@@ -1151,18 +1169,79 @@ class DialogueManager:
                 conversation_history=self.conversation_history,
             )
 
-            if is_task_patch_v2_enabled():
+            if task_patch_v2_active:
                 allowed_stage2 = self.extractor._allowed_candidate_keys(task_type_key, required)
                 patch = build_task_patch(extraction_res, allowed_keys=allowed_stage2)
-                stage2_updates, list_mutations, patch_unresolved = task_patch_to_legacy_updates(patch)
-                for u in patch_unresolved:
-                    if u not in turn_unresolved:
-                        turn_unresolved.append(u)
-                    if u not in new_unresolved:
-                        new_unresolved.append(u)
-                for k, cand_info in stage2_updates.items():
-                    merged_updates[k] = cand_info["value"]
-                    merged_updates_meta[k] = cand_info
+
+                if norm_v2_active:
+                    field_defs = self.builder.get_schema(task_type_key, self.mode)
+                    current_state_dict = {
+                        k: s.value for k, s in new_slots.items()
+                        if s.status == "valid" and s.value is not None
+                    }
+
+                    def allowed_resolver(fdef: dict[str, Any], state: dict[str, Any]) -> list[Any] | None:
+                        return self.builder._resolve_allowed(fdef, task_type_key, state)
+
+                    normalized_patch = normalize_task_patch(
+                        patch,
+                        field_defs,
+                        current_state_dict,
+                        allowed_resolver,
+                        passthrough_keys=NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS,
+                    )
+                    apply_plan = normalized_task_patch_to_apply_plan(normalized_patch)
+
+                    stage2_updates = {}
+                    for succ in apply_plan.successful_updates:
+                        stage2_updates[succ.key] = {
+                            "value": succ.value,
+                            "raw_value": succ.raw_value,
+                            "confidence": succ.confidence,
+                            "source": succ.source,
+                        }
+                        merged_updates[succ.key] = succ.value
+                        merged_updates_meta[succ.key] = stage2_updates[succ.key]
+
+                    for p in apply_plan.passthrough_slot_updates:
+                        stage2_updates[p.key] = {
+                            "value": p.candidate_value,
+                            "raw_value": p.raw_value,
+                            "confidence": p.confidence,
+                            "source": p.source,
+                        }
+                        merged_updates[p.key] = p.candidate_value
+                        merged_updates_meta[p.key] = stage2_updates[p.key]
+
+                    for u in apply_plan.unresolved:
+                        if u not in turn_unresolved:
+                            turn_unresolved.append(u)
+                        if u not in new_unresolved:
+                            new_unresolved.append(u)
+
+                    list_mutations = [
+                        {
+                            "op": m.operation,
+                            "operation": m.operation,
+                            "field": m.field,
+                            "items": list(m.items) if m.items else [],
+                            "target_items": list(m.target_items) if m.target_items else [],
+                            "raw_text": m.raw_text,
+                            "confidence": m.confidence,
+                            "source": m.source,
+                        }
+                        for m in apply_plan.list_mutations
+                    ]
+                else:
+                    stage2_updates, list_mutations, patch_unresolved = task_patch_to_legacy_updates(patch)
+                    for u in patch_unresolved:
+                        if u not in turn_unresolved:
+                            turn_unresolved.append(u)
+                        if u not in new_unresolved:
+                            new_unresolved.append(u)
+                    for k, cand_info in stage2_updates.items():
+                        merged_updates[k] = cand_info["value"]
+                        merged_updates_meta[k] = cand_info
             else:
                 record_unresolved(extraction_res)
                 stage2_updates = {}
@@ -1238,7 +1317,7 @@ class DialogueManager:
 
             _has_conflict = any(s.status == "conflict" for s in new_slots.values())
             has_successful_mutation = any(m.get("field") == "payload" for m in list_mutations)
-            if not stage2_updates and not _has_conflict and not turn_unresolved and not has_successful_mutation:
+            if not stage2_updates and not _has_conflict and not turn_unresolved and not has_successful_mutation and (apply_plan is None or not apply_plan.failures):
                 if new_unresolved:
                     self.slot_store.commit_transaction(
                         new_slots,
@@ -1247,9 +1326,6 @@ class DialogueManager:
                         expected_version=expected_version,
                     )
                 return reply_write_without_candidates()
-
-
-
 
             # Scoped & Negation-Safe Conflict resolution check
             slot_name_aliases = {
@@ -1309,12 +1385,29 @@ class DialogueManager:
                                 if k in stage2_updates:
                                     del stage2_updates[k]
 
+            if apply_plan is not None:
+                self._apply_normalized_plan_in_transaction(
+                    apply_plan,
+                    new_slots,
+                    allow_overwrite=had_task_type_key_at_turn_start,
+                )
+                extra_updates = {
+                    k: v for k, v in stage2_updates.items()
+                    if k not in apply_plan.normalized_schema_keys
+                }
+                if extra_updates:
+                    self._apply_updates_in_transaction(
+                        extra_updates,
+                        new_slots,
+                        allow_overwrite=had_task_type_key_at_turn_start,
+                    )
+            else:
+                self._apply_updates_in_transaction(
+                    stage2_updates,
+                    new_slots,
+                    allow_overwrite=had_task_type_key_at_turn_start,
+                )
 
-            self._apply_updates_in_transaction(
-                stage2_updates,
-                new_slots,
-                allow_overwrite=had_task_type_key_at_turn_start,
-            )
             if "rov_description" in stage2_updates:
                 all_rovs = self.kb.get_all_rovs()
                 proposed_pending_rov = self.extractor.resolve_rov_description(
@@ -1333,12 +1426,6 @@ class DialogueManager:
         if merged_updates.get("emergency_mode"):
             proposed_mode = "emergency"
 
-
-        # Compute proposed mode change without mutating self.mode before commit
-        proposed_mode = self.mode
-        if merged_updates.get("emergency_mode"):
-            proposed_mode = "emergency"
-
         # Compute changed fields based on proposed updates
         changed_fields = set()
         for k, v in merged_updates.items():
@@ -1351,7 +1438,8 @@ class DialogueManager:
 
         # Normalize and validate inside transaction working dict new_slots
         curr_task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
-        self._normalize_and_validate_in_transaction(new_slots, curr_task_type_key)
+        skip_keys = apply_plan.normalized_schema_keys if apply_plan is not None else None
+        self._normalize_and_validate_in_transaction(new_slots, curr_task_type_key, skip_schema_keys=skip_keys)
 
         curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
 
@@ -1897,6 +1985,120 @@ class DialogueManager:
                 slot.raw_value = meta["raw_value"]
                 slot.confidence = meta["confidence"]
                 slot.source = meta["source"]
+
+    def _apply_normalized_plan_in_transaction(
+        self,
+        plan: NormalizationApplyPlan,
+        new_slots: dict,
+        allow_overwrite: bool = False,
+    ) -> None:
+        """根据 NormalizationApplyPlan 修改 working dict new_slots。"""
+        # 1. 成功 outcomes 写入 new_slots
+        for succ in plan.successful_updates:
+            key = succ.key
+            value = succ.value
+            slot = new_slots.get(key)
+
+            if (
+                slot
+                and slot.status == "valid"
+                and slot.value is not None
+                and slot.value != value
+                and not allow_overwrite
+            ):
+                slot.status = "conflict"
+                slot.candidate_value = value
+                slot.raw_value = str(succ.raw_value) if succ.raw_value is not None else str(value)
+                slot.confidence = succ.confidence
+                slot.source = succ.source
+                slot.validation_error = None
+            else:
+                if slot is None:
+                    slot = Slot(slot_name=key)
+                    new_slots[key] = slot
+
+                slot.value = value
+                slot.status = "valid"
+                slot.candidate_value = None
+                slot.raw_value = str(succ.raw_value) if succ.raw_value is not None else str(value)
+                slot.confidence = succ.confidence
+                slot.source = succ.source
+                slot.validation_error = None
+
+        # 2. 失败 outcomes 写入 new_slots
+        for failure in plan.failures:
+            key = failure.key
+            slot = new_slots.get(key)
+            cand_val = failure.candidate_value
+            raw_val = failure.raw_value
+            raw_str = str(raw_val) if raw_val is not None else ""
+
+            if slot and slot.status in ("valid", "conflict") and slot.value is not None:
+                slot.status = "conflict"
+                slot.candidate_value = cand_val
+                slot.raw_value = raw_str
+                slot.confidence = failure.confidence
+                slot.source = failure.source
+                slot.validation_error = failure.error_message
+            else:
+                if slot is None:
+                    slot = Slot(slot_name=key)
+                    new_slots[key] = slot
+                slot.value = None
+                slot.status = "invalid"
+                slot.candidate_value = cand_val
+                slot.raw_value = raw_str
+                slot.confidence = failure.confidence
+                slot.source = failure.source
+                slot.validation_error = failure.error_message
+
+        # 3. Passthrough updates 依赖现有 specialized handler
+        equipment_keys = {
+            "equipment_class",
+            "equipment_family",
+            "equipment_specification",
+            "equipment_type",
+            "equipment_name",
+            "equipment_unit_id",
+        }
+        eq_updates = {}
+        pass_meta = {}
+
+        for sp in plan.passthrough_slot_updates:
+            k = sp.key
+            if k in equipment_keys:
+                eq_updates[k] = sp.candidate_value
+                pass_meta[k] = {
+                    "raw_value": sp.raw_value,
+                    "confidence": sp.confidence,
+                    "source": sp.source,
+                }
+            elif k == "emergency_mode":
+                if "emergency_mode" not in new_slots:
+                    new_slots["emergency_mode"] = Slot("emergency_mode")
+                new_slots["emergency_mode"].value = True
+                new_slots["emergency_mode"].status = "valid"
+            elif k == "rov_description":
+                if "rov_description" not in new_slots:
+                    new_slots["rov_description"] = Slot("rov_description")
+                new_slots["rov_description"].value = sp.candidate_value
+                new_slots["rov_description"].status = "candidate"
+                new_slots["rov_description"].raw_value = str(sp.raw_value)
+                new_slots["rov_description"].confidence = sp.confidence
+                new_slots["rov_description"].source = sp.source
+
+        if eq_updates:
+            self._handle_equipment_updates_in_transaction(
+                eq_updates,
+                new_slots,
+                allow_overwrite,
+            )
+            for eq_k, meta in pass_meta.items():
+                eq_slot = new_slots.get(eq_k)
+                if eq_slot:
+                    eq_slot.raw_value = str(meta["raw_value"]) if meta["raw_value"] is not None else None
+                    eq_slot.confidence = meta["confidence"]
+                    eq_slot.source = meta["source"]
 
     @staticmethod
     def _source_for_resolution_method(resolution_method: str | None) -> str:
@@ -2753,7 +2955,12 @@ class DialogueManager:
             ]
             new_slots["_rov_candidates"].status = "valid"
 
-    def _normalize_and_validate_in_transaction(self, new_slots: dict, task_type_key: str | None):
+    def _normalize_and_validate_in_transaction(
+        self,
+        new_slots: dict,
+        task_type_key: str | None,
+        skip_schema_keys: set[str] | frozenset[str] | None = None,
+    ):
         if not task_type_key:
             return
 
@@ -2761,6 +2968,8 @@ class DialogueManager:
 
         for field_def in schema:
             key = field_def["key"]
+            if skip_schema_keys and key in skip_schema_keys:
+                continue
             ftype = field_def["type"]
             slot = new_slots.get(key)
             if not slot or slot.status in ("fixed", "auto", "conflict", "invalid") or key.startswith("equipment_"):

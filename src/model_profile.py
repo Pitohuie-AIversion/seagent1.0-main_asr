@@ -231,6 +231,10 @@ def is_task_patch_v2_enabled(features_path: Path | None = None) -> bool:
     return get_feature_flag("task_patch_v2", features_path=features_path, default=False)
 
 
+def is_normalization_contract_v2_enabled(features_path: Path | None = None) -> bool:
+    return get_feature_flag("normalization_contract_v2", features_path=features_path, default=False)
+
+
 
 
 class ModelProfileRegistry:

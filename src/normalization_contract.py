@@ -24,6 +24,32 @@ class NormalizationContractError(ValueError):
     pass
 
 
+NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS: frozenset[str] = frozenset({
+    "equipment_class",
+    "equipment_family",
+    "equipment_specification",
+    "equipment_type",
+    "equipment_name",
+    "equipment_unit_id",
+    "emergency_mode",
+    "rov_description",
+    "raw_oilfield_name",
+    "pending_oilfield_name",
+    "pending_oilfield_candidates",
+})
+
+
+def validate_normalization_runtime_flags(
+    task_patch_enabled: bool,
+    normalization_v2_enabled: bool,
+) -> None:
+    """验证 Feature Flag 矩阵合法性。D 组合 (false/true) 必须 FAIL CLOSED。"""
+    if normalization_v2_enabled and not task_patch_enabled:
+        raise NormalizationContractError(
+            "normalization_contract_v2=True 时必须同时开启 task_patch_v2=True，非法 Feature Flag 组合"
+        )
+
+
 @dataclass(frozen=True)
 class SlotNormalizationOutcome:
     key: str
@@ -355,4 +381,131 @@ def normalize_task_patch(
         passthrough_slot_updates=tuple(passthrough_updates),
         list_mutations=patch.list_mutations,
         unresolved=patch.unresolved,
+    )
+
+
+@dataclass(frozen=True)
+class NormalizedSlotApply:
+    key: str
+    value: Any
+    raw_value: Any
+    confidence: float
+    source: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key.strip():
+            raise NormalizationContractError(
+                f"NormalizedSlotApply key 必须为非空 str，收到 {self.key!r}"
+            )
+        validate_confidence(
+            self.confidence,
+            field_name=f"NormalizedSlotApply({self.key}).confidence",
+        )
+        if not isinstance(self.source, str) or not self.source.strip():
+            raise NormalizationContractError(
+                f"NormalizedSlotApply source 必须为非空 str，收到 {self.source!r}"
+            )
+
+
+@dataclass(frozen=True)
+class NormalizationApplyPlan:
+    successful_updates: tuple[NormalizedSlotApply, ...]
+    failures: tuple[SlotNormalizationOutcome, ...]
+    passthrough_slot_updates: tuple[SlotPatch, ...]
+    list_mutations: tuple[ListMutationPatch, ...]
+    unresolved: tuple[str, ...]
+    normalized_schema_keys: frozenset[str]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.successful_updates, tuple):
+            raise NormalizationContractError(
+                f"NormalizationApplyPlan successful_updates 必须为 tuple，收到 {type(self.successful_updates)}"
+            )
+        for s in self.successful_updates:
+            if not isinstance(s, NormalizedSlotApply):
+                raise NormalizationContractError(
+                    f"NormalizationApplyPlan successful_updates 元素必须为 NormalizedSlotApply，收到 {type(s)}"
+                )
+
+        if not isinstance(self.failures, tuple):
+            raise NormalizationContractError(
+                f"NormalizationApplyPlan failures 必须为 tuple，收到 {type(self.failures)}"
+            )
+        for f in self.failures:
+            if not isinstance(f, SlotNormalizationOutcome):
+                raise NormalizationContractError(
+                    f"NormalizationApplyPlan failures 元素必须为 SlotNormalizationOutcome，收到 {type(f)}"
+                )
+
+        if not isinstance(self.passthrough_slot_updates, tuple):
+            raise NormalizationContractError(
+                f"NormalizationApplyPlan passthrough_slot_updates 必须为 tuple，收到 {type(self.passthrough_slot_updates)}"
+            )
+        for p in self.passthrough_slot_updates:
+            if not isinstance(p, SlotPatch):
+                raise NormalizationContractError(
+                    f"NormalizationApplyPlan passthrough_slot_updates 元素必须为 SlotPatch，收到 {type(p)}"
+                )
+
+        if not isinstance(self.list_mutations, tuple):
+            raise NormalizationContractError(
+                f"NormalizationApplyPlan list_mutations 必须为 tuple，收到 {type(self.list_mutations)}"
+            )
+        for m in self.list_mutations:
+            if not isinstance(m, ListMutationPatch):
+                raise NormalizationContractError(
+                    f"NormalizationApplyPlan list_mutations 元素必须为 ListMutationPatch，收到 {type(m)}"
+                )
+
+        if not isinstance(self.unresolved, tuple):
+            raise NormalizationContractError(
+                f"NormalizationApplyPlan unresolved 必须为 tuple，收到 {type(self.unresolved)}"
+            )
+        for u in self.unresolved:
+            if not isinstance(u, str) or not u.strip():
+                raise NormalizationContractError(
+                    f"NormalizationApplyPlan unresolved 元素必须为非空 str，收到 {u!r}"
+                )
+
+        if not isinstance(self.normalized_schema_keys, (set, frozenset)):
+            raise NormalizationContractError(
+                f"NormalizationApplyPlan normalized_schema_keys 必须为 frozenset 或 set，收到 {type(self.normalized_schema_keys)}"
+            )
+
+
+def normalized_task_patch_to_apply_plan(
+    patch: NormalizedTaskPatch,
+) -> NormalizationApplyPlan:
+    """把 NormalizedTaskPatch 转换为无副作用 Runtime NormalizationApplyPlan。"""
+    if not isinstance(patch, NormalizedTaskPatch):
+        raise NormalizationContractError(
+            f"patch 参数必须为 NormalizedTaskPatch，收到 {type(patch)}"
+        )
+
+    successful_applies: list[NormalizedSlotApply] = []
+    failures: list[SlotNormalizationOutcome] = []
+    normalized_keys: set[str] = set()
+
+    for outcome in patch.slot_outcomes:
+        normalized_keys.add(outcome.key)
+        if outcome.success:
+            successful_applies.append(
+                NormalizedSlotApply(
+                    key=outcome.key,
+                    value=outcome.normalized_value,
+                    raw_value=outcome.raw_value,
+                    confidence=outcome.confidence,
+                    source=outcome.source,
+                )
+            )
+        else:
+            failures.append(outcome)
+
+    return NormalizationApplyPlan(
+        successful_updates=tuple(successful_applies),
+        failures=tuple(failures),
+        passthrough_slot_updates=patch.passthrough_slot_updates,
+        list_mutations=patch.list_mutations,
+        unresolved=patch.unresolved,
+        normalized_schema_keys=frozenset(normalized_keys),
     )
