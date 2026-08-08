@@ -812,6 +812,400 @@ class TestRuntimeV2Integration(unittest.TestCase):
             )
             self.assertTrue(has_clear, "__clear_oilfield_name directive must reach _apply_updates_in_transaction")
 
+    def test_v2_datetime_success_parity(self):
+        res_candidates = [
+            {
+                "canonical_key": "start_time",
+                "normalized_value": "2026-08-10T08:00:00",
+                "raw_value": "2026-08-10 08:00:00",
+                "confidence": 1.0,
+                "resolution_method": "canonical_exact",
+            }
+        ]
+        snapshots = {}
+        for mode_name, flag_v2, flag_norm in [("Legacy", False, False), ("G2.1", True, False), ("V2", True, True)]:
+            dm = DialogueManager(llm=MagicMock())
+            self._setup_stage2_task("pipeline_inspection", dm=dm)
+            res = {"slot_candidates": res_candidates, "list_mutations": [], "unresolved": []}
+            dm.extractor.extract_updates = MagicMock(return_value=res)
+            with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
+                 patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
+                dm.process("开始时间2026-08-10 08:00:00")
+            snapshots[mode_name] = get_effect_snapshot(dm, ["start_time"])
+
+        self.assertEqual(snapshots["Legacy"], snapshots["G2.1"])
+        self.assertEqual(snapshots["Legacy"], snapshots["V2"])
+        self.assertEqual(snapshots["V2"]["slots"]["start_time"]["value"], "2026-08-10T08:00:00")
+        self.assertEqual(snapshots["V2"]["slots"]["start_time"]["status"], "valid")
+
+    def test_v2_datetime_failure_parity(self):
+        res_candidates = [
+            {
+                "canonical_key": "start_time",
+                "normalized_value": "invalid_datetime",
+                "raw_value": "非法时间表达",
+                "confidence": 1.0,
+                "resolution_method": "canonical_exact",
+            }
+        ]
+        # Case 1: Failure with old valid value
+        snaps_old_valid = {}
+        for mode_name, flag_v2, flag_norm in [("Legacy", False, False), ("G2.1", True, False), ("V2", True, True)]:
+            dm = DialogueManager(llm=MagicMock())
+            self._setup_stage2_task("pipeline_inspection", dm=dm)
+            st_slot = Slot("start_time")
+            st_slot.value = "2026-08-10T08:00:00"
+            st_slot.status = "valid"
+            ttk_slot = dm.slot_store.slots["task_type_key"]
+            tt_slot = dm.slot_store.slots["task_type"]
+            dm.slot_store.commit_transaction({"task_type": tt_slot, "task_type_key": ttk_slot, "start_time": st_slot}, [])
+
+            res = {"slot_candidates": res_candidates, "list_mutations": [], "unresolved": []}
+            dm.extractor.extract_updates = MagicMock(return_value=res)
+            with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
+                 patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
+                dm.process("开始时间非法时间表达")
+            snaps_old_valid[mode_name] = get_effect_snapshot(dm, ["start_time"])
+
+        self.assertEqual(snaps_old_valid["Legacy"], snaps_old_valid["G2.1"])
+        self.assertEqual(snaps_old_valid["Legacy"], snaps_old_valid["V2"])
+        self.assertEqual(snaps_old_valid["V2"]["slots"]["start_time"]["value"], "2026-08-10T08:00:00")
+        self.assertEqual(snaps_old_valid["V2"]["slots"]["start_time"]["status"], "conflict")
+        self.assertEqual(snaps_old_valid["V2"]["slots"]["start_time"]["candidate_value"], "invalid_datetime")
+        self.assertIsNotNone(snaps_old_valid["V2"]["slots"]["start_time"]["validation_error"])
+
+        # Case 2: Failure without old valid value
+        snaps_no_old = {}
+        for mode_name, flag_v2, flag_norm in [("Legacy", False, False), ("G2.1", True, False), ("V2", True, True)]:
+            dm = DialogueManager(llm=MagicMock())
+            self._setup_stage2_task("pipeline_inspection", dm=dm)
+            res = {"slot_candidates": res_candidates, "list_mutations": [], "unresolved": []}
+            dm.extractor.extract_updates = MagicMock(return_value=res)
+            with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
+                 patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
+                dm.process("开始时间非法时间表达")
+            snaps_no_old[mode_name] = get_effect_snapshot(dm, ["start_time"])
+
+        self.assertEqual(snaps_no_old["Legacy"], snaps_no_old["G2.1"])
+        self.assertEqual(snaps_no_old["Legacy"], snaps_no_old["V2"])
+        self.assertIsNone(snaps_no_old["V2"]["slots"]["start_time"]["value"])
+        self.assertEqual(snaps_no_old["V2"]["slots"]["start_time"]["status"], "invalid")
+        self.assertEqual(snaps_no_old["V2"]["slots"]["start_time"]["candidate_value"], "invalid_datetime")
+
+    def test_v2_coord_success_parity(self):
+        coord_val = {"lat": 20.0, "lon": 110.0}
+        res_candidates = [
+            {
+                "canonical_key": "start_point",
+                "normalized_value": coord_val,
+                "raw_value": "北纬20度东经110度",
+                "confidence": 1.0,
+                "resolution_method": "canonical_exact",
+            }
+        ]
+        snapshots = {}
+        for mode_name, flag_v2, flag_norm in [("Legacy", False, False), ("G2.1", True, False), ("V2", True, True)]:
+            dm = DialogueManager(llm=MagicMock())
+            self._setup_stage2_task("pipeline_inspection", dm=dm)
+            res = {"slot_candidates": res_candidates, "list_mutations": [], "unresolved": []}
+            dm.extractor.extract_updates = MagicMock(return_value=res)
+            with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
+                 patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
+                dm.process("起始点北纬20度东经110度")
+            snapshots[mode_name] = get_effect_snapshot(dm, ["start_point"])
+
+        self.assertEqual(snapshots["Legacy"], snapshots["G2.1"])
+        self.assertEqual(snapshots["Legacy"], snapshots["V2"])
+        self.assertEqual(snapshots["V2"]["slots"]["start_point"]["value"], coord_val)
+        self.assertEqual(snapshots["V2"]["slots"]["start_point"]["status"], "valid")
+
+    def test_v2_coord_failure_parity(self):
+        res_candidates = [
+            {
+                "canonical_key": "start_point",
+                "normalized_value": "invalid_coord",
+                "raw_value": "非法坐标表达",
+                "confidence": 1.0,
+                "resolution_method": "canonical_exact",
+            }
+        ]
+        # Case 1: Failure with old valid value
+        snaps_old_valid = {}
+        for mode_name, flag_v2, flag_norm in [("Legacy", False, False), ("G2.1", True, False), ("V2", True, True)]:
+            dm = DialogueManager(llm=MagicMock())
+            self._setup_stage2_task("pipeline_inspection", dm=dm)
+            sp_slot = Slot("start_point")
+            sp_slot.value = {"lat": 10.0, "lon": 100.0}
+            sp_slot.status = "valid"
+            ttk_slot = dm.slot_store.slots["task_type_key"]
+            tt_slot = dm.slot_store.slots["task_type"]
+            dm.slot_store.commit_transaction({"task_type": tt_slot, "task_type_key": ttk_slot, "start_point": sp_slot}, [])
+
+            res = {"slot_candidates": res_candidates, "list_mutations": [], "unresolved": []}
+            dm.extractor.extract_updates = MagicMock(return_value=res)
+            with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
+                 patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
+                dm.process("起始点非法坐标表达")
+            snaps_old_valid[mode_name] = get_effect_snapshot(dm, ["start_point"])
+
+        self.assertEqual(snaps_old_valid["Legacy"], snaps_old_valid["G2.1"])
+        self.assertEqual(snaps_old_valid["Legacy"], snaps_old_valid["V2"])
+        self.assertEqual(snaps_old_valid["V2"]["slots"]["start_point"]["value"], {"lat": 10.0, "lon": 100.0})
+        self.assertEqual(snaps_old_valid["V2"]["slots"]["start_point"]["status"], "conflict")
+        self.assertEqual(snaps_old_valid["V2"]["slots"]["start_point"]["candidate_value"], "invalid_coord")
+
+        # Case 2: Failure without old valid value
+        snaps_no_old = {}
+        for mode_name, flag_v2, flag_norm in [("Legacy", False, False), ("G2.1", True, False), ("V2", True, True)]:
+            dm = DialogueManager(llm=MagicMock())
+            self._setup_stage2_task("pipeline_inspection", dm=dm)
+            res = {"slot_candidates": res_candidates, "list_mutations": [], "unresolved": []}
+            dm.extractor.extract_updates = MagicMock(return_value=res)
+            with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
+                 patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
+                dm.process("起始点非法坐标表达")
+            snaps_no_old[mode_name] = get_effect_snapshot(dm, ["start_point"])
+
+        self.assertEqual(snaps_no_old["Legacy"], snaps_no_old["G2.1"])
+        self.assertEqual(snaps_no_old["Legacy"], snaps_no_old["V2"])
+        self.assertIsNone(snaps_no_old["V2"]["slots"]["start_point"]["value"])
+        self.assertEqual(snaps_no_old["V2"]["slots"]["start_point"]["status"], "invalid")
+
+    def test_v2_enum_success_parity(self):
+        res_candidates = [
+            {
+                "canonical_key": "cable_type",
+                "normalized_value": "海底油气管道",
+                "raw_value": "海底油气管道",
+                "confidence": 1.0,
+                "resolution_method": "canonical_exact",
+            }
+        ]
+        snapshots = {}
+        for mode_name, flag_v2, flag_norm in [("Legacy", False, False), ("G2.1", True, False), ("V2", True, True)]:
+            dm = DialogueManager(llm=MagicMock())
+            self._setup_stage2_task("pipeline_inspection", dm=dm)
+            res = {"slot_candidates": res_candidates, "list_mutations": [], "unresolved": []}
+            dm.extractor.extract_updates = MagicMock(return_value=res)
+            with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
+                 patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
+                dm.process("管缆类型海底油气管道")
+            snapshots[mode_name] = get_effect_snapshot(dm, ["cable_type"])
+
+        self.assertEqual(snapshots["Legacy"], snapshots["G2.1"])
+        self.assertEqual(snapshots["Legacy"], snapshots["V2"])
+        self.assertEqual(snapshots["V2"]["slots"]["cable_type"]["value"], "海底油气管道")
+        self.assertEqual(snapshots["V2"]["slots"]["cable_type"]["status"], "valid")
+
+    def test_v2_enum_failure_parity(self):
+        res_candidates = [
+            {
+                "canonical_key": "support_vessel",
+                "normalized_value": "invalid_enum",
+                "raw_value": "魔幻飞船",
+                "confidence": 1.0,
+                "resolution_method": "canonical_exact",
+            }
+        ]
+        # Case 1: Failure with old valid value
+        snaps_old_valid = {}
+        for mode_name, flag_v2, flag_norm in [("Legacy", False, False), ("G2.1", True, False), ("V2", True, True)]:
+            dm = DialogueManager(llm=MagicMock())
+            self._setup_stage2_task("pipeline_inspection", dm=dm)
+            sv_slot = Slot("support_vessel")
+            sv_slot.value = "VSL-001"
+            sv_slot.status = "valid"
+            ttk_slot = dm.slot_store.slots["task_type_key"]
+            tt_slot = dm.slot_store.slots["task_type"]
+            dm.slot_store.commit_transaction({"task_type": tt_slot, "task_type_key": ttk_slot, "support_vessel": sv_slot}, [])
+
+            res = {"slot_candidates": res_candidates, "list_mutations": [], "unresolved": []}
+            dm.extractor.extract_updates = MagicMock(return_value=res)
+            with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
+                 patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
+                dm.process("支持船魔幻飞船")
+            snaps_old_valid[mode_name] = get_effect_snapshot(dm, ["support_vessel"])
+
+        self.assertEqual(snaps_old_valid["Legacy"], snaps_old_valid["G2.1"])
+        self.assertEqual(snaps_old_valid["Legacy"], snaps_old_valid["V2"])
+        self.assertEqual(snaps_old_valid["V2"]["slots"]["support_vessel"]["value"], "VSL-001")
+        self.assertEqual(snaps_old_valid["V2"]["slots"]["support_vessel"]["status"], "conflict")
+
+        # Case 2: Failure without old valid value
+        snaps_no_old = {}
+        for mode_name, flag_v2, flag_norm in [("Legacy", False, False), ("G2.1", True, False), ("V2", True, True)]:
+            dm = DialogueManager(llm=MagicMock())
+            self._setup_stage2_task("pipeline_inspection", dm=dm)
+            res = {"slot_candidates": res_candidates, "list_mutations": [], "unresolved": []}
+            dm.extractor.extract_updates = MagicMock(return_value=res)
+            with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
+                 patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
+                dm.process("支持船魔幻飞船")
+            snaps_no_old[mode_name] = get_effect_snapshot(dm, ["support_vessel"])
+
+        self.assertEqual(snaps_no_old["Legacy"], snaps_no_old["G2.1"])
+        self.assertEqual(snaps_no_old["Legacy"], snaps_no_old["V2"])
+        self.assertIsNone(snaps_no_old["V2"]["slots"]["support_vessel"]["value"])
+        self.assertEqual(snaps_no_old["V2"]["slots"]["support_vessel"]["status"], "invalid")
+
+    def test_v2_direct_list_runtime_na_documentation(self):
+        # 证明 schema 中所有 list 槽位（如 payload）在真实架构中全由 ListMutationPatch 驱动
+        fields = self.dm.builder.get_schema("pipeline_inspection", "normal")
+        list_fields = [
+            f["key"] for f in fields
+            if f.get("type") == "list"
+        ]
+        self.assertEqual(list_fields, ["payload"])
+        # N/A 结论：不存在直接 SlotPatch 独立操作 list 槽位的 Runtime 路径，SSOT 为 ListMutationPatch
+
+    def test_v2_payload_remove_parity(self):
+        list_muts = [
+            {
+                "field": "payload",
+                "operation": "remove",
+                "items": ["LED水下照明灯"],
+                "target_items": [],
+                "raw_text": "移除LED水下照明灯",
+                "confidence": 1.0,
+                "source": "user_input",
+            }
+        ]
+        snapshots = {}
+        for mode_name, flag_v2, flag_norm in [("Legacy", False, False), ("G2.1", True, False), ("V2", True, True)]:
+            dm = DialogueManager(llm=MagicMock())
+            self._setup_stage2_task("pipeline_inspection", dm=dm)
+            p_slot = Slot("payload", value_type="list")
+            p_slot.value = ["高清水下摄像机", "LED水下照明灯"]
+            p_slot.status = "valid"
+            ttk_slot = dm.slot_store.slots["task_type_key"]
+            tt_slot = dm.slot_store.slots["task_type"]
+            dm.slot_store.commit_transaction({"task_type": tt_slot, "task_type_key": ttk_slot, "payload": p_slot}, [])
+
+            res = {"slot_candidates": [], "list_mutations": list_muts, "unresolved": []}
+            dm.extractor.extract_updates = MagicMock(return_value=res)
+            with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
+                 patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
+                dm.process("移除LED水下照明灯")
+            snapshots[mode_name] = get_effect_snapshot(dm, ["payload"])
+
+        self.assertEqual(snapshots["Legacy"], snapshots["G2.1"])
+        self.assertEqual(snapshots["Legacy"], snapshots["V2"])
+        self.assertEqual(snapshots["V2"]["slots"]["payload"]["value"], ["高清水下摄像机"])
+        self.assertEqual(snapshots["V2"]["slots"]["payload"]["status"], "valid")
+
+    def test_v2_payload_replace_parity(self):
+        list_muts = [
+            {
+                "field": "payload",
+                "operation": "replace",
+                "items": ["成像声呐"],
+                "target_items": ["高清水下摄像机"],
+                "raw_text": "将高清水下摄像机替换为成像声呐",
+                "confidence": 1.0,
+                "source": "user_input",
+            }
+        ]
+        snapshots = {}
+        for mode_name, flag_v2, flag_norm in [("Legacy", False, False), ("G2.1", True, False), ("V2", True, True)]:
+            dm = DialogueManager(llm=MagicMock())
+            self._setup_stage2_task("pipeline_inspection", dm=dm)
+            p_slot = Slot("payload", value_type="list")
+            p_slot.value = ["高清水下摄像机"]
+            p_slot.status = "valid"
+            ttk_slot = dm.slot_store.slots["task_type_key"]
+            tt_slot = dm.slot_store.slots["task_type"]
+            dm.slot_store.commit_transaction({"task_type": tt_slot, "task_type_key": ttk_slot, "payload": p_slot}, [])
+
+            res = {"slot_candidates": [], "list_mutations": list_muts, "unresolved": []}
+            dm.extractor.extract_updates = MagicMock(return_value=res)
+            with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
+                 patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
+                dm.process("将高清水下摄像机替换为成像声呐")
+            snapshots[mode_name] = get_effect_snapshot(dm, ["payload"])
+
+        self.assertEqual(snapshots["Legacy"], snapshots["G2.1"])
+        self.assertEqual(snapshots["Legacy"], snapshots["V2"])
+        self.assertEqual(snapshots["V2"]["slots"]["payload"]["value"], ["成像声呐"])
+        self.assertEqual(snapshots["V2"]["slots"]["payload"]["status"], "valid")
+
+    def test_v2_payload_clear_parity(self):
+        list_muts = [
+            {
+                "field": "payload",
+                "operation": "clear",
+                "items": [],
+                "target_items": [],
+                "raw_text": "清空所有工具",
+                "confidence": 1.0,
+                "source": "user_input",
+            }
+        ]
+        snapshots = {}
+        for mode_name, flag_v2, flag_norm in [("Legacy", False, False), ("G2.1", True, False), ("V2", True, True)]:
+            dm = DialogueManager(llm=MagicMock())
+            self._setup_stage2_task("pipeline_inspection", dm=dm)
+            p_slot = Slot("payload", value_type="list")
+            p_slot.value = ["高清水下摄像机", "成像声呐"]
+            p_slot.status = "valid"
+            ttk_slot = dm.slot_store.slots["task_type_key"]
+            tt_slot = dm.slot_store.slots["task_type"]
+            dm.slot_store.commit_transaction({"task_type": tt_slot, "task_type_key": ttk_slot, "payload": p_slot}, [])
+
+            res = {"slot_candidates": [], "list_mutations": list_muts, "unresolved": []}
+            dm.extractor.extract_updates = MagicMock(return_value=res)
+            with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
+                 patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
+                dm.process("清空所有工具")
+            snapshots[mode_name] = get_effect_snapshot(dm, ["payload"])
+
+        self.assertEqual(snapshots["Legacy"], snapshots["G2.1"])
+        self.assertEqual(snapshots["Legacy"], snapshots["V2"])
+        self.assertEqual(snapshots["V2"]["slots"]["payload"]["value"], [])
+        self.assertEqual(snapshots["V2"]["slots"]["payload"]["status"], "missing")
+
+    def test_v2_publish_adjacent_governance_invariants(self):
+        # 验证在 V2 启用时 Hard Constraint 阻断、Soft Warning 区分与 Fail-Closed 正常运作
+        dm = DialogueManager(llm=MagicMock())
+        self._setup_stage2_task("pipeline_inspection", dm=dm)
+        wd_slot = Slot("water_depth")
+        wd_slot.value = 500
+        wd_slot.status = "valid"
+        eq_slot = Slot("equipment_type")
+        eq_slot.value = "HYSY-601-ROV"
+        eq_slot.status = "valid"
+        ttk_slot = dm.slot_store.slots["task_type_key"]
+        tt_slot = dm.slot_store.slots["task_type"]
+        dm.slot_store.commit_transaction({"task_type": tt_slot, "task_type_key": ttk_slot, "water_depth": wd_slot, "equipment_type": eq_slot}, [])
+
+        res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "water_depth",
+                    "normalized_value": 5000,
+                    "raw_value": "5000米",
+                    "confidence": 1.0,
+                    "resolution_method": "canonical_exact",
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        dm.extractor.extract_updates = MagicMock(return_value=res)
+
+        dm.intent_router.route = MagicMock(
+            return_value=IntentRouteResult(
+                interaction_type="WRITE",
+                confidence=1.0,
+                reason="confirm_test",
+            )
+        )
+
+        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True), \
+             patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=True):
+            dm.process("水深改为5000米")
+
+        self.assertEqual(dm.phase, "blocked_hard")
+
 
 if __name__ == "__main__":
     unittest.main()
