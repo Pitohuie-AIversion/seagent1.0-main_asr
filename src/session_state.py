@@ -69,6 +69,66 @@ VALID_CONTROL_ACTIONS: frozenset[str] = frozenset({
     "cancel",
 })
 
+# Legality Matrix for Task Phase transitions in runtime business logic
+TASK_PHASE_TRANSITIONS: dict[str, frozenset[str]] = {
+    "collecting": frozenset({
+        "collecting",
+        "confirming",
+        "blocked_soft",
+        "blocked_hard",
+        "rejected",
+    }),
+    "blocked_soft": frozenset({
+        "collecting",
+        "confirming",
+        "blocked_soft",
+        "blocked_hard",
+        "done",
+        "rejected",
+    }),
+    "blocked_hard": frozenset({
+        "collecting",
+        "confirming",
+        "blocked_soft",
+        "blocked_hard",
+        "rejected",
+    }),
+    "confirming": frozenset({
+        "collecting",
+        "confirming",
+        "blocked_soft",
+        "blocked_hard",
+        "done",
+        "rejected",
+    }),
+    "done": frozenset({
+        "done",
+        "confirming",
+        "collecting",
+    }),
+    "rejected": frozenset({
+        "rejected",
+        "collecting",
+        "confirming",
+        "blocked_soft",
+        "blocked_hard",
+    }),
+}
+
+
+def validate_task_phase_transition(old_phase: str, new_phase: str) -> None:
+    """Validate whether transitioning from old_phase to new_phase is legal in runtime logic."""
+    if type(old_phase) is not str or old_phase not in VALID_PHASES:
+        raise StateContractError(f"Invalid old task phase for transition: {old_phase!r}")
+    if type(new_phase) is not str or new_phase not in VALID_PHASES:
+        raise StateContractError(f"Invalid new task phase for transition: {new_phase!r}")
+
+    allowed = TASK_PHASE_TRANSITIONS.get(old_phase, frozenset())
+    if new_phase not in allowed:
+        raise StateContractError(
+            f"Invalid task phase transition edge: {old_phase!r} -> {new_phase!r}"
+        )
+
 
 def _validate_mode_transition(transition: Any) -> MappingProxyType[str, Any]:
     """Validate a single mode transition dict and return a read-only MappingProxyType."""

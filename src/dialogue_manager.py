@@ -53,6 +53,7 @@ from .session_state import (
     VALID_PHASES,
     session_state_from_legacy_snapshot,
     session_state_to_legacy_fields,
+    validate_task_phase_transition,
 )
 from .normalization_contract import (
     NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS,
@@ -257,14 +258,14 @@ class DialogueManager:
         reason: str = "",
         source: str = "runtime",
     ) -> None:
-        """Issue #10 / G3.3-A 统一 Task Phase 修改入口。
+        """Issue #10 / G3.3-A & G3.4-A 统一 Task Phase 修改入口。
 
         只负责 phase 状态迁移。
-        不修改 SlotStore、task_state、_blocking_violations，不执行 Validator，不触发 publish，不生成回复。
+        在 session_state_v2=true 时增加 old_phase, new_phase 及 transition edge 的合法性校验。
         """
         if is_session_state_v2_enabled():
-            if new_phase not in VALID_PHASES:
-                raise StateContractError(f"Invalid task phase for transition: {new_phase!r}")
+            old_phase = getattr(self, "phase", "collecting")
+            validate_task_phase_transition(old_phase, new_phase)
 
         self.phase = new_phase
 
