@@ -235,6 +235,11 @@ def is_normalization_contract_v2_enabled(features_path: Path | None = None) -> b
     return get_feature_flag("normalization_contract_v2", features_path=features_path, default=False)
 
 
+def is_session_state_v2_enabled(features_path: Path | None = None) -> bool:
+    """查询 session_state_v2 Feature Flag 是否开启。"""
+    return get_feature_flag("session_state_v2", features_path=features_path, default=False)
+
+
 
 
 class ModelProfileRegistry:

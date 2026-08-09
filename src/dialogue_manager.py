@@ -40,7 +40,18 @@ from .model_profile import (
     ModelRole,
     _is_unsupported_role_keyword_error,
     is_normalization_contract_v2_enabled,
+    is_session_state_v2_enabled,
     is_task_patch_v2_enabled,
+)
+from .session_state import (
+    ConversationState,
+    ExecutionControlState,
+    SessionState,
+    StateContractError,
+    TaskLifecycleState,
+    VALID_DIALOGUE_MODES,
+    session_state_from_legacy_snapshot,
+    session_state_to_legacy_fields,
 )
 from .normalization_contract import (
     NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS,
@@ -182,6 +193,10 @@ class DialogueManager:
         reason: str = "",
     ) -> None:
         """Issue #10 统一模式切换方法：记录切换元数据与历史轨迹。"""
+        if is_session_state_v2_enabled():
+            if new_mode not in VALID_DIALOGUE_MODES:
+                raise StateContractError(f"Invalid dialogue_mode in transition: {new_mode!r}")
+
         old_mode = getattr(self, "dialogue_mode", "task_collection")
         changed_at = datetime.now(timezone.utc).isoformat()
         transition = {
@@ -201,6 +216,42 @@ class DialogueManager:
             self.mode_transition_history.append(transition)
             if len(self.mode_transition_history) > 50:
                 self.mode_transition_history.pop(0)
+
+    def _build_session_state_contract(self) -> SessionState:
+        """从 DialogueManager 当前 Runtime 内存字段构造 SessionState 合约。无副作用，纯只读校验。"""
+        conv = ConversationState(
+            dialogue_mode=getattr(self, "dialogue_mode", "task_collection"),
+            last_mode_transition=getattr(self, "last_mode_transition", None),
+            mode_transition_history=getattr(self, "mode_transition_history", []),
+        )
+        task = TaskLifecycleState(
+            phase=getattr(self, "phase", "collecting"),
+            mode=getattr(self, "mode", "normal"),
+            awaiting_final_confirm=bool(getattr(self, "awaiting_final_confirm", False)),
+        )
+        exec_ctrl = ExecutionControlState(
+            control_state=getattr(self, "control_state", "idle"),
+            last_control_request=getattr(self, "last_control_request", None),
+        )
+        return SessionState(
+            schema_version=2,
+            conversation=conv,
+            task=task,
+            execution=exec_ctrl,
+        )
+
+    def _apply_session_state_contract(self, state: SessionState) -> None:
+        """将已校验通过的 SessionState 合约对象字段写入 DialogueManager 内存状态。"""
+        fields = session_state_to_legacy_fields(state)
+        self.phase = fields["phase"]
+        self.mode = fields["mode"]
+        self.awaiting_final_confirm = fields["awaiting_final_confirm"]
+        self.dialogue_mode = fields["dialogue_mode"]
+        self.last_mode_transition = copy.deepcopy(fields["last_mode_transition"])
+        self.mode_transition_history = [copy.deepcopy(t) for t in fields["mode_transition_history"]]
+        self.control_state = fields["control_state"]
+        self.last_control_request = copy.deepcopy(fields["last_control_request"])
+
 
 
 
@@ -3680,6 +3731,9 @@ class DialogueManager:
 
     def export_snapshot(self) -> dict:
         """导出 Issue #10 会话状态快照。"""
+        if is_session_state_v2_enabled():
+            _ = self._build_session_state_contract()
+
         return {
             "snapshot_version": 2,
             "conversation_history": copy.deepcopy(self.conversation_history),
@@ -3700,6 +3754,11 @@ class DialogueManager:
 
     def load_snapshot(self, snapshot: dict) -> None:
         """兼容恢复旧版扁平快照和 snapshot_version=2 完整快照。原子验证 schema。"""
+        if is_session_state_v2_enabled():
+            contract_state = session_state_from_legacy_snapshot(snapshot)
+        else:
+            contract_state = None
+
         if not isinstance(snapshot, dict):
             raise ValueError("History snapshot must be a dictionary")
 
@@ -3849,12 +3908,17 @@ class DialogueManager:
         self.conversation_history = copy.deepcopy(conversation_history)
         self.slot_store = candidate_store
         self.task_state = self.slot_store.get_task_state()
-        self.mode = mode
-        self.dialogue_mode = dialogue_mode
-        self.last_mode_transition = copy.deepcopy(last_mode_transition)
-        self.mode_transition_history = copy.deepcopy(validated_history)
-        self.control_state = control_state
-        self.last_control_request = copy.deepcopy(last_control_request)
+
+        if is_session_state_v2_enabled() and contract_state is not None:
+            self._apply_session_state_contract(contract_state)
+        else:
+            self.mode = mode
+            self.dialogue_mode = dialogue_mode
+            self.last_mode_transition = copy.deepcopy(last_mode_transition)
+            self.mode_transition_history = copy.deepcopy(validated_history)
+            self.control_state = control_state
+            self.last_control_request = copy.deepcopy(last_control_request)
+
         self.final_result = None
         self.task_start_now = False
         # 清空阻塞与白名单，重新构建缓存
@@ -3954,3 +4018,6 @@ class DialogueManager:
                 self.slot_store.commit_transaction(new_slots, self.slot_store.unresolved)
                 self.task_state = self.slot_store.get_task_state()
                 self._last_built_json = self.slot_store.get_built_json()
+
+        if is_session_state_v2_enabled():
+            _ = self._build_session_state_contract()
