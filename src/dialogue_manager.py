@@ -194,10 +194,6 @@ class DialogueManager:
         reason: str = "",
     ) -> None:
         """Issue #10 统一模式切换方法：记录切换元数据与历史轨迹。"""
-        if is_session_state_v2_enabled():
-            if new_mode not in VALID_DIALOGUE_MODES:
-                raise StateContractError(f"Invalid dialogue_mode in transition: {new_mode!r}")
-
         old_mode = getattr(self, "dialogue_mode", "task_collection")
         changed_at = datetime.now(timezone.utc).isoformat()
         transition = {
@@ -208,15 +204,51 @@ class DialogueManager:
             "reason": reason,
             "changed_at": changed_at,
         }
-        self.dialogue_mode = new_mode
-        # 仅当模式发生实际改变时更新 last_mode_transition 并追加到切换历史轨迹中，避免同模式重复记录
+
+        cand_mode = new_mode
         if old_mode != new_mode:
-            self.last_mode_transition = transition
-            if not hasattr(self, "mode_transition_history") or self.mode_transition_history is None:
-                self.mode_transition_history = []
-            self.mode_transition_history.append(transition)
-            if len(self.mode_transition_history) > 50:
-                self.mode_transition_history.pop(0)
+            cand_last_transition = transition
+            hist = list(getattr(self, "mode_transition_history", []) or [])
+            hist.append(transition)
+            if len(hist) > 50:
+                hist.pop(0)
+            cand_history = hist
+        else:
+            cand_last_transition = getattr(self, "last_mode_transition", None)
+            cand_history = list(getattr(self, "mode_transition_history", []) or [])
+
+        if is_session_state_v2_enabled():
+            _cand_conv = ConversationState(
+                dialogue_mode=cand_mode,
+                last_mode_transition=cand_last_transition,
+                mode_transition_history=cand_history,
+            )
+
+        self.dialogue_mode = cand_mode
+        if old_mode != new_mode:
+            self.last_mode_transition = cand_last_transition
+            self.mode_transition_history = cand_history
+
+    def _set_execution_control_state(
+        self,
+        control_state: str,
+        last_control_request: dict | None,
+        *,
+        reason: str = "",
+        source: str = "runtime",
+    ) -> None:
+        """Issue #10 / G3.3-B 统一 Execution Control 修改入口。
+
+        Runtime 修改 control_state 与 last_control_request 两个字段的唯一入口。
+        """
+        if is_session_state_v2_enabled():
+            _cand_exec = ExecutionControlState(
+                control_state=control_state,
+                last_control_request=last_control_request,
+            )
+
+        self.control_state = control_state
+        self.last_control_request = copy.deepcopy(last_control_request) if last_control_request is not None else None
 
     def _transition_phase(
         self,
@@ -950,8 +982,7 @@ class DialogueManager:
         self._pending_rov_candidates = []
         self._last_built_json = {}
         self._last_missing = []
-        self.control_state = "idle"
-        self.last_control_request = None
+        self._set_execution_control_state("idle", None, reason="clear_task_draft")
 
     def _handle_emergency_intervention(
         self,
@@ -973,14 +1004,19 @@ class DialogueManager:
         action_cn = action_cn_map.get(action, action)
 
         if self.phase == "done":
-            self.control_state = f"{action}_requested"
-            self.last_control_request = {
+            req_dict = {
                 "action": action,
                 "status": "requested",
                 "source": route.source,
                 "confidence": route.confidence,
                 "reason": route.reason,
             }
+            self._set_execution_control_state(
+                f"{action}_requested",
+                req_dict,
+                reason="emergency_intervention_requested",
+                source=route.source,
+            )
             reply = f"已识别针对已发布任务的控制指令【{action_cn}】。该控制请求已记录，等待机器人控制适配器对接执行。"
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
