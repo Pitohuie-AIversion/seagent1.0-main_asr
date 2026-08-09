@@ -388,6 +388,192 @@ class TestExecutionRequestIdentityV2(unittest.TestCase):
         self.assertEqual(self.dm.control_state, "idle")
         self.assertIsNone(self.dm.last_control_request)
 
+    # --------------------------------------------------------------------------
+    # F. Legacy Snapshot Migration Policy (G3.4-B Repair)
+    # --------------------------------------------------------------------------
+
+    # 31. Safe legacy done migration
+    def test_31_safe_legacy_done_migration(self) -> None:
+        snap = {
+            "snapshot_version": 2,
+            "phase": "done",
+            "mode": "normal",
+            "control_state": "stop_requested",
+            "last_control_request": {
+                "action": "stop",
+                "status": "requested",
+                "source": "rule",
+                "confidence": 1.0,
+                "reason": "legacy",
+            },
+            "task_state": {
+                "intent_id": "TI20260809001",
+                "task_id": "PI-20260809-001",
+                "internal_id": "123e4567-e89b-42d3-a456-426614174000",
+            },
+        }
+        state = session_state_from_legacy_snapshot(snap)
+        self.assertEqual(state.execution.last_control_request["target_intent_id"], "TI20260809001")
+
+    # 32. Confirming ambiguous migration fails closed
+    def test_32_confirming_ambiguous_migration_fails_closed(self) -> None:
+        snap = {
+            "snapshot_version": 2,
+            "phase": "confirming",
+            "mode": "normal",
+            "control_state": "stop_requested",
+            "last_control_request": {
+                "action": "stop",
+                "status": "requested",
+                "source": "rule",
+                "confidence": 1.0,
+                "reason": "legacy",
+            },
+            "task_state": {
+                "intent_id": "TI20260809002",
+            },
+        }
+        with self.assertRaises(StateContractError) as ctx:
+            session_state_from_legacy_snapshot(snap)
+        self.assertIn("confirming", str(ctx.exception))
+
+    # 33. Collecting ambiguous migration fails closed
+    def test_33_collecting_ambiguous_migration_fails_closed(self) -> None:
+        snap = {
+            "snapshot_version": 2,
+            "phase": "collecting",
+            "mode": "normal",
+            "control_state": "stop_requested",
+            "last_control_request": {
+                "action": "stop",
+                "status": "requested",
+            },
+            "task_state": {"intent_id": "TI20260809002"},
+        }
+        with self.assertRaises(StateContractError):
+            session_state_from_legacy_snapshot(snap)
+
+    # 34. Blocked_soft ambiguous migration fails closed
+    def test_34_blocked_soft_ambiguous_migration_fails_closed(self) -> None:
+        snap = {
+            "snapshot_version": 2,
+            "phase": "blocked_soft",
+            "mode": "normal",
+            "control_state": "pause_requested",
+            "last_control_request": {
+                "action": "pause",
+                "status": "requested",
+            },
+            "task_state": {"intent_id": "TI20260809002"},
+        }
+        with self.assertRaises(StateContractError):
+            session_state_from_legacy_snapshot(snap)
+
+    # 35. Blocked_hard ambiguous migration fails closed
+    def test_35_blocked_hard_ambiguous_migration_fails_closed(self) -> None:
+        snap = {
+            "snapshot_version": 2,
+            "phase": "blocked_hard",
+            "mode": "normal",
+            "control_state": "abort_requested",
+            "last_control_request": {
+                "action": "abort",
+                "status": "requested",
+            },
+            "task_state": {"intent_id": "TI20260809002"},
+        }
+        with self.assertRaises(StateContractError):
+            session_state_from_legacy_snapshot(snap)
+
+    # 36. Rejected ambiguous migration fails closed
+    def test_36_rejected_ambiguous_migration_fails_closed(self) -> None:
+        snap = {
+            "snapshot_version": 2,
+            "phase": "rejected",
+            "mode": "normal",
+            "control_state": "cancel_requested",
+            "last_control_request": {
+                "action": "cancel",
+                "status": "requested",
+            },
+            "task_state": {"intent_id": "TI20260809002"},
+        }
+        with self.assertRaises(StateContractError):
+            session_state_from_legacy_snapshot(snap)
+
+    # 37. Done phase missing or invalid intent_id fails closed
+    def test_37_done_phase_missing_or_invalid_intent_id_fails_closed(self) -> None:
+        snap = {
+            "snapshot_version": 2,
+            "phase": "done",
+            "mode": "normal",
+            "control_state": "stop_requested",
+            "last_control_request": {
+                "action": "stop",
+                "status": "requested",
+            },
+            "task_state": {"intent_id": "INVALID_INTENT_ID"},
+        }
+        with self.assertRaises(StateContractError):
+            session_state_from_legacy_snapshot(snap)
+
+    # 38. Existing target wins over task_state in confirming phase
+    def test_38_existing_target_wins_over_task_state(self) -> None:
+        snap = {
+            "snapshot_version": 2,
+            "phase": "confirming",
+            "mode": "normal",
+            "control_state": "stop_requested",
+            "last_control_request": {
+                "action": "stop",
+                "status": "requested",
+                "target_intent_id": "TI20260809001",
+            },
+            "task_state": {"intent_id": "TI20260809002"},
+        }
+        state = session_state_from_legacy_snapshot(snap)
+        self.assertEqual(state.execution.last_control_request["target_intent_id"], "TI20260809001")
+
+    # 39. Existing target wins in done phase
+    def test_39_existing_target_wins_in_done_phase(self) -> None:
+        snap = {
+            "snapshot_version": 2,
+            "phase": "done",
+            "mode": "normal",
+            "control_state": "stop_requested",
+            "last_control_request": {
+                "action": "stop",
+                "status": "requested",
+                "target_intent_id": "TI20260809001",
+            },
+            "task_state": {"intent_id": "TI20260809002"},
+        }
+        state = session_state_from_legacy_snapshot(snap)
+        self.assertEqual(state.execution.last_control_request["target_intent_id"], "TI20260809001")
+
+    # 40. Optional audit IDs handled safely
+    def test_40_optional_audit_ids_handled_safely(self) -> None:
+        snap = {
+            "snapshot_version": 2,
+            "phase": "done",
+            "mode": "normal",
+            "control_state": "stop_requested",
+            "last_control_request": {
+                "action": "stop",
+                "status": "requested",
+            },
+            "task_state": {
+                "intent_id": "TI20260809001",
+                "task_id": "PI-20260809-001",
+                "internal_id": "123e4567-e89b-42d3-a456-426614174000",
+            },
+        }
+        state = session_state_from_legacy_snapshot(snap)
+        req = state.execution.last_control_request
+        self.assertEqual(req["target_intent_id"], "TI20260809001")
+        self.assertEqual(req["target_task_id"], "PI-20260809-001")
+        self.assertEqual(req["target_internal_id"], "123e4567-e89b-42d3-a456-426614174000")
+
 
 if __name__ == "__main__":
     unittest.main()

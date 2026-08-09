@@ -312,24 +312,31 @@ def session_state_from_legacy_snapshot(snapshot: dict[str, Any]) -> SessionState
             awaiting_final_confirm=snapshot.get("awaiting_final_confirm", False),
         )
 
+        ctrl_st = snapshot.get("control_state", "idle")
         raw_req = snapshot.get("last_control_request")
         if isinstance(raw_req, (dict, MappingProxyType)):
             raw_req = dict(copy.deepcopy(dict(raw_req)))
-            if "target_intent_id" not in raw_req or not raw_req["target_intent_id"]:
-                task_state = snapshot.get("task_state") or {}
-                if isinstance(task_state, dict):
-                    cand_id = task_state.get("intent_id")
-                    if cand_id and validate_intent_id(cand_id):
-                        raw_req["target_intent_id"] = cand_id
-                    cand_tid = task_state.get("task_id")
-                    if cand_tid and validate_task_id(cand_tid) and "target_task_id" not in raw_req:
-                        raw_req["target_task_id"] = cand_tid
-                    cand_iid = task_state.get("internal_id")
-                    if cand_iid and validate_uuid4(cand_iid) and "target_internal_id" not in raw_req:
-                        raw_req["target_internal_id"] = cand_iid
+            has_target = bool(raw_req.get("target_intent_id"))
+            if not has_target and ctrl_st != "idle":
+                if task.phase == "done":
+                    task_state = snapshot.get("task_state") or {}
+                    if isinstance(task_state, dict):
+                        cand_id = task_state.get("intent_id")
+                        if cand_id and validate_intent_id(cand_id):
+                            raw_req["target_intent_id"] = cand_id
+                        cand_tid = task_state.get("task_id")
+                        if cand_tid and validate_task_id(cand_tid) and "target_task_id" not in raw_req:
+                            raw_req["target_task_id"] = cand_tid
+                        cand_iid = task_state.get("internal_id")
+                        if cand_iid and validate_uuid4(cand_iid) and "target_internal_id" not in raw_req:
+                            raw_req["target_internal_id"] = cand_iid
+                else:
+                    raise StateContractError(
+                        f"Ambiguous legacy execution request without target_intent_id cannot be safely restored when phase is '{task.phase}'"
+                    )
 
         execution = ExecutionControlState(
-            control_state=snapshot.get("control_state", "idle"),
+            control_state=ctrl_st,
             last_control_request=raw_req,
         )
 
