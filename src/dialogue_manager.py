@@ -196,6 +196,10 @@ class DialogueManager:
     ) -> None:
         """Issue #10 统一模式切换方法：记录切换元数据与历史轨迹。"""
         old_mode = getattr(self, "dialogue_mode", "task_collection")
+        if is_session_state_v2_enabled():
+            if old_mode not in VALID_DIALOGUE_MODES:
+                raise StateContractError(f"Invalid old dialogue_mode in runtime: {old_mode!r}")
+
         changed_at = datetime.now(timezone.utc).isoformat()
         transition = {
             "from": old_mode,
