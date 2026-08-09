@@ -300,7 +300,9 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
         slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
         slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
         slots["water_depth"] = Slot("water_depth", value=300.0, status="valid")
+        slots["task_id"] = Slot("task_id", value="PI-20260809-001", status="valid")
         slots["intent_id"] = Slot("intent_id", value="TI20260809001", status="valid")
+        slots["internal_id"] = Slot("internal_id", value="123e4567-e89b-12d3-a456-426614174000", status="valid")
         self.dm.slot_store.commit_transaction(slots, [])
         self.dm.task_state = self.dm.slot_store.get_task_state()
         self.dm._transition_phase("done", reason="test_setup")
@@ -317,20 +319,16 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
         self.assertEqual(self.dm.control_state, "stop_requested")
         self.assertIsNotNone(self.dm.last_control_request)
         self.assertEqual(self.dm.last_control_request["action"], "stop")
+        self.assertEqual(self.dm.last_control_request["target_intent_id"], "TI20260809001")
 
-        # Step 3: User modifies published task parameter
-        slots_mod = self.dm.slot_store.clone_slots()
-        slots_mod["water_depth"] = Slot("water_depth", value=500.0, status="valid")
-        self.dm.slot_store.commit_transaction(slots_mod, [])
-        self.dm.task_state = self.dm.slot_store.get_task_state()
-        self.dm.final_result = None
-        self.dm._transition_phase("confirming", reason="task_modified")
+        # Step 3: Real task parameter modification via process()
+        self.dm.process("修改水深为 500 米")
 
-        # Audit phase, control_state, last_control_request
-        self.assertEqual(self.dm.phase, "confirming")
+        # Audit phase, control_state, last_control_request, target_intent_id
         self.assertEqual(self.dm.control_state, "stop_requested")
         self.assertIsNotNone(self.dm.last_control_request)
         self.assertEqual(self.dm.last_control_request["action"], "stop")
+        self.assertEqual(self.dm.last_control_request["target_intent_id"], "TI20260809001")
 
 
 if __name__ == "__main__":

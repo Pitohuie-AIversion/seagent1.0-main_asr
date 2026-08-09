@@ -68,7 +68,7 @@ class TestSessionStateContract(unittest.TestCase):
         self.assertEqual(ecs_idle.control_state, "idle")
         self.assertIsNone(ecs_idle.last_control_request)
 
-        req = {"action": "stop", "status": "requested"}
+        req = {"action": "stop", "status": "requested", "target_intent_id": "TI20260809001"}
         ecs_stop = ExecutionControlState(
             control_state="stop_requested",
             last_control_request=req,
@@ -172,7 +172,7 @@ class TestSessionStateContract(unittest.TestCase):
             "last_mode_transition": self.valid_transition,
             "mode_transition_history": [self.valid_transition],
             "control_state": "pause_requested",
-            "last_control_request": {"action": "pause", "status": "requested"},
+            "last_control_request": {"action": "pause", "status": "requested", "target_intent_id": "TI20260809001"},
             "slot_store": {"dummy": "data"},  # should be ignored by contract
             "task_state": {"dummy": "data"},  # should be ignored by contract
         }
@@ -201,7 +201,7 @@ class TestSessionStateContract(unittest.TestCase):
         tls = TaskLifecycleState(phase="confirming", mode="normal", awaiting_final_confirm=True)
         ecs = ExecutionControlState(
             control_state="cancel_requested",
-            last_control_request={"action": "cancel", "status": "requested"},
+            last_control_request={"action": "cancel", "status": "requested", "target_intent_id": "TI20260809001"},
         )
         ss = SessionState(schema_version=2, conversation=cs, task=tls, execution=ecs)
 
@@ -214,7 +214,7 @@ class TestSessionStateContract(unittest.TestCase):
         self.assertEqual(fields["last_mode_transition"], self.valid_transition)
         self.assertEqual(fields["mode_transition_history"], [self.valid_transition])
         self.assertEqual(fields["control_state"], "cancel_requested")
-        self.assertEqual(fields["last_control_request"], {"action": "cancel", "status": "requested"})
+        self.assertEqual(fields["last_control_request"], {"action": "cancel", "status": "requested", "target_intent_id": "TI20260809001"})
 
         # Assert output contains plain serializable dict/list
         self.assertIsInstance(fields["last_mode_transition"], dict)
@@ -239,7 +239,7 @@ class TestSessionStateContract(unittest.TestCase):
             "last_mode_transition": self.valid_transition,
             "mode_transition_history": [self.valid_transition],
             "control_state": "abort_requested",
-            "last_control_request": {"action": "abort", "status": "requested"},
+            "last_control_request": {"action": "abort", "status": "requested", "target_intent_id": "TI20260809001"},
         }
 
         st1 = session_state_from_legacy_snapshot(legacy_snap)
@@ -301,7 +301,7 @@ class TestSessionStateContract(unittest.TestCase):
     def test_17_nested_control_request_is_immutable(self) -> None:
         ecs = ExecutionControlState(
             control_state="stop_requested",
-            last_control_request={"action": "stop", "status": "requested"},
+            last_control_request={"action": "stop", "status": "requested", "target_intent_id": "TI20260809001"},
         )
         self.assertIsInstance(ecs.last_control_request, MappingProxyType)
         with self.assertRaises(TypeError):

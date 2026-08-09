@@ -247,6 +247,10 @@ class DialogueManager:
         Runtime 修改 control_state 与 last_control_request 两个字段的唯一入口。
         """
         if is_session_state_v2_enabled():
+            if control_state != "idle" and self.phase != "done":
+                raise StateContractError(
+                    f"Cannot set non-idle execution control state '{control_state}' when task phase is '{self.phase}' (must be 'done')"
+                )
             _cand_exec = ExecutionControlState(
                 control_state=control_state,
                 last_control_request=last_control_request,
@@ -1009,9 +1013,22 @@ class DialogueManager:
         action_cn = action_cn_map.get(action, action)
 
         if self.phase == "done":
+            target_intent_id = self.task_state.get("intent_id") or (self._last_built_json.get("intent_id") if isinstance(self._last_built_json, dict) else None)
+            target_task_id = self.task_state.get("task_id") or (self._last_built_json.get("task_id") if isinstance(self._last_built_json, dict) else None)
+            target_internal_id = self.task_state.get("internal_id") or (self._last_built_json.get("internal_id") if isinstance(self._last_built_json, dict) else None)
+
+            if is_session_state_v2_enabled():
+                if not target_intent_id or not validate_intent_id(target_intent_id):
+                    raise StateContractError(
+                        f"Cannot create execution control request: invalid or missing target_intent_id ({target_intent_id!r}) in phase 'done'"
+                    )
+
             req_dict = {
                 "action": action,
                 "status": "requested",
+                "target_intent_id": target_intent_id,
+                "target_task_id": target_task_id,
+                "target_internal_id": target_internal_id,
                 "source": route.source,
                 "confidence": route.confidence,
                 "reason": route.reason,

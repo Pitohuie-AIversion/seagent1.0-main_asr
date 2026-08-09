@@ -16,6 +16,9 @@ from types import MappingProxyType
 from typing import Any
 
 
+from .id_sequence import validate_intent_id, validate_task_id, validate_uuid4
+
+
 class StateContractError(ValueError):
     """Raised when session state validation or conversion fails."""
     pass
@@ -227,6 +230,19 @@ class ExecutionControlState:
             st = self.last_control_request.get("status")
             if not isinstance(st, str) or type(st) is not str or st != "requested":
                 raise StateContractError(f"Invalid status in last_control_request: {st!r}")
+
+            target_intent_id = self.last_control_request.get("target_intent_id")
+            if not target_intent_id or not validate_intent_id(target_intent_id):
+                raise StateContractError(f"Invalid or missing target_intent_id in last_control_request: {target_intent_id!r}")
+
+            target_task_id = self.last_control_request.get("target_task_id")
+            if target_task_id is not None and not validate_task_id(target_task_id):
+                raise StateContractError(f"Invalid target_task_id in last_control_request: {target_task_id!r}")
+
+            target_internal_id = self.last_control_request.get("target_internal_id")
+            if target_internal_id is not None and not validate_uuid4(target_internal_id):
+                raise StateContractError(f"Invalid target_internal_id in last_control_request: {target_internal_id!r}")
+
             validated_req = MappingProxyType(dict(copy.deepcopy(dict(self.last_control_request))))
             object.__setattr__(self, "last_control_request", validated_req)
 
@@ -296,9 +312,25 @@ def session_state_from_legacy_snapshot(snapshot: dict[str, Any]) -> SessionState
             awaiting_final_confirm=snapshot.get("awaiting_final_confirm", False),
         )
 
+        raw_req = snapshot.get("last_control_request")
+        if isinstance(raw_req, (dict, MappingProxyType)):
+            raw_req = dict(copy.deepcopy(dict(raw_req)))
+            if "target_intent_id" not in raw_req or not raw_req["target_intent_id"]:
+                task_state = snapshot.get("task_state") or {}
+                if isinstance(task_state, dict):
+                    cand_id = task_state.get("intent_id")
+                    if cand_id and validate_intent_id(cand_id):
+                        raw_req["target_intent_id"] = cand_id
+                    cand_tid = task_state.get("task_id")
+                    if cand_tid and validate_task_id(cand_tid) and "target_task_id" not in raw_req:
+                        raw_req["target_task_id"] = cand_tid
+                    cand_iid = task_state.get("internal_id")
+                    if cand_iid and validate_uuid4(cand_iid) and "target_internal_id" not in raw_req:
+                        raw_req["target_internal_id"] = cand_iid
+
         execution = ExecutionControlState(
             control_state=snapshot.get("control_state", "idle"),
-            last_control_request=snapshot.get("last_control_request"),
+            last_control_request=raw_req,
         )
 
         return SessionState(
