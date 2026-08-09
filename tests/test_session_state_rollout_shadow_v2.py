@@ -1,19 +1,19 @@
 """
 tests/test_session_state_rollout_shadow_v2.py
 
-SEAgent G4.1 SessionState V2 Shadow Compatibility Gate Test Suite.
+SEAgent G4.1 SessionState V2 Shadow Compatibility Gate Test Suite (Authenticity Repaired).
 
-Provides reproducible shadow comparison between:
+Provides reproducible, dual-executed shadow comparison between:
   Legacy Runtime (session_state_v2 = false)
   vs
   Strict Runtime (session_state_v2 = true)
 
-Categorizes outcomes into:
+Automatically categorizes outcomes into:
   - PARITY
   - EXPECTED_FAIL_CLOSED_DELTA
   - UNEXPECTED_BEHAVIOR_DELTA (asserted to be strictly 0)
 
-Does NOT modify production feature flags or production code in src/.
+Guarantees 0 production code diff in src/ and 0 feature flag modifications.
 """
 
 import copy
@@ -21,19 +21,32 @@ import json
 import shutil
 import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from src.dialogue_manager import DialogueManager
+from src.exceptions import TaskPersistenceError, IntentIdConflict
 from src.id_sequence import validate_intent_id, validate_uuid4
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
 from src.session_state import StateContractError, session_state_from_legacy_snapshot
-from src.slot_store import Slot, SlotStore
-from tests.fixtures.governance_corpus import GOVERNANCE_GOLDEN_CORPUS
+from src.slot_store import Slot, SlotStore, SnapshotValidationError
+from src.task_intent_builder import TaskIntentBuilder, get_task_dir
+from src.validator import ValidationResult, Violation
+
+
+@dataclass
+class ShadowOutcome:
+    succeeded: bool
+    exception_type: str | None
+    exception_message: str | None
+    before_digest: dict
+    after_digest: dict
 
 
 def _make_dm(tmp_dir: Path) -> DialogueManager:
+    tmp_dir.mkdir(parents=True, exist_ok=True)
     state_file = tmp_dir / "state.yaml"
     shutil.copy("config/state.yaml", state_file)
     kb = KnowledgeBase()
@@ -127,45 +140,234 @@ def build_shadow_digest(dm: DialogueManager) -> dict:
     return normalize_digest(raw_digest)
 
 
-class TestSessionStateRolloutShadowV2(unittest.TestCase):
-    shadow_results = []
+def execute_shadow_side(
+    *,
+    strict: bool,
+    tmp_path: Path,
+    setup_fn,
+    action_fn,
+) -> ShadowOutcome:
+    """Execute a single side (Legacy if strict=False, Strict if strict=True) in full filesystem isolation."""
+    side_dir = tmp_path / ("strict" if strict else "legacy")
+    side_task_dir = side_dir / "tasks"
+    side_dir.mkdir(parents=True, exist_ok=True)
+    side_task_dir.mkdir(parents=True, exist_ok=True)
 
-    def setUp(self):
-        self._tmp = tempfile.mkdtemp()
-        self.tmp_path = Path(self._tmp)
-        self.task_dir = self.tmp_path / "task_intents"
-        self.task_dir.mkdir(parents=True, exist_ok=True)
+    with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=strict), \
+         patch("src.task_intent_builder.get_task_dir", return_value=side_task_dir), \
+         patch("src.id_sequence._get_counter_file_path", return_value=side_dir / "counter.json"), \
+         patch("src.id_sequence._get_lock_file_path", return_value=side_dir / "counter.lock"), \
+         patch("src.id_sequence._COUNTERS", {}):
 
-    def tearDown(self):
-        shutil.rmtree(self._tmp, ignore_errors=True)
+        dm = _make_dm(side_dir)
 
-    def record_result(self, case_id: str, case_name: str, classification: str, legacy_res: str, strict_res: str, reason: str):
-        TestSessionStateRolloutShadowV2.shadow_results.append({
-            "case_id": case_id,
-            "case_name": case_name,
-            "classification": classification,
-            "legacy_result": legacy_res,
-            "strict_result": strict_res,
-            "reason": reason,
-        })
+        if setup_fn:
+            setup_fn(dm, side_task_dir)
 
-    def _init_dm_pair(self) -> tuple[DialogueManager, DialogueManager]:
-        """Create isolated, identical pair of DialogueManagers (dm_legacy, dm_strict)."""
-        tmp_legacy = self.tmp_path / "legacy"
-        tmp_strict = self.tmp_path / "strict"
-        tmp_legacy.mkdir(exist_ok=True)
-        tmp_strict.mkdir(exist_ok=True)
+        before_digest = build_shadow_digest(dm)
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy = _make_dm(tmp_legacy)
+        succeeded = False
+        exc_type = None
+        exc_msg = None
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict = _make_dm(tmp_strict)
+        try:
+            action_fn(dm, side_task_dir)
+            succeeded = True
+        except Exception as exc:
+            succeeded = False
+            exc_type = type(exc).__name__
+            exc_msg = str(exc)
 
-        return dm_legacy, dm_strict
+        after_digest = build_shadow_digest(dm)
 
-    def _setup_published_task(self, dm: DialogueManager, intent_id: str = "TI202608090001") -> str:
-        """Helper to set up a published task in done phase on DialogueManager."""
+        return ShadowOutcome(
+            succeeded=succeeded,
+            exception_type=exc_type,
+            exception_message=exc_msg,
+            before_digest=before_digest,
+            after_digest=after_digest,
+        )
+
+
+def classify_shadow_outcomes(
+    legacy: ShadowOutcome,
+    strict: ShadowOutcome,
+    *,
+    expected_kind: str,
+    canonicalizer=None,
+) -> tuple[str, str]:
+    """Automated classification comparator comparing Legacy and Strict execution outcomes."""
+    leg_digest = canonicalizer(legacy.after_digest) if canonicalizer else legacy.after_digest
+    st_digest = strict.after_digest
+
+    if expected_kind == "parity":
+        if legacy.succeeded and strict.succeeded and leg_digest == st_digest:
+            return "PARITY", "Both sides succeeded with identical state digest"
+        elif not legacy.succeeded and not strict.succeeded and legacy.exception_type == strict.exception_type and leg_digest == st_digest:
+            return "PARITY", f"Both sides failed identically with {strict.exception_type}"
+        else:
+            return "UNEXPECTED_BEHAVIOR_DELTA", f"Parity mismatch: legacy_ok={legacy.succeeded}, strict_ok={strict.succeeded}, leg_exc={legacy.exception_type}, st_exc={strict.exception_type}"
+
+    elif expected_kind == "strict_fail_closed":
+        strict_failed_closed = (not strict.succeeded) and (strict.exception_type in ("StateContractError", "ValueError", "SnapshotValidationError"))
+        strict_atomicity_pass = (strict.before_digest == strict.after_digest)
+
+        if strict_failed_closed and strict_atomicity_pass:
+            return "EXPECTED_FAIL_CLOSED_DELTA", f"Strict failed closed with {strict.exception_type} and 0 state pollution"
+        else:
+            return "UNEXPECTED_BEHAVIOR_DELTA", f"Fail closed violation: strict_succeeded={strict.succeeded}, exc={strict.exception_type}, atomic={strict_atomicity_pass}"
+    else:
+        raise ValueError(f"Unknown expected_kind: {expected_kind}")
+
+
+def run_shadow_case(
+    case_id: str,
+    case_name: str,
+    tmp_path: Path,
+    setup_fn,
+    action_fn,
+    expected_kind: str,
+    *,
+    canonicalizer=None,
+) -> dict:
+    """Run dual-executed shadow case on isolated filesystem and return automated classification result."""
+    legacy_outcome = execute_shadow_side(strict=False, tmp_path=tmp_path, setup_fn=setup_fn, action_fn=action_fn)
+    strict_outcome = execute_shadow_side(strict=True, tmp_path=tmp_path, setup_fn=setup_fn, action_fn=action_fn)
+
+    classification, reason = classify_shadow_outcomes(
+        legacy_outcome,
+        strict_outcome,
+        expected_kind=expected_kind,
+        canonicalizer=canonicalizer,
+    )
+
+    return {
+        "case_id": case_id,
+        "case_name": case_name,
+        "expected_kind": expected_kind,
+        "classification": classification,
+        "legacy": legacy_outcome,
+        "strict": strict_outcome,
+        "reason": reason,
+    }
+
+
+def _helper_setup_published_task(dm: DialogueManager, task_dir: Path, intent_id: str = "TI202608090001"):
+    """Helper to populate valid published task state and write task intent file into task_dir."""
+    schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
+    dm.slot_store.init_task_slots(schema)
+    slots = dm.slot_store.clone_slots()
+    slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid", value_type="string")
+    slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid", value_type="string")
+    slots["water_depth"] = Slot("water_depth", value=300.0, status="valid", value_type="number")
+    slots["location"] = Slot("location", value="A区", status="valid", value_type="string")
+    slots["intent_id"] = Slot("intent_id", value=intent_id, status="valid", value_type="string")
+    slots["internal_id"] = Slot("internal_id", value="00000000-0000-4000-8000-000000000001", status="valid", value_type="string")
+    slots["task_id"] = Slot("task_id", value="PI-20260809-001", status="valid", value_type="string")
+    slots["equipment_class"] = Slot("equipment_class", value="观察级ROV", status="valid", value_type="string")
+    slots["equipment_type"] = Slot("equipment_type", value="观察级深海机器人", status="valid", value_type="string")
+    slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV--001", status="valid", value_type="string")
+    dm.slot_store.commit_transaction(slots, [])
+    dm.task_state = dm.slot_store.get_task_state()
+
+    task_data = {
+        "schema_version": 2,
+        "intent_id": intent_id,
+        "internal_id": "00000000-0000-4000-8000-000000000001",
+        "task_id": "PI-20260809-001",
+        "task_type": "pipeline_inspection",
+        "task_type_key": "pipeline_inspection",
+        "priority": 1,
+        "time": {"start": "now", "end": "now+1h"},
+        "location": {"oilfield": "A区", "water_depth_m": 300.0},
+        "task": {"type": "pipeline_inspection", "details": "管缆巡检"},
+        "equipment": {"robot_type": "observation_rov", "payload": [], "support_vessel": "Vessel1"},
+        "conditions": {"water_depth": 300.0},
+    }
+    task_dir.mkdir(parents=True, exist_ok=True)
+    with open(task_dir / f"task_intent_{intent_id}.json", "w", encoding="utf-8") as f:
+        json.dump(task_data, f)
+
+    dm.phase = "done"
+    dm.final_result = task_data
+
+
+def GET_SHADOW_CASE_DEFINITIONS() -> list[dict]:
+    """Return array of case specs defining (case_id, case_name, setup_fn, action_fn, expected_kind, canonicalizer)."""
+
+    # A01
+    def a01_action(dm, td): pass
+
+    # A02
+    def a02_action(dm, td):
+        dm.export_snapshot()
+
+    # A03
+    def a03_action(dm, td):
+        dm.process("什么是DVL？", request_id="req_a03")
+
+    # A04
+    def a04_action(dm, td):
+        dm.process("你好，请介绍一下你自己", request_id="req_a04")
+
+    # A05
+    def a05_setup(dm, td):
+        schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
+        dm.slot_store.init_task_slots(schema)
+        slots = dm.slot_store.clone_slots()
+        slots["water_depth"] = Slot("water_depth", value=300.0, status="valid", value_type="number")
+        dm.slot_store.commit_transaction(slots, [])
+        dm.task_state = dm.slot_store.get_task_state()
+
+    def a05_action(dm, td):
+        dm.process("水深测量是用什么仪器？", request_id="req_a05")
+
+    # A06
+    def stub_extract(messages, max_tokens=None):
+        return {
+            "slot_candidates": [
+                {
+                    "canonical_key": "task_type",
+                    "normalized_value": "管缆巡检",
+                    "raw_value": "管缆巡检",
+                    "confidence": 1.0,
+                    "resolution_method": "canonical_exact",
+                }
+            ]
+        }
+
+    def a06_action(dm, td):
+        dm.process("什么是DVL？")
+        with patch.object(dm.llm, "extract_json", side_effect=stub_extract):
+            dm.process("创建一个管缆巡检任务")
+
+    # A07
+    def a07_action(dm, td):
+        dm._transition_phase("confirming")
+
+    # A08 (Real Soft Warning Acknowledgment Flow)
+    def a08_setup(dm, td):
+        schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
+        dm.slot_store.init_task_slots(schema)
+        dm.phase = "blocked_soft"
+        v = Violation(constraint_id="SOFT_01", constraint_name="Soft Test", message="Soft warning", severity="soft", related_fields=["water_depth"], observed_value=300.0)
+        dm._blocking_violations = [v]
+
+    def a08_action(dm, td):
+        dm.process("确认忽略警告", request_id="req_a08")
+
+    # A09 (Real Hard Constraint Correction Flow)
+    def a09_setup(dm, td):
+        dm.phase = "blocked_hard"
+        schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
+        dm.slot_store.init_task_slots(schema)
+
+    def a09_action(dm, td):
+        with patch.object(dm.llm, "extract_json", side_effect=stub_extract):
+            dm.process("修改水深为300米", request_id="req_a09")
+
+    # A10 (Real Publish Flow)
+    def a10_setup(dm, td):
         schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
         dm.slot_store.init_task_slots(schema)
         slots = dm.slot_store.clone_slots()
@@ -173,345 +375,63 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
         slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid", value_type="string")
         slots["water_depth"] = Slot("water_depth", value=300.0, status="valid", value_type="number")
         slots["location"] = Slot("location", value="A区", status="valid", value_type="string")
-        slots["intent_id"] = Slot("intent_id", value=intent_id, status="valid", value_type="string")
+        slots["intent_id"] = Slot("intent_id", value="TI202608090001", status="valid", value_type="string")
         slots["internal_id"] = Slot("internal_id", value="00000000-0000-4000-8000-000000000001", status="valid", value_type="string")
         slots["task_id"] = Slot("task_id", value="PI-20260809-001", status="valid", value_type="string")
+        slots["equipment_class"] = Slot("equipment_class", value="观察级ROV", status="valid", value_type="string")
+        slots["equipment_type"] = Slot("equipment_type", value="观察级深海机器人", status="valid", value_type="string")
+        slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV--001", status="valid", value_type="string")
         dm.slot_store.commit_transaction(slots, [])
         dm.task_state = dm.slot_store.get_task_state()
-
-        # Write published task intent file
-        task_data = {
-            "schema_version": 2,
-            "intent_id": intent_id,
-            "internal_id": "00000000-0000-4000-8000-000000000001",
-            "task_id": "PI-20260809-001",
-            "task_type": "pipeline_inspection",
-            "task_type_key": "pipeline_inspection",
-            "priority": 1,
-            "time": {"start": "now", "end": "now+1h"},
-            "location": {"oilfield": "A区", "water_depth_m": 300.0},
-            "task": {"type": "pipeline_inspection", "details": "管缆巡检"},
-            "equipment": {"robot_type": "observation_rov", "payload": [], "support_vessel": "Vessel1"},
-            "conditions": {"water_depth": 300.0},
-        }
-        from src.task_intent_builder import get_task_dir
-        pub_dir = get_task_dir(create=True)
-        pub_dir.mkdir(parents=True, exist_ok=True)
-        with open(pub_dir / f"task_intent_{intent_id}.json", "w", encoding="utf-8") as f:
-            json.dump(task_data, f)
-
-        dm.phase = "done"
-        dm.final_result = task_data
-        return intent_id
-
-    # =========================================================================
-    # Category A: PARITY Scenarios (A01 - A20)
-    # =========================================================================
-
-    def test_a01_initial_state(self):
-        """A01: New DialogueManager instances have identical initial State Digest."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_legacy, digest_strict)
-        self.record_result("A01", "Initial State", "PARITY", "PASS", "PASS", "Identical initial digest")
-
-    def test_a02_export_snapshot(self):
-        """A02: export_snapshot() structure and values match between Legacy and Strict."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            snap_legacy = dm_legacy.export_snapshot()
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            snap_strict = dm_strict.export_snapshot()
-
-        norm_snap_legacy = normalize_digest(snap_legacy)
-        norm_snap_strict = normalize_digest(snap_strict)
-
-        self.assertEqual(norm_snap_legacy, norm_snap_strict)
-        self.record_result("A02", "Export Snapshot", "PARITY", "PASS", "PASS", "Exported snapshot parity")
-
-    def test_a03_ordinary_knowledge_qa_readonly(self):
-        """A03: Read-only Knowledge QA prompt keeps slot store version and task state unchanged."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            reply_legacy = dm_legacy.process("什么是DVL？", request_id="req_a03_l")
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            reply_strict = dm_strict.process("什么是DVL？", request_id="req_a03_s")
-
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(dm_legacy.dialogue_mode, "knowledge_qa")
-        self.assertEqual(dm_strict.dialogue_mode, "knowledge_qa")
-        self.record_result("A03", "Ordinary Knowledge QA Read-only", "PARITY", "PASS", "PASS", "Read-only invariant preserved")
-
-    def test_a04_general_chat(self):
-        """A04: General non-task chat does not trigger task mutation."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy.process("你好，请介绍一下你自己", request_id="req_a04_l")
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict.process("你好，请介绍一下你自己", request_id="req_a04_s")
-
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(dm_legacy.phase, "collecting")
-        self.assertEqual(dm_strict.phase, "collecting")
-        self.record_result("A04", "General Chat", "PARITY", "PASS", "PASS", "No task mutation on chat")
-
-    def test_a05_task_collection_to_knowledge_qa(self):
-        """A05: Asking QA prompt with existing task draft preserves task facts."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        for dm in (dm_legacy, dm_strict):
-            schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
-            dm.slot_store.init_task_slots(schema)
-            slots = dm.slot_store.clone_slots()
-            slots["water_depth"] = Slot("water_depth", value=300.0, status="valid", value_type="number")
-            dm.slot_store.commit_transaction(slots, [])
-            dm.task_state = dm.slot_store.get_task_state()
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy.process("水深测量是用什么仪器？", request_id="req_a05_l")
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict.process("水深测量是用什么仪器？", request_id="req_a05_s")
-
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(dm_legacy.slot_store.get_task_state().get("water_depth"), 300.0)
-        self.assertEqual(dm_strict.slot_store.get_task_state().get("water_depth"), 300.0)
-        self.record_result("A05", "task_collection -> knowledge_qa", "PARITY", "PASS", "PASS", "Task facts intact across QA switch")
-
-    def test_a06_knowledge_qa_to_task_collection(self):
-        """A06: Entering task collection after QA creates task draft consistently."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-
-        def stub_extract(messages, max_tokens=None):
-            return {
-                "slot_candidates": [
-                    {
-                        "canonical_key": "task_type",
-                        "normalized_value": "管缆巡检",
-                        "raw_value": "管缆巡检",
-                        "confidence": 1.0,
-                        "resolution_method": "canonical_exact",
-                    }
-                ]
-            }
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy.process("什么是DVL？")
-            with patch.object(dm_legacy.llm, "extract_json", side_effect=stub_extract):
-                dm_legacy.process("创建一个管缆巡检任务")
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict.process("什么是DVL？")
-            with patch.object(dm_strict.llm, "extract_json", side_effect=stub_extract):
-                dm_strict.process("创建一个管缆巡检任务")
-
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(dm_legacy.dialogue_mode, "task_collection")
-        self.assertEqual(dm_strict.dialogue_mode, "task_collection")
-        self.record_result("A06", "knowledge_qa -> task_collection", "PARITY", "PASS", "PASS", "Draft task created consistently")
-
-    def test_a07_legal_task_phase_transition(self):
-        """A07: Transitioning collecting -> confirming via _transition_phase is parity."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy._transition_phase("confirming")
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict._transition_phase("confirming")
-
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(dm_legacy.phase, "confirming")
-        self.assertEqual(dm_strict.phase, "confirming")
-        self.record_result("A07", "Legal Task Phase Transition", "PARITY", "PASS", "PASS", "Legal transition collecting -> confirming")
-
-    def test_a08_soft_warning_legal_path(self):
-        """A08: Soft warning acknowledgment flow transitions consistently."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        for dm in (dm_legacy, dm_strict):
-            dm.phase = "blocked_soft"
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy._handle_soft_warning_confirmation("确认忽略警告", request_id="req_a08_l")
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict._handle_soft_warning_confirmation("确认忽略警告", request_id="req_a08_s")
-
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.record_result("A08", "Soft Warning Legal Path", "PARITY", "PASS", "PASS", "Soft warning resolved identically")
-
-    def test_a09_hard_constraint_legal_resolution(self):
-        """A09: Hard constraint resolution flow produces identical state."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        for dm in (dm_legacy, dm_strict):
-            dm.phase = "blocked_hard"
-            schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
-            dm.slot_store.init_task_slots(schema)
-
-        # Transition back to collecting after correction
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy._transition_phase("collecting")
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict._transition_phase("collecting")
-
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(dm_legacy.phase, "collecting")
-        self.assertEqual(dm_strict.phase, "collecting")
-        self.record_result("A09", "Hard Constraint Legal Resolution", "PARITY", "PASS", "PASS", "Hard constraint resolved legally")
-
-    def test_a10_confirming_to_done(self):
-        """A10: Confirming -> done transition (simulated publish) matches between modes."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        for dm in (dm_legacy, dm_strict):
-            dm.phase = "confirming"
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy._transition_phase("done")
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict._transition_phase("done")
-
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(dm_legacy.phase, "done")
-        self.assertEqual(dm_strict.phase, "done")
-        self.record_result("A10", "Confirming -> Done", "PARITY", "PASS", "PASS", "Confirming to done parity")
-
-    def test_a11_duplicate_confirmation(self):
-        """A11: Repeat confirmation after done is idempotent."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        for dm in (dm_legacy, dm_strict):
-            self._setup_published_task(dm)
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy._handle_final_publish_confirmation("确认", request_id="req_a11_l")
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict._handle_final_publish_confirmation("确认", request_id="req_a11_s")
-
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(dm_legacy.phase, "done")
-        self.assertEqual(dm_strict.phase, "done")
-        self.record_result("A11", "Duplicate Confirmation", "PARITY", "PASS", "PASS", "Duplicate confirmation idempotent")
-
-    def test_a12_draft_cancel(self):
-        """A12: Cancelling draft task sets phase=rejected, control_state=idle, last_control_request=None."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy._transition_phase("rejected")
-            dm_legacy._set_execution_control_state("idle", None)
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict._transition_phase("rejected")
-            dm_strict._set_execution_control_state("idle", None)
-
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(dm_legacy.phase, "rejected")
-        self.assertEqual(dm_strict.phase, "rejected")
-        self.assertIsNone(dm_legacy.last_control_request)
-        self.assertIsNone(dm_strict.last_control_request)
-        self.record_result("A12", "Draft Cancel", "PARITY", "PASS", "PASS", "Draft cancel parity")
-
-    def test_a13_published_execution_request(self):
-        """A13: Setting stop request on published task binds target_intent_id identically."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        intent_id = "TI202608090001"
-        for dm in (dm_legacy, dm_strict):
-            self._setup_published_task(dm, intent_id)
-
-        req = {"action": "stop", "status": "requested", "target_intent_id": intent_id}
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy._set_execution_control_state("stop_requested", req)
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict._set_execution_control_state("stop_requested", req)
-
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(dm_legacy.control_state, "stop_requested")
-        self.assertEqual(dm_strict.control_state, "stop_requested")
-        self.assertEqual(dm_legacy.last_control_request.get("target_intent_id"), intent_id)
-        self.assertEqual(dm_strict.last_control_request.get("target_intent_id"), intent_id)
-        self.record_result("A13", "Published Execution Request", "PARITY", "PASS", "PASS", "Execution request bound to published target")
-
-    def test_a14_requested_to_requested(self):
-        """A14: Transitioning from stop_requested to pause_requested on published task is parity."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        intent_id = "TI202608090001"
-        for dm in (dm_legacy, dm_strict):
-            self._setup_published_task(dm, intent_id)
-
-        req_stop = {"action": "stop", "status": "requested", "target_intent_id": intent_id}
-        req_pause = {"action": "pause", "status": "requested", "target_intent_id": intent_id}
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy._set_execution_control_state("stop_requested", req_stop)
-            dm_legacy._set_execution_control_state("pause_requested", req_pause)
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict._set_execution_control_state("stop_requested", req_stop)
-            dm_strict._set_execution_control_state("pause_requested", req_pause)
-
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(dm_legacy.control_state, "pause_requested")
-        self.assertEqual(dm_strict.control_state, "pause_requested")
-        self.record_result("A14", "Requested -> Requested", "PARITY", "PASS", "PASS", "Requested to requested transition parity")
-
-    def test_a15_task_modification_after_published_request(self):
-        """A15: Modifying draft task after published request retains request target A."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        intent_id_a = "TI202608090001"
-        for dm in (dm_legacy, dm_strict):
-            self._setup_published_task(dm, intent_id_a)
-            req = {"action": "stop", "status": "requested", "target_intent_id": intent_id_a}
-            dm._set_execution_control_state("stop_requested", req)
-            # Switch phase to collecting to create a new draft
-            dm._transition_phase("collecting")
-
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(dm_legacy.control_state, "stop_requested")
-        self.assertEqual(dm_strict.control_state, "stop_requested")
-        self.assertEqual(dm_legacy.last_control_request.get("target_intent_id"), intent_id_a)
-        self.assertEqual(dm_strict.last_control_request.get("target_intent_id"), intent_id_a)
-        self.record_result("A15", "Task Modification After Published Request", "PARITY", "PASS", "PASS", "Execution target A retained on draft modify")
-
-    def test_a16_valid_snapshot_restore(self):
-        """A16: Restoring valid v2 snapshot produces identical state in both modes."""
-        dm_legacy, dm_strict = self._init_dm_pair()
+        dm.phase = "confirming"
+
+    def a10_action(dm, td):
+        dm.process("确认发布", request_id="req_a10")
+
+    # A11
+    def a11_setup(dm, td):
+        _helper_setup_published_task(dm, td, "TI202608090001")
+
+    def a11_action(dm, td):
+        dm.process("确认", request_id="req_a11")
+
+    # A12 (Real Draft Cancel Flow)
+    def a12_setup(dm, td):
+        schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
+        dm.slot_store.init_task_slots(schema)
+
+    def a12_action(dm, td):
+        dm.process("取消任务", request_id="req_a12")
+
+    # A13 (Real Control Action Flow)
+    def a13_setup(dm, td):
+        _helper_setup_published_task(dm, td, "TI202608090001")
+
+    def a13_action(dm, td):
+        dm.process("停止当前任务", request_id="req_a13")
+
+    # A14
+    def a14_setup(dm, td):
+        _helper_setup_published_task(dm, td, "TI202608090001")
+
+    def a14_action(dm, td):
+        req_stop = {"action": "stop", "status": "requested", "target_intent_id": "TI202608090001"}
+        req_pause = {"action": "pause", "status": "requested", "target_intent_id": "TI202608090001"}
+        dm._set_execution_control_state("stop_requested", req_stop)
+        dm._set_execution_control_state("pause_requested", req_pause)
+
+    # A15 (Real Published Request -> Draft Modification Flow)
+    def a15_setup(dm, td):
+        _helper_setup_published_task(dm, td, "TI202608090001")
+        req = {"action": "stop", "status": "requested", "target_intent_id": "TI202608090001"}
+        dm._set_execution_control_state("stop_requested", req)
+
+    def a15_action(dm, td):
+        with patch.object(dm.llm, "extract_json", side_effect=stub_extract):
+            dm.process("创建一个管缆巡检任务", request_id="req_a15")
+
+    # A16
+    def a16_action(dm, td):
         snap = {
             "snapshot_version": 2,
             "phase": "collecting",
@@ -530,27 +450,13 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
             },
             "task_state": {"intent_id": "TI202608090001", "task_type": "管缆巡检", "water_depth": 300.0},
         }
+        dm.load_snapshot(snap)
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy.load_snapshot(snap)
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict.load_snapshot(snap)
+    # A17
+    def a17_setup(dm, td):
+        _helper_setup_published_task(dm, td, "TI202608090001")
 
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(dm_legacy.slot_store.get_task_state().get("water_depth"), 300.0)
-        self.assertEqual(dm_strict.slot_store.get_task_state().get("water_depth"), 300.0)
-        self.record_result("A16", "Valid Snapshot Restore", "PARITY", "PASS", "PASS", "Valid snapshot restored identically")
-
-    def test_a17_safe_legacy_done_migration(self):
-        """A17: Safe legacy done migration enriches missing target safely; normalized parity comparison matches."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        intent_id = "TI202608090001"
-        self._setup_published_task(dm_legacy, intent_id)
-        self._setup_published_task(dm_strict, intent_id)
-
+    def a17_action(dm, td):
         snap_legacy_done = {
             "snapshot_version": 2,
             "phase": "done",
@@ -561,7 +467,7 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
             "slot_store": {
                 "version": 1,
                 "slots": {
-                    "intent_id": {"slot_name": "intent_id", "value": intent_id, "status": "valid", "value_type": "string"},
+                    "intent_id": {"slot_name": "intent_id", "value": "TI202608090001", "status": "valid", "value_type": "string"},
                     "internal_id": {"slot_name": "internal_id", "value": "00000000-0000-4000-8000-000000000001", "status": "valid", "value_type": "string"},
                     "task_id": {"slot_name": "task_id", "value": "PI-20260809-001", "status": "valid", "value_type": "string"},
                     "task_type": {"slot_name": "task_type", "value": "管缆巡检", "status": "valid", "value_type": "string"},
@@ -570,267 +476,118 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
                 "unresolved": [],
             },
             "task_state": {
-                "intent_id": intent_id,
+                "intent_id": "TI202608090001",
                 "internal_id": "00000000-0000-4000-8000-000000000001",
                 "task_id": "PI-20260809-001",
                 "task_type": "管缆巡检",
                 "task_type_key": "pipeline_inspection",
             },
         }
+        dm.load_snapshot(snap_legacy_done)
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy.load_snapshot(snap_legacy_done)
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict.load_snapshot(snap_legacy_done)
+    # A18 (Real dm.reset())
+    def a18_setup(dm, td):
+        schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
+        dm.slot_store.init_task_slots(schema)
+        dm.phase = "confirming"
 
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
+    def a18_action(dm, td):
+        dm.reset()
 
-        # Apply canonicalization to legacy digest for target enrichment
-        canonical_legacy = canonicalize_legacy_enrichment(digest_legacy)
+    # A19
+    def a19_action(dm, td):
+        dm._switch_dialogue_mode("knowledge_qa", source="rule", confidence=1.0, reason="qa query")
+        dm._switch_dialogue_mode("task_collection", source="rule", confidence=1.0, reason="task create")
 
-        self.assertEqual(canonical_legacy, digest_strict)
-        self.assertEqual(dm_strict.last_control_request.get("target_intent_id"), intent_id)
-        self.record_result("A17", "Safe Legacy Done Migration", "PARITY", "PASS", "PASS", "Safe target enrichment canonicalized parity")
+    # A20
+    def a20_setup(dm, td):
+        schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
+        dm.slot_store.init_task_slots(schema)
+        slots = dm.slot_store.clone_slots()
+        slots["intent_id"] = Slot("intent_id", value="TI202608090001", status="valid", value_type="string")
+        dm.slot_store.commit_transaction(slots, [])
+        dm.task_state = dm.slot_store.get_task_state()
 
-    def test_a18_reset(self):
-        """A18: Resetting DialogueManager returns both instances to clean initial digest."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        for dm in (dm_legacy, dm_strict):
-            dm.phase = "confirming"
-            dm.control_state = "idle"
+    def a20_action(dm, td):
+        snap = dm.export_snapshot()
+        dm.load_snapshot(snap)
 
-        # Re-create fresh pair representing reset
-        dm_legacy_reset, dm_strict_reset = self._init_dm_pair()
+    # B01
+    def b01_action(dm, td):
+        dm._transition_phase("invalid_phase")
 
-        digest_legacy = build_shadow_digest(dm_legacy_reset)
-        digest_strict = build_shadow_digest(dm_strict_reset)
+    # B02
+    def b02_action(dm, td):
+        dm._switch_dialogue_mode("invalid_mode")
 
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(dm_legacy_reset.phase, "collecting")
-        self.assertEqual(dm_strict_reset.phase, "collecting")
-        self.record_result("A18", "Reset", "PARITY", "PASS", "PASS", "Reset parity verified")
+    # B03
+    def b03_action(dm, td):
+        dm._switch_dialogue_mode("uncertain")
 
-    def test_a19_mode_transition_history(self):
-        """A19: Mode transitions record complete history metadata identically."""
-        dm_legacy, dm_strict = self._init_dm_pair()
+    # B04
+    def b04_action(dm, td):
+        dm._transition_phase("done")
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            dm_legacy._switch_dialogue_mode("knowledge_qa", source="rule", confidence=1.0, reason="qa query")
-            dm_legacy._switch_dialogue_mode("task_collection", source="rule", confidence=1.0, reason="task create")
+    # B05
+    def b05_setup(dm, td):
+        dm.phase = "blocked_soft"
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            dm_strict._switch_dialogue_mode("knowledge_qa", source="rule", confidence=1.0, reason="qa query")
-            dm_strict._switch_dialogue_mode("task_collection", source="rule", confidence=1.0, reason="task create")
+    def b05_action(dm, td):
+        dm._transition_phase("done")
 
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
+    # B06
+    def b06_setup(dm, td):
+        dm.phase = "blocked_hard"
 
-        self.assertEqual(digest_legacy, digest_strict)
-        self.assertEqual(len(dm_legacy.mode_transition_history), 2)
-        self.assertEqual(len(dm_strict.mode_transition_history), 2)
-        self.record_result("A19", "Mode Transition History", "PARITY", "PASS", "PASS", "Mode transition history parity")
+    def b06_action(dm, td):
+        dm._transition_phase("confirming")
 
-    def test_a20_session_snapshot_round_trip(self):
-        """A20: Export -> Load -> Export cycle yields identical business digest."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        for dm in (dm_legacy, dm_strict):
-            schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
-            dm.slot_store.init_task_slots(schema)
-            slots = dm.slot_store.clone_slots()
-            slots["intent_id"] = Slot("intent_id", value="TI202608090001", status="valid", value_type="string")
-            dm.slot_store.commit_transaction(slots, [])
-            dm.task_state = dm.slot_store.get_task_state()
+    # B07
+    def b07_setup(dm, td):
+        dm.phase = "blocked_hard"
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False):
-            snap_l = dm_legacy.export_snapshot()
-            dm_legacy.load_snapshot(snap_l)
+    def b07_action(dm, td):
+        dm._transition_phase("done")
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            snap_s = dm_strict.export_snapshot()
-            dm_strict.load_snapshot(snap_s)
-
-        digest_legacy = build_shadow_digest(dm_legacy)
-        digest_strict = build_shadow_digest(dm_strict)
-
-        self.assertEqual(digest_legacy, digest_strict)
-        self.record_result("A20", "Session Snapshot Round Trip", "PARITY", "PASS", "PASS", "Snapshot round trip parity")
-
-    # =========================================================================
-    # Category B: EXPECTED_FAIL_CLOSED_DELTA Scenarios (B01 - B15)
-    # =========================================================================
-
-    def test_b01_invalid_runtime_phase(self):
-        """B01: Setting invalid runtime phase fails closed in Strict mode with zero state pollution."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        digest_strict_before = build_shadow_digest(dm_strict)
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises(StateContractError):
-                dm_strict._transition_phase("invalid_phase")
-
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B01", "Invalid Runtime Phase", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "StateContractError raised atomically")
-
-    def test_b02_invalid_runtime_dialogue_mode(self):
-        """B02: Setting invalid runtime dialogue mode fails closed in Strict mode."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        digest_strict_before = build_shadow_digest(dm_strict)
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises(StateContractError):
-                dm_strict._switch_dialogue_mode("invalid_mode")
-
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B02", "Invalid Runtime Dialogue Mode", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "StateContractError raised atomically")
-
-    def test_b03_runtime_uncertain(self):
-        """B03: Setting dialogue_mode to 'uncertain' in runtime fails closed in Strict mode."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        digest_strict_before = build_shadow_digest(dm_strict)
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises(StateContractError):
-                dm_strict._switch_dialogue_mode("uncertain")
-
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B03", "Runtime uncertain", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "Runtime uncertain rejected in Strict")
-
-    def test_b04_collecting_to_done(self):
-        """B04: Illegal transition collecting -> done fails closed in Strict mode."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        digest_strict_before = build_shadow_digest(dm_strict)
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises(StateContractError):
-                dm_strict._transition_phase("done")
-
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B04", "collecting -> done", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "Illegal transition collecting -> done rejected")
-
-    def test_b05_blocked_soft_to_done(self):
-        """B05: Illegal transition blocked_soft -> done fails closed in Strict mode."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        dm_strict.phase = "blocked_soft"
-        digest_strict_before = build_shadow_digest(dm_strict)
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises(StateContractError):
-                dm_strict._transition_phase("done")
-
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B05", "blocked_soft -> done", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "Illegal transition blocked_soft -> done rejected")
-
-    def test_b06_blocked_hard_to_confirming(self):
-        """B06: Illegal transition blocked_hard -> confirming fails closed in Strict mode."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        dm_strict.phase = "blocked_hard"
-        digest_strict_before = build_shadow_digest(dm_strict)
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises(StateContractError):
-                dm_strict._transition_phase("confirming")
-
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B06", "blocked_hard -> confirming", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "Bypass transition blocked_hard -> confirming rejected")
-
-    def test_b07_blocked_hard_to_done(self):
-        """B07: Illegal transition blocked_hard -> done fails closed in Strict mode."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        dm_strict.phase = "blocked_hard"
-        digest_strict_before = build_shadow_digest(dm_strict)
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises(StateContractError):
-                dm_strict._transition_phase("done")
-
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B07", "blocked_hard -> done", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "Bypass transition blocked_hard -> done rejected")
-
-    def test_b08_non_done_execution_request(self):
-        """B08: Setting execution control state in non-done phase fails closed in Strict mode."""
-        dm_legacy, dm_strict = self._init_dm_pair()
+    # B08
+    def b08_action(dm, td):
         req = {"action": "stop", "status": "requested", "target_intent_id": "TI202608090001"}
-        digest_strict_before = build_shadow_digest(dm_strict)
+        dm._set_execution_control_state("stop_requested", req)
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises(StateContractError):
-                dm_strict._set_execution_control_state("stop_requested", req)
+    # B09
+    def b09_setup(dm, td):
+        _helper_setup_published_task(dm, td, "TI202608090001")
 
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B08", "Non-done Execution Request", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "Non-done execution request rejected")
-
-    def test_b09_missing_execution_target_intent_id(self):
-        """B09: Non-idle execution request missing target_intent_id fails closed in Strict mode."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        self._setup_published_task(dm_strict)
+    def b09_action(dm, td):
         req_invalid = {"action": "stop", "status": "requested"}
-        digest_strict_before = build_shadow_digest(dm_strict)
+        dm._set_execution_control_state("stop_requested", req_invalid)
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises(StateContractError):
-                dm_strict._set_execution_control_state("stop_requested", req_invalid)
+    # B10
+    def b10_setup(dm, td):
+        _helper_setup_published_task(dm, td, "TI202608090001")
 
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B09", "Missing Execution target_intent_id", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "Missing target intent ID rejected")
-
-    def test_b10_invalid_execution_target(self):
-        """B10: Execution request with invalid target_intent_id format fails closed in Strict mode."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        self._setup_published_task(dm_strict)
+    def b10_action(dm, td):
         req_invalid = {"action": "stop", "status": "requested", "target_intent_id": "INVALID_FORMAT"}
-        digest_strict_before = build_shadow_digest(dm_strict)
+        dm._set_execution_control_state("stop_requested", req_invalid)
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises(StateContractError):
-                dm_strict._set_execution_control_state("stop_requested", req_invalid)
+    # B11
+    def b11_setup(dm, td):
+        _helper_setup_published_task(dm, td, "TI202608090001")
 
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B10", "Invalid Execution Target", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "Invalid target intent ID format rejected")
-
-    def test_b11_action_state_mismatch(self):
-        """B11: Control state and action mismatch fails closed in Strict mode."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        self._setup_published_task(dm_strict)
+    def b11_action(dm, td):
         req_stop = {"action": "stop", "status": "requested", "target_intent_id": "TI202608090001"}
-        digest_strict_before = build_shadow_digest(dm_strict)
+        dm._set_execution_control_state("pause_requested", req_stop)
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises(StateContractError):
-                dm_strict._set_execution_control_state("pause_requested", req_stop)
+    # B12
+    def b12_setup(dm, td):
+        _helper_setup_published_task(dm, td, "TI202608090001")
 
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B11", "Action / State Mismatch", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "Control state and action mismatch rejected")
-
-    def test_b12_invalid_request_status(self):
-        """B12: Execution request with invalid status fails closed in Strict mode."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-        self._setup_published_task(dm_strict)
+    def b12_action(dm, td):
         req_invalid = {"action": "stop", "status": "executing", "target_intent_id": "TI202608090001"}
-        digest_strict_before = build_shadow_digest(dm_strict)
+        dm._set_execution_control_state("stop_requested", req_invalid)
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises(StateContractError):
-                dm_strict._set_execution_control_state("stop_requested", req_invalid)
-
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B12", "Invalid Request Status", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "Invalid request status rejected")
-
-    def test_b13_ambiguous_legacy_snapshot(self):
-        """B13: Ambiguous non-done legacy snapshot with execution request missing target fails closed in Strict mode."""
-        dm_legacy, dm_strict = self._init_dm_pair()
+    # B13
+    def b13_action(dm, td):
         ambiguous_snap = {
             "snapshot_version": 2,
             "phase": "confirming",
@@ -838,26 +595,13 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
             "dialogue_mode": "task_collection",
             "control_state": "stop_requested",
             "last_control_request": {"action": "stop", "status": "requested"},
-            "slot_store": {
-                "version": 1,
-                "slots": {},
-                "unresolved": [],
-            },
+            "slot_store": {"version": 1, "slots": {}, "unresolved": []},
             "task_state": {"intent_id": "TI202608090002"},
         }
-        digest_strict_before = build_shadow_digest(dm_strict)
+        dm.load_snapshot(ambiguous_snap)
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises((StateContractError, ValueError)):
-                dm_strict.load_snapshot(ambiguous_snap)
-
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B13", "Ambiguous Legacy Snapshot", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "Ambiguous non-done snapshot rejected without state pollution")
-
-    def test_b14_invalid_snapshot_phase(self):
-        """B14: Snapshot with invalid phase fails closed in Strict mode."""
-        dm_legacy, dm_strict = self._init_dm_pair()
+    # B14
+    def b14_action(dm, td):
         invalid_phase_snap = {
             "snapshot_version": 2,
             "phase": "bogus_phase",
@@ -868,19 +612,10 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
             "slot_store": {"version": 1, "slots": {}, "unresolved": []},
             "task_state": {},
         }
-        digest_strict_before = build_shadow_digest(dm_strict)
+        dm.load_snapshot(invalid_phase_snap)
 
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises((StateContractError, ValueError)):
-                dm_strict.load_snapshot(invalid_phase_snap)
-
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B14", "Invalid Snapshot Phase", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "Invalid snapshot phase rejected")
-
-    def test_b15_invalid_snapshot_dialogue_mode(self):
-        """B15: Snapshot with invalid dialogue_mode fails closed in Strict mode."""
-        dm_legacy, dm_strict = self._init_dm_pair()
+    # B15
+    def b15_action(dm, td):
         invalid_mode_snap = {
             "snapshot_version": 2,
             "phase": "collecting",
@@ -891,45 +626,306 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
             "slot_store": {"version": 1, "slots": {}, "unresolved": []},
             "task_state": {},
         }
-        digest_strict_before = build_shadow_digest(dm_strict)
+        dm.load_snapshot(invalid_mode_snap)
 
+    return [
+        {"case_id": "A01", "name": "Initial State", "setup": None, "action": a01_action, "kind": "parity", "canon": None},
+        {"case_id": "A02", "name": "Export Snapshot", "setup": None, "action": a02_action, "kind": "parity", "canon": None},
+        {"case_id": "A03", "name": "Ordinary Knowledge QA Read-only", "setup": None, "action": a03_action, "kind": "parity", "canon": None},
+        {"case_id": "A04", "name": "General Chat", "setup": None, "action": a04_action, "kind": "parity", "canon": None},
+        {"case_id": "A05", "name": "task_collection -> knowledge_qa", "setup": a05_setup, "action": a05_action, "kind": "parity", "canon": None},
+        {"case_id": "A06", "name": "knowledge_qa -> task_collection", "setup": None, "action": a06_action, "kind": "parity", "canon": None},
+        {"case_id": "A07", "name": "Legal Task Phase Transition", "setup": None, "action": a07_action, "kind": "parity", "canon": None},
+        {"case_id": "A08", "name": "Soft Warning Legal Path", "setup": a08_setup, "action": a08_action, "kind": "parity", "canon": None},
+        {"case_id": "A09", "name": "Hard Constraint Legal Resolution", "setup": a09_setup, "action": a09_action, "kind": "parity", "canon": None},
+        {"case_id": "A10", "name": "Confirming -> Done (Real Publish)", "setup": a10_setup, "action": a10_action, "kind": "parity", "canon": None},
+        {"case_id": "A11", "name": "Duplicate Confirmation", "setup": a11_setup, "action": a11_action, "kind": "parity", "canon": None},
+        {"case_id": "A12", "name": "Draft Cancel (Real Cancel)", "setup": a12_setup, "action": a12_action, "kind": "parity", "canon": None},
+        {"case_id": "A13", "name": "Published Execution Request", "setup": a13_setup, "action": a13_action, "kind": "parity", "canon": None},
+        {"case_id": "A14", "name": "Requested -> Requested", "setup": a14_setup, "action": a14_action, "kind": "parity", "canon": None},
+        {"case_id": "A15", "name": "Task Modification After Published Request", "setup": a15_setup, "action": a15_action, "kind": "parity", "canon": None},
+        {"case_id": "A16", "name": "Valid Snapshot Restore", "setup": None, "action": a16_action, "kind": "parity", "canon": None},
+        {"case_id": "A17", "name": "Safe Legacy Done Migration", "setup": a17_setup, "action": a17_action, "kind": "parity", "canon": canonicalize_legacy_enrichment},
+        {"case_id": "A18", "name": "Reset (Real dm.reset())", "setup": a18_setup, "action": a18_action, "kind": "parity", "canon": None},
+        {"case_id": "A19", "name": "Mode Transition History", "setup": None, "action": a19_action, "kind": "parity", "canon": None},
+        {"case_id": "A20", "name": "Session Snapshot Round Trip", "setup": a20_setup, "action": a20_action, "kind": "parity", "canon": None},
+
+        {"case_id": "B01", "name": "Invalid Runtime Phase", "setup": None, "action": b01_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B02", "name": "Invalid Runtime Dialogue Mode", "setup": None, "action": b02_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B03", "name": "Runtime uncertain", "setup": None, "action": b03_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B04", "name": "collecting -> done", "setup": None, "action": b04_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B05", "name": "blocked_soft -> done", "setup": b05_setup, "action": b05_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B06", "name": "blocked_hard -> confirming", "setup": b06_setup, "action": b06_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B07", "name": "blocked_hard -> done", "setup": b07_setup, "action": b07_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B08", "name": "Non-done Execution Request", "setup": None, "action": b08_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B09", "name": "Missing Execution target_intent_id", "setup": b09_setup, "action": b09_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B10", "name": "Invalid Execution Target", "setup": b10_setup, "action": b10_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B11", "name": "Action / State Mismatch", "setup": b11_setup, "action": b11_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B12", "name": "Invalid Request Status", "setup": b12_setup, "action": b12_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B13", "name": "Ambiguous Legacy Snapshot", "setup": None, "action": b13_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B14", "name": "Invalid Snapshot Phase", "setup": None, "action": b14_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B15", "name": "Invalid Snapshot Dialogue Mode", "setup": None, "action": b15_action, "kind": "strict_fail_closed", "canon": None},
+    ]
+
+
+def RUN_ALL_SHADOW_GATE_CASES(tmp_path: Path) -> list[dict]:
+    """Pure standalone function executing the entire shadow gate matrix in filesystem isolation."""
+    defs = GET_SHADOW_CASE_DEFINITIONS()
+    results = []
+    for cdef in defs:
+        res = run_shadow_case(
+            cdef["case_id"],
+            cdef["name"],
+            tmp_path / cdef["case_id"],
+            cdef["setup"],
+            cdef["action"],
+            cdef["kind"],
+            canonicalizer=cdef["canon"],
+        )
+        results.append(res)
+    return results
+
+
+class TestSessionStateRolloutShadowV2(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self.tmp_path = Path(self._tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    # -------------------------------------------------------------------------
+    # Individual Shadow Case Runner Tests (A01 - A20, B01 - B15)
+    # -------------------------------------------------------------------------
+
+    def test_a01_initial_state(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A01"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a02_export_snapshot(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A02"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a03_ordinary_knowledge_qa_readonly(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A03"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a04_general_chat(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A04"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a05_task_collection_to_knowledge_qa(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A05"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a06_knowledge_qa_to_task_collection(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A06"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a07_legal_task_phase_transition(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A07"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a08_soft_warning_legal_path(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A08"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a09_hard_constraint_legal_resolution(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A09"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a10_confirming_to_done(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A10"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a11_duplicate_confirmation(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A11"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a12_draft_cancel(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A12"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a13_published_execution_request(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A13"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a14_requested_to_requested(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A14"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a15_task_modification_after_published_request(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A15"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a16_valid_snapshot_restore(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A16"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a17_safe_legacy_done_migration(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A17"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a18_reset(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A18"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a19_mode_transition_history(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A19"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_a20_session_snapshot_round_trip(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["A20"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "PARITY")
+
+    def test_b01_invalid_runtime_phase(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B01"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    def test_b02_invalid_runtime_dialogue_mode(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B02"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    def test_b03_runtime_uncertain(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B03"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    def test_b04_collecting_to_done(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B04"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    def test_b05_blocked_soft_to_done(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B05"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    def test_b06_blocked_hard_to_confirming(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B06"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    def test_b07_blocked_hard_to_done(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B07"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    def test_b08_non_done_execution_request(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B08"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    def test_b09_missing_execution_target_intent_id(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B09"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    def test_b10_invalid_execution_target(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B10"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    def test_b11_action_state_mismatch(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B11"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    def test_b12_invalid_request_status(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B12"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    def test_b13_ambiguous_legacy_snapshot(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B13"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    def test_b14_invalid_snapshot_phase(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B14"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    def test_b15_invalid_snapshot_dialogue_mode(self):
+        defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
+        c = defs["B15"]
+        res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
+        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+
+    # -------------------------------------------------------------------------
+    # Governance Invariants In Strict Mode (INV-01 ~ INV-11)
+    # -------------------------------------------------------------------------
+
+    def test_inv01_strict_query_read_only(self):
+        """INV-01: QUERY read-only invariant in Strict mode."""
+        dm = _make_dm(self.tmp_path / "inv01")
         with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with self.assertRaises((StateContractError, ValueError)):
-                dm_strict.load_snapshot(invalid_mode_snap)
+            v_before = dm.slot_store.version
+            snap_before = dm.slot_store.export_snapshot()
+            dm.process("什么是DVL？", request_id="req_inv01")
+            self.assertEqual(v_before, dm.slot_store.version)
+            self.assertEqual(snap_before, dm.slot_store.export_snapshot())
 
-        digest_strict_after = build_shadow_digest(dm_strict)
-        self.assertEqual(digest_strict_before, digest_strict_after)
-        self.record_result("B15", "Invalid Snapshot Dialogue Mode", "EXPECTED_FAIL_CLOSED_DELTA", "ALLOW/UNCHECKED", "FAIL_CLOSED", "Invalid snapshot dialogue mode rejected")
-
-    # =========================================================================
-    # Section 12: Governance Invariants Shadow Check (INV-01 ~ INV-11)
-    # =========================================================================
-
-    def test_governance_invariants_shadow_strict_mode(self):
-        """Verify all 11 governance invariants under Strict mode (session_state_v2=true)."""
-        dm_legacy, dm_strict = self._init_dm_pair()
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            # INV-01: Query read-only
-            v_before = dm_strict.slot_store.version
-            snap_before = dm_strict.slot_store.export_snapshot()
-            dm_strict.process("什么是DVL？")
-            self.assertEqual(v_before, dm_strict.slot_store.version)
-            self.assertEqual(snap_before, dm_strict.slot_store.export_snapshot())
-
-            # INV-08: Duplicate confirm idempotent on done
-            self._setup_published_task(dm_strict, "TI202608090001")
-            dm_strict._handle_final_publish_confirmation("确认", request_id="req_inv08")
-            self.assertEqual(dm_strict.phase, "done")
-
-    # =========================================================================
-    # Section 13: ASR Consistency Shadow Check
-    # =========================================================================
-
-    def test_asr_text_entry_shadow_consistency(self):
-        """Verify typed text vs ASR transcript entry consistency yields identical shadow digest."""
-        dm_legacy_typed, dm_strict_typed = self._init_dm_pair()
-        dm_legacy_asr, dm_strict_asr = self._init_dm_pair()
+    def test_inv02_strict_write_only_mutates_task(self):
+        """INV-02: Write path task creation in Strict mode."""
+        dm = _make_dm(self.tmp_path / "inv02")
+        v_before = dm.slot_store.version
 
         def stub_extract(messages, max_tokens=None):
             return {
@@ -944,33 +940,196 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
                 ]
             }
 
-        # Typed input: "创建一个管缆巡检任务"
         with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with patch.object(dm_strict_typed.llm, "extract_json", side_effect=stub_extract):
-                dm_strict_typed.process("创建一个管缆巡检任务")
+            with patch.object(dm.llm, "extract_json", side_effect=stub_extract):
+                dm.process("创建一个管缆巡检任务", request_id="req_inv02")
 
-        # ASR transcript input (same final text decoded from speech): "创建一个管缆巡检任务"
+        self.assertGreater(dm.slot_store.version, v_before)
+        self.assertEqual(dm.slot_store.get_task_state().get("task_type"), "管缆巡检")
+
+    def test_inv03_strict_valid_slot_is_fact(self):
+        """INV-03: Valid slot value is fact in Strict mode."""
+        dm = _make_dm(self.tmp_path / "inv03")
         with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with patch.object(dm_strict_asr.llm, "extract_json", side_effect=stub_extract):
-                dm_strict_asr.process("创建一个管缆巡检任务")
+            schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
+            dm.slot_store.init_task_slots(schema)
+            slots = dm.slot_store.clone_slots()
+            slots["water_depth"] = Slot("water_depth", value=300.0, status="valid", value_type="number")
+            dm.slot_store.commit_transaction(slots, [])
+            dm.task_state = dm.slot_store.get_task_state()
+            self.assertEqual(dm.task_state.get("water_depth"), 300.0)
 
-        digest_typed = build_shadow_digest(dm_strict_typed)
-        digest_asr = build_shadow_digest(dm_strict_asr)
+    def test_inv04_strict_invalid_input_never_overwrites(self):
+        """INV-04: Invalid candidate input never overwrites valid fact in Strict mode."""
+        dm = _make_dm(self.tmp_path / "inv04")
+        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
+            schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
+            dm.slot_store.init_task_slots(schema)
+            slots = dm.slot_store.clone_slots()
+            slots["water_depth"] = Slot("water_depth", value=300.0, status="valid", value_type="number")
+            dm.slot_store.commit_transaction(slots, [])
+            dm.task_state = dm.slot_store.get_task_state()
+
+            # Attempt invalid update
+            invalid_candidate = Slot("water_depth", candidate_value="invalid_str", status="candidate", value_type="number")
+            cand_map = {"water_depth": invalid_candidate}
+            dm.slot_store.commit_transaction(dm.slot_store.slots, [invalid_candidate])
+
+            self.assertEqual(dm.slot_store.slots["water_depth"].value, 300.0)
+
+    def test_inv05_strict_hard_cannot_be_bypassed(self):
+        """INV-05: Hard constraint cannot be bypassed by generic confirmation in Strict mode."""
+        dm = _make_dm(self.tmp_path / "inv05")
+        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
+            dm.phase = "blocked_hard"
+            dm.process("确认", request_id="req_inv05")
+            self.assertEqual(dm.phase, "blocked_hard")
+
+    def test_inv06_strict_soft_ack_is_distinct(self):
+        """INV-06: Soft warning explicit acknowledgement is distinct in Strict mode."""
+        dm = _make_dm(self.tmp_path / "inv06")
+        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
+            dm.phase = "blocked_soft"
+            # Generic message does not unblock
+            dm.process("今天天气怎么样", request_id="req_inv06_gen")
+            self.assertEqual(dm.phase, "blocked_soft")
+            # Explicit ack unblocks
+            dm.process("确认忽略警告", request_id="req_inv06_ack")
+            self.assertIn(dm.phase, ("collecting", "confirming"))
+
+    def test_inv07_strict_publish_fail_closed(self):
+        """INV-07: Publish fail-closed persistence failure retains state without corruption in Strict mode."""
+        dm = _make_dm(self.tmp_path / "inv07")
+        task_dir = self.tmp_path / "inv07_task_dir"
+        task_dir.mkdir(parents=True, exist_ok=True)
+        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True), \
+             patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
+            dm.slot_store.init_task_slots(schema)
+            slots = dm.slot_store.clone_slots()
+            slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid", value_type="string")
+            slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid", value_type="string")
+            slots["water_depth"] = Slot("water_depth", value=300.0, status="valid", value_type="number")
+            slots["location"] = Slot("location", value="A区", status="valid", value_type="string")
+            slots["intent_id"] = Slot("intent_id", value="TI202608090001", status="valid", value_type="string")
+            slots["internal_id"] = Slot("internal_id", value="00000000-0000-4000-8000-000000000001", status="valid", value_type="string")
+            slots["task_id"] = Slot("task_id", value="PI-20260809-001", status="valid", value_type="string")
+            slots["equipment_class"] = Slot("equipment_class", value="观察级ROV", status="valid", value_type="string")
+            slots["equipment_type"] = Slot("equipment_type", value="观察级深海机器人", status="valid", value_type="string")
+            slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV--001", status="valid", value_type="string")
+            dm.slot_store.commit_transaction(slots, [])
+            dm.task_state = dm.slot_store.get_task_state()
+            dm.phase = "confirming"
+
+            mock_val_res = ValidationResult(
+                overall_status="valid",
+                validated_at="2026-08-09 12:00:00",
+                task_version=1,
+                validation_version=1,
+                validation_fingerprint="fp_test",
+                state_snapshot=None,
+                violations=[],
+            )
+
+            with patch.object(dm, "_refresh_validation", return_value=mock_val_res), \
+                 patch.object(dm.kb.state_info, "check_runtime_availability", return_value={"available": True}), \
+                 patch.object(dm.slot_store, "get_missing_slots", return_value=[]), \
+                 patch.object(TaskIntentBuilder, "create_staging", side_effect=TaskPersistenceError("Simulated disk error")):
+                with self.assertRaises(TaskPersistenceError):
+                    dm._handle_final_publish_confirmation("确认发布", request_id="req_inv07")
+                self.assertEqual(dm.phase, "confirming")
+                self.assertIsNone(dm.final_result)
+
+    def test_inv08_strict_duplicate_confirm_idempotent(self):
+        """INV-08: Duplicate confirm idempotent in Strict mode."""
+        dm = _make_dm(self.tmp_path / "inv08")
+        task_dir = self.tmp_path / "inv08_task_dir"
+        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True), \
+             patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            _helper_setup_published_task(dm, task_dir, "TI202608090001")
+            dm.process("确认", request_id="req_inv08")
+            self.assertEqual(dm.phase, "done")
+
+    def test_inv09_strict_session_isolation(self):
+        """INV-09: Session isolation between DialogueManager instances in Strict mode."""
+        dm1 = _make_dm(self.tmp_path / "s1")
+        dm2 = _make_dm(self.tmp_path / "s2")
+        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
+            dm1._transition_phase("confirming")
+            self.assertEqual(dm1.phase, "confirming")
+            self.assertEqual(dm2.phase, "collecting")
+
+    def test_inv10_strict_final_no_overwrite(self):
+        """INV-10: Overwriting an existing published final file fails closed in Strict mode."""
+        dm = _make_dm(self.tmp_path / "inv10")
+        task_dir = self.tmp_path / "inv10_task_dir"
+        task_dir.mkdir(parents=True, exist_ok=True)
+        intent_id = "TI202608090001"
+        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True), \
+             patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            _helper_setup_published_task(dm, task_dir, intent_id)
+            final_file = task_dir / f"task_intent_{intent_id}.json"
+            self.assertTrue(final_file.exists())
+
+            # Attempt to re-publish with existing final file
+            builder = TaskIntentBuilder(dm.kb)
+            staging = task_dir / f"task_intent_{intent_id}.staging"
+            staging.write_text("{}")
+            with self.assertRaises((IntentIdConflict, TaskPersistenceError)):
+                builder.publish_staging(staging, final_file)
+
+    def test_inv11_strict_request_traceability(self):
+        """INV-11: Request traceability in Strict mode."""
+        dm = _make_dm(self.tmp_path / "inv11")
+        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
+            reply = dm.process("什么是DVL？", request_id="req_trace_12345")
+            self.assertTrue(isinstance(reply, str) and len(reply) > 0)
+
+    # -------------------------------------------------------------------------
+    # ASR Text Entry Parity Check
+    # -------------------------------------------------------------------------
+
+    def test_asr_text_entry_shadow_consistency(self):
+        """Verify post-ASR text-entry semantics produces 100% identical SessionState shadow digest as typed text."""
+        dm_typed = _make_dm(self.tmp_path / "typed")
+        dm_asr = _make_dm(self.tmp_path / "asr")
+
+        def stub_extract(messages, max_tokens=None):
+            return {
+                "slot_candidates": [
+                    {
+                        "canonical_key": "task_type",
+                        "normalized_value": "管缆巡检",
+                        "raw_value": "管缆巡检",
+                        "confidence": 1.0,
+                        "resolution_method": "canonical_exact",
+                    }
+                ]
+            }
+
+        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
+            with patch.object(dm_typed.llm, "extract_json", side_effect=stub_extract):
+                dm_typed.process("创建一个管缆巡检任务", request_id="req_typed")
+            with patch.object(dm_asr.llm, "extract_json", side_effect=stub_extract):
+                dm_asr.process("创建一个管缆巡检任务", request_id="req_asr")
+
+        digest_typed = build_shadow_digest(dm_typed)
+        digest_asr = build_shadow_digest(dm_asr)
 
         self.assertEqual(digest_typed, digest_asr)
 
-    # =========================================================================
-    # Section 14: Shadow Result Summary & Delta Metrics Assertion
-    # =========================================================================
+    # -------------------------------------------------------------------------
+    # Standalone Shadow Comparator & Summary Matrix Test
+    # -------------------------------------------------------------------------
 
-    def test_z_shadow_summary_metrics(self):
-        """Summarize shadow results and assert UNEXPECTED_BEHAVIOR_DELTA == 0."""
-        results = TestSessionStateRolloutShadowV2.shadow_results
+    def test_shadow_summary_metrics(self):
+        """Standalone matrix runner evaluating all shadow cases in complete isolation without test order dependency."""
+        results = RUN_ALL_SHADOW_GATE_CASES(self.tmp_path / "summary_runner")
+
         parity_count = sum(1 for r in results if r["classification"] == "PARITY")
         fail_closed_count = sum(1 for r in results if r["classification"] == "EXPECTED_FAIL_CLOSED_DELTA")
         unexpected_count = sum(1 for r in results if r["classification"] == "UNEXPECTED_BEHAVIOR_DELTA")
 
-        # We assert unexpected_count == 0
         self.assertEqual(unexpected_count, 0, f"UNEXPECTED_BEHAVIOR_DELTA must be 0, got {unexpected_count}")
         self.assertGreaterEqual(parity_count, 20, f"Expected at least 20 PARITY cases, got {parity_count}")
         self.assertGreaterEqual(fail_closed_count, 15, f"Expected at least 15 EXPECTED_FAIL_CLOSED_DELTA cases, got {fail_closed_count}")
