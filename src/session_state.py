@@ -83,12 +83,10 @@ TASK_PHASE_TRANSITIONS: dict[str, frozenset[str]] = {
         "confirming",
         "blocked_soft",
         "blocked_hard",
-        "done",
         "rejected",
     }),
     "blocked_hard": frozenset({
         "collecting",
-        "confirming",
         "blocked_soft",
         "blocked_hard",
         "rejected",

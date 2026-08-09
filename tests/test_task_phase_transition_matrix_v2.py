@@ -47,10 +47,8 @@ class TestTaskPhaseTransitionMatrixV2(unittest.TestCase):
             ("blocked_soft", "confirming"),
             ("blocked_soft", "blocked_soft"),
             ("blocked_soft", "blocked_hard"),
-            ("blocked_soft", "done"),
             ("blocked_soft", "rejected"),
             ("blocked_hard", "collecting"),
-            ("blocked_hard", "confirming"),
             ("blocked_hard", "blocked_soft"),
             ("blocked_hard", "blocked_hard"),
             ("blocked_hard", "rejected"),
@@ -74,10 +72,13 @@ class TestTaskPhaseTransitionMatrixV2(unittest.TestCase):
                 # Should not raise exception
                 validate_task_phase_transition(old_p, new_p)
 
-    # 3. Explicit illegal edges are rejected
+    # 3. Explicit illegal edges are rejected (including P1 repairs: blocked_soft -> done, blocked_hard -> confirming)
     def test_03_illegal_edges_rejected(self) -> None:
         illegal_edges = [
             ("collecting", "done"),
+            ("blocked_soft", "done"),        # P1-1 repair
+            ("blocked_hard", "confirming"),  # P1-2 repair
+            ("blocked_hard", "done"),
             ("done", "blocked_soft"),
             ("done", "blocked_hard"),
             ("done", "rejected"),
@@ -117,15 +118,25 @@ class TestTaskPhaseTransitionMatrixV2(unittest.TestCase):
         self.dm._transition_phase("confirming", reason="test")
         self.assertEqual(self.dm.phase, "confirming")
 
-    # 8. flag=true illegal edge fails closed with zero mutation
+    # 8. flag=true illegal edge fails closed with zero mutation (testing P1-1 & P1-2)
     @patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True)
     def test_08_flag_true_illegal_edge_fails_closed_zero_mutation(self, mock_flag) -> None:
         self.dm.phase = "collecting"
         with self.assertRaises(StateContractError):
             self.dm._transition_phase("done", reason="test_illegal")
-
-        # Phase remains collecting
         self.assertEqual(self.dm.phase, "collecting")
+
+        # P1-1 repair: blocked_soft -> done must fail closed
+        self.dm.phase = "blocked_soft"
+        with self.assertRaises(StateContractError):
+            self.dm._transition_phase("done", reason="test_p1_1_repair")
+        self.assertEqual(self.dm.phase, "blocked_soft")
+
+        # P1-2 repair: blocked_hard -> confirming must fail closed
+        self.dm.phase = "blocked_hard"
+        with self.assertRaises(StateContractError):
+            self.dm._transition_phase("confirming", reason="test_p1_2_repair")
+        self.assertEqual(self.dm.phase, "blocked_hard")
 
     # 9. flag=false legacy behavior preserved
     @patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False)
