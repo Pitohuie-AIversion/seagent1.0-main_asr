@@ -4,6 +4,7 @@ tests/test_intent_routing_matrix.py - G7 交互计划与 Read-First 路由测试
 
 import copy
 import unittest
+from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
 from src.intent_router import IntentRouter
@@ -228,7 +229,7 @@ class TestIntentRoutingMatrixG7(unittest.TestCase):
         self.assertTrue(plan.needs_clarification)
 
     # ══════════════════════════════════════════════════════════════════════
-    # 5. 状态副作用与不变性断言
+    # 5. 状态副作用与不变性断言及 False-Positive WRITE 门控测试
     # ══════════════════════════════════════════════════════════════════════
 
     def test_state_invariance_for_read_and_clarify(self):
@@ -252,6 +253,25 @@ class TestIntentRoutingMatrixG7(unittest.TestCase):
             self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
             self.assertEqual(self.dm.phase, phase_before)
             self.assertEqual(self.dm.task_state, task_state_before)
+
+    def test_llm_false_positive_write_demotion_in_dialogue_manager(self):
+        """测试当 LLM 产生假阳性 WRITE 时，DialogueManager 的 Evidence Gate 能将其拦截降级，Extractor 不被调用且 SlotStore 不变。"""
+        with patch.object(self.dm.extractor, 'extract_updates') as mock_ext, \
+             patch.object(self.llm, 'extract_json', return_value={
+                 "operation": "WRITE",
+                 "dialogue_mode": "task_collection",
+                 "confidence": 0.95,
+                 "reason": "LLM 误判 WRITE"
+             }):
+            v_before = self.dm.slot_store.version
+            snap_before = self.dm.slot_store.export_snapshot()
+
+            reply = self.dm.process("介绍一下新型号X")
+
+            mock_ext.assert_not_called()
+            self.assertEqual(self.dm.slot_store.version, v_before)
+            self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+            self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
 
     # ══════════════════════════════════════════════════════════════════════
     # 6. ASR 入口与文本入口语义一致性
