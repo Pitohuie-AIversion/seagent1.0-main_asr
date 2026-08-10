@@ -120,9 +120,9 @@ def compare_session_state_shadow(
             checkpoint=checkpoint,
             request_id=request_id,
             exception_type=type(exc).__name__,
-            exception_message=str(exc),
+            exception_message=type(exc).__name__,
             diff_fields=(),
-            details=f"Snapshot rejected by SessionState V2 Contract: {exc}",
+            details="Snapshot rejected by SessionState V2 Contract",
         )
 
     # 2. Extract V2 fields and canonicalized Legacy projection
@@ -150,7 +150,6 @@ def compare_session_state_shadow(
         )
 
     diff_tuple = tuple(diffs)
-    diff_details = ", ".join(f"{k}: legacy={legacy_projection.get(k)!r} vs v2={v2_projection.get(k)!r}" for k in diff_tuple)
     return ShadowComparisonResult(
         classification="MISMATCH",
         checkpoint=checkpoint,
@@ -158,5 +157,5 @@ def compare_session_state_shadow(
         exception_type=None,
         exception_message=None,
         diff_fields=diff_tuple,
-        details=f"Field projection mismatch: {diff_details}",
+        details=f"Field projection mismatch on fields: {diff_tuple}",
     )

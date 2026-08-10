@@ -3,7 +3,7 @@ tests/test_session_state_runtime_shadow_v2.py
 
 SEAgent G4.2 SessionState V2 Runtime Shadow Instrumentation Test Suite.
 
-Verifies the 15 required runtime shadow criteria:
+Verifies the 15 required runtime shadow criteria + strict log privacy sanitization:
  1. shadow_compare=false -> Shadow does not execute at all.
  2. shadow_compare=true -> Valid initial/task state returns PARITY.
  3. Ordinary Knowledge QA with Shadow -> reply and state unchanged.
@@ -15,10 +15,12 @@ Verifies the 15 required runtime shadow criteria:
  9. Manually constructed invalid Legacy state -> Shadow records STRICT_REJECTED, main business succeeds, memory unmodified.
 10. Manually constructed projection mismatch -> MISMATCH recorded.
 11. Shadow comparator exception -> main business completes successfully (fail-safe).
-12. request_id appears in Shadow audit metadata logs.
+12. request_id appears in Shadow audit metadata.
 13. Shadow produces 0 SlotStore writes.
 14. Shadow produces 0 TaskIntent files.
 15. session_state_v2 remains false throughout tests.
+16. Log Privacy: MISMATCH log contains zero intent/task IDs, zero result.details, zero raw snapshot data.
+17. Log Privacy: Comparator exception log contains exception_type but zero exception message/err text.
 """
 
 import copy
@@ -329,6 +331,71 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
             dm = _make_dm(self.tmp_path / "t15")
             dm.process("什么是DVL？", request_id="req_t15")
             self.assertFalse(is_session_state_v2_enabled())
+
+    # 16. Log Privacy: MISMATCH log contains zero intent/task IDs, zero result.details, zero raw snapshot.
+    def test_16_log_privacy_mismatch_sanitization(self):
+        dm = _make_dm(self.tmp_path / "t16")
+        task_dir = self.tmp_path / "t16_tasks"
+        _helper_setup_published_task(dm, task_dir, "TI202608109999")
+
+        sensitive_intent_id = "TI202608109999"
+        sensitive_task_id = "PI-20260810-001"
+
+        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True), \
+             patch("src.session_state_shadow.session_state_to_legacy_fields") as mock_v2_fields, \
+             patch("src.dialogue_manager.logger.warning") as mock_warn:
+
+            mock_v2_fields.return_value = {
+                "snapshot_version": 2,
+                "phase": "confirming",  # Mismatch with dm.phase ("done")
+                "mode": "normal",
+                "dialogue_mode": "task_collection",
+                "control_state": "idle",
+                "last_control_request": None,
+            }
+
+            dm._run_session_state_shadow_check(checkpoint="process", request_id="req_priv_01")
+
+            rendered_calls = [call.args[0] % call.args[1:] for call in mock_warn.call_args_list if "[SESSION_STATE_SHADOW_MISMATCH]" in call.args[0]]
+            self.assertTrue(len(rendered_calls) > 0, "Expected MISMATCH warning log")
+            log_str = rendered_calls[0]
+
+            # Assert required log fields present
+            self.assertIn("checkpoint=process", log_str)
+            self.assertIn("request_id=req_priv_01", log_str)
+            self.assertIn("diff_fields=", log_str)
+
+            # Assert NO task/intent ID actual values or un-sanitized details
+            self.assertNotIn(sensitive_intent_id, log_str)
+            self.assertNotIn(sensitive_task_id, log_str)
+            self.assertNotIn("details=", log_str)
+            self.assertNotIn("snapshot=", log_str)
+            self.assertNotIn("task_state=", log_str)
+
+    # 17. Log Privacy: Comparator exception log contains exception_type but zero exception message/err text.
+    def test_17_log_privacy_exception_sanitization(self):
+        dm = _make_dm(self.tmp_path / "t17")
+        secret_msg = "Sensitive database credential secret_key_12345 leaked"
+
+        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True), \
+             patch("src.dialogue_manager.compare_session_state_shadow", side_effect=RuntimeError(secret_msg)), \
+             patch("src.dialogue_manager.logger.warning") as mock_warn:
+
+            dm._run_session_state_shadow_check(checkpoint="process", request_id="req_priv_02")
+
+            rendered_calls = [call.args[0] % call.args[1:] for call in mock_warn.call_args_list if "[SESSION_STATE_SHADOW_ERROR]" in call.args[0]]
+            self.assertTrue(len(rendered_calls) > 0, "Expected ERROR warning log")
+            log_str = rendered_calls[0]
+
+            # Assert required log fields present
+            self.assertIn("checkpoint=process", log_str)
+            self.assertIn("request_id=req_priv_02", log_str)
+            self.assertIn("exc_type=RuntimeError", log_str)
+
+            # Assert NO exception message or err= format
+            self.assertNotIn(secret_msg, log_str)
+            self.assertNotIn("secret_key_12345", log_str)
+            self.assertNotIn("err=", log_str)
 
 
 if __name__ == "__main__":

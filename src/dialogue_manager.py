@@ -332,7 +332,7 @@ class DialogueManager:
         checkpoint: str,
         request_id: str | None = None,
     ) -> None:
-        """在稳定边界运行 SessionState V2 Shadow 旁路比较（只读、不干预、异常隔离）。"""
+        """在稳定边界运行 SessionState V2 Shadow 旁路比较（只读、不干预、异常隔离、日志脱敏）。"""
         if not is_shadow_compare_enabled():
             return
 
@@ -347,27 +347,24 @@ class DialogueManager:
                 )
             elif result.classification == "STRICT_REJECTED":
                 logger.warning(
-                    "[SESSION_STATE_SHADOW_STRICT_REJECTED] checkpoint=%s request_id=%s exc_type=%s details=%s",
+                    "[SESSION_STATE_SHADOW_STRICT_REJECTED] checkpoint=%s request_id=%s exc_type=%s",
                     checkpoint,
                     request_id,
                     result.exception_type,
-                    result.details,
                 )
             elif result.classification == "MISMATCH":
                 logger.warning(
-                    "[SESSION_STATE_SHADOW_MISMATCH] checkpoint=%s request_id=%s diff_fields=%s details=%s",
+                    "[SESSION_STATE_SHADOW_MISMATCH] checkpoint=%s request_id=%s diff_fields=%s",
                     checkpoint,
                     request_id,
                     result.diff_fields,
-                    result.details,
                 )
         except Exception as exc:
             logger.warning(
-                "[SESSION_STATE_SHADOW_ERROR] checkpoint=%s request_id=%s exc_type=%s err=%s",
+                "[SESSION_STATE_SHADOW_ERROR] checkpoint=%s request_id=%s exc_type=%s",
                 checkpoint,
                 request_id,
                 type(exc).__name__,
-                exc,
             )
 
     def _handle_non_task_route(self, user_message: str, route: IntentRouteResult, request_id: str) -> str:
