@@ -184,8 +184,8 @@ def has_write_evidence(
     用于验证 LLM 提出的 WRITE 候选 Plan 是否在当前用户输入和 session context 中存在真实写入任务状态的证据。
     至少满足以下确定性证据之一才允许判定为 WRITE：
     A. 明确创建任务 ("创建一个管缆巡检任务", "我想做管缆巡检")
-    B. 明确修改/填写任务参数 ("水深改成500米", "水深300米", "支持船换成XXX")
-    C. 明确增删替换任务字段 ("增加高清摄像机", "移除摄像机", "把机器人替换为天鹰座", "使用天鹰座")
+    B. 明确修改/填写任务参数 ("水深改成500米", "从500米改到800米", "水深300米", "支持船换成XXX")
+    C. 明确增删替换/取消槽位修改 ("增加高清摄像机", "安装成对侧扫声呐", "移除摄像机", "取消修改水深")
     D. expected_slot 追问的直接回答 ("海底油气管道")
     E. 明确确认候选修改 ("确认这个修改", "使用这个值", "确认发布")
 
@@ -205,11 +205,12 @@ def has_write_evidence(
     if is_conditional_question:
         return False
 
-    has_write_verb = any(
+    has_explicit_write_verb = any(
         kw in msg for kw in (
-            "改成", "设为", "设置为", "替换为", "调整为", "切换为", "换成", "指定为",
-            "创建一个", "新建一个", "发起一个", "帮我发起", "我要执行", "增加高清摄像机", "添加机械臂",
-            "确认发布", "确认开始", "确认无误", "去检查", "去巡检", "去操作", "去埋设", "让", "执行"
+            "改成", "改到", "设为", "设置为", "修改为", "变更为", "调整为", "调整至", "切换为", "换成", "指定为",
+            "创建一个", "新建一个", "发起一个", "帮我发起", "我要执行", "增加", "添加", "加上", "带上", "配备",
+            "搭载", "安装", "配置", "配", "挂载", "删除", "移除", "去掉", "取消修改", "撤销修改", "取消水深修改",
+            "不修改", "确认发布", "确认开始", "确认无误"
         )
     )
 
@@ -223,7 +224,7 @@ def has_write_evidence(
                 "能做什么", "可以做什么", "最大水深是", "最大水深多少", "有什么影响", "会发生什么"
             )
         )
-    ) and not has_write_verb
+    ) and not has_explicit_write_verb
 
     if is_pure_query:
         return False
@@ -232,7 +233,7 @@ def has_write_evidence(
     if expected_slots and len(expected_slots) > 0:
         is_negation_or_control = any(
             k in msg for k in ("不确认", "不发布", "不要", "暂不", "取消", "停止", "暂停", "终止")
-        )
+        ) and not any(k in msg for k in ("取消修改", "撤销修改", "取消水深修改"))
         is_meta_query = any(
             k in msg for k in ("为什么", "什么是", "凭什么", "哪些", "介绍", "帮助", "规则")
         )
@@ -256,25 +257,33 @@ def has_write_evidence(
     if has_creation:
         return True
 
-    # 4. B. 明确任务参数修改/填写证据
-    has_explicit_modify_verb = bool(
-        re.search(r"(?:改成|设为|设置为|替换为|调整为|切换为|换成|指定为|为\s*[0-9]+)", msg)
+    # 4. B. 明确任务参数修改/填写与槽位撤销证据
+    has_modify_verb = bool(
+        re.search(r"(?:改成|改到|设为|设置为|修改为|变更为|调整为|调整至|切换为|换成|指定为|为\s*[0-9]+)", msg)
+    ) or any(
+        k in msg for k in ("取消修改", "撤销修改", "取消水深修改", "不修改", "取消更新")
     )
-    if has_explicit_modify_verb:
+    if has_modify_verb:
         return True
 
-    has_param_assignment = bool(
+    has_numeric_assignment = bool(
+        re.search(r"(?:水深|深度|开始时间|结束时间|水温)\s*[:：等于为是\s]*[0-9]+", msg)
+    )
+    if has_numeric_assignment:
+        return True
+
+    has_explicit_field_assignment = bool(
         re.search(
-            r"(?:水深|深度|开始时间|结束时间|管缆位置|管缆类型|支持船|机器人|设备|工具|载荷|井口|油田)\s*[:：等于为是\s]*[\u4e00-\u9fa5A-Za-z0-9_\-\.\:]+",
+            r"(?:水深|深度|开始时间|结束时间|管缆位置|管缆类型|支持船|机器人|设备|工具|载荷|井口|油田)\s*[:：等于为是]\s*[\u4e00-\u9fa5A-Za-z0-9_\-\.\:]+",
             msg,
         )
     )
-    if has_param_assignment:
+    if has_explicit_field_assignment:
         return True
 
     has_device_use_cmd = bool(
         re.search(
-            r"(?:使用|选用|选择|采用|搭载|配备)\s*(?:[A-Za-z0-9_\-]+|金牛座|天鹰座|水蛟|海马|CRAWLER|LROV|1600|WORK|观察级|工作级|亚特兰蒂斯|OBSROV-\d+|机器人|设备)",
+            r"(?:使用|选用|选择|采用|搭载|配备|换成)\s*(?:[A-Za-z0-9_\-]+|金牛座|天鹰座|水蛟|海马|CRAWLER|LROV|1600|WORK|观察级|工作级|亚特兰蒂斯|OBSROV-\d+)",
             msg,
         )
     )
@@ -283,11 +292,11 @@ def has_write_evidence(
 
     # 5. C. 明确增删替换任务字段证据
     has_add_delete_replace = (
-        any(v in msg for v in ("增加", "添加", "加上", "带上", "配备", "搭载"))
-        and any(n in msg for n in ("摄像机", "机械臂", "声呐", "声纳", "抓手", "传感器", "工具", "载荷", "payload"))
+        any(v in msg for v in ("增加", "添加", "加上", "带上", "配备", "搭载", "安装", "配置", "配", "挂载"))
+        and any(n in msg for n in ("摄像机", "机械臂", "声呐", "声纳", "抓手", "传感器", "工具", "载荷", "payload", "激光", "测距仪", "流速仪", "高度计", "水听器"))
     ) or (
-        any(v in msg for v in ("删除", "移除", "去掉", "取消"))
-        and any(n in msg for n in ("侧扫声呐", "摄像机", "机械臂", "抓手", "传感器", "工具", "载荷", "payload"))
+        any(v in msg for v in ("删除", "移除", "去掉", "取消", "卸载", "拿掉"))
+        and any(n in msg for n in ("侧扫声呐", "摄像机", "机械臂", "抓手", "传感器", "工具", "载荷", "payload", "激光", "测距仪", "流速仪", "高度计", "水听器"))
     ) or (
         any(v in msg for v in ("替换", "换成", "更换"))
         and any(n in msg for n in ("天鹰座", "金牛座", "水蛟", "海马", "机器人", "设备", "支持船", "A", "B", "C"))
