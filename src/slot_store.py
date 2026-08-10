@@ -274,6 +274,226 @@ VALID_SLOT_STATUSES = {
 
 VALID_VALUE_TYPES = {"string", "number", "boolean", "list", "coord", "datetime", "object"}
 LEGACY_SCHEMA_TYPES = {"tasktype", "auto", "fixed", "raw"}
+SLOT_SNAPSHOT_SCHEMA_VERSION = 2
+
+
+def _validate_slot_value_type_compatibility(
+    *,
+    slot_key: str,
+    value: Any,
+    value_type: str,
+    status: str,
+) -> None:
+    """Validate that actual slot value strictly matches its declared normalized value_type."""
+    if status == "valid" and value is None:
+        raise SnapshotValidationError(f"Valid slot '{slot_key}' cannot have null value.")
+
+    if value is None:
+        return
+
+    if value_type == "string":
+        if isinstance(value, bool) or not isinstance(value, str):
+            raise SnapshotValidationError(
+                f"Slot '{slot_key}' value {value!r} is not a valid string for value_type 'string'."
+            )
+    elif value_type == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise SnapshotValidationError(
+                f"Slot '{slot_key}' value {value!r} is not a valid finite number for value_type 'number'."
+            )
+    elif value_type == "boolean":
+        if not isinstance(value, bool):
+            raise SnapshotValidationError(
+                f"Slot '{slot_key}' value {value!r} is not a valid boolean for value_type 'boolean'."
+            )
+    elif value_type == "list":
+        if not isinstance(value, list):
+            raise SnapshotValidationError(
+                f"Slot '{slot_key}' value {value!r} is not a valid list for value_type 'list'."
+            )
+    elif value_type == "object":
+        if not isinstance(value, dict):
+            raise SnapshotValidationError(
+                f"Slot '{slot_key}' value {value!r} is not a valid dict for value_type 'object'."
+            )
+    elif value_type == "coord":
+        if not isinstance(value, dict):
+            raise SnapshotValidationError(
+                f"Slot '{slot_key}' coord value must be a dictionary; got {type(value).__name__}: {value!r}"
+            )
+        if "lat" not in value or "lon" not in value:
+            raise SnapshotValidationError(
+                f"Slot '{slot_key}' coord dictionary missing required 'lat' or 'lon' keys."
+            )
+        lat = value["lat"]
+        lon = value["lon"]
+        if isinstance(lat, bool) or not isinstance(lat, (int, float)) or not math.isfinite(lat) or not (-90.0 <= float(lat) <= 90.0):
+            raise SnapshotValidationError(
+                f"Slot '{slot_key}' coord 'lat' must be a finite number between -90 and 90; got {lat!r}"
+            )
+        if isinstance(lon, bool) or not isinstance(lon, (int, float)) or not math.isfinite(lon) or not (-180.0 <= float(lon) <= 180.0):
+            raise SnapshotValidationError(
+                f"Slot '{slot_key}' coord 'lon' must be a finite number between -180 and 180; got {lon!r}"
+            )
+    elif value_type == "datetime":
+        if isinstance(value, bool) or not isinstance(value, str):
+            raise SnapshotValidationError(
+                f"Slot '{slot_key}' datetime value must be an ISO-8601 string; got {type(value).__name__}: {value!r}"
+            )
+        try:
+            clean_ts = value.replace("Z", "+00:00")
+            datetime.fromisoformat(clean_ts)
+        except Exception as exc:
+            raise SnapshotValidationError(
+                f"Slot '{slot_key}' datetime value '{value}' is not a valid ISO-8601 timestamp: {exc}"
+            )
+
+
+def _validate_and_build_restored_slot(
+    key: str,
+    raw_slot: Any,
+    slots_data: Dict[str, Any],
+) -> "Slot":
+    """Unified validation and creation for dict and Slot representations in restore_snapshot."""
+    if not isinstance(key, str):
+        raise SnapshotValidationError("Slot key must be a string.")
+
+    if isinstance(raw_slot, dict):
+        slot_name = raw_slot.get("slot_name")
+        if slot_name is not None and slot_name != key:
+            raise SnapshotValidationError(f"Slot key '{key}' does not match slot_name '{slot_name}'.")
+
+        status = raw_slot.get("status")
+        if status not in VALID_SLOT_STATUSES:
+            raise SnapshotValidationError(f"Invalid status '{status}' for slot '{key}'.")
+
+        version = raw_slot.get("version", 0)
+        if not isinstance(version, int) or isinstance(version, bool) or version < 0:
+            raise SnapshotValidationError(f"Invalid slot version '{version}' for slot '{key}'.")
+
+        confidence = raw_slot.get("confidence")
+        if confidence is not None and (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not math.isfinite(float(confidence))
+            or not (0.0 <= float(confidence) <= 1.0)
+        ):
+            raise SnapshotValidationError(f"Invalid confidence '{confidence}' for slot '{key}'.")
+
+        raw_val_type = raw_slot.get("value_type", "auto")
+        if not isinstance(raw_val_type, str):
+            raise SnapshotValidationError(f"Invalid value_type '{raw_val_type}' for slot '{key}'.")
+
+        value = copy.deepcopy(raw_slot.get("value"))
+        value_type = normalize_slot_value_type(raw_val_type, value)
+        if value_type not in VALID_VALUE_TYPES:
+            raise SnapshotValidationError(f"Invalid value_type '{raw_val_type}' for slot '{key}'.")
+
+        source = raw_slot.get("source", "user_input")
+        if not isinstance(source, str):
+            raise SnapshotValidationError(f"Invalid source for slot '{key}'.")
+
+        updated_at = raw_slot.get("updated_at")
+        if updated_at is not None:
+            if not isinstance(updated_at, str):
+                raise SnapshotValidationError(f"Invalid updated_at for slot '{key}'.")
+            try:
+                clean_dt = updated_at.replace("Z", "+00:00")
+                datetime.fromisoformat(clean_dt)
+            except Exception as exc:
+                raise SnapshotValidationError(
+                    f"Invalid ISO-8601 updated_at timestamp '{updated_at}' for slot '{key}': {exc}"
+                )
+
+        candidate_val = copy.deepcopy(raw_slot.get("candidate_value"))
+        raw_val = copy.deepcopy(raw_slot.get("raw_value"))
+        val_error = raw_slot.get("validation_error")
+
+    elif isinstance(raw_slot, Slot):
+        if raw_slot.slot_name is not None and raw_slot.slot_name != key:
+            raise SnapshotValidationError(f"Slot key '{key}' does not match slot_name '{raw_slot.slot_name}'.")
+
+        status = raw_slot.status
+        if status not in VALID_SLOT_STATUSES:
+            raise SnapshotValidationError(f"Invalid status '{status}' for slot '{key}'.")
+
+        version = raw_slot.version
+        if not isinstance(version, int) or isinstance(version, bool) or version < 0:
+            raise SnapshotValidationError(f"Invalid slot version '{version}' for slot '{key}'.")
+
+        source = raw_slot.source
+        if not isinstance(source, str):
+            raise SnapshotValidationError(f"Invalid source for slot '{key}'.")
+
+        confidence = raw_slot.confidence
+        if confidence is not None and (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not math.isfinite(float(confidence))
+            or not (0.0 <= float(confidence) <= 1.0)
+        ):
+            raise SnapshotValidationError(f"Invalid confidence '{confidence}' for slot '{key}'.")
+
+        updated_at = raw_slot.updated_at
+        if updated_at is not None:
+            if not isinstance(updated_at, str):
+                raise SnapshotValidationError(f"Invalid updated_at for slot '{key}'.")
+            try:
+                clean_dt = updated_at.replace("Z", "+00:00")
+                datetime.fromisoformat(clean_dt)
+            except Exception as exc:
+                raise SnapshotValidationError(
+                    f"Invalid ISO-8601 updated_at timestamp '{updated_at}' for slot '{key}': {exc}"
+                )
+
+        value = copy.deepcopy(raw_slot.value)
+        value_type = normalize_slot_value_type(raw_slot.value_type, value)
+        if value_type not in VALID_VALUE_TYPES:
+            raise SnapshotValidationError(f"Invalid value_type '{raw_slot.value_type}' for slot '{key}'.")
+
+        candidate_val = copy.deepcopy(raw_slot.candidate_value)
+        raw_val = copy.deepcopy(raw_slot.raw_value)
+        val_error = copy.deepcopy(raw_slot.validation_error)
+
+    else:
+        raise SnapshotValidationError(f"Slot data for key '{key}' must be a dict or Slot.")
+
+    _validate_slot_value_type_compatibility(
+        slot_key=key,
+        value=value,
+        value_type=value_type,
+        status=status,
+    )
+
+    if key == "equipment_specification":
+        eq_type_in_snapshot = slots_data.get("equipment_type")
+        is_type_valid = False
+        if isinstance(eq_type_in_snapshot, dict):
+            is_type_valid = (
+                eq_type_in_snapshot.get("status") == "valid"
+                and eq_type_in_snapshot.get("value") is not None
+            )
+        elif hasattr(eq_type_in_snapshot, "__dataclass_fields__"):
+            is_type_valid = (
+                getattr(eq_type_in_snapshot, "status", None) == "valid"
+                and getattr(eq_type_in_snapshot, "value", None) is not None
+            )
+        if not is_type_valid:
+            _validate_spec_slot_data(value, candidate_val, slot_key=key)
+
+    return Slot(
+        slot_name=key,
+        value=value,
+        value_type=value_type,
+        status=status,
+        source=source,
+        raw_value=raw_val,
+        confidence=confidence,
+        validation_error=val_error,
+        updated_at=updated_at,
+        version=version,
+        candidate_value=candidate_val,
+    )
 
 
 def normalize_slot_value_type(schema_type: Optional[str] = None, value: Any = None) -> str:
@@ -282,6 +502,8 @@ def normalize_slot_value_type(schema_type: Optional[str] = None, value: Any = No
         st = schema_type.lower()
         if st in VALID_VALUE_TYPES:
             if st == "string" and value is not None:
+                if isinstance(value, dict) and "lat" in value and "lon" in value:
+                    return "coord"
                 if isinstance(value, str):
                     try:
                         clean_ts = value.replace("Z", "+00:00")
@@ -290,17 +512,32 @@ def normalize_slot_value_type(schema_type: Optional[str] = None, value: Any = No
                             return "datetime"
                     except Exception:
                         pass
-                else:
-                    pass
+                    return "string"
+                return "string"
             else:
                 return st
         if st in ("tasktype", "raw"):
             return "string"
         if st == "auto":
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                return "number"
             if isinstance(value, bool):
                 return "boolean"
+            if isinstance(value, (int, float)):
+                return "number"
+            if isinstance(value, list):
+                return "list"
+            if isinstance(value, dict):
+                if "lat" in value and "lon" in value:
+                    return "coord"
+                return "object"
+            if isinstance(value, str):
+                try:
+                    clean_ts = value.replace("Z", "+00:00")
+                    if len(value) >= 10 and "T" in value:
+                        datetime.fromisoformat(clean_ts)
+                        return "datetime"
+                except Exception:
+                    pass
+                return "string"
             return "string"
         if st == "fixed":
             pass
@@ -349,7 +586,10 @@ class Slot:
     ):
         self.slot_name = slot_name
         self.value = value
-        self.value_type = normalize_slot_value_type(value_type, value)
+        if value_type == "string" and value is not None and not isinstance(value, str):
+            self.value_type = normalize_slot_value_type(value=value)
+        else:
+            self.value_type = normalize_slot_value_type(schema_type=value_type, value=value)
         self.status = status  # missing | candidate | valid | invalid | conflict | unresolved
         self.source = source  # user_input | auto | fixed | system-derived values
         self.raw_value = raw_value
@@ -767,6 +1007,17 @@ class SlotStore:
             if not isinstance(snapshot, dict):
                 raise SnapshotValidationError("Snapshot must be a dictionary.")
 
+            snap_schema_ver = snapshot.get("snapshot_schema_version")
+            if snap_schema_ver is not None:
+                if (
+                    isinstance(snap_schema_ver, bool)
+                    or not isinstance(snap_schema_ver, int)
+                    or snap_schema_ver != SLOT_SNAPSHOT_SCHEMA_VERSION
+                ):
+                    raise SnapshotValidationError(
+                        f"Unsupported snapshot_schema_version: {snap_schema_ver!r}. Expected {SLOT_SNAPSHOT_SCHEMA_VERSION} or None for legacy V1."
+                    )
+
             store_ver = snapshot.get("store_version", 1)
             if store_ver is None:
                 store_ver = 1
@@ -806,134 +1057,9 @@ class SlotStore:
                         raise SnapshotValidationError("Each entry in validation_acknowledgements must be a dictionary.")
                 ack_data = cleaned_ack
 
-
             new_slots = {}
             for key, sdict in slots_data.items():
-                if not isinstance(key, str):
-                    raise SnapshotValidationError("Slot key must be a string.")
-                if not isinstance(sdict, (dict, Slot)):
-                    raise SnapshotValidationError(f"Slot data for key '{key}' must be a dict or Slot.")
-
-                if isinstance(sdict, dict):
-                    slot_name = sdict.get("slot_name")
-                    if slot_name is not None and slot_name != key:
-                        raise SnapshotValidationError(f"Slot key '{key}' does not match slot_name '{slot_name}'.")
-                    status = sdict.get("status")
-                    if status not in VALID_SLOT_STATUSES:
-                        raise SnapshotValidationError(f"Invalid status '{status}' for slot '{key}'.")
-                    version = sdict.get("version", 0)
-                    if not isinstance(version, int) or isinstance(version, bool) or version < 0:
-                        raise SnapshotValidationError(f"Invalid slot version '{version}' for slot '{key}'.")
-                    confidence = sdict.get("confidence")
-                    if confidence is not None and (
-                        isinstance(confidence, bool)
-                        or not isinstance(confidence, (int, float))
-                        or not (0.0 <= float(confidence) <= 1.0)
-                    ):
-                        raise SnapshotValidationError(f"Invalid confidence '{confidence}' for slot '{key}'.")
-                    raw_val_type = sdict.get("value_type", "string")
-                    value = copy.deepcopy(sdict.get("value"))
-                    if not isinstance(raw_val_type, str):
-                        raise SnapshotValidationError(f"Invalid value_type '{raw_val_type}' for slot '{key}'.")
-                    value_type = normalize_slot_value_type(raw_val_type, value)
-                    if value_type not in VALID_VALUE_TYPES:
-                        raise SnapshotValidationError(f"Invalid value_type '{raw_val_type}' for slot '{key}'.")
-                    source = sdict.get("source", "user_input")
-                    if not isinstance(source, str):
-                        raise SnapshotValidationError(f"Invalid source for slot '{key}'.")
-                    updated_at = sdict.get("updated_at")
-                    if updated_at is not None:
-                        if not isinstance(updated_at, str):
-                            raise SnapshotValidationError(f"Invalid updated_at for slot '{key}'.")
-                        try:
-                            clean_dt = updated_at.replace("Z", "+00:00")
-                            datetime.fromisoformat(clean_dt)
-                        except Exception as exc:
-                            raise SnapshotValidationError(
-                                f"Invalid ISO-8601 updated_at timestamp '{updated_at}' for slot '{key}': {exc}"
-                            )
-
-                    if status == "valid" and value is None:
-                        raise SnapshotValidationError(f"Valid slot '{key}' cannot have null value.")
-
-                    candidate_val = copy.deepcopy(sdict.get("candidate_value"))
-                    if key == "equipment_specification":
-                        eq_type_in_snapshot = slots_data.get("equipment_type")
-                        is_type_valid = False
-                        if isinstance(eq_type_in_snapshot, dict):
-                            is_type_valid = (
-                                eq_type_in_snapshot.get("status") == "valid"
-                                and eq_type_in_snapshot.get("value") is not None
-                            )
-                        elif hasattr(eq_type_in_snapshot, "__dataclass_fields__"):
-                            is_type_valid = (
-                                getattr(eq_type_in_snapshot, "status", None) == "valid"
-                                and getattr(eq_type_in_snapshot, "value", None) is not None
-                            )
-                        if not is_type_valid:
-                            _validate_spec_slot_data(value, candidate_val, slot_key=key)
-
-                    new_slots[key] = Slot(
-                        slot_name=key,
-                        value=value,
-                        value_type=value_type,
-                        status=status,
-                        source=source,
-                        raw_value=copy.deepcopy(sdict.get("raw_value")),
-                        confidence=confidence,
-                        validation_error=sdict.get("validation_error"),
-                        updated_at=updated_at,
-                        version=version,
-                        candidate_value=candidate_val,
-                    )
-                elif isinstance(sdict, Slot):
-                    if sdict.slot_name != key:
-                        raise SnapshotValidationError(f"Slot key '{key}' does not match slot_name '{sdict.slot_name}'.")
-                    if sdict.status not in VALID_SLOT_STATUSES:
-                        raise SnapshotValidationError(f"Invalid status '{sdict.status}' for slot '{key}'.")
-                    value_type = normalize_slot_value_type(sdict.value_type, sdict.value)
-                    if value_type not in VALID_VALUE_TYPES:
-                        raise SnapshotValidationError(f"Invalid value_type '{sdict.value_type}' for slot '{key}'.")
-                    sdict.value_type = value_type
-                    if not isinstance(sdict.version, int) or isinstance(sdict.version, bool) or sdict.version < 0:
-                        raise SnapshotValidationError(f"Invalid slot version '{sdict.version}' for slot '{key}'.")
-                    if not isinstance(sdict.source, str):
-                        raise SnapshotValidationError(f"Invalid source for slot '{key}'.")
-                    if sdict.confidence is not None and (
-                        isinstance(sdict.confidence, bool)
-                        or not isinstance(sdict.confidence, (int, float))
-                        or not (0.0 <= float(sdict.confidence) <= 1.0)
-                    ):
-                        raise SnapshotValidationError(f"Invalid confidence '{sdict.confidence}' for slot '{key}'.")
-                    if sdict.updated_at is not None:
-                        if not isinstance(sdict.updated_at, str):
-                            raise SnapshotValidationError(f"Invalid updated_at for slot '{key}'.")
-                        try:
-                            clean_dt = sdict.updated_at.replace("Z", "+00:00")
-                            datetime.fromisoformat(clean_dt)
-                        except Exception as exc:
-                            raise SnapshotValidationError(
-                                f"Invalid ISO-8601 updated_at timestamp '{sdict.updated_at}' for slot '{key}': {exc}"
-                            )
-                    if sdict.status == "valid" and sdict.value is None:
-                        raise SnapshotValidationError(f"Valid slot '{key}' cannot have null value.")
-                    if key == "equipment_specification":
-                        eq_type_in_snapshot = slots_data.get("equipment_type")
-                        is_type_valid = False
-                        if isinstance(eq_type_in_snapshot, dict):
-                            is_type_valid = (
-                                eq_type_in_snapshot.get("status") == "valid"
-                                and eq_type_in_snapshot.get("value") is not None
-                            )
-                        elif hasattr(eq_type_in_snapshot, "__dataclass_fields__"):
-                            is_type_valid = (
-                                getattr(eq_type_in_snapshot, "status", None) == "valid"
-                                and getattr(eq_type_in_snapshot, "value", None) is not None
-                            )
-                        if not is_type_valid:
-                            _validate_spec_slot_data(sdict.value, sdict.candidate_value, slot_key=key)
-                    new_slots[key] = sdict.copy()
-                    new_slots[key].slot_name = key
+                new_slots[key] = _validate_and_build_restored_slot(key, sdict, slots_data)
 
             val_obj = None
             if validation_data is not None:
