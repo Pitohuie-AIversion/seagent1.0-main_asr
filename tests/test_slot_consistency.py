@@ -398,18 +398,30 @@ class SlotConsistencyTest(unittest.TestCase):
     # 3. 一个槽位包含多个值 (多值列表)
     def test_03_multi_value_slot(self):
         self.dm.reset()
+        schema = self.dm.builder.get_schema("pipeline_inspection")
+        self.dm.slot_store.init_task_slots(schema)
         self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
         self.dm.slot_store.slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
         self.dm.task_state = self.dm.slot_store.get_task_state()
+
+        from src.intent_router import IntentRouteResult
+        self.dm.intent_router.route = MagicMock(return_value=IntentRouteResult(
+            interaction_type="WRITE",
+            confidence=1.0,
+            reason="TEST",
+            query_intent="TASK_UPDATE",
+            dialogue_mode="task_collection",
+        ))
 
         self.llm.extract_json.return_value = {
             "intent": "TASK_UPDATE",
             "slot_candidates": [
                 {"raw_key": "负载工具", "canonical_key": "payload", "raw_value": "高清水下摄像机,成像声呐", "normalized_value": ["高清水下摄像机", "成像声呐"], "confidence": 1.0}
             ],
+            "list_mutations": [],
             "unresolved": []
         }
-        self.dm.process("携带高清水下摄像机和成像声呐")
+        self.dm.process("负载为高清水下摄像机和成像声呐")
         self.assertEqual(self.dm.slot_store.slots["payload"].value, ["高清水下摄像机", "成像声呐"])
         assert_ssot_consistency(self, self.dm)
 
@@ -585,10 +597,11 @@ class SlotConsistencyTest(unittest.TestCase):
             "intent": "TASK_UPDATE",
             "confidence": 0.9,
             "slot_candidates": [],
+            "list_mutations": [],
             "unresolved": ["某些无法理解的内容"]
         }
 
-        self.dm.process("测试处理无法理解的内容")
+        reply = self.dm.process("设置水深为500米 某些无法理解的内容")
         self.assertIn("某些无法理解的内容", self.dm.slot_store.unresolved)
 
     # 10. GENERAL_CHAT 不修改 SlotStore

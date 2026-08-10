@@ -508,9 +508,10 @@ class DialogueManagerROVTest(unittest.TestCase):
             allow_overwrite=True,
         )
         self.assertEqual(slots["equipment_family"].status, "candidate")
-        for key in ("equipment_type", "equipment_unit_id", "equipment_name"):
-            self.assertIsNone(slots[key].value)
-            self.assertEqual(slots[key].status, "missing")
+        self.assertIsNone(slots["equipment_unit_id"].value)
+        self.assertEqual(slots["equipment_unit_id"].status, "missing")
+        # Under Issue #40, single variant under 轻型工作级深海机器人 is auto-collapsed
+        self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人")
 
 
     def test_task_intent_robot_type_comes_from_selected_variant(self):
@@ -557,8 +558,8 @@ class DialogueManagerROVTest(unittest.TestCase):
 
         self.assertEqual(dm.task_state["equipment_family"], "水下无人自主航行器")
         self.assertEqual(dm.task_state["equipment_type"], "水下无人自主航行器 324CC")
-        self.assertNotIn("equipment_unit_id", dm.task_state)
-        self.assertIsNone(dm.slot_store.slots["equipment_unit_id"].value)
+        # Issue #40: Single AUV unit AUV-324cc-001 auto-bound
+        self.assertEqual(dm.task_state["equipment_unit_id"], "AUV-324cc-001")
 
     def test_equipment_updates_have_no_direct_task_state_legacy_entry(self):
         self.assertFalse(hasattr(DialogueManager, "_apply_updates"))

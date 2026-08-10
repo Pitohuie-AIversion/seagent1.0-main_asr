@@ -70,7 +70,7 @@ class TestIssue12DialogueCascade(unittest.TestCase):
     def test_02_valid_class_returns_family_candidates(self):
         """2. 已有 class 时调用 list_robot_families()，候选全部属于当前 class，不返回其他 class 候选。"""
         self._init_task("pipeline_inspection")
-        self._apply_updates({"equipment_class": "auv"}, task_type_key="pipeline_inspection")
+        self._apply_updates({"equipment_class": "observation_rov"}, task_type_key="pipeline_inspection")
 
         missing = self.dm.slot_store.get_missing_slots(
             self.dm.builder.get_schema("pipeline_inspection"),
@@ -81,7 +81,7 @@ class TestIssue12DialogueCascade(unittest.TestCase):
 
         fam_field = next((m for m in missing if m.get("key") == "equipment_family"), None)
         self.assertIsNotNone(fam_field)
-        self.assertEqual(fam_field["allowed_values"], ["水下无人自主航行器"])
+        self.assertEqual(set(fam_field["allowed_values"]), {"轻型工作级深海机器人", "观察级深海机器人"})
 
     # ── Test 3: AUV 输入 '324CC' 转 4 级 canonical equipment_type ─────────────────
     def test_03_auv_returns_cc_specification(self):
@@ -113,14 +113,14 @@ class TestIssue12DialogueCascade(unittest.TestCase):
         self.assertEqual(type_slot.status, "valid")
         self.assertEqual(type_slot.value, "通用工作级深海机器人 250HP")
 
-    # ── Test 5: 完整对话链：输入 324CC 后推进到 unit 候选 ─────────────────────
+    # ── Test 5: 完整对话链：多候选 unit 场景推进到 unit 候选 ─────────────────────
     def test_05_valid_three_levels_returns_unit_candidates(self):
-        """5. 输入 324CC 完成前三级级联后，下一级 missing 获取精准 unit 候选。"""
+        """5. 输入多候选 unit 的规格后，下一级 missing 获取精准 unit 候选。"""
         self._init_task("pipeline_inspection")
         self._apply_updates({
-            "equipment_class": "auv",
-            "equipment_family": "水下无人自主航行器",
-            "equipment_type": "水下无人自主航行器 324CC",
+            "equipment_class": "observation_rov",
+            "equipment_family": "轻型工作级深海机器人",
+            "equipment_type": "轻型工作级深海机器人 600MSW",
         }, task_type_key="pipeline_inspection")
 
         missing = self.dm.slot_store.get_missing_slots(
@@ -132,8 +132,8 @@ class TestIssue12DialogueCascade(unittest.TestCase):
 
         unit_field = next((m for m in missing if m.get("key") == "equipment_unit_id"), None)
         self.assertIsNotNone(unit_field)
-        self.assertIn("AUV-324cc-001", unit_field["allowed_values"])
-        self.assertNotIn("WROV-250-001", unit_field["allowed_values"])
+        self.assertIn("LROV--001", unit_field["allowed_values"])
+        self.assertIn("LROV--002", unit_field["allowed_values"])
 
     # ── Test 6: 直接输入 AUV unit 自动补全 ─────────────────────────────────────
     def test_06_direct_unit_input_auto_completes(self):

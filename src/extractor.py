@@ -294,6 +294,17 @@ class ParameterExtractor:
         for field in required:
             if field.get("key") == "payload":
                 allowed_values = field.get("allowed_values") or []
+                if not allowed_values and field.get("allowed_values_ref"):
+                    ref = str(field["allowed_values_ref"])
+                    if ref.startswith("payload_options.") or ref in ("supported_payloads", "onboard_payloads", "all_payloads"):
+                        try:
+                            from .knowledge_retriever import KnowledgeBase
+                            from .output_builder import OutputBuilder
+                            kb = getattr(cls, "kb", None) or KnowledgeBase()
+                            task_key = current_state.get("task_type_key") or ""
+                            allowed_values = OutputBuilder(kb).resolve_allowed_values(field, str(task_key), current_state) or []
+                        except Exception:
+                            pass
                 break
 
         specific_items = cls._find_payload_items_in_text(text, allowed_values)
@@ -304,7 +315,7 @@ class ParameterExtractor:
             r"^(?:清空|清掉)\s*(?:所有|全部|整个)?\s*(?:载荷|工具|payload)$",
             r"(?:清空|清掉)\s*(?:所有|全部|整个)?\s*(?:载荷|工具|payload)",
             r"(?:删除|放弃)\s*(?:所有|全部|整个)\s*(?:载荷|工具|payload)",
-            r"(?:所有|全部|整个)\s*(?:载荷|工具|payload)\s*(?:都不要|都不用|不需要|都清空|都不带)",
+            r"(?:所有|全部|整个)\s*(?:载荷|工具|payload)\s*(?:都不要|都不用|不需要|都清空|都不带)(?:了)?",
             r"不要任何\s*(?:载荷|工具|payload)",
         ]
         is_clear_intent = any(re.search(pat, text, re.IGNORECASE) for pat in clear_patterns)

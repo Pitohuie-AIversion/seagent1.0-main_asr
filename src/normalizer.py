@@ -241,7 +241,7 @@ class FieldNormalizer:
             items = [str(x) for x in raw]
 
         if not items:
-            return None
+            return [] if isinstance(raw, list) else None
 
         result = []
         for item in items:

@@ -1243,6 +1243,13 @@ class DialogueManager:
         current_state = self.slot_store.get_task_state()
         state_before_turn = dict(current_state)
 
+        if task_type_key:
+            schema = self.builder.get_schema(task_type_key, self.mode)
+            for f in schema:
+                k = f.get("key")
+                if k and k not in new_slots:
+                    new_slots[k] = Slot(slot_name=k, value_type=f.get("type", "string"), status="missing")
+
         merged_updates = {}
         merged_updates_meta = {}
         payload_mutation_failed = False
@@ -1366,22 +1373,23 @@ class DialogueManager:
         if should_extract_task_parameters:
             # Stage 2: Extract task parameters
             current_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
+            field_defs = self.builder.get_schema(task_type_key, self.mode)
             required = self.builder.get_required(task_type_key, self.mode, current_state)
             extraction_res = self.extractor.extract_updates(
                 user_message, current_state,
                 task_type_key=task_type_key,
                 task_type_map=self.kb.get_task_type_map(),
-                required=required,
+                required=field_defs,
                 ROV2type=self.kb.ROV2type,
                 conversation_history=self.conversation_history,
             )
 
             if task_patch_v2_active:
-                allowed_stage2 = self.extractor._allowed_candidate_keys(task_type_key, required)
+                field_defs = self.builder.get_schema(task_type_key, self.mode)
+                allowed_stage2 = self.extractor._allowed_candidate_keys(task_type_key, field_defs)
                 patch = build_task_patch(extraction_res, allowed_keys=allowed_stage2)
 
                 if norm_v2_active:
-                    field_defs = self.builder.get_schema(task_type_key, self.mode)
                     current_state_dict = {
                         k: s.value for k, s in new_slots.items()
                         if s.status == "valid" and s.value is not None
@@ -1478,11 +1486,17 @@ class DialogueManager:
                         merged_updates.pop("payload", None)
                         merged_updates_meta.pop("payload", None)
 
+                        field_defs = self.builder.get_schema(task_type_key, self.mode)
                         mut_res = self.slot_store.apply_list_mutation(
                             new_slots,
                             mutation,
-                            required_schema=required,
+                            required_schema=field_defs,
                             payload_catalog=self.kb.assets.get("payload_catalog"),
+                            allowed_values_resolver=lambda f: self.builder.resolve_allowed_values(
+                                f,
+                                task_type_key,
+                                {k: v.value for k, v in new_slots.items() if v and v.value is not None},
+                            ),
                         )
                         if mut_res.get("success"):
                             new_payload_val = mut_res.get("new_value")
@@ -1493,6 +1507,7 @@ class DialogueManager:
                                 "confidence": mutation.get("confidence", 0.95),
                                 "source": mutation.get("source", "user_input"),
                             }
+                            stage2_updates["payload"] = merged_updates_meta["payload"]
                         else:
                             payload_mutation_failed = True
                             mutation_failure_result = mut_res
@@ -1613,9 +1628,10 @@ class DialogueManager:
                     if val is not None and val != "":
                         self._handle_task_type_update_in_transaction(k, val, new_slots)
 
+                applied_keys = {outcome.key for outcome in apply_plan.successful_updates} | {f.key for f in apply_plan.failures}
                 extra_updates = {
                     k: v for k, v in stage2_updates.items()
-                    if k not in apply_plan.normalized_schema_keys
+                    if k not in applied_keys
                     and k not in ("task_type", "task_type_key")
                 }
                 if extra_updates:
@@ -2208,6 +2224,8 @@ class DialogueManager:
                 slot.confidence = meta["confidence"]
                 slot.source = meta["source"]
 
+        self._auto_collapse_robot_cascade(new_slots, allow_overwrite)
+
     def _apply_normalized_plan_in_transaction(
         self,
         plan: NormalizationApplyPlan,
@@ -2274,6 +2292,8 @@ class DialogueManager:
                 slot.source = failure.source
                 slot.validation_error = failure.error_message
 
+        self._auto_collapse_robot_cascade(new_slots, allow_overwrite)
+
     @staticmethod
     def _source_for_resolution_method(resolution_method: str | None) -> str:
         source_map = {
@@ -2315,6 +2335,229 @@ class DialogueManager:
         slot.candidate_value = None
         slot.raw_value = str(value)
         slot.validation_error = None
+
+    def _auto_collapse_robot_cascade(self, new_slots: dict, allow_overwrite: bool = False) -> None:
+        """
+        [Issue #40] 四级级联自动收敛处理。
+        只在 task_type_key 为 valid 时生效。
+        规则：
+        1. 前置校验：若已有槽位不属于当前 task 的 feasible_domain，作废该槽位及所有下游依赖。
+        2. 逐级计算可行候选数 (candidate count)：
+           - count == 0: Fail Closed (若槽位状态非 conflict/invalid，设为 invalid)；
+           - count == 1: 自动绑定唯一 canonical value (status="valid", source="auto")，继续下一层推导；
+           - count > 1: 停止自动收敛，等待用户选择该层。
+        """
+        task_type_slot = new_slots.get("task_type_key")
+        if not task_type_slot or task_type_slot.status != "valid" or not task_type_slot.value:
+            return
+
+        task_type_key = str(task_type_slot.value)
+        try:
+            domain = self.kb.get_feasible_robot_selection_domain(task_type_key)
+        except Exception as exc:
+            logger.warning("[DialogueManager] Failed to build feasible robot domain for task '%s': %s", task_type_key, exc)
+            if "equipment_class" not in new_slots:
+                new_slots["equipment_class"] = Slot("equipment_class")
+            slot = new_slots["equipment_class"]
+            slot.status = "invalid"
+            slot.value = None
+            slot.validation_error = str(exc)
+            return
+
+        from src.slot_store import (
+            invalidate_robot_cascade_dependents,
+            reset_slot_to_missing,
+        )
+
+        # ── 1. 前置校验：若已有槽位不属于当前 feasible_domain，作废该槽位及下游 ──
+        cls_slot = new_slots.get("equipment_class")
+        if cls_slot and cls_slot.status in ("valid", "candidate") and cls_slot.value:
+            resolved_cls = self.kb._resolve_class_key(str(cls_slot.value))
+            feasible_class_ids = {c["class_id"] for c in domain["classes"]}
+            if not resolved_cls or resolved_cls not in feasible_class_ids:
+                invalidate_robot_cascade_dependents(new_slots, ["equipment_class"])
+                reset_slot_to_missing(cls_slot, source="system_dependency_invalidation")
+
+        fam_slot = new_slots.get("equipment_family")
+        if fam_slot and fam_slot.status in ("valid", "candidate") and fam_slot.value:
+            cur_cls = new_slots.get("equipment_class")
+            cur_cls_id = self.kb._resolve_class_key(str(cur_cls.value)) if cur_cls and cur_cls.value else None
+            cls_node = next((c for c in domain["classes"] if c["class_id"] == cur_cls_id), None)
+            feasible_fam_ids = {f["family_id"] for f in cls_node["families"]} if cls_node else set()
+            resolved_fam_id = self.kb.resolve_robot_family_id(str(fam_slot.value), task_type_key)
+            if not resolved_fam_id or resolved_fam_id not in feasible_fam_ids:
+                invalidate_robot_cascade_dependents(new_slots, ["equipment_family"])
+                reset_slot_to_missing(fam_slot, source="system_dependency_invalidation")
+
+        type_slot = new_slots.get("equipment_type")
+        if type_slot and type_slot.status in ("valid", "candidate") and type_slot.value:
+            cur_cls = new_slots.get("equipment_class")
+            cur_fam = new_slots.get("equipment_family")
+            cur_cls_id = self.kb._resolve_class_key(str(cur_cls.value)) if cur_cls and cur_cls.value else None
+            cur_fam_id = self.kb.resolve_robot_family_id(str(cur_fam.value), task_type_key) if cur_fam and cur_fam.value else None
+            cls_node = next((c for c in domain["classes"] if c["class_id"] == cur_cls_id), None)
+            fam_node = next((f for f in cls_node["families"] if f["family_id"] == cur_fam_id), None) if cls_node else None
+            feasible_var_names = (
+                {v["full_name"] for v in fam_node["variants"]} | {v["variant_id"] for v in fam_node["variants"]}
+                if fam_node else set()
+            )
+            if str(type_slot.value) not in feasible_var_names:
+                invalidate_robot_cascade_dependents(new_slots, ["equipment_type"])
+                reset_slot_to_missing(type_slot, source="system_dependency_invalidation")
+
+        unit_slot = new_slots.get("equipment_unit_id")
+        if unit_slot and unit_slot.status in ("valid", "candidate") and unit_slot.value:
+            cur_cls = new_slots.get("equipment_class")
+            cur_fam = new_slots.get("equipment_family")
+            cur_type = new_slots.get("equipment_type")
+            cur_cls_id = self.kb._resolve_class_key(str(cur_cls.value)) if cur_cls and cur_cls.value else None
+            cur_fam_id = self.kb.resolve_robot_family_id(str(cur_fam.value), task_type_key) if cur_fam and cur_fam.value else None
+            cur_type_val = str(cur_type.value) if cur_type and cur_type.value else None
+            cls_node = next((c for c in domain["classes"] if c["class_id"] == cur_cls_id), None)
+            fam_node = next((f for f in cls_node["families"] if f["family_id"] == cur_fam_id), None) if cls_node else None
+            var_node = next((v for v in fam_node["variants"] if v["full_name"] == cur_type_val or v["variant_id"] == cur_type_val), None) if fam_node else None
+            feasible_units = {u["unit_id"] for u in var_node["units"]} if var_node else set()
+            if str(unit_slot.value) not in feasible_units:
+                reset_slot_to_missing(unit_slot, source="system_dependency_invalidation")
+
+        # ── 2. 逐级四级 auto-collapse ──
+
+        # Level 1: equipment_class
+        classes = domain["classes"]
+        cls_slot = new_slots.get("equipment_class")
+        if cls_slot and cls_slot.status in ("invalid", "conflict"):
+            return
+        if not cls_slot or cls_slot.status not in ("valid", "candidate") or not cls_slot.value:
+            if len(classes) == 0:
+                if "equipment_class" not in new_slots:
+                    new_slots["equipment_class"] = Slot("equipment_class")
+                slot = new_slots["equipment_class"]
+                if slot.status not in ("conflict", "invalid"):
+                    slot.status = "invalid"
+                    slot.value = None
+                    slot.validation_error = f"No feasible robot class for task '{task_type_key}'"
+                return
+            elif len(classes) == 1:
+                cls_info = classes[0]
+                if "equipment_class" not in new_slots:
+                    new_slots["equipment_class"] = Slot("equipment_class")
+                cls_slot = new_slots["equipment_class"]
+                cls_slot.value = cls_info["full_name"]
+                cls_slot.status = "valid"
+                cls_slot.source = "auto"
+                cls_slot.raw_value = cls_info["full_name"]
+                cls_slot.confidence = 1.0
+                cls_slot.validation_error = None
+            else:
+                # > 1 候选且未指定 -> 停止自动收敛
+                return
+
+        # Level 2: equipment_family
+        cur_cls_val = str(new_slots["equipment_class"].value)
+        cur_cls_id = self.kb._resolve_class_key(cur_cls_val)
+        cls_node = next((c for c in classes if c["class_id"] == cur_cls_id), None)
+        if not cls_node:
+            return
+
+        families = cls_node["families"]
+        fam_slot = new_slots.get("equipment_family")
+        if fam_slot and fam_slot.status in ("invalid", "conflict"):
+            return
+        if not fam_slot or fam_slot.status not in ("valid", "candidate") or not fam_slot.value:
+            if len(families) == 0:
+                if "equipment_family" not in new_slots:
+                    new_slots["equipment_family"] = Slot("equipment_family")
+                slot = new_slots["equipment_family"]
+                if slot.status not in ("conflict", "invalid"):
+                    slot.status = "invalid"
+                    slot.value = None
+                    slot.validation_error = f"No feasible robot family under class '{cur_cls_id}' for task '{task_type_key}'"
+                return
+            elif len(families) == 1:
+                fam_info = families[0]
+                if "equipment_family" not in new_slots:
+                    new_slots["equipment_family"] = Slot("equipment_family")
+                fam_slot = new_slots["equipment_family"]
+                fam_slot.value = fam_info["full_name"]
+                fam_slot.status = "valid"
+                fam_slot.source = "auto"
+                fam_slot.raw_value = fam_info["full_name"]
+                fam_slot.confidence = 1.0
+                fam_slot.validation_error = None
+            else:
+                # > 1 候选且未指定 -> 停止自动收敛
+                return
+
+        # Level 3: equipment_type
+        cur_fam_val = str(new_slots["equipment_family"].value)
+        cur_fam_id = self.kb.resolve_robot_family_id(cur_fam_val, task_type_key)
+        fam_node = next((f for f in families if f["family_id"] == cur_fam_id), None)
+        if not fam_node:
+            return
+
+        variants = fam_node["variants"]
+        type_slot = new_slots.get("equipment_type")
+        if type_slot and type_slot.status in ("invalid", "conflict"):
+            return
+        if not type_slot or type_slot.status not in ("valid", "candidate") or not type_slot.value:
+            if len(variants) == 0:
+                if "equipment_type" not in new_slots:
+                    new_slots["equipment_type"] = Slot("equipment_type")
+                slot = new_slots["equipment_type"]
+                if slot.status not in ("conflict", "invalid"):
+                    slot.status = "invalid"
+                    slot.value = None
+                    slot.validation_error = f"No feasible robot variant under family '{cur_fam_id}' for task '{task_type_key}'"
+                return
+            elif len(variants) == 1:
+                var_info = variants[0]
+                if "equipment_type" not in new_slots:
+                    new_slots["equipment_type"] = Slot("equipment_type")
+                type_slot = new_slots["equipment_type"]
+                type_slot.value = var_info["full_name"]
+                type_slot.status = "valid"
+                type_slot.source = "auto"
+                type_slot.raw_value = var_info["full_name"]
+                type_slot.confidence = 1.0
+                type_slot.validation_error = None
+            else:
+                # > 1 候选且未指定 -> 停止自动收敛
+                return
+
+        # Level 4: equipment_unit_id
+        cur_type_val = str(new_slots["equipment_type"].value)
+        var_node = next((v for v in variants if v["full_name"] == cur_type_val or v["variant_id"] == cur_type_val), None)
+        if not var_node:
+            return
+
+        units = var_node["units"]
+        unit_slot = new_slots.get("equipment_unit_id")
+        if unit_slot and unit_slot.status in ("invalid", "conflict"):
+            return
+        if not unit_slot or unit_slot.status not in ("valid", "candidate") or not unit_slot.value:
+            if len(units) == 0:
+                if "equipment_unit_id" not in new_slots:
+                    new_slots["equipment_unit_id"] = Slot("equipment_unit_id")
+                slot = new_slots["equipment_unit_id"]
+                if slot.status not in ("conflict", "invalid"):
+                    slot.status = "invalid"
+                    slot.value = None
+                    slot.validation_error = f"No fleet units configured for variant '{cur_type_val}'"
+                return
+            elif len(units) == 1:
+                unit_info = units[0]
+                if "equipment_unit_id" not in new_slots:
+                    new_slots["equipment_unit_id"] = Slot("equipment_unit_id")
+                unit_slot = new_slots["equipment_unit_id"]
+                unit_slot.value = unit_info["unit_id"]
+                unit_slot.status = "valid"
+                unit_slot.source = "auto"
+                unit_slot.raw_value = unit_info["unit_id"]
+                unit_slot.confidence = 1.0
+                unit_slot.validation_error = None
+            else:
+                # > 1 候选且未指定 -> 停止自动收敛
+                return
 
     def _handle_equipment_updates_in_transaction(
         self,
@@ -2625,6 +2868,9 @@ class DialogueManager:
             if not selected_variant:
                 selected_variant = self.kb.get_rov(str(variant_update))
 
+            if selected_variant and task_type and not self.kb.robot_matches_task(selected_variant, task_type):
+                selected_variant = None
+
             if selected_variant:
                 robot_cls = selected_variant.get("robot_class")
                 fam_id = selected_variant.get("family_id")
@@ -2724,6 +2970,9 @@ class DialogueManager:
                     str(unit_update),
                     None,
                 )
+
+            if resolved_unit and task_type and not self.kb.robot_matches_task(resolved_unit.get("robot"), task_type):
+                resolved_unit = None
 
             if resolved_unit:
                 unit_variant = resolved_unit["robot"]
@@ -2898,6 +3147,8 @@ class DialogueManager:
                     new_slots[fkey] = Slot(slot_name=fkey, value_type=ftype)
                 else:
                     new_slots[fkey].value_type = ftype
+
+            self._auto_collapse_robot_cascade(new_slots, allow_overwrite=True)
 
     def _handle_rov_description_in_transaction(self, description: str, new_slots: dict):
         all_rovs = self.kb.get_all_rovs()

@@ -1165,7 +1165,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
     def test_v2_publish_adjacent_governance_invariants(self):
         # 验证在 V2 启用时 Hard Constraint 阻断、Soft Warning 区分与 Fail-Closed 正常运作
         dm = DialogueManager(llm=MagicMock())
-        self._setup_stage2_task("pipeline_inspection", dm=dm)
+        self._setup_stage2_task("tree_valve_operation", dm=dm)
         wd_slot = Slot("water_depth")
         wd_slot.value = 500
         wd_slot.status = "valid"

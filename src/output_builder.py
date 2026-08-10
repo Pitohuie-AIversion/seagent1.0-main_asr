@@ -607,9 +607,12 @@ class OutputBuilder:
             "robot_full_names",
             "robot_variant_full_names",
             "robot_unit_ids",
+            "supported_payloads",
+            "onboard_payloads",
+            "all_payloads",
         }
 
-        if ref in dynamic_robot_refs:
+        if ref in dynamic_robot_refs or ref.startswith("payload_options."):
             return self._lookup_ref(ref, task_type_key, task_state)
 
         if ref in self._ref_cache:
@@ -692,8 +695,8 @@ class OutputBuilder:
             if eq_type:
                 robot = self.kb.get_rov(eq_type)
                 if robot:
-                    robot_payloads = set(robot.get("all_payloads", []))
-                    return [item for item in task_commons if item in robot_payloads]
+                    robot_payloads = {p.strip().replace(" ", "") for p in robot.get("all_payloads", [])}
+                    return [item for item in task_commons if item.strip().replace(" ", "") in robot_payloads]
             return task_commons
 
         if ref in ("supported_payloads", "onboard_payloads", "all_payloads"):

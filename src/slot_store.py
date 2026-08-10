@@ -112,7 +112,7 @@ def reset_slot_to_missing(
     source: str = "system_dependency_invalidation",
 ) -> None:
     """Reset a slot completely to missing state during dependency invalidation."""
-    slot.value = None
+    slot.value = [] if slot.value_type == "list" else None
     slot.status = "missing"
     slot.candidate_value = None
     slot.raw_value = None
@@ -706,6 +706,7 @@ class SlotStore:
         mutation: Dict[str, Any],
         required_schema: Optional[List[Dict[str, Any]]] = None,
         payload_catalog: Optional[Dict[str, Any]] = None,
+        allowed_values_resolver: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """统一列表增量修改入口（add/remove/replace/clear）。"""
         field_name = mutation.get("field", "payload")
@@ -728,7 +729,18 @@ class SlotStore:
         if required_schema:
             for f in required_schema:
                 if f.get("key") == field_name:
-                    allowed_values = f.get("allowed_values") or []
+                    if allowed_values_resolver:
+                        allowed_values = allowed_values_resolver(f) or []
+                    else:
+                        allowed_values = f.get("allowed_values") or []
+                        if not allowed_values and f.get("allowed_values_ref") and self.kb:
+                            try:
+                                from .output_builder import OutputBuilder
+                                task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else ""
+                                current_state = {k: v.value for k, v in new_slots.items() if v and v.value is not None}
+                                allowed_values = OutputBuilder(self.kb).resolve_allowed_values(f, str(task_type_key or ""), current_state) or []
+                            except Exception:
+                                pass
                     break
 
         def _resolve(item_str: str) -> Tuple[Optional[str], Optional[str]]:
@@ -884,6 +896,16 @@ class SlotStore:
                 if item_to_add and not _contains(temp_list, item_to_add):
                     temp_list.append(item_to_add)
             new_value = temp_list
+        elif op in ("set", "override"):
+            items = mutation.get("items") or []
+            new_canonicals = []
+            for item_raw in items:
+                cat_id, c_name = _resolve(item_raw)
+                if c_name is None:
+                    return _fail(str(op), f"设置的载荷 '{item_raw}' 非法或不属于当前任务允许范围")
+                if c_name not in new_canonicals:
+                    new_canonicals.append(c_name)
+            new_value = new_canonicals
 
         elif op == "clear":
             slot.value = []

@@ -207,12 +207,12 @@ def has_write_evidence(
 
     has_explicit_write_verb = any(
         kw in msg for kw in (
-            "改成", "改到", "设为", "设置为", "修改为", "变更为", "调整为", "调整至", "切换为", "换成", "指定为",
+            "改成", "改到", "改为", "设为", "设置为", "修改为", "修改到", "变更为", "调整为", "调整到", "调整至", "切换为", "换成", "指定为",
             "创建一个", "新建一个", "发起一个", "帮我发起", "我要执行", "增加", "添加", "加上", "带上", "配备",
-            "搭载", "安装", "配置", "配", "挂载", "删除", "移除", "去掉", "取消修改", "撤销修改", "取消水深修改",
+            "搭载", "安装", "配置", "配", "挂载", "删除", "移除", "去掉", "清空", "清掉", "都不要", "不要了", "取消修改", "撤销修改", "取消水深修改",
             "不修改", "确认发布", "确认开始", "确认无误"
         )
-    )
+    ) or bool(re.search(r"取消.*修改", msg))
 
     is_pure_query = (
         bool(re.search(r"[呢吗？?]$", msg))
@@ -228,6 +228,9 @@ def has_write_evidence(
 
     if is_pure_query:
         return False
+
+    if has_explicit_write_verb:
+        return True
 
     # 2. Expected Slot 追问回答校验
     if expected_slots and len(expected_slots) > 0:
@@ -259,7 +262,7 @@ def has_write_evidence(
 
     # 4. B. 明确任务参数修改/填写与槽位撤销证据
     has_modify_verb = bool(
-        re.search(r"(?:改成|改到|设为|设置为|修改为|变更为|调整为|调整至|切换为|换成|指定为|为\s*[0-9]+)", msg)
+        re.search(r"(?:改成|改到|改为|设为|设置为|修改为|修改到|变更为|调整为|调整到|调整至|切换为|换成|指定为|为\s*[0-9]+)", msg)
     ) or any(
         k in msg for k in ("取消修改", "撤销修改", "取消水深修改", "不修改", "取消更新")
     )
