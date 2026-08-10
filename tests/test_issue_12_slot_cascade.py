@@ -260,104 +260,166 @@ class TestIssue12SlotCascade(unittest.TestCase):
         self.assertEqual(store.slots["equipment_type"].status, "valid")
 
     def test_11_non_dict_specification_fail_closed(self):
-        """11. Case C: 非 dict 类型的 legacy specification fail closed，equipment_type 为 missing。"""
+        """11. Case C: 非 dict 类型的 legacy specification 触发 SnapshotValidationError 整体 fail closed。"""
         snapshot = {
             "store_version": 1,
             "slots": {
+                "equipment_class": {"slot_name": "equipment_class", "value": "work_class_rov", "status": "valid", "value_type": "string"},
+                "equipment_family": {"slot_name": "equipment_family", "value": "通用工作级深海机器人", "status": "valid", "value_type": "string"},
                 "equipment_specification": {
                     "slot_name": "equipment_specification",
                     "value": "250HP_string",
                     "value_type": "object",
                     "status": "valid",
-                }
+                },
             },
         }
         store = SlotStore(kb=self.kb)
-        store.restore_snapshot(snapshot)
-        self.assertNotIn("equipment_specification", store.slots)
-        self.assertEqual(store.slots["equipment_type"].status, "missing")
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot(snapshot)
 
     def test_12_missing_required_field_in_specification_fail_closed(self):
-        """12. Case C: 缺少 variant_id 的 specification fail closed。"""
+        """12. Case C: 缺少 required field (即使 variant_id 合法) 的 specification 触发 SnapshotValidationError 整体 fail closed。"""
         incomplete_spec = {
             "type": "power_hp",
             "value": 250,
-        }
-        snapshot = {
-            "store_version": 1,
-            "slots": {
-                "equipment_specification": {
-                    "slot_name": "equipment_specification",
-                    "value": incomplete_spec,
-                    "value_type": "object",
-                    "status": "valid",
-                }
-            },
-        }
-        store = SlotStore(kb=self.kb)
-        store.restore_snapshot(snapshot)
-        self.assertNotIn("equipment_specification", store.slots)
-        self.assertEqual(store.slots["equipment_type"].status, "missing")
-
-    def test_13_bool_specification_value_fail_closed(self):
-        """13. Case C: value 为 bool 或 invalid variant_id 类型的 specification fail closed。"""
-        bad_spec = {
-            "type": "power_hp",
-            "value": True,
-            "variant_id": "non_existent_variant_id",
-        }
-        snapshot = {
-            "store_version": 1,
-            "slots": {
-                "equipment_specification": {
-                    "slot_name": "equipment_specification",
-                    "value": bad_spec,
-                    "value_type": "object",
-                    "status": "valid",
-                }
-            },
-        }
-        store = SlotStore(kb=self.kb)
-        store.restore_snapshot(snapshot)
-        self.assertNotIn("equipment_specification", store.slots)
-        self.assertEqual(store.slots["equipment_type"].status, "missing")
-
-    def test_14_non_finite_specification_value_fail_closed(self):
-        """14. Case C: NaN 或 Infinity 值的 specification fail closed。"""
-        bad_spec = {
-            "type": "power_hp",
-            "value": float("nan"),
-            "variant_id": "non_existent_variant_nan",
-        }
-        snapshot = {
-            "store_version": 1,
-            "slots": {
-                "equipment_specification": {
-                    "slot_name": "equipment_specification",
-                    "value": bad_spec,
-                    "value_type": "object",
-                    "status": "valid",
-                }
-            },
-        }
-        store = SlotStore(kb=self.kb)
-        store.restore_snapshot(snapshot)
-        self.assertNotIn("equipment_specification", store.slots)
-        self.assertEqual(store.slots["equipment_type"].status, "missing")
-
-    def test_15_mismatched_type_and_unit_fail_closed(self):
-        """15. Case C: Mismatched legacy spec fail closed. """
-        mismatched_spec = {
-            "type": "power_hp",
-            "value": 250,
-            "unit": "mm",
             "variant_id": "general_work_class_rov_250hp",
         }
         snapshot = {
             "store_version": 1,
             "slots": {
-                "equipment_class": {"slot_name": "equipment_class", "value": "auv", "status": "valid"},
-                "equipment_family": {"slot_name": "equipment_family", "value": "水下无人自主航行器", "status": "valid"},
+                "equipment_class": {"slot_name": "equipment_class", "value": "work_class_rov", "status": "valid", "value_type": "string"},
+                "equipment_family": {"slot_name": "equipment_family", "value": "通用工作级深海机器人", "status": "valid", "value_type": "string"},
+                "equipment_specification": {
+                    "slot_name": "equipment_specification",
+                    "value": incomplete_spec,
+                    "value_type": "object",
+                    "status": "valid",
+                },
+            },
+        }
+        store = SlotStore(kb=self.kb)
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot(snapshot)
+
+    def test_13_bool_specification_value_fail_closed(self):
+        """13. Case C: value 为 bool (即使 variant_id 与 hierarchy 完全合法) 触发 SnapshotValidationError 整体 fail closed。"""
+        bad_spec = {
+            "type": "power_hp",
+            "value": True,
+            "unit": "hp",
+            "display_value": "250HP",
+            "variant_id": "general_work_class_rov_250hp",
+        }
+        snapshot = {
+            "store_version": 1,
+            "slots": {
+                "equipment_class": {"slot_name": "equipment_class", "value": "work_class_rov", "status": "valid", "value_type": "string"},
+                "equipment_family": {"slot_name": "equipment_family", "value": "通用工作级深海机器人", "status": "valid", "value_type": "string"},
+                "equipment_specification": {
+                    "slot_name": "equipment_specification",
+                    "value": bad_spec,
+                    "value_type": "object",
+                    "status": "valid",
+                },
+            },
+        }
+        store = SlotStore(kb=self.kb)
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot(snapshot)
+
+    def test_14_non_finite_specification_value_fail_closed(self):
+        """14. Case C: NaN 或 Infinity 值的 specification (即使 variant_id 合法) 触发 SnapshotValidationError 整体 fail closed。"""
+        bad_spec = {
+            "type": "power_hp",
+            "value": float("nan"),
+            "unit": "hp",
+            "display_value": "250HP",
+            "variant_id": "general_work_class_rov_250hp",
+        }
+        snapshot = {
+            "store_version": 1,
+            "slots": {
+                "equipment_class": {"slot_name": "equipment_class", "value": "work_class_rov", "status": "valid", "value_type": "string"},
+                "equipment_family": {"slot_name": "equipment_family", "value": "通用工作级深海机器人", "status": "valid", "value_type": "string"},
+                "equipment_specification": {
+                    "slot_name": "equipment_specification",
+                    "value": bad_spec,
+                    "value_type": "object",
+                    "status": "valid",
+                },
+            },
+        }
+        store = SlotStore(kb=self.kb)
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot(snapshot)
+
+    def test_14b_infinity_specification_value_fail_closed(self):
+        """14b. Case C: Infinity 值的 specification (即使 variant_id 合法) 触发 SnapshotValidationError 整体 fail closed。"""
+        bad_spec = {
+            "type": "power_hp",
+            "value": float("inf"),
+            "unit": "hp",
+            "display_value": "250HP",
+            "variant_id": "general_work_class_rov_250hp",
+        }
+        snapshot = {
+            "store_version": 1,
+            "slots": {
+                "equipment_class": {"slot_name": "equipment_class", "value": "work_class_rov", "status": "valid", "value_type": "string"},
+                "equipment_family": {"slot_name": "equipment_family", "value": "通用工作级深海机器人", "status": "valid", "value_type": "string"},
+                "equipment_specification": {
+                    "slot_name": "equipment_specification",
+                    "value": bad_spec,
+                    "value_type": "object",
+                    "status": "valid",
+                },
+            },
+        }
+        store = SlotStore(kb=self.kb)
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot(snapshot)
+
+    def test_14c_negative_or_zero_specification_value_fail_closed(self):
+        """14c. Case C: <=0 值的 specification (即使 variant_id 合法) 触发 SnapshotValidationError 整体 fail closed。"""
+        bad_spec = {
+            "type": "power_hp",
+            "value": -5,
+            "unit": "hp",
+            "display_value": "250HP",
+            "variant_id": "general_work_class_rov_250hp",
+        }
+        snapshot = {
+            "store_version": 1,
+            "slots": {
+                "equipment_class": {"slot_name": "equipment_class", "value": "work_class_rov", "status": "valid", "value_type": "string"},
+                "equipment_family": {"slot_name": "equipment_family", "value": "通用工作级深海机器人", "status": "valid", "value_type": "string"},
+                "equipment_specification": {
+                    "slot_name": "equipment_specification",
+                    "value": bad_spec,
+                    "value_type": "object",
+                    "status": "valid",
+                },
+            },
+        }
+        store = SlotStore(kb=self.kb)
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot(snapshot)
+
+    def test_15_mismatched_type_and_unit_fail_closed(self):
+        """15. Case C: Mismatched unit/type 或 invalid spec type 触发 SnapshotValidationError 整体 fail closed。"""
+        mismatched_spec = {
+            "type": "power_hp",
+            "value": 250,
+            "unit": "mm",
+            "display_value": "250HP",
+            "variant_id": "general_work_class_rov_250hp",
+        }
+        snapshot = {
+            "store_version": 1,
+            "slots": {
+                "equipment_class": {"slot_name": "equipment_class", "value": "work_class_rov", "status": "valid", "value_type": "string"},
+                "equipment_family": {"slot_name": "equipment_family", "value": "通用工作级深海机器人", "status": "valid", "value_type": "string"},
                 "equipment_specification": {
                     "slot_name": "equipment_specification",
                     "value": mismatched_spec,
@@ -367,19 +429,33 @@ class TestIssue12SlotCascade(unittest.TestCase):
             },
         }
         store = SlotStore(kb=self.kb)
-        store.restore_snapshot(snapshot)
-        self.assertNotIn("equipment_specification", store.slots)
-        self.assertEqual(store.slots["equipment_type"].status, "missing")
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot(snapshot)
 
     def test_16_failed_restore_preserves_original_store_state(self):
-        """16. 校验失败 (如格式破损) 时，原 SlotStore 内存快照与版本完全不变。"""
+        """16. 校验失败 (如带有合法 variant_id 的 malformed spec) 时，原 SlotStore 内存快照与版本完全不变。"""
         store = SlotStore(kb=self.kb)
         initial_version = store.version
         initial_slots = store.get_slot_snapshot()
 
         malformed_snapshot = {
-            "store_version": "invalid_int",
-            "slots": "invalid_slots_type",
+            "store_version": 1,
+            "slots": {
+                "equipment_class": {"slot_name": "equipment_class", "value": "work_class_rov", "status": "valid", "value_type": "string"},
+                "equipment_family": {"slot_name": "equipment_family", "value": "通用工作级深海机器人", "status": "valid", "value_type": "string"},
+                "equipment_specification": {
+                    "slot_name": "equipment_specification",
+                    "value": {
+                        "type": "power_hp",
+                        "value": True,
+                        "unit": "hp",
+                        "display_value": "250HP",
+                        "variant_id": "general_work_class_rov_250hp",
+                    },
+                    "value_type": "object",
+                    "status": "valid",
+                },
+            },
         }
         with self.assertRaises(SnapshotValidationError):
             store.restore_snapshot(malformed_snapshot)

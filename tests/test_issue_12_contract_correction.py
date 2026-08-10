@@ -224,7 +224,7 @@ class TestIssue12ContractCorrection(unittest.TestCase):
                 "equipment_type": {"slot_name": "equipment_type", "value": "通用工作级深海机器人 250HP", "status": "valid", "value_type": "string"},
                 "equipment_specification": {
                     "slot_name": "equipment_specification",
-                    "value": {"type": "power_hp", "value": 250.0, "unit": "HP", "variant_id": "general_work_class_rov_250hp"},
+                    "value": {"type": "power_hp", "value": 250.0, "unit": "HP", "display_value": "250HP", "variant_id": "general_work_class_rov_250hp"},
                     "status": "valid",
                     "value_type": "object",
                 },
@@ -245,7 +245,7 @@ class TestIssue12ContractCorrection(unittest.TestCase):
                 "equipment_family": {"slot_name": "equipment_family", "value": "通用工作级深海机器人", "status": "valid", "value_type": "string"},
                 "equipment_specification": {
                     "slot_name": "equipment_specification",
-                    "value": {"type": "power_hp", "value": 250.0, "unit": "HP", "variant_id": "general_work_class_rov_250hp"},
+                    "value": {"type": "power_hp", "value": 250.0, "unit": "HP", "display_value": "250HP", "variant_id": "general_work_class_rov_250hp"},
                     "status": "valid",
                     "value_type": "object",
                 },
@@ -266,15 +266,14 @@ class TestIssue12ContractCorrection(unittest.TestCase):
                 "equipment_family": {"slot_name": "equipment_family", "value": "水下无人自主航行器", "status": "valid", "value_type": "string"},
                 "equipment_specification": {
                     "slot_name": "equipment_specification",
-                    "value": {"type": "power_hp", "value": 250.0, "unit": "HP", "variant_id": "general_work_class_rov_250hp"},  # mismatch
+                    "value": {"type": "power_hp", "value": 250.0, "unit": "HP", "display_value": "250HP", "variant_id": "general_work_class_rov_250hp"},  # mismatch
                     "status": "valid",
                     "value_type": "object",
                 },
             },
         }
-        store.restore_snapshot(legacy_snapshot)
-        self.assertNotIn("equipment_specification", store.slots)
-        self.assertEqual(store.slots["equipment_type"].status, "missing")
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot(legacy_snapshot)
 
     # Scenario 20: Flat JSON output Builder has no equipment_specification
     def test_flat_task_intent_builder_output(self):
