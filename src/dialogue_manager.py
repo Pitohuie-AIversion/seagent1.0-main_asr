@@ -44,7 +44,11 @@ from .model_profile import (
     is_shadow_compare_enabled,
     is_task_patch_v2_enabled,
 )
-from .session_state_shadow import compare_session_state_shadow
+from .session_state_shadow import (
+    compare_session_state_shadow,
+    record_shadow_metric,
+    should_run_session_state_shadow,
+)
 from .session_state import (
     ConversationState,
     ExecutionControlState,
@@ -130,13 +134,19 @@ SOFT_IGNORE_KEYWORDS = {"忽略", "继续", "确认", "无视", "不管", "没�
 
 
 class DialogueManager:
-    def __init__(self, llm: Optional[LLMClient] = None, kb: Optional[KnowledgeBase] = None):
+    def __init__(
+        self,
+        llm: Optional[LLMClient] = None,
+        kb: Optional[KnowledgeBase] = None,
+        session_id: str | None = None,
+    ):
         if kb is None:
             kb = KnowledgeBase()
         if llm is None:
             llm = LLMClient(None, None)
         self.llm = llm
         self.kb = kb
+        self.session_id = session_id
         self.extractor = ParameterExtractor(llm)
         # LHL 归一化器采用确定性规则，不依赖 LLM 猜测合法字段值。
         self.normalizer = FieldNormalizer()
@@ -333,19 +343,21 @@ class DialogueManager:
         request_id: str | None = None,
     ) -> None:
         """在稳定边界运行 SessionState V2 Shadow 旁路比较（只读、不干预、异常隔离、日志脱敏）。"""
-        if not is_shadow_compare_enabled():
+        if not should_run_session_state_shadow(self.session_id):
             return
 
         try:
             snapshot = self.export_snapshot()
             result = compare_session_state_shadow(snapshot, checkpoint=checkpoint, request_id=request_id)
             if result.classification == "PARITY":
+                record_shadow_metric("parity")
                 logger.info(
                     "[SESSION_STATE_SHADOW_PARITY] checkpoint=%s request_id=%s",
                     checkpoint,
                     request_id,
                 )
             elif result.classification == "STRICT_REJECTED":
+                record_shadow_metric("strict_rejected")
                 logger.warning(
                     "[SESSION_STATE_SHADOW_STRICT_REJECTED] checkpoint=%s request_id=%s exc_type=%s",
                     checkpoint,
@@ -353,6 +365,7 @@ class DialogueManager:
                     result.exception_type,
                 )
             elif result.classification == "MISMATCH":
+                record_shadow_metric("mismatch")
                 logger.warning(
                     "[SESSION_STATE_SHADOW_MISMATCH] checkpoint=%s request_id=%s diff_fields=%s",
                     checkpoint,
@@ -360,6 +373,7 @@ class DialogueManager:
                     result.diff_fields,
                 )
         except Exception as exc:
+            record_shadow_metric("error")
             logger.warning(
                 "[SESSION_STATE_SHADOW_ERROR] checkpoint=%s request_id=%s exc_type=%s",
                 checkpoint,
@@ -3858,6 +3872,7 @@ class DialogueManager:
 
         return {
             "snapshot_version": 2,
+            "session_id": self.session_id,
             "conversation_history": copy.deepcopy(self.conversation_history),
             "phase": self.phase,
             "mode": self.mode,
@@ -3883,6 +3898,9 @@ class DialogueManager:
 
         if not isinstance(snapshot, dict):
             raise ValueError("History snapshot must be a dictionary")
+
+        if "session_id" in snapshot and snapshot["session_id"] is not None:
+            self.session_id = str(snapshot["session_id"])
 
         conversation_history = snapshot.get("conversation_history", [])
         if not isinstance(conversation_history, list):

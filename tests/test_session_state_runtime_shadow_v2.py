@@ -40,14 +40,14 @@ from src.slot_store import Slot
 from src.validator import ValidationResult
 
 
-def _make_dm(tmp_dir: Path) -> DialogueManager:
+def _make_dm(tmp_dir: Path, session_id: str | None = "sess_test_shadow") -> DialogueManager:
     tmp_dir.mkdir(parents=True, exist_ok=True)
     state_file = tmp_dir / "state.yaml"
     shutil.copy("config/state.yaml", state_file)
     kb = KnowledgeBase()
     kb.state_info.state_file = state_file
     llm = LLMClient(None, None)
-    return DialogueManager(llm, kb)
+    return DialogueManager(llm, kb, session_id=session_id)
 
 
 def _helper_setup_published_task(dm: DialogueManager, task_dir: Path, intent_id: str = "TI202608100001"):
@@ -108,7 +108,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
     # 2. shadow_compare=true -> Valid initial/task state returns PARITY.
     def test_02_shadow_enabled_valid_initial_state_returns_parity(self):
         dm = _make_dm(self.tmp_path / "t02")
-        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True):
+        with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True):
             snap = dm.export_snapshot()
             res = compare_session_state_shadow(snap, checkpoint="process", request_id="req_t02")
             self.assertEqual(res.classification, "PARITY")
@@ -117,7 +117,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
     # 3. Knowledge QA with Shadow enabled -> reply and state unchanged.
     def test_03_knowledge_qa_shadow_enabled_preserves_reply_and_state(self):
         dm = _make_dm(self.tmp_path / "t03")
-        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True):
+        with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True):
             snap_before = dm.export_snapshot()
             reply = dm.process("什么是DVL？", request_id="req_t03")
             snap_after = dm.export_snapshot()
@@ -148,7 +148,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
                 dm_disabled.process("创建一个管缆巡检任务", request_id="req_t04_dis")
                 count_disabled = mock_llm_dis.call_count
 
-        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True):
+        with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True):
             with patch.object(dm_enabled.llm, "extract_json", side_effect=stub_extract) as mock_llm_en:
                 dm_enabled.process("创建一个管缆巡检任务", request_id="req_t04_en")
                 count_enabled = mock_llm_en.call_count
@@ -204,7 +204,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         dm = _make_dm(self.tmp_path / "t06")
         task_dir = self.tmp_path / "t06_tasks"
         task_dir.mkdir(parents=True, exist_ok=True)
-        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True), \
+        with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
              patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
             _helper_setup_published_task(dm, task_dir, "TI202608100001")
             dm.process("停止当前任务", request_id="req_t06")
@@ -232,7 +232,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
             },
             "task_state": {"intent_id": "TI202608100001", "task_type": "管缆巡检", "water_depth": 300.0},
         }
-        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True):
+        with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True):
             dm.load_snapshot(snap)
             res = compare_session_state_shadow(dm.export_snapshot(), checkpoint="load_snapshot")
             self.assertEqual(res.classification, "PARITY")
@@ -241,7 +241,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
     def test_08_post_reset_shadow_returns_parity(self):
         dm = _make_dm(self.tmp_path / "t08")
         dm.phase = "confirming"
-        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True):
+        with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True):
             dm.reset()
             self.assertEqual(dm.phase, "collecting")
             res = compare_session_state_shadow(dm.export_snapshot(), checkpoint="reset")
@@ -252,7 +252,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         dm = _make_dm(self.tmp_path / "t09")
         dm.phase = "invalid_phase_xyz"
 
-        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True), \
+        with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
              patch("src.dialogue_manager.logger.warning") as mock_warn:
             reply = dm.process("什么是DVL？", request_id="req_t09")
             self.assertTrue(isinstance(reply, str) and len(reply) > 0)
@@ -287,7 +287,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
     # 11. Shadow comparator exception -> main business completes successfully (fail-safe).
     def test_11_shadow_comparator_exception_fail_safe(self):
         dm = _make_dm(self.tmp_path / "t11")
-        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True), \
+        with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
              patch("src.dialogue_manager.compare_session_state_shadow", side_effect=RuntimeError("Simulated shadow crash")), \
              patch("src.dialogue_manager.logger.warning") as mock_warn:
             reply = dm.process("什么是DVL？", request_id="req_t11")
@@ -298,7 +298,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
     # 12. request_id appears in Shadow audit metadata.
     def test_12_request_id_in_shadow_audit_metadata(self):
         dm = _make_dm(self.tmp_path / "t12")
-        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True), \
+        with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
              patch("src.dialogue_manager.logger.info") as mock_info:
             dm.process("什么是DVL？", request_id="req_audit_999")
             info_calls = [str(call) for call in mock_info.call_args_list if "[SESSION_STATE_SHADOW_PARITY]" in str(call)]
@@ -308,7 +308,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
     # 13. Shadow produces 0 SlotStore writes.
     def test_13_shadow_produces_zero_slotstore_writes(self):
         dm = _make_dm(self.tmp_path / "t13")
-        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True):
+        with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True):
             v_before = dm.slot_store.version
             dm.process("什么是DVL？", request_id="req_t13")
             v_after = dm.slot_store.version
@@ -318,7 +318,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
     def test_14_shadow_produces_zero_task_intent_files(self):
         dm = _make_dm(self.tmp_path / "t14")
         task_dir = self.tmp_path / "t14_tasks"
-        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True), \
+        with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
              patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
             dm.process("什么是DVL？", request_id="req_t14")
             files = list(task_dir.glob("*.json")) if task_dir.exists() else []
@@ -327,7 +327,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
     # 15. session_state_v2 remains false throughout tests.
     def test_15_session_state_v2_remains_false(self):
         self.assertFalse(is_session_state_v2_enabled())
-        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True):
+        with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True):
             dm = _make_dm(self.tmp_path / "t15")
             dm.process("什么是DVL？", request_id="req_t15")
             self.assertFalse(is_session_state_v2_enabled())
@@ -341,7 +341,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         sensitive_intent_id = "TI202608109999"
         sensitive_task_id = "PI-20260810-001"
 
-        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True), \
+        with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
              patch("src.session_state_shadow.session_state_to_legacy_fields") as mock_v2_fields, \
              patch("src.dialogue_manager.logger.warning") as mock_warn:
 
@@ -377,7 +377,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         dm = _make_dm(self.tmp_path / "t17")
         secret_msg = "Sensitive database credential secret_key_12345 leaked"
 
-        with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True), \
+        with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
              patch("src.dialogue_manager.compare_session_state_shadow", side_effect=RuntimeError(secret_msg)), \
              patch("src.dialogue_manager.logger.warning") as mock_warn:
 

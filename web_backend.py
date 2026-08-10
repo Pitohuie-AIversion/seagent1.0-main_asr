@@ -63,7 +63,7 @@ def get_or_create_manager(sid: str) -> DialogueManager:
     """获取或创建会话专属的 DialogueManager 实例"""
     with _sessions_lock:
         if sid not in _sessions_manager:
-            _sessions_manager[sid] = DialogueManager(_shared_llm, _shared_kb)
+            _sessions_manager[sid] = DialogueManager(_shared_llm, _shared_kb, session_id=sid)
         return _sessions_manager[sid]
 
 
