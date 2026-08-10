@@ -61,7 +61,7 @@ def normalize_digest(obj: any) -> any:
     if isinstance(obj, dict):
         res = {}
         for k, v in obj.items():
-            if k in ("changed_at", "updated_at", "validated_at") and isinstance(v, str):
+            if k in ("changed_at", "updated_at", "validated_at", "acknowledged_at") and isinstance(v, str):
                 res[k] = "<TIMESTAMP>"
             elif (k in ("internal_id", "target_internal_id") and isinstance(v, str) and validate_uuid4(v)):
                 res[k] = "<UUID>"

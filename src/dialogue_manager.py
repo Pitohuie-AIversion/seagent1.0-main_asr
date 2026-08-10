@@ -41,8 +41,10 @@ from .model_profile import (
     _is_unsupported_role_keyword_error,
     is_normalization_contract_v2_enabled,
     is_session_state_v2_enabled,
+    is_shadow_compare_enabled,
     is_task_patch_v2_enabled,
 )
+from .session_state_shadow import compare_session_state_shadow
 from .session_state import (
     ConversationState,
     ExecutionControlState,
@@ -321,7 +323,52 @@ class DialogueManager:
 
     def process(self, user_message: str, request_id: str = "req_default") -> str:
         with self._session_lock:
-            return self._process_internal(user_message, request_id)
+            reply = self._process_internal(user_message, request_id)
+            self._run_session_state_shadow_check(checkpoint="process", request_id=request_id)
+            return reply
+
+    def _run_session_state_shadow_check(
+        self,
+        checkpoint: str,
+        request_id: str | None = None,
+    ) -> None:
+        """在稳定边界运行 SessionState V2 Shadow 旁路比较（只读、不干预、异常隔离）。"""
+        if not is_shadow_compare_enabled():
+            return
+
+        try:
+            snapshot = self.export_snapshot()
+            result = compare_session_state_shadow(snapshot, checkpoint=checkpoint, request_id=request_id)
+            if result.classification == "PARITY":
+                logger.info(
+                    "[SESSION_STATE_SHADOW_PARITY] checkpoint=%s request_id=%s",
+                    checkpoint,
+                    request_id,
+                )
+            elif result.classification == "STRICT_REJECTED":
+                logger.warning(
+                    "[SESSION_STATE_SHADOW_STRICT_REJECTED] checkpoint=%s request_id=%s exc_type=%s details=%s",
+                    checkpoint,
+                    request_id,
+                    result.exception_type,
+                    result.details,
+                )
+            elif result.classification == "MISMATCH":
+                logger.warning(
+                    "[SESSION_STATE_SHADOW_MISMATCH] checkpoint=%s request_id=%s diff_fields=%s details=%s",
+                    checkpoint,
+                    request_id,
+                    result.diff_fields,
+                    result.details,
+                )
+        except Exception as exc:
+            logger.warning(
+                "[SESSION_STATE_SHADOW_ERROR] checkpoint=%s request_id=%s exc_type=%s err=%s",
+                checkpoint,
+                request_id,
+                type(exc).__name__,
+                exc,
+            )
 
     def _handle_non_task_route(self, user_message: str, route: IntentRouteResult, request_id: str) -> str:
         # 1. 记录前置快照镜像（用于严格的只读状态不变性断言）
@@ -3706,6 +3753,7 @@ class DialogueManager:
         self.dialogue_mode = "task_collection"
         self.last_mode_transition = None
         self.mode_transition_history = []
+        self._run_session_state_shadow_check(checkpoint="reset")
 
     def _commit_internal_slot_values(
         self,
@@ -4098,3 +4146,5 @@ class DialogueManager:
 
         if is_session_state_v2_enabled():
             _ = self._build_session_state_contract()
+
+        self._run_session_state_shadow_check(checkpoint="load_snapshot")

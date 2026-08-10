@@ -240,6 +240,11 @@ def is_session_state_v2_enabled(features_path: Path | None = None) -> bool:
     return get_feature_flag("session_state_v2", features_path=features_path, default=False)
 
 
+def is_shadow_compare_enabled(features_path: Path | None = None) -> bool:
+    """查询 shadow_compare_enabled Feature Flag 是否开启。"""
+    return get_feature_flag("shadow_compare_enabled", features_path=features_path, default=False)
+
+
 
 
 class ModelProfileRegistry:
