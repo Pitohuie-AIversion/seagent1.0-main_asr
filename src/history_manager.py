@@ -5,6 +5,8 @@ history_manager.py — 对话历史快照的保存与加载
 import copy
 import json
 import logging
+import os
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -127,8 +129,20 @@ def save_conversation(
         "task_type": task_state.get("task_type_key", "unknown"),
         "intent_id": intent_id,
     }
-    with open(filepath, "w", encoding="utf-8") as file:
-        json.dump(snapshot, file, ensure_ascii=False, indent=2)
+    tmp_filepath = filepath.with_suffix(f".tmp_{uuid.uuid4().hex[:8]}")
+    try:
+        with open(tmp_filepath, "w", encoding="utf-8") as file:
+            json.dump(snapshot, file, ensure_ascii=False, indent=2)
+            file.flush()
+            os.fsync(file.fileno())
+        tmp_filepath.replace(filepath)
+    except Exception:
+        if tmp_filepath.exists():
+            try:
+                tmp_filepath.unlink()
+            except OSError:
+                pass
+        raise
     return filename
 
 

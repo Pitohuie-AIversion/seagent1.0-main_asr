@@ -1327,7 +1327,8 @@ Please describe your task request or ask a question directly.`,
       cancelActiveRequest();
       isSending = true;
       applyInteractionState(currentActions, currentReadOnly);
-      const restoreSeq = currentRequestSeq;
+      const restoreSeq = ++currentRequestSeq;
+      const restoreGen = sessionGeneration;
       currentAbortController = new AbortController();
       let effectiveSessionId = sessionId;
       if (!effectiveSessionId) {
@@ -1342,13 +1343,14 @@ Please describe your task request or ask a question directly.`,
           signal: currentAbortController.signal,
         });
         const data = await res.json();
-        if (restoreSeq !== currentRequestSeq) return;
+        if (restoreSeq !== currentRequestSeq || restoreGen !== sessionGeneration) return;
         if (data.code !== 200) {
           alert(I18N[currentLang].restoreFailed + (data.msg || 'unknown'));
           return;
         }
         if (data.session_id) sessionId = data.session_id;
         else sessionId = effectiveSessionId;
+        try { localStorage.setItem('seagent_session_id', sessionId); } catch(e){}
 
         messageContainer.innerHTML = '';
         for (const msg of data.conversation_history) {
@@ -1387,8 +1389,15 @@ Please describe your task request or ask a question directly.`,
 
         document.getElementById('historyList').style.display = 'none';
       } catch (err) {
+        if (err.name === 'AbortError') return;
         console.error('还原历史失败', err);
         alert(I18N[currentLang].restoreNetError);
+      } finally {
+        if (restoreSeq === currentRequestSeq && restoreGen === sessionGeneration) {
+          isSending = false;
+          currentAbortController = null;
+          applyInteractionState(currentActions, currentReadOnly);
+        }
       }
     }
 
@@ -1584,7 +1593,11 @@ Please describe your task request or ask a question directly.`,
 
 
 
+    window.reset = reset;
+    window.restoreHistory = restoreHistory;
+    window.sendMessage = sendMessage;
     window.updateSidebar = updateSidebar;
+    window.applyInteractionState = applyInteractionState;
 
     restoreSessionFromStorage().then(restored => {
       if (!restored) reset();
