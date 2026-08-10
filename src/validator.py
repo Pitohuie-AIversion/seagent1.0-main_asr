@@ -178,8 +178,78 @@ def _compute_fingerprint(
 
 
 class TaskValidator:
+
     def __init__(self, kb: KnowledgeBase):
         self.kb = kb
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 静态数据校验辅助函数 (Fail-Closed)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _validate_water_depth_value(val: Any) -> tuple[float | None, dict | None]:
+        if val is None:
+            return None, None
+        if isinstance(val, bool):
+            return None, {"code": "INVALID_WATER_DEPTH", "message": "水深 (water_depth) 不能为布尔值。"}
+        if isinstance(val, (int, float, str)):
+            try:
+                f_val = float(val)
+            except (ValueError, TypeError):
+                return None, {"code": "INVALID_WATER_DEPTH", "message": f"水深 (water_depth='{val}') 格式非法，无法解析为数字。"}
+            import math
+            if math.isnan(f_val) or math.isinf(f_val):
+                return None, {"code": "INVALID_WATER_DEPTH", "message": f"水深 (water_depth='{val}') 不能为 NaN 或 Inf。"}
+            if f_val <= 0:
+                return None, {"code": "INVALID_WATER_DEPTH", "message": f"水深 (water_depth={f_val}) 必须为大于 0 的正数。"}
+            return f_val, None
+        return None, {"code": "INVALID_WATER_DEPTH", "message": f"水深 (water_depth) 类型非法: {type(val).__name__}"}
+
+    @staticmethod
+    def _validate_time_value(val: Any, field_name: str) -> tuple[datetime | None, dict | None]:
+        if val is None or (isinstance(val, str) and val.strip() == ""):
+            return None, None
+        if isinstance(val, bool):
+            return None, {"code": "MALFORMED_TIME_FORMAT", "message": f"{field_name} 不能为布尔值。"}
+        dt = None
+        if isinstance(val, datetime):
+            dt = val
+        elif isinstance(val, str):
+            text = val.strip().replace("：", ":")
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            try:
+                dt = datetime.fromisoformat(text.replace("T", " "))
+            except (ValueError, TypeError):
+                return None, {"code": "MALFORMED_TIME_FORMAT", "message": f"{field_name} ('{val}') 时间格式非法，无法解析。"}
+        else:
+            return None, {"code": "MALFORMED_TIME_FORMAT", "message": f"{field_name} 类型非法。"}
+
+        if dt is not None:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+            else:
+                dt = dt.astimezone(ZoneInfo("Asia/Shanghai"))
+        return dt, None
+
+    @staticmethod
+    def _validate_max_depth_m_value(max_depth_raw: Any, rov_name: str = "") -> tuple[float | None, dict | None]:
+        if max_depth_raw is None:
+            return None, {"code": "INVALID_ROV_MAX_DEPTH", "message": f"机器人 '{rov_name}' 规格中缺少最大作业深度 (max_depth_m)。"}
+        if isinstance(max_depth_raw, bool):
+            return None, {"code": "INVALID_ROV_MAX_DEPTH", "message": f"机器人 '{rov_name}' 最大作业深度 (max_depth_m) 不能为布尔值。"}
+        if isinstance(max_depth_raw, (int, float, str)):
+            try:
+                max_depth = float(max_depth_raw)
+            except (ValueError, TypeError):
+                return None, {"code": "INVALID_ROV_MAX_DEPTH", "message": f"机器人 '{rov_name}' 最大作业深度 (max_depth_m='{max_depth_raw}') 无法解析为数字。"}
+            import math
+            if math.isnan(max_depth) or math.isinf(max_depth):
+                return None, {"code": "INVALID_ROV_MAX_DEPTH", "message": f"机器人 '{rov_name}' 最大作业深度 (max_depth_m='{max_depth_raw}') 不能为 NaN 或 Inf。"}
+            if max_depth <= 0:
+                return None, {"code": "INVALID_ROV_MAX_DEPTH", "message": f"机器人 '{rov_name}' 最大作业深度 (max_depth_m={max_depth}) 必须为大于 0 的正数。"}
+            return max_depth, None
+        return None, {"code": "INVALID_ROV_MAX_DEPTH", "message": f"机器人 '{rov_name}' 最大作业深度 (max_depth_m) 类型非法。"}
 
     # ──────────────────────────────────────────────────────────────────────────
     # 公开接口
@@ -197,95 +267,136 @@ class TaskValidator:
         结构化约束校验服务主入口。
         purpose 可选: "interactive" | "preview" | "publish" | "runtime_execution"
         """
-        validated_at = get_current_datetime().isoformat(timespec="seconds")
-        is_now = self._is_task_start_now(task_state) if purpose != "runtime_execution" else True
+        try:
+            validated_at = get_current_datetime().isoformat(timespec="seconds")
+            is_now = self._is_task_start_now(task_state) if purpose != "runtime_execution" else True
 
-        # 如果 previous_result 是 dict，安全还原为 ValidationResult 对象
-        if isinstance(previous_result, dict):
-            try:
-                previous_result = ValidationResult.from_dict(previous_result)
-            except Exception:
-                previous_result = None
+            # 如果 previous_result 是 dict，安全还原为 ValidationResult 对象
+            if isinstance(previous_result, dict):
+                try:
+                    previous_result = ValidationResult.from_dict(previous_result)
+                except Exception:
+                    previous_result = None
 
-        # 尝试确定具体单机并提取状态快照
-        state_snapshot, error_dict = self._resolve_single_unit_snapshot(task_state, is_now=is_now)
-
-        # 门禁控制 (publish / preview)：必须要求明确 unit_id
-        if purpose in ("publish", "preview") and error_dict is None:
-            unit_id = task_state.get("equipment_unit_id")
-            if not unit_id or not isinstance(unit_id, str) or not unit_id.strip():
-                error_dict = {
-                    "code": "MISSING_UNIT_ID",
-                    "message": "发布或预览任务前必须指定明确的具体单机编号 (equipment_unit_id)。",
-                }
-
-        violations: list[Violation] = []
-        is_future_pending_telemetry = (
-            not is_now
-            and purpose != "runtime_execution"
-            and error_dict is not None
-            and error_dict.get("code") in ("INVALID_STATE_SNAPSHOT", "MISSING_TELEMETRY", "EXPIRED_TELEMETRY", "INVALID_STATE_DATA", "STATE_READ_FAILED")
-        )
-
-        if error_dict is None:
-            violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=state_snapshot)
-        elif is_future_pending_telemetry:
-            # 未来任务且已注册单机遥测缺失/过期：不阻断为 validation_error，按 pending_runtime_validation 处理
-            violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=None)
+            # 校验原始输入字段的基础合法性 (water_depth, start_time, end_time)
             error_dict = None
-        else:
-            # 存在 validation_error 时，不得返回空违规列表
-            err_violation = Violation(
+            if error_dict is None and task_state.get("water_depth") is not None:
+                _, w_err = self._validate_water_depth_value(task_state.get("water_depth"))
+                if w_err:
+                    error_dict = w_err
+
+            if error_dict is None and task_state.get("start_time") is not None:
+                _, st_err = self._validate_time_value(task_state.get("start_time"), "开始时间 (start_time)")
+                if st_err:
+                    error_dict = st_err
+
+            if error_dict is None and task_state.get("end_time") is not None:
+                _, et_err = self._validate_time_value(task_state.get("end_time"), "结束时间 (end_time)")
+                if et_err:
+                    error_dict = et_err
+
+            # 尝试确定具体单机并提取状态快照
+            state_snapshot = None
+            if error_dict is None:
+                state_snapshot, error_dict = self._resolve_single_unit_snapshot(task_state, is_now=is_now)
+
+            # 门禁控制 (publish / preview)：必须要求明确 unit_id
+            if purpose in ("publish", "preview") and error_dict is None:
+                unit_id = task_state.get("equipment_unit_id")
+                if not unit_id or not isinstance(unit_id, str) or not unit_id.strip():
+                    error_dict = {
+                        "code": "MISSING_UNIT_ID",
+                        "message": "发布或预览任务前必须指定明确的具体单机编号 (equipment_unit_id)。",
+                    }
+
+            violations: list[Violation] = []
+            is_future_pending_telemetry = (
+                not is_now
+                and purpose != "runtime_execution"
+                and error_dict is not None
+                and error_dict.get("code") in ("INVALID_STATE_SNAPSHOT", "MISSING_TELEMETRY", "EXPIRED_TELEMETRY", "INVALID_STATE_DATA", "STATE_READ_FAILED")
+            )
+
+            if error_dict is None:
+                violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=state_snapshot)
+            elif is_future_pending_telemetry:
+                # 未来任务且已注册单机遥测缺失/过期：不阻断为 validation_error，按 pending_runtime_validation 处理
+                violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=None)
+                error_dict = None
+            else:
+                # 存在 validation_error 时，不得返回空违规列表
+                err_violation = Violation(
+                    constraint_id="VAL_ERR",
+                    constraint_name="单机状态校验失败",
+                    message=error_dict.get("message", "单机校验错误"),
+                    severity="hard",
+                    related_fields=["equipment_unit_id"],
+                    check_type="validation_error",
+                )
+                violations.append(err_violation)
+
+            # 状态优先级规则：
+            # validation_error > blocked_hard > blocked_soft > warning > pending_runtime_validation > valid
+            if error_dict is not None:
+                overall_status = "validation_error"
+            elif any(v.severity == "hard" for v in violations):
+                overall_status = "blocked_hard"
+            elif any(v.severity == "soft" for v in violations):
+                overall_status = "blocked_soft"
+            elif any(v.severity == "warning" for v in violations):
+                overall_status = "warning"
+            elif not is_now:
+                overall_status = "pending_runtime_validation"
+            else:
+                overall_status = "valid"
+
+            status_ref = state_snapshot.get("status_ref") if state_snapshot else None
+            state_version = state_snapshot.get("state_version") if state_snapshot else None
+
+            fingerprint = _compute_fingerprint(
+                task_version=task_version,
+                status_ref=status_ref,
+                state_version=state_version,
+                violations=violations,
+                error=error_dict,
+            )
+
+            if previous_result and previous_result.validation_fingerprint == fingerprint:
+                validation_version = previous_result.validation_version
+            else:
+                validation_version = (previous_result.validation_version + 1) if previous_result else 1
+
+            return ValidationResult(
+                overall_status=overall_status,
+                validated_at=validated_at,
+                task_version=task_version,
+                validation_version=validation_version,
+                validation_fingerprint=fingerprint,
+                state_snapshot=state_snapshot,
+                violations=violations,
+                error=error_dict,
+            )
+
+        except Exception as e:
+            err_dict = {"code": "VALIDATOR_EXCEPTION", "message": f"校验流程内部发生未捕获异常: {e}"}
+            err_v = Violation(
                 constraint_id="VAL_ERR",
-                constraint_name="单机状态校验失败",
-                message=error_dict.get("message", "单机校验错误"),
+                constraint_name="校验服务异常",
+                message=err_dict["message"],
                 severity="hard",
-                related_fields=["equipment_unit_id"],
                 check_type="validation_error",
             )
-            violations.append(err_violation)
-
-        # 状态优先级规则：
-        # validation_error > blocked_hard > blocked_soft > warning > pending_runtime_validation > valid
-        if error_dict is not None:
-            overall_status = "validation_error"
-        elif any(v.severity == "hard" for v in violations):
-            overall_status = "blocked_hard"
-        elif any(v.severity == "soft" for v in violations):
-            overall_status = "blocked_soft"
-        elif any(v.severity == "warning" for v in violations):
-            overall_status = "warning"
-        elif not is_now:
-            overall_status = "pending_runtime_validation"
-        else:
-            overall_status = "valid"
-
-        status_ref = state_snapshot.get("status_ref") if state_snapshot else None
-        state_version = state_snapshot.get("state_version") if state_snapshot else None
-
-        fingerprint = _compute_fingerprint(
-            task_version=task_version,
-            status_ref=status_ref,
-            state_version=state_version,
-            violations=violations,
-            error=error_dict,
-        )
-
-        if previous_result and previous_result.validation_fingerprint == fingerprint:
-            validation_version = previous_result.validation_version
-        else:
-            validation_version = (previous_result.validation_version + 1) if previous_result else 1
-
-        return ValidationResult(
-            overall_status=overall_status,
-            validated_at=validated_at,
-            task_version=task_version,
-            validation_version=validation_version,
-            validation_fingerprint=fingerprint,
-            state_snapshot=state_snapshot,
-            violations=violations,
-            error=error_dict,
-        )
+            fp = _compute_fingerprint(task_version, None, None, [err_v], err_dict)
+            return ValidationResult(
+                overall_status="validation_error",
+                validated_at=get_current_datetime().isoformat(timespec="seconds"),
+                task_version=task_version,
+                validation_version=1,
+                validation_fingerprint=fp,
+                state_snapshot=None,
+                violations=[err_v],
+                error=err_dict,
+            )
 
     def validate(self, task_state: dict) -> list[Violation]:
         """全量约束检查，返回所有当前违规（兼容旧接口）"""
@@ -349,6 +460,8 @@ class TaskValidator:
                     if err:
                         return None, err
                     return snapshot, None
+                else:
+                    return None, {"code": "MISSING_TELEMETRY", "message": f"未找到单机 '{clean_unit_id}' 的实时遥测状态快照。"}
             except StateSelectorError as e:
                 return None, {"code": "UNIT_NOT_FOUND", "message": f"未在系统中注册匹配单机 '{clean_unit_id}': {e}"}
             except StateSnapshotValidationError as e:
@@ -396,6 +509,8 @@ class TaskValidator:
                         if err:
                             return None, err
                         return snapshot, None
+                    else:
+                        return None, {"code": "MISSING_TELEMETRY", "message": f"未找到单机 '{single_unit_id}' 的实时遥测状态快照。"}
                 except StateSelectorError as e:
                     return None, {"code": "UNIT_NOT_FOUND", "message": f"未在系统中注册匹配单机 '{single_unit_id}': {e}"}
                 except StateSnapshotValidationError as e:
@@ -413,17 +528,19 @@ class TaskValidator:
     def _validate_state_snapshot_content(unit_id: str, snapshot: dict) -> dict | None:
         if not isinstance(snapshot, dict):
             return {"code": "INVALID_STATE_DATA", "message": f"单机 '{unit_id}' 的状态快照非字典"}
+        if not snapshot.get("status_ref"):
+            return {"code": "INVALID_STATE_SNAPSHOT", "message": f"单机 '{unit_id}' 状态快照缺少 status_ref 标识。"}
+        if snapshot.get("state_version") is None or not isinstance(snapshot.get("state_version"), int):
+            return {"code": "INVALID_STATE_SNAPSHOT", "message": f"单机 '{unit_id}' 状态快照缺少合法的 state_version 版本号。"}
         state_dict = snapshot.get("state")
         if not isinstance(state_dict, dict):
             return {"code": "INVALID_STATE_DATA", "message": f"单机 '{unit_id}' 的状态记录不存在或非字典"}
-        if "overall_status" not in state_dict:
+        if "overall_status" not in state_dict or state_dict.get("overall_status") is None:
             return {"code": "INVALID_STATE_DATA", "message": f"单机 '{unit_id}' 缺少状态指标 (overall_status)。"}
         overall_val = state_dict.get("overall_status")
         if overall_val == "unknown":
             return {"code": "INVALID_STATE_DATA", "message": f"单机 '{unit_id}' 的 overall_status 为无法识别的值 'unknown'。"}
         return None
-
-        return None, None
 
     def _run_checks(
         self,
@@ -484,26 +601,19 @@ class TaskValidator:
         return violations
 
     def _is_task_start_now(self, task_state: dict, time_window_minutes: int = 10) -> bool:
-        try:
-            start_time_str = task_state.get("start_time")
-            if not start_time_str:
-                return True
-
-            now = get_current_datetime().replace(microsecond=0)
-
-            start_time_str = start_time_str.replace("T", " ").replace("：", ":").strip()
-            if start_time_str.endswith("Z"):
-                start_time_str = start_time_str[:-1] + "+00:00"
-            start_time = datetime.fromisoformat(start_time_str)
-            if start_time.tzinfo is None:
-                start_time = start_time.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
-            else:
-                start_time = start_time.astimezone(ZoneInfo("Asia/Shanghai"))
-
-            delta_seconds = (start_time - now).total_seconds()
-            return delta_seconds <= time_window_minutes * 60
-        except Exception:
+        start_time_raw = task_state.get("start_time")
+        if not start_time_raw or (isinstance(start_time_raw, str) and start_time_raw.strip() == ""):
             return True
+        st_dt, err = self._validate_time_value(start_time_raw, "start_time")
+        if err or st_dt is None:
+            return True
+        now = get_current_datetime().replace(microsecond=0)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+        else:
+            now = now.astimezone(ZoneInfo("Asia/Shanghai"))
+        delta_seconds = (st_dt - now).total_seconds()
+        return delta_seconds <= time_window_minutes * 60
 
     def _check_one(
         self,
@@ -529,21 +639,36 @@ class TaskValidator:
                     c["id"], c["name"], c["violation_message"].strip(),
                     c["severity"], rel_fields, check_type=check
                 )
-        elif check == "depth_vs_rov_limit" and rov and water_depth is not None:
-            try:
-                depth_val = float(water_depth)
-            except (TypeError, ValueError):
-                return None
-            max_depth = rov.get("max_depth_m", 99999)
-            if depth_val > max_depth:
-                msg = c["violation_message"].replace("{rov_max_depth}", str(max_depth))
-                return Violation(
-                    c["id"], c["name"], msg.strip(), c["severity"],
-                    rel_fields, check_type=check, observed_value=depth_val, threshold=max_depth
+        elif check == "depth_vs_rov_limit" and rov:
+            if water_depth is not None:
+                depth_val, depth_err = self._validate_water_depth_value(water_depth)
+                if depth_err:
+                    return Violation(
+                        c["id"], c["name"], depth_err["message"], "hard",
+                        rel_fields, check_type=check, observed_value=water_depth
+                    )
+                max_depth, max_depth_err = self._validate_max_depth_m_value(
+                    rov.get("max_depth_m"), rov_name=str(rov.get("full_name") or rov.get("display_name") or "ROV")
                 )
+                if max_depth_err:
+                    return Violation(
+                        c["id"], c["name"], max_depth_err["message"], "hard",
+                        rel_fields, check_type=check, observed_value=rov.get("max_depth_m")
+                    )
+                if depth_val is not None and max_depth is not None and depth_val > max_depth:
+                    msg = c["violation_message"].replace("{rov_max_depth}", str(max_depth))
+                    return Violation(
+                        c["id"], c["name"], msg.strip(), c["severity"],
+                        rel_fields, check_type=check, observed_value=depth_val, threshold=max_depth
+                    )
 
         elif check == "start_time_not_in_past":
-            start_time = self._parse_task_datetime(task_state.get("start_time"))
+            start_time, st_err = self._validate_time_value(task_state.get("start_time"), "start_time")
+            if st_err:
+                return Violation(
+                    c["id"], c["name"], st_err["message"], "hard",
+                    rel_fields, check_type=check, observed_value=task_state.get("start_time")
+                )
             if start_time is None:
                 return None
             now = get_current_datetime().replace(microsecond=0)
@@ -564,8 +689,18 @@ class TaskValidator:
                 )
 
         elif check == "end_time_after_start_time":
-            start_time = self._parse_task_datetime(task_state.get("start_time"))
-            end_time = self._parse_task_datetime(task_state.get("end_time"))
+            start_time, st_err = self._validate_time_value(task_state.get("start_time"), "start_time")
+            end_time, et_err = self._validate_time_value(task_state.get("end_time"), "end_time")
+            if st_err:
+                return Violation(
+                    c["id"], c["name"], st_err["message"], "hard",
+                    rel_fields, check_type=check, observed_value=task_state.get("start_time")
+                )
+            if et_err:
+                return Violation(
+                    c["id"], c["name"], et_err["message"], "hard",
+                    rel_fields, check_type=check, observed_value=task_state.get("end_time")
+                )
             if start_time is None or end_time is None or end_time > start_time:
                 return None
             msg = (
@@ -591,7 +726,18 @@ class TaskValidator:
             for field_name in ["start_point", "end_point", "oilfield_coordinates", "cable_position"]:
                 coords = task_state.get(field_name)
                 if coords:
-                    env_info = self.kb.get_environment_info_dict(coords)
+                    try:
+                        env_info = self.kb.get_environment_info_dict(coords)
+                    except Exception as e:
+                        return Violation(
+                            c["id"], c["name"], f"查询环境坐标数据失败: {e}", "hard",
+                            rel_fields, check_type=check, observed_value=coords
+                        )
+                    if not isinstance(env_info, dict):
+                        return Violation(
+                            c["id"], c["name"], "环境坐标查询结果非字典格式", "hard",
+                            rel_fields, check_type=check, observed_value=coords
+                        )
                     if env_info.get("forbidden") is True:
                         return Violation(
                             c["id"], c["name"], c["violation_message"].strip(),
@@ -602,7 +748,18 @@ class TaskValidator:
             for field_name in ["start_point", "oilfield_coordinates", "cable_position"]:
                 coords = task_state.get(field_name)
                 if coords:
-                    env_info = self.kb.get_environment_info_dict(coords)
+                    try:
+                        env_info = self.kb.get_environment_info_dict(coords)
+                    except Exception as e:
+                        return Violation(
+                            c["id"], c["name"], f"查询环境坐标数据失败: {e}", "hard",
+                            rel_fields, check_type=check, observed_value=coords
+                        )
+                    if not isinstance(env_info, dict):
+                        return Violation(
+                            c["id"], c["name"], "环境坐标查询结果非字典格式", "hard",
+                            rel_fields, check_type=check, observed_value=coords
+                        )
                     if env_info.get("dvl_risk") is True:
                         return Violation(
                             c["id"], c["name"], c["violation_message"].strip(),
@@ -613,7 +770,18 @@ class TaskValidator:
             for field_name in ["start_point", "oilfield_coordinates"]:
                 coords = task_state.get(field_name)
                 if coords:
-                    env_info = self.kb.get_environment_info_dict(coords)
+                    try:
+                        env_info = self.kb.get_environment_info_dict(coords)
+                    except Exception as e:
+                        return Violation(
+                            c["id"], c["name"], f"查询底质环境数据失败: {e}", "hard",
+                            rel_fields, check_type=check, observed_value=coords
+                        )
+                    if not isinstance(env_info, dict):
+                        return Violation(
+                            c["id"], c["name"], "环境坐标查询结果非字典格式", "hard",
+                            rel_fields, check_type=check, observed_value=coords
+                        )
                     seabed = env_info.get("seabed_type")
                     if seabed and seabed != "unknown":
                         supported_raw = rov.get("supported_seabed")
@@ -855,23 +1023,8 @@ class TaskValidator:
 
         return None
 
-    @staticmethod
-    def _parse_task_datetime(value: Any) -> datetime | None:
-        if not value:
+    def _parse_task_datetime(self, value: Any) -> datetime | None:
+        dt, err = self._validate_time_value(value, "time")
+        if err:
             return None
-        if isinstance(value, datetime):
-            dt = value
-        elif isinstance(value, str):
-            text = value.strip().replace("：", ":")
-            if text.endswith("Z"):
-                text = text[:-1] + "+00:00"
-            try:
-                dt = datetime.fromisoformat(text.replace("T", " "))
-            except ValueError:
-                return None
-        else:
-            return None
-
-        if dt.tzinfo is None:
-            return dt.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
-        return dt.astimezone(ZoneInfo("Asia/Shanghai"))
+        return dt
