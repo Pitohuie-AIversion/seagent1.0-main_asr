@@ -636,7 +636,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
             "unresolved": [],
         }
 
-        eq_keys = ["equipment_class", "equipment_family", "equipment_specification", "equipment_type", "equipment_name", "equipment_unit_id"]
+        eq_keys = ["equipment_class", "equipment_family", "equipment_type", "equipment_name", "equipment_unit_id"]
         snapshots = {}
         for mode_name, flag_v2, flag_norm in [
             ("Legacy", False, False),

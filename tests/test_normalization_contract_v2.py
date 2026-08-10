@@ -930,7 +930,6 @@ class TestL4RealSchemaAndPassthroughBoundary(unittest.TestCase):
         self.equipment_passthrough_keys = {
             "equipment_class",
             "equipment_family",
-            "equipment_specification",
             "equipment_type",
             "equipment_name",
             "equipment_unit_id",
@@ -994,50 +993,13 @@ class TestL4RealSchemaAndPassthroughBoundary(unittest.TestCase):
         self.assertNotIn("water_depth", passthrough_keys)
         self.assertEqual(outcome_keys & passthrough_keys, set())
 
-    def test_real_schema_equipment_specification_is_passthrough(self):
-        """验证真实 schema 下 equipment_specification 复杂 object 结构可被 Passthrough，不触发 unsupported_field_type。"""
-        spec_dict = {"variant_id": "var_001", "type": "ROV", "value": 250}
-        patch_input = TaskPatch(
-            schema_version=1,
-            slot_updates=(
-                SlotPatch(
-                    key="equipment_specification",
-                    candidate_value=spec_dict,
-                    raw_value="ROV 250规格",
-                    confidence=0.95,
-                    source="user_input",
-                ),
-            ),
-            list_mutations=(),
-            unresolved=(),
-        )
-
-        resolver = lambda fdef, state: self.builder._resolve_allowed(fdef, "pipeline_inspection", state)
-
-        res = normalize_task_patch(
-            patch_input,
-            self.real_pipeline_schema,
-            {},
-            resolver,
-            passthrough_keys=self.equipment_passthrough_keys,
-        )
-
-        self.assertEqual(len(res.slot_outcomes), 0)
-        self.assertEqual(len(res.passthrough_slot_updates), 1)
-        p = res.passthrough_slot_updates[0]
-        self.assertEqual(p.key, "equipment_specification")
-        self.assertEqual(p.candidate_value, spec_dict)
-        self.assertEqual(p.raw_value, "ROV 250规格")
-
     def test_real_schema_passthrough_does_not_call_normalizer(self):
-        """验证在真实 schema 下，water_depth 触发 FieldNormalizer，而 equipment_type 与 equipment_specification 不触发。"""
-        spec_dict = {"variant_id": "var_001", "type": "ROV", "value": 250}
+        """验证在真实 schema 下，water_depth 触发 FieldNormalizer，而 equipment_type 不触发。"""
         patch_input = TaskPatch(
             schema_version=1,
             slot_updates=(
                 SlotPatch(key="water_depth", candidate_value="300米", raw_value="300米", confidence=0.9, source="user_input"),
                 SlotPatch(key="equipment_type", candidate_value="观测级ROV", raw_value="观测级ROV", confidence=0.9, source="user_input"),
-                SlotPatch(key="equipment_specification", candidate_value=spec_dict, raw_value="ROV 250", confidence=0.9, source="user_input"),
             ),
             list_mutations=(),
             unresolved=(),
@@ -1056,12 +1018,11 @@ class TestL4RealSchemaAndPassthroughBoundary(unittest.TestCase):
 
         self.assertEqual(len(res.slot_outcomes), 1)
         self.assertEqual(res.slot_outcomes[0].key, "water_depth")
-        self.assertEqual(len(res.passthrough_slot_updates), 2)
+        self.assertEqual(len(res.passthrough_slot_updates), 1)
 
         called_first_args = [call[0][0] for call in spy_normalize.call_args_list]
         self.assertIn("300米", called_first_args)
         self.assertNotIn("观测级ROV", called_first_args)
-        self.assertNotIn(spec_dict, called_first_args)
 
     def test_stage1_task_type_key_explicit_passthrough(self):
         """验证 Stage1 产生的 task_type_key 可作为显式 passthrough_keys，与 task_type 分立。"""
