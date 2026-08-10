@@ -853,6 +853,9 @@ class SlotStore:
                                 f"Invalid ISO-8601 updated_at timestamp '{updated_at}' for slot '{key}': {exc}"
                             )
 
+                    if status == "valid" and value is None:
+                        raise SnapshotValidationError(f"Valid slot '{key}' cannot have null value.")
+
                     candidate_val = copy.deepcopy(sdict.get("candidate_value"))
                     if key == "equipment_specification":
                         eq_type_in_snapshot = slots_data.get("equipment_type")
@@ -894,6 +897,8 @@ class SlotStore:
                     sdict.value_type = value_type
                     if not isinstance(sdict.version, int) or isinstance(sdict.version, bool) or sdict.version < 0:
                         raise SnapshotValidationError(f"Invalid slot version '{sdict.version}' for slot '{key}'.")
+                    if not isinstance(sdict.source, str):
+                        raise SnapshotValidationError(f"Invalid source for slot '{key}'.")
                     if sdict.confidence is not None and (
                         isinstance(sdict.confidence, bool)
                         or not isinstance(sdict.confidence, (int, float))

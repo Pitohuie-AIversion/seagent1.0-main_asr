@@ -318,6 +318,57 @@ class TestIssue12ContractCorrection(unittest.TestCase):
         self.assertNotIn("equipment_specification", NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS)
         self.assertIn("equipment_type", NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS)
 
+    # Scenario 23: Dict representation null value check for valid status
+    def test_snapshot_dict_representation_null_value_rejected(self):
+        store = SlotStore(kb=self.kb)
+        snapshot = {
+            "version": 1,
+            "slots": {
+                "equipment_type": {
+                    "slot_name": "equipment_type",
+                    "value": None,
+                    "status": "valid",
+                    "value_type": "string",
+                }
+            },
+        }
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot(snapshot)
+
+    # Scenario 24: Slot object representation null value check for valid status
+    def test_snapshot_slot_object_representation_null_value_rejected(self):
+        store = SlotStore(kb=self.kb)
+        snapshot = {
+            "version": 1,
+            "slots": {
+                "equipment_type": Slot(
+                    slot_name="equipment_type",
+                    value=None,
+                    status="valid",
+                    value_type="string",
+                )
+            },
+        }
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot(snapshot)
+
+    # Scenario 25: Slot object representation invalid source rejected
+    def test_snapshot_slot_object_invalid_source_rejected(self):
+        store = SlotStore(kb=self.kb)
+        bad_slot = Slot(
+            slot_name="equipment_type",
+            value="ROV",
+            status="valid",
+            value_type="string",
+        )
+        bad_slot.source = 123  # Non-string source
+        snapshot = {
+            "version": 1,
+            "slots": {"equipment_type": bad_slot},
+        }
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot(snapshot)
+
 
 if __name__ == "__main__":
     unittest.main()
