@@ -765,7 +765,15 @@ class DialogueManager:
             task_type_key = self.task_state.get("task_type_key")
             if task_type_key:
                 req_schema = self.builder.get_schema(task_type_key, self.mode)
-                missing = self.slot_store.get_missing_slots(req_schema)
+                user_req_schema = [f for f in req_schema if f.get("type") not in ("auto", "fixed")]
+                missing = self.slot_store.get_missing_slots(
+                    user_req_schema,
+                    allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
+                        field,
+                        task_type_key,
+                        self.task_state,
+                    ),
+                )
                 self._last_missing = missing
                 if not missing:
                     self._transition_phase("confirming", reason="required_slots_complete")
@@ -1145,7 +1153,10 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
-        if self.phase == "done" and self._is_confirmation_only(user_message):
+        if self.phase == "done" and (
+            self._is_confirmation_only(user_message)
+            or self._is_final_publish_confirmation(user_message)
+        ):
             self._switch_dialogue_mode("task_collection", source="user_confirmation", reason="已发布任务重复确认")
             intent_id = self.task_state.get("intent_id") or self._last_built_json.get("intent_id")
             intent_detail = f"（intent_id: {intent_id}）" if intent_id else ""
@@ -1165,17 +1176,27 @@ class DialogueManager:
         if self.phase == "blocked_hard" and (
             self._is_confirmation_only(user_message)
             or self._is_soft_warning_acknowledgement(user_message)
+            or self._is_final_publish_confirmation(user_message)
         ):
             return self._reject_hard_constraint_bypass(user_message)
 
-        if self.phase in ("blocked_soft", "confirming") and (
-            self._is_confirmation_only(user_message)
-            or (
-                self.phase == "blocked_soft"
-                and self._is_soft_warning_acknowledgement(user_message)
-            )
-        ):
-            return self._handle_task_confirm(user_message, request_id)
+        if self.phase == "blocked_soft":
+            if self._is_soft_warning_acknowledgement(user_message):
+                return self._handle_task_confirm(user_message, request_id)
+            elif self._is_final_publish_confirmation(user_message) or self._is_confirmation_only(user_message):
+                reply = "当前仍存在软警告。请先修改相关参数，或明确回复‘忽略警告’后继续。"
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
+
+        if self.phase == "confirming":
+            if self._is_final_publish_confirmation(user_message):
+                return self._handle_task_confirm(user_message, request_id)
+            elif self._is_confirmation_only(user_message):
+                reply = "当前任务尚未发布。如确认无误，请回复‘确认发布’；如需调整，可直接说明要修改的参数。"
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
 
         # ── 独立意图路由分流阶段 ──
         expected_slots = [m["key"] for m in self._last_missing if isinstance(m, dict) and "key" in m]
@@ -3376,37 +3397,61 @@ class DialogueManager:
         return any(kw in message.lower() for kw in keywords)
 
     @staticmethod
+    def _is_final_publish_confirmation(message: str) -> bool:
+        """仅识别明确具有‘发布/提交当前任务’语义的独立指令。"""
+        text = re.sub(r"[\s，,。.!！?？、；;：:]+", "", message).lower()
+        return text in {
+            "确认发布",
+            "确认并发布",
+            "确认发布任务",
+            "发布任务",
+            "发布",
+            "立即发布",
+            "现在发布",
+            "确认提交",
+            "确认并提交",
+            "提交任务",
+            "提交",
+            "确认开始",
+            "确认开始任务",
+        }
+
+    @staticmethod
     def _is_confirmation_only(message: str) -> bool:
-        """仅识别不携带参数更新的独立确认/发布指令。"""
+        """仅识别不携带参数更新的独立泛确认/认可指令。"""
         text = re.sub(r"[\s，,。.!！?？、；;：:]+", "", message).lower()
         return text in {
             "确认",
             "确认无误",
-            "确认发布",
-            "确认并发布",
-            "确认发布任务",
             "确认开始",
             "开始",
             "开始任务",
-            "发布",
-            "发布任务",
-            "立即发布",
-            "现在发布",
-            "提交",
-            "提交任务",
-            "确认提交",
-            "确认并提交",
             "确定",
             "没问题",
             "好的",
             "可以",
             "ok",
+            "继续",
         }
 
     @classmethod
     def _is_soft_warning_acknowledgement(cls, message: str) -> bool:
-        """Only treat a standalone acknowledgement as consent to ignore soft warnings."""
-        if cls._is_confirmation_only(message):
+        """仅识别明确接受/忽略软警告的独立指令，绝不混入通用确认或最终发布词。"""
+        text = re.sub(r"[\s，,。.!！?？、；;：:]+", "", message).lower()
+        exact_ack_words = {
+            "忽略警告",
+            "确认忽略警告",
+            "接受警告继续",
+            "接受风险继续",
+            "继续并接受该警告",
+            "确认继续",
+            "继续",
+            "忽略",
+            "忽略风险",
+            "无视警告",
+            "无视风险",
+        }
+        if text in exact_ack_words:
             return True
 
         parameter_cues = (
@@ -3415,9 +3460,10 @@ class DialogueManager:
         )
         if any(cue in message for cue in parameter_cues):
             return False
+
         return any(
-            keyword in message.lower()
-            for keyword in ("忽略", "继续", "无视", "不管", "没关系")
+            kw in text
+            for kw in ("忽略警告", "忽略风险", "无视警告", "无视风险", "接受警告", "接受风险", "确认继续")
         )
 
     def _ensure_constraint_details(self, reply: str, constraint_context: dict) -> str:

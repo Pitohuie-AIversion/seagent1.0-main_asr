@@ -44,6 +44,16 @@ _CONSTRAINT_INSTRUCTIONS: dict[str, str] = {
 - 明确询问用户是否要修改相关字段，或者确认继续（忽略此警告）。
 - 如果用户选择忽略，系统会记录并不再提醒同样的问题。
 - 等待用户明确回应后再继续收集其他字段。""",
+
+    "confirming": """\
+【📋 所有必填参数已收集完成，等待用户最终发布确认】
+你必须向用户呈现任务确认摘要，并明确提示以下事项：
+1. 简洁展示当前已收集的任务参数摘要。
+2. 明确说明：“当前任务尚未发布”。
+3. 明确要求：“如确认无误，请回复‘确认发布’”。
+4. 明确告知用户：如需调整参数可直接说明修改内容，或回复“取消”放弃任务。
+5. 【严禁】自行假设用户已经确认发布，绝对不能将任务描述为“已发布”、“已提交”或“已生成执行方案”。
+6. 即使用户发送了“好的/可以/确认”等通用语气词，也必须提示任务尚未发布，需明确发送“确认发布”才能下发。""",
 }
 
 
@@ -237,7 +247,10 @@ def build_responder_messages(
 
     # ── 约束指令 ─────────────────────────────────────────────────────────────
     ctx_type = constraint_context.get("type", "none")
-    constraint_instruction = _CONSTRAINT_INSTRUCTIONS.get(ctx_type, "")
+    if ctx_type == "none" and phase == "confirming":
+        constraint_instruction = _CONSTRAINT_INSTRUCTIONS.get("confirming", "")
+    else:
+        constraint_instruction = _CONSTRAINT_INSTRUCTIONS.get(ctx_type, "")
     violations = constraint_context.get("violations", [])
     if violations and constraint_instruction:
         lines = []
