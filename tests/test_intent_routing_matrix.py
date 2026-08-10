@@ -1,221 +1,276 @@
 """
-tests/test_intent_routing_matrix.py — IntentRouter 行为验收测试矩阵
-
-涵盖场景：
-1. QUERY:
-   - "天鹰座一号机最大水深是多少？" -> interaction_type=QUERY, query_intent=DEVICE_CAPABILITY, SlotStore 不变化
-   - "管缆巡检需要什么工具？" -> interaction_type=QUERY, query_intent=KNOWLEDGE_QA 或 TOOL_QUERY, SlotStore 不变化
-   - "当前任务缺少什么？" -> interaction_type=QUERY, query_intent=TASK_STATUS, SlotStore 不变化
-2. WRITE:
-   - "执行流花11-1油田管缆巡检" -> interaction_type=WRITE, 提取 task_type 和 oilfield_name
-   - "使用天鹰座一号机，携带机械臂和声呐" -> interaction_type=WRITE, 提取 equipment_type 和 payload
-3. 边界场景:
-   - "水深500米合适吗？" -> 必须识别为 QUERY, SlotStore 状态不发生写入修改
-   - "把水深改成500米" -> 必须识别为 WRITE, 触发水深参数修改
+tests/test_intent_routing_matrix.py - G7 交互计划与 Read-First 路由测试矩阵
 """
 
-import sys
+import copy
 import unittest
-from pathlib import Path
-from unittest.mock import MagicMock
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
-
-from src.intent_router import IntentRouter, IntentRouteResult
 from src.dialogue_manager import DialogueManager
+from src.intent_router import IntentRouter
 from src.knowledge_retriever import KnowledgeBase
+from src.llm_client import LLMClient
 
 
-class FakeLLMForRoutingMatrix:
-    def route_mock(self, user_message: str):
-        msg = user_message.strip()
-        if msg == "水深500米合适吗？":
-            return {
-                "interaction_type": "QUERY",
-                "query_intent": "DEVICE_CAPABILITY",
-                "confidence": 0.96,
-                "reason": "用户在条件性询问水深500米是否合适，未提交写入意图"
-            }
-        elif msg == "把水深改成500米":
-            return {
-                "interaction_type": "WRITE",
-                "query_intent": None,
-                "confidence": 0.98,
-                "reason": "用户明确提交准备写入的任务水深参数"
-            }
-        elif "最大水深是多少" in msg:
-            return {
-                "interaction_type": "QUERY",
-                "query_intent": "DEVICE_CAPABILITY",
-                "confidence": 0.97,
-                "reason": "询问设备能力参数"
-            }
-        elif "需要什么工具" in msg:
-            return {
-                "interaction_type": "QUERY",
-                "query_intent": "KNOWLEDGE_QA",
-                "confidence": 0.95,
-                "reason": "询问作业工具知识"
-            }
-        elif "缺少什么" in msg:
-            return {
-                "interaction_type": "QUERY",
-                "query_intent": "TASK_STATUS",
-                "confidence": 0.95,
-                "reason": "询问任务进度及缺失槽位"
-            }
-        elif "执行流花11-1油田管缆巡检" in msg:
-            return {
-                "interaction_type": "WRITE",
-                "query_intent": None,
-                "confidence": 0.99,
-                "reason": "提交任务类型与油田"
-            }
-        elif "携带机械臂和声呐" in msg:
-            return {
-                "interaction_type": "WRITE",
-                "query_intent": None,
-                "confidence": 0.98,
-                "reason": "提交设备与载荷"
-            }
-        else:
-            return {
-                "interaction_type": "QUERY",
-                "query_intent": "GENERAL_CHAT",
-                "confidence": 0.90,
-                "reason": "普通查询"
-            }
+class DummyLLM(LLMClient):
+    def __init__(self):
+        self.llm = None
 
-    def classify_interaction(self, messages, max_tokens=260):
-        last_msg = messages[-1]["content"]
-        # extract latest user message from context prompt
-        if "【最新用户输入】:" in last_msg:
-            user_msg = last_msg.split("【最新用户输入】:")[1].strip().strip('"')
-        else:
-            user_msg = last_msg
-        return self.route_mock(user_msg)
-
-    def extract_json(self, messages, max_tokens=800):
-        last_msg = messages[-1]["content"]
-        if "执行流花11-1油田管缆巡检" in last_msg:
-            return {
-                "slot_candidates": [
-                    {"raw_key": "作业类型标识", "canonical_key": "task_type_key", "raw_value": "管缆巡检", "normalized_value": "pipeline_inspection", "confidence": 0.99},
-                    {"raw_key": "作业类型", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 0.99},
-                    {"raw_key": "目标油田", "canonical_key": "raw_oilfield_name", "raw_value": "流花11-1油田", "normalized_value": "流花11-1油田", "confidence": 0.99},
-                ],
-                "unresolved": []
-            }
-        elif "携带机械臂和声呐" in last_msg:
-            return {
-                "slot_candidates": [
-                    {"raw_key": "使用设备", "canonical_key": "equipment_type", "raw_value": "天鹰座一号机", "normalized_value": "轻型工作级深海机器人", "confidence": 0.95},
-                    {"raw_key": "携带工具", "canonical_key": "payload", "raw_value": "机械臂", "normalized_value": "机械臂", "confidence": 0.95},
-                    {"raw_key": "携带工具", "canonical_key": "payload", "raw_value": "声呐", "normalized_value": "前视声呐", "confidence": 0.95},
-                ],
-                "unresolved": []
-            }
-        elif "把水深改成500米" in last_msg:
-            return {
-                "slot_candidates": [
-                    {"raw_key": "作业水深", "canonical_key": "water_depth", "raw_value": "500米", "normalized_value": 500, "confidence": 0.99}
-                ],
-                "unresolved": []
-            }
-        return {"slot_candidates": [], "unresolved": []}
-
-    def chat(self, messages, **kwargs):
-        return "响应消息"
-
-    def filter_reply(self, reply):
-        return reply
+    def chat(self, messages: list[dict], temperature: float = 0.7, max_tokens: int = 800) -> str:
+        return "默认测试回复"
 
 
-class IntentRoutingMatrixTest(unittest.TestCase):
+class TestIntentRoutingMatrixG7(unittest.TestCase):
     def setUp(self):
-        self.llm = FakeLLMForRoutingMatrix()
-        self.router = IntentRouter(self.llm)
         self.kb = KnowledgeBase()
+        self.llm = DummyLLM()
+        self.router = IntentRouter(self.llm)
         self.dm = DialogueManager(self.llm, self.kb)
 
-    def test_query_device_capability(self):
-        msg = "天鹰座一号机最大水深是多少？"
-        route = self.router.route(msg, [], {})
-        self.assertEqual(route.interaction_type, "QUERY")
-        self.assertEqual(route.query_intent, "DEVICE_CAPABILITY")
+    # ══════════════════════════════════════════════════════════════════════
+    # 1. READ 矩阵验证
+    # ══════════════════════════════════════════════════════════════════════
 
-        # DialogueManager 处理 QUERY 必须保证 SlotStore 状态不发生变化
-        ver_before = self.dm.slot_store.version
-        state_before = dict(self.dm.task_state)
-        self.dm.process(msg)
-        self.assertEqual(self.dm.slot_store.version, ver_before)
-        self.assertEqual(self.dm.task_state, state_before)
+    def test_read_01_soft_constraint_definition(self):
+        res = self.router.route("什么是软约束", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "READ")
+        self.assertEqual(plan.dialogue_mode, "knowledge_qa")
+        self.assertEqual(plan.subject_type, "system_rule")
+        self.assertFalse(plan.needs_clarification)
 
-    def test_query_knowledge_qa(self):
-        msg = "管缆巡检需要什么工具？"
-        route = self.router.route(msg, [], {})
-        self.assertEqual(route.interaction_type, "QUERY")
-        self.assertIn(route.query_intent, ("KNOWLEDGE_QA", "TOOL_QUERY"))
+    def test_read_02_describe_taurus(self):
+        res = self.router.route("介绍金牛座", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "READ")
+        self.assertEqual(plan.dialogue_mode, "knowledge_qa")
+        self.assertEqual(plan.subject_type, "device")
+        self.assertEqual(plan.subject_text, "金牛座")
+        self.assertEqual(plan.relation, "describe")
+        self.assertEqual(plan.source_policy, "project_kb")
 
-        ver_before = self.dm.slot_store.version
-        self.dm.process(msg)
-        self.assertEqual(self.dm.slot_store.version, ver_before)
+    def test_read_03_taurus_family_belongs_to(self):
+        res = self.router.route("金牛座属于哪个 family", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "READ")
+        self.assertEqual(plan.subject_type, "device")
+        self.assertEqual(plan.subject_text, "金牛座")
+        self.assertEqual(plan.relation, "belongs_to")
+        self.assertEqual(plan.source_policy, "project_kb")
 
-    def test_query_task_status(self):
-        msg = "当前任务缺少什么？"
-        route = self.router.route(msg, [], {})
-        self.assertEqual(route.interaction_type, "QUERY")
-        self.assertEqual(route.query_intent, "TASK_STATUS")
+    def test_read_04_taurus_supported_payloads(self):
+        res = self.router.route("金牛座支持哪些 payload", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "READ")
+        self.assertEqual(plan.relation, "supports")
+        self.assertEqual(plan.source_policy, "project_kb")
 
-        ver_before = self.dm.slot_store.version
-        self.dm.process(msg)
-        self.assertEqual(self.dm.slot_store.version, ver_before)
+    def test_read_05_robots_supporting_manipulator(self):
+        res = self.router.route("哪些机器人支持机械臂", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "READ")
+        self.assertEqual(plan.relation, "supports")
+        self.assertEqual(plan.source_policy, "project_kb")
 
-    def test_write_task_creation(self):
-        msg = "执行流花11-1油田管缆巡检"
-        route = self.router.route(msg, [], {})
-        self.assertEqual(route.interaction_type, "WRITE")
-        self.assertIsNone(route.query_intent)
+    def test_read_06_auv_rov_compare(self):
+        res = self.router.route("AUV 和 ROV 有什么区别", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "READ")
+        self.assertEqual(plan.subject_type, "device_class")
+        self.assertEqual(plan.relation, "compare")
+        self.assertEqual(plan.source_policy, "hybrid")
 
-        reply = self.dm.process(msg)
-        self.assertEqual(self.dm.task_state.get("task_type_key"), "pipeline_inspection")
-        self.assertTrue(
-            self.dm.task_state.get("oilfield_name") == "流花11-1油田" or
-            self.dm.task_state.get("raw_oilfield_name") == "流花11-1油田" or
-            self.dm.task_state.get("pending_oilfield_name") == "流花11-1油田"
-        )
+    def test_read_07_missing_fields(self):
+        res = self.router.route("当前任务还缺什么", [], {"task_type_key": "pipeline_inspection"})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "READ")
+        self.assertEqual(plan.subject_type, "task")
+        self.assertEqual(plan.relation, "missing_fields")
+        self.assertEqual(plan.source_policy, "session_state")
 
-    def test_write_equipment_and_payload(self):
-        # 先建立任务
-        self.dm.process("执行流花11-1油田管缆巡检")
-        msg = "使用天鹰座一号机，携带机械臂和声呐"
-        route = self.router.route(msg, self.dm.conversation_history, self.dm.task_state)
-        self.assertEqual(route.interaction_type, "WRITE")
+    def test_read_08_filled_fields(self):
+        res = self.router.route("刚才已经填写了什么", [], {"task_type_key": "pipeline_inspection", "water_depth": 500.0})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "READ")
+        self.assertEqual(plan.subject_type, "task")
+        self.assertEqual(plan.relation, "filled_fields")
+        self.assertEqual(plan.source_policy, "session_state")
 
-        self.dm.process(msg)
-        self.assertEqual(self.dm.task_state.get("equipment_type"), "轻型工作级深海机器人")
+    def test_read_09_rov_depth_capability_question(self):
+        res = self.router.route("ROV可以在500米工作吗？", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "READ")
+        self.assertEqual(plan.dialogue_mode, "knowledge_qa")
+        self.assertEqual(plan.relation, "capabilities")
 
-    def test_boundary_depth_query_vs_write(self):
-        # 边界 1: "水深500米合适吗？" 必须识别为 QUERY，且不能更新水深
-        msg_query = "水深500米合适吗？"
-        route_q = self.router.route(msg_query, [], {})
-        self.assertEqual(route_q.interaction_type, "QUERY")
-        self.assertEqual(route_q.query_intent, "DEVICE_CAPABILITY")
+    def test_read_10_stop_impact_question(self):
+        res = self.router.route("停止任务会有什么影响", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "READ")
+        self.assertEqual(plan.dialogue_mode, "knowledge_qa")
+        self.assertIsNone(plan.emergency_action)
 
-        ver_before = self.dm.slot_store.version
-        self.dm.process(msg_query)
-        self.assertEqual(self.dm.slot_store.version, ver_before)
-        self.assertNotIn("water_depth", self.dm.task_state)
+    def test_read_11_conditional_stop_question(self):
+        res = self.router.route("如果停止任务会怎样", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "READ")
+        self.assertEqual(plan.dialogue_mode, "knowledge_qa")
+        self.assertIsNone(plan.emergency_action)
 
-        # 边界 2: "把水深改成500米" 必须识别为 WRITE，且更新水深
-        self.dm.process("执行流花11-1油田管缆巡检")
-        msg_write = "把水深改成500米"
-        route_w = self.router.route(msg_write, self.dm.conversation_history, self.dm.task_state)
-        self.assertEqual(route_w.interaction_type, "WRITE")
+    # ══════════════════════════════════════════════════════════════════════
+    # 2. WRITE 矩阵验证
+    # ══════════════════════════════════════════════════════════════════════
 
-        self.dm.process(msg_write)
-        self.assertEqual(self.dm.task_state.get("water_depth"), 500)
+    def test_write_01_create_pipeline_task(self):
+        res = self.router.route("创建一个管缆巡检任务", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "WRITE")
+        self.assertEqual(plan.dialogue_mode, "task_collection")
+
+    def test_write_02_observation_rov(self):
+        res = self.router.route("让观察级机器人执行巡检", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "WRITE")
+        self.assertEqual(plan.dialogue_mode, "task_collection")
+
+    def test_write_03_modify_water_depth(self):
+        res = self.router.route("水深改成500米", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "WRITE")
+        self.assertEqual(plan.dialogue_mode, "task_collection")
+
+    def test_write_04_change_robot_aquila(self):
+        res = self.router.route("把机器人换成天鹰座", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "WRITE")
+        self.assertEqual(plan.dialogue_mode, "task_collection")
+
+    def test_write_05_add_camera_payload(self):
+        res = self.router.route("增加高清摄像机", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "WRITE")
+        self.assertEqual(plan.dialogue_mode, "task_collection")
+
+    def test_write_06_expected_slot_direct_answer(self):
+        res = self.router.route("海底油气管道", [], {"task_type_key": "pipeline_inspection"}, expected_slots=["cable_type"])
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "WRITE")
+        self.assertEqual(plan.dialogue_mode, "task_collection")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 3. CONTROL 矩阵验证
+    # ══════════════════════════════════════════════════════════════════════
+
+    def test_control_01_stop_immediately(self):
+        res = self.router.route("立即停止当前任务", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "CONTROL")
+        self.assertEqual(plan.dialogue_mode, "emergency_intervention")
+        self.assertEqual(plan.emergency_action, "stop")
+
+    def test_control_02_pause_robot(self):
+        res = self.router.route("马上暂停当前机器人", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "CONTROL")
+        self.assertEqual(plan.dialogue_mode, "emergency_intervention")
+        self.assertEqual(plan.emergency_action, "pause")
+
+    def test_control_03_abort_job(self):
+        res = self.router.route("终止当前作业", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "CONTROL")
+        self.assertEqual(plan.dialogue_mode, "emergency_intervention")
+        self.assertEqual(plan.emergency_action, "abort")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 4. CLARIFY 矩阵验证
+    # ══════════════════════════════════════════════════════════════════════
+
+    def test_clarify_01_vague_look(self):
+        res = self.router.route("帮我看看机器人", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "CLARIFY")
+        self.assertEqual(plan.dialogue_mode, "knowledge_qa")
+        self.assertTrue(plan.needs_clarification)
+
+    def test_clarify_02_vague_process(self):
+        res = self.router.route("处理一下设备", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "CLARIFY")
+        self.assertTrue(plan.needs_clarification)
+
+    def test_clarify_03_bare_stop_word(self):
+        res = self.router.route("停止", [], {})
+        plan = res.interaction_plan
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.operation, "CLARIFY")
+        self.assertTrue(plan.needs_clarification)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 5. 状态副作用与不变性断言
+    # ══════════════════════════════════════════════════════════════════════
+
+    def test_state_invariance_for_read_and_clarify(self):
+        read_queries = [
+            "什么是软约束",
+            "介绍金牛座",
+            "当前任务还缺什么",
+            "帮我看看机器人",  # CLARIFY
+            "停止",            # CLARIFY
+        ]
+        for q in read_queries:
+            v_before = self.dm.slot_store.version
+            snap_before = self.dm.slot_store.export_snapshot()
+            phase_before = self.dm.phase
+            task_state_before = copy.deepcopy(self.dm.task_state)
+
+            reply = self.dm.process(q)
+            self.assertTrue(isinstance(reply, str) and len(reply) > 0)
+
+            self.assertEqual(self.dm.slot_store.version, v_before)
+            self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+            self.assertEqual(self.dm.phase, phase_before)
+            self.assertEqual(self.dm.task_state, task_state_before)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 6. ASR 入口与文本入口语义一致性
+    # ══════════════════════════════════════════════════════════════════════
+
+    def test_asr_consistency(self):
+        text_input = "水深改成500米"
+        asr_transcribed_input = "水深改成500米"
+
+        res_text = self.router.route(text_input, [], {})
+        res_asr = self.router.route(asr_transcribed_input, [], {})
+
+        p_text = res_text.interaction_plan
+        p_asr = res_asr.interaction_plan
+
+        self.assertEqual(p_text.operation, p_asr.operation)
+        self.assertEqual(p_text.dialogue_mode, p_asr.dialogue_mode)
+        self.assertEqual(p_text.subject_type, p_asr.subject_type)
+        self.assertEqual(p_text.relation, p_asr.relation)
 
 
 if __name__ == "__main__":

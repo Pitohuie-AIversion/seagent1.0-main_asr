@@ -5,6 +5,8 @@ IntentRouter 将用户输入路由至三种对话模式之一：
 - task_collection：任务数据收集与参数修改
 - knowledge_qa：知识问答、能力/状态查询与普通聊天（含意图澄清 CLARIFICATION）
 - emergency_intervention：紧急控制干预（需二次确定性验证）
+
+在 G7 架构中，IntentRouter 内部完全基于结构化 InteractionPlan 进行推导与后端确定性校验。
 """
 
 from __future__ import annotations
@@ -16,6 +18,16 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from .interaction_plan import (
+    InteractionPlan,
+    OperationType,
+    DialogueModeType,
+    SubjectType,
+    RelationType,
+    SourcePolicyType,
+    validate_interaction_plan,
+    build_clarify_fallback_plan,
+)
 from .llm_client import LLMClient
 from .model_profile import ModelRole, _is_unsupported_role_keyword_error
 
@@ -47,54 +59,53 @@ VALID_QUERY_INTENTS = {
 }
 
 INTENT_ROUTER_SYSTEM = """\
-你负责判断用户本轮输入的对话模式 (dialogue_mode)。
+你负责判断用户本轮输入的交互语义，并输出结构化的交互计划 InteractionPlan。
 
-【对话模式类型】
+【四种操作类型 (operation)】
 
-1. task_collection:
-用户正在创建任务、提交参数、补充信息、选择机器人/工具/位置/时间，
+1. READ (只读查询与知识问答):
+用户正在索取信息、查询设备能力/工具/状态、查询环境/系统规则、
+进行普通聊天，或对控制操作进行解释性询问（如"如何取消任务"、"如果停止任务会怎样"、"停止任务有什么影响"）。
+严禁修改任务状态，不调用 Extractor，零状态副作用。
+
+示例结构：
+- 介绍金牛座 -> subject_type="device", subject_text="金牛座", relation="describe", source_policy="project_kb"
+- 金牛座属于哪个family -> subject_type="device", subject_text="金牛座", relation="belongs_to", source_policy="project_kb"
+- 金牛座支持哪些payload / 哪些机器人支持机械臂 -> relation="supports", source_policy="project_kb"
+- AUV和ROV有什么区别 -> subject_type="device_class", relation="compare", source_policy="hybrid"
+- 当前任务还缺什么 / 刚才填写了什么 -> subject_type="task", relation="missing_fields"|"filled_fields", source_policy="session_state"
+- 金牛座现在状态怎么样 -> subject_type="device", relation="status", source_policy="realtime_state"
+
+2. WRITE (显式任务数据提交与修改):
+用户明确创建任务、修改任务参数（水深改成500米、更换机器人天鹰座、增加高清摄像机），
 或回答系统追问的 expected_slots，或否定控制动作后继续提交参数。
 
-2. knowledge_qa:
-用户正在索取信息、查询设备能力/工具/状态、查询环境/任务规则、
-进行普通聊天，或对控制操作进行解释性询问（如"如何取消任务"、"如果停止任务会怎样"），
-或在表达模糊、包含歧义裸词或否定控制指令时进行意图澄清 (query_intent: CLARIFICATION)。
-知识问答严禁修改任务状态。
-
-3. emergency_intervention:
+3. CONTROL (明确紧急控制动作):
 用户发出明确的紧急控制动作命令，要求暂停、停止、终止或取消当前任务。
+必须包含 emergency_action ('stop', 'pause', 'abort', 'cancel')。
 
-【输出要求】
+4. CLARIFY (极度模糊表达或裸词歧义):
+用户表达模糊（"帮我看看机器人"、"处理一下设备"、"这个怎么样"）或包含单独裸词（"停止"），无法安全决定操作。
+必须只读，needs_clarification=true。
+
+【输出结构 JSON 示例】
+{
+  "schema_version": 1,
+  "operation": "READ",
+  "dialogue_mode": "knowledge_qa",
+  "query_intent": "DEVICE_CAPABILITY",
+  "subject_type": "device",
+  "subject_text": "金牛座",
+  "relation": "describe",
+  "source_policy": "project_kb",
+  "needs_clarification": false,
+  "clarification_reason": null,
+  "emergency_action": null,
+  "confidence": 0.95,
+  "reason_code": "DEVICE_CAPABILITY_READ"
+}
 
 只能输出严格 JSON，不得输出其他文字。
-
-task_collection 示例：
-{
-  "dialogue_mode": "task_collection",
-  "interaction_type": "WRITE",
-  "query_intent": null,
-  "confidence": 0.97,
-  "reason": "用户提交了准备写入任务状态的水深参数"
-}
-
-knowledge_qa 示例：
-{
-  "dialogue_mode": "knowledge_qa",
-  "interaction_type": "QUERY",
-  "query_intent": "DEVICE_CAPABILITY",
-  "confidence": 0.96,
-  "reason": "用户正在询问设备的最大作业水深"
-}
-
-emergency_intervention 示例：
-{
-  "dialogue_mode": "emergency_intervention",
-  "interaction_type": "QUERY",
-  "query_intent": null,
-  "confidence": 0.99,
-  "emergency_action": "stop",
-  "reason": "用户要求立即停止当前任务"
-}
 """
 
 
@@ -114,6 +125,7 @@ class IntentRouteResult:
     dialogue_mode: DialogueMode = "task_collection"
     source: str = "rule"
     emergency_action: str | None = None
+    interaction_plan: InteractionPlan | None = None
 
     def __post_init__(self) -> None:
         it_str = str(self.interaction_type).strip().upper()
@@ -168,7 +180,7 @@ class IntentRouteResult:
         object.__setattr__(self, "query_intent", query_intent)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "interaction_type": self.interaction_type,
             "confidence": self.confidence,
             "reason": self.reason,
@@ -177,6 +189,9 @@ class IntentRouteResult:
             "source": self.source,
             "emergency_action": self.emergency_action,
         }
+        if self.interaction_plan is not None:
+            d["interaction_plan"] = self.interaction_plan.to_dict()
+        return d
 
     @property
     def intent(self) -> str | None:
@@ -195,6 +210,111 @@ class IntentRouteResult:
         return self.dialogue_mode == "task_collection"
 
 
+def _extract_subject_relation_policy(
+    user_message: str,
+    query_intent: str | None,
+    task_state: dict,
+) -> tuple[SubjectType | None, str | None, RelationType | None, SourcePolicyType]:
+    msg = user_message.strip()
+
+    subject_text = None
+    subject_type: SubjectType | None = None
+
+    families = ("天鹰座", "金牛座", "水蛟", "海马", "CRAWLER", "LROV", "1600", "WORK", "观察级", "工作级", "亚特兰蒂斯", "深海")
+    for fam in families:
+        if fam in msg:
+            subject_text = fam
+            subject_type = "device"
+            break
+
+    if not subject_type:
+        classes = ("ROV", "AUV", "HOV", "潜水器", "机器人", "设备")
+        for cls in classes:
+            if cls in msg or cls.lower() in msg.lower():
+                subject_text = cls
+                subject_type = "device_class"
+                break
+
+    if not subject_type:
+        payloads = ("机械臂", "摄像机", "声呐", "声纳", "抓手", "传感器", "payload", "负载", "载荷", "工具")
+        for p in payloads:
+            if p in msg or p.lower() in msg.lower():
+                subject_text = p
+                subject_type = "payload"
+                break
+
+    if not subject_type:
+        rules = ("软约束", "硬约束", "忽略警告", "规则", "约束", "保存位置", "存储位置")
+        for r in rules:
+            if r in msg:
+                subject_text = r
+                subject_type = "system_rule"
+                break
+
+    if not subject_type:
+        envs = ("海况", "水温", "底质", "海床")
+        for e in envs:
+            if e in msg:
+                subject_text = e
+                subject_type = "environment"
+                break
+
+    if not subject_type:
+        realtime_terms = ("实时深度", "当前水深", "当前深度", "当前位置", "当前电量", "电量", "实时状态")
+        for rt in realtime_terms:
+            if rt in msg:
+                subject_text = rt
+                subject_type = "realtime_state"
+                break
+
+    if not subject_type:
+        task_terms = ("当前任务", "进度", "步骤", "已经填写", "填写了什么", "缺什么", "缺少", "缺失", "参数")
+        for t in task_terms:
+            if t in msg:
+                subject_text = "当前任务"
+                subject_type = "task"
+                break
+
+    if not subject_type:
+        subject_type = "general_concept"
+
+    relation: RelationType | None = None
+    if any(k in msg for k in ("属于哪个", "属于", "family", "族", "class")):
+        relation = "belongs_to"
+    elif any(k in msg for k in ("支持哪些", "支持", "搭载", "配备", "携带", "适合")):
+        relation = "supports"
+    elif any(k in msg for k in ("区别", "不同", "差异")):
+        relation = "compare"
+    elif any(k in msg for k in ("定义", "含义", "概念", "什么是", "为何")):
+        relation = "definition"
+    elif any(k in msg for k in ("缺什么", "缺少", "缺失", "缺啥")):
+        relation = "missing_fields"
+    elif any(k in msg for k in ("填写了哪些", "已填写", "已经填写", "填写了什么", "已有参数", "填写")):
+        relation = "filled_fields"
+    elif any(k in msg for k in ("能力", "最大水深", "限制", "作业吗", "工作吗")):
+        relation = "capabilities"
+    elif any(k in msg for k in ("状态", "电量", "位置", "深度")):
+        relation = "status"
+    elif any(k in msg for k in ("如何", "怎么", "流程", "步骤", "影响", "如果")):
+        relation = "procedure"
+    elif any(k in msg for k in ("有哪些", "列表", "包含哪些", "包含什么")):
+        relation = "list"
+    else:
+        relation = "describe"
+
+    source_policy: SourcePolicyType = "project_kb"
+    if subject_type == "task" or relation in ("missing_fields", "filled_fields"):
+        source_policy = "session_state"
+    elif subject_type == "realtime_state" or "实时" in msg or "电量" in msg or "位置" in msg:
+        source_policy = "realtime_state"
+    elif relation == "compare":
+        source_policy = "hybrid"
+    elif subject_type in ("device", "device_class", "device_family", "payload", "system_rule", "general_concept", "environment"):
+        source_policy = "project_kb"
+
+    return subject_type, subject_text, relation, source_policy
+
+
 class IntentRouter:
     def __init__(self, llm: LLMClient):
         self.llm = llm
@@ -202,7 +322,6 @@ class IntentRouter:
     @staticmethod
     def _parse_executable_control_action(user_message: str) -> str | None:
         """从用户消息中提取明确可执行的紧急控制动作。"""
-        # 1. 结合标点符号及前置控制动词后的疑问/条件句与转折/连词界限切分子句
         clauses = [
             c.strip()
             for c in re.split(
@@ -243,7 +362,6 @@ class IntentRouter:
         )
 
         for clause in clauses:
-            # 2. 检查子句是否为作用于非任务对象的控制句（如“停止回答”、“停止任务打印”）
             is_non_task_clause = False
             for obj in non_task_objects:
                 if obj in clause:
@@ -288,7 +406,6 @@ class IntentRouter:
             if not action_found:
                 continue
 
-            # 3. 检查子句级别的否定修饰
             has_local_negation = any(phrase in clause for phrase in negation_phrases)
             if not has_local_negation:
                 for neg in negation_prefixes:
@@ -305,7 +422,6 @@ class IntentRouter:
             if has_local_negation:
                 continue
 
-            # 4. 检查子句自身是否为疑问语气或条件表达
             has_local_question = bool(re.search(r"[呢吗？?]$", clause)) or any(
                 kw in clause
                 for kw in (
@@ -337,7 +453,6 @@ class IntentRouter:
             if has_local_question or has_local_conditional:
                 continue
 
-            # 5. 检查明确控制对象或紧急提示词
             has_target_or_prompt = any(
                 cue in clause
                 for cue in (
@@ -362,13 +477,47 @@ class IntentRouter:
             )
 
             if has_target_or_prompt:
-                # 若控制动作作用于特定槽位/字段修改（如"取消支持船修改"），不误判为全局紧急干预
                 if any(k in clause for k in ("修改", "更新", "槽位", "填写的")):
                     return None
                 return action_found
 
         return None
 
+    def _build_plan_result(
+        self,
+        operation: OperationType,
+        dialogue_mode: DialogueModeType,
+        query_intent: str | None = None,
+        subject_type: SubjectType | None = "unknown",
+        subject_text: str | None = None,
+        relation: RelationType | None = "unknown",
+        source_policy: SourcePolicyType = "none",
+        needs_clarification: bool = False,
+        clarification_reason: str | None = None,
+        emergency_action: str | None = None,
+        confidence: float = 0.95,
+        reason_code: str = "RULE_ROUTE",
+        source: str = "rule",
+    ) -> IntentRouteResult:
+        raw_plan = {
+            "schema_version": 1,
+            "operation": operation,
+            "dialogue_mode": dialogue_mode,
+            "query_intent": query_intent,
+            "subject_type": subject_type,
+            "subject_text": subject_text,
+            "relation": relation,
+            "source_policy": source_policy,
+            "needs_clarification": needs_clarification,
+            "clarification_reason": clarification_reason,
+            "emergency_action": emergency_action,
+            "confidence": confidence,
+            "reason_code": reason_code,
+        }
+        validated_plan = validate_interaction_plan(raw_plan)
+        res = validated_plan.to_intent_route_result()
+        object.__setattr__(res, "source", source)
+        return res
 
     def _rule_deterministic_route(
         self,
@@ -387,13 +536,17 @@ class IntentRouter:
         if has_control_word:
             action = self._parse_executable_control_action(msg)
             if action is not None:
-                return IntentRouteResult(
-                    interaction_type="QUERY",
+                st, stext, rel, sp = _extract_subject_relation_policy(msg, None, task_state)
+                return self._build_plan_result(
+                    operation="CONTROL",
                     dialogue_mode="emergency_intervention",
                     emergency_action=action,
+                    subject_type=st or "task",
+                    subject_text=stext or "当前任务",
+                    relation=rel or "procedure",
+                    source_policy=sp or "session_state",
                     confidence=0.99,
-                    reason=f"规则确定性路由: 紧急介入动作【{action}】",
-                    source="rule",
+                    reason_code=f"EMERGENCY_CONTROL_{action.upper()}",
                 )
 
         # 2. 非任务控制对象拦截
@@ -407,16 +560,20 @@ class IntentRouter:
                 "终止说明输出",
             )
         ):
-            return IntentRouteResult(
-                interaction_type="QUERY",
-                confidence=0.9,
-                reason="规则拦截: 非任务对象控制",
-                query_intent="KNOWLEDGE_QA",
+            st, stext, rel, sp = _extract_subject_relation_policy(msg, "KNOWLEDGE_QA", task_state)
+            return self._build_plan_result(
+                operation="READ",
                 dialogue_mode="knowledge_qa",
-                source="rule",
+                query_intent="KNOWLEDGE_QA",
+                subject_type=st,
+                subject_text=stext,
+                relation=rel,
+                source_policy=sp,
+                confidence=0.9,
+                reason_code="NON_TASK_CONTROL_INTERCEPT",
             )
 
-        # 3. 含有控制词但整体为疑问/条件且未匹配独立紧急控制动作的否决分支
+        # 3. 含有控制词但整体为疑问/条件且未匹配独立紧急控制动作的否决分支 (Read-First 原则)
         is_question = bool(re.search(r"[呢吗？?]$", msg)) or any(
             kw in msg
             for kw in (
@@ -445,15 +602,20 @@ class IntentRouter:
             for kw in ("如果", "要是", "假如", "假使", "若", "假设", "万一")
         )
         if has_control_word and (is_question or is_conditional):
-            return IntentRouteResult(
+            st, stext, rel, sp = _extract_subject_relation_policy(msg, "KNOWLEDGE_QA", task_state)
+            return self._build_plan_result(
+                operation="READ",
                 dialogue_mode="knowledge_qa",
-                interaction_type="QUERY",
-                confidence=0.9,
-                reason="规则拦截: 含有控制词的疑问/条件表达",
                 query_intent="KNOWLEDGE_QA",
+                subject_type=st or "system_rule",
+                subject_text=stext or "控制流程",
+                relation=rel or "procedure",
+                source_policy=sp or "project_kb",
+                confidence=0.9,
+                reason_code="CONTROL_QUESTION_READ",
             )
 
-        # 3. 否定控制动作 (若同时提交显式参数修改如'改成500米'，优先走 task_collection)
+        # 4. 否定控制动作 (若同时提交显式参数修改如'改成500米'，优先走 task_collection WRITE)
         if any(
             kw in msg
             for kw in (
@@ -493,43 +655,55 @@ class IntentRouter:
                 r"(?:[0-9]+|改成|设为|设置为|替换为|调整为|水深|深度|管缆|工具|设备|支持船)",
                 msg,
             ):
-                return IntentRouteResult(
+                st, stext, rel, sp = _extract_subject_relation_policy(msg, None, task_state)
+                return self._build_plan_result(
+                    operation="WRITE",
                     dialogue_mode="task_collection",
-                    interaction_type="WRITE",
+                    subject_type=st or "task",
+                    subject_text=stext,
+                    relation=rel or "filled_fields",
+                    source_policy=sp or "session_state",
                     confidence=0.95,
-                    reason="规则拦截: 否决控制动作并提交任务参数",
-                    query_intent=None,
+                    reason_code="NEGATE_CONTROL_WITH_WRITE",
                 )
-            return IntentRouteResult(
+            return self._build_plan_result(
+                operation="CLARIFY",
                 dialogue_mode="knowledge_qa",
-                interaction_type="QUERY",
-                confidence=0.85,
-                reason="规则拦截: 否决控制动作",
                 query_intent="CLARIFICATION",
+                needs_clarification=True,
+                clarification_reason="用户表达了否定控制指令，需澄清后明确后续意图",
+                confidence=0.85,
+                reason_code="NEGATE_CONTROL_CLARIFY",
             )
 
-        # 4. 确定性紧急动作与裸词处理
+        # 5. 确定性紧急动作与裸词处理
         if has_control_word:
             action = self._parse_executable_control_action(msg)
             if action is not None:
-                return IntentRouteResult(
+                st, stext, rel, sp = _extract_subject_relation_policy(msg, None, task_state)
+                return self._build_plan_result(
+                    operation="CONTROL",
                     dialogue_mode="emergency_intervention",
-                    interaction_type="QUERY",
-                    confidence=0.95,
-                    reason=f"规则识别: 紧急控制动作 ({action})",
-                    query_intent=None,
                     emergency_action=action,
+                    subject_type=st or "task",
+                    subject_text=stext or "当前任务",
+                    relation=rel or "procedure",
+                    source_policy=sp or "session_state",
+                    confidence=0.95,
+                    reason_code=f"EMERGENCY_CONTROL_{action.upper()}",
                 )
             if msg in ("停止", "暂停", "取消", "终止", "撤销", "放弃"):
-                return IntentRouteResult(
+                return self._build_plan_result(
+                    operation="CLARIFY",
                     dialogue_mode="knowledge_qa",
-                    interaction_type="QUERY",
-                    confidence=0.85,
-                    reason="规则拦截: 模糊裸词控制动作",
                     query_intent="CLARIFICATION",
+                    needs_clarification=True,
+                    clarification_reason=f"接收到模糊控制裸词【{msg}】，需澄清明确作用对象",
+                    confidence=0.85,
+                    reason_code="BARE_CONTROL_CLARIFY",
                 )
 
-        # 5. 确认/发布指令
+        # 6. 确认/发布指令
         if any(
             kw in msg
             for kw in (
@@ -552,25 +726,30 @@ class IntentRouter:
             )
         ):
             if phase in ("confirming", "blocked_soft"):
-                return IntentRouteResult(
+                return self._build_plan_result(
+                    operation="WRITE",
                     dialogue_mode="task_collection",
-                    interaction_type="WRITE",
+                    subject_type="task",
+                    subject_text="当前任务",
+                    relation="procedure",
+                    source_policy="session_state",
                     confidence=0.95,
-                    reason="规则兜底: 确认发布",
-                    query_intent=None,
+                    reason_code="CONFIRM_PUBLISH_WRITE",
                 )
 
         # 0. 纯标点符号/非词汇输入拦截
         if not re.search(r"[\u4e00-\u9fa5a-zA-Z0-9]", msg.strip()):
-            return IntentRouteResult(
-                interaction_type="QUERY",
-                confidence=0.85,
-                reason="规则拦截: 纯标点符号/非词汇输入",
-                query_intent="CLARIFICATION",
+            return self._build_plan_result(
+                operation="CLARIFY",
                 dialogue_mode="knowledge_qa",
+                query_intent="CLARIFICATION",
+                needs_clarification=True,
+                clarification_reason="纯标点符号或非词汇输入",
+                confidence=0.85,
+                reason_code="PUNCTUATION_CLARIFY",
             )
 
-        # 6. 只读查询与意图分流
+        # 7. 只读查询与意图分流 (Read-First 原则)
         msg_for_query_check = msg.replace("支持船", "")
         is_query_sentence = is_question or any(
             kw in msg_for_query_check for kw in (
@@ -579,12 +758,11 @@ class IntentRouter:
             )
         )
 
-
-        # 显式任务写入动词
         has_write_verb = any(
             kw in msg for kw in (
                 "创建", "新建", "发起", "改成", "设为", "设置为",
-                "替换为", "调整为", "切换为", "换成", "去检查", "去巡检", "去操作", "去埋设", "让", "取消", "撤销"
+                "替换为", "调整为", "切换为", "换成", "去检查", "去巡检", "去操作", "去埋设", "让", "取消", "撤销",
+                "增加", "添加", "加上", "带上", "配备", "搭载", "删除", "移除", "去掉"
             )
         )
 
@@ -600,124 +778,157 @@ class IntentRouter:
             "软约束", "硬约束", "设备", "机器人"
         )
 
-        # 6.1 显式写入动作直接进入 task_collection
+        # 7.1 显式写入动作直接进入 task_collection (WRITE)
         if has_explicit_write_action:
-            return IntentRouteResult(
+            st, stext, rel, sp = _extract_subject_relation_policy(msg, None, task_state)
+            return self._build_plan_result(
+                operation="WRITE",
                 dialogue_mode="task_collection",
-                interaction_type="WRITE",
+                subject_type=st or "task",
+                subject_text=stext,
+                relation=rel or "filled_fields",
+                source_policy=sp or "session_state",
                 confidence=0.95,
-                reason="规则识别: 显式任务写入或参数/设备修改指令",
-                query_intent=None,
+                reason_code="EXPLICIT_WRITE_ACTION",
             )
 
-        # 6.2 裸领域名词只读处理
+        # 7.2 裸领域名词只读处理 (READ)
         if is_bare_domain_noun:
             if msg_clean in ("payload", "负载", "载荷", "工具", "抓手", "传感器", "机械臂", "摄像机", "声呐", "声纳"):
-                return IntentRouteResult(
-                    interaction_type="QUERY",
-                    confidence=0.9,
-                    reason="规则拦截: 裸领域名词只读工具查询",
-                    query_intent="TOOL_QUERY",
+                return self._build_plan_result(
+                    operation="READ",
                     dialogue_mode="knowledge_qa",
+                    query_intent="TOOL_QUERY",
+                    subject_type="payload",
+                    subject_text=msg_clean,
+                    relation="list",
+                    source_policy="project_kb",
+                    confidence=0.9,
+                    reason_code="BARE_NOUN_TOOL_READ",
                 )
             elif msg_clean in ("设备", "机器人"):
-                return IntentRouteResult(
-                    interaction_type="QUERY",
-                    confidence=0.9,
-                    reason="规则拦截: 裸领域名词只读设备查询",
-                    query_intent="DEVICE_CAPABILITY",
+                return self._build_plan_result(
+                    operation="READ",
                     dialogue_mode="knowledge_qa",
+                    query_intent="DEVICE_CAPABILITY",
+                    subject_type="device_class",
+                    subject_text=msg_clean,
+                    relation="list",
+                    source_policy="project_kb",
+                    confidence=0.9,
+                    reason_code="BARE_NOUN_DEVICE_READ",
                 )
             else:
-                return IntentRouteResult(
-                    interaction_type="QUERY",
-                    confidence=0.9,
-                    reason="规则拦截: 裸领域名词只读知识查询",
-                    query_intent="KNOWLEDGE_QA",
+                return self._build_plan_result(
+                    operation="READ",
                     dialogue_mode="knowledge_qa",
+                    query_intent="KNOWLEDGE_QA",
+                    subject_type="general_concept",
+                    subject_text=msg_clean,
+                    relation="describe",
+                    source_policy="project_kb",
+                    confidence=0.9,
+                    reason_code="BARE_NOUN_KNOWLEDGE_READ",
                 )
 
-        # 6.3 广义只读查询意图分流
+        # 7.3 广义只读查询意图分流 (READ)
         is_broad_device_query = (
             any(verb in msg for verb in ("查询", "查看", "列出", "检索", "显示", "获取", "了解", "介绍", "说明", "解释"))
             and any(noun in msg for noun in ("设备", "机器人", "潜水器", "ROV", "AUV", "HOV", "负载", "载荷", "工具", "抓手", "传感器"))
         )
 
         if is_query_sentence or is_broad_device_query or is_meta_workflow_query:
-            # A. 歧义设备别名拦截 (如 "一号机" / "001" 未带具体系列名)
+            # A. 歧义设备别名拦截 (如 "一号机" / "001" 未带具体系列名) -> CLARIFY
             is_device_context = any(dev in msg for dev in ("机", "设备", "水深", "深度", "作业", "下潜", "机器人", "能力", "搭载", "模式"))
             is_ambiguous_alias = ("一号机" in msg or "二号机" in msg or ("001" in msg and is_device_context))
             has_family = any(fam in msg for fam in ("天鹰座", "金牛座", "水蛟", "海马", "CRAWLER", "LROV", "1600", "WORK"))
             if is_ambiguous_alias and not has_family:
-                reason = (
-                    "规则拦截: 歧义设备别名 (001/一号机)"
-                    if ("001" in msg or "一号机" in msg)
-                    else "规则拦截: 歧义设备别名"
-                )
-                return IntentRouteResult(
-                    interaction_type="QUERY",
-                    confidence=0.85,
-                    reason=reason,
-                    query_intent="CLARIFICATION",
+                return self._build_plan_result(
+                    operation="CLARIFY",
                     dialogue_mode="knowledge_qa",
+                    query_intent="CLARIFICATION",
+                    needs_clarification=True,
+                    clarification_reason="歧义设备别名 (如 001/一号机)，缺少特定型号或族名称",
+                    confidence=0.85,
+                    reason_code="AMBIGUOUS_ALIAS_CLARIFY",
                 )
 
-            # B. 极度模糊的查看/处理类只读澄清 ("帮我看看机器人", "处理一下设备", "看一下A")
+            # B. 极度模糊的查看/处理类只读澄清 ("帮我看看机器人", "处理一下设备", "这个怎么样", "看一下A") -> CLARIFY
             if any(p in msg for p in ("帮我看看机器人", "处理一下设备", "这个怎么样", "看一下")) and not any(k in msg for k in ("水深", "能力", "工具", "电量", "状态")):
-                return IntentRouteResult(
-                    interaction_type="QUERY",
-                    confidence=0.85,
-                    reason="规则拦截: 模糊只读意图澄清",
-                    query_intent="CLARIFICATION",
+                return self._build_plan_result(
+                    operation="CLARIFY",
                     dialogue_mode="knowledge_qa",
+                    query_intent="CLARIFICATION",
+                    needs_clarification=True,
+                    clarification_reason="模糊查看/处理请求，需明确具体查询意图",
+                    confidence=0.85,
+                    reason_code="VAGUE_QUERY_CLARIFY",
                 )
 
-            # C. 规则、概念与差异比较问答 (KNOWLEDGE_QA)
-            # 如 "AUV 和 ROV 有什么区别？", "什么是软约束？", "如何忽略软警告？", "任务发布后保存在哪里？"
+            # C. 规则、概念与差异比较问答 (KNOWLEDGE_QA) -> READ
             if any(kw in msg for kw in (
                 "区别", "差异", "不同", "软约束", "硬约束", "忽略警告", "忽略软警告", "硬约束阻断",
                 "保存在哪", "保存位置", "存储位置", "原理", "含义", "概念", "为什么需要"
             )):
-                return IntentRouteResult(
-                    interaction_type="QUERY",
-                    confidence=0.85,
-                    reason="规则兜底: 业务规则与概念知识查询",
+                st, stext, rel, sp = _extract_subject_relation_policy(msg, "KNOWLEDGE_QA", task_state)
+                return self._build_plan_result(
+                    operation="READ",
+                    dialogue_mode="knowledge_qa",
                     query_intent="KNOWLEDGE_QA",
-                    dialogue_mode="knowledge_qa",
+                    subject_type=st or "system_rule",
+                    subject_text=stext,
+                    relation=rel or "definition",
+                    source_policy=sp or "project_kb",
+                    confidence=0.85,
+                    reason_code="KNOWLEDGE_CONCEPT_READ",
                 )
 
-            # D. 海洋环境与海况查询 (ENVIRONMENT_QUERY)
+            # D. 海洋环境与海况查询 (ENVIRONMENT_QUERY) -> READ
             if any(kw in msg for kw in ("海况", "水温", "底质", "海床")):
-                return IntentRouteResult(
-                    interaction_type="QUERY",
-                    confidence=0.85,
-                    reason="规则兜底: 环境海况查询",
+                st, stext, rel, sp = _extract_subject_relation_policy(msg, "ENVIRONMENT_QUERY", task_state)
+                return self._build_plan_result(
+                    operation="READ",
+                    dialogue_mode="knowledge_qa",
                     query_intent="ENVIRONMENT_QUERY",
-                    dialogue_mode="knowledge_qa",
+                    subject_type=st or "environment",
+                    subject_text=stext,
+                    relation=rel or "status",
+                    source_policy=sp or "project_kb",
+                    confidence=0.85,
+                    reason_code="ENVIRONMENT_READ",
                 )
 
-            # E. 实时设备状态/遥测深度/电量查询 (DEVICE_STATUS)
+            # E. 实时设备状态/遥测深度/电量查询 (DEVICE_STATUS) -> READ
             if any(kw in msg for kw in ("当前深度", "当前水深", "当前状态", "实时深度", "实时状态", "当前位置", "当前电量", "电量")):
-                return IntentRouteResult(
-                    interaction_type="QUERY",
-                    confidence=0.85,
-                    reason="规则兜底: 实时设备状态查询",
+                st, stext, rel, sp = _extract_subject_relation_policy(msg, "DEVICE_STATUS", task_state)
+                return self._build_plan_result(
+                    operation="READ",
+                    dialogue_mode="knowledge_qa",
                     query_intent="DEVICE_STATUS",
-                    dialogue_mode="knowledge_qa",
-                )
-
-            # F. 会话任务状态/进度/缺啥参数查询 (TASK_STATUS)
-            if any(kw in msg for kw in ("还缺", "缺少", "缺失", "填写了哪些", "有哪些参数", "当前任务", "进度", "步骤")):
-                return IntentRouteResult(
-                    interaction_type="QUERY",
+                    subject_type=st or "realtime_state",
+                    subject_text=stext or "实时状态",
+                    relation=rel or "status",
+                    source_policy="realtime_state",
                     confidence=0.85,
-                    reason="规则兜底: 任务状态查询",
-                    query_intent="TASK_STATUS",
-                    dialogue_mode="knowledge_qa",
+                    reason_code="REALTIME_DEVICE_STATUS_READ",
                 )
 
-            # G. 特定型号/族机器人的能力与限制查询 (DEVICE_CAPABILITY)
-            # 若包含具体型号/族名称 (如 "金牛座"、"亚特兰蒂斯"、"观察级ROV") 或明确询问机器人列表 ("哪些机器人可以搭载机械臂", "能在1000米作业吗")
+            # F. 会话任务状态/进度/缺啥参数查询 (TASK_STATUS) -> READ
+            if any(kw in msg for kw in ("还缺", "缺少", "缺失", "填写了哪些", "有哪些参数", "当前任务", "进度", "步骤")):
+                st, stext, rel, sp = _extract_subject_relation_policy(msg, "TASK_STATUS", task_state)
+                return self._build_plan_result(
+                    operation="READ",
+                    dialogue_mode="knowledge_qa",
+                    query_intent="TASK_STATUS",
+                    subject_type="task",
+                    subject_text="当前任务",
+                    relation=rel or "missing_fields",
+                    source_policy="session_state",
+                    confidence=0.85,
+                    reason_code="TASK_STATUS_READ",
+                )
+
+            # G. 特定型号/族机器人的能力与限制查询 (DEVICE_CAPABILITY) -> READ
             has_specific_family_mention = any(
                 fam in msg for fam in ("天鹰座", "金牛座", "水蛟", "海马", "CRAWLER", "LROV", "1600", "WORK", "观察级", "工作级", "亚特兰蒂斯", "深海")
             )
@@ -730,17 +941,20 @@ class IntentRouter:
             if has_specific_family_mention or asks_which_robots or any(
                 kw in msg for kw in ("属于哪个", "能执行什么", "class", "family", "族", "能力和限制", "限制是什么", "作业吗", "水深是", "最大水深")
             ):
-                return IntentRouteResult(
-                    interaction_type="QUERY",
-                    confidence=0.85,
-                    reason="规则兜底: 特定设备能力与关系查询",
-                    query_intent="DEVICE_CAPABILITY",
+                st, stext, rel, sp = _extract_subject_relation_policy(msg, "DEVICE_CAPABILITY", task_state)
+                return self._build_plan_result(
+                    operation="READ",
                     dialogue_mode="knowledge_qa",
+                    query_intent="DEVICE_CAPABILITY",
+                    subject_type=st or "device",
+                    subject_text=stext,
+                    relation=rel or "capabilities",
+                    source_policy=sp or "project_kb",
+                    confidence=0.85,
+                    reason_code="DEVICE_CAPABILITY_READ",
                 )
 
-
-            # H. 工具/载荷查询 (TOOL_QUERY)
-            # 如果问句关注载荷/工具/设备 ("机器人的负载有哪些", "机器人支持的设备有哪些", "侧扫声呐有什么作用")
+            # H. 工具/载荷查询 (TOOL_QUERY) -> READ
             is_tool_focused = any(
                 kw in msg.lower()
                 for kw in (
@@ -749,38 +963,49 @@ class IntentRouter:
                 )
             )
             if is_tool_focused:
-                return IntentRouteResult(
-                    interaction_type="QUERY",
-                    confidence=0.85,
-                    reason="规则兜底: 工具/载荷查询",
-                    query_intent="TOOL_QUERY",
+                st, stext, rel, sp = _extract_subject_relation_policy(msg, "TOOL_QUERY", task_state)
+                return self._build_plan_result(
+                    operation="READ",
                     dialogue_mode="knowledge_qa",
+                    query_intent="TOOL_QUERY",
+                    subject_type=st or "payload",
+                    subject_text=stext,
+                    relation=rel or "supports",
+                    source_policy=sp or "project_kb",
+                    confidence=0.85,
+                    reason_code="TOOL_QUERY_READ",
                 )
 
-            # I. 宽泛设备列表或水深能力查询 (DEVICE_CAPABILITY)
+            # I. 宽泛设备列表或水深能力查询 (DEVICE_CAPABILITY) -> READ
             if is_broad_device_query or any(
                 kw in msg for kw in ("水深", "深度", "作业模式", "能力", "不能在", "支持哪些", "适合作业", "目前有哪些机器人", "机器人有哪些")
             ):
-                return IntentRouteResult(
-                    interaction_type="QUERY",
-                    confidence=0.85,
-                    reason="规则兜底: 广义设备能力查询",
-                    query_intent="DEVICE_CAPABILITY",
+                st, stext, rel, sp = _extract_subject_relation_policy(msg, "DEVICE_CAPABILITY", task_state)
+                return self._build_plan_result(
+                    operation="READ",
                     dialogue_mode="knowledge_qa",
+                    query_intent="DEVICE_CAPABILITY",
+                    subject_type=st or "device_class",
+                    subject_text=stext,
+                    relation=rel or "capabilities",
+                    source_policy=sp or "project_kb",
+                    confidence=0.85,
+                    reason_code="BROAD_DEVICE_READ",
                 )
 
-            # J. 规则/流程/通用概念知识问答 (KNOWLEDGE_QA)
-            return IntentRouteResult(
-                interaction_type="QUERY",
-                confidence=0.85,
-                reason="规则兜底: 业务规则与概念知识查询",
-                query_intent="KNOWLEDGE_QA",
+            # J. 规则/流程/通用概念知识问答 (KNOWLEDGE_QA) -> READ
+            st, stext, rel, sp = _extract_subject_relation_policy(msg, "KNOWLEDGE_QA", task_state)
+            return self._build_plan_result(
+                operation="READ",
                 dialogue_mode="knowledge_qa",
+                query_intent="KNOWLEDGE_QA",
+                subject_type=st or "general_concept",
+                subject_text=stext,
+                relation=rel or "describe",
+                source_policy=sp or "project_kb",
+                confidence=0.85,
+                reason_code="GENERAL_KNOWLEDGE_READ",
             )
-
-
-
-
 
         if any(
             kw in msg
@@ -798,27 +1023,36 @@ class IntentRouter:
             )
         ):
             if is_query_sentence or "哪些" in msg or "状态" in msg:
-                return IntentRouteResult(
-                    interaction_type="QUERY",
-                    confidence=0.85,
-                    reason="规则兜底: 任务状态查询",
-                    query_intent="TASK_STATUS",
+                return self._build_plan_result(
+                    operation="READ",
                     dialogue_mode="knowledge_qa",
+                    query_intent="TASK_STATUS",
+                    subject_type="task",
+                    subject_text="当前任务",
+                    relation="missing_fields",
+                    source_policy="session_state",
+                    confidence=0.85,
+                    reason_code="TASK_STATUS_READ",
                 )
 
         if any(
             kw in msg
             for kw in ("需要哪些", "包含哪些", "包含什么", "模板", "知识", "定义", "规则", "需要什么")
         ):
-            return IntentRouteResult(
-                interaction_type="QUERY",
-                confidence=0.85,
-                reason="规则兜底: 业务知识查询",
-                query_intent="KNOWLEDGE_QA",
+            st, stext, rel, sp = _extract_subject_relation_policy(msg, "KNOWLEDGE_QA", task_state)
+            return self._build_plan_result(
+                operation="READ",
                 dialogue_mode="knowledge_qa",
+                query_intent="KNOWLEDGE_QA",
+                subject_type=st or "system_rule",
+                subject_text=stext,
+                relation=rel or "list",
+                source_policy=sp or "project_kb",
+                confidence=0.85,
+                reason_code="SYSTEM_RULE_READ",
             )
 
-        # 7. 任务新建与参数/设备更新 (问句且无显式赋值动词时不误判为 WRITE)
+        # 8. 任务新建与参数/设备更新 (问句且无显式赋值动词时不误判为 WRITE)
         if not is_query_sentence or re.search(
             r"(?:改成|设为|设置为|替换为|调整为|切换为|为\s*[0-9]+)", msg
         ):
@@ -828,31 +1062,44 @@ class IntentRouter:
                     msg,
                 )
             ):
-                return IntentRouteResult(
-                    interaction_type="WRITE",
-                    confidence=0.85,
-                    reason="规则兜底: 包含任务新建或参数/设备更新",
-                    query_intent=None,
+                st, stext, rel, sp = _extract_subject_relation_policy(msg, None, task_state)
+                return self._build_plan_result(
+                    operation="WRITE",
                     dialogue_mode="task_collection",
+                    subject_type=st or "task",
+                    subject_text=stext,
+                    relation=rel or "filled_fields",
+                    source_policy=sp or "session_state",
+                    confidence=0.85,
+                    reason_code="TASK_UPDATE_WRITE",
                 )
 
         if any(
             kw in msg for kw in ("进度", "缺", "缺少", "状态", "已有", "步骤", "进行到")
         ):
-            return IntentRouteResult(
+            return self._build_plan_result(
+                operation="READ",
                 dialogue_mode="knowledge_qa",
-                interaction_type="QUERY",
-                confidence=0.85,
-                reason="规则兜底: 任务状态查询",
                 query_intent="TASK_STATUS",
+                subject_type="task",
+                subject_text="当前任务",
+                relation="missing_fields",
+                source_policy="session_state",
+                confidence=0.85,
+                reason_code="TASK_STATUS_READ",
             )
         if any(kw in msg for kw in ("海况", "水温", "底质", "海床")):
-            return IntentRouteResult(
+            st, stext, rel, sp = _extract_subject_relation_policy(msg, "ENVIRONMENT_QUERY", task_state)
+            return self._build_plan_result(
+                operation="READ",
                 dialogue_mode="knowledge_qa",
-                interaction_type="QUERY",
-                confidence=0.85,
-                reason="规则兜底: 环境查询",
                 query_intent="ENVIRONMENT_QUERY",
+                subject_type=st or "environment",
+                subject_text=stext,
+                relation=rel or "status",
+                source_policy=sp or "project_kb",
+                confidence=0.85,
+                reason_code="ENVIRONMENT_READ",
             )
         if any(
             kw in msg
@@ -868,12 +1115,16 @@ class IntentRouter:
                 "嗨",
             )
         ):
-            return IntentRouteResult(
+            return self._build_plan_result(
+                operation="READ",
                 dialogue_mode="knowledge_qa",
-                interaction_type="QUERY",
-                confidence=0.85,
-                reason="规则兜底: 通用对话",
                 query_intent="GENERAL_CHAT",
+                subject_type="general_concept",
+                subject_text=None,
+                relation="describe",
+                source_policy="general_domain",
+                confidence=0.85,
+                reason_code="GENERAL_CHAT_READ",
             )
 
         return None
@@ -912,13 +1163,12 @@ class IntentRouter:
             logger.warning(
                 "[IntentRouter] LLM route failed, using rule fallback: %s", e
             )
-            return IntentRouteResult(
-                interaction_type="QUERY",
+            fallback_plan = build_clarify_fallback_plan(
+                reason=f"规则兜底澄清: {e}",
+                reason_code="LLM_ROUTE_FAIL_FALLBACK",
                 confidence=0.5,
-                reason="规则兜底: 澄清意图",
-                query_intent="CLARIFICATION",
-                dialogue_mode="knowledge_qa",
             )
+            return fallback_plan.to_intent_route_result()
 
     def _call_llm_router(
         self,
@@ -967,19 +1217,19 @@ class IntentRouter:
             ej_attr = getattr(self.llm, "extract_json", None)
             if ej_attr is not None and hasattr(ej_attr, "called"):
                 try:
-                    parsed = self.llm.extract_json(messages, max_tokens=260, role=ModelRole.ROUTER)
+                    parsed = self.llm.extract_json(messages, max_tokens=320, role=ModelRole.ROUTER)
                 except TypeError as exc:
                     if not _is_unsupported_role_keyword_error(exc):
                         raise
-                    parsed = self.llm.extract_json(messages, max_tokens=260)
+                    parsed = self.llm.extract_json(messages, max_tokens=320)
             elif hasattr(self.llm, "classify_interaction"):
                 try:
                     try:
-                        res = self.llm.classify_interaction(messages, max_tokens=260, role=ModelRole.ROUTER)
+                        res = self.llm.classify_interaction(messages, max_tokens=320, role=ModelRole.ROUTER)
                     except TypeError as exc:
                         if not _is_unsupported_role_keyword_error(exc):
                             raise
-                        res = self.llm.classify_interaction(messages, max_tokens=260)
+                        res = self.llm.classify_interaction(messages, max_tokens=320)
                     if isinstance(res, dict):
                         parsed = res
                 except IntentRoutingError:
@@ -988,11 +1238,11 @@ class IntentRouter:
                     pass
             if parsed is None and hasattr(self.llm, "extract_json"):
                 try:
-                    parsed = self.llm.extract_json(messages, max_tokens=260, role=ModelRole.ROUTER)
+                    parsed = self.llm.extract_json(messages, max_tokens=320, role=ModelRole.ROUTER)
                 except TypeError as exc:
                     if not _is_unsupported_role_keyword_error(exc):
                         raise
-                    parsed = self.llm.extract_json(messages, max_tokens=260)
+                    parsed = self.llm.extract_json(messages, max_tokens=320)
         except Exception as exc:
             logger.warning("[IntentRouter] LLM call failed: %s", exc)
             raise IntentRoutingError(f"LLM 调用失败: {exc}") from exc
@@ -1001,144 +1251,76 @@ class IntentRouter:
             logger.warning("[IntentRouter] LLM 未返回合法 JSON object: %r", parsed)
             raise IntentRoutingError("LLM 路由结果不是合法 JSON object")
 
-        _has_slot_candidates = bool(parsed.get("slot_candidates"))
+        # 检查 query_subtype / query_intent 的数据类型合法性（针对非 string 类型如 list/dict/number/bool）
+        raw_subtype = parsed.get("query_subtype")
+        if raw_subtype is not None and (isinstance(raw_subtype, bool) or not isinstance(raw_subtype, str)):
+            parsed["operation"] = "CLARIFY"
+            parsed["dialogue_mode"] = "knowledge_qa"
+            parsed["query_intent"] = "CLARIFICATION"
+            parsed["needs_clarification"] = True
+            parsed["clarification_reason"] = f"非法 query_subtype 类型: {type(raw_subtype)}"
 
-        is_unknown_or_bogus = False
-        raw_mode = parsed.get("dialogue_mode")
-        if not raw_mode:
-            raw_it = parsed.get("interaction_type") or parsed.get("intent")
-            it_str = str(raw_it or "").strip().upper()
-            if (
-                it_str in ("WRITE", "TASK_CREATE", "TASK_UPDATE", "CREATE", "UPDATE")
-                or _has_slot_candidates
-            ):
-                raw_mode = "task_collection"
-            elif it_str in ("QUERY", "SEARCH", "INFO"):
-                raw_mode = "knowledge_qa"
-            elif it_str == "EMERGENCY":
-                raw_mode = "emergency_intervention"
-            else:
-                raw_mode = "knowledge_qa"
-                is_unknown_or_bogus = True
+        raw_qintent = parsed.get("query_intent")
+        if raw_qintent is not None and (isinstance(raw_qintent, bool) or not isinstance(raw_qintent, str)):
+            parsed["operation"] = "CLARIFY"
+            parsed["dialogue_mode"] = "knowledge_qa"
+            parsed["query_intent"] = "CLARIFICATION"
+            parsed["needs_clarification"] = True
+            parsed["clarification_reason"] = f"非法 query_intent 类型: {type(raw_qintent)}"
 
-        dialogue_mode = str(raw_mode).strip().lower()
-        if dialogue_mode == "uncertain":
-            dialogue_mode = "knowledge_qa"
-            is_unknown_or_bogus = True
-        if dialogue_mode not in VALID_DIALOGUE_MODES:
-            logger.warning("[IntentRouter] 非法 dialogue_mode: %r", dialogue_mode)
-            raise IntentRoutingError("LLM 返回 dialogue_mode 非法")
-
-        if "confidence" not in parsed or parsed["confidence"] is None:
-            if dialogue_mode == "task_collection" and _has_slot_candidates:
-                parsed["confidence"] = 0.9
-            elif is_unknown_or_bogus or parsed.get("intent") == "UNKNOWN":
-                parsed["confidence"] = 0.85
-            else:
-                logger.warning("[IntentRouter] LLM response missing confidence")
-                raise IntentRoutingError("LLM 缺少 confidence 字段")
-
-
-        confidence = parsed["confidence"]
-        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
-            logger.warning("[IntentRouter] 非法 confidence 类型: %r", type(confidence))
-            raise IntentRoutingError("LLM confidence 类型非法")
-
-        confidence_float = float(confidence)
-        if not math.isfinite(confidence_float) or not 0.0 <= confidence_float <= 1.0:
-            logger.warning(
-                "[IntentRouter] confidence 越界或非有限值: %r", confidence_float
-            )
-            raise IntentRoutingError("LLM confidence 数值越界或非有限值")
-
-        reason = parsed.get("reason")
-        if not isinstance(reason, str) or not reason.strip():
-            reason = "意图识别"
-
-        if confidence_float < 0.6:
-            raise IntentRoutingError(
-                f"LLM 识别置信度过低({confidence_float:.2f}): {reason.strip()}"
-            )
-
-        raw_query_intent = parsed.get("query_intent") or parsed.get("query_subtype")
-        query_intent = (
-            str(raw_query_intent).strip().upper() if raw_query_intent else None
-        )
-
-        if dialogue_mode == "knowledge_qa" and (
-            not query_intent or query_intent == "UNKNOWN" or is_unknown_or_bogus
+        # 检查非法/未识别的 intent
+        raw_intent = parsed.get("intent")
+        if raw_intent and str(raw_intent).strip().upper() not in (
+            "TASK_CREATE", "TASK_UPDATE", "CREATE", "UPDATE", "WRITE", "QUERY", "SEARCH", "INFO", "EMERGENCY",
+            "TASK_STATUS", "TOOL_QUERY", "DEVICE_CAPABILITY", "DEVICE_STATUS", "ENVIRONMENT_QUERY", "KNOWLEDGE_QA", "GENERAL_CHAT", "CLARIFICATION"
         ):
-            if is_unknown_or_bogus:
-                query_intent = "CLARIFICATION"
-            else:
-                msg = user_message.strip()
-                if any(
-                    kw in msg
-                    for kw in (
-                        "当前任务",
-                        "进度",
-                        "缺",
-                        "缺少",
-                        "状态",
-                        "已有",
-                        "步骤",
-                        "进行到",
-                        "一步",
-                    )
-                ):
-                    query_intent = "TASK_STATUS"
-                elif any(
-                    kw in msg
-                    for kw in ("哪些参数", "包含哪些", "包含什么", "模板", "知识", "定义", "规则")
-                ):
-                    query_intent = "KNOWLEDGE_QA"
-                elif any(
-                    kw in msg
-                    for kw in (
-                        "水深",
-                        "深度",
-                        "作业模式",
-                        "能力",
-                        "不能在",
-                        "支持哪些",
-                        "适合作业",
-                        "哪些机器人",
-                        "哪些设备",
-                        "机器人有哪些",
-                        "米级",
-                    )
-                ):
-                    query_intent = "DEVICE_CAPABILITY"
-                elif any(
-                    kw in msg for kw in ("工具", "载荷", "抓手", "传感器", "机械臂", "配备")
-                ):
-                    query_intent = "TOOL_QUERY"
-                elif any(kw in msg for kw in ("海况", "水温", "底质", "海床")):
-                    query_intent = "ENVIRONMENT_QUERY"
-                else:
-                    query_intent = "KNOWLEDGE_QA"
+            parsed["operation"] = "CLARIFY"
+            parsed["dialogue_mode"] = "knowledge_qa"
+            parsed["query_intent"] = "CLARIFICATION"
+            parsed["needs_clarification"] = True
+            parsed["clarification_reason"] = f"未知的意图分类: {raw_intent}"
 
-        emergency_action = None
-        if dialogue_mode == "emergency_intervention":
+        # 双重提取安全校验: 针对 LLM 返回逻辑为紧急介入的分支，强行进行文本确定性可执行动作校验
+        raw_dm = parsed.get("dialogue_mode")
+        raw_op = parsed.get("operation")
+        if raw_dm == "emergency_intervention" or raw_op == "CONTROL":
             validated_action = self._parse_executable_control_action(user_message)
             if validated_action is None:
-                return IntentRouteResult(
-                    dialogue_mode="knowledge_qa",
-                    interaction_type="QUERY",
-                    confidence=confidence_float,
-                    reason="LLM 识别为紧急干预，但缺乏确定性可执行紧急命令依据，安全降级为澄清",
-                    query_intent="CLARIFICATION",
-                    source="llm",
-                    emergency_action=None,
-                )
-            emergency_action = validated_action
+                parsed["operation"] = "CLARIFY"
+                parsed["dialogue_mode"] = "knowledge_qa"
+                parsed["query_intent"] = "CLARIFICATION"
+                parsed["emergency_action"] = None
+                parsed["needs_clarification"] = True
+                parsed["clarification_reason"] = "LLM 识别为紧急控制，但用户文本缺少确定性可执行紧急命令，安全降级澄清"
+            else:
+                parsed["operation"] = "CONTROL"
+                parsed["dialogue_mode"] = "emergency_intervention"
+                parsed["emergency_action"] = validated_action
 
-        return IntentRouteResult(
-            dialogue_mode=dialogue_mode,
-            interaction_type="WRITE" if dialogue_mode == "task_collection" else "QUERY",
-            confidence=confidence_float,
-            reason=reason.strip(),
-            query_intent=query_intent if dialogue_mode == "knowledge_qa" else None,
-            source="llm",
-            emergency_action=emergency_action,
-        )
+        # 适配兼容遗留 LLM 字段向 InteractionPlan 补全
+        if "operation" not in parsed:
+            raw_it = parsed.get("interaction_type") or parsed.get("intent")
+            raw_it_str = str(raw_it or "").strip().upper()
+            if raw_dm == "task_collection" or raw_it_str in ("WRITE", "TASK_CREATE", "TASK_UPDATE", "CREATE", "UPDATE"):
+                parsed["operation"] = "WRITE"
+                parsed["dialogue_mode"] = "task_collection"
+            elif raw_dm == "emergency_intervention" or raw_it_str in ("EMERGENCY", "EMERGENCY_INTERVENTION"):
+                parsed["operation"] = "CONTROL"
+                parsed["dialogue_mode"] = "emergency_intervention"
+            elif parsed.get("query_intent") == "CLARIFICATION" or parsed.get("needs_clarification") or raw_it_str == "CLARIFICATION":
+                parsed["operation"] = "CLARIFY"
+                parsed["dialogue_mode"] = "knowledge_qa"
+            else:
+                parsed["operation"] = "READ"
+                parsed["dialogue_mode"] = "knowledge_qa"
+
+        if "source_policy" not in parsed:
+            st, stext, rel, sp = _extract_subject_relation_policy(user_message, parsed.get("query_intent"), task_state)
+            parsed.setdefault("subject_type", st)
+            parsed.setdefault("subject_text", stext)
+            parsed.setdefault("relation", rel)
+            parsed.setdefault("source_policy", sp)
+
+        # 通过后端确定性校验器 validate_interaction_plan 强制约束，非合法输出一律安全降级 CLARIFY
+        validated_plan = validate_interaction_plan(parsed, user_message=user_message, context=context)
+        return validated_plan.to_intent_route_result()
