@@ -1317,6 +1317,7 @@ class KnowledgeBase:
             unit_variant = variants.get(u.get("variant_id"))
             if unit_variant and self.robot_matches_task(unit_variant, task_type_key):
                 return {**u, "robot": unit_variant}
+            return None
 
 
         def matching_units(contains: bool) -> list[dict]:

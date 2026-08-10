@@ -35,6 +35,7 @@ class TestRobotCapabilityPreselection(unittest.TestCase):
             new_slots["task_type_key"].value = task_type_key
             new_slots["task_type_key"].status = "valid"
         self.dm._apply_updates_in_transaction(updates, new_slots, allow_overwrite=allow_overwrite)
+        self.dm._normalize_and_validate_in_transaction(new_slots, task_type_key)
         self.dm.slot_store.commit_transaction(new_slots, [])
         self.dm.task_state = self.dm.slot_store.get_task_state()
 
@@ -258,6 +259,94 @@ class TestRobotCapabilityPreselection(unittest.TestCase):
         self.assertIn("LROV--001", unit_ids)
         self.assertIn("LROV--002", unit_ids)
         self.assertIn("OBSROV--001", unit_ids)
+
+    def test_17_candidate_class_does_not_auto_bind_family(self):
+        """17. equipment_class 为 candidate 状态时不得向下自动绑定 family"""
+        self._init_task("pipeline_inspection")
+        slots = self.dm.slot_store.slots
+        slots["equipment_class"].value = "auv"
+        slots["equipment_class"].status = "candidate"
+        self.dm._auto_collapse_robot_cascade(slots)
+        self.assertNotEqual(slots["equipment_family"].status, "valid")
+
+    def test_18_candidate_family_does_not_auto_bind_type(self):
+        """18. equipment_family 为 candidate 状态时不得向下自动绑定 type"""
+        self._init_task("pipeline_inspection")
+        slots = self.dm.slot_store.slots
+        slots["equipment_class"].value = "auv"
+        slots["equipment_class"].status = "valid"
+        slots["equipment_family"].value = "水下无人自主航行器"
+        slots["equipment_family"].status = "candidate"
+        self.dm._auto_collapse_robot_cascade(slots)
+        self.assertNotEqual(slots["equipment_type"].status, "valid")
+
+    def test_19_candidate_type_does_not_auto_bind_unit(self):
+        """19. equipment_type 为 candidate 状态时不得向下自动绑定 unit"""
+        self._init_task("pipeline_inspection")
+        slots = self.dm.slot_store.slots
+        slots["equipment_class"].value = "auv"
+        slots["equipment_class"].status = "valid"
+        slots["equipment_family"].value = "水下无人自主航行器"
+        slots["equipment_family"].status = "valid"
+        slots["equipment_type"].value = "水下无人自主航行器 324CC"
+        slots["equipment_type"].status = "candidate"
+        self.dm._auto_collapse_robot_cascade(slots)
+        self.assertNotEqual(slots["equipment_unit_id"].status, "valid")
+
+    def test_20_zero_capability_domain_fail_closed(self):
+        """20. 合法 class/fleet 但无任何 family 满足 required_capabilities 时，Domain 为空并 fail closed 标记 invalid"""
+        # AUV 不具备 tree_operation 能力
+        fake_task_schemas = {
+            "task_templates": {
+                "zero_cap_task": {
+                    "task_type_key": "zero_cap_task",
+                    "allowed_robot_classes": ["auv"],
+                    "required_capabilities": ["tree_operation"],
+                    "required_fields": [{"key": "equipment_class", "type": "string"}],
+                }
+            }
+        }
+        original_schemas = self.kb.task_schemas
+        self.kb.task_schemas = fake_task_schemas
+        try:
+            self._init_task("zero_cap_task")
+            slots = self.dm.slot_store.slots
+            self.assertEqual(slots["equipment_class"].status, "invalid")
+            self.assertIsNone(slots["equipment_class"].value)
+            self.assertIsNotNone(slots["equipment_class"].validation_error)
+        finally:
+            self.kb.task_schemas = original_schemas
+
+    def test_21_direct_invalid_variant(self):
+        """21. tree_valve_operation 任务下直接输入不符合 capability 的 AUV 变体被拒绝"""
+        self._init_task("tree_valve_operation")
+        self._apply_updates({"equipment_type": "水下无人自主航行器 324CC"}, task_type_key="tree_valve_operation")
+        slots = self.dm.slot_store.slots
+        self.assertNotEqual(slots["equipment_type"].status, "valid")
+
+    def test_22_direct_invalid_unit(self):
+        """22. tree_valve_operation 任务下直接指定 AUV-324cc-001 必须在静态 selection 层拒绝"""
+        self._init_task("tree_valve_operation")
+        self._apply_updates({"equipment_unit_id": "AUV-324cc-001"}, task_type_key="tree_valve_operation")
+        slots = self.dm.slot_store.slots
+        self.assertNotEqual(slots["equipment_unit_id"].status, "valid")
+        self.assertEqual(slots["equipment_unit_id"].candidate_value, "AUV-324cc-001")
+        self.assertNotEqual(slots["equipment_unit_id"].value, "AUV-324cc-001")
+
+    def test_23_auto_bound_unit_snapshot_round_trip(self):
+        """23. auto-bound unit 带有 source='auto'，经 snapshot 导出与 restore 后 source 保持 'auto'"""
+        self._init_task("tree_valve_operation")
+        slots = self.dm.slot_store.slots
+        self.assertEqual(slots["equipment_unit_id"].status, "valid")
+        self.assertEqual(slots["equipment_unit_id"].source, "auto")
+
+        snap = self.dm.slot_store.export_snapshot()
+        from src.slot_store import SlotStore
+        new_store = SlotStore(kb=self.kb)
+        new_store.restore_snapshot(snap)
+        restored_unit = new_store.slots.get("equipment_unit_id")
+        self.assertIsNotNone(restored_unit)
+        self.assertEqual(restored_unit.source, "auto")
 
 
 if __name__ == "__main__":

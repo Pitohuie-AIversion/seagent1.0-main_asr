@@ -507,11 +507,11 @@ class DialogueManagerROVTest(unittest.TestCase):
             slots,
             allow_overwrite=True,
         )
-        self.assertEqual(slots["equipment_family"].status, "candidate")
+        self.assertEqual(slots["equipment_family"].status, "valid")
         self.assertIsNone(slots["equipment_unit_id"].value)
         self.assertEqual(slots["equipment_unit_id"].status, "missing")
-        # Under Issue #40, single variant under 轻型工作级深海机器人 is auto-collapsed
         self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人")
+        self.assertEqual(slots["equipment_type"].status, "valid")
 
 
     def test_task_intent_robot_type_comes_from_selected_variant(self):

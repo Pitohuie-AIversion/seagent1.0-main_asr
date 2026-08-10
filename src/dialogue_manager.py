@@ -2425,9 +2425,9 @@ class DialogueManager:
         # Level 1: equipment_class
         classes = domain["classes"]
         cls_slot = new_slots.get("equipment_class")
-        if cls_slot and cls_slot.status in ("invalid", "conflict"):
+        if cls_slot and cls_slot.status in ("invalid", "conflict", "unresolved", "candidate"):
             return
-        if not cls_slot or cls_slot.status not in ("valid", "candidate") or not cls_slot.value:
+        if not cls_slot or cls_slot.status != "valid" or not cls_slot.value:
             if len(classes) == 0:
                 if "equipment_class" not in new_slots:
                     new_slots["equipment_class"] = Slot("equipment_class")
@@ -2461,9 +2461,9 @@ class DialogueManager:
 
         families = cls_node["families"]
         fam_slot = new_slots.get("equipment_family")
-        if fam_slot and fam_slot.status in ("invalid", "conflict"):
+        if fam_slot and fam_slot.status in ("invalid", "conflict", "unresolved", "candidate"):
             return
-        if not fam_slot or fam_slot.status not in ("valid", "candidate") or not fam_slot.value:
+        if not fam_slot or fam_slot.status != "valid" or not fam_slot.value:
             if len(families) == 0:
                 if "equipment_family" not in new_slots:
                     new_slots["equipment_family"] = Slot("equipment_family")
@@ -2497,9 +2497,9 @@ class DialogueManager:
 
         variants = fam_node["variants"]
         type_slot = new_slots.get("equipment_type")
-        if type_slot and type_slot.status in ("invalid", "conflict"):
+        if type_slot and type_slot.status in ("invalid", "conflict", "unresolved", "candidate"):
             return
-        if not type_slot or type_slot.status not in ("valid", "candidate") or not type_slot.value:
+        if not type_slot or type_slot.status != "valid" or not type_slot.value:
             if len(variants) == 0:
                 if "equipment_type" not in new_slots:
                     new_slots["equipment_type"] = Slot("equipment_type")
@@ -2532,9 +2532,9 @@ class DialogueManager:
 
         units = var_node["units"]
         unit_slot = new_slots.get("equipment_unit_id")
-        if unit_slot and unit_slot.status in ("invalid", "conflict"):
+        if unit_slot and unit_slot.status in ("invalid", "conflict", "unresolved", "candidate"):
             return
-        if not unit_slot or unit_slot.status not in ("valid", "candidate") or not unit_slot.value:
+        if not unit_slot or unit_slot.status != "valid" or not unit_slot.value:
             if len(units) == 0:
                 if "equipment_unit_id" not in new_slots:
                     new_slots["equipment_unit_id"] = Slot("equipment_unit_id")
@@ -2759,6 +2759,7 @@ class DialogueManager:
                     sandbox_slots,
                     allow_overwrite,
                 )
+                sandbox_slots["equipment_class"].status = "valid"
             else:
                 _rollback_and_fail(
                     "equipment_class",
@@ -2808,6 +2809,7 @@ class DialogueManager:
                         sandbox_slots,
                         allow_overwrite,
                     )
+                    sandbox_slots["equipment_class"].status = "valid"
                     family_slot = sandbox_slots.get("equipment_family")
                     current_family_id = (
                         self.kb.resolve_robot_family_id(str(family_slot.value), task_type)
@@ -2826,6 +2828,7 @@ class DialogueManager:
                         sandbox_slots,
                         allow_overwrite,
                     )
+                    sandbox_slots["equipment_family"].status = "valid"
             else:
                 _rollback_and_fail(
                     "equipment_family",
@@ -2924,18 +2927,21 @@ class DialogueManager:
                     sandbox_slots,
                     allow_overwrite,
                 )
+                sandbox_slots["equipment_class"].status = "valid"
                 self._apply_slot_update_in_transaction(
                     "equipment_family",
                     fam_full,
                     sandbox_slots,
                     allow_overwrite,
                 )
+                sandbox_slots["equipment_family"].status = "valid"
                 self._apply_slot_update_in_transaction(
                     "equipment_type",
                     new_variant_val,
                     sandbox_slots,
                     allow_overwrite,
                 )
+                sandbox_slots["equipment_type"].status = "valid"
             else:
                 _rollback_and_fail(
                     "equipment_type",
@@ -3039,24 +3045,28 @@ class DialogueManager:
                     sandbox_slots,
                     allow_overwrite,
                 )
+                sandbox_slots["equipment_class"].status = "valid"
                 self._apply_slot_update_in_transaction(
                     "equipment_family",
                     unit_fam_full,
                     sandbox_slots,
                     allow_overwrite,
                 )
+                sandbox_slots["equipment_family"].status = "valid"
                 self._apply_slot_update_in_transaction(
                     "equipment_type",
                     unit_variant_full,
                     sandbox_slots,
                     allow_overwrite,
                 )
+                sandbox_slots["equipment_type"].status = "valid"
                 self._apply_slot_update_in_transaction(
                     "equipment_unit_id",
                     resolved_unit["unit_id"],
                     sandbox_slots,
                     allow_overwrite,
                 )
+                sandbox_slots["equipment_unit_id"].status = "valid"
                 if "equipment_name" in sandbox_slots:
                     self._apply_slot_update_in_transaction(
                         "equipment_name",
@@ -3064,6 +3074,7 @@ class DialogueManager:
                         sandbox_slots,
                         allow_overwrite,
                     )
+                    sandbox_slots["equipment_name"].status = "valid"
             else:
                 _rollback_and_fail(
                     "equipment_unit_id",

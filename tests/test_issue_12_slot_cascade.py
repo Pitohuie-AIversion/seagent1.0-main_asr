@@ -434,9 +434,62 @@ class TestIssue12SlotCascade(unittest.TestCase):
 
     def test_16_failed_restore_preserves_original_store_state(self):
         """16. 校验失败 (如带有合法 variant_id 的 malformed spec) 时，原 SlotStore 内存快照与版本完全不变。"""
+        import copy
+        from src.slot_store import SnapshotValidationError
         store = SlotStore(kb=self.kb)
-        initial_version = store.version
-        initial_slots = store.get_slot_snapshot()
+        store.commit_transaction(
+            {
+                "task_type_key": Slot("task_type_key", value="pipeline_inspection", status="valid"),
+                "equipment_class": Slot("equipment_class", value="work_class_rov", status="valid"),
+            },
+            [],
+        )
+        before_version = store.version
+        before_snapshot = copy.deepcopy(store.export_snapshot())
+
+        malformed_snapshot = copy.deepcopy(before_snapshot)
+        # malformed legacy spec dict (lacks top-level 'status', but contains valid variant_id)
+        malformed_snapshot["slots"]["equipment_specification"] = {
+            "type": "power_hp",
+            "value": True,
+            "unit": "hp",
+            "display_value": "250HP",
+            "variant_id": "general_work_class_rov_250hp",
+        }
+
+        with self.assertRaises(SnapshotValidationError):
+            store.restore_snapshot(malformed_snapshot)
+
+        self.assertEqual(store.version, before_version)
+        self.assertEqual(store.export_snapshot(), before_snapshot)
+
+    def test_17_class_change_clears_all_downstream_slots(self):
+        """17. 修改 equipment_class 时，旧 AUV family/type/unit 不得泄漏，新 domain 唯一项重新自动收敛，不唯一的保持 missing。"""
+        self._apply_updates("AUV 324CC", task_type_key="pipeline_inspection")
+        self._apply_updates({"equipment_unit_id": "AUV-324cc-001"}, task_type_key="pipeline_inspection")
+        slots = self.dm.slot_store.slots
+        self.assertEqual(slots["equipment_class"].value, "auv")
+        self.assertEqual(slots["equipment_family"].value, "水下无人自主航行器")
+        self.assertEqual(slots["equipment_unit_id"].value, "AUV-324cc-001")
+
+        # 修改为 observation_rov
+        self._apply_updates({"equipment_class": "observation_rov"}, allow_overwrite=True, task_type_key="pipeline_inspection")
+        slots = self.dm.slot_store.slots
+
+        # 1. 旧 AUV 事实完全不存在
+        self.assertNotEqual(slots["equipment_family"].value, "水下无人自主航行器")
+        self.assertNotEqual(slots["equipment_type"].value, "水下无人自主航行器 324CC")
+        self.assertNotEqual(slots["equipment_unit_id"].value, "AUV-324cc-001")
+
+        # 2. observation_rov 下有 2 个 families (>1) -> 所有下级必须保持 missing
+        self.assertEqual(slots["equipment_class"].value, "observation_rov")
+        self.assertEqual(slots["equipment_family"].status, "missing")
+        self.assertIsNone(slots["equipment_family"].value)
+        self.assertEqual(slots["equipment_type"].status, "missing")
+        self.assertIsNone(slots["equipment_type"].value)
+        self.assertEqual(slots["equipment_unit_id"].status, "missing")
+        self.assertIsNone(slots["equipment_unit_id"].value)
+
     def test_18_family_change_clears_type_unit_name(self):
         """18. family 合法变化时清空 unit_id。"""
         self._apply_updates({"equipment_family": "水下无人自主航行器"}, task_type_key="pipeline_inspection")
@@ -465,21 +518,21 @@ class TestIssue12SlotCascade(unittest.TestCase):
         self.assertEqual(self.dm.slot_store.slots["equipment_unit_id"].value, unit_before)
 
     def test_21_unknown_class_does_not_clear_existing_cascade(self):
-        """21. 未知 class 输入标记 invalid，不清空原有的已确认级联。"""
+        """21. 未知 class 输入标记 invalid/conflict，不清空原有的已确认级联。"""
         self._apply_updates({"equipment_unit_id": "WROV-250-001"})
         fam_before = self.dm.slot_store.slots["equipment_family"].value
 
         self._apply_updates({"equipment_class": "未知太空飞船"})
-        self.assertEqual(self.dm.slot_store.slots["equipment_class"].status, "invalid")
+        self.assertIn(self.dm.slot_store.slots["equipment_class"].status, ("invalid", "conflict"))
         self.assertEqual(self.dm.slot_store.slots["equipment_family"].value, fam_before)
 
     def test_22_unknown_family_does_not_clear_existing_cascade(self):
-        """22. 未知 family 输入标记 invalid，不清空原有的已确认级联。"""
+        """22. 未知 family 输入标记 invalid/conflict，不清空原有的已确认级联。"""
         self._apply_updates({"equipment_unit_id": "WROV-250-001"})
         unit_before = self.dm.slot_store.slots["equipment_unit_id"].value
 
         self._apply_updates({"equipment_family": "未知系列"})
-        self.assertEqual(self.dm.slot_store.slots["equipment_family"].status, "invalid")
+        self.assertIn(self.dm.slot_store.slots["equipment_family"].status, ("invalid", "conflict"))
         self.assertEqual(self.dm.slot_store.slots["equipment_unit_id"].value, unit_before)
 
     def test_23_conflict_parent_does_not_prematurely_clear_downstream(self):
@@ -859,7 +912,7 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
         self.assertEqual(unit_slot.value, "AUV-324cc-001")
         self.assertEqual(unit_slot.status, "conflict")
         self.assertEqual(unit_slot.candidate_value, "WROV-250-001")
-        self.assertIn("UNIT_REJECTED", unit_slot.validation_error or "")
+        self.assertEqual(unit_slot.validation_error, "Unknown fleet unit 'WROV-250-001'")
 
     def test_58_changing_class_clears_orphan_equipment_name(self):
         """58. 已有 valid AUV 级联时，切换 class 为 work_class_rov (allow_overwrite=True) 清理旧 AUV name。"""

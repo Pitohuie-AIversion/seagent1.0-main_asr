@@ -447,5 +447,34 @@ class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
         self.assertFalse(final_file.exists(), "Final file should not be created when is_online is 'false'")
 
 
+    def test_14_auto_bound_unit_does_not_bypass_runtime_gate(self):
+        """Test 14: 四级自动收敛绑定的 equipment_unit_id (WROV-250-001) 若运行时离线，仍必须被 Runtime Availability Gate 阻断发布。"""
+        intent_id = self._setup_confirming_task("WROV-250-001")
+        slots = self.dm.slot_store.slots
+        slots["equipment_unit_id"].source = "auto"
+        self.assertEqual(slots["equipment_unit_id"].value, "WROV-250-001")
+        self.assertEqual(slots["equipment_unit_id"].status, "valid")
+        self.assertEqual(slots["equipment_unit_id"].source, "auto")
+
+        # 模拟 WROV-250-001 离线
+        now_dt = get_current_datetime()
+        ts_fresh = now_dt.isoformat(timespec="microseconds")
+        self._set_raw_state(
+            "WROV-250-001",
+            {
+                "overall_status": "offline",
+                "updated_at": ts_fresh,
+                "update_timestamp": ts_fresh,
+                "version": 1,
+            },
+        )
+
+        self.dm.phase = "confirming"
+        reply = self.dm.process("确认发布")
+
+        self.assertNotEqual(self.dm.phase, "done")
+        self.assertIn("离线", reply)
+
+
 if __name__ == "__main__":
     unittest.main()
