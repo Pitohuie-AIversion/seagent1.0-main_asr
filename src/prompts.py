@@ -184,7 +184,6 @@ def build_responder_messages(
     missing_keys = {m.get("key") for m in missing_fields}
     equipment_class = built_json.get("equipment_class") or task_state.get("equipment_class")
     equipment_family = built_json.get("equipment_family") or task_state.get("equipment_family")
-    equipment_spec = built_json.get("equipment_specification") or task_state.get("equipment_specification")
     equipment_type = built_json.get("equipment_type") or task_state.get("equipment_type")
     equipment_unit = built_json.get("equipment_unit_id") or task_state.get("equipment_unit_id")
 
@@ -200,33 +199,26 @@ def build_responder_messages(
             "本轮只询问作业机器人系列；不得询问或展示作业设备型号，"
             "也不得询问或展示具体机器人编号 equipment_unit_id。"
         )
-    elif "equipment_specification" in missing_keys and not equipment_spec:
-        spec_field = next(
-            (field for field in missing_fields if field.get("key") == "equipment_specification"),
+    elif "equipment_type" in missing_keys and not equipment_type:
+        type_field = next(
+            (field for field in missing_fields if field.get("key") == "equipment_type"),
             None,
         )
-        spec_candidates = (
-            spec_field.get("allowed_values", [])
-            if spec_field
+        type_candidates = (
+            type_field.get("allowed_values", [])
+            if type_field
             else []
         )
-
-        if not spec_candidates:
+        if not type_candidates:
             field_dependency_instruction = (
-                "\n【字段依赖提示】当前后端未返回合法机器人规格候选。"
-                "请如实告知用户候选暂不可用，不得猜测或自行生成规格。"
-            )
-        elif str(equipment_class).lower() == "auv":
-            field_dependency_instruction = (
-                f"\n【字段依赖提示】当前机器人系列已确认：{equipment_family}。"
-                f"本轮只询问 CC 口径规格，合法候选仅为：{spec_candidates}。"
-                "不得询问设备型号、HP、马力或具体机器人编号。"
+                "\n【字段依赖提示】当前后端未返回合法作业设备型号候选。"
+                "请如实告知用户候选暂不可用，不得猜测或自行生成型号。"
             )
         else:
             field_dependency_instruction = (
                 f"\n【字段依赖提示】当前机器人系列已确认：{equipment_family}。"
-                f"本轮只询问 HP 马力规格，合法候选仅为：{spec_candidates}。"
-                "不得询问设备型号、CC 口径或具体机器人编号。"
+                f"本轮只询问作业设备型号 equipment_type，合法候选仅为：{type_candidates}。"
+                "不得询问具体机器人编号 equipment_unit_id。"
             )
     elif "equipment_unit_id" in missing_keys and not equipment_unit:
         unit_field = next((m for m in missing_fields if m.get("key") == "equipment_unit_id"), None)

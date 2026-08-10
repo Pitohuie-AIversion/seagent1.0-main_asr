@@ -88,7 +88,6 @@ def seed_complete_valid_pipeline_task(dm, kb):
         "end_point": (end_point, "coord"),
         "equipment_class": (selected_rov.get("robot_class") or "observation_rov", "string"),
         "equipment_family": (selected_rov.get("family_full_name") or selected_rov.get("family") or "ROV", "string"),
-        "equipment_specification": ({"type": "power_hp", "value": 250, "unit": "hp", "display_value": "250HP", "variant_id": selected_rov.get("variant_id", "observation_rov_hp")}, "object"),
         "equipment_type": (equipment_type, "string"),
         "equipment_unit_id": (equipment_unit_id, "string"),
         "payload": (["高清水下摄像机"], "list"),

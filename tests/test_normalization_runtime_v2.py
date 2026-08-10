@@ -155,7 +155,6 @@ class TestRuntimeSpecializedOwnership(unittest.TestCase):
         eq_keys = {
             "equipment_class",
             "equipment_family",
-            "equipment_specification",
             "equipment_type",
             "equipment_name",
             "equipment_unit_id",

@@ -481,26 +481,6 @@ class OutputBuilder:
                     )
             return catalog
 
-        if ref in ("robot_specifications", "equipment_specification"):
-            class_selector = str(task_state.get("equipment_class") or "") if task_state else ""
-            family_selector = str(task_state.get("equipment_family") or "") if task_state else ""
-            if class_selector and family_selector:
-                try:
-                    specs = self.kb.list_robot_specifications(class_selector, family_selector, task_type_key)
-                    for spec in specs:
-                        disp = spec.get("display_value")
-                        if disp:
-                            catalog.append({
-                                "canonical_value": disp,
-                                "aliases": [],
-                                "display_name": disp,
-                                "parent": {"field": "equipment_family", "value": family_selector},
-                            })
-                    return catalog
-                except RobotSelectionDataError as exc:
-                    logger.warning("Robot candidate catalog resolution failed: ref=%s task=%s error=%s", ref, task_type_key, exc)
-                    return []
-            return []
 
         if ref in ("robot_full_names", "robot_variant_full_names"):
             family_selector = str(task_state.get("equipment_family") or "") if task_state else ""
@@ -675,18 +655,6 @@ class OutputBuilder:
                     return []
             return self.kb.get_task_allowed_robot_family_names(task_type_key)
 
-        if ref in ("robot_specifications", "equipment_specification"):
-            class_selector = str(task_state.get("equipment_class") or "") if task_state else ""
-            family_selector = str(task_state.get("equipment_family") or "") if task_state else ""
-            if class_selector and family_selector:
-                try:
-                    specs = self.kb.list_robot_specifications(class_selector, family_selector, task_type_key)
-                    return [s.get("display_value") for s in specs if s and s.get("display_value")]
-                except RobotSelectionDataError as exc:
-                    logger.warning("Robot spec resolution failed: ref=%s task=%s error=%s", ref, task_type_key, exc)
-                    return []
-            return []
-
         if ref in ("robot_full_names", "robot_variant_full_names"):
             family_selector = ""
             if task_state:
@@ -702,10 +670,10 @@ class OutputBuilder:
         if ref == "robot_unit_ids":
             class_selector = str(task_state.get("equipment_class") or "") if task_state else ""
             family_selector = str(task_state.get("equipment_family") or "") if task_state else ""
-            spec_selector = task_state.get("equipment_specification") if task_state else None
-            if class_selector and family_selector and spec_selector:
+            type_selector = task_state.get("equipment_type") if task_state else None
+            if class_selector and family_selector and type_selector:
                 try:
-                    units = self.kb.list_robot_units(class_selector, family_selector, spec_selector, task_type_key)
+                    units = self.kb.list_robot_units(class_selector, family_selector, type_selector, task_type_key)
                     if units:
                         return [u.get("unit_id") for u in units if u and u.get("unit_id")]
                 except RobotSelectionDataError as exc:

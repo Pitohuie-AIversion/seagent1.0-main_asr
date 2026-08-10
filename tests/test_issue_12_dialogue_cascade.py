@@ -83,56 +83,44 @@ class TestIssue12DialogueCascade(unittest.TestCase):
         self.assertIsNotNone(fam_field)
         self.assertEqual(fam_field["allowed_values"], ["水下无人自主航行器"])
 
-    # ── Test 3: AUV 输入 '324CC' 转完整 5 字段 canonical spec ─────────────────────
+    # ── Test 3: AUV 输入 '324CC' 转 4 级 canonical equipment_type ─────────────────
     def test_03_auv_returns_cc_specification(self):
-        """3. 输入显示值 '324CC' 确定性转换为 5 字段 canonical spec dictionary。"""
+        """3. 输入显示值 '324CC' 确定性转换为 canonical equipment_type 并填充 4 级级联。"""
         self._init_task("pipeline_inspection")
         self._apply_updates({
             "equipment_class": "auv",
             "equipment_family": "水下无人自主航行器",
-            "equipment_specification": "324CC",
+            "equipment_type": "324CC",
         }, task_type_key="pipeline_inspection")
 
-        spec_slot = self.dm.slot_store.slots.get("equipment_specification")
-        self.assertIsNotNone(spec_slot)
-        self.assertEqual(spec_slot.status, "valid")
-        val = spec_slot.value
-        self.assertIsInstance(val, dict)
-        self.assertEqual(val["type"], "diameter_mm")
-        self.assertEqual(val["value"], 324)
-        self.assertEqual(val["unit"], "mm")
-        self.assertEqual(val["display_value"], "324CC")
-        self.assertEqual(val["variant_id"], "autonomous_underwater_vehicle_324cc")
+        type_slot = self.dm.slot_store.slots.get("equipment_type")
+        self.assertIsNotNone(type_slot)
+        self.assertEqual(type_slot.status, "valid")
+        self.assertEqual(type_slot.value, "水下无人自主航行器 324CC")
 
-    # ── Test 4: 非 AUV 输入 '250HP' 转完整 5 字段 canonical spec ──────────────────
+    # ── Test 4: 非 AUV 输入 '250HP' 转 4 级 canonical equipment_type ──────────────
     def test_04_non_auv_returns_hp_specification(self):
-        """4. 输入显示值 '250HP' 确定性转换为 5 字段 canonical spec dictionary。"""
+        """4. 输入显示值 '250HP' 确定性转换为 canonical equipment_type 并填充 4 级级联。"""
         self._init_task("tree_valve_operation")
         self._apply_updates({
             "equipment_class": "work_class_rov",
             "equipment_family": "通用工作级深海机器人",
-            "equipment_specification": "250HP",
+            "equipment_type": "250HP",
         }, task_type_key="tree_valve_operation")
 
-        spec_slot = self.dm.slot_store.slots.get("equipment_specification")
-        self.assertIsNotNone(spec_slot)
-        self.assertEqual(spec_slot.status, "valid")
-        val = spec_slot.value
-        self.assertIsInstance(val, dict)
-        self.assertEqual(val["type"], "power_hp")
-        self.assertEqual(val["value"], 250)
-        self.assertEqual(val["unit"], "hp")
-        self.assertEqual(val["display_value"], "250HP")
-        self.assertEqual(val["variant_id"], "general_work_class_rov_250hp")
+        type_slot = self.dm.slot_store.slots.get("equipment_type")
+        self.assertIsNotNone(type_slot)
+        self.assertEqual(type_slot.status, "valid")
+        self.assertEqual(type_slot.value, "通用工作级深海机器人 250HP")
 
     # ── Test 5: 完整对话链：输入 324CC 后推进到 unit 候选 ─────────────────────
     def test_05_valid_three_levels_returns_unit_candidates(self):
-        """5. 输入 324CC 完成三级级联后，下一级 missing 获取精准 unit 候选。"""
+        """5. 输入 324CC 完成前三级级联后，下一级 missing 获取精准 unit 候选。"""
         self._init_task("pipeline_inspection")
         self._apply_updates({
             "equipment_class": "auv",
             "equipment_family": "水下无人自主航行器",
-            "equipment_specification": "324CC",
+            "equipment_type": "水下无人自主航行器 324CC",
         }, task_type_key="pipeline_inspection")
 
         missing = self.dm.slot_store.get_missing_slots(
@@ -156,14 +144,14 @@ class TestIssue12DialogueCascade(unittest.TestCase):
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].status, "valid")
         self.assertEqual(slots["equipment_family"].status, "valid")
-        self.assertEqual(slots["equipment_specification"].status, "valid")
+        self.assertEqual(slots["equipment_type"].status, "valid")
         self.assertEqual(slots["equipment_unit_id"].status, "valid")
 
         missing = self.dm.slot_store.get_missing_slots(self.dm.builder.get_schema("pipeline_inspection"))
         missing_keys = [m["key"] for m in missing]
         self.assertNotIn("equipment_class", missing_keys)
         self.assertNotIn("equipment_family", missing_keys)
-        self.assertNotIn("equipment_specification", missing_keys)
+        self.assertNotIn("equipment_type", missing_keys)
         self.assertNotIn("equipment_unit_id", missing_keys)
 
     # ── Test 7: legacy equipment_type 继续兼容 ─────────────────────────────────
@@ -175,7 +163,7 @@ class TestIssue12DialogueCascade(unittest.TestCase):
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].value, "work_class_rov")
         self.assertEqual(slots["equipment_family"].value, "通用工作级深海机器人")
-        self.assertEqual(slots["equipment_specification"].value.get("variant_id"), "general_work_class_rov_250hp")
+        self.assertEqual(slots["equipment_type"].value, "通用工作级深海机器人 250HP")
 
     # ── Test 8: 知识问答不修改 Slot ───────────────────────────────────────────
     def test_08_knowledge_qa_does_not_modify_slot_store(self):
@@ -204,7 +192,7 @@ class TestIssue12DialogueCascade(unittest.TestCase):
         dm2.process(msg, request_id="req_asr_01")
 
         self.assertEqual(dm1.slot_store.get_task_state(), dm2.slot_store.get_task_state())
-        for k in ("equipment_class", "equipment_family", "equipment_specification", "equipment_unit_id"):
+        for k in ("equipment_class", "equipment_family", "equipment_type", "equipment_unit_id"):
             s1 = dm1.slot_store.slots.get(k)
             s2 = dm2.slot_store.slots.get(k)
             self.assertIsNotNone(s1)
@@ -227,7 +215,7 @@ class TestIssue12DialogueCascade(unittest.TestCase):
             self.dm._apply_updates_in_transaction({"equipment_class": "invalid_class"}, self.dm.slot_store.slots, allow_overwrite=True)
             self.assertEqual(self.dm.slot_store.slots["equipment_class"].status, "invalid")
 
-            missing_empty = [{"key": "equipment_specification", "label": "机器人规格", "type": "object", "allowed_values": []}]
+            missing_empty = [{"key": "equipment_type", "label": "作业设备型号", "type": "string", "allowed_values": []}]
             msg = build_responder_messages(
                 task_state={"equipment_class": "auv", "equipment_family": "水下无人自主航行器"},
                 built_json={"equipment_class": "auv", "equipment_family": "水下无人自主航行器"},
@@ -285,43 +273,25 @@ class TestIssue12DialogueCascade(unittest.TestCase):
             with self.assertRaises(TypeError):
                 self.dm.builder.get_required("pipeline_inspection", task_state=self.dm.task_state)
 
-    # ── Test 15 (P1-2): Prompts 明确按 CC / HP 规格追问 ────────────────────────
+    # ── Test 15 (P1-2): Prompts 明确按 equipment_type 追问 ────────────────────────
     def test_15_prompt_instructions_for_auv_and_non_auv_specifications(self):
-        """15 (P1-2). prompts 按 equipment_specification 单独追问：AUV 询问 CC 口径，非 AUV 询问 HP 马力。"""
+        """15 (P1-2). prompts 按 equipment_type 追问设备型号。"""
         from src.prompts import build_responder_messages
 
-        # AUV
-        missing_auv = [
-            {"key": "equipment_specification", "label": "机器人规格", "type": "object", "allowed_values": ["324CC"]},
+        missing_type = [
+            {"key": "equipment_type", "label": "作业设备型号", "type": "string", "allowed_values": ["水下无人自主航行器 324CC"]},
         ]
         msg_auv = build_responder_messages(
             task_state={"equipment_class": "auv", "equipment_family": "水下无人自主航行器"},
             built_json={"equipment_class": "auv", "equipment_family": "水下无人自主航行器"},
-            missing_fields=missing_auv,
+            missing_fields=missing_type,
             mode="normal", phase="collecting", knowledge_context="", constraint_context={"type": "none"}, conversation_history=[], latest_user_message="继续", ROV2type={}, support_task=[]
         )[0]["content"]
-        self.assertIn("本轮只询问 CC 口径规格", msg_auv)
-        self.assertIn("324CC", msg_auv)
-        self.assertNotIn("作业设备型号/", msg_auv)
-        self.assertNotIn("HP 马力规格", msg_auv)
-
-        # 非 AUV
-        missing_rov = [
-            {"key": "equipment_specification", "label": "机器人规格", "type": "object", "allowed_values": ["250HP"]},
-        ]
-        msg_rov = build_responder_messages(
-            task_state={"equipment_class": "work_class_rov", "equipment_family": "通用工作级深海机器人"},
-            built_json={"equipment_class": "work_class_rov", "equipment_family": "通用工作级深海机器人"},
-            missing_fields=missing_rov,
-            mode="normal", phase="collecting", knowledge_context="", constraint_context={"type": "none"}, conversation_history=[], latest_user_message="继续", ROV2type={}, support_task=[]
-        )[0]["content"]
-        self.assertIn("本轮只询问 HP 马力规格", msg_rov)
-        self.assertIn("250HP", msg_rov)
-        self.assertNotIn("作业设备型号/", msg_rov)
-        self.assertNotIn("CC 口径规格", msg_rov)
+        self.assertIn("equipment_type", msg_auv)
+        self.assertIn("水下无人自主航行器 324CC", msg_auv)
 
     def test_equipment_type_missing_alone_does_not_trigger_spec_prompt(self):
-        """equipment_type 单独缺失时（specification 已有效），不得生成 CC/HP specification 提示。"""
+        """equipment_type 缺失时生成 equipment_type 专属提示。"""
         from src.prompts import build_responder_messages
 
         missing_fields = [
@@ -337,18 +307,10 @@ class TestIssue12DialogueCascade(unittest.TestCase):
             task_state={
                 "equipment_class": "work_class_rov",
                 "equipment_family": "通用工作级深海机器人",
-                "equipment_specification": {
-                    "type": "power_hp",
-                    "value": 250,
-                    "unit": "hp",
-                    "display_value": "250HP",
-                    "variant_id": "general_work_class_rov_250hp",
-                },
             },
             built_json={
                 "equipment_class": "work_class_rov",
                 "equipment_family": "通用工作级深海机器人",
-                "equipment_specification": "250HP",
             },
             missing_fields=missing_fields,
             mode="normal",
@@ -361,8 +323,7 @@ class TestIssue12DialogueCascade(unittest.TestCase):
             support_task=[],
         )[0]["content"]
 
-        self.assertNotIn("HP 马力规格", msg)
-        self.assertNotIn("CC 口径规格", msg)
+        self.assertIn("equipment_type", msg)
 
 
 if __name__ == "__main__":

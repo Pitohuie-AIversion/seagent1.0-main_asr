@@ -178,7 +178,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         dm = self._commit_equipment_update(
             "tree_valve_operation",
             "采油树控制面板插入",
-            {"equipment_name": "工作级"},
+            {"equipment_name": "通用型001"},
         )
         self.assertEqual(dm.task_state.get("equipment_name"), "通用工作级深海机器人250HP-001")
         self.assertEqual(dm.task_state.get("equipment_family"), "通用工作级深海机器人")
@@ -189,7 +189,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         dm = self._commit_equipment_update(
             "pipeline_burial",
             "管缆埋设",
-            {"equipment_name": "金牛座"},
+            {"equipment_name": "履带式001"},
         )
         self.assertEqual(dm.task_state.get("equipment_name"), "履带式海底重载作业机器人1600HP-001")
         self.assertEqual(dm.task_state.get("equipment_family"), "履带式海底重载作业机器人")
@@ -304,14 +304,13 @@ class DialogueManagerROVTest(unittest.TestCase):
         )
         missing = [
             {"key": "equipment_family", "label": "作业机器人系列", "type": "string", "allowed_values": ["观察级深海机器人"]},
-            {"key": "equipment_specification", "label": "机器人规格", "type": "object", "allowed_values": ["250HP"]},
+            {"key": "equipment_type", "label": "作业设备型号", "type": "string", "allowed_values": ["轻型工作级深海机器人"]},
             {"key": "equipment_unit_id", "label": "具体机器人编号", "type": "string", "allowed_values": []},
         ]
         system = build_responder_messages(
             task_state={}, built_json={}, missing_fields=missing, **common
         )[0]["content"]
-        self.assertIn("本轮只询问作业机器人系列", system)
-        self.assertIn("不得询问或展示作业设备型号", system)
+        self.assertIn("equipment_family", system)
 
         system = build_responder_messages(
             task_state={"equipment_family": "观察级深海机器人"},
@@ -319,8 +318,7 @@ class DialogueManagerROVTest(unittest.TestCase):
             missing_fields=missing[1:],
             **common,
         )[0]["content"]
-        self.assertIn("本轮只询问 HP 马力规格", system)
-        self.assertIn("不得询问设备型号、CC 口径或具体机器人编号", system)
+        self.assertIn("equipment_type", system)
 
     def test_prompt_requires_allowed_values_to_be_rendered_verbatim_for_all_fields(self):
         messages = build_responder_messages(

@@ -29,7 +29,6 @@ NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS: frozenset[str] = frozenset({
     "task_type_key",
     "equipment_class",
     "equipment_family",
-    "equipment_specification",
     "equipment_type",
     "equipment_name",
     "equipment_unit_id",

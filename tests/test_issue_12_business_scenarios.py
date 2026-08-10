@@ -34,7 +34,7 @@ class TestIssue12BusinessScenarios(unittest.TestCase):
 
     # 场景 1：AUV 完整级联
     def test_scenario_1_auv_complete_cascade(self):
-        """场景 1：输入合法 AUV unit (AUV-324cc-001) 自动得到完整合法 6 槽进入 valid。"""
+        """场景 1：输入合法 AUV unit (AUV-324cc-001) 自动得到完整合法 5 槽进入 valid。"""
         self._apply_updates({"equipment_unit_id": "AUV-324cc-001"}, task_type_key="pipeline_inspection")
         slots = self.dm.slot_store.slots
 
@@ -42,14 +42,13 @@ class TestIssue12BusinessScenarios(unittest.TestCase):
         self.assertEqual(slots["equipment_class"].status, "valid")
         self.assertEqual(slots["equipment_family"].value, "水下无人自主航行器")
         self.assertEqual(slots["equipment_family"].status, "valid")
-        self.assertIsNotNone(slots["equipment_specification"].value)
-        self.assertEqual(slots["equipment_specification"].status, "valid")
         self.assertEqual(slots["equipment_type"].value, "水下无人自主航行器 324CC")
         self.assertEqual(slots["equipment_type"].status, "valid")
         self.assertEqual(slots["equipment_unit_id"].value, "AUV-324cc-001")
         self.assertEqual(slots["equipment_unit_id"].status, "valid")
         self.assertEqual(slots["equipment_name"].value, "水下无人自主航行器-324cc-001")
         self.assertEqual(slots["equipment_name"].status, "valid")
+        self.assertNotIn("equipment_specification", slots)
 
     # 场景 2：WROV 完整级联
     def test_scenario_2_wrov_complete_cascade(self):
@@ -61,12 +60,11 @@ class TestIssue12BusinessScenarios(unittest.TestCase):
         self.assertEqual(slots["equipment_class"].status, "valid")
         self.assertEqual(slots["equipment_family"].value, "通用工作级深海机器人")
         self.assertEqual(slots["equipment_family"].status, "valid")
-        self.assertIsNotNone(slots["equipment_specification"].value)
-        self.assertEqual(slots["equipment_specification"].status, "valid")
         self.assertEqual(slots["equipment_type"].value, "通用工作级深海机器人 250HP")
         self.assertEqual(slots["equipment_type"].status, "valid")
         self.assertEqual(slots["equipment_unit_id"].value, "WROV-250-001")
         self.assertEqual(slots["equipment_unit_id"].status, "valid")
+        self.assertNotIn("equipment_specification", slots)
 
     # 场景 3：非法或混合组合
     def test_scenario_3_illegal_or_mismatched_combination(self):
@@ -87,15 +85,10 @@ class TestIssue12BusinessScenarios(unittest.TestCase):
         """场景 4：已有 AUV 完整级联，输入完整 WROV 且 allow_overwrite=False，旧 AUV 保留，最高冲突层进 conflict。"""
         self._apply_updates({"equipment_unit_id": "AUV-324cc-001"}, task_type_key="pipeline_inspection")
 
-        wrov_spec = {
-            "type": "power_hp",
-            "value": 250,
-            "variant_id": "general_work_class_rov_250hp",
-        }
         wrov_input = {
             "equipment_class": "work_class_rov",
             "equipment_family": "通用工作级深海机器人",
-            "equipment_specification": wrov_spec,
+            "equipment_type": "通用工作级深海机器人 250HP",
             "equipment_unit_id": "WROV-250-001",
         }
 
@@ -116,15 +109,10 @@ class TestIssue12BusinessScenarios(unittest.TestCase):
         """场景 5：已有 AUV 完整级联，输入完整 WROV 且 allow_overwrite=True，整套成功一次性更新。"""
         self._apply_updates({"equipment_unit_id": "AUV-324cc-001"}, task_type_key="pipeline_inspection")
 
-        wrov_spec = {
-            "type": "power_hp",
-            "value": 250,
-            "variant_id": "general_work_class_rov_250hp",
-        }
         wrov_input = {
             "equipment_class": "work_class_rov",
             "equipment_family": "通用工作级深海机器人",
-            "equipment_specification": wrov_spec,
+            "equipment_type": "通用工作级深海机器人 250HP",
             "equipment_unit_id": "WROV-250-001",
         }
 
@@ -135,18 +123,23 @@ class TestIssue12BusinessScenarios(unittest.TestCase):
         self.assertEqual(slots["equipment_class"].status, "valid")
         self.assertEqual(slots["equipment_family"].value, "通用工作级深海机器人")
         self.assertEqual(slots["equipment_family"].status, "valid")
+        self.assertEqual(slots["equipment_type"].value, "通用工作级深海机器人 250HP")
+        self.assertEqual(slots["equipment_type"].status, "valid")
         self.assertEqual(slots["equipment_unit_id"].value, "WROV-250-001")
         self.assertEqual(slots["equipment_unit_id"].status, "valid")
         self.assertNotEqual(slots["equipment_name"].value, "水下无人自主航行器-324cc-001")
 
-    # 场景 6：规格缺失阻止发布
+    # 场景 6：观察级 ROV 完整级联
     def test_scenario_6_missing_spec_blocks_publish(self):
-        """场景 6：输入规格缺失/为 null 的机器人 (OBSROV--001)，在 null=unknown 契约下 spec/unit 均有效。"""
+        """场景 6：输入观察级 ROV (OBSROV--001) 4 级槽位均有效。"""
         self._apply_updates({"equipment_unit_id": "OBSROV--001"}, task_type_key="pipeline_inspection")
         slots = self.dm.slot_store.slots
 
-        self.assertEqual(slots["equipment_specification"].status, "valid")
+        self.assertEqual(slots["equipment_class"].value, "observation_rov")
+        self.assertEqual(slots["equipment_class"].status, "valid")
+        self.assertEqual(slots["equipment_type"].status, "valid")
         self.assertEqual(slots["equipment_unit_id"].status, "valid")
+        self.assertNotIn("equipment_specification", slots)
 
 
 if __name__ == "__main__":

@@ -71,10 +71,6 @@ task_templates:
           label: "作业机器人系列"
           type: string
           allowed_values_ref: "robot_family_full_names"
-        - key: equipment_specification
-          label: "机器人规格"
-          type: object
-          allowed_values_ref: "robot_specifications"
         - key: equipment_type
           label: "作业设备型号"
           type: string
@@ -163,10 +159,6 @@ task_templates:
           label: "作业机器人系列"
           type: string
           allowed_values_ref: "robot_family_full_names"
-        - key: equipment_specification
-          label: "机器人规格"
-          type: object
-          allowed_values_ref: "robot_specifications"
         - key: equipment_type
           label: "作业设备型号"
           type: string
@@ -260,10 +252,6 @@ task_templates:
           label: "作业机器人系列"
           type: string
           allowed_values_ref: "robot_family_full_names"
-        - key: equipment_specification
-          label: "机器人规格"
-          type: object
-          allowed_values_ref: "robot_specifications"
         - key: equipment_type
           label: "作业设备型号"
           type: string

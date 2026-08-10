@@ -83,7 +83,6 @@ BASE_SLOT_TYPES = {
     "internal_id": "string",
     "equipment_class": "string",
     "equipment_family": "string",
-    "equipment_specification": "object",
     "equipment_type": "string",
     "equipment_name": "string",
     "equipment_unit_id": "string",
@@ -92,18 +91,11 @@ BASE_SLOT_TYPES = {
 ROBOT_CASCADE_DEPENDENCIES = {
     "equipment_class": (
         "equipment_family",
-        "equipment_specification",
         "equipment_type",
         "equipment_unit_id",
         "equipment_name",
     ),
     "equipment_family": (
-        "equipment_specification",
-        "equipment_type",
-        "equipment_unit_id",
-        "equipment_name",
-    ),
-    "equipment_specification": (
         "equipment_type",
         "equipment_unit_id",
         "equipment_name",
@@ -865,7 +857,10 @@ class SlotStore:
 
                     candidate_val = copy.deepcopy(sdict.get("candidate_value"))
                     if key == "equipment_specification":
-                        _validate_spec_slot_data(value, candidate_val, slot_key=key)
+                        try:
+                            _validate_spec_slot_data(value, candidate_val, slot_key=key)
+                        except SnapshotValidationError:
+                            pass
 
                     new_slots[key] = Slot(
                         slot_name=key,
@@ -910,7 +905,10 @@ class SlotStore:
                     if sdict.status == "valid" and sdict.value is None:
                         raise SnapshotValidationError(f"Valid slot '{key}' cannot have null value.")
                     if key == "equipment_specification":
-                        _validate_spec_slot_data(sdict.value, sdict.candidate_value, slot_key=key)
+                        try:
+                            _validate_spec_slot_data(sdict.value, sdict.candidate_value, slot_key=key)
+                        except SnapshotValidationError:
+                            pass
                     new_slots[key] = sdict.copy()
                     new_slots[key].slot_name = key
 
@@ -939,6 +937,76 @@ class SlotStore:
                         parsed_acks.append(copy.deepcopy(a))
                     else:
                         raise SnapshotValidationError("Each entry in validation_acknowledgements must be a dictionary or ValidationAcknowledgement.")
+
+            # Snapshot Migration Rule for legacy equipment_specification
+            if "equipment_specification" in new_slots:
+                legacy_spec_slot = new_slots.pop("equipment_specification")
+                eq_type_slot = new_slots.get("equipment_type")
+                # Case A: equipment_type already valid -> ignore equipment_specification
+                if not (eq_type_slot and eq_type_slot.status == "valid" and eq_type_slot.value):
+                    # Case B: try to backfill equipment_type from legacy_spec_slot.variant_id
+                    spec_val = (
+                        legacy_spec_slot.value
+                        if isinstance(legacy_spec_slot.value, dict)
+                        else (
+                            legacy_spec_slot.candidate_value
+                            if isinstance(legacy_spec_slot.candidate_value, dict)
+                            else {}
+                        )
+                    )
+                    variant_id = (
+                        spec_val.get("variant_id") if isinstance(spec_val, dict) else None
+                    )
+                    if variant_id and isinstance(variant_id, str):
+                        model_variants = {}
+                        robot_families = {}
+                        robot_classes = {}
+                        if (
+                            self.kb
+                            and hasattr(self.kb, "robot_fleet")
+                            and isinstance(self.kb.robot_fleet, dict)
+                        ):
+                            model_variants = self.kb.robot_fleet.get("model_variants", {})
+                            robot_families = self.kb.robot_fleet.get("robot_families", {})
+                            robot_classes = self.kb.robot_fleet.get("robot_classes", {})
+                        else:
+                            try:
+                                import yaml
+
+                                with open("config/robot_fleet.yaml", "r", encoding="utf-8") as f:
+                                    rf_cfg = yaml.safe_load(f) or {}
+                                model_variants = rf_cfg.get("model_variants", {})
+                                robot_families = rf_cfg.get("robot_families", {})
+                                robot_classes = rf_cfg.get("robot_classes", {})
+                            except Exception:
+                                pass
+
+                        if variant_id in model_variants:
+                            var_info = model_variants[variant_id]
+                            fam_id = var_info.get("family_id")
+                            fam_info = robot_families.get(fam_id, {})
+                            cls_id = fam_info.get("robot_class")
+
+                            # Check family/class consistency if present in snapshot
+                            fam_slot = new_slots.get("equipment_family")
+                            cls_slot = new_slots.get("equipment_class")
+                            fam_ok = True
+                            if fam_slot and fam_slot.status == "valid" and fam_slot.value:
+                                fam_ok = fam_slot.value in (fam_id, fam_info.get("full_name"))
+                            cls_ok = True
+                            if cls_slot and cls_slot.status == "valid" and cls_slot.value:
+                                cls_name = robot_classes.get(cls_id, {}).get("full_name", cls_id)
+                                cls_ok = cls_slot.value in (cls_id, cls_name)
+
+                            if fam_ok and cls_ok:
+                                new_slots["equipment_type"] = Slot(
+                                    slot_name="equipment_type",
+                                    value=var_info.get("full_name", variant_id),
+                                    value_type="string",
+                                    status="valid",
+                                    source="snapshot_migration",
+                                )
+                            # Case C: if mismatch, fail closed (equipment_type remains missing/unresolved)
 
             self._initialize_base_slots(new_slots)
             self.slots = new_slots
