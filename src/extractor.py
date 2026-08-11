@@ -67,7 +67,10 @@ EXTRACTION_SYSTEM = """\
    用户说"水深300米"、"深度300"、"作业水深是300"、"300米水深"时，输出 {{"water_depth": 300}}。
 8. 对于任务类型：
 {task_type_rules}
-9. 对于ROV型号：如用户描述模糊（如"深水工作ROV"、"轻型观察"），提取 rov_description 字段，不要强行映射型号名。
+9. 对于作业设备类型（equipment_type）与型号（equipment_name）：
+   - 若用户提供了作业设备类型（如"观察级ROV"、"观察级 ROV"、"工作级ROV"、"海底拖拉机"、"调查型AUV"等），必须提取为 equipment_type。
+   - 若用户提供了具体的设备全称/型号（如 sealien_inspection、sealien_work_class 等），提取 equipment_name，并结合 {ROV2type} 自动映射对应的 equipment_type。
+   - 若用户描述极其模糊（既非标准设备类型，也非已知型号），仅在所需字段中明确包含 rov_description 时才提取 rov_description 字段。
 10. 若确定ROV型号，可自动识别出ROV类型：{ROV2type}
 11. 机器人能力、最大水深、载荷、功率、尺寸、状态、任务阈值和作业限制必须以所需字段、允许值、ROV2type和后续知识库/约束校验为准；不得凭通用知识补全或改写配置中没有的信息。
 12. 如用户明确说任务紧急（"紧急"、"急"、"加急"等），提取 emergency_mode: true。
@@ -183,7 +186,25 @@ class ParameterExtractor:
         result = self.llm.extract_json(messages, max_tokens=500)
         print('result in extract update | '*10)
         print(result)
-        return result or {}
+
+        if result is None:
+            result = {}
+
+        # 兜底补充 equipment_type
+        if "equipment_type" not in result and required:
+            has_eq_type = any(req.get("key") == "equipment_type" for req in required)
+            if has_eq_type:
+                msg_clean = user_message.replace(" ", "").lower()
+                if "观察级" in msg_clean or "observation" in msg_clean:
+                    result["equipment_type"] = "观察级ROV"
+                elif "工作级" in msg_clean or "workclass" in msg_clean:
+                    result["equipment_type"] = "工作级ROV"
+                elif "拖拉机" in msg_clean or "tractor" in msg_clean:
+                    result["equipment_type"] = "海底拖拉机"
+                elif "auv" in msg_clean or "调查型" in msg_clean:
+                    result["equipment_type"] = "调查型AUV"
+
+        return result
 
     @staticmethod
     def _build_extraction_history(conversation_history: list[dict]) -> list[dict]:

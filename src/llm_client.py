@@ -112,19 +112,16 @@ class LLMClient:
                 if wellhead_match2:
                     res["wellhead_id"] = wellhead_match2.group(0)
                     
-            # Extract equipment_name
-            if "work" in user_msg.lower() or "工作级" in user_msg:
-                res["equipment_name"] = "sealien_work_class"
+            # Extract equipment_name & equipment_type
+            clean_msg = user_msg.lower().replace(" ", "")
+            if "work" in clean_msg or "工作级" in clean_msg:
                 res["equipment_type"] = "工作级ROV"
-            elif "inspection" in user_msg.lower() or "观察级" in user_msg or "巡检rov" in user_msg.lower():
-                res["equipment_name"] = "sealien_inspection"
+            elif "inspection" in clean_msg or "观察级" in clean_msg:
                 res["equipment_type"] = "观察级ROV"
-            elif "taurus" in user_msg.lower() or "拖拉机" in user_msg:
-                res["equipment_name"] = "taurus_tractor"
+            elif "taurus" in clean_msg or "拖拉机" in clean_msg:
                 res["equipment_type"] = "海底拖拉机"
-            elif "auv" in user_msg.lower():
-                res["equipment_name"] = "sealien_survey_auv"
-                res["equipment_type"] = "观察级ROV"
+            elif "auv" in clean_msg or "调查型" in clean_msg:
+                res["equipment_type"] = "调查型AUV"
                 
             # Extract payload
             payload_options = [

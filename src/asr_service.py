@@ -32,6 +32,7 @@ class ASRService:
         self.device = "cpu"
         self.dtype = None
         self._lock = threading.Lock()
+        self.is_degraded = False
 
     def load(self) -> None:
         if self.model is not None:
@@ -40,9 +41,16 @@ class ASRService:
         if os.environ.get("OFFLINE_MOCK") == "1":
             self.device = "mock"
             self.model = "mock_model"
+            self.is_degraded = True
             return
 
         model_path = self.config.model_path.resolve()
+        if str(self.config.model_path).lower() == "mock" or self.config.model_path.name.lower() == "mock":
+            self.device = "mock"
+            self.model = "mock_model"
+            self.is_degraded = True
+            return
+
         if not model_path.exists():
             raise FileNotFoundError(f"ASR model path does not exist: {model_path}")
 
@@ -85,6 +93,12 @@ class ASRService:
         except TypeError:
             # Some qwen-asr versions do not expose local_files_only at this wrapper level.
             self.model = Qwen3ASRModel.from_pretrained(str(model_path), **model_kwargs)
+        except Exception as exc:
+            # 降级到 mock 模式，避免因为 ASR 模型显存不足导致整个服务启动失败。
+            self.device = "mock"
+            self.model = "mock_model"
+            self.is_degraded = True
+            print(f"⚠️ ASR model load failed ({exc}), falling back to mock mode")
 
     def transcribe_file(self, audio_path: str | Path, language: str | None = None) -> dict[str, Any]:
         if self.model is None:
