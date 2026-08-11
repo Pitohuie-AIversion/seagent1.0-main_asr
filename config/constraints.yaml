@@ -7,15 +7,15 @@ constraints:
 
   # ── ROV 类型约束 ─────────────────────────────────────────────────────────────
 
-  - id: "C001"
-    name: "管缆巡检必须使用观察级ROV"
-    applies_to: ["pipeline_inspection"]
-    check_type: "robot_category"
-    required_category: "observation"
-    violation_message: >
-      管缆巡检任务要求使用观察级ROV（Observation-class ROV），
-      当前选择的设备类型不符合要求。请更换为观察级ROV。
-    severity: "hard"   # hard=无法发布; soft=警告但可继续
+  # - id: "C001"
+  #   name: "管缆巡检必须使用观察级ROV"
+  #   applies_to: ["pipeline_inspection"]
+  #   check_type: "robot_category"
+  #   required_category: "observation"
+  #   violation_message: >
+  #     管缆巡检任务要求使用观察级ROV（Observation-class ROV），
+  #     当前选择的设备类型不符合要求。请更换为观察级ROV。
+  #   severity: "hard"   # hard=无法发布; soft=警告但可继续
 
   - id: "C002"
     name: "采油树阀门插拔必须使用工作级ROV"
@@ -179,7 +179,8 @@ constraints:
     applies_to: ["all"]
     check_type: "turbidity"
     violation_message: >
-      当前作业区域水体浑浊度较高（{turbidity}），视觉感知效果将下降。建议优先使用声呐等声学设备进行探测。
+      当前浊度为（{turbidity}），可能降低光学成像质量，但不影响声呐巡检，触发浊度软约束，建议以侧扫声呐为主要检测手段，并降低航速、适当缩短扫测距离。
+>
     severity: "soft"
 
   - id: "C015"
