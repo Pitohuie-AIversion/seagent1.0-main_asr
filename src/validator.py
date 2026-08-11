@@ -28,6 +28,14 @@ class Violation:
     # related_fields：触发本条违规的字段名列表，用于白名单 key 和失效判断
 
 
+@dataclass
+class PassedConstraint:
+    constraint_id: str
+    constraint_name: str
+    message: str
+    related_fields: list[str] = field(default_factory=list)
+
+
 # check_type → 该约束关注的字段集合
 _CHECK_FIELDS: dict[str, list[str]] = {
     "robot_category":                ["equipment_name", "equipment_type"],
@@ -90,6 +98,49 @@ class TaskValidator:
             lines.append(f"{tag} 作业规范：{v.constraint_name}\n  {v.message}")
         return "\n\n".join(lines)
 
+    def get_positive_feedback(
+        self, task_state: dict, trigger_fields: set[str] | None = None
+    ) -> list[PassedConstraint]:
+        """Return non-blocking positive constraint feedback for responder prompts."""
+        if trigger_fields is not None:
+            watched = {"task_type", "task_type_key", "equipment_name", "equipment_type", "water_depth"}
+            if not watched.intersection(trigger_fields):
+                return []
+
+        if task_state.get("task_type_key") != "pipeline_inspection":
+            return []
+
+        rov = self._selected_auv(task_state)
+        if not rov:
+            return []
+
+        water_depth = task_state.get("water_depth")
+        if water_depth is None:
+            return []
+
+        try:
+            depth_val = float(water_depth)
+        except (TypeError, ValueError):
+            return []
+
+        max_depth = rov.get("max_depth_m")
+        if max_depth is None or depth_val > float(max_depth):
+            return []
+
+        depth_text = f"{depth_val:g}"
+        max_depth_text = f"{float(max_depth):g}"
+        return [
+            PassedConstraint(
+                "P_AUV_DEPTH_OK",
+                "AUV水深能力满足",
+                (
+                    f"已满足AUV水深硬约束：任务设计水深 {depth_text} m "
+                    f"不超过 {rov['full_name']} 最大工作水深 {max_depth_text} m。"
+                ),
+                ["equipment_name", "equipment_type", "water_depth"],
+            )
+        ]
+
     # ──────────────────────────────────────────────────────────────────────────
     # 内部实现
     # ──────────────────────────────────────────────────────────────────────────
@@ -127,6 +178,33 @@ class TaskValidator:
                 violations.append(v)
 
         return violations
+
+    def _selected_auv(self, task_state: dict) -> dict | None:
+        equipment = task_state.get("equipment_name")
+        if equipment:
+            rov = self.kb.get_rov(equipment)
+            if rov and self._is_auv(rov):
+                return rov
+
+        equipment_type = str(task_state.get("equipment_type", ""))
+        if "AUV" in equipment_type.upper() or "调查型" in equipment_type:
+            for candidate in self.kb.get_all_rovs():
+                if self._is_auv(candidate):
+                    return candidate
+        return None
+
+    @staticmethod
+    def _is_auv(rov: dict) -> bool:
+        text = " ".join(
+            [
+                str(rov.get("model", "")),
+                str(rov.get("full_name", "")),
+                str(rov.get("category", "")),
+                str(rov.get("category_name", "")),
+                " ".join(str(alias) for alias in rov.get("aliases", [])),
+            ]
+        ).lower()
+        return "auv" in text or "调查型" in text
 
     def _check_one(
         self, c: dict, check: str, task_state: dict,

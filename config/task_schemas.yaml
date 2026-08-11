@@ -149,9 +149,9 @@ task_templates:
           label: "作业设备类型"
           type: string
           allowed_values_ref: "robot_category_labels"
-        - key: equipment_name
-          label: "作业设备全称"
-          type: string
+        # - key: equipment_name
+        #   label: "作业设备全称"
+        #   type: string
           allowed_values_ref: "robot_full_names"
         - key: payload
           label: "携带工具"

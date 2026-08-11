@@ -63,6 +63,8 @@ RESPONDER_SYSTEM = """你是一个专业的水下多智能体任务决策大模�
 
 {constraint_instruction}
 
+{positive_constraint_instruction}
+
 【ROV机器所属类型介绍】
 {ROV2type}
 
@@ -83,6 +85,7 @@ RESPONDER_SYSTEM = """你是一个专业的水下多智能体任务决策大模�
 3. **字段值约束**：
    - 待收集字段列表中标注了"必须从以下选项中选择"的字段，必须引导用户在给定选项中确认，不接受选项以外的值。
    - 设备类型必须是知识库中定义的 ROV 类型；设备全称必须是知识库中存在的型号全名。
+   - 当当前字段中已选择“调查型AUV”或设备全称包含“AUV”时，视为用户已明确选择 AUV；不得输出“参数冲突预警”，不得因为管缆巡检而建议更换为观察级ROV/调查型ROV，也不得追加“宏观巡查/细节检查”的二选一劝退话术。只有真实硬/软约束违规时才提示修改设备；水深满足时只简要说明已满足AUV水深约束并继续收集或确认后续字段。
 
 4. **收集策略**：
    - 正常模式：每次聚焦1-2个缺失字段，逐步引导。
@@ -157,6 +160,18 @@ def build_responder_messages(
             tag = "⛔" if v.severity == "hard" else "⚠️"
             lines.append(f"{tag} 作业规范：{v.constraint_name}\n   {v.message}")
         constraint_instruction += "\n\n【当前违规详情】\n" + "\n\n".join(lines)
+    passed_constraints = constraint_context.get("passed_constraints", [])
+    positive_constraint_instruction = ""
+    if passed_constraints:
+        lines = [
+            f"✓ 作业规范：{p.constraint_name}\n   {p.message}"
+            for p in passed_constraints
+        ]
+        positive_constraint_instruction = (
+            "【当前已满足约束】\n"
+            + "\n\n".join(lines)
+            + "\n请在后续回复中自然提及这些已满足项，但不要把它们当作阻塞或警告。"
+        )
     refusal_counts = constraint_context.get("hard_refusal_counts", {})
     if refusal_counts and ctx_type in ("hard", "hard_final_warning"):
         active_refusal_counts = [cnt for cnt in refusal_counts.values() if cnt > 0]
@@ -181,6 +196,7 @@ def build_responder_messages(
         mode                   = "紧急模式" if mode == "emergency" else "正常模式",
         phase                  = phase_label,
         constraint_instruction = constraint_instruction,
+        positive_constraint_instruction = positive_constraint_instruction,
         knowledge_context      = knowledge_context,
         ROV2type               = ROV2type,
         support_task           = support_task,

@@ -482,8 +482,14 @@ class DialogueManager:
 
     def _run_constraint_check(self, changed_fields: set[str]) -> dict:
         """执行约束检查，返回上下文"""
+        passed_constraints = self.validator.get_positive_feedback(self.task_state, changed_fields)
         if not changed_fields and self.phase not in ("blocked_hard", "blocked_soft"):
-            return {"type": "none", "violations": [], "hard_refusal_counts": {}}
+            return {
+                "type": "none",
+                "violations": [],
+                "passed_constraints": passed_constraints,
+                "hard_refusal_counts": {},
+            }
 
         if self.phase == "blocked_hard":
             new_violations = self.validator.validate(self.task_state)
@@ -504,11 +510,13 @@ class DialogueManager:
                     self.phase = "rejected"
                     self._blocking_violations = []
                     return {"type": "hard_rejected", "violations": current_hard,
+                            "passed_constraints": passed_constraints,
                             "hard_refusal_counts": dict(self._hard_refusal_counts)}
                 warn_ids = {cid for cid, cnt in self._hard_refusal_counts.items()
-                            if cnt == HARD_REFUSAL_LIMIT - 1}
+                             if cnt == HARD_REFUSAL_LIMIT - 1}
                 ctx_type = "hard_final_warning" if warn_ids else "hard"
                 return {"type": ctx_type, "violations": current_hard,
+                        "passed_constraints": passed_constraints,
                         "hard_refusal_counts": dict(self._hard_refusal_counts)}
             else:
                 # 硬约束解除，清除计数
@@ -526,8 +534,14 @@ class DialogueManager:
                     self.phase = "blocked_soft"
                     self._blocking_violations = current_soft
                     return {"type": "soft", "violations": current_soft,
+                            "passed_constraints": passed_constraints,
                             "hard_refusal_counts": {}}
-                return {"type": "none", "violations": [], "hard_refusal_counts": {}}
+                return {
+                    "type": "none",
+                    "violations": [],
+                    "passed_constraints": passed_constraints,
+                    "hard_refusal_counts": {},
+                }
 
         # collecting状态下的新违规
         if self.phase == "collecting":
@@ -542,13 +556,24 @@ class DialogueManager:
                     if v.constraint_id not in self._hard_refusal_counts:
                         self._hard_refusal_counts[v.constraint_id] = 0
                 return {"type": "hard", "violations": hard_new,
+                        "passed_constraints": passed_constraints,
                         "hard_refusal_counts": dict(self._hard_refusal_counts)}
             if soft_new:
                 self.phase = "blocked_soft"
                 self._blocking_violations = soft_new
-                return {"type": "soft", "violations": soft_new, "hard_refusal_counts": {}}
+                return {
+                    "type": "soft",
+                    "violations": soft_new,
+                    "passed_constraints": passed_constraints,
+                    "hard_refusal_counts": {},
+                }
 
-        return {"type": "none", "violations": [], "hard_refusal_counts": {}}
+        return {
+            "type": "none",
+            "violations": [],
+            "passed_constraints": passed_constraints,
+            "hard_refusal_counts": {},
+        }
 
     # --------------------------------------------------------------------------
     # 工具方法

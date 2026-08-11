@@ -171,7 +171,7 @@ constraints:
     applies_to: ["all"]
     check_type: "turbidity"
     violation_message: >
-      当前作业区域水体浑浊度中等（{turbidity}），视觉感知效果略有下降。
+      当前作业区域水体浑浊度中等（{turbidity} NTU），光学成像质量及视觉感知能力有所下降，建议适当降低对视觉检测的依赖，优先结合声呐等声学设备开展巡检。
     severity: "soft"
 
   - id: "C014"

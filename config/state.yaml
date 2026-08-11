@@ -4,7 +4,7 @@ robots:
     turbidity: 3
     obstacle_density: low
     mothership_support: strong
-    update_timestamp: '2026-06-04T10:00:00+08:00'
+    update_timestamp: '2026-08-11T14:00:00+08:00'
     confidence: 0.95
     overall_status: available
     survival_status: normal
@@ -21,7 +21,7 @@ robots:
     turbidity: 11.4
     obstacle_density: low
     mothership_support: strong
-    update_timestamp: '2026-04-19T14:55:00+08:00'
+    update_timestamp: '2026-08-11T14:00:00+08:00'
     confidence: 0.1
     overall_status: available
     survival_status: normal
@@ -35,10 +35,10 @@ robots:
     tether_connection_status: normal
   sealien_inspection:
     current_velocity: 0.3
-    turbidity: 15
+    turbidity: 8
     obstacle_density: low
     mothership_support: strong
-    update_timestamp: '2026-06-04T10:00:00+08:00'
+    update_timestamp: '2026-08-11T14:00:00+08:00'
     confidence: 0.95
     overall_status: available
     survival_status: normal
@@ -50,12 +50,12 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-  sealien_survey_auv:
+  sealien_inspection_auv:
     current_velocity: 0.2
-    turbidity: 3.5
+    turbidity: 8
     obstacle_density: low
-    mothership_support: weak
-    update_timestamp: '2026-06-04T10:00:00+08:00'
+    mothership_support: strong
+    update_timestamp: '2026-08-11T14:00:00+08:00'
     confidence: 0.95
     overall_status: available
     survival_status: normal
