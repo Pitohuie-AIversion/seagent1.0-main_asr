@@ -180,7 +180,6 @@ constraints:
     check_type: "turbidity"
     violation_message: >
       当前浊度为（{turbidity}），可能降低光学成像质量，但不影响声呐巡检，触发浊度软约束，建议以侧扫声呐为主要检测手段，并降低航速、适当缩短扫测距离。
->
     severity: "soft"
 
   - id: "C015"
