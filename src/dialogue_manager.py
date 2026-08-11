@@ -1374,12 +1374,12 @@ class DialogueManager:
             # Stage 2: Extract task parameters
             current_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
             field_defs = self.builder.get_schema(task_type_key, self.mode)
-            required = self.builder.get_required(task_type_key, self.mode, current_state)
+            required_field_defs = self.builder.get_required(task_type_key, self.mode, current_state)
             extraction_res = self.extractor.extract_updates(
                 user_message, current_state,
                 task_type_key=task_type_key,
                 task_type_map=self.kb.get_task_type_map(),
-                required=field_defs,
+                required=required_field_defs,
                 ROV2type=self.kb.ROV2type,
                 conversation_history=self.conversation_history,
             )
@@ -1513,7 +1513,7 @@ class DialogueManager:
                             mutation_failure_result = mut_res
                             break
 
-            raw_stage2 = self._merge_coordinate_updates(user_message, {k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, required)
+            raw_stage2 = self._merge_coordinate_updates(user_message, {k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, required_field_defs)
             for k, v in raw_stage2.items():
                 if k not in stage2_updates:
                     c_info = {"value": v, "raw_value": user_message, "confidence": 1.0, "source": "rule_parser"}
