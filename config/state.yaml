@@ -1,6 +1,6 @@
 robots:
   sealien_work_class:
-    current_velocity: 0.3
+    current_velocity: 0.6
     turbidity: 3
     obstacle_density: low
     mothership_support: strong
