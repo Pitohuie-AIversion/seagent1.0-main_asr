@@ -8,14 +8,14 @@ constraints:
   # ── ROV 类型约束 ─────────────────────────────────────────────────────────────
 
   # - id: "C001"
-  #   name: "管缆巡检必须使用观察级ROV"
+  #   name: "管缆巡检必须使用观察级ROV或调查型AUV"
   #   applies_to: ["pipeline_inspection"]
   #   check_type: "robot_category"
-  #   required_category: "observation"
+  #   required_category: ["observation", "survey"]
   #   violation_message: >
-  #     管缆巡检任务要求使用观察级ROV（Observation-class ROV），
-  #     当前选择的设备类型不符合要求。请更换为观察级ROV。
-  #   severity: "hard"   # hard=无法发布; soft=警告但可继续
+  #     管缆巡检任务要求使用观察级ROV或调查型AUV，
+  #     当前选择的设备类型不符合要求。请更换为观察级ROV或调查型AUV。
+  #   severity: "hard"
 
   - id: "C002"
     name: "采油树阀门插拔必须使用工作级ROV"

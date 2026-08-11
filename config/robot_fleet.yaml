@@ -130,8 +130,8 @@ robot_fleet:
 
   - model: "sealien_inspection_auv"
     aliases: ["调查型AUV", "AUV", "自主水下航行器", "Sealien AUV"]
-    category: "observation"
-    category_name: "观察级"
+    category: "survey"
+    category_name: "调查型"
     full_name: "sealien_inspection_auv"
     max_depth_m: 1000
     dimensions: "3.24×3.6m"

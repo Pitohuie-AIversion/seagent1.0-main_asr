@@ -117,8 +117,13 @@ class KnowledgeBase:
         if not required_cat:
             return ""
         cats = self.robot_fleet["robot_categories"]
-        cat_label = cats.get(required_cat, {}).get("label", required_cat)
-        return f"【任务设备约束】{schema.get('display_name', task_type)} 任务强制要求使用 {cat_label}，不可使用其他类型ROV。"
+        if isinstance(required_cat, list):
+            cat_labels = [cats.get(c, {}).get("label", c) for c in required_cat]
+            labels_str = " 或 ".join(cat_labels)
+            return f"【任务设备约束】{schema.get('display_name', task_type)} 任务要求使用 {labels_str}。"
+        else:
+            cat_label = cats.get(required_cat, {}).get("label", required_cat)
+            return f"【任务设备约束】{schema.get('display_name', task_type)} 任务强制要求使用 {cat_label}，不可使用其他类型ROV。"
 
     def _rovs_by_category(self, category_key: str) -> str:
         cats = self.robot_fleet["robot_categories"]

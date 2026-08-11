@@ -243,7 +243,7 @@ class ParameterExtractor:
 
         constraint_hint = ""
         if task_type_key == "pipeline_inspection":
-            constraint_hint = "注意：该任务必须使用观察级ROV（category=observation）。"
+            constraint_hint = "注意：该任务可以使用观察级ROV（category=observation）或调查型AUV（category=survey）。"
         elif task_type_key == "tree_valve_operation":
             constraint_hint = "注意：该任务必须使用工作级ROV（category=work）。"
 

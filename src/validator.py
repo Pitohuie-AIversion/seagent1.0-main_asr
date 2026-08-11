@@ -137,7 +137,12 @@ class TaskValidator:
 
         if check == "robot_category" and rov:
             required = c.get("required_category")
-            if rov["category"] != required:
+            if isinstance(required, list):
+                if rov["category"] not in required:
+                    return Violation(c["id"], c["name"],
+                                     c["violation_message"].strip(), c["severity"],
+                                     rel_fields)
+            elif rov["category"] != required:
                 return Violation(c["id"], c["name"],
                                  c["violation_message"].strip(), c["severity"],
                                  rel_fields)

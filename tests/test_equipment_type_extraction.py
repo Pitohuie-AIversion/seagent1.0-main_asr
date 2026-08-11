@@ -56,6 +56,20 @@ class TestEquipmentTypeExtraction(unittest.TestCase):
         )
         self.assertEqual(res.get("equipment_type"), "调查型AUV")
 
+    def test_pipeline_inspection_auv_constraint(self):
+        from src.knowledge_retriever import KnowledgeBase
+        from src.validator import TaskValidator
+        kb = KnowledgeBase()
+        constraint_str = kb._task_rov_constraint("pipeline_inspection")
+        self.assertIn("观察级ROV 或 调查型AUV", constraint_str)
+
+        validator = TaskValidator(kb)
+        violations = validator.validate({
+            "task_type_key": "pipeline_inspection",
+            "equipment_name": "sealien_inspection_auv"
+        })
+        self.assertFalse(validator.has_hard_violations(violations))
+
 
 if __name__ == "__main__":
     unittest.main()

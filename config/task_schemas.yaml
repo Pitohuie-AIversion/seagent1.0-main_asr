@@ -30,7 +30,7 @@ task_templates:
   pipeline_inspection:
     code: "PI"
     display_name: "管缆巡检"
-    robot_category_required: "observation"
+    robot_category_required: ["observation", "survey"]
     task_type_values:
       - "管缆巡检"
 
