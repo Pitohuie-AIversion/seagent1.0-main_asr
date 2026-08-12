@@ -317,8 +317,8 @@ model_variants:
 
   light_work_class_rov_hp:
     family_id: "light_work_class_rov"
-    full_name: "轻型工作级深海机器人"
-    aliases: ["轻型工作级深海机器人", "轻型工作级ROV", "轻型ROV", "轻型", "天鹰座"]
+    full_name: "轻型工作级深海机器人 HP"
+    aliases: ["轻型工作级深海机器人 HP", "轻型工作级ROV HP", "轻型ROV HP", "轻型 HP", "天鹰座 HP"]
     hard_params:
       max_depth_m: 600
       max_burial_depth_m: "不适用"
@@ -362,8 +362,8 @@ model_variants:
 
   observation_rov_hp:
     family_id: "observation_rov"
-    full_name: "观察级深海机器人"
-    aliases: ["观察级深海机器人", "观察级ROV", "观察型ROV", "观察级", "巡检ROV"]
+    full_name: "观察级深海机器人 HP"
+    aliases: ["观察级深海机器人 HP", "观察级ROV HP", "观察型ROV HP", "观察级 HP", "巡检ROV HP"]
     hard_params:
       max_depth_m: 600
       max_burial_depth_m: "不适用"
