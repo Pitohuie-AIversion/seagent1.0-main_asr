@@ -127,7 +127,7 @@ class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
         ver_before = self.dm.slot_store.version
         reply = self.dm.process("确认发布")
 
-        self.assertNotEqual(self.dm.phase, "done")
+        self.assertEqual(self.dm.phase, "blocked_hard")
         self.assertIn("离线", reply)
         self.assertEqual(self.dm.slot_store.slots["equipment_unit_id"].value, self.unit_id)
         self.assertEqual(self.dm.slot_store.version, ver_before)
@@ -214,7 +214,11 @@ class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
 
         reply = self.dm.process("确认发布")
 
-        self.assertNotEqual(self.dm.phase, "done")
+        self.assertEqual(
+            self.dm.phase,
+            "confirming",
+            "遥测过期是发布时就绪条件，不应把任务升级为 blocked_hard",
+        )
         self.assertIn("状态信息已过期", reply)
 
         task_dir = get_task_dir("final")
@@ -284,7 +288,11 @@ class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
 
         reply = self.dm.process("确认发布")
 
-        self.assertNotEqual(self.dm.phase, "done")
+        self.assertEqual(
+            self.dm.phase,
+            "confirming",
+            "version=0 不改变遥测过期的非硬约束语义",
+        )
         self.assertIn("状态信息已过期", reply)
         task_dir = get_task_dir("final")
         final_file = task_dir / f"task_intent_{intent_id}.json"

@@ -74,7 +74,7 @@ operation 只能是：
   "query_intent": "TASK_STATUS|TOOL_QUERY|DEVICE_CAPABILITY|DEVICE_STATUS|ENVIRONMENT_QUERY|KNOWLEDGE_QA|GENERAL_CHAT|CLARIFICATION|null",
   "subject_type": "general_concept|system_rule|task|device|device_class|device_family|payload|environment|realtime_state|unknown",
   "subject_text": "string|null",
-  "relation": "definition|describe|list|compare|supports|belongs_to|capabilities|limitations|status|missing_fields|filled_fields|procedure|unknown",
+  "relation": "definition|describe|list|compare|supports|belongs_to|capabilities|limitations|status|missing_fields|filled_fields|procedure|recommend|unknown",
   "source_policy": "project_kb|session_state|realtime_state|general_domain|hybrid|none",
   "needs_clarification": false,
   "clarification_reason": "string|null",
@@ -87,6 +87,12 @@ operation 只能是：
 
 一致性要求：READ/CLARIFY 使用 knowledge_qa；WRITE 使用 task_collection；CONTROL
 使用 emergency_intervention 且必须给出 emergency_action。
+当用户要求系统从当前待填字段的合法候选中推荐一个时，READ 且 relation=recommend；
+subject_type 必须对应被推荐字段，subject_text 必须逐字选自 expected_slot_options
+中该字段的 allowed_values，不能把机器人类别、系列、型号或单机编号混为一层。
+当用户仅接受紧邻上一条助手给出的单一推荐时，WRITE 且仍使用
+relation=recommend、相同 subject_type 和相同 subject_text。代码会核验该值确实是
+上一轮推荐且仍属于当前合法候选；不得额外推导其他机器人层级。
 当上下文含 pending_oilfield 时，确认或拒绝该候选都属于 WRITE，并分别设置
 pending_action=confirm 或 reject；其他轮次必须为 null。候选选择写入 subject_text，
 代码只执行经过协议校验的动作。
@@ -226,6 +232,7 @@ class IntentRouter:
         task_state: dict,
         phase: str = "collecting",
         expected_slots: list[str] | None = None,
+        expected_slot_options: list[dict[str, Any]] | None = None,
     ) -> IntentRouteResult:
         message = (user_message or "").strip()
         if not message:
@@ -238,6 +245,7 @@ class IntentRouter:
                 task_state=task_state,
                 phase=phase,
                 expected_slots=expected_slots or [],
+                expected_slot_options=expected_slot_options or [],
             )
         except IntentRoutingError as exc:
             logger.warning(
@@ -257,6 +265,7 @@ class IntentRouter:
         task_state: dict,
         phase: str,
         expected_slots: list[str],
+        expected_slot_options: list[dict[str, Any]],
     ) -> IntentRouteResult:
         classify = getattr(self.llm, "classify_interaction", None)
         if not callable(classify):
@@ -268,6 +277,7 @@ class IntentRouter:
             "task_type": task_state.get("task_type"),
             "task_type_key": task_state.get("task_type_key"),
             "expected_slots": expected_slots,
+            "expected_slot_options": expected_slot_options,
             "pending_oilfield": {
                 "name": task_state.get("pending_oilfield_name"),
                 "candidates": [

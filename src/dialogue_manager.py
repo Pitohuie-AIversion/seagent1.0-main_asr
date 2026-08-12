@@ -127,6 +127,18 @@ FIELD_LABELS = {
     # "tree_type":           "采油树类型",
 }
 
+RECOMMENDATION_FIELD_BY_SUBJECT = {
+    "device_class": "equipment_class",
+    "device_family": "equipment_family",
+    "device": "equipment_type",
+}
+ROBOT_CASCADE_FIELDS = {
+    "equipment_class",
+    "equipment_family",
+    "equipment_type",
+    "equipment_unit_id",
+}
+
 # 软约束忽略关键词
 SOFT_IGNORE_KEYWORDS = {"忽略", "继续", "确认", "无视", "不管", "没关系", "ok", "好的", "是"}
 
@@ -464,6 +476,112 @@ class DialogueManager:
 
         return "当前知识库已检索到相关信息，但暂时无法生成完整回答。"
 
+    def _missing_field_definition(self, key: str) -> dict | None:
+        return next(
+            (
+                item
+                for item in self._last_missing
+                if isinstance(item, dict) and item.get("key") == key
+            ),
+            None,
+        )
+
+    def _build_grounded_recommendation(self, route: IntentRouteResult) -> str | None:
+        """把模型的推荐选择约束到当前待填字段的配置候选中。"""
+        plan = route.interaction_plan
+        if plan is None or plan.operation != "READ" or plan.relation != "recommend":
+            return None
+
+        target_key = RECOMMENDATION_FIELD_BY_SUBJECT.get(plan.subject_type or "")
+        field_def = self._missing_field_definition(target_key or "")
+        allowed_values = list((field_def or {}).get("allowed_values") or [])
+        selected = plan.subject_text
+        label = FIELD_LABELS.get(target_key or "", target_key or "该字段")
+
+        if not target_key or not selected or selected not in allowed_values:
+            candidates = "、".join(map(str, allowed_values)) or "无"
+            return (
+                f"无法从当前任务的合法{label}候选中验证这项推荐，因此本轮没有"
+                f"给出或写入选择。当前合法候选：{candidates}。"
+            )
+
+        task_name = self.task_state.get("task_type") or self.task_state.get("task_type_key")
+        task_prefix = f"针对当前【{task_name}】任务，" if task_name else ""
+        return (
+            f"{task_prefix}我明确推荐{label}【{selected}】。"
+            "该值来自当前任务经过项目配置约束筛选后的合法候选；"
+            "本轮仅提供建议，尚未写入任务。若接受，请确认采用该选择。"
+        )
+
+    def _resolve_project_robot_classes(self, text: str) -> list[tuple[str, str]]:
+        """仅依据 robot_fleet 配置识别文本中明确提到的机器人类别。"""
+        compact = str(text or "").lower().replace(" ", "")
+        matched: set[str] = set()
+        classes = self.kb.get_robot_classes()
+
+        for class_id, config in classes.items():
+            names = [class_id, config.get("full_name")]
+            if any(
+                str(name).lower().replace(" ", "") in compact
+                for name in names
+                if name
+            ):
+                matched.add(class_id)
+
+        for family in self.kb.robot_fleet.get("robot_families", {}).values():
+            class_id = family.get("robot_class")
+            if class_id not in classes:
+                continue
+            names = [family.get("full_name"), *(family.get("aliases") or [])]
+            if any(
+                str(name).lower().replace(" ", "") in compact
+                for name in names
+                if name
+            ):
+                matched.add(class_id)
+
+        return [
+            (class_id, config.get("full_name", class_id))
+            for class_id, config in classes.items()
+            if class_id in matched
+        ]
+
+    def _build_grounded_device_class_answer(
+        self,
+        user_message: str,
+        route: IntentRouteResult,
+    ) -> str | None:
+        """用 task_schemas/robot_fleet 回答类别适用任务，禁止自由补充项目事实。"""
+        plan = route.interaction_plan
+        if (
+            plan is None
+            or plan.operation != "READ"
+            or plan.subject_type != "device_class"
+            or plan.relation not in {"compare", "supports", "capabilities", "describe", "list"}
+        ):
+            return None
+
+        mentioned = self._resolve_project_robot_classes(
+            f"{plan.subject_text or ''} {user_message}"
+        )
+        if not mentioned:
+            return None
+
+        templates = self.kb.task_schemas.get("task_templates", {})
+        lines = ["依据项目配置："]
+        for class_id, class_name in mentioned:
+            supported_tasks: list[str] = []
+            for task_key, template in templates.items():
+                if class_id not in (template.get("allowed_robot_classes") or []):
+                    continue
+                domain = self.kb.get_feasible_robot_selection_domain(task_key)
+                if any(node.get("class_id") == class_id for node in domain.get("classes", [])):
+                    supported_tasks.append(template.get("display_name", task_key))
+            rendered = "、".join(supported_tasks) if supported_tasks else "暂无已配置的适用任务"
+            lines.append(f"- 【{class_name}】：{rendered}。")
+        lines.append("以上仅说明项目知识库中已配置的适用关系，本轮未创建或修改任务。")
+        return "\n".join(lines)
+
     def _safe_llm_chat(
         self,
         messages: list[dict],
@@ -496,6 +614,17 @@ class DialogueManager:
         route: IntentRouteResult,
         request_id: str = "req_default",
     ) -> str:
+        grounded_recommendation = self._build_grounded_recommendation(route)
+        if grounded_recommendation is not None:
+            return grounded_recommendation
+
+        grounded_class_answer = self._build_grounded_device_class_answer(
+            user_message,
+            route,
+        )
+        if grounded_class_answer is not None:
+            return grounded_class_answer
+
         context = {
             "task_type_key": self.task_state.get("task_type_key"),
             "equipment_type": (
@@ -867,7 +996,11 @@ class DialogueManager:
         if unit_id:
             runtime_res = self.kb.state_info.check_runtime_availability(str(unit_id))
             if not runtime_res.get("available"):
-                self._transition_phase("blocked_hard", reason="runtime_equipment_unavailable")
+                # 遥测过期表示发布时无法确认当前就绪性，不是任务本身触发了
+                # 硬约束。保持 confirming 并拒绝本次发布，等遥测刷新后可直接重试。
+                # 离线、忙碌、状态缺失/损坏等真实不可用性仍按硬阻断处理。
+                if runtime_res.get("reason_code") != "STATE_EXPIRED":
+                    self._transition_phase("blocked_hard", reason="runtime_equipment_unavailable")
                 reply = runtime_res.get("message") or f"无法发布任务：机器人 {unit_id} 当前不可用。"
                 self.conversation_history.append({"role": "user", "content": user_message})
                 self.conversation_history.append({"role": "assistant", "content": reply})
@@ -1207,6 +1340,15 @@ class DialogueManager:
 
         # ── 独立意图路由分流阶段 ──
         expected_slots = [m["key"] for m in self._last_missing if isinstance(m, dict) and "key" in m]
+        expected_slot_options = [
+            {
+                "key": item.get("key"),
+                "label": item.get("label"),
+                "allowed_values": copy.deepcopy(item.get("allowed_values") or []),
+            }
+            for item in self._last_missing
+            if isinstance(item, dict) and item.get("key")
+        ]
         # ════════════════════════════════════════════════════════════════
         # 修复3的关键：路由切换 dialogue_mode 之前快照保存原始 mode
         #   否则 L1207-1212 _switch_dialogue_mode(route.dialogue_mode)
@@ -1218,6 +1360,7 @@ class DialogueManager:
             task_state=self.task_state,
             phase=self.phase,
             expected_slots=expected_slots,
+            expected_slot_options=expected_slot_options,
         )
 
         self._switch_dialogue_mode(
@@ -1426,6 +1569,11 @@ class DialogueManager:
                 allow_empty_for_side_effect=bool(
                     plan and plan.warning_action == "acknowledge"
                 ),
+            )
+            extraction_res = self._scope_confirmed_recommendation(
+                extraction_res,
+                plan,
+                user_message,
             )
 
             if task_patch_v2_active:
@@ -2363,8 +2511,69 @@ class DialogueManager:
             "alias_exact": "alias_mapping",
             "llm_semantic": "llm_semantic_match",
             "type_normalization": "user_input",
+            "assistant_recommendation": "assistant_recommendation",
         }
         return source_map.get(resolution_method, "user_input")
+
+    def _scope_confirmed_recommendation(
+        self,
+        extraction_result: dict,
+        plan: Any,
+        user_message: str,
+    ) -> dict:
+        """接受推荐时只授权同一机器人层级，其他字段仍按正常抽取处理。"""
+        if (
+            plan is None
+            or plan.operation != "WRITE"
+            or plan.relation != "recommend"
+        ):
+            return extraction_result
+
+        result = copy.deepcopy(extraction_result or {})
+        result.setdefault("slot_candidates", [])
+        result.setdefault("list_mutations", [])
+        result.setdefault("unresolved", [])
+
+        target_key = RECOMMENDATION_FIELD_BY_SUBJECT.get(plan.subject_type or "")
+        selected = plan.subject_text
+        field_def = self._missing_field_definition(target_key or "")
+        allowed_values = list((field_def or {}).get("allowed_values") or [])
+        previous_assistant = (
+            self.conversation_history[-1].get("content", "")
+            if self.conversation_history
+            and self.conversation_history[-1].get("role") == "assistant"
+            else ""
+        )
+        valid_provenance = bool(
+            target_key
+            and selected
+            and selected in allowed_values
+            and selected in previous_assistant
+        )
+
+        result["slot_candidates"] = [
+            candidate
+            for candidate in result["slot_candidates"]
+            if candidate.get("canonical_key") not in ROBOT_CASCADE_FIELDS
+        ]
+
+        if not valid_provenance:
+            result["unresolved"].append(
+                "无法验证所接受的推荐与紧邻上一轮助手建议及当前合法候选一致"
+            )
+            return result
+
+        result["slot_candidates"].append(
+            {
+                "raw_key": "上一轮明确推荐",
+                "canonical_key": target_key,
+                "raw_value": user_message,
+                "normalized_value": selected,
+                "confidence": plan.confidence,
+                "resolution_method": "assistant_recommendation",
+            }
+        )
+        return result
 
     @staticmethod
     def _apply_slot_update_in_transaction(

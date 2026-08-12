@@ -26,7 +26,7 @@ SubjectType = Literal[
 RelationType = Literal[
     "definition", "describe", "list", "compare", "supports", "belongs_to",
     "capabilities", "limitations", "status", "missing_fields", "filled_fields",
-    "procedure", "unknown",
+    "procedure", "recommend", "unknown",
 ]
 SourcePolicyType = Literal[
     "project_kb", "session_state", "realtime_state", "general_domain",
@@ -44,7 +44,7 @@ VALID_SUBJECT_TYPES = {
 VALID_RELATIONS = {
     "definition", "describe", "list", "compare", "supports", "belongs_to",
     "capabilities", "limitations", "status", "missing_fields", "filled_fields",
-    "procedure", "unknown",
+    "procedure", "recommend", "unknown",
 }
 VALID_SOURCE_POLICIES = {
     "project_kb", "session_state", "realtime_state", "general_domain",

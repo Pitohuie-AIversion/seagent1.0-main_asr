@@ -41,7 +41,15 @@ INTERACTION_PLAN_JSON_SCHEMA: dict[str, Any] = {
         "query_intent": {"type": ["string", "null"]},
         "subject_type": {"type": ["string", "null"]},
         "subject_text": {"type": ["string", "null"]},
-        "relation": {"type": ["string", "null"]},
+        "relation": {
+            "type": ["string", "null"],
+            "enum": [
+                "definition", "describe", "list", "compare", "supports",
+                "belongs_to", "capabilities", "limitations", "status",
+                "missing_fields", "filled_fields", "procedure", "recommend",
+                "unknown", None,
+            ],
+        },
         "source_policy": {"type": ["string", "null"]},
         "needs_clarification": {"type": "boolean"},
         "clarification_reason": {"type": ["string", "null"]},

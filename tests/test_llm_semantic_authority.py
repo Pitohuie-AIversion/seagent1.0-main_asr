@@ -9,6 +9,7 @@ from src.intent_router import INTENT_ROUTER_SYSTEM, IntentRouteResult, IntentRou
 from src.interaction_plan import (
     VALID_EMERGENCY_ACTIONS,
     VALID_PENDING_ACTIONS,
+    VALID_RELATIONS,
     VALID_WARNING_ACTIONS,
     validate_interaction_plan,
 )
@@ -74,6 +75,57 @@ def test_native_router_schema_matches_runtime_warning_actions() -> None:
     )
     schema_values.discard(None)
     assert schema_values == VALID_WARNING_ACTIONS
+
+
+def test_recommendation_is_a_first_class_validated_relation() -> None:
+    candidate = _plan("READ", "knowledge_qa")
+    candidate.update(
+        {
+            "subject_type": "device_class",
+            "subject_text": "观察级ROV",
+            "relation": "recommend",
+            "source_policy": "project_kb",
+        }
+    )
+
+    plan = validate_interaction_plan(candidate)
+
+    assert "recommend" in VALID_RELATIONS
+    assert plan.operation == "READ"
+    assert plan.relation == "recommend"
+
+
+def test_router_receives_typed_allowed_options_for_pending_fields() -> None:
+    router, llm = _router_with_model_result(
+        {
+            **_plan("READ", "knowledge_qa"),
+            "subject_type": "device_class",
+            "subject_text": "观察级ROV",
+            "relation": "recommend",
+            "source_policy": "project_kb",
+        }
+    )
+
+    router.route(
+        "从合法机器人类别中推荐一个，但先不要修改任务",
+        conversation_history=[],
+        task_state={"task_type_key": "pipeline_inspection"},
+        phase="collecting",
+        expected_slots=["equipment_class"],
+        expected_slot_options=[
+            {
+                "key": "equipment_class",
+                "label": "机器人类别",
+                "allowed_values": ["观察级ROV", "AUV"],
+            }
+        ],
+    )
+
+    prompt = llm.classify_interaction.call_args.args[0][-1]["content"]
+    assert '"expected_slot_options"' in prompt
+    assert '"equipment_class"' in prompt
+    assert '"观察级ROV"' in prompt
+    assert '"AUV"' in prompt
 
 
 
@@ -790,6 +842,128 @@ def test_confirmed_assistant_recommendation_commits_after_schema_validation() ->
     assert extraction_messages[-2]["role"] == "assistant"
     assert "明确推荐观察级ROV" in extraction_messages[-2]["content"]
     assert extraction_messages[-1] == {"role": "user", "content": "确认"}
+
+
+def _seed_pipeline_inspection_task(dm: DialogueManager) -> None:
+    schema = dm.builder.get_schema("pipeline_inspection", "normal")
+    dm.slot_store.init_task_slots(schema)
+    slots, unresolved, version = dm.slot_store.snapshot()
+    slots["task_type"].value = "管缆巡检"
+    slots["task_type"].status = "valid"
+    slots["task_type_key"].value = "pipeline_inspection"
+    slots["task_type_key"].status = "valid"
+    dm.slot_store.commit_transaction(slots, unresolved, expected_version=version)
+    dm._rebuild_cache(commit_derived=False)
+
+
+def test_grounded_class_recommendation_is_single_read_only_candidate() -> None:
+    llm = ScriptedLLM(
+        plans=[
+            make_plan(
+                "READ",
+                query_intent="DEVICE_CAPABILITY",
+                subject_type="device_class",
+                subject_text="观察级ROV",
+                relation="recommend",
+                source_policy="project_kb",
+            )
+        ],
+        replies=["不应调用自由回答模型"],
+    )
+    dm = DialogueManager(llm, KnowledgeBase())
+    _seed_pipeline_inspection_task(dm)
+    before_version = dm.slot_store.version
+    before_snapshot = dm.slot_store.export_snapshot()
+
+    reply = dm.process("从合法机器人类别中明确只推荐一个，但先不要修改任务")
+
+    assert "明确推荐机器人类别【观察级ROV】" in reply
+    assert "本轮仅提供建议，尚未写入任务" in reply
+    assert "轻型工作级深海机器人" not in reply
+    assert "AUV" not in reply
+    assert llm.chat_calls == []
+    assert dm.slot_store.version == before_version
+    assert dm.slot_store.export_snapshot() == before_snapshot
+
+
+def test_accepting_class_recommendation_cannot_write_family_or_variant() -> None:
+    llm = ScriptedLLM(
+        plans=[
+            make_plan(
+                "READ",
+                query_intent="DEVICE_CAPABILITY",
+                subject_type="device_class",
+                subject_text="观察级ROV",
+                relation="recommend",
+                source_policy="project_kb",
+            ),
+            make_plan(
+                "WRITE",
+                subject_type="device_class",
+                subject_text="观察级ROV",
+                relation="recommend",
+                source_policy="project_kb",
+            ),
+        ],
+        extractions=[
+            extraction_result(
+                slot_candidate("equipment_class", "观察级ROV", raw_value="确认"),
+                slot_candidate(
+                    "equipment_family",
+                    "轻型工作级深海机器人",
+                    raw_value="确认",
+                ),
+                slot_candidate(
+                    "equipment_type",
+                    "轻型工作级深海机器人 HP",
+                    raw_value="确认",
+                ),
+            )
+        ],
+    )
+    dm = DialogueManager(llm, KnowledgeBase())
+    _seed_pipeline_inspection_task(dm)
+
+    recommendation = dm.process("请只推荐一个合法机器人类别，不要修改任务")
+    version_before = dm.slot_store.version
+    reply = dm.process("那就按你刚才推荐的选")
+    state = dm.slot_store.get_task_state()
+
+    assert "明确推荐机器人类别【观察级ROV】" in recommendation
+    assert state["equipment_class"] == "observation_rov"
+    assert state.get("equipment_family") is None
+    assert state.get("equipment_type") is None
+    assert dm.slot_store.version == version_before + 1
+    assert dm.phase != "blocked_hard"
+    assert "机器人类别=观察级ROV" in reply
+
+
+def test_device_class_comparison_uses_project_configuration_only() -> None:
+    llm = ScriptedLLM(
+        plans=[
+            make_plan(
+                "READ",
+                query_intent="DEVICE_CAPABILITY",
+                subject_type="device_class",
+                subject_text="观察级ROV和AUV",
+                relation="compare",
+                source_policy="project_kb",
+            )
+        ],
+        replies=["不应调用自由回答模型"],
+    )
+    dm = DialogueManager(llm, KnowledgeBase())
+    before = dm.slot_store.export_snapshot()
+
+    reply = dm.process("观察级ROV和AUV分别适合什么任务？只回答，不创建任务。")
+
+    assert "观察级ROV" in reply
+    assert "AUV" in reply
+    assert "管缆巡检" in reply
+    assert "依据项目配置" in reply
+    assert "通用工程常识" not in reply
+    assert llm.chat_calls == []
+    assert dm.slot_store.export_snapshot() == before
 
 
 def test_natural_write_phrase_commits_model_extracted_value() -> None:
