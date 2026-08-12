@@ -378,6 +378,21 @@ def _build_frontend_ui_state_locked(manager: "DialogueManager") -> dict:
         slots = _build_slots(manager, slot_snapshot=slot_snapshot)
         constraint_state = _build_constraint_state(manager)
         actions = _compute_actions(phase, dialogue_mode)
+        if actions.get("can_publish"):
+            try:
+                if task_type_key:
+                    _built_for_publish, missing = manager.builder.build(
+                        getattr(manager, "task_state", {}),
+                        task_type_key,
+                        mode,
+                    )
+                else:
+                    missing = [{"key": "task_type", "label": "任务类型"}]
+                if missing:
+                    actions["can_publish"] = False
+            except Exception as exc:
+                logger.warning("build_frontend_ui_state: publish action missing check failed: %s", exc)
+                actions["can_publish"] = False
         read_only = _compute_read_only(phase, dialogue_mode)
 
         return {

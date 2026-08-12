@@ -725,9 +725,13 @@ class SlotStore:
                     payload_catalog = {}
 
         allowed_values = []
+        has_allowed_value_constraint = False
         if required_schema:
             for f in required_schema:
                 if f.get("key") == field_name:
+                    has_allowed_value_constraint = bool(
+                        f.get("allowed_values") is not None or f.get("allowed_values_ref")
+                    )
                     if allowed_values_resolver:
                         allowed_values = allowed_values_resolver(f) or []
                     else:
@@ -766,6 +770,9 @@ class SlotStore:
                                 break
                         return cat_id, a_val
 
+            if has_allowed_value_constraint:
+                return None, None
+
             cat_id = None
             cat_candidates = []
             for c_id, info in payload_catalog.items():
@@ -782,14 +789,6 @@ class SlotStore:
 
             if not cat_candidates:
                 cat_candidates = [text]
-
-            if allowed_values:
-                for cand in cat_candidates:
-                    cand_key = normalize_payload_match_key(cand)
-                    for a_val in allowed_values:
-                        if isinstance(a_val, str) and normalize_payload_match_key(a_val) == cand_key:
-                            return cat_id, a_val
-                return cat_id, None
 
             if cat_id and payload_catalog.get(cat_id, {}).get("name"):
                 return cat_id, payload_catalog[cat_id]["name"]
@@ -977,14 +976,28 @@ class SlotStore:
         self,
         required_schema: List[Dict[str, Any]],
         allowed_values_resolver: Optional[Callable[[Dict[str, Any]], List[Any]]] = None,
+        slots: Optional[Dict[str, Slot]] = None,
     ) -> List[Dict[str, Any]]:
         """Return missing fields and optionally fill dynamic allowed values."""
+        def _is_required_value_filled(slot: Slot | None) -> bool:
+            if not slot or slot.status != "valid":
+                return False
+            value = slot.value
+            if value is None:
+                return False
+            if isinstance(value, str):
+                return bool(value.strip())
+            if isinstance(value, (list, tuple, set, dict)):
+                return bool(value)
+            return True
+
         with self._lock:
+            source_slots = slots if slots is not None else self.slots
             missing_fields = []
             for field in required_schema:
                 key = field["key"]
-                slot = self.slots.get(key)
-                if slot and slot.status == "valid" and slot.value is not None:
+                slot = source_slots.get(key)
+                if _is_required_value_filled(slot):
                     continue
                 missing_fields.append(copy.deepcopy(field))
 

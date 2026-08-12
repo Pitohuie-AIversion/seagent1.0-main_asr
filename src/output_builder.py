@@ -155,9 +155,9 @@ class OutputBuilder:
         # tasktype: allowed_values 来自本模板的 task_type_values
         if ftype == "tasktype":
             raw = task_state.get(key)
-            if raw is None:
-                return None
             allowed = self._get_template_task_type_values(task_type_key)
+            if raw is None:
+                return allowed[0] if allowed else None
             return raw if raw in allowed else None
 
         raw = task_state.get(key)
@@ -612,7 +612,7 @@ class OutputBuilder:
             "all_payloads",
         }
 
-        if ref in dynamic_robot_refs or ref.startswith("payload_options."):
+        if ref in dynamic_robot_refs:
             return self._lookup_ref(ref, task_type_key, task_state)
 
         if ref in self._ref_cache:
@@ -635,8 +635,7 @@ class OutputBuilder:
           robot_family_full_names        → 当前任务允许的机器人族 full_name
           robot_variant_full_names       → 当前任务及机器人族允许的型号 full_name
           robot_full_names               → robot_variant_full_names 的兼容名称
-          payload_options.pipeline_inspection
-          payload_options.tree_valve_operation
+          supported_payloads              → 当前已选型号支持额外搭载的 payload
           vessel_ids
         """
         if ref in ("robot_category_labels", "robot_class_labels", "robot_classes"):
@@ -689,17 +688,6 @@ class OutputBuilder:
             return [r['id'] for r in self.kb.assets.get("vessels", [])]
             # return self.kb.assets.get("vessel_ids", [])
 
-        if ref.startswith("payload_options."):
-            task_key = ref.split(".", 1)[1]
-            task_commons = list(self.kb.assets.get("payload_options", {}).get(task_key, {}).get("common", []))
-            eq_type = str(task_state.get("equipment_type") or "") if task_state else ""
-            if eq_type:
-                robot = self.kb.get_rov(eq_type)
-                if robot:
-                    robot_payloads = {p.strip().replace(" ", "") for p in robot.get("all_payloads", [])}
-                    return [item for item in task_commons if item.strip().replace(" ", "") in robot_payloads]
-            return task_commons
-
         if ref in ("supported_payloads", "onboard_payloads", "all_payloads"):
             eq_type = str(task_state.get("equipment_type") or "") if task_state else ""
             if eq_type:
@@ -711,16 +699,7 @@ class OutputBuilder:
                         return list(robot.get("raw_supported_payloads", robot.get("supported_payloads", [])))
                     else:
                         return list(robot.get("supported_payloads", []))
-            robots = self.kb.get_task_allowed_robot_variants(task_type_key) if task_type_key else self.kb.get_all_rovs()
-            res: set[str] = set()
-            for r in robots:
-                if ref == "onboard_payloads":
-                    res.update(r.get("onboard_payloads", []))
-                elif ref == "supported_payloads":
-                    res.update(r.get("raw_supported_payloads", r.get("supported_payloads", [])))
-                else:
-                    res.update(r.get("supported_payloads", []))
-            return sorted(res)
+            return []
 
         return []
 

@@ -27,41 +27,28 @@ class PayloadSourceContractTest(unittest.TestCase):
             if onboard:
                 self.assertNotIn("raw_supported_payloads", r)
 
-    def test_payload_options_intersection_matrix(self):
+    def test_write_payload_values_come_from_selected_variant_supported_payloads(self):
         """
-        测试 payload_options.* 严格求交集逻辑:
-        - 没有机器人 -> task payload_options
-        - task 不允许、robot 支持 -> 拒绝
-        - task 允许、robot 不支持 -> 拒绝
-        - task 允许、robot 支持 -> 接受
+        LHL_V4 WRITE 权威：
+        - assets.payload_options 仅用于 QUERY 知识，不进入 WRITE
+        - 未选 equipment_type -> payload 候选为空
+        - 已选 equipment_type -> payload 候选等于该型号 supported_payloads
         """
         task_key = "pipeline_inspection"
-        task_commons = self.kb.assets.get("payload_options", {}).get(task_key, {}).get("common", [])
+        field = {"key": "payload", "allowed_values_ref": "supported_payloads"}
+        self.assertEqual(self.builder.resolve_allowed_values(field, task_key, {}), [])
 
-        # 1. 没有机器人 -> 返回 task payload_options (task_commons)
-        res_no_robot = self.builder._lookup_ref("payload_options.pipeline_inspection", task_type_key=task_key, task_state={})
-        self.assertEqual(res_no_robot, task_commons)
-
-        # 2. 有机器人 -> 求 task payload_options ∩ robot all_payloads
-        rov = self.kb.get_rov("观察级深海机器人")
+        rov = self.kb.get_rov("light_work_class_rov_hp")
         self.assertIsNotNone(rov)
-        robot_all = set(rov.get("all_payloads", []))
+        res_with_robot = self.builder.resolve_allowed_values(
+            field,
+            task_key,
+            {"equipment_type": "light_work_class_rov_hp"},
+        )
 
-        task_state_with_robot = {"equipment_type": "观察级深海机器人"}
-        res_with_robot = self.builder._lookup_ref("payload_options.pipeline_inspection", task_type_key=task_key, task_state=task_state_with_robot)
-
-        # 交集断言
-        expected_intersection = [item for item in task_commons if item in robot_all]
-        self.assertEqual(res_with_robot, expected_intersection)
-
-        # 校验拒绝/接受判定:
-        for payload_item in task_commons:
-            if payload_item in robot_all:
-                # task 允许、robot 支持 -> 接受
-                self.assertIn(payload_item, res_with_robot)
-            else:
-                # task 允许、robot 不支持 -> 拒绝
-                self.assertNotIn(payload_item, res_with_robot)
+        self.assertEqual(res_with_robot, rov.get("supported_payloads", []))
+        for onboard_item in rov.get("onboard_payloads", []):
+            self.assertNotIn(onboard_item, res_with_robot)
 
     def test_mutation_validation_rejects_payload_not_in_intersection(self):
         """测试 SlotStore apply_list_mutation 在限制模式下拒绝不在交集内的载荷。"""
@@ -70,15 +57,19 @@ class PayloadSourceContractTest(unittest.TestCase):
         task_key = "pipeline_inspection"
 
         # 准备任务 schema 约束
-        allowed = self.builder._lookup_ref("payload_options.pipeline_inspection", task_type_key=task_key, task_state={"equipment_type": "观察级深海机器人"})
+        allowed = self.builder.resolve_allowed_values(
+            {"key": "payload", "allowed_values_ref": "supported_payloads"},
+            task_key,
+            {"equipment_type": "light_work_class_rov_hp"},
+        )
         req_schema = [{"key": "payload", "allowed_values": allowed}]
 
-        # 假设 "机械切割开沟模块" 不在观察级 ROV 的允许交集中
+        # onboard payload 只用于知识/设备固有配置，不是 WRITE payload 合法值
         mutation = {
             "field": "payload",
             "operation": "add",
-            "items": ["机械切割开沟模块"],
-            "raw_text": "添加机械切割开沟模块",
+            "items": ["高清水下摄像机"],
+            "raw_text": "添加高清水下摄像机",
             "confidence": 0.9,
             "source": "user_input",
         }

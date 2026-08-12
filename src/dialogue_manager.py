@@ -488,6 +488,47 @@ class DialogueManager:
                 raise
             return self.llm.filter_reply(reply)
 
+    def _generate_task_reply(
+        self,
+        *,
+        task_state: dict,
+        built: dict,
+        missing: list[dict],
+        constraint_context: dict,
+        user_message: str,
+        knowledge_context: dict | None = None,
+        accepted_updates: dict | None = None,
+        unresolved_inputs: list | None = None,
+    ) -> str:
+        """Generate structured task-collection replies without post-filter mutation.
+
+        TASK_RESPONDER replies contain backend-owned field values and allowed_values
+        that must be displayed verbatim. Free-form QUERY/chat replies still use
+        filter_reply at their call sites.
+        """
+        messages = build_responder_messages(
+            task_state=task_state,
+            built_json=built,
+            missing_fields=missing,
+            mode=self.mode,
+            phase=self.phase,
+            knowledge_context=knowledge_context or {},
+            constraint_context=constraint_context,
+            conversation_history=self.conversation_history,
+            latest_user_message=user_message,
+            ROV2type=self.kb.ROV2type,
+            support_task=self.kb.get_supported_task(),
+            slot_snapshot=self.slot_store.get_slot_snapshot(),
+            accepted_updates=accepted_updates or {},
+            unresolved_inputs=unresolved_inputs or [],
+        )
+        return self._safe_llm_chat(
+            messages,
+            temperature=0.7,
+            max_tokens=1500,
+            role=ModelRole.TASK_RESPONDER,
+        )
+
     def _handle_knowledge_query(
         self,
         user_message: str,
@@ -692,9 +733,11 @@ class DialogueManager:
 
         # 检查缺失（排除 auto 和 fixed 等由系统自动管理的字段，如 task_id）
         if task_type_key:
-            req_schema = self.builder.get_schema(task_type_key, self.mode)
-            user_req_schema = [f for f in req_schema if f.get("type") not in ("auto", "fixed")]
-            missing = self.slot_store.get_missing_slots(user_req_schema)
+            _built_for_publish, missing = self.builder.build(
+                self.task_state,
+                task_type_key,
+                self.mode,
+            )
         else:
             missing = [{"key": "task_type", "label": "任务类型"}]
 
@@ -1088,7 +1131,6 @@ class DialogueManager:
             ]
             try:
                 reply = self._safe_llm_chat(guide_messages, temperature=0.5, max_tokens=300, role=ModelRole.TASK_RESPONDER)
-                reply = self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
             except Exception:
                 reply = (
                     f"您好！请问您想进行哪种水下作业任务？"
@@ -1529,33 +1571,26 @@ class DialogueManager:
 
         proposed_phase = self.phase
 
-        # Check required missing in working new_slots
+        # Check required missing in working new_slots via SlotStore SSOT.
         if curr_task_type_key:
-            required_schema = self.builder.get_schema(curr_task_type_key, proposed_mode)
-            user_req_schema = [f for f in required_schema if f.get("type") not in ("auto", "fixed")]
-            built = self.slot_store.get_built_json()
-            missing = self.slot_store.get_missing_slots(
-                user_req_schema,
-                allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
-                    field,
-                    curr_task_type_key,
-                    self.task_state,
-                ),
+            working_state = {
+                key: slot.value
+                for key, slot in new_slots.items()
+                if slot.status == "valid"
+            }
+            _working_built, missing = self.builder.build(
+                working_state,
+                curr_task_type_key,
+                proposed_mode,
             )
             self._last_missing = missing
-            cand_missing = [f for f in required_schema if f.get("type") not in ("auto", "fixed") and (not new_slots.get(f["key"]) or new_slots[f["key"]].status != "valid" or new_slots[f["key"]].value is None)]
         else:
-            built = {}
             missing = [{"key": "task_type", "label": "任务类型", "type": "string",
                         "allowed_values": self.kb.get_all_task_type_values()}]
             self._last_missing = missing
-            cand_missing = missing
-
-        # 维持严格 SSOT：_last_built_json 完全由 self.slot_store.get_built_json() 派生
-        self._last_built_json = built
 
         # Auto-generate intent_id inside new_slots BEFORE commit when all required slots are present or when revising a done task
-        if old_phase == "done" or (curr_task_type_key and not cand_missing):
+        if old_phase == "done" or (curr_task_type_key and not missing):
             intent_id_slot = new_slots.get("intent_id")
             if old_phase == "done" or not intent_id_slot or intent_id_slot.status != "valid" or not intent_id_slot.value:
                 today = get_current_datetime().strftime("%Y%m%d")
@@ -1571,9 +1606,11 @@ class DialogueManager:
                 new_slots["intent_id"].raw_value = None
 
         if old_phase == "done":
-            proposed_phase = "confirming" if not cand_missing else "collecting"
-        elif not cand_missing and proposed_phase not in ("blocked_hard", "confirming", "done"):
+            proposed_phase = "confirming" if not missing else "collecting"
+        elif not missing and proposed_phase not in ("blocked_hard", "confirming", "done"):
             proposed_phase = "confirming"
+        elif missing and proposed_phase not in ("blocked_hard", "done", "rejected"):
+            proposed_phase = "collecting"
 
         # Atomic single commit with optimistic version validation
         self.slot_store.commit_transaction(
@@ -1594,16 +1631,10 @@ class DialogueManager:
         # Re-derive from slot_store (SSOT)
         self.task_state = self.slot_store.get_task_state()
         if curr_task_type_key:
-            required_schema = self.builder.get_schema(curr_task_type_key, self.mode)
-            user_req_schema = [f for f in required_schema if f.get("type") not in ("auto", "fixed")]
-            built = self.slot_store.get_built_json()
-            missing = self.slot_store.get_missing_slots(
-                user_req_schema,
-                allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
-                    field,
-                    curr_task_type_key,
-                    self.task_state,
-                ),
+            built, missing = self.builder.build(
+                self.task_state,
+                curr_task_type_key,
+                self.mode,
             )
             self._last_missing = missing
         else:
@@ -1643,25 +1674,17 @@ class DialogueManager:
             state_before_turn,
         )
 
-        # 生成回复
-        messages = build_responder_messages(
+        # 生成结构化任务回复：候选值/字段值由后端提供，不能再由脱敏 LLM 二次改写。
+        reply = self._generate_task_reply(
             task_state=self.task_state,
-            built_json=built,
-            missing_fields=missing,
-            mode=self.mode,
-            phase=self.phase,
+            built=built,
+            missing=missing,
             knowledge_context=knowledge_context,
             constraint_context=constraint_context,
-            conversation_history=self.conversation_history,
-            latest_user_message=user_message,
-            ROV2type=self.kb.ROV2type,
-            support_task=self.kb.get_supported_task(),
-            slot_snapshot=self.slot_store.get_slot_snapshot(),
+            user_message=user_message,
             accepted_updates=accepted_updates,
             unresolved_inputs=turn_unresolved,
         )
-        reply = self._safe_llm_chat(messages, temperature=0.7, max_tokens=1500, role=ModelRole.TASK_RESPONDER)
-        reply = self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
         reply = self._ensure_constraint_details(reply, constraint_context)
 
         if payload_mutation_failed and mutation_failure_result:

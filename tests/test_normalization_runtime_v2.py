@@ -153,7 +153,6 @@ class TestRuntimeSpecializedOwnership(unittest.TestCase):
 
     def test_runtime_ownership_constants(self):
         eq_keys = {
-            "equipment_class",
             "equipment_family",
             "equipment_type",
             "equipment_name",
@@ -343,12 +342,23 @@ class TestRuntimeV2Integration(unittest.TestCase):
 
     def test_v2_runtime_payload_add_parity(self):
         self._setup_stage2_task("pipeline_inspection")
+        fam_slot = Slot("equipment_family", value="观察级深海机器人", status="valid")
+        type_slot = Slot("equipment_type", value="观察级深海机器人 HP", status="valid")
         p_slot = Slot(slot_name="payload", value_type="list")
         p_slot.value = []
         p_slot.status = "valid"
         ttk_slot = self.dm.slot_store.slots["task_type_key"]
         tt_slot = self.dm.slot_store.slots["task_type"]
-        self.dm.slot_store.commit_transaction({"task_type_key": ttk_slot, "task_type": tt_slot, "payload": p_slot}, [])
+        self.dm.slot_store.commit_transaction(
+            {
+                "task_type_key": ttk_slot,
+                "task_type": tt_slot,
+                "equipment_family": fam_slot,
+                "equipment_type": type_slot,
+                "payload": p_slot,
+            },
+            [],
+        )
 
         extraction_res = {
             "slot_candidates": [],
@@ -356,9 +366,9 @@ class TestRuntimeV2Integration(unittest.TestCase):
                 {
                     "field": "payload",
                     "operation": "add",
-                    "items": ["高清水下摄像机"],
+                    "items": ["双目视觉模块"],
                     "target_items": [],
-                    "raw_text": "配备高清水下摄像机",
+                    "raw_text": "配备双目视觉模块",
                     "confidence": 1.0,
                     "source": "user_input",
                 }
@@ -369,11 +379,11 @@ class TestRuntimeV2Integration(unittest.TestCase):
 
         with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True), \
              patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=True):
-            self.dm.process("配备高清水下摄像机")
+            self.dm.process("配备双目视觉模块")
 
         payload_slot = self.dm.slot_store.slots.get("payload")
         self.assertIsNotNone(payload_slot)
-        self.assertIn("高清水下摄像机", payload_slot.value)
+        self.assertIn("双目视觉模块", payload_slot.value)
         self.assertEqual(payload_slot.status, "valid")
 
     def test_v2_normalization_does_not_force_stage1_schema(self):
@@ -636,7 +646,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
             "unresolved": [],
         }
 
-        eq_keys = ["equipment_class", "equipment_family", "equipment_type", "equipment_name", "equipment_unit_id"]
+        eq_keys = ["equipment_family", "equipment_type", "equipment_name", "equipment_unit_id"]
         snapshots = {}
         for mode_name, flag_v2, flag_norm in [
             ("Legacy", False, False),
@@ -1062,9 +1072,9 @@ class TestRuntimeV2Integration(unittest.TestCase):
             {
                 "field": "payload",
                 "operation": "remove",
-                "items": ["LED水下照明灯"],
+                "items": ["机械式声呐"],
                 "target_items": [],
-                "raw_text": "移除LED水下照明灯",
+                "raw_text": "移除机械式声呐",
                 "confidence": 1.0,
                 "source": "user_input",
             }
@@ -1074,22 +1084,33 @@ class TestRuntimeV2Integration(unittest.TestCase):
             dm = DialogueManager(llm=MagicMock())
             self._setup_stage2_task("pipeline_inspection", dm=dm)
             p_slot = Slot("payload", value_type="list")
-            p_slot.value = ["高清水下摄像机", "LED水下照明灯"]
+            fam_slot = Slot("equipment_family", value="观察级深海机器人", status="valid")
+            type_slot = Slot("equipment_type", value="观察级深海机器人 HP", status="valid")
+            p_slot.value = ["双目视觉模块", "机械式声呐"]
             p_slot.status = "valid"
             ttk_slot = dm.slot_store.slots["task_type_key"]
             tt_slot = dm.slot_store.slots["task_type"]
-            dm.slot_store.commit_transaction({"task_type": tt_slot, "task_type_key": ttk_slot, "payload": p_slot}, [])
+            dm.slot_store.commit_transaction(
+                {
+                    "task_type": tt_slot,
+                    "task_type_key": ttk_slot,
+                    "equipment_family": fam_slot,
+                    "equipment_type": type_slot,
+                    "payload": p_slot,
+                },
+                [],
+            )
 
             res = {"slot_candidates": [], "list_mutations": list_muts, "unresolved": []}
             dm.extractor.extract_updates = MagicMock(return_value=res)
             with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
                  patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
-                dm.process("移除LED水下照明灯")
+                dm.process("移除机械式声呐")
             snapshots[mode_name] = get_effect_snapshot(dm, ["payload"])
 
         self.assertEqual(snapshots["Legacy"], snapshots["G2.1"])
         self.assertEqual(snapshots["Legacy"], snapshots["V2"])
-        self.assertEqual(snapshots["V2"]["slots"]["payload"]["value"], ["高清水下摄像机"])
+        self.assertEqual(snapshots["V2"]["slots"]["payload"]["value"], ["双目视觉模块"])
         self.assertEqual(snapshots["V2"]["slots"]["payload"]["status"], "valid")
 
     def test_v2_payload_replace_parity(self):
@@ -1097,9 +1118,9 @@ class TestRuntimeV2Integration(unittest.TestCase):
             {
                 "field": "payload",
                 "operation": "replace",
-                "items": ["成像声呐"],
-                "target_items": ["高清水下摄像机"],
-                "raw_text": "将高清水下摄像机替换为成像声呐",
+                "items": ["机械式声呐"],
+                "target_items": ["双目视觉模块"],
+                "raw_text": "将双目视觉模块替换为机械式声呐",
                 "confidence": 1.0,
                 "source": "user_input",
             }
@@ -1109,22 +1130,33 @@ class TestRuntimeV2Integration(unittest.TestCase):
             dm = DialogueManager(llm=MagicMock())
             self._setup_stage2_task("pipeline_inspection", dm=dm)
             p_slot = Slot("payload", value_type="list")
-            p_slot.value = ["高清水下摄像机"]
+            fam_slot = Slot("equipment_family", value="观察级深海机器人", status="valid")
+            type_slot = Slot("equipment_type", value="观察级深海机器人 HP", status="valid")
+            p_slot.value = ["双目视觉模块"]
             p_slot.status = "valid"
             ttk_slot = dm.slot_store.slots["task_type_key"]
             tt_slot = dm.slot_store.slots["task_type"]
-            dm.slot_store.commit_transaction({"task_type": tt_slot, "task_type_key": ttk_slot, "payload": p_slot}, [])
+            dm.slot_store.commit_transaction(
+                {
+                    "task_type": tt_slot,
+                    "task_type_key": ttk_slot,
+                    "equipment_family": fam_slot,
+                    "equipment_type": type_slot,
+                    "payload": p_slot,
+                },
+                [],
+            )
 
             res = {"slot_candidates": [], "list_mutations": list_muts, "unresolved": []}
             dm.extractor.extract_updates = MagicMock(return_value=res)
             with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
                  patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
-                dm.process("将高清水下摄像机替换为成像声呐")
+                dm.process("将双目视觉模块替换为机械式声呐")
             snapshots[mode_name] = get_effect_snapshot(dm, ["payload"])
 
         self.assertEqual(snapshots["Legacy"], snapshots["G2.1"])
         self.assertEqual(snapshots["Legacy"], snapshots["V2"])
-        self.assertEqual(snapshots["V2"]["slots"]["payload"]["value"], ["成像声呐"])
+        self.assertEqual(snapshots["V2"]["slots"]["payload"]["value"], ["机械式声呐"])
         self.assertEqual(snapshots["V2"]["slots"]["payload"]["status"], "valid")
 
     def test_v2_payload_clear_parity(self):

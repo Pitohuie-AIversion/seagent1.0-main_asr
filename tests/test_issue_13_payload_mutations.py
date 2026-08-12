@@ -54,9 +54,9 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.slot_store = SlotStore()
         self.output_builder = OutputBuilder(self.kb)
 
-        self.cam = "高清水下摄像机"
-        self.sonar = "成像声呐"
-        self.light = "LED水下照明灯"
+        self.cam = "双目视觉模块"
+        self.sonar = "机械式声呐"
+        self.light = "激光标尺"
         self.arm = "多功能液压机械臂"
 
         self.pipeline_req = [
@@ -65,14 +65,13 @@ class TestIssue13PayloadMutations(unittest.TestCase):
                 "label": "携带工具",
                 "type": "list",
                 "allowed_values": [
-                    "高清水下摄像机",
-                    "LED水下照明灯",
                     "激光标尺",
-                    "成像声呐",
-                    "INS惯性导航系统",
-                    "DVL多普勒测速仪",
+                    "双目视觉模块",
+                    "机械式声呐",
+                    "电磁检测传感器",
+                    "腐蚀检测探头",
+                    "厚度检测传感器",
                     "USBL定位设备",
-                    "深度传感器",
                 ],
             }
         ]
@@ -84,16 +83,32 @@ class TestIssue13PayloadMutations(unittest.TestCase):
                 "type": "list",
                 "allowed_values": [
                     "多功能液压机械臂",
-                    "高清水下摄像机",
-                    "成像声呐",
-                    "专有飞天抓手",
+                    "电液机械臂",
+                    "双目视觉模块",
+                    "夹爪",
                 ],
             }
         ]
 
+    def _new_dm(
+        self,
+        task_type_key="pipeline_inspection",
+        equipment_type="观察级深海机器人 HP",
+        equipment_family="观察级深海机器人",
+    ):
+        dm = DialogueManager(llm=self.llm, kb=self.kb)
+        dm.task_state["task_type_key"] = task_type_key
+        dm.task_state["equipment_family"] = equipment_family
+        dm.task_state["equipment_type"] = equipment_type
+        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value=task_type_key, status="valid")
+        dm.slot_store.slots["equipment_family"] = Slot("equipment_family", value=equipment_family, status="valid")
+        dm.slot_store.slots["equipment_type"] = Slot("equipment_type", value=equipment_type, status="valid")
+        dm.phase = "collecting"
+        return dm
+
     def test_01_extractor_detect_add(self):
         res = self.extractor.extract_updates(
-            user_message="再加一个成像声呐",
+            user_message=f"再加一个{self.sonar}",
             current_state={"payload": [self.cam]},
             task_type_key="pipeline_inspection",
             required=self.pipeline_req,
@@ -105,7 +120,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
 
     def test_02_extractor_detect_remove(self):
         res = self.extractor.extract_updates(
-            user_message="去掉成像声呐",
+            user_message=f"去掉{self.sonar}",
             current_state={"payload": [self.cam, self.sonar]},
             task_type_key="pipeline_inspection",
             required=self.pipeline_req,
@@ -117,7 +132,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
 
     def test_03_extractor_detect_replace(self):
         res = self.extractor.extract_updates(
-            user_message="把高清水下摄像机换成成像声呐",
+            user_message=f"把{self.cam}换成{self.sonar}",
             current_state={"payload": [self.cam]},
             task_type_key="pipeline_inspection",
             required=self.pipeline_req,
@@ -151,7 +166,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
 
     def test_06_extractor_ambiguous_logged(self):
         res = self.extractor.extract_updates(
-            user_message="成像声呐",
+            user_message=self.sonar,
             current_state={"payload": [self.cam]},
             task_type_key="pipeline_inspection",
             required=self.pipeline_req,
@@ -163,7 +178,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
 
     def test_07_slot_store_add_success(self):
         slots = {"payload": Slot("payload", value=[self.cam], status="valid")}
-        mutation = {"field": "payload", "operation": "add", "items": ["成像声呐"], "raw_text": "加个成像声呐"}
+        mutation = {"field": "payload", "operation": "add", "items": [self.sonar], "raw_text": f"加个{self.sonar}"}
         res = self.slot_store.apply_list_mutation(slots, mutation, required_schema=self.pipeline_req)
         self.assertTrue(res["success"])
         self.assertIn(self.cam, slots["payload"].value)
@@ -171,7 +186,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
 
     def test_08_slot_store_add_duplicate(self):
         slots = {"payload": Slot("payload", value=[self.cam], status="valid")}
-        mutation = {"field": "payload", "operation": "add", "items": ["摄像机"], "raw_text": "加个摄像机"}
+        mutation = {"field": "payload", "operation": "add", "items": [self.cam], "raw_text": f"加个{self.cam}"}
         res = self.slot_store.apply_list_mutation(slots, mutation, required_schema=self.pipeline_req)
         self.assertTrue(res["success"])
         self.assertEqual(slots["payload"].value, [self.cam])
@@ -186,7 +201,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
 
     def test_10_slot_store_replace_success(self):
         slots = {"payload": Slot("payload", value=[self.cam], status="valid")}
-        mutation = {"field": "payload", "operation": "replace", "target_items": ["高清水下摄像机"], "items": ["成像声呐"], "raw_text": "换成成像声呐"}
+        mutation = {"field": "payload", "operation": "replace", "target_items": [self.cam], "items": [self.sonar], "raw_text": f"换成{self.sonar}"}
         res = self.slot_store.apply_list_mutation(slots, mutation, required_schema=self.pipeline_req)
         self.assertTrue(res["success"])
         self.assertEqual(slots["payload"].value, [self.sonar])
@@ -217,7 +232,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertFalse(res_add["success"])
         self.assertEqual(slots["payload"].value, [self.cam])
 
-        mut_rep = {"field": "payload", "operation": "replace", "target_items": ["高清水下摄像机"], "items": ["未知抓手"], "raw_text": "把摄像机换成未知抓手"}
+        mut_rep = {"field": "payload", "operation": "replace", "target_items": [self.cam], "items": ["未知抓手"], "raw_text": f"把{self.cam}换成未知抓手"}
         res_rep = self.slot_store.apply_list_mutation(slots, mut_rep, required_schema=self.pipeline_req)
         self.assertFalse(res_rep["success"])
         self.assertEqual(slots["payload"].value, [self.cam])
@@ -241,12 +256,9 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertIsNone(out_empty)
 
     def test_15_dialogue_manager_multiturn(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "pipeline_inspection"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm()
 
-        dm.process("添加高清水下摄像机")
+        dm.process(f"添加{self.cam}")
 
         payload_slot = dm.slot_store.slots["payload"]
         task_state_val = dm.slot_store.get_task_state().get("payload")
@@ -257,7 +269,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertIn(self.cam, task_state_val or [])
         self.assertIn(self.cam, built_val or [])
 
-        dm.process("再加一个成像声呐")
+        dm.process(f"再加一个{self.sonar}")
 
         payload_slot = dm.slot_store.slots["payload"]
         task_state_val = dm.slot_store.get_task_state().get("payload")
@@ -269,7 +281,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertIn(self.sonar, task_state_val)
         self.assertIn(self.sonar, built_val)
 
-        dm.process("去掉成像声呐")
+        dm.process(f"去掉{self.sonar}")
 
         payload_slot = dm.slot_store.slots["payload"]
         task_state_val = dm.slot_store.get_task_state().get("payload")
@@ -291,12 +303,9 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertIsNone(built_val)
 
     def test_16_dialogue_manager_invalid_add_rejection(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "pipeline_inspection"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm()
 
-        dm.process("添加高清水下摄像机")
+        dm.process(f"添加{self.cam}")
 
         reply = dm.process("再加一个机械臂")
 
@@ -311,26 +320,20 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertEqual(built_val, [self.cam])
 
     def test_17_asr_text_flow_parity(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "pipeline_inspection"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm()
 
-        dm.process("添加高清水下摄像机")
+        dm.process(f"添加{self.cam}")
 
-        asr_transcribed_text = "再加一个成像声呐"
+        asr_transcribed_text = f"再加一个{self.sonar}"
         dm.process(asr_transcribed_text)
 
         payload_slot = dm.slot_store.slots["payload"]
         self.assertIn(self.sonar, payload_slot.value)
 
     def test_18_unknown_add_payload_via_extractor_and_dm(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "pipeline_inspection"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm()
 
-        dm.process("添加高清水下摄像机")
+        dm.process(f"添加{self.cam}")
 
         dm.process("添加无中生有水下切割刀")
 
@@ -340,14 +343,11 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertIn("无中生有水下切割刀", payload_slot.validation_error)
 
     def test_19_unknown_replace_payload_via_extractor_and_dm(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "pipeline_inspection"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm()
 
-        dm.process("添加高清水下摄像机")
+        dm.process(f"添加{self.cam}")
 
-        dm.process("把高清水下摄像机换成未知工具")
+        dm.process(f"把{self.cam}换成未知工具")
 
         payload_slot = dm.slot_store.slots["payload"]
         self.assertEqual(payload_slot.value, [self.cam])
@@ -355,39 +355,30 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertIsNotNone(payload_slot.validation_error)
 
     def test_20_mixed_turn_payload_failure_preserves_equipment(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "pipeline_inspection"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm()
 
-        dm.process("使用天鹰座一号机，携带机械臂和前视声呐")
+        dm.process("使用天鹰座 HP，携带多功能液压机械臂和前视声呐")
 
         eq_slot = dm.slot_store.slots.get("equipment_type")
         self.assertIsNotNone(eq_slot)
-        self.assertEqual(eq_slot.value, "轻型工作级深海机器人")
-        self.assertEqual(dm.slot_store.get_task_state().get("equipment_type"), "轻型工作级深海机器人")
+        self.assertEqual(eq_slot.value, "观察级深海机器人 HP")
+        self.assertEqual(dm.slot_store.get_task_state().get("equipment_type"), "观察级深海机器人 HP")
 
     def test_21_catalog_alias_resolves_to_task_canonical_value(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "tree_valve_operation"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="tree_valve_operation", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm("tree_valve_operation", "通用工作级深海机器人 250HP", "通用工作级深海机器人")
 
-        dm.process("添加 LED水下照明灯")
+        dm.process("添加 电液机械臂")
 
         payload_slot = dm.slot_store.slots["payload"]
-        self.assertEqual(payload_slot.value, ["LED水下照明灯"])
+        self.assertEqual(payload_slot.value, ["电液机械臂"])
         self.assertEqual(payload_slot.status, "valid")
 
     def test_22_targeted_removal_not_misidentified_as_clear(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "pipeline_inspection"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm()
 
-        dm.process("添加高清水下摄像机和成像声呐")
+        dm.process(f"添加{self.cam}和{self.sonar}")
 
-        dm.process("不需要载荷中的成像声呐")
+        dm.process(f"不需要载荷中的{self.sonar}")
 
         payload_slot = dm.slot_store.slots["payload"]
         self.assertEqual(payload_slot.value, [self.cam])
@@ -418,10 +409,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertIsNotNone(slot.validation_error)
 
     def test_24_exact_task_allowed_value_not_collapsed_by_catalog_alias(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "tree_valve_operation"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="tree_valve_operation", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm("tree_valve_operation", "通用工作级深海机器人 250HP", "通用工作级深海机器人")
 
         dm.process("添加电液机械臂")
 
@@ -430,14 +418,11 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertEqual(payload_slot.status, "valid")
 
     def test_25_natural_language_targeted_removals(self):
-        phrases = ["删除载荷里的成像声呐", "删除载荷成像声呐", "放弃工具里的成像声呐"]
+        phrases = [f"删除载荷里的{self.sonar}", f"删除载荷{self.sonar}", f"放弃工具里的{self.sonar}"]
         for phrase in phrases:
-            dm = DialogueManager(llm=self.llm, kb=self.kb)
-            dm.task_state["task_type_key"] = "pipeline_inspection"
-            dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-            dm.phase = "collecting"
+            dm = self._new_dm()
 
-            dm.process("添加高清水下摄像机和成像声呐")
+            dm.process(f"添加{self.cam}和{self.sonar}")
             dm.process(phrase)
 
             payload_slot = dm.slot_store.slots["payload"]
@@ -445,10 +430,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
             self.assertEqual(payload_slot.status, "valid")
 
     def test_26_optional_suffix_canonical_mapping(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "tree_valve_operation"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="tree_valve_operation", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm("tree_valve_operation", "通用工作级深海机器人 250HP", "通用工作级深海机器人")
 
         dm.process("添加双目视觉模块")
 
@@ -458,10 +440,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertNotEqual(payload_slot.value, ["高清水下摄像机"])
 
     def test_27_optional_suffix_burial_laser_ruler(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "pipeline_burial"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_burial", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm("pipeline_burial", "履带式海底重载作业机器人 1600HP", "履带式海底重载作业机器人")
 
         dm.process("添加机械切割开沟模块")
 
@@ -470,10 +449,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertEqual(payload_slot.status, "valid")
 
     def test_28_optional_suffix_remove_existing(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "pipeline_burial"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_burial", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm("pipeline_burial", "履带式海底重载作业机器人 1600HP", "履带式海底重载作业机器人")
 
         dm.process("添加机械切割开沟模块")
         dm.process("去掉机械切割开沟模块")
@@ -483,38 +459,29 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertEqual(payload_slot.status, "missing")
 
     def test_29_scoped_removal_with_all_quantifier(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "pipeline_inspection"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm()
 
-        dm.process("添加高清水下摄像机和成像声呐")
-        dm.process("删除所有载荷里的成像声呐")
+        dm.process(f"添加{self.cam}和{self.sonar}")
+        dm.process(f"删除所有载荷里的{self.sonar}")
 
         payload_slot = dm.slot_store.slots["payload"]
         self.assertEqual(payload_slot.value, [self.cam])
         self.assertEqual(payload_slot.status, "valid")
 
     def test_30_scoped_removal_with_but_keep_phrase(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "pipeline_inspection"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm()
 
-        dm.process("添加高清水下摄像机和成像声呐")
-        dm.process("删除所有载荷中的成像声呐，但保留摄像机")
+        dm.process(f"添加{self.cam}和{self.sonar}")
+        dm.process(f"删除所有载荷中的{self.sonar}，但保留{self.cam}")
 
         payload_slot = dm.slot_store.slots["payload"]
         self.assertEqual(payload_slot.value, [self.cam])
         self.assertEqual(payload_slot.status, "valid")
 
     def test_31_pure_clear_still_clears(self):
-        dm = DialogueManager(llm=self.llm, kb=self.kb)
-        dm.task_state["task_type_key"] = "pipeline_inspection"
-        dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        dm.phase = "collecting"
+        dm = self._new_dm()
 
-        dm.process("添加高清水下摄像机和成像声呐")
+        dm.process(f"添加{self.cam}和{self.sonar}")
         dm.process("删除所有载荷")
 
         payload_slot = dm.slot_store.slots["payload"]
