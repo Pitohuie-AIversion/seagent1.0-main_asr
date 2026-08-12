@@ -5,7 +5,7 @@ SEAgent G6 — Frontend State & History Recovery Closeout 主测试模块。
 验证：
 1. /api/chat、/api/session/state、/api/history/load 使用统一 build_frontend_ui_state 结构；
 2. valid / candidate / invalid / missing / conflict 槽位状态契约；
-3. blocked_hard / blocked_soft / confirming / done / rejected 的 actions 与 read_only 契约；
+3. blocked_hard / confirming / done / rejected 的 actions 与 read_only 契约；
 4. history save -> list_history -> load_history 保存与完整恢复流程；
 5. 损坏历史文件容错（不拖垮 list_history）；
 6. history 恢复无副作用（不重新生成 ID / 不重新 publish / 不触发 LLM）；
@@ -112,27 +112,26 @@ class TestFrontendHistoryCloseout(unittest.TestCase):
         self.assertEqual(payload_slot["status"], "missing")
 
     def test_03_phase_actions_and_read_only_contract(self):
-        """3. blocked_hard / blocked_soft / confirming / done / rejected 的 actions 与 read_only 契约"""
+        """3. blocked_hard / confirming / done / rejected 的 actions 与 read_only 契约"""
         mgr = DialogueManager(self.llm, self.kb, session_id="test_sess_03")
         mgr.dialogue_mode = "task_collection"
 
         phases_test = [
-            ("collecting", True, False, False, False),
-            ("blocked_soft", True, True, False, False),
-            ("blocked_hard", True, False, False, False),
-            ("confirming", True, False, True, False),
-            ("done", False, False, False, True),
-            ("rejected", False, False, False, True),
+            ("collecting", True, False, False),
+            ("blocked_hard", True, False, False),
+            ("confirming", True, True, False),
+            ("done", False, False, True),
+            ("rejected", False, False, True),
         ]
 
-        for phase, exp_can_send, exp_can_ignore, exp_can_pub, exp_read_only in phases_test:
+        for phase, exp_can_send, exp_can_pub, exp_read_only in phases_test:
             mgr.phase = phase
             ui_state = build_frontend_ui_state(mgr)
 
             self.assertEqual(ui_state["read_only"], exp_read_only, f"phase {phase} read_only mismatch")
             actions = ui_state["actions"]
             self.assertEqual(actions["can_send"], exp_can_send, f"phase {phase} can_send mismatch")
-            self.assertEqual(actions["can_ignore_soft_warning"], exp_can_ignore, f"phase {phase} can_ignore mismatch")
+            self.assertNotIn("can_ignore_soft_warning", actions, f"phase {phase} can_ignore should not exist")
             self.assertEqual(actions["can_publish"], exp_can_pub, f"phase {phase} can_publish mismatch")
 
     def test_04_history_save_list_load_recovery_flow(self):

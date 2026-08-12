@@ -6,7 +6,6 @@ dialogue_manager.py - 对话主控制器
 阶段状态机:
   collecting
     → blocked_hard   (硬违规阻塞)
-    → blocked_soft   (软违规阻塞)
     → confirming     (字段齐全无阻塞，等待确认)
     → done           (确认，输出最终JSON)
     → rejected       (拒绝)
@@ -14,8 +13,7 @@ dialogue_manager.py - 对话主控制器
 约束检查策略:
   - 字段变化后增量检查
   - Hard违规阻塞，连续失败达上限则拒绝
-  - Soft违规询问一次，用户可忽略并加入白名单
-  - 白名单key: (field, str(value), constraint_id)，字段值变化时失效
+  - Soft 违规仅作为 warning 记录/展示，不改变 workflow phase
 """
 
 import copy
@@ -92,7 +90,6 @@ from .slot_store import (
     Slot,
     SlotStore,
     SnapshotValidationError,
-    ValidationAcknowledgement,
     normalize_slot_value_type,
     validate_specification_object,
     validate_specification_selector_input,
@@ -167,7 +164,6 @@ class DialogueManager:
 
         # 约束管理状态
         self._blocking_violations: list[Violation] = []
-        self._soft_whitelist: set[tuple[str, str, str]] = set()
         self._hard_refusal_counts: dict[str, int] = {}
 
         # ROV候选暂存
@@ -631,14 +627,12 @@ class DialogueManager:
 
         不得调用 extractor.extract_updates / slot normalization /
         _apply_updates_in_transaction / slot_store.commit_transaction。
-        只修改控制状态（phase / _soft_whitelist / _blocking_violations）。
+        只处理 confirming 阶段的最终发布确认。
         """
-        if self.phase == "blocked_soft":
-            return self._handle_soft_warning_confirmation(user_message, request_id)
-        elif self.phase == "confirming":
+        if self.phase == "confirming":
             return self._handle_final_publish_confirmation(user_message, request_id)
         else:
-            # 非 confirming/blocked_soft 阶段出现确认指令 → 澄清
+            # 非 confirming 阶段出现确认指令 → 澄清
             reply = "当前没有待确认的任务。请先创建或补充任务参数。"
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
@@ -661,159 +655,6 @@ class DialogueManager:
         self.slot_store.validation_result = res
         return res
 
-    def _get_valid_acknowledgements(
-        self,
-        validation_result: ValidationResult | None,
-    ) -> list[ValidationAcknowledgement]:
-        """
-        过滤并返回与当前 validation_result 完全匹配的有效确认。
-        至少匹配：
-        - constraint_id
-        - task_version
-        - validation_version
-        - validation_fingerprint
-        - status_ref
-        - state_version
-        - observed_value (or field/value)
-        """
-        if not validation_result or not self.slot_store.validation_acknowledgements:
-            return []
-
-        status_ref = (
-            validation_result.state_snapshot.get("status_ref", "")
-            if validation_result.state_snapshot
-            else ""
-        )
-        state_version = (
-            validation_result.state_snapshot.get("state_version", 0)
-            if validation_result.state_snapshot
-            else 0
-        )
-
-        violation_map = {
-            v.constraint_id: v for v in (validation_result.violations or [])
-        }
-
-        valid_acks = []
-        for ack in self.slot_store.validation_acknowledgements:
-            if not isinstance(ack, ValidationAcknowledgement):
-                continue
-            if ack.task_version != validation_result.task_version:
-                continue
-            if ack.validation_version != validation_result.validation_version:
-                continue
-            if ack.validation_fingerprint != validation_result.validation_fingerprint:
-                continue
-            if ack.status_ref != status_ref:
-                continue
-            if ack.state_version != state_version:
-                continue
-            if ack.constraint_id in violation_map:
-                v = violation_map[ack.constraint_id]
-                if ack.value != getattr(v, "observed_value", None) and ack.field not in getattr(v, "related_fields", []):
-                    continue
-            valid_acks.append(ack)
-        return valid_acks
-
-    def _handle_soft_warning_confirmation(self, user_message: str, request_id: str) -> str:
-        """blocked_soft 阶段的确认/忽略处理。
-
-        将已确认忽略的软警告录入 SlotStore.validation_acknowledgements 绑定快照版本，
-        清除 _blocking_violations，然后根据缺失槽位决定进入 collecting 或 confirming。
-        """
-        res = self._refresh_validation(purpose="interactive")
-        status_ref = res.state_snapshot.get("status_ref") if res.state_snapshot else None
-        state_ver = res.state_snapshot.get("state_version") if res.state_snapshot else None
-
-        if self._blocking_violations:
-            for v in self._blocking_violations:
-                if getattr(v, "severity", "soft") == "soft":
-                    ack = ValidationAcknowledgement(
-                        constraint_id=v.constraint_id,
-                        acknowledged_at=get_current_datetime().isoformat(timespec="seconds"),
-                        task_version=res.task_version,
-                        validation_version=res.validation_version,
-                        validation_fingerprint=res.validation_fingerprint,
-                        status_ref=status_ref or "",
-                        state_version=state_ver or 0,
-                        field=getattr(v, "related_fields", [""])[0] if getattr(v, "related_fields", None) else "",
-                        value=getattr(v, "observed_value", None),
-                    )
-                    if ack not in self.slot_store.validation_acknowledgements:
-                        self.slot_store.validation_acknowledgements.append(ack)
-                for f in v.related_fields:
-                    val = self.task_state.get(f)
-                    if val is not None:
-                        self._soft_whitelist.add((f, str(val), v.constraint_id))
-            self._blocking_violations = []
-
-        # 重新检查约束（使用白名单过滤后的结果）
-        res = self._refresh_validation(purpose="interactive")
-        all_violations = res.violations
-        remaining_soft = [v for v in all_violations
-                          if v.severity == "soft" and not self._is_whitelisted(v)]
-        remaining_hard = [v for v in all_violations if v.severity == "hard"]
-
-        if remaining_hard:
-            self._transition_phase("blocked_hard", reason="hard_constraint_detected")
-            self._blocking_violations = remaining_hard
-        elif remaining_soft:
-            self._transition_phase("blocked_soft", reason="soft_warning_detected")
-            self._blocking_violations = remaining_soft
-        else:
-            # 检查是否有缺失槽位
-            task_type_key = self.task_state.get("task_type_key")
-            if task_type_key:
-                req_schema = self.builder.get_schema(task_type_key, self.mode)
-                user_req_schema = [f for f in req_schema if f.get("type") not in ("auto", "fixed")]
-                missing = self.slot_store.get_missing_slots(
-                    user_req_schema,
-                    allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
-                        field,
-                        task_type_key,
-                        self.task_state,
-                    ),
-                )
-                self._last_missing = missing
-                if not missing:
-                    self._transition_phase("confirming", reason="required_slots_complete")
-                else:
-                    self._transition_phase("collecting", reason="required_slots_missing")
-            else:
-                self._transition_phase("collecting", reason="task_type_missing")
-
-        # 生成回复
-        knowledge_context = self.kb.get_context_for_state(self.task_state)
-        built = self._last_built_json
-        missing = self._last_missing
-        constraint_context = {"type": "none", "violations": [], "hard_refusal_counts": {}}
-        if remaining_hard:
-            constraint_context = {"type": "hard", "violations": remaining_hard, "hard_refusal_counts": {}}
-        elif remaining_soft:
-            constraint_context = {"type": "soft", "violations": remaining_soft, "hard_refusal_counts": {}}
-
-        messages = build_responder_messages(
-            task_state=self.task_state,
-            built_json=built,
-            missing_fields=missing,
-            mode=self.mode,
-            phase=self.phase,
-            knowledge_context=knowledge_context,
-            constraint_context=constraint_context,
-            conversation_history=self.conversation_history,
-            latest_user_message=user_message,
-            ROV2type=self.kb.ROV2type,
-            support_task=self.kb.get_supported_task(),
-            slot_snapshot=self.slot_store.get_slot_snapshot(),
-        )
-        reply = self._safe_llm_chat(messages, temperature=0.7, max_tokens=1500, role=ModelRole.TASK_RESPONDER)
-        reply = self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
-        reply = self._ensure_constraint_details(reply, constraint_context)
-
-        self.conversation_history.append({"role": "user", "content": user_message})
-        self.conversation_history.append({"role": "assistant", "content": reply})
-        return reply
-
     def _handle_final_publish_confirmation(self, user_message: str, request_id: str) -> str:
         """confirming 阶段的唯一正式确认发布处理。
 
@@ -828,7 +669,6 @@ class DialogueManager:
 
         prev_phase = self.phase
         prev_snap = self.slot_store.export_snapshot()
-        prev_whitelist = copy.deepcopy(self._soft_whitelist)
         prev_missing = copy.deepcopy(self._last_missing)
         prev_pending_rov = copy.deepcopy(self._pending_rov_candidates)
         prev_blocking_violations = copy.deepcopy(self._blocking_violations)
@@ -839,29 +679,16 @@ class DialogueManager:
         cand_state = copy.deepcopy(self.task_state)
         cand_built = copy.deepcopy(self._last_built_json)
 
-        # 运行时设备可用性重新校验 (Issue #12)
         unit_id = cand_state.get("equipment_unit_id") or cand_built.get("equipment_unit_id")
         if not unit_id and self.slot_store.slots.get("equipment_unit_id"):
             unit_slot = self.slot_store.slots.get("equipment_unit_id")
             if unit_slot and unit_slot.status == "valid":
                 unit_id = unit_slot.value
 
-        if unit_id:
-            runtime_res = self.kb.state_info.check_runtime_availability(str(unit_id))
-            if not runtime_res.get("available"):
-                self._transition_phase("blocked_hard", reason="runtime_equipment_unavailable")
-                reply = runtime_res.get("message") or f"无法发布任务：机器人 {unit_id} 当前不可用。"
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
-
         # 最终约束全量检查
         val_res = self._refresh_validation(purpose="publish")
         all_violations = val_res.violations
-        runtime_diag = getattr(val_res, "runtime_diagnostic", None) or {}
         has_hard = self.validator.has_hard_violations(all_violations)
-        has_runtime_blocker = val_res.overall_status == "pending_runtime_validation" and is_now
-        unwhitelisted_soft = [v for v in all_violations if v.severity == "soft" and not self._is_whitelisted(v)]
 
         # 检查缺失（排除 auto 和 fixed 等由系统自动管理的字段，如 task_id）
         if task_type_key:
@@ -871,7 +698,7 @@ class DialogueManager:
         else:
             missing = [{"key": "task_type", "label": "任务类型"}]
 
-        if missing or has_hard or has_runtime_blocker or unwhitelisted_soft:
+        if missing or has_hard:
             if has_hard:
                 self._transition_phase("blocked_hard", reason="publish_hard_constraint_detected")
                 hard_violations = [v for v in all_violations if v.severity == "hard"]
@@ -880,14 +707,6 @@ class DialogueManager:
                     reply = "\n".join(v.message for v in hard_violations)
                 else:
                     reply = "当前任务参数包含硬性约束冲突，无法发布。"
-            elif has_runtime_blocker:
-                self._transition_phase("blocked_hard", reason="publish_runtime_availability_pending")
-                self._blocking_violations = []
-                reply = runtime_diag.get("message") or "当前机器人运行状态未完成确认，无法发布实时任务。"
-            elif unwhitelisted_soft:
-                self._transition_phase("blocked_soft", reason="publish_soft_warning_detected")
-                self._blocking_violations = unwhitelisted_soft
-                reply = "\n".join(v.message for v in unwhitelisted_soft)
             else:
                 self._transition_phase("collecting", reason="publish_slots_missing")
                 reply = "当前任务参数不满足发布条件，请补充或修正参数。"
@@ -947,26 +766,13 @@ class DialogueManager:
                         # blocked_hard -> 阻断并回滚
                         if re_val_res.overall_status == "blocked_hard":
                             raise TaskPersistenceError(f"单机 {unit_id} 的状态遥测在确认发布过程中发生变更，触发阻断告警。")
-                        elif re_val_res.overall_status == "blocked_soft":
-                            valid_acks = self._get_valid_acknowledgements(re_val_res)
-                            unacked = [
-                                v for v in (re_val_res.violations or [])
-                                if getattr(v, "severity", "") == "soft" and not any(a.constraint_id == v.constraint_id for a in valid_acks)
-                            ]
-                            if unacked:
-                                self._transition_phase("blocked_soft", reason="telemetry_soft_warning_detected")
-                                self._blocking_violations = unacked
-                                raise TaskPersistenceError(f"单机 {unit_id} 的状态遥测在确认发布过程中发生变更，触发未确认的软性告警。")
-                        elif re_val_res.overall_status == "pending_runtime_validation" and is_now:
-                            raise TaskPersistenceError(f"单机 {unit_id} 的状态遥测在确认发布过程中发生变更，实时任务无法在缺乏遥测时发布。")
                         val_res = re_val_res
                 except Exception as check_exc:
                     if isinstance(check_exc, TaskPersistenceError):
                         raise check_exc
                     raise TaskPersistenceError(f"发布前单机状态复核失败 (fail closed): {check_exc}") from check_exc
 
-            # 准备发布：仅传入匹配当前 validation_result 的有效确认
-            valid_acknowledgements = self._get_valid_acknowledgements(val_res)
+            # Soft warning 不再作为发布 gate，不需要 acknowledgement 才能继续。
             ti_builder = TaskIntentBuilder(self.kb)
             ti_json_artifact = ti_builder.prepare(
                 task_state=cand_state,
@@ -975,7 +781,7 @@ class DialogueManager:
                 task_type_key=task_type_key,
                 intent_id=intent_id,
                 validation_result=val_res,
-                validation_acknowledgements=valid_acknowledgements,
+                validation_acknowledgements=[],
             )
             staging_file = ti_builder.create_staging(ti_json_artifact)
 
@@ -987,8 +793,8 @@ class DialogueManager:
                 ti_builder.publish_staging(staging_file, ti_json_artifact)
         except Exception as exc:
             # 回滚：包含 reserve, commit_transaction, prepare, create_staging, publish_staging 在内的全流程失败保护
-            target_phase = self.phase if self.phase == "blocked_soft" else prev_phase
-            target_blocking = copy.deepcopy(self._blocking_violations) if self.phase == "blocked_soft" else prev_blocking_violations
+            target_phase = prev_phase
+            target_blocking = prev_blocking_violations
             self._transition_phase(target_phase, reason="publish_rollback")
             self.final_result = None
 
@@ -1003,7 +809,6 @@ class DialogueManager:
 
             self.task_state = self.slot_store.get_task_state()
             self._last_built_json = self.slot_store.get_built_json()
-            self._soft_whitelist = prev_whitelist
             self._pending_rov_candidates = prev_pending_rov
             self._blocking_violations = target_blocking
             self.conversation_history = prev_hist
@@ -1033,14 +838,14 @@ class DialogueManager:
         self._transition_phase("done", reason="publish_success")
         self.task_state = self.slot_store.get_task_state()
         self._last_built_json = self.slot_store.get_built_json()
-        self.final_result = self._last_built_json
+        self.final_result = ti_json_artifact
         self.task_start_now = self.is_start_time_near_now()
         if self.task_start_now:
             reply = (f"✅ 信息收集完成，当前为【立即执行任务】，任务已生成并下发。\n"
-                     f"{json.dumps(cand_built, ensure_ascii=False, indent=2)}")
+                     f"{json.dumps(ti_json_artifact, ensure_ascii=False, indent=2)}")
         else:
             reply = (f"✅ 信息收集完成，当前为【未来规划任务】，已加入计划池。\n"
-                     f"{json.dumps(cand_built, ensure_ascii=False, indent=2)}")
+                     f"{json.dumps(ti_json_artifact, ensure_ascii=False, indent=2)}")
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": reply})
         return reply
@@ -1058,7 +863,6 @@ class DialogueManager:
         self.awaiting_final_confirm = False
         self.task_start_now = False
         self._blocking_violations = []
-        self._soft_whitelist = set()
         self._hard_refusal_counts = {}
         self._pending_rov_candidates = []
         self._last_built_json = {}
@@ -1181,19 +985,9 @@ class DialogueManager:
         # 控制动作由 DialogueManager 当前阶段处理，不再交给 IntentRouter 判断。
         if self.phase == "blocked_hard" and (
             self._is_confirmation_only(user_message)
-            or self._is_soft_warning_acknowledgement(user_message)
             or self._is_final_publish_confirmation(user_message)
         ):
             return self._reject_hard_constraint_bypass(user_message)
-
-        if self.phase == "blocked_soft":
-            if self._is_soft_warning_acknowledgement(user_message):
-                return self._handle_task_confirm(user_message, request_id)
-            elif self._is_final_publish_confirmation(user_message) or self._is_confirmation_only(user_message):
-                reply = "当前仍存在软警告。请先修改相关参数，或明确回复‘忽略警告’后继续。"
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
 
         if self.phase == "confirming":
             if self._is_final_publish_confirmation(user_message):
@@ -1679,8 +1473,6 @@ class DialogueManager:
                 if old_val != v:
                     changed_fields.add(k)
 
-        proposed_whitelist = {item for item in self._soft_whitelist if item[0] not in changed_fields}
-
         # Normalize and validate inside transaction working dict new_slots
         curr_task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
         skip_keys = apply_plan.normalized_schema_keys if apply_plan is not None else None
@@ -1780,7 +1572,7 @@ class DialogueManager:
 
         if old_phase == "done":
             proposed_phase = "confirming" if not cand_missing else "collecting"
-        elif not cand_missing and proposed_phase not in ("blocked_hard", "blocked_soft", "confirming", "done"):
+        elif not cand_missing and proposed_phase not in ("blocked_hard", "confirming", "done"):
             proposed_phase = "confirming"
 
         # Atomic single commit with optimistic version validation
@@ -1797,7 +1589,6 @@ class DialogueManager:
         # Apply proposed instance state AFTER successful commit
         self.mode = proposed_mode
         self._transition_phase(proposed_phase, reason="task_modified")
-        self._soft_whitelist = proposed_whitelist
         self._pending_rov_candidates = proposed_pending_rov
 
         # Re-derive from slot_store (SSOT)
@@ -1832,32 +1623,14 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": pending_oilfield_reply})
             return pending_oilfield_reply
 
-        # 处理软约束忽略（blocked_soft阶段）
-        if self.phase == "blocked_soft":
-            user_ignore = self._is_soft_warning_acknowledgement(user_message)
-            if self._blocking_violations:
-                soft_related_fields = set()
-                for v in self._blocking_violations:
-                    soft_related_fields.update(v.related_fields)
-                if user_ignore and not (soft_related_fields & changed_fields):
-                    for v in self._blocking_violations:
-                        for f in v.related_fields:
-                            val = self.task_state.get(f)
-                            if val is not None:
-                                self._soft_whitelist.add((f, str(val), v.constraint_id))
-                    self._transition_phase("collecting", reason="soft_warning_acknowledged")
-                    self._blocking_violations = []
-
         # 约束检查
         ALL_FIELDS = {"task_type", "start_time", "end_time", "cable_position", "cable_type", "start_point", "end_point",
                       "water_depth", "equipment_family", "equipment_type", "equipment_name", "equipment_unit_id",
                       "payload", "support_vessel", "oilfield_name",
                       "oilfield_coordinates", "wellhead_id"}
 
-        if not missing and self.phase not in ("blocked_hard", "blocked_soft"):
+        if not missing and self.phase != "blocked_hard":
             constraint_context = self._run_constraint_check(ALL_FIELDS)
-        elif not missing and self.phase == "blocked_soft":
-            constraint_context = self._run_constraint_check(changed_fields)
         elif not missing and self.phase == "blocked_hard":
             constraint_context = self._run_constraint_check(ALL_FIELDS)
         else:
@@ -3306,7 +3079,7 @@ class DialogueManager:
 
     def _run_constraint_check(self, changed_fields: set[str]) -> dict:
         """执行约束检查，返回上下文"""
-        if not changed_fields and self.phase not in ("blocked_hard", "blocked_soft"):
+        if not changed_fields and self.phase != "blocked_hard":
             return {"type": "none", "violations": [], "hard_refusal_counts": {}}
 
         val_res = self._refresh_validation(purpose="interactive", changed_fields=changed_fields)
@@ -3316,42 +3089,8 @@ class DialogueManager:
             v for v in new_violations
             if v.severity == "hard"
         ]
-        current_soft = [
-            v for v in new_violations
-            if v.severity == "soft" and not self._is_whitelisted(v)
-        ]
-        current_blockers = current_hard + current_soft
-
-        # 处理 soft 阻塞升级为 hard / 维持 / 解除
-        if self.phase == "blocked_soft":
-            if current_hard:
-                self._transition_phase("blocked_hard", reason="soft_upgraded_to_hard")
-                self._blocking_violations = current_blockers
-                for v in current_hard:
-                    if v.constraint_id not in self._hard_refusal_counts:
-                        self._hard_refusal_counts[v.constraint_id] = 0
-
-                return {
-                    "type": "hard",
-                    "violations": current_blockers,
-                    "hard_refusal_counts": dict(self._hard_refusal_counts),
-                }
-
-            if current_soft:
-                self._blocking_violations = current_soft
-                return {
-                    "type": "soft",
-                    "violations": current_soft,
-                    "hard_refusal_counts": {},
-                }
-
-            self._blocking_violations = []
-            self._transition_phase("collecting", reason="soft_warning_resolved")
-            return {
-                "type": "none",
-                "violations": [],
-                "hard_refusal_counts": {},
-            }
+        current_soft = [v for v in new_violations if v.severity == "soft"]
+        current_blockers = current_hard
 
         # 处理 hard 阻塞维持 / 降级为 soft / 解除
         if self.phase == "blocked_hard":
@@ -3390,15 +3129,6 @@ class DialogueManager:
                 for cid in resolved_ids:
                     self._hard_refusal_counts.pop(cid, None)
 
-                if current_soft:
-                    self._transition_phase("blocked_soft", reason="hard_downgraded_to_soft")
-                    self._blocking_violations = current_soft
-                    return {
-                        "type": "soft",
-                        "violations": current_soft,
-                        "hard_refusal_counts": {},
-                    }
-
                 self._transition_phase("collecting", reason="hard_constraint_resolved")
                 self._blocking_violations = []
                 return {
@@ -3419,15 +3149,6 @@ class DialogueManager:
                     "type": "hard",
                     "violations": current_blockers,
                     "hard_refusal_counts": dict(self._hard_refusal_counts),
-                }
-
-            if current_soft:
-                self._transition_phase("blocked_soft", reason="soft_warning_detected")
-                self._blocking_violations = current_soft
-                return {
-                    "type": "soft",
-                    "violations": current_soft,
-                    "hard_refusal_counts": {},
                 }
 
         return {"type": "none", "violations": [], "hard_refusal_counts": {}}
@@ -3458,46 +3179,6 @@ class DialogueManager:
         merged = dict(updates)
         merged.update(coord_updates)
         return merged
-
-    def _invalidate_whitelist(self, changed_fields: set[str]):
-        if changed_fields:
-            self._soft_whitelist -= {e for e in self._soft_whitelist if e[0] in changed_fields}
-
-    def _is_whitelisted(self, v: Violation) -> bool:
-        res = getattr(self.slot_store, "validation_result", None)
-        if res is None:
-            return False
-
-        curr_fp = getattr(res, "validation_fingerprint", None)
-        state_snap = getattr(res, "state_snapshot", None)
-        curr_state_ver = state_snap.get("state_version") if isinstance(state_snap, dict) else None
-        curr_status_ref = state_snap.get("status_ref") if isinstance(state_snap, dict) else None
-
-        if not curr_fp or curr_state_ver is None:
-            return False
-
-        acks = getattr(self.slot_store, "validation_acknowledgements", [])
-        for ack in acks:
-            ack_cid = getattr(ack, "constraint_id", None) if not isinstance(ack, dict) else ack.get("constraint_id")
-            if ack_cid != v.constraint_id:
-                continue
-
-            ack_tv = getattr(ack, "task_version", None) if not isinstance(ack, dict) else ack.get("task_version")
-            ack_vv = getattr(ack, "validation_version", None) if not isinstance(ack, dict) else ack.get("validation_version")
-            ack_fp = getattr(ack, "validation_fingerprint", None) if not isinstance(ack, dict) else ack.get("validation_fingerprint")
-            ack_sref = getattr(ack, "status_ref", None) if not isinstance(ack, dict) else ack.get("status_ref")
-            ack_sver = getattr(ack, "state_version", None) if not isinstance(ack, dict) else ack.get("state_version")
-
-            if (
-                ack_tv == getattr(res, "task_version", 1)
-                and ack_vv == getattr(res, "validation_version", 1)
-                and ack_fp == curr_fp
-                and ack_sref == curr_status_ref
-                and ack_sver == curr_state_ver
-            ):
-                return True
-
-        return False
 
     @staticmethod
     def _is_business_identity_query(message: str) -> bool:
@@ -3553,38 +3234,6 @@ class DialogueManager:
             "继续",
         }
 
-    @classmethod
-    def _is_soft_warning_acknowledgement(cls, message: str) -> bool:
-        """仅识别明确接受/忽略软警告的独立指令，绝不混入通用确认或最终发布词。"""
-        text = re.sub(r"[\s，,。.!！?？、；;：:]+", "", message).lower()
-        exact_ack_words = {
-            "忽略警告",
-            "确认忽略警告",
-            "接受警告继续",
-            "接受风险继续",
-            "继续并接受该警告",
-            "确认继续",
-            "继续",
-            "忽略",
-            "忽略风险",
-            "无视警告",
-            "无视风险",
-        }
-        if text in exact_ack_words:
-            return True
-
-        parameter_cues = (
-            "改成", "修改", "水深", "深度", "时间", "支持船", "管缆", "油田",
-            "设备", "工具", "改为", "设为", "调整", "增加", "减少", "补充",
-        )
-        if any(cue in message for cue in parameter_cues):
-            return False
-
-        return any(
-            kw in text
-            for kw in ("忽略警告", "忽略风险", "无视警告", "无视风险", "接受警告", "接受风险", "确认继续")
-        )
-
     def _ensure_constraint_details(self, reply: str, constraint_context: dict) -> str:
         """Append canonical details for violations omitted or paraphrased by the LLM."""
         violations = constraint_context.get("violations") or []
@@ -3613,7 +3262,7 @@ class DialogueManager:
                 if v.severity == "hard"
             ]
 
-        reply = "硬性约束不能通过确认或忽略警告绕过。请先修正以下问题后再发布任务。"
+        reply = "硬性约束不能通过确认绕过。请先修正以下问题后再发布任务。"
         if violations:
             reply = f"{reply}\n\n{self.validator.format_violations(violations)}"
             self._blocking_violations = violations
@@ -3685,7 +3334,6 @@ class DialogueManager:
             "last_control_request": copy.deepcopy(self.last_control_request),
             "filled": filled,
             "missing": missing_display,
-            "whitelisted_soft": sorted({e[2] for e in self._soft_whitelist}),
         }
 
     def get_final_result(self) -> dict | None:
@@ -3701,7 +3349,6 @@ class DialogueManager:
         self.awaiting_final_confirm = False
         self.task_start_now = False
         self._blocking_violations = []
-        self._soft_whitelist = set()
         self._hard_refusal_counts = {}
         self._pending_rov_candidates = []
         self._last_built_json = {}
@@ -4010,7 +3657,6 @@ class DialogueManager:
         self.task_start_now = False
         # 清空阻塞与白名单，重新构建缓存
         self._blocking_violations = []
-        self._soft_whitelist = set()
         self._hard_refusal_counts = {}
         self._pending_rov_candidates = []
         self._rebuild_cache(commit_derived=False)

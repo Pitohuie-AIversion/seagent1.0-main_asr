@@ -41,7 +41,6 @@ def make_mock_manager(
     task_id=None,
     task_id_preview=None,
     blocking_violations=None,
-    soft_whitelist=None,
     slot_snapshot=None,
     schema_fields=None,
     validation_result=None,
@@ -57,7 +56,6 @@ def make_mock_manager(
     }
     mgr.task_id_preview = task_id_preview
     mgr._blocking_violations = blocking_violations or []
-    mgr._soft_whitelist = soft_whitelist or set()
 
     # slot_store
     _snap = slot_snapshot if slot_snapshot is not None else {}
@@ -95,7 +93,7 @@ class TestUIStateContract(unittest.TestCase):
         self.assertTrue(actions["can_send"])
         self.assertTrue(actions["can_modify"])
         self.assertFalse(actions["can_confirm"])
-        self.assertFalse(actions["can_ignore_soft_warning"])
+        self.assertNotIn("can_ignore_soft_warning", actions)
         self.assertFalse(actions["can_publish"])
         self.assertTrue(actions["can_cancel"])
 
@@ -107,17 +105,17 @@ class TestUIStateContract(unittest.TestCase):
         self.assertTrue(actions["can_cancel"])
         self.assertTrue(actions["can_send"])
 
-    # 3. actions 计算 - blocked_soft
-    def test_actions_blocked_soft_phase(self):
-        actions = _compute_actions("blocked_soft", "task_collection")
-        self.assertTrue(actions["can_ignore_soft_warning"])
-        self.assertFalse(actions["can_publish"])
-        self.assertFalse(actions["can_confirm"])
+    # 3. LHL_V4: soft warnings do not create an ignore/ack action
+    def test_actions_confirming_has_no_soft_ignore_gate(self):
+        actions = _compute_actions("confirming", "task_collection")
+        self.assertNotIn("can_ignore_soft_warning", actions)
+        self.assertTrue(actions["can_publish"])
+        self.assertTrue(actions["can_confirm"])
 
     # 4. actions 计算 - blocked_hard
     def test_actions_blocked_hard_phase(self):
         actions = _compute_actions("blocked_hard", "task_collection")
-        self.assertFalse(actions["can_ignore_soft_warning"])
+        self.assertNotIn("can_ignore_soft_warning", actions)
         self.assertFalse(actions["can_publish"])
         self.assertFalse(actions["can_confirm"])
         self.assertTrue(actions["can_send"])
@@ -235,9 +233,9 @@ class TestUIStateContract(unittest.TestCase):
         self.assertEqual(len(cs["hard_violations"]), 1)
         self.assertEqual(cs["hard_violations"][0]["check_type"], "range")
         self.assertEqual(cs["hard_violations"][0]["observed_value"], 500)
-        # 过期指纹被过滤，只保留有效 ack
-        self.assertEqual(len(cs["ignored_soft_warnings"]), 1)
-        self.assertEqual(cs["ignored_soft_warnings"][0]["constraint_id"], "C020")
+        self.assertEqual(len(cs["soft_warnings"]), 1)
+        self.assertEqual(cs["soft_warnings"][0]["constraint_id"], "C020")
+        self.assertEqual(len(cs["ignored_soft_warnings"]), 0)
 
     # P2-4 修复验证: Fail closed 状态与错误标识
     def test_build_ui_state_fail_closed(self):
@@ -292,7 +290,7 @@ class TestUIStateContract(unittest.TestCase):
     # 九-3: stale acknowledgement 因 task_version 不匹配被过滤
     def test_stale_ack_filtered_by_task_version(self):
         val_result = ValidationResult(
-            overall_status="blocked_soft",
+            overall_status="warning",
             validated_at="2026-08-06T20:00:00Z",
             task_version=2,
             validation_version=1,
@@ -311,12 +309,12 @@ class TestUIStateContract(unittest.TestCase):
         mgr = make_mock_manager(validation_result=val_result, validation_acknowledgements=[stale_ack])
         cs = _build_constraint_state(mgr)
         self.assertEqual(len(cs["ignored_soft_warnings"]), 0)
-        self.assertEqual(len(cs["legacy_acknowledgements"]), 1)
+        self.assertEqual(len(cs["legacy_acknowledgements"]), 0)
 
     # 九-4: stale acknowledgement 因 fingerprint 不匹配被过滤
     def test_stale_ack_filtered_by_fingerprint(self):
         val_result = ValidationResult(
-            overall_status="blocked_soft",
+            overall_status="warning",
             validated_at="2026-08-06T20:00:00Z",
             task_version=1,
             validation_version=1,
@@ -335,12 +333,12 @@ class TestUIStateContract(unittest.TestCase):
         mgr = make_mock_manager(validation_result=val_result, validation_acknowledgements=[stale_ack])
         cs = _build_constraint_state(mgr)
         self.assertEqual(len(cs["ignored_soft_warnings"]), 0)
-        self.assertEqual(len(cs["legacy_acknowledgements"]), 1)
+        self.assertEqual(len(cs["legacy_acknowledgements"]), 0)
 
     # 九-5: stale acknowledgement 因 state_version 不匹配被过滤
     def test_stale_ack_filtered_by_state_version(self):
         val_result = ValidationResult(
-            overall_status="blocked_soft",
+            overall_status="warning",
             validated_at="2026-08-06T20:00:00Z",
             task_version=1,
             validation_version=1,
@@ -359,12 +357,12 @@ class TestUIStateContract(unittest.TestCase):
         mgr = make_mock_manager(validation_result=val_result, validation_acknowledgements=[stale_ack])
         cs = _build_constraint_state(mgr)
         self.assertEqual(len(cs["ignored_soft_warnings"]), 0)
-        self.assertEqual(len(cs["legacy_acknowledgements"]), 1)
+        self.assertEqual(len(cs["legacy_acknowledgements"]), 0)
 
     # 九-6: ValidationResult dict 形式可以正常序列化
     def test_validation_result_dict_serialization(self):
         val_dict = {
-            "overall_status": "blocked_soft",
+            "overall_status": "warning",
             "validated_at": "2026-08-06T20:00:00Z",
             "task_version": 3,
             "validation_version": 2,

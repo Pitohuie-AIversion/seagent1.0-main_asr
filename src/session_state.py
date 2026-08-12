@@ -46,7 +46,6 @@ VALID_TRANSITION_MODES: frozenset[str] = frozenset({
 VALID_PHASES: frozenset[str] = frozenset({
     "collecting",
     "blocked_hard",
-    "blocked_soft",
     "confirming",
     "done",
     "rejected",
@@ -77,27 +76,17 @@ TASK_PHASE_TRANSITIONS: dict[str, frozenset[str]] = {
     "collecting": frozenset({
         "collecting",
         "confirming",
-        "blocked_soft",
-        "blocked_hard",
-        "rejected",
-    }),
-    "blocked_soft": frozenset({
-        "collecting",
-        "confirming",
-        "blocked_soft",
         "blocked_hard",
         "rejected",
     }),
     "blocked_hard": frozenset({
         "collecting",
-        "blocked_soft",
         "blocked_hard",
         "rejected",
     }),
     "confirming": frozenset({
         "collecting",
         "confirming",
-        "blocked_soft",
         "blocked_hard",
         "done",
         "rejected",
@@ -111,7 +100,6 @@ TASK_PHASE_TRANSITIONS: dict[str, frozenset[str]] = {
         "rejected",
         "collecting",
         "confirming",
-        "blocked_soft",
         "blocked_hard",
     }),
 }

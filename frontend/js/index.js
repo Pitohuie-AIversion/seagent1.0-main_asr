@@ -925,7 +925,7 @@ Please describe your task request or ask a question directly.`,
 
         // 阶段 badge + 约束状态 + 缺失字段
         const phase = uiState.phase;
-        const taskPhaseLabels = currentLang === 'zh' ? { collecting: '任务收集', confirming: '待确认', blocked_soft: '软警告', blocked_hard: '硬阻断', done: '已完成', rejected: '已拒绝' } : { collecting: 'Task collection', confirming: 'Confirming', blocked_soft: 'Soft warning', blocked_hard: 'Hard blocked', done: 'Done', rejected: 'Rejected' };
+        const taskPhaseLabels = currentLang === 'zh' ? { collecting: '任务收集', confirming: '待确认', blocked_hard: '硬阻断', done: '已完成', rejected: '已拒绝' } : { collecting: 'Task collection', confirming: 'Confirming', blocked_hard: 'Hard blocked', done: 'Done', rejected: 'Rejected' };
         let phaseLabel = taskPhaseLabels[phase] || phase;
         if (uiState.dialogue_mode === 'knowledge_qa') phaseLabel = currentLang === 'zh' ? '知识问答' : 'Knowledge Q&A';
         if (uiState.dialogue_mode === 'emergency_intervention' || uiState.mode === 'emergency') phaseLabel = currentLang === 'zh' ? '紧急模式' : 'Emergency';
@@ -951,9 +951,6 @@ Please describe your task request or ask a question directly.`,
             nameEl.style.cssText = 'font-size:0.85em; margin-bottom:2px;';
             nameEl.textContent = `[${v.code || ''}] ${v.message || ''}`;
             missingHtml += nameEl.outerHTML;
-          }
-          if (uiState.actions && uiState.actions.can_ignore_soft_warning) {
-            missingHtml += `<div style="margin-top:6px; font-size:0.8em; opacity:0.7;">输入"忽略警告"可继续。</div>`;
           }
           missingHtml += '</div>';
         }
@@ -1007,7 +1004,7 @@ Please describe your task request or ask a question directly.`,
         }
       }
 
-      const finalJson = data.final_json || (uiState && uiState.phase === 'done' ? data.built_json : null);
+      const finalJson = data.final_json || null;
       if (finalJson) {
         document.getElementById('resultCard').style.display = 'block';
         document.getElementById('finalJson').innerText = JSON.stringify(finalJson, null, 2);
@@ -1372,11 +1369,11 @@ Please describe your task request or ask a question directly.`,
             emergency: data.mode === 'emergency',
             collected: data.built_json,
             missing: data.missing,
-            final_json: isCompleted ? data.built_json : null
+            final_json: isCompleted ? data.final_json : null
           });
           if (isCompleted) {
             document.getElementById('resultCard').style.display = 'block';
-            document.getElementById('finalJson').innerText = JSON.stringify(data.built_json, null, 2);
+            document.getElementById('finalJson').innerText = JSON.stringify(data.final_json, null, 2);
             messageInput.disabled = true;
             sendBtn.disabled = true;
             addMessage('bot', I18N[currentLang].historyLoadedReadOnly);

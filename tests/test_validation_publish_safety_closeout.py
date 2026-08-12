@@ -8,7 +8,7 @@ SEAgent G5 — Validation & Publish Safety Final Closeout Unit Tests
 3. max_depth_m 缺失/非法：validation_error，不发布；
 4. malformed start_time：validation_error，不跳过动态检查；
 5. current_velocity / turbidity：现有 soft/hard C013-C017 正确；
-6. soft ack：当前状态下可继续；state/version 变化后失效；
+6. soft warning：记录为 warning，不需要 ack 即可继续；
 7. hard violation：无论用户怎么确认都不能发布；
 8. Validator/state lookup 抛异常：final 不生成，fail closed。
 """
@@ -21,7 +21,6 @@ from unittest.mock import MagicMock
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
 from src.session_state import SessionState
-from src.slot_store import ValidationAcknowledgement
 from src.simulated_time import get_current_datetime
 from src.task_intent_builder import TaskIntentBuilder
 from src.validator import TaskValidator, ValidationResult, Violation
@@ -195,7 +194,7 @@ class TestValidationPublishSafetyCloseout(unittest.TestCase):
 
         mock_kb.get_unit_state_snapshot.return_value = state_snap_soft
         res_soft = v_handler.validate_task(task_state, purpose="publish")
-        self.assertEqual(res_soft.overall_status, "blocked_soft")
+        self.assertEqual(res_soft.overall_status, "warning")
         self.assertTrue(any(v.constraint_id == "C015" for v in res_soft.violations))
 
         mock_kb.get_unit_state_snapshot.return_value = state_snap_hard
@@ -203,8 +202,8 @@ class TestValidationPublishSafetyCloseout(unittest.TestCase):
         self.assertEqual(res_hard.overall_status, "blocked_hard")
         self.assertTrue(any(v.constraint_id == "C017" for v in res_hard.violations))
 
-    # 6. soft ack：当前状态下可继续；state/version 变化后失效
-    def test_06_soft_ack_invalidation_on_state_change(self):
+    # 6. soft warning：当前状态下可继续；不再需要 acknowledgement
+    def test_06_soft_warning_is_recorded_without_ack_gate(self):
         dm = DialogueManager(kb=self.kb)
         dm.task_state = {
             "task_type_key": "pipeline_inspection",
@@ -216,9 +215,8 @@ class TestValidationPublishSafetyCloseout(unittest.TestCase):
             "intent_id": "TI20260810001",
         }
 
-        # Initial validation result with soft warning
         val_res_v1 = ValidationResult(
-            overall_status="blocked_soft",
+            overall_status="warning",
             validated_at="2026-08-10T12:00:00",
             task_version=1,
             validation_version=1,
@@ -235,35 +233,10 @@ class TestValidationPublishSafetyCloseout(unittest.TestCase):
         )
         dm.slot_store.validation_result = val_res_v1
 
-        # Simulate user acknowledging warning
-        v_soft = val_res_v1.violations[0]
-        ack = ValidationAcknowledgement(
-            constraint_id=v_soft.constraint_id,
-            acknowledged_at="2026-08-10T12:00:00",
-            task_version=val_res_v1.task_version,
-            validation_version=val_res_v1.validation_version,
-            validation_fingerprint=val_res_v1.validation_fingerprint,
-            status_ref="REF-001",
-            state_version=1,
-            field="current_velocity",
-            value=v_soft.observed_value,
-        )
-        dm.slot_store.validation_acknowledgements.append(ack)
-        self.assertTrue(dm._is_whitelisted(v_soft))
-
-
-        # Mutate state version in snapshot -> ack must invalidate
-        val_res_v2 = ValidationResult(
-            overall_status="blocked_soft",
-            validated_at="2026-08-10T12:05:00",
-            task_version=1,
-            validation_version=2,
-            validation_fingerprint="fp_v2",  # changed fingerprint
-            state_snapshot={"status_ref": "REF-001", "state_version": 2},  # state_version mutated
-            violations=[v_soft],
-        )
-        dm.slot_store.validation_result = val_res_v2
-        self.assertFalse(dm._is_whitelisted(v_soft))
+        self.assertEqual(dm.slot_store.validation_result.overall_status, "warning")
+        self.assertEqual(dm.slot_store.validation_result.violations[0].constraint_id, "C015")
+        self.assertFalse(hasattr(dm, "_soft_whitelist"))
+        self.assertFalse(hasattr(dm, "_is_whitelisted"))
 
     # 7. hard violation：无论用户怎么确认都不能发布
     def test_07_hard_violation_cannot_be_bypassed(self):

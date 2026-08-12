@@ -37,12 +37,12 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         snapshot = self.kb.get_unit_state_snapshot("OBSROV--001")
         self.assertIsInstance(snapshot, dict)
         self.assertEqual(snapshot["unit_id"], "OBSROV--001")
-        self.assertEqual(snapshot["status_ref"], "OBSROV-001")
+        self.assertEqual(snapshot["status_ref"], "OBSROV--001")
         self.assertIn("state_version", snapshot)
         self.assertIn("updated_at", snapshot)
         self.assertIn("state", snapshot)
 
-        # status_ref 直接传入抛出 StateSelectorError
+        # 旧单横线编号不在当前 fleet_units 中，必须拒绝
         with self.assertRaises(StateSelectorError):
             self.kb.get_unit_state_snapshot("OBSROV-001")
 
@@ -56,7 +56,7 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
 
     def test_turbidity_and_velocity_thresholds(self):
         """测试浑浊度 (C013/C014) 与流速 (C015/C016/C017) 的分级逻辑。"""
-        self.kb.state_info.set_status("OBSROV-001", {"turbidity": 7, "current_velocity": 0.7})
+        self.kb.state_info.set_status("OBSROV--001", {"turbidity": 7, "current_velocity": 0.7})
         task_state = {
             "equipment_unit_id": "OBSROV--001",
             "task_type_key": "pipeline_inspection",
@@ -68,9 +68,9 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         self.assertIn("C015", c_ids)
         self.assertNotIn("C016", c_ids)
         self.assertNotIn("C017", c_ids)
-        self.assertEqual(res.overall_status, "blocked_soft")
+        self.assertEqual(res.overall_status, "warning")
 
-        self.kb.state_info.set_status("OBSROV-001", {"turbidity": 15, "current_velocity": 0.9})
+        self.kb.state_info.set_status("OBSROV--001", {"turbidity": 15, "current_velocity": 0.9})
         res = self.validator.validate_task(task_state)
         c_ids = {v.constraint_id for v in res.violations}
         self.assertNotIn("C013", c_ids)
@@ -79,7 +79,7 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         self.assertIn("C016", c_ids)
         self.assertNotIn("C017", c_ids)
 
-        self.kb.state_info.set_status("OBSROV-001", {"turbidity": 3, "current_velocity": 1.3})
+        self.kb.state_info.set_status("OBSROV--001", {"turbidity": 3, "current_velocity": 1.3})
         res = self.validator.validate_task(task_state)
         c_ids = {v.constraint_id for v in res.violations}
         self.assertIn("C017", c_ids)
@@ -88,7 +88,7 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
     def test_single_unit_isolation(self):
         """测试同一型号多台设备，只读取用户选择的 unit_id 的状态快照。"""
         self.kb.state_info.set_status("LROV--001", {"overall_status": "available", "current_velocity": 0.1})
-        self.kb.state_info.set_status("LROV-002", {"overall_status": "available", "current_velocity": 1.5})
+        self.kb.state_info.set_status("LROV--002", {"overall_status": "available", "current_velocity": 1.5})
 
         task1 = {"equipment_unit_id": "LROV--001", "task_type_key": "pipeline_inspection"}
         res1 = self.validator.validate_task(task1)
@@ -100,14 +100,14 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         self.assertEqual(res2.overall_status, "blocked_hard")
         self.assertEqual(res2.state_snapshot["unit_id"], "LROV--002")
 
-    def test_ambiguous_family_is_runtime_pending_not_val_err(self):
-        """只提供 family/type 且对应多台单机时，应等待明确单机，不生成 VAL_ERR 业务违规。"""
+    def test_ambiguous_family_is_diagnostic_not_constraint_status(self):
+        """只提供 family/type 且对应多台单机时，只记录诊断，不生成额外阻断状态。"""
         task_state = {
             "equipment_family": "observation_rov",
             "task_type_key": "pipeline_inspection",
         }
         res = self.validator.validate_task(task_state)
-        self.assertEqual(res.overall_status, "pending_runtime_validation")
+        self.assertEqual(res.overall_status, "valid")
         self.assertEqual(res.runtime_diagnostic["code"], "AMBIGUOUS_UNIT_SELECTOR")
         self.assertEqual(res.violations, [])
         self.assertIsNone(res.error)
@@ -127,14 +127,14 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         finally:
             self.validator._resolve_single_unit_snapshot = original
 
-        self.assertEqual(res.overall_status, "pending_runtime_validation")
+        self.assertEqual(res.overall_status, "valid")
         self.assertEqual(res.runtime_diagnostic["code"], "VALIDATOR_EXCEPTION")
         self.assertEqual(res.violations, [])
 
     def test_communication_status_uses_telemetry_fields_not_robot_class(self):
         """通信检查读取状态字段本身，不再根据 robot_class 选择水声或脐带缆分支。"""
         self.kb.state_info.set_status(
-            "OBSROV-001",
+            "OBSROV--001",
             {
                 "overall_status": "available",
                 "acoustic_comms_status": "abnormal",
@@ -163,9 +163,9 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         c27 = next(v for v in res_tether.violations if v.constraint_id == "C027")
         self.assertIn("与母船连接异常", c27.observed_value)
 
-    def test_future_task_pending_runtime_validation(self):
-        """未来执行的任务（start_time 晚于当前）不使用当前遥测流速阻断，标记为 pending_runtime_validation。"""
-        self.kb.state_info.set_status("OBSROV-001", {"current_velocity": 1.5})
+    def test_future_task_does_not_use_current_telemetry_as_constraint_status(self):
+        """未来执行的任务不使用当前遥测流速阻断；非 constraints 运行态状态不改变 overall_status。"""
+        self.kb.state_info.set_status("OBSROV--001", {"current_velocity": 1.5})
         future_time = "2099-01-01T12:00:00"
         task_state = {
             "equipment_unit_id": "OBSROV--001",
@@ -173,7 +173,7 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
             "start_time": future_time,
         }
         res = self.validator.validate_task(task_state)
-        self.assertEqual(res.overall_status, "pending_runtime_validation")
+        self.assertEqual(res.overall_status, "valid")
         c_ids = {v.constraint_id for v in res.violations}
         self.assertNotIn("C017", c_ids)
 

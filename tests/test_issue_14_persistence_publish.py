@@ -58,7 +58,7 @@ class TestPersistencePublish(unittest.TestCase):
             }
             built_json = dict(task_state)
 
-            self.dm.kb.state_info.set_status("OBSROV-001", {"current_velocity": 0.2, "turbidity": 3})
+            self.dm.kb.state_info.set_status("OBSROV--001", {"current_velocity": 0.2, "turbidity": 3})
             val_res = self.dm.validator.validate_task(task_state)
             self.assertEqual(val_res.overall_status, "valid")
 
@@ -85,7 +85,7 @@ class TestPersistencePublish(unittest.TestCase):
             self.assertIn("validation", cond)
             val_info = cond["validation"]
             self.assertEqual(val_info["overall_status"], "valid")
-            self.assertEqual(val_info["status_ref"], "OBSROV-001")
+            self.assertEqual(val_info["status_ref"], "OBSROV--001")
             self.assertIn("state_version", val_info)
             self.assertIn("validation_version", val_info)
             self.assertIn("validation_fingerprint", val_info)

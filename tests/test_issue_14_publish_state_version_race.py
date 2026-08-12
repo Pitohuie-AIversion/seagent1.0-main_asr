@@ -71,7 +71,7 @@ class TestPublishStateVersionRace(unittest.TestCase):
         dm = _setup_dm(tmp_dir, "0001")
         kb = dm.kb
 
-        kb.state_info.set_status("OBSROV-001", {"current_velocity": 0.2, "turbidity": 3})
+        kb.state_info.set_status("OBSROV--001", {"current_velocity": 0.2, "turbidity": 3})
 
         val_res = dm._refresh_validation(purpose="publish")
         self.assertIn(val_res.overall_status, ("valid", "warning", "pending_runtime_validation"))
@@ -107,7 +107,7 @@ class TestPublishStateVersionRace(unittest.TestCase):
         dm = _setup_dm(tmp_dir, "0002")
         kb = dm.kb
 
-        kb.state_info.set_status("OBSROV-001", {"current_velocity": 0.2, "turbidity": 3})
+        kb.state_info.set_status("OBSROV--001", {"current_velocity": 0.2, "turbidity": 3})
 
         original_get_snapshot = kb.state_info.get_unit_state_snapshot
         call_count = [0]
@@ -132,8 +132,8 @@ class TestPublishStateVersionRace(unittest.TestCase):
         finally:
             kb.state_info.get_unit_state_snapshot = original_get_snapshot
 
-    def test_publish_new_soft_warning_blocks_without_acknowledgement(self):
-        """状态变化产生新的 blocked_soft 且缺乏有效 acknowledgement 时必须阻断并更新 phase=blocked_soft。"""
+    def test_publish_new_soft_warning_after_state_change_still_publishes_with_warning_evidence(self):
+        """LHL_V4: 状态变化只产生新的 soft warning 时，不阻断发布，但保留校验证据。"""
         tmp_dir = Path(self._tmp) / "test3"
         tmp_dir.mkdir()
         task_dir = tmp_dir / "task_intents"
@@ -141,7 +141,7 @@ class TestPublishStateVersionRace(unittest.TestCase):
         dm = _setup_dm(tmp_dir, "0003")
         kb = dm.kb
 
-        kb.state_info.set_status("OBSROV-001", {"current_velocity": 0.2, "turbidity": 3})
+        kb.state_info.set_status("OBSROV--001", {"current_velocity": 0.2, "turbidity": 3})
 
         original_get_snapshot = kb.state_info.get_unit_state_snapshot
         call_count = [0]
@@ -158,11 +158,17 @@ class TestPublishStateVersionRace(unittest.TestCase):
         kb.state_info.get_unit_state_snapshot = mock_soft_changed_snapshot
         try:
             with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
-                with self.assertRaises(TaskPersistenceError):
-                    dm._handle_final_publish_confirmation("确认发布", request_id="req-race-soft")
-            self.assertEqual(dm.phase, "blocked_soft")
+                dm._handle_final_publish_confirmation("确认发布", request_id="req-race-soft")
+            self.assertEqual(dm.phase, "done")
             final_file = task_dir / "task_intent_TI202608060003.json"
-            self.assertFalse(final_file.exists())
+            self.assertTrue(final_file.exists())
+            self.assertEqual(dm.final_result["validation"]["overall_status"], "warning")
+            self.assertTrue(
+                any(
+                    v.get("constraint_id") == "C014"
+                    for v in dm.final_result["validation"].get("violations", [])
+                )
+            )
         finally:
             kb.state_info.get_unit_state_snapshot = original_get_snapshot
 
@@ -190,7 +196,7 @@ class TestPublishStateVersionRace(unittest.TestCase):
 
         def worker_update():
             barrier.wait(timeout=5)  # 确保 worker_guard 已进入 guard
-            kb.state_info.set_status("OBSROV-001", {"current_velocity": 0.5})
+            kb.state_info.set_status("OBSROV--001", {"current_velocity": 0.5})
             step.append("update_finished")
 
         t1 = threading.Thread(target=worker_guard)

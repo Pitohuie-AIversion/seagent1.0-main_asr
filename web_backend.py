@@ -74,7 +74,6 @@ def print_status(manager: DialogueManager):
     phase_labels = {
         "collecting":   "收集中",
         "blocked_hard": "⛔ Hard违规待修复",
-        "blocked_soft": "⚠️  Soft警告待确认",
         "confirming":   "待用户确认",
         "done":         "✅ 已完成",
         "rejected":     "❌ 已拒绝",
@@ -110,11 +109,6 @@ def print_status(manager: DialogueManager):
                 print(f"│  ✗ {m['label']}")
     else:
         print("│  （无缺失，所有必填字段已收集 ✓）")
-
-    if status["whitelisted_soft"]:
-        print("├─ 已忽略的 Soft 警告 " + "─" * 37)
-        for cid in status["whitelisted_soft"]:
-            print(f"│  ~ [{cid}]")
 
     print("└" + "─" * 58)
     print()
@@ -479,7 +473,7 @@ def api_chat():
                 "task_id": mgr.task_state.get("task_id"),
                 "task_id_preview": mgr.task_id_preview,
                 "emergency": mgr.mode == "emergency",
-                "final_json": mgr._last_built_json if mgr.phase == "done" else None
+                "final_json": mgr.get_final_result() if mgr.phase == "done" else None
             }
         for k, v in resp_data.items():
             try:
@@ -584,7 +578,7 @@ def get_session_state():
             "task_id_preview": mgr.task_id_preview,
             "emergency": mgr.mode == "emergency",
             "history": mgr.conversation_history,
-            "final_json": mgr._last_built_json if mgr.phase == "done" else None
+            "final_json": mgr.get_final_result() if mgr.phase == "done" else None
         })
 
 

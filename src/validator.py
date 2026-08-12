@@ -3,7 +3,7 @@ validator.py — 结构化约束验证服务 (Issue #14 增强版)
 - 支持基于具体单机 (unit_id -> status_ref) 的严格遥测状态快照提取
 - 支持 ValidationResult 结构化输出（包含指纹、版本号、快照、错误信息与违规列表）
 - 区分交互中(interactive)、预览(preview)、发布(publish)与运行时(runtime_execution)不同目的
-- 支持未来任务标记 pending_runtime_validation
+- 非 constraints.yaml 的运行态诊断仅随结果携带，不决定发布阻断
 """
 
 import copy
@@ -67,7 +67,7 @@ class Violation:
 
 @dataclass
 class ValidationResult:
-    overall_status: str     # "valid" | "pending_runtime_validation" | "warning" | "blocked_soft" | "blocked_hard"
+    overall_status: str     # "valid" | "warning" | "blocked_hard"
     validated_at: str
     task_version: int
     validation_version: int
@@ -288,8 +288,9 @@ class TaskValidator:
             # when values can be parsed.
             state_snapshot, runtime_diagnostic = self._resolve_single_unit_snapshot(task_state, is_now=is_now)
 
-            # Missing/ambiguous unit and telemetry failures are runtime or slot
-            # readiness diagnostics. They must not become business violations.
+            # Missing/ambiguous unit and telemetry failures are diagnostics only.
+            # They must not become business violations or publish gates; only
+            # constraints.yaml checks decide warning/blocked_hard.
             if purpose in ("publish", "preview") and not (task_state.get("equipment_unit_id") or "").strip():
                 runtime_diagnostic = {
                     "code": "MISSING_UNIT_ID",
@@ -299,15 +300,13 @@ class TaskValidator:
             violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=state_snapshot)
 
             # 状态优先级规则：
-            # blocked_hard > blocked_soft > warning > pending_runtime_validation > valid
+            # blocked_hard > warning > valid
             if any(v.severity == "hard" for v in violations):
                 overall_status = "blocked_hard"
             elif any(v.severity == "soft" for v in violations):
-                overall_status = "blocked_soft"
+                overall_status = "warning"
             elif any(v.severity == "warning" for v in violations):
                 overall_status = "warning"
-            elif not is_now or runtime_diagnostic is not None:
-                overall_status = "pending_runtime_validation"
             else:
                 overall_status = "valid"
 
@@ -342,7 +341,7 @@ class TaskValidator:
             err_dict = {"code": "VALIDATOR_EXCEPTION", "message": f"校验流程内部发生未捕获异常: {e}"}
             fp = _compute_fingerprint(task_version, None, None, [], err_dict)
             return ValidationResult(
-                overall_status="pending_runtime_validation",
+                overall_status="valid",
                 validated_at=get_current_datetime().isoformat(timespec="seconds"),
                 task_version=task_version,
                 validation_version=1,

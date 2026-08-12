@@ -28,7 +28,6 @@ _PHASE_ACTIONS: dict = {
         "can_send": True,
         "can_modify": True,
         "can_confirm": False,
-        "can_ignore_soft_warning": False,
         "can_publish": False,
         "can_cancel": True,
     },
@@ -36,23 +35,13 @@ _PHASE_ACTIONS: dict = {
         "can_send": True,
         "can_modify": True,
         "can_confirm": True,
-        "can_ignore_soft_warning": False,
         "can_publish": True,
-        "can_cancel": True,
-    },
-    "blocked_soft": {
-        "can_send": True,
-        "can_modify": True,
-        "can_confirm": False,
-        "can_ignore_soft_warning": True,
-        "can_publish": False,
         "can_cancel": True,
     },
     "blocked_hard": {
         "can_send": True,
         "can_modify": True,
         "can_confirm": False,
-        "can_ignore_soft_warning": False,
         "can_publish": False,
         "can_cancel": True,
     },
@@ -60,7 +49,6 @@ _PHASE_ACTIONS: dict = {
         "can_send": False,
         "can_modify": False,
         "can_confirm": False,
-        "can_ignore_soft_warning": False,
         "can_publish": False,
         "can_cancel": False,
     },
@@ -68,7 +56,6 @@ _PHASE_ACTIONS: dict = {
         "can_send": False,
         "can_modify": False,
         "can_confirm": False,
-        "can_ignore_soft_warning": False,
         "can_publish": False,
         "can_cancel": False,
     },
@@ -78,7 +65,6 @@ _NORMAL_CHAT_ACTIONS: dict = {
     "can_send": True,
     "can_modify": False,
     "can_confirm": False,
-    "can_ignore_soft_warning": False,
     "can_publish": False,
     "can_cancel": False,
 }
@@ -308,48 +294,6 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
                 else:
                     soft_warnings.append(v_dict)
 
-            # 获取有效 acknowledgement:
-            # 优先调用 DialogueManager 独有的 _get_valid_acknowledgements 过滤逻辑
-            valid_ack_objs = []
-            if hasattr(manager, "_get_valid_acknowledgements") and callable(manager._get_valid_acknowledgements):
-                try:
-                    valid_ack_objs = manager._get_valid_acknowledgements(val_result)
-                except Exception:
-                    valid_ack_objs = []
-
-            status_ref = state_snapshot.get("status_ref", "") if isinstance(state_snapshot, dict) else ""
-            state_ver = state_snapshot.get("state_version", 0) if isinstance(state_snapshot, dict) else 0
-            violation_ids = {v["constraint_id"] for v in soft_warnings}
-
-            raw_acks = getattr(manager.slot_store, "validation_acknowledgements", []) or []
-            for ack in raw_acks:
-                ack_dict = ack.to_dict() if hasattr(ack, "to_dict") else (ack if isinstance(ack, dict) else {})
-                ack_cid = ack_dict.get("constraint_id")
-                ack_tv = ack_dict.get("task_version")
-                ack_vv = ack_dict.get("validation_version")
-                ack_fp = ack_dict.get("validation_fingerprint")
-                ack_sr = ack_dict.get("status_ref")
-                ack_sv = ack_dict.get("state_version")
-
-                # 严格全匹配（AND 规则），绝不使用 OR 避开校验
-                is_valid = (
-                    ack in valid_ack_objs or
-                    (
-                        ack_cid in violation_ids and
-                        ack_tv == task_version and
-                        ack_vv == validation_version and
-                        ack_fp == validation_fingerprint and
-                        ack_sr == status_ref and
-                        ack_sv == state_ver and
-                        validation_fingerprint is not None
-                    )
-                )
-
-                if is_valid:
-                    ignored_soft_warnings.append(ack_dict)
-                else:
-                    legacy_acknowledgements.append(ack_dict)
-
         except Exception as exc:
             logger.warning("解析 ValidationResult 失败，退回降级逻辑: %s", exc)
             val_result = None
@@ -373,23 +317,9 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
             else:
                 soft_warnings.append(v_dict)
 
-        try:
-            whitelist = manager._soft_whitelist or set()
-            for item in whitelist:
-                if isinstance(item, (tuple, list)) and len(item) >= 3:
-                    ignored_soft_warnings.append({
-                        "field": item[0],
-                        "value": item[1],
-                        "constraint_id": item[2],
-                    })
-        except AttributeError:
-            pass
-
         phase = getattr(manager, "phase", "collecting")
         if phase == "blocked_hard":
             overall_status = "blocked_hard"
-        elif phase == "blocked_soft":
-            overall_status = "blocked_soft"
         elif hard_violations:
             overall_status = "blocked_hard"
         elif soft_warnings:
@@ -490,7 +420,6 @@ def _build_frontend_ui_state_locked(manager: "DialogueManager") -> dict:
                 "can_send": False,
                 "can_modify": False,
                 "can_confirm": False,
-                "can_ignore_soft_warning": False,
                 "can_publish": False,
                 "can_cancel": False,
             },
