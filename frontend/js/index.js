@@ -384,7 +384,7 @@ Please describe your task request or ask a question directly.`,
         welcomeMsgDiv.setAttribute('data-original', welcomeContent);
         const bubble = welcomeMsgDiv.querySelector('.bubble');
         if (bubble) {
-          bubble.innerHTML = renderMarkdown(welcomeContent).replace(/\n/g, '<br>');
+          bubble.innerHTML = renderMessageContent(welcomeContent, 'bot');
         }
       }
 
@@ -401,7 +401,7 @@ Please describe your task request or ask a question directly.`,
           if (currentLang === 'en' && hasZh) {
             autoTranslateMessage(msgDiv);
           } else {
-            bubble.innerHTML = renderMarkdown(originalText).replace(/\n/g, '<br>');
+            bubble.innerHTML = renderMessageContent(originalText, msgDiv.getAttribute('data-role'));
             btn.innerText = I18N[currentLang].transTranslate;
             btn.setAttribute('data-translated', 'false');
           }
@@ -478,7 +478,7 @@ Please describe your task request or ask a question directly.`,
         const { translated, warning } = await fetchTranslation(originalText, 'English');
         msgDiv.setAttribute('data-translation-cache', translated);
         if (currentLang === 'en') {
-          bubble.innerHTML = renderMarkdown(translated).replace(/\n/g, '<br>');
+          bubble.innerHTML = renderMessageContent(translated, msgDiv.getAttribute('data-role'));
           if (warning === 'low_quality') {
             btn.innerText = I18N[currentLang].transFallback;
             btn.setAttribute('data-translated', 'warn');
@@ -503,7 +503,7 @@ Please describe your task request or ask a question directly.`,
 
       if (isTranslated === 'true' || isTranslated === 'warn') {
         // 显示原文
-        bubble.innerHTML = renderMarkdown(originalText).replace(/\n/g, '<br>');
+        bubble.innerHTML = renderMessageContent(originalText, messageDiv.getAttribute('data-role'));
         btn.innerText = I18N[currentLang].transTranslate;
         btn.setAttribute('data-translated', 'false');
       } else {
@@ -512,7 +512,7 @@ Please describe your task request or ask a question directly.`,
         try {
           const { translated, warning } = await fetchTranslation(originalText, targetLang);
           messageDiv.setAttribute('data-translation-cache', translated);
-          bubble.innerHTML = renderMarkdown(translated).replace(/\n/g, '<br>');
+          bubble.innerHTML = renderMessageContent(translated, messageDiv.getAttribute('data-role'));
           if (warning === 'low_quality') {
             btn.innerText = I18N[currentLang].transFallback;
             btn.setAttribute('data-translated', 'warn');
@@ -529,20 +529,25 @@ Please describe your task request or ask a question directly.`,
     }
 
     function escapeHtml(str) {
+      if (window.SEAgentMarkdown && typeof window.SEAgentMarkdown.escapeHtml === 'function') {
+        return window.SEAgentMarkdown.escapeHtml(str);
+      }
       if (typeof str !== 'string') str = String(str);
-      return str.replace(/[&<>]/g, function (m) {
+      return str.replace(/[&<>"']/g, function (m) {
         if (m === '&') return '&amp;';
         if (m === '<') return '&lt;';
         if (m === '>') return '&gt;';
+        if (m === '"') return '&quot;';
+        if (m === "'") return '&#39;';
         return m;
       });
     }
 
-    function renderMarkdown(text) {
-      const escapedText = escapeHtml(text);
-      return escapedText
-        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*(.+?)\*/g, '<em>$1</em>');
+    function renderMessageContent(content, role) {
+      if (window.SEAgentMarkdown && typeof window.SEAgentMarkdown.render === 'function') {
+        return window.SEAgentMarkdown.render(content, role);
+      }
+      return escapeHtml(content).replace(/\r\n?|\n/g, '<br>');
     }
 
     function getFieldLabel(key) {
@@ -605,7 +610,7 @@ Please describe your task request or ask a question directly.`,
       div.setAttribute('data-original', content);
       div.setAttribute('data-role', role);
 
-      const renderedContent = renderMarkdown(content).replace(/\n/g, '<br>');
+      const renderedContent = renderMessageContent(content, role);
 
       let translateBtn = '';
       if (content.trim() && options.kind !== 'welcome') {
