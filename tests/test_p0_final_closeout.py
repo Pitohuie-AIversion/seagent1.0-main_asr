@@ -3,10 +3,8 @@ tests/test_p0_final_closeout.py - P0 最终小范围收口测试套件
 
 问题一：confirming 快照恢复时合法 intent_id 被无条件替换
 问题二："不是候选油田"没有拒绝 pending oilfield（缺少动态候选名匹配）
-问题三：歧义设备别名仍被确定性路由到 DEVICE_CAPABILITY
 """
 
-import copy
 import json
 import tempfile
 import unittest
@@ -14,26 +12,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
-from src.intent_router import IntentRouter
 from src.knowledge_retriever import KnowledgeBase
-from src.llm_client import LLMClient
 from src.slot_store import Slot
+from tests.interaction_plan_support import ScriptedLLM, make_plan
 from tests.test_slot_consistency import seed_complete_valid_pipeline_task
-
-
-class DummyLLM(LLMClient):
-    def __init__(self, default_reply="默认LLM测试回复"):
-        self.llm = None
-        self.default_reply = default_reply
-
-    def chat(self, messages, temperature=0.7, max_tokens=800):
-        return self.default_reply
-
-    def generate(self, messages, temperature=0.7, max_tokens=800):
-        return self.chat(messages, temperature, max_tokens)
-
-    def filter_reply(self, text):
-        return text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -44,7 +26,7 @@ class SnapshotIntentIdPreservationTest(unittest.TestCase):
 
     def setUp(self):
         self.kb = KnowledgeBase()
-        self.llm = DummyLLM()
+        self.llm = ScriptedLLM(default_reply="默认LLM测试回复")
         self.dm = DialogueManager(self.llm, self.kb)
 
     def _make_confirming_snap(self, intent_id, status="valid", store_version=3, slot_version=2):
@@ -252,7 +234,7 @@ class PendingOilfieldRejectionTest(unittest.TestCase):
 
     def setUp(self):
         self.kb = KnowledgeBase()
-        self.llm = DummyLLM()
+        self.llm = ScriptedLLM(default_reply="默认LLM测试回复")
         self.dm = DialogueManager(self.llm, self.kb)
 
     def _setup_pending(self, candidate_name="流花11-1油田"):
@@ -280,8 +262,8 @@ class PendingOilfieldRejectionTest(unittest.TestCase):
         self.assertTrue(self._is_pending_cleared(),
                         "'不是流花11-1油田' 应清除 pending_oilfield_name")
         oil_slot = self.dm.slot_store.slots.get("oilfield_name")
-        if oil_slot:
-            self.assertNotEqual(oil_slot.status, "pending_confirmation")
+        self.assertIsNotNone(oil_slot)
+        self.assertNotEqual(oil_slot.status, "pending_confirmation")
         self.assertNotEqual(self.dm.phase, "rejected")
 
     def test_o2_candidate_name_suffix_not_right_rejects(self):
@@ -298,16 +280,21 @@ class PendingOilfieldRejectionTest(unittest.TestCase):
     def test_o3_task_update_does_not_clear_pending(self):
         """'不是要取消任务，水深改成500米' 应走 TASK_UPDATE，水深更新，pending 油田不变"""
         self._setup_pending("流花11-1油田")
+        version_before = self.dm.slot_store.version
+        self.llm.queue_plan(make_plan("WRITE"))
 
         with patch.object(self.dm.extractor, "extract_updates", return_value={
-            "intent": "TASK_UPDATE",
             "slot_candidates": [
-                {"canonical_key": "water_depth", "normalized_value": 500.0,
-                 "raw_value": "500米", "confidence": 1.0}
-            ]
-        }):
+                {"raw_key": "水深", "canonical_key": "water_depth",
+                 "normalized_value": 500.0, "raw_value": "500米", "confidence": 1.0}
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }) as mock_extract:
             reply = self.dm.process("不是要取消任务，水深改成500米")
 
+        mock_extract.assert_called_once()
+        self.assertGreater(self.dm.slot_store.version, version_before)
         self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 500.0)
         pending = self.dm.slot_store.slots.get("pending_oilfield_name")
         self.assertIsNotNone(pending)
@@ -331,68 +318,10 @@ class PendingOilfieldRejectionTest(unittest.TestCase):
         reply = self.dm.process("确认使用流花11-1油田")
 
         oil_slot = self.dm.slot_store.slots.get("oilfield_name")
-        if oil_slot:
-            self.assertNotEqual(oil_slot.status, "pending_confirmation")
+        self.assertIsNotNone(oil_slot)
+        self.assertNotEqual(oil_slot.status, "pending_confirmation")
+        self.assertEqual(oil_slot.value, "流花11-1油田")
         self.assertNotEqual(self.dm.phase, "done")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 问题三：歧义设备别名应进入 CLARIFICATION
-# ─────────────────────────────────────────────────────────────────────────────
-
-class AmbiguousDeviceAliasRoutingTest(unittest.TestCase):
-
-    def setUp(self):
-        self.kb = KnowledgeBase()
-        self.llm = DummyLLM()
-        self.dm = DialogueManager(self.llm, self.kb)
-
-    def test_d1_ambiguous_alias_routes_to_clarification(self):
-        """'一号机最大水深是多少？' - 一号机对应多个设备，必须 CLARIFICATION"""
-        res = self.dm.intent_router.route("一号机最大水深是多少？", [], {})
-        self.assertEqual(res.intent, "CLARIFICATION",
-                         f"歧义别名'一号机'应路由到 CLARIFICATION，实际: {res.intent}")
-        self.assertFalse(res.should_update_slots)
-
-    def test_d2_qualified_device_name_routes_to_device_capability(self):
-        """'金牛座001最大水深是多少？' - 含家族前缀的限定名，应 DEVICE_CAPABILITY"""
-        res = self.dm.intent_router.route("金牛座001最大水深是多少？", [], {})
-        self.assertEqual(res.intent, "DEVICE_CAPABILITY",
-                         f"限定别名'金牛座001'应路由到 DEVICE_CAPABILITY，实际: {res.intent}")
-
-    def test_d3_crawler_model_routes_to_device_capability(self):
-        """'CRAWLER-1600-001能在500米作业吗？' - 型号编码，应 DEVICE_CAPABILITY"""
-        res = self.dm.intent_router.route("CRAWLER-1600-001能在500米作业吗？", [], {})
-        self.assertEqual(res.intent, "DEVICE_CAPABILITY",
-                         f"型号'CRAWLER-1600-001'应路由到 DEVICE_CAPABILITY，实际: {res.intent}")
-
-    def test_d4_unknown_device_routes_to_device_capability(self):
-        """'亚特兰蒂斯能在1000米作业吗？' - 未知设备但结构明确，应 DEVICE_CAPABILITY"""
-        res = self.dm.intent_router.route("亚特兰蒂斯能在1000米作业吗？", [], {})
-        self.assertEqual(res.intent, "DEVICE_CAPABILITY",
-                         f"未知设备能力问句应路由到 DEVICE_CAPABILITY，实际: {res.intent}")
-
-    def test_d5_pure_number_context_not_device_capability(self):
-        """'我有001个苹果吗？' - 纯数字上下文，不得路由为 DEVICE_CAPABILITY"""
-        res = self.dm.intent_router.route("我有001个苹果吗？", [], {})
-        self.assertNotEqual(res.intent, "DEVICE_CAPABILITY",
-                            "纯数字'001'在非设备上下文中不应误路由为 DEVICE_CAPABILITY")
-
-    def test_d6_kb_alias_index_built_dynamically(self):
-        """KnowledgeBase 动态建立别名索引：一号机应在歧义集合中"""
-        alias_index = self.kb.get_device_alias_index()
-        self.assertIsInstance(alias_index, dict)
-        self.assertIn("一号机", alias_index,
-                      "一号机应在别名索引中")
-        self.assertGreater(len(alias_index["一号机"]), 1,
-                           f"一号机应对应多个设备，实际: {alias_index.get('一号机')}")
-
-    def test_d7_kb_ambiguous_device_terms_set(self):
-        """KnowledgeBase.get_ambiguous_device_terms() 应包含 一号机 和 001"""
-        ambiguous = self.kb.get_ambiguous_device_terms()
-        self.assertIsInstance(ambiguous, set)
-        self.assertIn("一号机", ambiguous, "一号机应在歧义别名集合中")
-        self.assertIn("001", ambiguous, "001 应在歧义别名集合中（被多个设备共用）")
 
 
 if __name__ == "__main__":

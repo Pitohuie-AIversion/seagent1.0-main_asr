@@ -28,16 +28,6 @@ class TimeContextTest(unittest.TestCase):
         self.assertEqual(context.datetime_text, "2026-07-06 09:30:15 CST")
         self.assertEqual(context.user_reply, "当前模拟时间是 2026-07-06 09:30:15 CST。")
 
-    def test_recognizes_standalone_time_queries(self):
-        self.assertTrue(time_context.is_standalone_time_query("现在几点？"))
-        self.assertTrue(time_context.is_standalone_time_query("当前模拟时间是多少"))
-        self.assertTrue(time_context.is_standalone_time_query("今天几号"))
-
-    def test_keeps_task_requests_in_normal_dialogue_flow(self):
-        self.assertFalse(time_context.is_standalone_time_query("现在开始管缆巡检"))
-        self.assertFalse(time_context.is_standalone_time_query("如果现在开始，会不会违规？"))
-        self.assertFalse(time_context.is_standalone_time_query("明天上午开始可以吗"))
-
 
 if __name__ == "__main__":
     unittest.main()

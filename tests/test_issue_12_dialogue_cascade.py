@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from src.llm_client import LLMClient
+from tests.interaction_plan_support import ScriptedLLM, make_plan
 
 
 class TestIssue12DialogueCascade(unittest.TestCase):
@@ -120,7 +121,7 @@ class TestIssue12DialogueCascade(unittest.TestCase):
         self._apply_updates({
             "equipment_class": "observation_rov",
             "equipment_family": "轻型工作级深海机器人",
-            "equipment_type": "轻型工作级深海机器人 600MSW",
+            "equipment_type": "轻型工作级深海机器人 HP",
         }, task_type_key="pipeline_inspection")
 
         missing = self.dm.slot_store.get_missing_slots(
@@ -168,37 +169,30 @@ class TestIssue12DialogueCascade(unittest.TestCase):
     # ── Test 8: 知识问答不修改 Slot ───────────────────────────────────────────
     def test_08_knowledge_qa_does_not_modify_slot_store(self):
         """8. 普通知识问答不修改 SlotStore，Snapshot 与 store_version 保持 100% 不变。"""
+        self.llm = ScriptedLLM(
+            plans=[make_plan("READ", query_intent="GENERAL_CHAT")],
+            default_reply="AUV 使用 CC 表示排量规格。",
+        )
+        self.dm = DialogueManager(self.llm, self.kb)
         self._init_task("pipeline_inspection")
         snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
         ver_before = self.dm.slot_store.version
 
-        self.dm.process("为什么 AUV 使用 CC？")
+        with patch.object(
+            self.dm.extractor,
+            "extract_updates",
+            wraps=self.dm.extractor.extract_updates,
+        ) as mock_extract:
+            self.dm.process("为什么 AUV 使用 CC？")
 
         snap_after = self.dm.slot_store.export_snapshot()
         ver_after = self.dm.slot_store.version
 
+        mock_extract.assert_not_called()
+        self.assertEqual(len(self.llm.classify_calls), 1)
+        self.assertEqual(self.llm.extract_calls, [])
         self.assertEqual(snap_before, snap_after)
         self.assertEqual(ver_before, ver_after)
-
-    # ── Test 9: ASR handoff 文本与普通文本一致性契约 ─────────────────────────
-    def test_09_asr_handoff_text_and_direct_text_produce_identical_result(self):
-        """9. ASR handoff 转写文本与文本输入在 DialogueManager 中产生完全相同的结果。"""
-        msg = "使用 AUV-324cc-001 执行管缆巡检"
-
-        dm1 = DialogueManager(self.llm, self.kb)
-        dm1.process(msg, request_id="req_text_01")
-
-        dm2 = DialogueManager(self.llm, self.kb)
-        dm2.process(msg, request_id="req_asr_01")
-
-        self.assertEqual(dm1.slot_store.get_task_state(), dm2.slot_store.get_task_state())
-        for k in ("equipment_class", "equipment_family", "equipment_type", "equipment_unit_id"):
-            s1 = dm1.slot_store.slots.get(k)
-            s2 = dm2.slot_store.slots.get(k)
-            self.assertIsNotNone(s1)
-            self.assertIsNotNone(s2)
-            self.assertEqual(s1.value, s2.value)
-            self.assertEqual(s1.status, s2.status)
 
     # ── Test 10: Registry 错误 fail closed 并提示用户 ──────────────────────────
     def test_10_registry_error_fails_closed(self):

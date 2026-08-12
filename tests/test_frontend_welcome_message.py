@@ -2,11 +2,11 @@
 tests/test_frontend_welcome_message.py - Targeted regression test for frontend welcome message (Issue #21).
 
 Verifies:
-1. Chinese mode titles and examples
-2. English mode titles and examples
+1. Chinese capability titles and examples
+2. English capability titles and examples
 3. Knowledge Q&A data isolation semantics
-4. Emergency mode semantics (rapid collection, key fields)
-5. Absence of prohibited misdescriptions (emergency intervention, task stop/cancel)
+4. Task creation and admission semantics
+5. Complete absence of emergency-mode content
 6. Single source of truth in frontend/js/index.js (I18N.zh and I18N.en)
 7. Init, reset, and session recovery reuse of I18N[currentLang].welcomeMsg
 """
@@ -55,51 +55,49 @@ class TestFrontendWelcomeMessage(unittest.TestCase):
         return raw_val[1:-1]
 
     def test_9_1_chinese_mode_titles(self):
-        """9.1 Chinese mode titles test."""
-        self.assertIn("【任务收集】", self.zh_welcome)
+        """9.1 Chinese capability titles test."""
+        self.assertIn("当前支持以下两项核心能力", self.zh_welcome)
         self.assertIn("【知识问答】", self.zh_welcome)
-        self.assertIn("【紧急模式】", self.zh_welcome)
+        self.assertIn("【任务创建与准入】", self.zh_welcome)
+        self.assertNotIn("【任务收集】", self.zh_welcome)
 
     def test_9_2_english_mode_titles(self):
-        """9.2 English mode titles test."""
-        self.assertIn("[Task Collection]", self.en_welcome)
+        """9.2 English capability titles test."""
+        self.assertIn("support two core capabilities", self.en_welcome)
         self.assertIn("[Knowledge Q&A]", self.en_welcome)
-        self.assertIn("[Emergency Mode]", self.en_welcome)
+        self.assertIn("[Task Creation & Admission]", self.en_welcome)
+        self.assertNotIn("[Task Collection]", self.en_welcome)
 
     def test_9_3_chinese_examples(self):
-        """9.3 Chinese mode examples test."""
-        self.assertIn("在流花11-1油田执行管缆巡检", self.zh_welcome)
+        """9.3 Chinese capability examples test."""
         self.assertIn("金牛座一号机的最大作业水深是多少", self.zh_welcome)
-        self.assertIn("紧急巡检PL-003管线泄漏", self.zh_welcome)
+        self.assertIn("在流花11-1油田执行管缆巡检", self.zh_welcome)
 
     def test_9_4_english_examples(self):
-        """9.4 English mode examples test."""
-        self.assertIn("Inspect the subsea pipeline at Liuhua 11-1 Oilfield", self.en_welcome)
+        """9.4 English capability examples test."""
         self.assertIn("What is the maximum operating depth of Taurus Unit 1", self.en_welcome)
-        self.assertIn("Urgently inspect the PL-003 pipeline leak", self.en_welcome)
+        self.assertIn("Inspect the subsea pipeline at Liuhua 11-1 Oilfield", self.en_welcome)
 
     def test_9_5_knowledge_qa_isolation_semantics(self):
         """9.5 Knowledge Q&A data isolation semantics test."""
         self.assertIn("不会写入或修改任务信息", self.zh_welcome)
         self.assertIn("without creating or modifying task data", self.en_welcome)
 
-    def test_9_6_emergency_mode_semantics(self):
-        """9.6 Emergency mode semantics test."""
-        # Chinese emergency semantics
-        self.assertIn("时间紧迫", self.zh_welcome)
-        self.assertIn("关键字段", self.zh_welcome)
-        self.assertIn("减少", self.zh_welcome)
-        self.assertIn("确认步骤", self.zh_welcome)
+    def test_9_6_task_creation_and_admission_semantics(self):
+        """9.6 Task creation and admission semantics test."""
+        self.assertIn("收集", self.zh_welcome)
+        self.assertIn("约束检查", self.zh_welcome)
+        self.assertIn("通过准入", self.zh_welcome)
+        self.assertIn("确认并发布任务", self.zh_welcome)
+        self.assertIn("Collects task information", self.en_welcome)
+        self.assertIn("constraint checks", self.en_welcome)
+        self.assertIn("admission is approved", self.en_welcome)
+        self.assertIn("confirm and publish the task", self.en_welcome)
 
-        # English emergency semantics
-        self.assertIn("time-critical", self.en_welcome)
-        self.assertIn("key fields", self.en_welcome)
-        self.assertIn("reduces", self.en_welcome)
-        self.assertIn("confirmation steps", self.en_welcome)
-
-    def test_9_7_prohibited_misdescriptions(self):
-        """9.7 Prohibited misdescriptions test in welcomeMsg content."""
+    def test_9_7_emergency_mode_content_is_absent(self):
+        """9.7 Welcome message must not describe an emergency mode."""
         forbidden_zh = [
+            "紧急",
             "紧急干预",
             "立即停止当前任务",
             "暂停当前任务",
@@ -107,6 +105,9 @@ class TestFrontendWelcomeMessage(unittest.TestCase):
             "取消当前任务",
         ]
         forbidden_en = [
+            "emergency",
+            "time-critical",
+            "urgently",
             "emergency intervention",
             "stop the current task",
             "pause the current task",

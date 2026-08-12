@@ -1607,6 +1607,47 @@ class KnowledgeBase:
                 terms.add(full_name.strip())
         return terms
 
+    def _resolve_typed_read_query(
+        self,
+        query_type: str,
+        user_message: str,
+        context: dict,
+    ) -> tuple[str, str]:
+        """用结构化主题和权威别名选择事实域，不重新猜测自然语言意图。"""
+        if query_type != "KNOWLEDGE_QA":
+            return query_type, user_message
+
+        if (
+            context.get("relation") == "status"
+            or context.get("source_policy") == "realtime_state"
+        ):
+            return query_type, user_message
+
+        subject_type = context.get("subject_type")
+        subject_text = context.get("subject_text")
+        device_subject_types = {"device", "device_class", "device_family"}
+        neutral_subject_types = {None, "unknown", "general_concept"}
+
+        candidates: list[str] = []
+        if subject_type in device_subject_types:
+            if isinstance(subject_text, str) and subject_text.strip():
+                candidates.append(subject_text.strip())
+            candidates.append(user_message)
+        elif subject_type in neutral_subject_types:
+            candidates.append(user_message)
+        else:
+            return query_type, user_message
+
+        for selector in candidates:
+            _, entity_targets = self._find_query_entity_targets(selector)
+            if not entity_targets:
+                continue
+            if selector == user_message:
+                return "DEVICE_CAPABILITY", user_message
+            return "DEVICE_CAPABILITY", f"{selector} {user_message}"
+
+        return query_type, user_message
+
     def execute_typed_query(
         self,
         query_type: str,
@@ -1615,8 +1656,13 @@ class KnowledgeBase:
     ) -> dict:
         """执行强类型只读知识查询，并返回稳定的结构化证据。"""
         context = context if isinstance(context, dict) else {}
+        requested_query_type = query_type
+        query_type, retrieval_message = self._resolve_typed_read_query(
+            query_type, user_message, context
+        )
         response = {
             "query_type": query_type,
+            "requested_query_type": requested_query_type,
             "results": [],
             "found": False,
             "source": "knowledge_base",
@@ -1688,7 +1734,7 @@ class KnowledgeBase:
 
         if query_type == "DEVICE_CAPABILITY":
             return self._execute_device_capability_query(
-                user_message,
+                retrieval_message,
                 context,
                 response,
             )

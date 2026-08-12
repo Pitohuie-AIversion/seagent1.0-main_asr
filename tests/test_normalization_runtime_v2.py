@@ -33,6 +33,7 @@ from src.normalization_contract import (
 from src.normalizer import FieldNormalizer
 from src.slot_store import Slot, SlotStore
 from src.task_patch import ListMutationPatch, SlotPatch, TaskPatch
+from tests.interaction_plan_support import ScriptedLLM, make_plan
 
 
 class TestNormalizationRuntimeV2Flags(unittest.TestCase):
@@ -63,7 +64,8 @@ class TestNormalizationRuntimeV2Flags(unittest.TestCase):
         self.assertIn("非法 Feature Flag 组合", str(ctx.exception))
 
     def test_flags_false_true_fails_closed_in_dm(self):
-        dm = DialogueManager(llm=MagicMock())
+        llm = ScriptedLLM(plans=[make_plan("WRITE")])
+        dm = DialogueManager(llm=llm)
         version_before = dm.slot_store.version
         slots_before = {k: (s.value, s.status) for k, s in dm.slot_store.slots.items()}
 
@@ -76,6 +78,8 @@ class TestNormalizationRuntimeV2Flags(unittest.TestCase):
         slots_after = {k: (s.value, s.status) for k, s in dm.slot_store.slots.items()}
         self.assertEqual(version_before, version_after)
         self.assertEqual(slots_before, slots_after)
+        self.assertEqual(len(llm.classify_calls), 1)
+        self.assertEqual(len(llm.extract_calls), 0)
 
 
 class TestApplyAdapter(unittest.TestCase):
@@ -768,9 +772,9 @@ class TestRuntimeV2Integration(unittest.TestCase):
             self.dm.process("作业在南海油田")
 
         of_slot = self.dm.slot_store.slots.get("oilfield_name")
-        self.assertTrue(of_slot is None or of_slot.value is None)
-        if of_slot is not None:
-            self.assertEqual(of_slot.status, "missing")
+        self.assertIsNotNone(of_slot)
+        self.assertIsNone(of_slot.value)
+        self.assertEqual(of_slot.status, "missing")
 
     def test_v2_oilfield_clear_directive_reaches_apply_seam(self):
         self._setup_stage2_task("tree_valve_operation")

@@ -1,6 +1,6 @@
 """
 tests/test_phase1_publish_ownership_final_closeout.py
-第一阶段事务所有权、并发锁与能力问句终极收口测试套件
+第一阶段事务所有权与并发锁收口测试套件
 """
 
 import copy
@@ -14,7 +14,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
-from src.intent_router import IntentRouter
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
 from src.task_intent_builder import TaskIntentBuilder, TaskPublishLock
@@ -606,70 +605,6 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
 
         repo_task_files = list(repo_root.glob("task_intent_*.json"))
         self.assertEqual(len(repo_task_files), 0)
-
-
-class DeviceCapabilityQuestionRoutingTest(unittest.TestCase):
-    def setUp(self):
-        self.kb = KnowledgeBase()
-        self.llm = DummyLLM()
-        self.dm = DialogueManager(self.llm, self.kb)
-
-    def test_21_jinniuzuo_depth_is_500m_ne_routes_to_device_capability(self):
-        """21. '水深为500米呢' 进入 DEVICE_CAPABILITY 或 CLARIFICATION (不进入 TASK_UPDATE)"""
-        res1 = self.dm.intent_router.route("水深为500米呢", [], {})
-        self.assertFalse(res1.should_update_slots)
-        self.assertNotEqual(res1.intent, "TASK_UPDATE")
-
-        res2 = self.dm.intent_router.route("金牛座一号机水深为500米呢", [], {})
-        self.assertEqual(res2.intent, "DEVICE_CAPABILITY")
-        self.assertFalse(res2.should_update_slots)
-
-        res3 = self.dm.intent_router.route("金牛座一号机的作业水深是500米呢？", [], {})
-        self.assertEqual(res3.intent, "DEVICE_CAPABILITY")
-        self.assertFalse(res3.should_update_slots)
-
-    def test_22_capability_query_does_not_call_extractor(self):
-        """22. 能力查询不调用 extractor"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        with patch.object(self.dm.extractor, "extract_updates") as mock_ext:
-            self.dm.process("金牛座一号机水深为500米呢？")
-            mock_ext.assert_not_called()
-
-    def test_23_capability_query_preserves_dialogue_state(self):
-        """23. 能力查询前后完整会话状态不变"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
-        phase_before = self.dm.phase
-        mode_before = self.dm.mode
-        res_before = copy.deepcopy(self.dm.final_result)
-
-        self.dm.process("金牛座一号机的作业水深是500米呢？")
-
-        snap_after = copy.deepcopy(self.dm.slot_store.export_snapshot())
-        phase_after = self.dm.phase
-        mode_after = self.dm.mode
-        res_after = copy.deepcopy(self.dm.final_result)
-
-        self.assertEqual(snap_before, snap_after)
-        self.assertEqual(phase_before, phase_after)
-        self.assertEqual(mode_before, mode_after)
-        self.assertEqual(res_before, res_after)
-
-    def test_24_explicit_update_enters_slot_update(self):
-        """24. 明确修改语句继续进入统一槽位更新流程"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        res = self.dm.intent_router.route("把作业水深改为500米", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertEqual(res.intent, "TASK_UPDATE")
-        self.assertTrue(res.should_update_slots)
-
-    def test_25_ordinary_question_does_not_false_trigger(self):
-        """25. 普通含'到/为/是/使用'的问句不误触发"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        res1 = self.dm.intent_router.route("订单001什么时候到？", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertNotEqual(res1.intent, "TASK_UPDATE")
-
-        res2 = self.dm.intent_router.route("我能看看系统说明书吗？", [], {})
-        self.assertNotEqual(res2.intent, "TASK_UPDATE")
 
 
 if __name__ == "__main__":

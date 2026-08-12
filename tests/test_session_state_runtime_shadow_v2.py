@@ -29,15 +29,20 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.llm_client import LLMClient
-from src.model_profile import is_session_state_v2_enabled, is_shadow_compare_enabled
-from src.session_state_shadow import compare_session_state_shadow, ShadowComparisonResult
+from src.model_profile import is_session_state_v2_enabled
+from src.session_state_shadow import compare_session_state_shadow
 from src.slot_store import Slot
 from src.validator import ValidationResult
+from tests.interaction_plan_support import (
+    ScriptedLLM,
+    extraction_result,
+    make_plan,
+    slot_candidate,
+)
 
 
 def _make_dm(tmp_dir: Path, session_id: str | None = "sess_test_shadow") -> DialogueManager:
@@ -46,8 +51,63 @@ def _make_dm(tmp_dir: Path, session_id: str | None = "sess_test_shadow") -> Dial
     shutil.copy("config/state.yaml", state_file)
     kb = KnowledgeBase()
     kb.state_info.state_file = state_file
-    llm = LLMClient(None, None)
+    llm = ScriptedLLM(default_reply="测试回复")
     return DialogueManager(llm, kb, session_id=session_id)
+
+
+def _task_state_digest(dm: DialogueManager) -> dict:
+    return {
+        "slot_store": copy.deepcopy(dm.slot_store.export_snapshot()),
+        "task_state": copy.deepcopy(dm.task_state),
+        "last_built_json": copy.deepcopy(dm._last_built_json),
+        "last_missing": copy.deepcopy(dm._last_missing),
+        "phase": dm.phase,
+        "mode": dm.mode,
+    }
+
+
+def _process_scripted_read(
+    dm: DialogueManager,
+    user_message: str,
+    *,
+    request_id: str,
+    query_intent: str = "KNOWLEDGE_QA",
+) -> str:
+    before = _task_state_digest(dm)
+    classify_count = len(dm.llm.classify_calls)
+    extract_count = len(dm.llm.extract_calls)
+    dm.llm.queue_plan(make_plan("READ", query_intent=query_intent))
+
+    reply = dm.process(user_message, request_id=request_id)
+
+    assert _task_state_digest(dm) == before
+    assert len(dm.llm.classify_calls) == classify_count + 1
+    assert len(dm.llm.extract_calls) == extract_count
+    return reply
+
+
+def _queue_pipeline_write(dm: DialogueManager, *, water_depth: float = 300.0) -> None:
+    dm.llm.queue_plan(make_plan("WRITE"))
+    dm.llm.queue_extraction(
+        extraction_result(
+            slot_candidate(
+                "task_type_key",
+                "pipeline_inspection",
+                raw_key="任务类型",
+                raw_value="管缆巡检",
+            )
+        )
+    )
+    dm.llm.queue_extraction(
+        extraction_result(
+            slot_candidate(
+                "water_depth",
+                water_depth,
+                raw_key="作业水深",
+                raw_value=f"{water_depth:g}米",
+            )
+        )
+    )
 
 
 def _helper_setup_published_task(dm: DialogueManager, task_dir: Path, intent_id: str = "TI202608100001"):
@@ -102,7 +162,8 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         dm = _make_dm(self.tmp_path / "t01")
         with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=False), \
              patch("src.dialogue_manager.compare_session_state_shadow") as mock_comp:
-            dm.process("什么是DVL？", request_id="req_t01")
+            reply = _process_scripted_read(dm, "什么是DVL？", request_id="req_t01")
+            self.assertTrue(reply)
             mock_comp.assert_not_called()
 
     # 2. shadow_compare=true -> Valid initial/task state returns PARITY.
@@ -118,43 +179,45 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
     def test_03_knowledge_qa_shadow_enabled_preserves_reply_and_state(self):
         dm = _make_dm(self.tmp_path / "t03")
         with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True):
-            snap_before = dm.export_snapshot()
-            reply = dm.process("什么是DVL？", request_id="req_t03")
-            snap_after = dm.export_snapshot()
+            reply = _process_scripted_read(dm, "什么是DVL？", request_id="req_t03")
             self.assertTrue(isinstance(reply, str) and len(reply) > 0)
-            self.assertEqual(snap_before["phase"], snap_after["phase"])
-            self.assertEqual(snap_before["task_state"], snap_after["task_state"])
 
     # 4. Task creation with Shadow enabled -> exactly 0 additional LLM execution compared to disabled.
     def test_04_task_creation_shadow_enabled_no_double_execution(self):
         dm_disabled = _make_dm(self.tmp_path / "t04_disabled")
         dm_enabled = _make_dm(self.tmp_path / "t04_enabled")
 
-        def stub_extract(messages, max_tokens=None):
-            return {
-                "slot_candidates": [
-                    {
-                        "canonical_key": "task_type",
-                        "normalized_value": "管缆巡检",
-                        "raw_value": "管缆巡检",
-                        "confidence": 1.0,
-                        "resolution_method": "canonical_exact",
-                    }
-                ]
-            }
+        v_disabled_before = dm_disabled.slot_store.version
+        v_enabled_before = dm_enabled.slot_store.version
+        _queue_pipeline_write(dm_disabled)
+        _queue_pipeline_write(dm_enabled)
 
         with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=False):
-            with patch.object(dm_disabled.llm, "extract_json", side_effect=stub_extract) as mock_llm_dis:
-                dm_disabled.process("创建一个管缆巡检任务", request_id="req_t04_dis")
-                count_disabled = mock_llm_dis.call_count
+            dm_disabled.process("创建一个管缆巡检任务", request_id="req_t04_dis")
+            count_disabled = (
+                len(dm_disabled.llm.classify_calls),
+                len(dm_disabled.llm.extract_calls),
+                len(dm_disabled.llm.chat_calls),
+            )
 
         with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True):
-            with patch.object(dm_enabled.llm, "extract_json", side_effect=stub_extract) as mock_llm_en:
-                dm_enabled.process("创建一个管缆巡检任务", request_id="req_t04_en")
-                count_enabled = mock_llm_en.call_count
+            dm_enabled.process("创建一个管缆巡检任务", request_id="req_t04_en")
+            count_enabled = (
+                len(dm_enabled.llm.classify_calls),
+                len(dm_enabled.llm.extract_calls),
+                len(dm_enabled.llm.chat_calls),
+            )
 
-        self.assertEqual(count_enabled, count_disabled, f"Shadow enabled LLM calls ({count_enabled}) must equal disabled ({count_disabled})")
-        self.assertEqual(dm_enabled.slot_store.get_task_state().get("task_type"), "管缆巡检")
+        self.assertEqual(count_disabled, (1, 2, 1))
+        self.assertEqual(count_enabled, count_disabled)
+        for dm, version_before in (
+            (dm_disabled, v_disabled_before),
+            (dm_enabled, v_enabled_before),
+        ):
+            state = dm.slot_store.get_task_state()
+            self.assertGreater(dm.slot_store.version, version_before)
+            self.assertEqual(state.get("task_type_key"), "pipeline_inspection")
+            self.assertEqual(state.get("water_depth"), 300.0)
 
     # 5. Post-publish Shadow returns PARITY.
     def test_05_post_publish_shadow_returns_parity(self):
@@ -204,10 +267,16 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         dm = _make_dm(self.tmp_path / "t06")
         task_dir = self.tmp_path / "t06_tasks"
         task_dir.mkdir(parents=True, exist_ok=True)
+        dm.llm.queue_plan(make_plan("CONTROL", emergency_action="stop"))
         with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
              patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
             _helper_setup_published_task(dm, task_dir, "TI202608100001")
             dm.process("停止当前任务", request_id="req_t06")
+            self.assertEqual(dm.control_state, "stop_requested")
+            self.assertEqual(dm.last_control_request["action"], "stop")
+            self.assertEqual(dm.last_control_request["target_intent_id"], "TI202608100001")
+            self.assertEqual(len(dm.llm.classify_calls), 1)
+            self.assertEqual(len(dm.llm.extract_calls), 0)
             res = compare_session_state_shadow(dm.export_snapshot(), checkpoint="process", request_id="req_t06")
             self.assertEqual(res.classification, "PARITY")
 
@@ -254,7 +323,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
 
         with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
              patch("src.dialogue_manager.logger.warning") as mock_warn:
-            reply = dm.process("什么是DVL？", request_id="req_t09")
+            reply = _process_scripted_read(dm, "什么是DVL？", request_id="req_t09")
             self.assertTrue(isinstance(reply, str) and len(reply) > 0)
             self.assertEqual(dm.phase, "invalid_phase_xyz")
 
@@ -290,7 +359,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
              patch("src.dialogue_manager.compare_session_state_shadow", side_effect=RuntimeError("Simulated shadow crash")), \
              patch("src.dialogue_manager.logger.warning") as mock_warn:
-            reply = dm.process("什么是DVL？", request_id="req_t11")
+            reply = _process_scripted_read(dm, "什么是DVL？", request_id="req_t11")
             self.assertTrue(isinstance(reply, str) and len(reply) > 0)
             err_calls = [str(call) for call in mock_warn.call_args_list if "[SESSION_STATE_SHADOW_ERROR]" in str(call)]
             self.assertTrue(len(err_calls) > 0)
@@ -300,7 +369,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         dm = _make_dm(self.tmp_path / "t12")
         with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
              patch("src.dialogue_manager.logger.info") as mock_info:
-            dm.process("什么是DVL？", request_id="req_audit_999")
+            _process_scripted_read(dm, "什么是DVL？", request_id="req_audit_999")
             info_calls = [str(call) for call in mock_info.call_args_list if "[SESSION_STATE_SHADOW_PARITY]" in str(call)]
             self.assertTrue(len(info_calls) > 0)
             self.assertIn("req_audit_999", info_calls[0])
@@ -310,7 +379,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         dm = _make_dm(self.tmp_path / "t13")
         with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True):
             v_before = dm.slot_store.version
-            dm.process("什么是DVL？", request_id="req_t13")
+            _process_scripted_read(dm, "什么是DVL？", request_id="req_t13")
             v_after = dm.slot_store.version
             self.assertEqual(v_before, v_after)
 
@@ -320,7 +389,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         task_dir = self.tmp_path / "t14_tasks"
         with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
              patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
-            dm.process("什么是DVL？", request_id="req_t14")
+            _process_scripted_read(dm, "什么是DVL？", request_id="req_t14")
             files = list(task_dir.glob("*.json")) if task_dir.exists() else []
             self.assertEqual(len(files), 0)
 
@@ -329,7 +398,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         self.assertFalse(is_session_state_v2_enabled())
         with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True):
             dm = _make_dm(self.tmp_path / "t15")
-            dm.process("什么是DVL？", request_id="req_t15")
+            _process_scripted_read(dm, "什么是DVL？", request_id="req_t15")
             self.assertFalse(is_session_state_v2_enabled())
 
     # 16. Log Privacy: MISMATCH log contains zero intent/task IDs, zero result.details, zero raw snapshot.

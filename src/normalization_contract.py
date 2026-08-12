@@ -309,8 +309,12 @@ def normalize_task_patch(
             allowed,
             field_type,
         )
+        constraint_failure = normalizer.validate_field_constraints(
+            normalized,
+            fdef,
+        )
 
-        if normalized is not None:
+        if normalized is not None and constraint_failure is None:
             temp_state[key] = normalized
             outcomes.append(
                 SlotNormalizationOutcome(
@@ -328,7 +332,9 @@ def normalize_task_patch(
             )
         else:
             cand = slot_patch.candidate_value
-            if cand is None or cand == "":
+            if constraint_failure is not None:
+                error_code, error_msg = constraint_failure
+            elif cand is None or cand == "":
                 error_code = "empty_value"
             elif field_type == "number":
                 error_code = "invalid_number"
@@ -353,7 +359,8 @@ def normalize_task_patch(
             else:
                 error_code = "normalization_failed"
 
-            error_msg = f"无法将 '{cand}' 规范化为合法的 {field_type} 类型"
+            if constraint_failure is None:
+                error_msg = f"无法将 '{cand}' 规范化为合法的 {field_type} 类型"
 
             outcomes.append(
                 SlotNormalizationOutcome(

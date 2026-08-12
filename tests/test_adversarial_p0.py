@@ -17,10 +17,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.dialogue_manager import DialogueManager
-from src.intent_router import IntentRouter, IntentRouteResult
+from src.intent_router import IntentRouteResult
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
 from src.exceptions import TaskPersistenceError
+from tests.interaction_plan_support import make_plan
 from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 
 
@@ -28,6 +29,12 @@ class DummyLLM(LLMClient):
     def __init__(self, default_reply: str = "默认LLM测试回复"):
         self.llm = None
         self.default_reply = default_reply
+        self.plans = []
+
+    def classify_interaction(self, messages, max_tokens=480, role=None):
+        if not self.plans:
+            raise AssertionError("测试必须显式提供 TurnPlan")
+        return self.plans.pop(0)
 
     def chat(self, messages: list[dict], temperature: float = 0.7, max_tokens: int = 800) -> str:
         return self.default_reply
@@ -44,16 +51,17 @@ class AdversarialP0SecurityTest(unittest.TestCase):
         self.kb = KnowledgeBase()
         self.llm = DummyLLM()
         self.dm = DialogueManager(self.llm, self.kb)
-        self.router = IntentRouter(self.llm)
 
     # 1. confirming + “不确认发布，水深改成500米” -> TASK_UPDATE, 不生成文件, phase != done
     def test_adv_01_confirming_negation_update(self):
         seed_complete_valid_pipeline_task(self.dm, self.kb)
+        self.llm.plans.append(make_plan("WRITE"))
         with patch.object(self.dm.extractor, 'extract_updates', return_value={
-            "intent": "TASK_UPDATE",
             "slot_candidates": [
                 {"canonical_key": "water_depth", "normalized_value": 500.0, "raw_value": "500米", "confidence": 1.0}
-            ]
+            ],
+            "list_mutations": [],
+            "unresolved": [],
         }) as mock_ext:
             reply = self.dm.process("不确认发布，水深改成500米")
             mock_ext.assert_called_once()
@@ -63,26 +71,32 @@ class AdversarialP0SecurityTest(unittest.TestCase):
     # 2. confirming + “确认发布前，把水深改成500米” -> TASK_UPDATE, 不发布
     def test_adv_02_confirming_prefix_update(self):
         seed_complete_valid_pipeline_task(self.dm, self.kb)
+        self.llm.plans.append(make_plan("WRITE"))
         with patch.object(self.dm.extractor, 'extract_updates', return_value={
-            "intent": "TASK_UPDATE",
             "slot_candidates": [
                 {"canonical_key": "water_depth", "normalized_value": 500.0, "raw_value": "500米", "confidence": 1.0}
-            ]
-        }):
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }) as mock_ext:
             reply = self.dm.process("确认发布前，把水深改成500米")
+            mock_ext.assert_called_once()
             self.assertNotEqual(self.dm.phase, "done")
             self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 500.0)
 
     # 3. confirming + “水深改成500米并确认发布” -> 只修改, 不发布, 下一轮重新确认
     def test_adv_03_mixed_update_and_confirm(self):
         seed_complete_valid_pipeline_task(self.dm, self.kb)
+        self.llm.plans.append(make_plan("WRITE"))
         with patch.object(self.dm.extractor, 'extract_updates', return_value={
-            "intent": "TASK_UPDATE",
             "slot_candidates": [
                 {"canonical_key": "water_depth", "normalized_value": 500.0, "raw_value": "500米", "confidence": 1.0}
-            ]
-        }):
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }) as mock_ext:
             reply = self.dm.process("水深改成500米并确认发布")
+            mock_ext.assert_called_once()
             self.assertNotEqual(self.dm.phase, "done")
             self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 500.0)
 
@@ -245,31 +259,18 @@ class AdversarialP0SecurityTest(unittest.TestCase):
     def test_adv_13_device_list_depth_query(self):
         res = self.kb.execute_typed_query("DEVICE_CAPABILITY", "最大下潜深度1000米的机器人有哪些？")
         self.assertEqual(res["query_mode"], "device_list")
-        if res["found"]:
-            all_rovs = self.kb.get_all_rovs()
-            self.assertLessEqual(len(res["results"]), len(all_rovs))
-            for r in res["results"]:
-                self.assertLessEqual(r["max_depth_m"], 1000)
+        self.assertTrue(res["found"])
+        self.assertTrue(res["results"])
+        all_rovs = self.kb.get_all_rovs()
+        self.assertLessEqual(len(res["results"]), len(all_rovs))
+        for r in res["results"]:
+            self.assertLessEqual(r["max_depth_m"], 1000)
 
     # 14. 深度解析失败且包含“有哪些机器人” -> 不返回全部设备
     def test_adv_14_depth_parse_failure_no_fallback_all(self):
         res = self.kb.execute_typed_query("DEVICE_CAPABILITY", "987米 的有哪些机器人")
         self.assertFalse(res["found"])
         self.assertEqual(len(res["results"]), 0)
-
-    # 15. 非法 query_subtype: list/dict/bool/number 全部 fail closed 到 CLARIFICATION
-    def test_adv_15_invalid_query_subtype_types(self):
-        invalid_subtypes = [[1, 2], {"a": 1}, True, False, 123, 45.6]
-        for sub in invalid_subtypes:
-            with patch.object(self.llm, 'extract_json', return_value={
-                "intent": "TOOL_QUERY",
-                "confidence": 0.95,
-                "reason": "test",
-                "query_subtype": sub
-            }):
-                res = self.router.route("模糊查询测试", [], {})
-                self.assertEqual(res.intent, "CLARIFICATION", f"query_subtype={sub} should fall to CLARIFICATION")
-
 
 if __name__ == "__main__":
     unittest.main()

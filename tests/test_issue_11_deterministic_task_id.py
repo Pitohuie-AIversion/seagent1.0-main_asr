@@ -38,12 +38,32 @@ from src.simulated_time import (
 )
 from src.slot_store import Slot
 from src.task_intent_builder import TaskIntentBuilder, validate_task_intent
+from tests.interaction_plan_support import (
+    ScriptedLLM,
+    extraction_result,
+    make_plan,
+    slot_candidate,
+)
 
 
 class FakeLLM(LLMClient):
-    def __init__(self):
+    """测试调用方显式指定语义；替身不读取用户原句。"""
+
+    _TASK_NAMES = {
+        "pipeline_inspection": "管缆巡检",
+        "pipeline_burial": "管缆埋设",
+        "tree_valve_operation": "采油树控制面板插入",
+    }
+
+    def __init__(
+        self,
+        task_type_key: str = "pipeline_inspection",
+        operation: str = "WRITE",
+    ):
         self.llm = None
         self.tokenizer = None
+        self.task_type_key = task_type_key
+        self.operation = operation
 
     def chat(self, messages, **kwargs):
         return "已接收到您的任务请求"
@@ -51,59 +71,48 @@ class FakeLLM(LLMClient):
     def filter_reply(self, text, *args, **kwargs):
         return text if isinstance(text, str) else "已接收到您的任务请求"
 
+    def classify_interaction(self, messages, max_tokens=480, role=None):
+        return make_plan(
+            self.operation,
+            query_intent="GENERAL_CHAT" if self.operation == "READ" else None,
+        )
+
     def extract_json(self, prompt, schema=None, **kwargs):
-        user_msg = ""
-        if isinstance(prompt, list) and prompt and isinstance(prompt[-1], dict):
-            user_msg = str(prompt[-1].get("content", ""))
-        elif isinstance(prompt, str):
-            user_msg = prompt
-
-        if "管缆埋设" in user_msg or "pipeline_burial" in user_msg:
-            return {
-                "slot_candidates": [
-                    {
-                        "raw_key": "任务类型",
-                        "canonical_key": "task_type_key",
-                        "raw_value": "管缆埋设",
-                        "normalized_value": "pipeline_burial",
-                        "confidence": 0.95,
-                    }
-                ],
-                "unresolved": [],
-            }
-        if "采油树" in user_msg or "tree_valve_operation" in user_msg:
-            return {
-                "slot_candidates": [
-                    {
-                        "raw_key": "任务类型",
-                        "canonical_key": "task_type_key",
-                        "raw_value": "采油树控制面板插入",
-                        "normalized_value": "tree_valve_operation",
-                        "confidence": 0.95,
-                    }
-                ],
-                "unresolved": [],
-            }
-        if "管缆巡检" in user_msg or "pipeline_inspection" in user_msg:
-            return {
-                "slot_candidates": [
-                    {
-                        "raw_key": "任务类型",
-                        "canonical_key": "task_type_key",
-                        "raw_value": "管缆巡检",
-                        "normalized_value": "pipeline_inspection",
-                        "confidence": 0.95,
-                    }
-                ],
-                "unresolved": [],
-            }
-        return {"slot_candidates": [], "unresolved": []}
+        if self.operation != "WRITE":
+            return {"slot_candidates": [], "list_mutations": [], "unresolved": []}
+        task_name = self._TASK_NAMES[self.task_type_key]
+        return {
+            "slot_candidates": [
+                {
+                    "raw_key": "任务类型",
+                    "canonical_key": "task_type_key",
+                    "raw_value": task_name,
+                    "normalized_value": self.task_type_key,
+                    "confidence": 0.95,
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
 
 
-def create_dialogue_manager():
+def create_dialogue_manager(
+    task_type_key: str = "pipeline_inspection",
+    operation: str = "WRITE",
+):
     kb = KnowledgeBase()
-    llm = FakeLLM()
+    llm = FakeLLM(task_type_key=task_type_key, operation=operation)
     return DialogueManager(llm, kb)
+
+
+def _task_type_candidate(task_type_key: str) -> dict:
+    task_name = FakeLLM._TASK_NAMES[task_type_key]
+    return slot_candidate(
+        "task_type_key",
+        task_type_key,
+        raw_key="任务类型",
+        raw_value=task_name,
+    )
 
 
 def _worker_reserve_task_id(result_queue, prefix, date_text, width, tmp_dir):
@@ -421,68 +430,130 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         self.assertTrue(validate_task_intent(final_data, kb.task_schemas))
 
     def test_17_user_input_cannot_overwrite_task_id(self):
-        dm = create_dialogue_manager()
+        task_type = _task_type_candidate("pipeline_inspection")
+        candidate_attack = slot_candidate(
+            "task_id",
+            "FAKE-999",
+            raw_key="任务编号",
+            raw_value="FAKE-999",
+        )
+        official_attack = slot_candidate(
+            "task_id",
+            "PI-20260803-999",
+            raw_key="任务编号",
+            raw_value="PI-20260803-999",
+        )
+        llm = ScriptedLLM(
+            plans=[make_plan("WRITE") for _ in range(3)],
+            extractions=[
+                extraction_result(task_type),
+                extraction_result(task_type),
+                extraction_result(candidate_attack),
+                extraction_result(official_attack),
+            ],
+            default_reply="测试回复。",
+        )
+        dm = DialogueManager(llm, KnowledgeBase())
+
         dm.process("我要做管缆巡检")
-        tid1 = dm.task_state.get("task_id")
+        preview_slot = dm.slot_store.slots["task_id"]
+        preview_before = preview_slot.candidate_value
+        preview_snapshot = copy.deepcopy(dm.slot_store.export_snapshot())
+        preview_version = dm.slot_store.version
+
+        self.assertIsNotNone(preview_before)
+        self.assertEqual(preview_slot.status, "candidate")
+        self.assertEqual(preview_slot.source, "auto_preview")
+        self.assertIsNone(preview_slot.value)
 
         dm.process("把 task_id 改成 FAKE-999")
-        self.assertEqual(dm.task_state.get("task_id"), tid1)
+        self.assertEqual(dm.slot_store.version, preview_version)
+        self.assertEqual(dm.slot_store.export_snapshot(), preview_snapshot)
+        self.assertEqual(dm.slot_store.slots["task_id"].candidate_value, preview_before)
+        self.assertIsNone(dm.task_state.get("task_id"))
+        self.assertNotIn("FAKE-999", json.dumps(dm.slot_store.export_snapshot(), ensure_ascii=False))
 
-    def test_18_snapshot_restore_preserves_task_id(self):
-        dm = create_dialogue_manager()
-        dm.process("我要做管缆巡检")
-        tid1 = dm.task_state.get("task_id")
+        official_id = "PI-20260803-001"
+        new_slots, new_unresolved, expected_version = dm.slot_store.snapshot()
+        official_slot = new_slots["task_id"]
+        official_slot.value = official_id
+        official_slot.status = "valid"
+        official_slot.source = "auto_reserved"
+        official_slot.candidate_value = None
+        official_slot.raw_value = None
+        official_slot.validation_error = None
+        dm.slot_store.commit_transaction(
+            new_slots,
+            new_unresolved,
+            request_id="test_17_seed_official_id",
+            expected_version=expected_version,
+        )
+        dm._rebuild_cache()
+        official_snapshot = copy.deepcopy(dm.slot_store.export_snapshot())
+        official_version = dm.slot_store.version
 
-        snap = dm.slot_store.export_snapshot()
-
-        dm2 = create_dialogue_manager()
-        dm2.slot_store.restore_snapshot(snap)
-        self.assertEqual(dm2.slot_store.get_task_state().get("task_id"), tid1)
+        dm.process("把 task_id 改成 PI-20260803-999")
+        protected_slot = dm.slot_store.slots["task_id"]
+        self.assertEqual(dm.slot_store.version, official_version)
+        self.assertEqual(dm.slot_store.export_snapshot(), official_snapshot)
+        self.assertEqual(protected_slot.value, official_id)
+        self.assertEqual(protected_slot.status, "valid")
+        self.assertEqual(protected_slot.source, "auto_reserved")
+        self.assertIsNone(protected_slot.candidate_value)
+        self.assertEqual(dm.task_state.get("task_id"), official_id)
+        self.assertEqual(dm._last_built_json.get("task_id"), official_id)
+        self.assertNotIn("PI-20260803-999", json.dumps(dm.slot_store.export_snapshot(), ensure_ascii=False))
+        self.assertEqual(len(llm.classify_calls), 3)
+        self.assertEqual(len(llm.extract_calls), 4)
+        self.assertFalse(llm.plans)
+        self.assertFalse(llm.extractions)
 
     def test_19_category_modification_allowed_when_only_preview_exists(self):
-        """preview task_id (状态=candidate) 不应锁定任务类别。
-        只有正式预约 (status=valid, source=auto_reserved) 的 task_id 才锁定类别。
-        """
-        dm = create_dialogue_manager()
-        dm.process("新建管缆巡检任务")
-        # 草稿阶段： task_id 是 preview（candidate），不锁定类别
-        slot = dm.slot_store.slots.get("task_id")
-        self.assertIsNotNone(slot)
-        self.assertEqual(slot.status, "candidate", "preview 应为 candidate 状态")
-        preview_id = dm.task_id_preview
-        self.assertIsNotNone(preview_id, "dm.task_id_preview 应包含预览编号")
-        self.assertNotIn("task_id", dm._last_built_json)
-        self.assertTrue(preview_id.startswith("PI-"), f"预览编号前缀不匹配: {preview_id}")
-        # candidate 状态不锁定类别，不应触发 task_type_key.validation_error="任务编号已锁定"
-        err = dm.slot_store.slots.get("task_type_key") and dm.slot_store.slots["task_type_key"].validation_error
-        if err:
-            self.assertNotIn("任务编号已锁定", err, "preview 不应锁定类别")
+        """preview task_id 不锁定任务类别；显式 WRITE 修改后应刷新前缀。"""
+        initial_type = _task_type_candidate("pipeline_inspection")
+        replacement_type = _task_type_candidate("pipeline_burial")
+        llm = ScriptedLLM(
+            plans=[make_plan("WRITE"), make_plan("WRITE")],
+            extractions=[
+                extraction_result(initial_type),
+                extraction_result(initial_type),
+                extraction_result(replacement_type),
+            ],
+            default_reply="测试回复。",
+        )
+        dm = DialogueManager(llm, KnowledgeBase())
 
-    def test_20_publish_retry_preserves_task_id(self):
-        dm = create_dialogue_manager()
         dm.process("新建管缆巡检任务")
-        # 草稿阶段 task_id 在 dm.task_id_preview，不在 _last_built_json 或 task_state
-        tid1_preview = dm.task_id_preview
-        self.assertIsNotNone(tid1_preview, "dm.task_id_preview 应包含 preview task_id")
+        slot = dm.slot_store.slots["task_id"]
+        preview_before = dm.task_id_preview
+        self.assertEqual(slot.status, "candidate")
+        self.assertEqual(slot.source, "auto_preview")
+        self.assertIsNotNone(preview_before)
+        self.assertTrue(preview_before.startswith("PI-"))
         self.assertNotIn("task_id", dm._last_built_json)
 
-        dm.slot_store.slots["intent_id"] = Slot("intent_id", "TI2026080301", status="valid")
-        dm._last_built_json["intent_id"] = "TI2026080301"
-        dm.task_state["intent_id"] = "TI2026080301"
+        version_before = dm.slot_store.version
+        dm.process("改成管缆埋设任务")
 
-        def mock_publish_fail(*args, **kwargs):
-            raise RuntimeError("Disk write failed")
-
-        with patch("src.dialogue_manager.TaskIntentBuilder.publish_staging", side_effect=mock_publish_fail):
-            dm.phase = "confirming"
-            reply = dm._handle_final_publish_confirmation("确认发布", "req_test")
-            self.assertTrue("发布" in reply or dm.phase != "done")
-            # 发布失败后，task_id 应恢复到 candidate 状态（preview）
-            # 正式预约的编号成为空洞，不得重用
-            post_slot = dm.slot_store.slots.get("task_id")
-            if post_slot and post_slot.status == "valid":
-                # 如果回滚后是 valid，编号必须与发布前预览一致（回滚应恢复快照）
-                self.assertEqual(dm.task_state.get("task_id"), post_slot.value)
+        updated_type = dm.slot_store.slots["task_type_key"]
+        updated_preview = dm.slot_store.slots["task_id"]
+        self.assertGreater(dm.slot_store.version, version_before)
+        self.assertEqual(updated_type.value, "pipeline_burial")
+        self.assertEqual(updated_type.status, "valid")
+        self.assertIsNone(updated_type.validation_error)
+        self.assertEqual(updated_preview.status, "candidate")
+        self.assertEqual(updated_preview.source, "auto_preview")
+        self.assertIsNone(updated_preview.value)
+        self.assertTrue(updated_preview.candidate_value.startswith("PB-"))
+        self.assertEqual(dm.task_id_preview, updated_preview.candidate_value)
+        self.assertNotEqual(dm.task_id_preview, preview_before)
+        self.assertIsNone(dm.task_state.get("task_id"))
+        self.assertEqual(dm.task_state.get("task_type_key"), "pipeline_burial")
+        self.assertEqual(dm.task_state, dm.slot_store.get_task_state())
+        self.assertEqual(len(llm.classify_calls), 2)
+        self.assertEqual(len(llm.extract_calls), 3)
+        self.assertFalse(llm.plans)
+        self.assertFalse(llm.extractions)
 
     def test_21_whitelist_disk_scan_excludes_unregistered_filenames(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -519,12 +590,52 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
                 self.assertEqual(tid, "PI-20260803-003")
 
     def test_23_general_chat_does_not_generate_task_id(self):
-        dm = create_dialogue_manager()
-        dm.process("你好，请问你是谁？")
-        self.assertIsNone(dm.task_state.get("task_id"))
+        llm = ScriptedLLM(
+            plans=[
+                make_plan("READ", query_intent="GENERAL_CHAT"),
+                make_plan(
+                    "READ",
+                    query_intent="DEVICE_CAPABILITY",
+                    subject_type="device",
+                    subject_text="深海勇士号",
+                    relation="capabilities",
+                    source_policy="project_kb",
+                ),
+            ],
+            replies=["今天天气确实不错。", "测试设备能力回复。"],
+        )
+        dm = DialogueManager(llm, KnowledgeBase())
 
-        dm.process("深海勇士号的最大作业水深是多少？")
-        self.assertIsNone(dm.task_state.get("task_id"))
+        for message in ("今天天气不错。", "深海勇士号的最大作业水深是多少？"):
+            version_before = dm.slot_store.version
+            snapshot_before = copy.deepcopy(dm.slot_store.export_snapshot())
+            unresolved_before = copy.deepcopy(dm.slot_store.unresolved)
+            state_before = copy.deepcopy(dm.task_state)
+            built_before = copy.deepcopy(dm._last_built_json)
+            missing_before = copy.deepcopy(dm._last_missing)
+            phase_before = dm.phase
+            mode_before = dm.mode
+            rov_before = copy.deepcopy(dm._pending_rov_candidates)
+            extract_calls_before = len(llm.extract_calls)
+
+            reply = dm.process(message)
+
+            self.assertTrue(reply)
+            self.assertEqual(dm.slot_store.version, version_before)
+            self.assertEqual(dm.slot_store.export_snapshot(), snapshot_before)
+            self.assertEqual(dm.slot_store.unresolved, unresolved_before)
+            self.assertEqual(dm.task_state, state_before)
+            self.assertEqual(dm._last_built_json, built_before)
+            self.assertEqual(dm._last_missing, missing_before)
+            self.assertEqual(dm.phase, phase_before)
+            self.assertEqual(dm.mode, mode_before)
+            self.assertEqual(dm._pending_rov_candidates, rov_before)
+            self.assertEqual(len(llm.extract_calls), extract_calls_before)
+            self.assertIsNone(dm.task_state.get("task_id"))
+
+        self.assertEqual(len(llm.classify_calls), 2)
+        self.assertEqual(len(llm.extract_calls), 0)
+        self.assertFalse(llm.plans)
 
     def test_24_asr_input_task_id_behavior(self):
         import io
@@ -532,7 +643,15 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         client = web_backend.app.test_client()
 
         kb = KnowledgeBase()
-        llm = FakeLLM()
+        task_type = _task_type_candidate("pipeline_burial")
+        llm = ScriptedLLM(
+            plans=[make_plan("WRITE")],
+            extractions=[
+                extraction_result(task_type),
+                extraction_result(task_type),
+            ],
+            default_reply="已接收到您的任务请求。",
+        )
         mock_asr = MagicMock()
         mock_asr.transcribe_file.return_value = {
             "text": "新建管缆埋设任务",
@@ -542,25 +661,52 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
             "device": "cpu",
             "elapsed_ms": 10,
             "segments": [],
-            "entities": []
+            "entities": [],
         }
+        session_id = "sess_asr_issue11"
 
-        with patch("web_backend._shared_asr", mock_asr), \
-             patch("web_backend._shared_kb", kb), \
-             patch("web_backend._shared_llm", llm):
-            data_file = (io.BytesIO(b"dummy audio"), "test.wav")
-            res_asr = client.post("/api/asr", data={"audio": data_file}, content_type="multipart/form-data")
-            self.assertEqual(res_asr.status_code, 200)
-            corrected_text = res_asr.get_json().get("corrected_text")
-            self.assertEqual(corrected_text, "新建管缆埋设任务")
+        def clear_test_session():
+            with web_backend._sessions_lock:
+                web_backend._sessions_manager.pop(session_id, None)
 
-            res_chat = client.post("/api/chat", json={"session_id": "sess_asr_issue11", "message": corrected_text})
-            self.assertEqual(res_chat.status_code, 200)
-            data = res_chat.get_json()
-            self.assertIn("task_id_preview", data)
-            self.assertIsNotNone(data["task_id_preview"])
-            self.assertTrue(data["task_id_preview"].startswith("PB-"))
-            self.assertIsNone(data.get("task_id"))
+        clear_test_session()
+        try:
+            with patch("web_backend._shared_asr", mock_asr), \
+                 patch("web_backend._shared_kb", kb), \
+                 patch("web_backend._shared_llm", llm):
+                data_file = (io.BytesIO(b"dummy audio"), "test.wav")
+                res_asr = client.post("/api/asr", data={"audio": data_file}, content_type="multipart/form-data")
+                self.assertEqual(res_asr.status_code, 200)
+                corrected_text = res_asr.get_json().get("corrected_text")
+                self.assertEqual(corrected_text, "新建管缆埋设任务")
+                mock_asr.transcribe_file.assert_called_once()
+
+                res_chat = client.post("/api/chat", json={"session_id": session_id, "message": corrected_text})
+                self.assertEqual(res_chat.status_code, 200)
+                data = res_chat.get_json()
+                self.assertIn("task_id_preview", data)
+                self.assertIsNotNone(data["task_id_preview"])
+                self.assertTrue(data["task_id_preview"].startswith("PB-"))
+                self.assertIsNone(data.get("task_id"))
+
+                with web_backend._sessions_lock:
+                    session_dm = web_backend._sessions_manager[session_id]
+                task_type_slot = session_dm.slot_store.slots["task_type_key"]
+                task_id_slot = session_dm.slot_store.slots["task_id"]
+                self.assertGreater(session_dm.slot_store.version, 0)
+                self.assertEqual(task_type_slot.value, "pipeline_burial")
+                self.assertEqual(task_type_slot.status, "valid")
+                self.assertEqual(task_id_slot.status, "candidate")
+                self.assertEqual(task_id_slot.source, "auto_preview")
+                self.assertIsNone(task_id_slot.value)
+                self.assertEqual(task_id_slot.candidate_value, data["task_id_preview"])
+                self.assertEqual(session_dm.task_state, session_dm.slot_store.get_task_state())
+                self.assertEqual(len(llm.classify_calls), 1)
+                self.assertEqual(len(llm.extract_calls), 2)
+                self.assertFalse(llm.plans)
+                self.assertFalse(llm.extractions)
+        finally:
+            clear_test_session()
 
     def test_25_directory_fsync_failure_raises_id_reservation_error(self):
         real_fsync = os.fsync
@@ -588,32 +734,73 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
     def test_26_internal_id_is_uuid_and_immutable(self):
         import uuid
         from src.task_intent_builder import validate_uuid4
-        dm = create_dialogue_manager()
+
+        task_type = _task_type_candidate("pipeline_inspection")
+        llm = ScriptedLLM(
+            plans=[make_plan("WRITE") for _ in range(4)],
+            extractions=[
+                extraction_result(task_type),
+                extraction_result(task_type),
+                extraction_result(task_type),
+                extraction_result(
+                    slot_candidate(
+                        "water_depth",
+                        300.0,
+                        raw_key="水深",
+                        raw_value="300米",
+                    )
+                ),
+                extraction_result(
+                    slot_candidate(
+                        "internal_id",
+                        "12345678-1234-4234-8234-1234567890ab",
+                        raw_key="内部编号",
+                        raw_value="12345678-1234-4234-8234-1234567890ab",
+                    )
+                ),
+            ],
+            default_reply="测试回复。",
+        )
+        dm = DialogueManager(llm, KnowledgeBase())
+
         dm.process("我要做管缆巡检")
         internal_id = dm.task_state.get("internal_id")
         self.assertIsNotNone(internal_id)
         self.assertTrue(validate_uuid4(internal_id))
 
-        # Re-confirming same category preserves exact same internal_id
         dm.process("任务类型还是管缆巡检")
         self.assertEqual(dm.task_state.get("internal_id"), internal_id)
 
-        # Confirm internal_id is preserved on update and distinct from task_id
+        version_before_depth = dm.slot_store.version
         dm.process("水深设置为 300 米")
+        self.assertGreater(dm.slot_store.version, version_before_depth)
+        self.assertEqual(dm.task_state.get("water_depth"), 300.0)
         self.assertEqual(dm.task_state.get("internal_id"), internal_id)
         self.assertNotEqual(dm.task_state.get("internal_id"), dm.task_state.get("task_id"))
+        self.assertEqual(dm.task_state, dm.slot_store.get_task_state())
 
-        # User input attempting to set internal_id cannot overwrite it
+        state_before_attack = copy.deepcopy(dm.task_state)
+        snapshot_before_attack = copy.deepcopy(dm.slot_store.export_snapshot())
+        version_before_attack = dm.slot_store.version
         dm.process("把 internal_id 改成 12345678-1234-4234-8234-1234567890ab")
+        self.assertEqual(dm.slot_store.version, version_before_attack)
+        self.assertEqual(dm.slot_store.export_snapshot(), snapshot_before_attack)
+        self.assertEqual(dm.task_state, state_before_attack)
         self.assertEqual(dm.task_state.get("internal_id"), internal_id)
+        self.assertNotIn(
+            "12345678-1234-4234-8234-1234567890ab",
+            json.dumps(dm.slot_store.export_snapshot(), ensure_ascii=False),
+        )
+        self.assertEqual(len(llm.classify_calls), 4)
+        self.assertEqual(len(llm.extract_calls), 5)
+        self.assertFalse(llm.plans)
+        self.assertFalse(llm.extractions)
 
-        # prepare without internal_id must fail closed
         kb = KnowledgeBase()
         ti_builder = TaskIntentBuilder(kb)
         with self.assertRaises(TaskPersistenceError):
             ti_builder.prepare({"task_id": "PI-20260803-001"}, {"task_id": "PI-20260803-001"}, "normal", "pipeline_inspection")
 
-        # Non-UUIDv4 (e.g. UUIDv1) must be rejected
         v1_uuid = str(uuid.uuid1())
         self.assertFalse(validate_uuid4(v1_uuid))
         with self.assertRaises(TaskPersistenceError):
@@ -1114,19 +1301,20 @@ class TestPreviewReserve(unittest.TestCase):
         self.assertIn("task_id", str(cm.exception), "应明确说明缺少正式 task_id")
 
     # ──────────────────────────────────────────────────────
-    # Test 38: 发布失败后不重复编号（允许空洞）
+    # Test 38: 连续正式预约必须消耗并递增序号
     # ──────────────────────────────────────────────────────
-    def test_38_publish_failure_creates_gap_not_reuse(self):
-        """reserve 001 后 publish 失败，下次 reserve 应返回 002，不得回退到 001。"""
+    def test_38_consecutive_reservations_advance_sequence_without_reuse(self):
+        """每次正式 reserve 都消耗序号；连续预约必须返回 001、002。"""
         date = get_business_date().strftime("%Y%m%d")
         prefixes = ["PI", "PB", "CT"]
         specs = ()
 
         r1 = next_daily_task_id("PI", date, 3, specs, prefixes)
-        self.assertTrue(r1.endswith("-001"))
+        self.assertEqual(r1, f"PI-{date}-001")
 
         r2 = next_daily_task_id("PI", date, 3, specs, prefixes)
-        self.assertTrue(r2.endswith("-002"), "发布失败后序号必须跳过（空洞），不得重用")
+        self.assertEqual(r2, f"PI-{date}-002")
+        self.assertNotEqual(r1, r2)
 
     # ──────────────────────────────────────────────────────
     # Test 39: 真实全链 5 路 SSOT 零误差一致性测试
@@ -1242,9 +1430,13 @@ class TestPreviewReserve(unittest.TestCase):
             missing_before = copy.deepcopy(dm._last_missing)
             hist_before = copy.deepcopy(dm.conversation_history)
 
-            with patch("src.task_intent_builder.TaskIntentBuilder.prepare", side_effect=TaskPersistenceError("Mock prepare error")):
+            with patch(
+                "src.task_intent_builder.TaskIntentBuilder.prepare",
+                side_effect=TaskPersistenceError("Mock prepare error"),
+            ) as mock_prepare:
                 with self.assertRaises(TaskPersistenceError):
                     dm._handle_final_publish_confirmation("确认发布", "req_41")
+                mock_prepare.assert_called_once()
 
             self.assertEqual(dm.phase, "confirming", "phase 应完全回滚")
             self.assertIsNone(dm.final_result, "final_result 应为 None")
@@ -1286,9 +1478,13 @@ class TestPreviewReserve(unittest.TestCase):
             missing_before = copy.deepcopy(dm._last_missing)
             hist_before = copy.deepcopy(dm.conversation_history)
 
-            with patch("src.task_intent_builder.TaskIntentBuilder.create_staging", side_effect=TaskPersistenceError("Mock staging error")):
+            with patch(
+                "src.task_intent_builder.TaskIntentBuilder.create_staging",
+                side_effect=TaskPersistenceError("Mock staging error"),
+            ) as mock_create_staging:
                 with self.assertRaises(TaskPersistenceError):
                     dm._handle_final_publish_confirmation("确认发布", "req_42")
+                mock_create_staging.assert_called_once()
 
             self.assertEqual(dm.phase, "confirming")
             self.assertIsNone(dm.final_result)
@@ -1329,9 +1525,13 @@ class TestPreviewReserve(unittest.TestCase):
             missing_before = copy.deepcopy(dm._last_missing)
             hist_before = copy.deepcopy(dm.conversation_history)
 
-            with patch("src.task_intent_builder.TaskIntentBuilder.publish_staging", side_effect=TaskPersistenceError("Mock publish error")):
+            with patch(
+                "src.task_intent_builder.TaskIntentBuilder.publish_staging",
+                side_effect=TaskPersistenceError("Mock publish error"),
+            ) as mock_publish_staging:
                 with self.assertRaises(TaskPersistenceError):
                     dm._handle_final_publish_confirmation("确认发布", "req_43")
+                mock_publish_staging.assert_called_once()
 
             self.assertEqual(dm.phase, "confirming")
             self.assertIsNone(dm.final_result)

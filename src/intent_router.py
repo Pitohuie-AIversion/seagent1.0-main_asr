@@ -62,6 +62,9 @@ operation 只能是：
 不要依赖固定句式。需要理解省略、指代、对上一轮建议的接受、任务中途闲聊，以及
 同一句中的问答和修改。已有任务或 expected_slots 不代表本轮一定要写入；反过来，
 自然表达没有出现字段名也不代表不能写入。
+询问推荐本身属于 READ，不得因为问题中出现任务字段或“选择”语义就修改任务；
+接受上一轮助手明确给出的单一推荐才属于 WRITE。若上一轮只是并列介绍多个候选、
+没有明确推荐，且用户本轮也未指明选择，必须 CLARIFY，不能替用户猜测。
 
 必须输出全部字段：
 {
@@ -76,12 +79,31 @@ operation 只能是：
   "needs_clarification": false,
   "clarification_reason": "string|null",
   "emergency_action": "stop|pause|abort|cancel|null",
+  "pending_action": "confirm|reject|null",
+  "warning_action": "acknowledge|null",
   "confidence": 0.0,
   "reason_code": "short_machine_readable_code"
 }
 
 一致性要求：READ/CLARIFY 使用 knowledge_qa；WRITE 使用 task_collection；CONTROL
-使用 emergency_intervention 且必须给出 emergency_action。只能输出 JSON。
+使用 emergency_intervention 且必须给出 emergency_action。
+当上下文含 pending_oilfield 时，确认或拒绝该候选都属于 WRITE，并分别设置
+pending_action=confirm 或 reject；其他轮次必须为 null。候选选择写入 subject_text，
+代码只执行经过协议校验的动作。
+当 phase=blocked_soft 且用户明确表示理解并接受当前软警告时，使用 WRITE 并设置
+warning_action=acknowledge；这不是紧急控制指令，此时 dialogue_mode 必须为
+task_collection，emergency_action 必须为 null，pending_action 必须为 null。
+“忽略软警告”“接受风险后继续”绝不能解释成 stop、pause、abort 或 cancel。
+例如 blocked_soft 下“忽略当前全部软警告”的关键字段必须是：
+{"operation":"WRITE","dialogue_mode":"task_collection",
+ "emergency_action":null,"pending_action":null,"warning_action":"acknowledge"}。
+询问、解释、比较风险不等于接受风险；“顺便说说风险”“有什么风险”都必须令
+warning_action=null。同一轮只要还包含任何任务参数新增、修改或删除，也必须令
+warning_action=null，先按普通 WRITE 抽取并校验修改；因为参数变化会使旧警告及
+其确认指纹失效。只有用户本轮唯一任务副作用是接受当前已展示的软警告时，才设置
+warning_action=acknowledge。
+不处于 blocked_soft 或未明确接受风险时 warning_action 必须为 null。
+只能输出 JSON。
 """
 
 
@@ -246,6 +268,16 @@ class IntentRouter:
             "task_type": task_state.get("task_type"),
             "task_type_key": task_state.get("task_type_key"),
             "expected_slots": expected_slots,
+            "pending_oilfield": {
+                "name": task_state.get("pending_oilfield_name"),
+                "candidates": [
+                    item.get("name")
+                    for item in task_state.get("pending_oilfield_candidates", [])
+                    if isinstance(item, dict) and item.get("name")
+                ],
+            }
+            if task_state.get("pending_oilfield_name")
+            else None,
             "filled_slots": {
                 key: value
                 for key, value in (task_state or {}).items()

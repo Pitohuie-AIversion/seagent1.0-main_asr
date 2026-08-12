@@ -113,9 +113,11 @@ FIELD_LABELS = {
     "start_point":         "起始点经纬度",
     "end_point":           "结束点经纬度",
     "water_depth":         "水深（米）",
+    "equipment_class":     "机器人类别",
     "equipment_family":    "机器人系列",
     "equipment_type":      "设备型号",
     "equipment_name":      "设备全称",
+    "equipment_unit_id":   "具体机器人编号",
     "payload":             "携带工具",
     "support_vessel":      "支持船编号",
     "oilfield_name":       "油田名称",
@@ -392,7 +394,7 @@ class DialogueManager:
         query_intent = route.query_intent
 
         if query_intent in ("TOOL_QUERY", "DEVICE_CAPABILITY", "KNOWLEDGE_QA"):
-            reply = self._handle_knowledge_query(user_message, route)
+            reply = self._handle_knowledge_query(user_message, route, request_id)
         elif query_intent in ("TASK_STATUS", "DEVICE_STATUS", "ENVIRONMENT_QUERY"):
             reply = self._handle_status_query(user_message, route)
         elif query_intent in ("GENERAL_CHAT", "CLARIFICATION"):
@@ -505,7 +507,26 @@ class DialogueManager:
             "user_requirements": self.slot_store.get_built_json(),
             "missing_slots": [m.get("label") for m in self._last_missing if isinstance(m, dict)],
         }
+        plan = route.interaction_plan
+        if plan is not None:
+            context.update({
+                "subject_type": plan.subject_type,
+                "subject_text": plan.subject_text,
+                "relation": plan.relation,
+                "source_policy": plan.source_policy,
+            })
         kb_evidence = self.kb.execute_typed_query(route.query_intent, user_message, context=context)
+        logger.info(
+            "[KNOWLEDGE_QUERY] request_id=%s requested=%s effective=%s "
+            "subject_type=%s subject_text=%r matched_entity=%s found=%s",
+            request_id,
+            route.query_intent,
+            kb_evidence.get("query_type"),
+            context.get("subject_type"),
+            context.get("subject_text"),
+            kb_evidence.get("matched_entity"),
+            kb_evidence.get("found"),
+        )
         if not kb_evidence.get("found"):
             reason = kb_evidence.get("reason")
             if reason == "device_not_resolved":
@@ -778,33 +799,34 @@ class DialogueManager:
             else:
                 self._transition_phase("collecting", reason="task_type_missing")
 
-        # 生成回复
-        knowledge_context = self.kb.get_context_for_state(self.task_state)
-        built = self._last_built_json
-        missing = self._last_missing
-        constraint_context = {"type": "none", "violations": [], "hard_refusal_counts": {}}
         if remaining_hard:
-            constraint_context = {"type": "hard", "violations": remaining_hard, "hard_refusal_counts": {}}
+            reply = (
+                "未能继续：重新校验发现硬约束，软警告确认不能绕过硬约束。"
+                "任务尚未发布，请先修改相关参数。"
+            )
         elif remaining_soft:
-            constraint_context = {"type": "soft", "violations": remaining_soft, "hard_refusal_counts": {}}
-
-        messages = build_responder_messages(
-            task_state=self.task_state,
-            built_json=built,
-            missing_fields=missing,
-            mode=self.mode,
-            phase=self.phase,
-            knowledge_context=knowledge_context,
-            constraint_context=constraint_context,
-            conversation_history=self.conversation_history,
-            latest_user_message=user_message,
-            ROV2type=self.kb.ROV2type,
-            support_task=self.kb.get_supported_task(),
-            slot_snapshot=self.slot_store.get_slot_snapshot(),
-        )
-        reply = self._safe_llm_chat(messages, temperature=0.7, max_tokens=1500, role=ModelRole.TASK_RESPONDER)
-        reply = self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
-        reply = self._ensure_constraint_details(reply, constraint_context)
+            reply = (
+                "已记录可忽略软警告的确认，但仍有未确认的软警告。"
+                "任务保持阻断且尚未发布。"
+            )
+        elif self.phase == "confirming":
+            reply = (
+                "已记录您对当前软警告的确认。任务尚未发布；"
+                "所有必填字段已完整，如确认无误，请回复“确认发布”。"
+            )
+        else:
+            labels = [
+                item.get("label") or item.get("key")
+                for item in self._last_missing
+                if isinstance(item, dict) and (item.get("label") or item.get("key"))
+            ]
+            missing_text = "、".join(labels)
+            suffix = (
+                f"请继续补充：{missing_text}。"
+                if missing_text
+                else "请继续补充任务信息。"
+            )
+            reply = f"已记录您对当前软警告的确认。任务尚未发布；{suffix}"
 
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": reply})
@@ -1161,29 +1183,18 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
-        pending_reply = self._resolve_pending_oilfield_confirmation(user_message, request_id=request_id)
-        if pending_reply is not None:
-            self._switch_dialogue_mode("task_collection", source="user_confirmation", reason="待确认油田消解")
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.conversation_history.append({"role": "assistant", "content": pending_reply})
-            return pending_reply
-
-        # 控制动作由 DialogueManager 当前阶段处理，不再交给 IntentRouter 判断。
+        # 发布确认是安全边界；软警告语义由结构化 InteractionPlan 决定。
         if self.phase == "blocked_hard" and (
             self._is_confirmation_only(user_message)
-            or self._is_soft_warning_acknowledgement(user_message)
             or self._is_final_publish_confirmation(user_message)
         ):
             return self._reject_hard_constraint_bypass(user_message)
 
-        if self.phase == "blocked_soft":
-            if self._is_soft_warning_acknowledgement(user_message):
-                return self._handle_task_confirm(user_message, request_id)
-            elif self._is_final_publish_confirmation(user_message) or self._is_confirmation_only(user_message):
-                reply = "当前仍存在软警告。请先修改相关参数，或明确回复‘忽略警告’后继续。"
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
+        if self.phase == "blocked_soft" and self._is_final_publish_confirmation(user_message):
+            reply = "当前仍存在软警告。请先修改相关参数，或明确接受当前软警告后继续。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
 
         if self.phase == "confirming":
             if self._is_final_publish_confirmation(user_message):
@@ -1215,6 +1226,30 @@ class DialogueManager:
             confidence=route.confidence,
             reason=route.reason,
         )
+
+        plan = route.interaction_plan
+        if plan and plan.warning_action == "acknowledge":
+            if self.phase == "blocked_hard":
+                return self._reject_hard_constraint_bypass(user_message)
+            # warning_action 是 WRITE 中的次级副作用，不能在字段抽取前抢占整轮。
+            # 真实模型可能把“补充参数后继续”同时误标成 acknowledge；执行器必须
+            # 先尝试提取并校验字段，只有没有任何任务候选时才执行警告确认。
+
+        pending_reply = self._resolve_pending_oilfield_confirmation(
+            user_message,
+            request_id=request_id,
+            pending_action=plan.pending_action if plan else None,
+            subject_text=plan.subject_text if plan else None,
+        )
+        if pending_reply is not None:
+            self._switch_dialogue_mode(
+                "task_collection",
+                source="interaction_plan",
+                reason="结构化待确认油田消解",
+            )
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": pending_reply})
+            return pending_reply
 
         if route.dialogue_mode == "emergency_intervention":
             return self._handle_emergency_intervention(user_message, route, request_id)
@@ -1269,32 +1304,38 @@ class DialogueManager:
                     new_unresolved.append(item)
 
         def reply_write_without_candidates() -> str:
-            """Stage1 提取失败：引导用户明确选择支持的任务类型。"""
-            supported = self.kb.get_all_task_type_values()
-            supported_str = "、".join(supported) if supported else "管缆巡检、管缆埋设、采油树控制面板插入/拔出"
-            # 通过 Responder LLM 生成自然的引导回复，避免冷硬错误提示
-            guide_messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是一个专业的水下多智能体任务决策大模型。"
-                        "用户希望创建任务，但系统暂时无法识别任务类型。"
-                        f"当前系统支持的任务类型有：{supported_str}。"
-                        "请友好、简洁地引导用户明确说明想要进行哪种具体任务类型，"
-                        "并列出所有支持的任务类型供用户选择。不要透露底座模型或实现细节。"
-                    ),
-                },
-                *self.conversation_history[-4:],
-                {"role": "user", "content": user_message},
-            ]
-            try:
-                reply = self._safe_llm_chat(guide_messages, temperature=0.5, max_tokens=300, role=ModelRole.TASK_RESPONDER)
-                reply = self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
-            except Exception:
-                reply = (
-                    f"您好！请问您想进行哪种水下作业任务？"
-                    f"当前系统支持：{supported_str}。请告知具体任务类型，我将帮您进一步填写参数。"
+            """依据事务结果回复，禁止模型在零提交时声称写入成功。"""
+            if plan and plan.warning_action == "acknowledge":
+                self._switch_dialogue_mode(
+                    "task_collection",
+                    source="interaction_plan",
+                    reason="无任务候选时执行结构化软警告确认",
                 )
+                if self.phase == "blocked_soft":
+                    return self._handle_soft_warning_confirmation(
+                        user_message,
+                        request_id,
+                    )
+                reply = (
+                    "当前没有等待确认的软警告，未执行忽略操作。"
+                    "任务状态和已填写参数均未改变。"
+                )
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
+
+            unresolved = list(turn_unresolved)
+            if not unresolved:
+                unresolved.append("模型没有返回可验证的任务字段候选")
+            reply = self._ground_write_reply(
+                "",
+                accepted_updates={},
+                unresolved_inputs=unresolved,
+            )
+            if task_type_key is None:
+                supported = self.kb.get_all_task_type_values()
+                if supported:
+                    reply += " 当前支持的任务类型：" + "、".join(supported) + "。"
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
@@ -1307,6 +1348,9 @@ class DialogueManager:
                 task_type_map=self.kb.get_task_type_map(),
                 required=None,
                 conversation_history=self.conversation_history,
+                allow_empty_for_side_effect=bool(
+                    plan and plan.warning_action == "acknowledge"
+                ),
             )
 
             if is_task_patch_v2_enabled():
@@ -1379,6 +1423,9 @@ class DialogueManager:
                 required=required_field_defs,
                 ROV2type=self.kb.ROV2type,
                 conversation_history=self.conversation_history,
+                allow_empty_for_side_effect=bool(
+                    plan and plan.warning_action == "acknowledge"
+                ),
             )
 
             if task_patch_v2_active:
@@ -1644,6 +1691,17 @@ class DialogueManager:
                     allow_overwrite=had_task_type_key_at_turn_start,
                 )
 
+            for key in stage2_updates:
+                slot = new_slots.get(key)
+                if (
+                    slot
+                    and slot.status in ("invalid", "conflict")
+                    and slot.validation_error
+                ):
+                    detail = f"{FIELD_LABELS.get(key, key)}：{slot.validation_error}"
+                    if detail not in turn_unresolved:
+                        turn_unresolved.append(detail)
+
             if "rov_description" in stage2_updates:
                 all_rovs = self.kb.get_all_rovs()
                 proposed_pending_rov = self.extractor.resolve_rov_description(
@@ -1823,21 +1881,6 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": pending_oilfield_reply})
             return pending_oilfield_reply
 
-        # 处理软约束忽略（blocked_soft阶段）
-        if self.phase == "blocked_soft":
-            user_ignore = self._is_soft_warning_acknowledgement(user_message)
-            if self._blocking_violations:
-                soft_related_fields = set()
-                for v in self._blocking_violations:
-                    soft_related_fields.update(v.related_fields)
-                if user_ignore and not (soft_related_fields & changed_fields):
-                    for v in self._blocking_violations:
-                        for f in v.related_fields:
-                            val = self.task_state.get(f)
-                            if val is not None:
-                                self._soft_whitelist.add((f, str(val), v.constraint_id))
-                    self._transition_phase("collecting", reason="soft_warning_acknowledged")
-                    self._blocking_violations = []
 
         # 约束检查
         ALL_FIELDS = {"task_type", "start_time", "end_time", "cable_position", "cable_type", "start_point", "end_point",
@@ -1853,6 +1896,18 @@ class DialogueManager:
             constraint_context = self._run_constraint_check(ALL_FIELDS)
         else:
             constraint_context = self._run_constraint_check(changed_fields)
+
+        # 约束处理可能把 blocked_soft/blocked_hard 解除为 collecting。若此时
+        # 必填字段已经齐全，必须继续完成本轮状态收敛，不能停在“无缺失但仍收集”。
+        if (
+            not missing
+            and self.phase == "collecting"
+            and constraint_context.get("type") == "none"
+        ):
+            self._transition_phase(
+                "confirming",
+                reason="constraints_resolved_and_required_slots_complete",
+            )
 
         # 知识上下文
         knowledge_context = self.kb.get_context_for_state(self.task_state)
@@ -1884,6 +1939,10 @@ class DialogueManager:
             reply,
             accepted_updates=accepted_updates,
             unresolved_inputs=turn_unresolved,
+            missing_fields=missing,
+            display_updates=self._get_committed_update_display_values(
+                accepted_updates
+            ),
         )
         reply = self._ensure_constraint_details(reply, constraint_context)
 
@@ -1907,20 +1966,57 @@ class DialogueManager:
         *,
         accepted_updates: dict,
         unresolved_inputs: list,
+        missing_fields: list[dict] | None = None,
+        display_updates: dict | None = None,
     ) -> str:
         """保证 WRITE 回复不会把未提交候选描述成已写入事实。
 
-        有真实提交时保留模型回复；没有真实提交时不信任任何自然语言成功声明，
-        直接返回由事务结果生成的确定性说明。这里不分析原句或回复关键词。
+        写入回执完全由 SlotStore 事务结果生成，不分析原句或模型回复关键词。
+        ``model_reply`` 仅保留兼容签名；不能作为字段写入事实来源。
         """
-        if accepted_updates:
-            return model_reply
+        del model_reply
 
-        reply = "本轮没有任务字段通过验证，因此未写入任务状态。"
         unresolved = [str(item) for item in unresolved_inputs if str(item).strip()]
+        if accepted_updates:
+            committed = []
+            for key, value in accepted_updates.items():
+                label = FIELD_LABELS.get(key, key)
+                value = (display_updates or {}).get(key, value)
+                if isinstance(value, (dict, list)):
+                    rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                else:
+                    rendered = str(value)
+                committed.append(f"{label}={rendered}")
+            reply = "已写入本轮通过验证的字段：" + "；".join(committed) + "。"
+        else:
+            reply = "本轮没有任务字段通过验证，因此未写入任务状态。"
+
         if unresolved:
-            reply += " 尚未解析的内容：" + "；".join(unresolved) + "。"
+            reply += " 未写入或仍需确认的内容：" + "；".join(unresolved) + "。"
+
+        if missing_fields is not None:
+            labels = [
+                str(item.get("label") or item.get("key"))
+                for item in missing_fields
+                if isinstance(item, dict) and (item.get("label") or item.get("key"))
+            ]
+            if labels:
+                reply += " 仍需补充：" + "、".join(labels) + "。"
+            elif accepted_updates:
+                reply += " 所有必填字段已收集完成，任务尚未发布。"
         return reply
+
+    def _get_committed_update_display_values(self, accepted_updates: dict) -> dict:
+        """从领域配置生成写入回执的展示值，不改变 SlotStore 标准值。"""
+        display = dict(accepted_updates)
+        equipment_class = accepted_updates.get("equipment_class")
+        if equipment_class is not None:
+            class_config = self.kb.get_robot_classes().get(str(equipment_class), {})
+            display["equipment_class"] = class_config.get(
+                "full_name",
+                equipment_class,
+            )
+        return display
 
     def _get_committed_turn_updates(
         self,
@@ -1935,6 +2031,7 @@ class DialogueManager:
             "task_id",
             "intent_id",
             "internal_id",
+            "task_type_key",
             "emergency_mode",
             "rov_description",
             "pending_oilfield_candidates",
@@ -2061,6 +2158,8 @@ class DialogueManager:
             "equipment_unit_id",
         }
         passthrough_keys = {
+            "task_type",
+            "task_type_key",
             "emergency_mode",
             "rov_description",
             "oilfield_name",
@@ -3253,11 +3352,15 @@ class DialogueManager:
         self,
         user_message: str,
         request_id: str = "req_default",
+        pending_action: str | None = None,
+        subject_text: str | None = None,
     ) -> str | None:
         pending_slot = self.slot_store.slots.get("pending_oilfield_name")
         if not pending_slot or not pending_slot.value or pending_slot.status != "valid":
             return None
-        if self._user_cancelled_oilfield(user_message):
+        if pending_action == "reject" or (
+            pending_action is None and self._user_cancelled_oilfield(user_message)
+        ):
             oil_slot = self.slot_store.slots.get("oilfield_name")
             clear_oil = ("oilfield_name", "oilfield_entity_id") if (not oil_slot or oil_slot.status != "valid") else ()
             self._commit_internal_slot_values(
@@ -3272,10 +3375,12 @@ class DialogueManager:
             return "已取消当前待确认油田名称，请提供标准的油田名称（例如：流花11-1油田、陵水17-2油田等），或补充油田坐标。"
 
 
-        if not self._user_confirmed_oilfield(user_message):
+        if pending_action not in {"confirm", None}:
+            return None
+        if pending_action is None and not self._user_confirmed_oilfield(user_message):
             return None
 
-        candidate = self._top_pending_oilfield_candidate(user_message)
+        candidate = self._top_pending_oilfield_candidate(subject_text or user_message)
         if not candidate:
             return self._build_pending_oilfield_reply()
 
@@ -3576,10 +3681,23 @@ class DialogueManager:
 
         curr_fp = getattr(res, "validation_fingerprint", None)
         state_snap = getattr(res, "state_snapshot", None)
-        curr_state_ver = state_snap.get("state_version") if isinstance(state_snap, dict) else None
-        curr_status_ref = state_snap.get("status_ref") if isinstance(state_snap, dict) else None
+        # 非遥测类约束（例如时间、区域风险）在尚未选择机器人时没有
+        # state_snapshot。ValidationAcknowledgement 与 UI 契约均使用 ("", 0)
+        # 表示该合法空状态；白名单校验必须采用同一标准值，否则确认会被永久判旧。
+        curr_state_ver = (
+            state_snap.get("state_version")
+            if isinstance(state_snap, dict)
+            else 0
+        )
+        curr_status_ref = (
+            state_snap.get("status_ref")
+            if isinstance(state_snap, dict)
+            else ""
+        )
+        curr_state_ver = 0 if curr_state_ver is None else curr_state_ver
+        curr_status_ref = curr_status_ref or ""
 
-        if not curr_fp or curr_state_ver is None:
+        if not curr_fp:
             return False
 
         acks = getattr(self.slot_store, "validation_acknowledgements", [])
@@ -3659,37 +3777,6 @@ class DialogueManager:
             "继续",
         }
 
-    @classmethod
-    def _is_soft_warning_acknowledgement(cls, message: str) -> bool:
-        """仅识别明确接受/忽略软警告的独立指令，绝不混入通用确认或最终发布词。"""
-        text = re.sub(r"[\s，,。.!！?？、；;：:]+", "", message).lower()
-        exact_ack_words = {
-            "忽略警告",
-            "确认忽略警告",
-            "接受警告继续",
-            "接受风险继续",
-            "继续并接受该警告",
-            "确认继续",
-            "继续",
-            "忽略",
-            "忽略风险",
-            "无视警告",
-            "无视风险",
-        }
-        if text in exact_ack_words:
-            return True
-
-        parameter_cues = (
-            "改成", "修改", "水深", "深度", "时间", "支持船", "管缆", "油田",
-            "设备", "工具", "改为", "设为", "调整", "增加", "减少", "补充",
-        )
-        if any(cue in message for cue in parameter_cues):
-            return False
-
-        return any(
-            kw in text
-            for kw in ("忽略警告", "忽略风险", "无视警告", "无视风险", "接受警告", "接受风险", "确认继续")
-        )
 
     def _ensure_constraint_details(self, reply: str, constraint_context: dict) -> str:
         """Append canonical details for violations omitted or paraphrased by the LLM."""

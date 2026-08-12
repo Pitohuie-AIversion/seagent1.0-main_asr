@@ -73,6 +73,26 @@ class FieldNormalizer:
 
         return None
 
+    @staticmethod
+    def validate_field_constraints(
+        value: Any,
+        field_definition: dict[str, Any],
+    ) -> tuple[str, str] | None:
+        """校验 schema 声明的通用值域约束，不解释自然语言。"""
+        if value is None or field_definition.get("type") != "number":
+            return None
+
+        key = str(field_definition.get("key") or "number")
+        if "exclusive_minimum" in field_definition:
+            threshold = field_definition["exclusive_minimum"]
+            if value <= threshold:
+                return "below_exclusive_minimum", f"{key} 必须大于 {threshold}"
+        if "minimum" in field_definition:
+            threshold = field_definition["minimum"]
+            if value < threshold:
+                return "below_minimum", f"{key} 不得小于 {threshold}"
+        return None
+
     def normalize_updates_with_failures(
         self,
         updates: dict[str, Any],
@@ -106,12 +126,20 @@ class FieldNormalizer:
                 allowed,
                 field_type,
             )
-            if normalized is None:
+            constraint_failure = self.validate_field_constraints(
+                normalized,
+                field_def,
+            )
+            if normalized is None or constraint_failure is not None:
+                error_code, message = constraint_failure or (
+                    "normalization_failed",
+                    f"无法将 '{raw_val}' 规范化为合法的 {field_type} 类型",
+                )
                 failures[key] = NormalizationFailure(
                     field=key,
                     raw_value=raw_val,
-                    error_code="normalization_failed",
-                    message=f"无法将 '{raw_val}' 规范化为合法的 {field_type} 类型",
+                    error_code=error_code,
+                    message=message,
                 )
             else:
                 normalized_updates[key] = normalized

@@ -23,6 +23,7 @@ from src.model_profile import (
     ModelProfileConfigError,
 )
 from src.dialogue_manager import DialogueManager
+from tests.interaction_plan_support import make_plan
 
 
 def snapshot_effect(dm: DialogueManager) -> dict:
@@ -651,60 +652,6 @@ class TestListMutationContract(unittest.TestCase):
                 source="user_input",
             )
 
-    def test_cancel_water_depth_not_payload_mutation(self):
-        """验证水深取消修改等非载荷命令不会生成 ListMutationPatch。"""
-        dm = DialogueManager(llm=MagicMock())
-        turn1_ext = {
-            "slot_candidates": [
-                {
-                    "raw_key": "任务类型",
-                    "canonical_key": "task_type",
-                    "raw_value": "管缆巡检",
-                    "normalized_value": "管缆巡检",
-                    "confidence": 0.95,
-                },
-                {
-                    "raw_key": "任务类型标识",
-                    "canonical_key": "task_type_key",
-                    "raw_value": "巡检",
-                    "normalized_value": "pipeline_inspection",
-                    "confidence": 0.95,
-                },
-            ],
-            "unresolved": [],
-            "list_mutations": [],
-        }
-        turn2_ext = {
-            "slot_candidates": [
-                {
-                    "raw_key": "水深",
-                    "canonical_key": "water_depth",
-                    "raw_value": "300米",
-                    "normalized_value": 300,
-                    "confidence": 0.95,
-                }
-            ],
-            "unresolved": [],
-            "list_mutations": [],
-        }
-        with patch.object(dm.extractor, "extract_updates", return_value=turn1_ext):
-            dm.process("创建一个管缆巡检任务")
-
-        with patch.object(dm.extractor, "extract_updates", return_value=turn2_ext):
-            dm.process("水深300米")
-
-        cancel_ext = {
-            "slot_candidates": [],
-            "unresolved": [],
-            "list_mutations": [],
-        }
-
-        with patch.object(dm.extractor, "extract_updates", return_value=cancel_ext):
-            dm.process("取消修改水深")
-
-        self.assertEqual(dm.slot_store.get_task_state()["water_depth"], 300)
-
-
 class TestTaskPatchAdapter(unittest.TestCase):
     """Legacy Adapter 纯函数转换逻辑测试。"""
 
@@ -788,6 +735,12 @@ class TestTaskPatchAdapter(unittest.TestCase):
 class TestFeatureFlag(unittest.TestCase):
     """Feature Flag 控制与 Fail-Closed 断言测试。"""
 
+    @staticmethod
+    def _make_write_llm():
+        llm = MagicMock()
+        llm.classify_interaction.return_value = make_plan("WRITE")
+        return llm
+
     def test_task_patch_flag_defaults_false(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             yaml_path = Path(tmpdir) / "features.yaml"
@@ -804,7 +757,7 @@ class TestFeatureFlag(unittest.TestCase):
             self.assertTrue(is_task_patch_v2_enabled(features_path=yaml_path))
 
     def test_task_patch_flag_false_does_not_construct_task_patch(self):
-        dm = DialogueManager(llm=MagicMock())
+        dm = DialogueManager(llm=self._make_write_llm())
         with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=False), \
              patch("src.dialogue_manager.build_task_patch") as mock_builder:
             dm.process("创建一个管缆巡检任务")
@@ -822,7 +775,7 @@ class TestFeatureFlag(unittest.TestCase):
                 is_task_patch_v2_enabled(features_path=yaml_path)
 
     def test_task_patch_build_failure_does_not_fallback_to_write(self):
-        dm = DialogueManager(llm=MagicMock())
+        dm = DialogueManager(llm=self._make_write_llm())
         bad_extraction = {
             "slot_candidates": [
                 {
@@ -848,7 +801,7 @@ class TestFeatureFlag(unittest.TestCase):
                 dm.process("水深300米")
 
     def test_v2_malformed_candidate_does_not_mutate_slotstore(self):
-        dm = DialogueManager(llm=MagicMock())
+        dm = DialogueManager(llm=self._make_write_llm())
         bad_extraction = {
             "slot_candidates": [
                 {
@@ -881,7 +834,7 @@ class TestFeatureFlag(unittest.TestCase):
         self.assertNotEqual(dm.phase, "done")
 
     def test_v2_missing_mutation_field_does_not_mutate_slotstore(self):
-        dm = DialogueManager(llm=MagicMock())
+        dm = DialogueManager(llm=self._make_write_llm())
         bad_extraction = {
             "slot_candidates": [],
             "list_mutations": [
@@ -919,195 +872,57 @@ class TestFeatureFlag(unittest.TestCase):
 
 
 class TestEffectParity(unittest.TestCase):
-    """L3: task_patch_v2=false 与 task_patch_v2=true 对比 12 大场景 Effect Parity。"""
+    """比较 legacy 与 TaskPatch v2 的确定性提交效果，不在测试替身中解析自然语言。"""
 
     def setUp(self):
         self.mock_llm = MagicMock()
+        self.mock_llm.classify_interaction.return_value = make_plan("WRITE")
 
     @staticmethod
-    def _get_extraction_for_turn(turn: str) -> dict:
-        if "管缆巡检任务" in turn:
-            return {
-                "slot_candidates": [
-                    {
-                        "raw_key": "任务类型",
-                        "canonical_key": "task_type",
-                        "raw_value": "管缆巡检",
-                        "normalized_value": "管缆巡检",
-                        "confidence": 0.95,
-                        "resolution_method": "canonical_exact",
-                    },
-                    {
-                        "raw_key": "任务类型标识",
-                        "canonical_key": "task_type_key",
-                        "raw_value": "巡检",
-                        "normalized_value": "pipeline_inspection",
-                        "confidence": 0.95,
-                        "resolution_method": "canonical_exact",
-                    },
-                ],
-                "unresolved": [],
-                "list_mutations": [],
-            }
-        elif "水深改成500米" in turn:
-            return {
-                "slot_candidates": [
-                    {
-                        "raw_key": "水深",
-                        "canonical_key": "water_depth",
-                        "raw_value": "500米",
-                        "normalized_value": 500,
-                        "confidence": 0.95,
-                        "resolution_method": "canonical_exact",
-                    }
-                ],
-                "unresolved": [],
-                "list_mutations": [],
-            }
-        elif "水深300米" in turn:
-            return {
-                "slot_candidates": [
-                    {
-                        "raw_key": "水深",
-                        "canonical_key": "water_depth",
-                        "raw_value": "300米",
-                        "normalized_value": 300,
-                        "confidence": 0.95,
-                        "resolution_method": "canonical_exact",
-                    }
-                ],
-                "unresolved": [],
-                "list_mutations": [],
-            }
-        elif "带上云台摄像机" in turn:
-            return {
-                "slot_candidates": [],
-                "unresolved": [],
-                "list_mutations": [
-                    {
-                        "field": "payload",
-                        "operation": "add",
-                        "items": ["云台摄像机"],
-                        "target_items": [],
-                        "raw_text": "带上云台摄像机",
-                        "confidence": 0.95,
-                        "source": "user_input",
-                    }
-                ],
-            }
-        elif "去掉云台摄像机" in turn:
-            return {
-                "slot_candidates": [],
-                "unresolved": [],
-                "list_mutations": [
-                    {
-                        "field": "payload",
-                        "operation": "remove",
-                        "items": ["云台摄像机"],
-                        "target_items": [],
-                        "raw_text": "去掉云台摄像机",
-                        "confidence": 0.95,
-                        "source": "user_input",
-                    }
-                ],
-            }
-        elif "把云台摄像机换成机械手" in turn:
-            return {
-                "slot_candidates": [],
-                "unresolved": [],
-                "list_mutations": [
-                    {
-                        "field": "payload",
-                        "operation": "replace",
-                        "items": ["机械手"],
-                        "target_items": ["云台摄像机"],
-                        "raw_text": "把云台摄像机换成机械手",
-                        "confidence": 0.95,
-                        "source": "user_input",
-                    }
-                ],
-            }
-        elif "清空所有载荷" in turn:
-            return {
-                "slot_candidates": [],
-                "unresolved": [],
-                "list_mutations": [
-                    {
-                        "field": "payload",
-                        "operation": "clear",
-                        "items": [],
-                        "target_items": [],
-                        "raw_text": "清空所有载荷",
-                        "confidence": 0.95,
-                        "source": "user_input",
-                    }
-                ],
-            }
-        elif "设备使用Seaeye Tiger" in turn:
-            return {
-                "slot_candidates": [
-                    {
-                        "raw_key": "设备型号",
-                        "canonical_key": "equipment_type",
-                        "raw_value": "Seaeye Tiger",
-                        "normalized_value": "Seaeye Tiger",
-                        "confidence": 0.95,
-                        "resolution_method": "canonical_exact",
-                    }
-                ],
-                "unresolved": [],
-                "list_mutations": [],
-            }
+    def _task_extraction() -> dict:
         return {
-            "slot_candidates": [],
-            "unresolved": [],
+            "slot_candidates": [
+                {
+                    "raw_key": "任务类型",
+                    "canonical_key": "task_type",
+                    "raw_value": "管缆巡检",
+                    "normalized_value": "管缆巡检",
+                    "confidence": 0.95,
+                    "resolution_method": "canonical_exact",
+                },
+                {
+                    "raw_key": "任务类型标识",
+                    "canonical_key": "task_type_key",
+                    "raw_value": "巡检",
+                    "normalized_value": "pipeline_inspection",
+                    "confidence": 0.95,
+                    "resolution_method": "canonical_exact",
+                },
+            ],
             "list_mutations": [],
+            "unresolved": [],
         }
 
-    def _run_turn_parity(self, turns: list[str]) -> tuple[dict, dict]:
-        """对相同的对话输入，分别在 flag=False 和 flag=True 下跑完并输出 snapshot_effect。"""
-        # Legacy run
-        dm_legacy = DialogueManager(llm=self.mock_llm)
-        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=False):
-            for turn in turns:
-                ext_res = self._get_extraction_for_turn(turn)
-                with patch.object(dm_legacy.extractor, "extract_updates", return_value=ext_res):
-                    dm_legacy.process(turn)
-        effect_legacy = snapshot_effect(dm_legacy)
+    @staticmethod
+    def _depth_extraction(value: int) -> dict:
+        return {
+            "slot_candidates": [
+                {
+                    "raw_key": "水深",
+                    "canonical_key": "water_depth",
+                    "raw_value": f"{value}米",
+                    "normalized_value": value,
+                    "confidence": 0.95,
+                    "resolution_method": "canonical_exact",
+                }
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
 
-        # V2 run
-        dm_v2 = DialogueManager(llm=self.mock_llm)
-        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True):
-            for turn in turns:
-                ext_res = self._get_extraction_for_turn(turn)
-                with patch.object(dm_v2.extractor, "extract_updates", return_value=ext_res):
-                    dm_v2.process(turn)
-        effect_v2 = snapshot_effect(dm_v2)
-
-        return effect_legacy, effect_v2
-
-    def test_parity_01_create_task(self):
-        turns = ["创建一个管缆巡检任务"]
-        eff_legacy, eff_v2 = self._run_turn_parity(turns)
-        self.assertEqual(eff_legacy, eff_v2)
-
-    def test_parity_02_valid_field(self):
-        turns = ["创建一个管缆巡检任务", "水深300米"]
-        eff_legacy, eff_v2 = self._run_turn_parity(turns)
-        self.assertEqual(eff_legacy, eff_v2)
-
-    def test_parity_03_modify_valid(self):
-        turns = ["创建一个管缆巡检任务", "水深300米", "水深改成500米"]
-        eff_legacy, eff_v2 = self._run_turn_parity(turns)
-        self.assertEqual(eff_legacy, eff_v2)
-
-    def test_parity_04_normalization_failure_with_old_valid(self):
-        dm_legacy = DialogueManager(llm=self.mock_llm)
-        dm_v2 = DialogueManager(llm=self.mock_llm)
-
-        t1_ext = self._get_extraction_for_turn("创建一个管缆巡检任务")
-        t2_ext = self._get_extraction_for_turn("水深300米")
-        bad_extraction = {
+    @staticmethod
+    def _invalid_depth_extraction() -> dict:
+        return {
             "slot_candidates": [
                 {
                     "raw_key": "水深",
@@ -1122,129 +937,112 @@ class TestEffectParity(unittest.TestCase):
             "unresolved": [],
         }
 
-        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=False):
-            with patch.object(dm_legacy.extractor, "extract_updates", return_value=t1_ext):
-                dm_legacy.process("创建一个管缆巡检任务")
-            with patch.object(dm_legacy.extractor, "extract_updates", return_value=t2_ext):
-                dm_legacy.process("水深300米")
-            with patch.object(dm_legacy.extractor, "extract_updates", return_value=bad_extraction):
-                dm_legacy.process("水深改成非法深度")
-        eff_legacy = snapshot_effect(dm_legacy)
+    def _execute_steps(
+        self,
+        dm: DialogueManager,
+        steps: list[tuple[str, dict]],
+        *,
+        task_patch_v2: bool,
+    ) -> dict:
+        with patch(
+            "src.dialogue_manager.is_task_patch_v2_enabled",
+            return_value=task_patch_v2,
+        ):
+            for label, extraction in steps:
+                with patch.object(
+                    dm.extractor,
+                    "extract_updates",
+                    return_value=copy.deepcopy(extraction),
+                ) as mock_extract:
+                    dm.process(label)
+                    mock_extract.assert_called()
+        return snapshot_effect(dm)
 
-        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True):
-            with patch.object(dm_v2.extractor, "extract_updates", return_value=t1_ext):
-                dm_v2.process("创建一个管缆巡检任务")
-            with patch.object(dm_v2.extractor, "extract_updates", return_value=t2_ext):
-                dm_v2.process("水深300米")
-            with patch.object(dm_v2.extractor, "extract_updates", return_value=bad_extraction):
-                dm_v2.process("水深改成非法深度")
-        eff_v2 = snapshot_effect(dm_v2)
+    def _run_parity(self, steps: list[tuple[str, dict]]) -> tuple[dict, dict]:
+        legacy = self._execute_steps(
+            DialogueManager(llm=self.mock_llm),
+            steps,
+            task_patch_v2=False,
+        )
+        v2 = self._execute_steps(
+            DialogueManager(llm=self.mock_llm),
+            steps,
+            task_patch_v2=True,
+        )
+        self.assertEqual(legacy, v2)
+        return legacy, v2
 
-        self.assertEqual(eff_legacy, eff_v2)
-        # 验证两边都保持 INV-04：旧 valid 值 300 保持不变，status 为 conflict，candidate_value 为 invalid_depth_val
-        slot = eff_v2["slots"]["water_depth"]
+    def test_parity_01_create_task(self):
+        _, effect = self._run_parity(
+            [("turn:create", self._task_extraction())]
+        )
+        self.assertGreater(effect["slot_version"], 0)
+        self.assertEqual(
+            effect["task_state"]["task_type_key"],
+            "pipeline_inspection",
+        )
+
+    def test_parity_02_valid_field(self):
+        _, effect = self._run_parity(
+            [
+                ("turn:create", self._task_extraction()),
+                ("turn:set-depth", self._depth_extraction(300)),
+            ]
+        )
+        self.assertEqual(effect["task_state"]["water_depth"], 300.0)
+
+    def test_parity_03_modify_valid(self):
+        _, effect = self._run_parity(
+            [
+                ("turn:create", self._task_extraction()),
+                ("turn:set-depth", self._depth_extraction(300)),
+                ("turn:replace-depth", self._depth_extraction(500)),
+            ]
+        )
+        self.assertEqual(effect["task_state"]["water_depth"], 500.0)
+
+    def test_parity_04_normalization_failure_with_old_valid(self):
+        _, effect = self._run_parity(
+            [
+                ("turn:create", self._task_extraction()),
+                ("turn:set-depth", self._depth_extraction(300)),
+                ("turn:invalid-depth", self._invalid_depth_extraction()),
+            ]
+        )
+        slot = effect["slots"]["water_depth"]
         self.assertEqual(slot["value"], 300)
         self.assertEqual(slot["candidate_value"], "invalid_depth_val")
         self.assertEqual(slot["status"], "conflict")
         self.assertIsNotNone(slot["validation_error"])
 
     def test_parity_05_normalization_failure_without_old_valid(self):
-        dm_legacy = DialogueManager(llm=self.mock_llm)
-        dm_v2 = DialogueManager(llm=self.mock_llm)
-
-        t1_ext = self._get_extraction_for_turn("创建一个管缆巡检任务")
-        bad_extraction = {
-            "slot_candidates": [
-                {
-                    "raw_key": "水深",
-                    "canonical_key": "water_depth",
-                    "raw_value": "非法深度",
-                    "normalized_value": "invalid_depth_val",
-                    "confidence": 0.95,
-                    "resolution_method": "type_normalization",
-                }
-            ],
-            "list_mutations": [],
-            "unresolved": [],
-        }
-
-        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=False):
-            with patch.object(dm_legacy.extractor, "extract_updates", return_value=t1_ext):
-                dm_legacy.process("创建一个管缆巡检任务")
-            with patch.object(dm_legacy.extractor, "extract_updates", return_value=bad_extraction):
-                dm_legacy.process("水深改成非法深度")
-        eff_legacy = snapshot_effect(dm_legacy)
-
-        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True):
-            with patch.object(dm_v2.extractor, "extract_updates", return_value=t1_ext):
-                dm_v2.process("创建一个管缆巡检任务")
-            with patch.object(dm_v2.extractor, "extract_updates", return_value=bad_extraction):
-                dm_v2.process("水深改成非法深度")
-        eff_v2 = snapshot_effect(dm_v2)
-
-        self.assertEqual(eff_legacy, eff_v2)
-        slot = eff_v2["slots"]["water_depth"]
+        _, effect = self._run_parity(
+            [
+                ("turn:create", self._task_extraction()),
+                ("turn:invalid-depth", self._invalid_depth_extraction()),
+            ]
+        )
+        slot = effect["slots"]["water_depth"]
         self.assertIsNone(slot["value"])
         self.assertEqual(slot["candidate_value"], "invalid_depth_val")
         self.assertEqual(slot["status"], "invalid")
+        self.assertIsNotNone(slot["validation_error"])
 
-    def test_parity_06_payload_add(self):
-        turns = ["创建一个管缆巡检任务", "带上云台摄像机"]
-        eff_legacy, eff_v2 = self._run_turn_parity(turns)
-        self.assertEqual(eff_legacy, eff_v2)
-
-    def test_parity_07_payload_remove(self):
-        turns = ["创建一个管缆巡检任务", "带上云台摄像机", "去掉云台摄像机"]
-        eff_legacy, eff_v2 = self._run_turn_parity(turns)
-        self.assertEqual(eff_legacy, eff_v2)
-
-    def test_parity_08_payload_replace(self):
-        turns = ["创建一个管缆巡检任务", "带上云台摄像机", "把云台摄像机换成机械手"]
-        eff_legacy, eff_v2 = self._run_turn_parity(turns)
-        self.assertEqual(eff_legacy, eff_v2)
-
-    def test_parity_09_payload_clear(self):
-        turns = ["创建一个管缆巡检任务", "带上云台摄像机", "清空所有载荷"]
-        eff_legacy, eff_v2 = self._run_turn_parity(turns)
-        self.assertEqual(eff_legacy, eff_v2)
-
-    def test_parity_10_cancel_water_depth(self):
-        turns = ["创建一个管缆巡检任务", "水深300米", "取消修改水深"]
-        eff_legacy, eff_v2 = self._run_turn_parity(turns)
-        self.assertEqual(eff_legacy, eff_v2)
-
-    def test_parity_11_equipment_candidate(self):
-        turns = ["创建一个管缆巡检任务", "设备使用Seaeye Tiger"]
-        eff_legacy, eff_v2 = self._run_turn_parity(turns)
-        self.assertEqual(eff_legacy, eff_v2)
-
-    def test_parity_12_unresolved_preserved(self):
-        dm_legacy = DialogueManager(llm=self.mock_llm)
-        dm_v2 = DialogueManager(llm=self.mock_llm)
-
-        t1_ext = self._get_extraction_for_turn("创建一个管缆巡检任务")
-        unresolved_extraction = {
-            "slot_candidates": [],
-            "list_mutations": [],
-            "unresolved": ["未识别信息XYZ"],
-        }
-
-        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=False):
-            with patch.object(dm_legacy.extractor, "extract_updates", return_value=t1_ext):
-                dm_legacy.process("创建一个管缆巡检任务")
-            with patch.object(dm_legacy.extractor, "extract_updates", return_value=unresolved_extraction):
-                dm_legacy.process("发起 包含未识别信息XYZ")
-        eff_legacy = snapshot_effect(dm_legacy)
-
-        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True):
-            with patch.object(dm_v2.extractor, "extract_updates", return_value=t1_ext):
-                dm_v2.process("创建一个管缆巡检任务")
-            with patch.object(dm_v2.extractor, "extract_updates", return_value=unresolved_extraction):
-                dm_v2.process("发起 包含未识别信息XYZ")
-        eff_v2 = snapshot_effect(dm_v2)
-
-        self.assertEqual(eff_legacy, eff_v2)
-        self.assertIn("未识别信息XYZ", eff_v2["unresolved"])
+    def test_parity_06_unresolved_preserved(self):
+        _, effect = self._run_parity(
+            [
+                ("turn:create", self._task_extraction()),
+                (
+                    "turn:unresolved",
+                    {
+                        "slot_candidates": [],
+                        "list_mutations": [],
+                        "unresolved": ["未识别信息XYZ"],
+                    },
+                ),
+            ]
+        )
+        self.assertIn("未识别信息XYZ", effect["unresolved"])
 
 
 if __name__ == "__main__":

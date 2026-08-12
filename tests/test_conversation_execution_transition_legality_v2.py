@@ -17,12 +17,14 @@ from src.session_state import (
     session_state_from_legacy_snapshot,
 )
 from src.slot_store import Slot
+from tests.interaction_plan_support import ScriptedLLM, make_plan
 
 
 class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
 
     def setUp(self) -> None:
-        self.dm = DialogueManager()
+        self.llm = ScriptedLLM()
+        self.dm = DialogueManager(self.llm)
 
     # --------------------------------------------------------------------------
     # A. Conversation Transition Audit & Contract Tests
@@ -40,6 +42,7 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
     # 2. task_collection -> knowledge_qa via DM process turn
     def test_02_task_collection_to_knowledge_qa(self) -> None:
         self.dm.dialogue_mode = "task_collection"
+        self.llm.queue_plan(make_plan("READ", query_intent="GENERAL_CHAT"))
         reply = self.dm.process("今天天气怎么样？")
         self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
         self.assertTrue(len(reply) > 0)
@@ -47,6 +50,7 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
     # 3. knowledge_qa -> task_collection via DM process turn
     def test_03_knowledge_qa_to_task_collection(self) -> None:
         self.dm.dialogue_mode = "knowledge_qa"
+        self.llm.queue_plan(make_plan("WRITE"))
         self.dm.process("帮我创建一个管缆巡检任务")
         self.assertEqual(self.dm.dialogue_mode, "task_collection")
 
@@ -54,14 +58,9 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
     def test_04_task_collection_to_emergency_intervention(self) -> None:
         self.dm.dialogue_mode = "task_collection"
         self.dm.phase = "done"
+        self.llm.queue_plan(make_plan("CONTROL", emergency_action="stop"))
         self.dm.process("紧急停止当前任务")
         self.assertEqual(self.dm.dialogue_mode, "emergency_intervention")
-
-    # 5. emergency_intervention -> subsequent turn returns to allowed mode
-    def test_05_emergency_intervention_subsequent_turn_returns_valid_mode(self) -> None:
-        self.dm.dialogue_mode = "emergency_intervention"
-        self.dm.process("你叫什么名字？")
-        self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
 
     # 6. Same mode transition does not duplicate history
     def test_06_same_mode_transition_does_not_append_history(self) -> None:
@@ -137,6 +136,7 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
         self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
         task_state_before = copy.deepcopy(self.dm.slot_store.get_task_state())
 
+        self.llm.queue_plan(make_plan("READ", query_intent="GENERAL_CHAT"))
         self.dm.process("今天天气怎么样？")
         self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
         self.assertEqual(self.dm.slot_store.get_task_state(), task_state_before)
@@ -147,42 +147,42 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
 
     # 13. idle -> stop_requested
     def test_13_idle_to_stop_requested(self) -> None:
-        req = {"action": "stop", "status": "requested", "source": "rule", "confidence": 1.0, "reason": "test"}
+        req = {"action": "stop", "status": "requested", "source": "interaction_plan", "confidence": 1.0, "reason": "test"}
         self.dm._set_execution_control_state("stop_requested", req)
         self.assertEqual(self.dm.control_state, "stop_requested")
         self.assertEqual(self.dm.last_control_request["action"], "stop")
 
     # 14. idle -> pause_requested
     def test_14_idle_to_pause_requested(self) -> None:
-        req = {"action": "pause", "status": "requested", "source": "rule", "confidence": 1.0, "reason": "test"}
+        req = {"action": "pause", "status": "requested", "source": "interaction_plan", "confidence": 1.0, "reason": "test"}
         self.dm._set_execution_control_state("pause_requested", req)
         self.assertEqual(self.dm.control_state, "pause_requested")
 
     # 15. idle -> abort_requested
     def test_15_idle_to_abort_requested(self) -> None:
-        req = {"action": "abort", "status": "requested", "source": "rule", "confidence": 1.0, "reason": "test"}
+        req = {"action": "abort", "status": "requested", "source": "interaction_plan", "confidence": 1.0, "reason": "test"}
         self.dm._set_execution_control_state("abort_requested", req)
         self.assertEqual(self.dm.control_state, "abort_requested")
 
     # 16. idle -> cancel_requested
     def test_16_idle_to_cancel_requested(self) -> None:
-        req = {"action": "cancel", "status": "requested", "source": "rule", "confidence": 1.0, "reason": "test"}
+        req = {"action": "cancel", "status": "requested", "source": "interaction_plan", "confidence": 1.0, "reason": "test"}
         self.dm._set_execution_control_state("cancel_requested", req)
         self.assertEqual(self.dm.control_state, "cancel_requested")
 
     # 17. requested -> requested transition allowed in done phase
     def test_17_requested_to_requested_transition_allowed(self) -> None:
-        req1 = {"action": "stop", "status": "requested", "source": "rule", "confidence": 1.0, "reason": "test1"}
+        req1 = {"action": "stop", "status": "requested", "source": "interaction_plan", "confidence": 1.0, "reason": "test1"}
         self.dm._set_execution_control_state("stop_requested", req1)
 
-        req2 = {"action": "pause", "status": "requested", "source": "rule", "confidence": 1.0, "reason": "test2"}
+        req2 = {"action": "pause", "status": "requested", "source": "interaction_plan", "confidence": 1.0, "reason": "test2"}
         self.dm._set_execution_control_state("pause_requested", req2)
         self.assertEqual(self.dm.control_state, "pause_requested")
 
     # 18. Mismatched action and state fails closed when flag=true
     @patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True)
     def test_18_mismatched_action_state_fails_closed(self, mock_flag) -> None:
-        req = {"action": "stop", "status": "requested", "source": "rule", "confidence": 1.0, "reason": "test"}
+        req = {"action": "stop", "status": "requested", "source": "interaction_plan", "confidence": 1.0, "reason": "test"}
         with self.assertRaises(StateContractError):
             self.dm._set_execution_control_state("pause_requested", req)
 
@@ -192,7 +192,7 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
     # 19. Non-requested status fails closed when flag=true
     @patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True)
     def test_19_non_requested_status_fails_closed(self, mock_flag) -> None:
-        req = {"action": "stop", "status": "executing", "source": "rule", "confidence": 1.0, "reason": "test"}
+        req = {"action": "stop", "status": "executing", "source": "interaction_plan", "confidence": 1.0, "reason": "test"}
         with self.assertRaises(StateContractError):
             self.dm._set_execution_control_state("stop_requested", req)
 
@@ -215,6 +215,7 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
         self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
         self.dm.task_state = self.dm.slot_store.get_task_state()
 
+        self.llm.queue_plan(make_plan("CONTROL", emergency_action="cancel"))
         self.dm.process("取消当前任务")
         self.assertEqual(self.dm.phase, "rejected")
         self.assertEqual(self.dm.control_state, "idle")
@@ -225,7 +226,7 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
         self.dm._transition_phase("done", reason="test_setup")
         route_mock = MagicMock()
         route_mock.emergency_action = "cancel"
-        route_mock.source = "rule"
+        route_mock.source = "interaction_plan"
         route_mock.confidence = 1.0
         route_mock.reason = "user_command"
 
@@ -241,7 +242,7 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
 
         route_mock = MagicMock()
         route_mock.emergency_action = "stop"
-        route_mock.source = "rule"
+        route_mock.source = "interaction_plan"
         route_mock.confidence = 1.0
         route_mock.reason = "user_command"
 
@@ -260,7 +261,7 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
 
                 route_mock = MagicMock()
                 route_mock.emergency_action = "pause"
-                route_mock.source = "rule"
+                route_mock.source = "interaction_plan"
                 route_mock.confidence = 1.0
                 route_mock.reason = "user_command"
 
@@ -271,7 +272,7 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
 
     # 25. Reset preserves execution control state reset
     def test_25_reset_preserves_execution_state_reset(self) -> None:
-        req = {"action": "stop", "status": "requested", "source": "rule", "confidence": 1.0, "reason": "test"}
+        req = {"action": "stop", "status": "requested", "source": "interaction_plan", "confidence": 1.0, "reason": "test"}
         self.dm._set_execution_control_state("stop_requested", req)
         self.dm.reset()
         self.assertEqual(self.dm.control_state, "idle")
@@ -279,7 +280,7 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
 
     # 26. Snapshot restore preserves execution control state
     def test_26_snapshot_restore_preserves_execution_control_state(self) -> None:
-        req = {"action": "pause", "status": "requested", "source": "rule", "confidence": 1.0, "reason": "test"}
+        req = {"action": "pause", "status": "requested", "source": "interaction_plan", "confidence": 1.0, "reason": "test"}
         self.dm._set_execution_control_state("pause_requested", req)
 
         snap = self.dm.export_snapshot()
@@ -308,12 +309,8 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
         self.dm._transition_phase("done", reason="test_setup")
 
         # Step 2: Emergency control request issued for published task
-        route_mock = MagicMock()
-        route_mock.emergency_action = "stop"
-        route_mock.source = "rule"
-        route_mock.confidence = 1.0
-        route_mock.reason = "user_command"
-        self.dm._handle_emergency_intervention("停止当前任务", route_mock)
+        self.llm.queue_plan(make_plan("CONTROL", emergency_action="stop"))
+        self.dm.process("停止当前任务")
 
         self.assertEqual(self.dm.phase, "done")
         self.assertEqual(self.dm.control_state, "stop_requested")
@@ -322,9 +319,27 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
         self.assertEqual(self.dm.last_control_request["target_intent_id"], "TI20260809001")
 
         # Step 3: Real task parameter modification via process()
+        self.llm.queue_plan(make_plan("WRITE"))
+        self.llm.queue_extraction(
+            {
+                "slot_candidates": [
+                    {
+                        "raw_key": "水深",
+                        "canonical_key": "water_depth",
+                        "raw_value": "500 米",
+                        "normalized_value": 500.0,
+                        "confidence": 0.95,
+                        "resolution_method": "llm_semantic",
+                    }
+                ],
+                "list_mutations": [],
+                "unresolved": [],
+            }
+        )
         self.dm.process("修改水深为 500 米")
 
         # Audit phase, control_state, last_control_request, target_intent_id
+        self.assertEqual(self.dm.slot_store.get_task_state()["water_depth"], 500.0)
         self.assertEqual(self.dm.control_state, "stop_requested")
         self.assertIsNotNone(self.dm.last_control_request)
         self.assertEqual(self.dm.last_control_request["action"], "stop")

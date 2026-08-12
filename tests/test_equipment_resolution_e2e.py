@@ -16,100 +16,124 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-
-
-class EquipmentResolutionE2ELLM:
-    def __init__(self, alias_input="观察级一号机"):
-        self.alias_input = alias_input
-
-    def classify_interaction(self, messages, max_tokens=260):
-        return {
-            "interaction_type": "WRITE",
-            "query_intent": None,
-            "confidence": 0.99,
-            "reason": "设备选择",
-        }
-
-    def chat(self, messages, temperature=0.7, max_tokens=1500):
-        return "设备解析成功。"
-
-    def filter_reply(self, text):
-        return text
-
-    def extract_json(self, messages, max_tokens=800):
-        task_type_key = "pipeline_inspection"
-        raw_task_type = "管缆巡检"
-        if "通用工作级" in self.alias_input:
-            task_type_key = "tree_valve_operation"
-            raw_task_type = "采油树控制面板插入"
-        elif "金牛座" in self.alias_input:
-            task_type_key = "pipeline_burial"
-            raw_task_type = "管缆埋设"
-
-        return {
-            "task_type_key": task_type_key,
-            "slot_candidates": [
-                {
-                    "raw_key": "任务类型",
-                    "canonical_key": "task_type_key",
-                    "raw_value": raw_task_type,
-                    "normalized_value": task_type_key,
-                    "confidence": 0.99,
-                },
-                {
-                    "raw_key": "设备名称",
-                    "canonical_key": "equipment_name",
-                    "raw_value": self.alias_input,
-                    "normalized_value": self.alias_input,
-                    "confidence": 0.99,
-                },
-                {
-                    "raw_key": "作业水深",
-                    "canonical_key": "water_depth",
-                    "raw_value": "300米",
-                    "normalized_value": 300.0,
-                    "confidence": 0.99,
-                },
-            ],
-            "unresolved": [],
-        }
+from tests.interaction_plan_support import (
+    ScriptedLLM,
+    extraction_result,
+    make_plan,
+    slot_candidate,
+)
 
 
 class EquipmentResolutionE2ETest(unittest.TestCase):
     def setUp(self):
         self.kb = KnowledgeBase()
 
+    def _run_scripted_write(
+        self,
+        *,
+        task_type_key,
+        raw_task_type,
+        equipment_alias,
+        user_message,
+    ):
+        llm = ScriptedLLM(
+            plans=[make_plan("WRITE")],
+            extractions=[
+                extraction_result(
+                    slot_candidate(
+                        "task_type_key",
+                        task_type_key,
+                        raw_key="任务类型",
+                        raw_value=raw_task_type,
+                    )
+                ),
+                extraction_result(
+                    slot_candidate(
+                        "equipment_name",
+                        equipment_alias,
+                        raw_key="设备名称",
+                    ),
+                    slot_candidate(
+                        "water_depth",
+                        300.0,
+                        raw_key="作业水深",
+                        raw_value="300米",
+                    ),
+                ),
+            ],
+            default_reply="设备解析成功。",
+        )
+        dm = DialogueManager(llm, self.kb)
+
+        dm.process(user_message)
+
+        self.assertEqual(len(llm.classify_calls), 1)
+        self.assertEqual(len(llm.extract_calls), 2)
+        self.assertFalse(llm.plans)
+        self.assertFalse(llm.extractions)
+        return dm
+
+    def _assert_equipment_matches_ssot(
+        self,
+        dm,
+        *,
+        equipment_alias,
+        task_type_key,
+        expected_unit_id,
+    ):
+        expected_unit = self.kb.resolve_robot_unit(equipment_alias, task_type_key)
+        self.assertIsNotNone(expected_unit)
+        self.assertEqual(expected_unit["unit_id"], expected_unit_id)
+
+        expected_slots = {
+            "equipment_unit_id": expected_unit["unit_id"],
+            "equipment_name": expected_unit["display_name"],
+            "equipment_type": expected_unit["robot"]["full_name"],
+            "equipment_family": expected_unit["robot"]["family_full_name"],
+        }
+        for slot_name, expected_value in expected_slots.items():
+            with self.subTest(slot=slot_name):
+                slot = dm.slot_store.slots.get(slot_name)
+                self.assertIsNotNone(slot)
+                self.assertEqual(slot.status, "valid")
+                self.assertEqual(slot.value, expected_value)
+                self.assertEqual(dm.task_state.get(slot_name), expected_value)
+
+        self.assertEqual(dm.task_state, dm.slot_store.get_task_state())
+
     def test_alias_to_unit_variant_family_e2e_flow(self):
-        """1. 验证口语别名 '通用工作级一号机' 完整解析链"""
-        llm = EquipmentResolutionE2ELLM("通用工作级一号机")
-        dm = DialogueManager(llm, self.kb)
+        """口语别名通过两阶段抽取写入 unit、variant 与 family。"""
+        dm = self._run_scripted_write(
+            task_type_key="tree_valve_operation",
+            raw_task_type="采油树控制面板插入",
+            equipment_alias="通用工作级一号机",
+            user_message="执行采油树控制面板插入，配备通用工作级一号机，水深300米",
+        )
 
-        reply = dm.process("执行采油树控制面板插入，配备通用工作级一号机，水深300米")
+        self._assert_equipment_matches_ssot(
+            dm,
+            equipment_alias="通用工作级一号机",
+            task_type_key="tree_valve_operation",
+            expected_unit_id="WROV-250-001",
+        )
+        self.assertEqual(dm.task_state.get("water_depth"), 300.0)
 
-        # 验证单机 ID 映射正确
-        self.assertEqual(dm.task_state.get("equipment_unit_id"), "WROV-250-001")
-        # 验证设备展示名正确
-        self.assertEqual(dm.task_state.get("equipment_name"), "通用工作级深海机器人250HP-001")
-        # 验证型号全称映射正确
-        self.assertEqual(dm.task_state.get("equipment_type"), "通用工作级深海机器人 250HP")
-        # 验证设备族群全称映射正确
-        self.assertEqual(dm.task_state.get("equipment_family"), "通用工作级深海机器人")
-        # 验证 SSOT 一致性
-        self.assertEqual(dm.task_state, dm.slot_store.get_task_state())
+    def test_alias_jinniu_to_unit_variant_family_e2e_flow(self):
+        """金牛座实体别名必须收敛到配置中的同一设备级联。"""
+        dm = self._run_scripted_write(
+            task_type_key="pipeline_burial",
+            raw_task_type="管缆埋设",
+            equipment_alias="金牛座001",
+            user_message="执行管缆埋设作业，配备金牛座001，水深300米",
+        )
 
-    def test_alias_tianying_to_unit_variant_e2e_flow(self):
-        """2. 验证口语别名 '金牛座001' 完整解析链"""
-        llm = EquipmentResolutionE2ELLM("金牛座001")
-        dm = DialogueManager(llm, self.kb)
-
-        reply = dm.process("执行管缆埋设作业，配备金牛座001，水深300米")
-
-        # 验证单机 ID 映射正确
-        self.assertEqual(dm.task_state.get("equipment_unit_id"), "CRAWLER-1600-001")
-        # 验证型号全称映射正确
-        self.assertIn("履带式海底重载作业机器人 1600HP", dm.task_state.get("equipment_type", ""))
-        # 验证 SSOT 一致性
-        self.assertEqual(dm.task_state, dm.slot_store.get_task_state())
+        self._assert_equipment_matches_ssot(
+            dm,
+            equipment_alias="金牛座001",
+            task_type_key="pipeline_burial",
+            expected_unit_id="CRAWLER-1600-001",
+        )
+        self.assertEqual(dm.task_state.get("water_depth"), 300.0)
 
 
 if __name__ == "__main__":

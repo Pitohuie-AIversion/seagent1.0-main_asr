@@ -51,6 +51,8 @@ VALID_SOURCE_POLICIES = {
     "hybrid", "none",
 }
 VALID_EMERGENCY_ACTIONS = {"stop", "pause", "abort", "cancel"}
+VALID_PENDING_ACTIONS = {"confirm", "reject"}
+VALID_WARNING_ACTIONS = {"acknowledge"}
 MIN_PLAN_CONFIDENCE = 0.6
 
 
@@ -69,6 +71,8 @@ class InteractionPlan:
     emergency_action: str | None
     confidence: float
     reason_code: str
+    warning_action: str | None = None
+    pending_action: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -82,7 +86,9 @@ class InteractionPlan:
             "source_policy": self.source_policy,
             "needs_clarification": self.needs_clarification,
             "clarification_reason": self.clarification_reason,
+            "warning_action": self.warning_action,
             "emergency_action": self.emergency_action,
+            "pending_action": self.pending_action,
             "confidence": self.confidence,
             "reason_code": self.reason_code,
         }
@@ -235,6 +241,24 @@ def validate_interaction_plan(
         ):
             raise ValueError(f"emergency_action 非法: {emergency_action!r}")
 
+        pending_action = data.get("pending_action")
+        if pending_action is not None and (
+            not isinstance(pending_action, str)
+            or pending_action not in VALID_PENDING_ACTIONS
+        ):
+            raise ValueError(f"pending_action 非法: {pending_action!r}")
+        if pending_action is not None and operation != "WRITE":
+            raise ValueError("pending_action 只能用于 WRITE")
+
+        warning_action = data.get("warning_action")
+        if warning_action is not None and (
+            not isinstance(warning_action, str)
+            or warning_action not in VALID_WARNING_ACTIONS
+        ):
+            raise ValueError(f"warning_action 非法: {warning_action!r}")
+        if warning_action is not None and operation != "WRITE":
+            raise ValueError("warning_action 只能用于 WRITE")
+
         if operation == "CONTROL":
             if (
                 dialogue_mode != "emergency_intervention"
@@ -259,6 +283,7 @@ def validate_interaction_plan(
         return InteractionPlan(
             schema_version=schema_version,
             operation=operation,
+            warning_action=warning_action,
             dialogue_mode=dialogue_mode,
             query_intent=query_intent,
             subject_type=subject_type,
@@ -270,6 +295,7 @@ def validate_interaction_plan(
             emergency_action=emergency_action if operation == "CONTROL" else None,
             confidence=confidence,
             reason_code=reason_code.strip() or "OK",
+            pending_action=pending_action,
         )
     except (TypeError, ValueError) as exc:
         logger.warning("[validate_interaction_plan] 协议校验失败: %s", exc)

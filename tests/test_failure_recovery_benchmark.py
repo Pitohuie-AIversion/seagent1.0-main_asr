@@ -1,189 +1,178 @@
-"""
-tests/test_failure_recovery_benchmark.py — 异常隔离与恢复 Failure Recovery Benchmark 测试
+"""故障隔离、硬约束恢复与发布事务回滚基准。
 
-验证目标：
-1. 抽取/LLM 故障隔离：抽取过程中 LLM 抛出异常或返回非 JSON 坏数据时，错误被捕获，SlotStore 版本号与 task_state 不受污染。
-2. 硬约束阻断与恢复：当用户提交超出物理极限的参数（如水深 9999m）时，系统切入 blocked_hard；后续纠正为合规参数（300m）后，系统成功恢复到正常阶段。
-3. 发布/锁异常回滚：在 final TaskIntent 发布时抛出 TaskPersistenceError，DialogueManager 完整恢复 SlotStore 快照与 Phase，保证状态一致性。
+测试替身只返回预先排队的 InteractionPlan 和抽取结果，不读取用户原句。完整任务
+前置状态由确定性测试 seed 构建；每次真实用户修改仍必须经过 WRITE Plan、Extractor、
+SlotStore 提交与约束检查。
 """
 
-import sys
+from __future__ import annotations
+
+import copy
+import tempfile
 import unittest
 from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.task_intent_builder import TaskPersistenceError
-
-
-class FaultyLLM:
-    def __init__(self):
-        self.should_fail_classify = False
-        self.should_fail_extract = False
-
-    def classify_interaction(self, messages, max_tokens=260):
-        if self.should_fail_classify:
-            raise RuntimeError("Simulated LLM network/classification timeout error")
-        return {
-            "interaction_type": "WRITE",
-            "query_intent": None,
-            "confidence": 0.95,
-            "reason": "任务提交"
-        }
-
-    def extract_json(self, messages, max_tokens=800):
-        if self.should_fail_extract:
-            raise ValueError("Simulated LLM JSON parsing error: bad format")
-        last_msg = messages[-1]["content"]
-        if "【最新用户输入】:" in last_msg:
-            current_input = last_msg.split("【最新用户输入】:")[1].split("\n")[0].strip().strip('"')
-        else:
-            current_input = last_msg
-
-        if "9999" in current_input:
-            return {
-                "slot_candidates": [
-                    {"raw_key": "作业水深", "canonical_key": "water_depth", "raw_value": "9999米", "normalized_value": 9999.0, "confidence": 0.99}
-                ],
-                "unresolved": []
-            }
-        elif "把水深改成300米" in current_input:
-            return {
-                "slot_candidates": [
-                    {"raw_key": "作业水深", "canonical_key": "water_depth", "raw_value": "300米", "normalized_value": 300.0, "confidence": 0.99}
-                ],
-                "unresolved": []
-            }
-        elif "管缆巡检" in current_input or "紧急" in current_input or "详细" in current_input or "300米" in current_input:
-            return {
-                "slot_candidates": [
-                    {"raw_key": "作业类型标识", "canonical_key": "task_type_key", "raw_value": "管缆巡检", "normalized_value": "pipeline_inspection", "confidence": 0.99},
-                    {"raw_key": "作业类型", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 0.99},
-                    {"raw_key": "加急", "canonical_key": "emergency_mode", "raw_value": "紧急", "normalized_value": True, "confidence": 0.99},
-                    {"raw_key": "使用设备", "canonical_key": "equipment_type", "raw_value": "AUV", "normalized_value": "AUV", "confidence": 0.99},
-                    {"raw_key": "使用设备", "canonical_key": "equipment_name", "raw_value": "水下无人自主航行器-324cc-001", "normalized_value": "水下无人自主航行器-324cc-001", "confidence": 0.99},
-                    {"raw_key": "目标油田", "canonical_key": "raw_oilfield_name", "raw_value": "流花11-1油田", "normalized_value": "流花11-1油田", "confidence": 0.99},
-                    {"raw_key": "开始时间", "canonical_key": "start_time", "raw_value": "2026-07-27T15:00:00", "normalized_value": "2026-07-27T15:00:00", "confidence": 0.99},
-                    {"raw_key": "起点坐标", "canonical_key": "start_point", "raw_value": "(20.0, 115.0)", "normalized_value": "(20.0, 115.0)", "confidence": 0.99},
-                    {"raw_key": "终点坐标", "canonical_key": "end_point", "raw_value": "(20.1, 115.1)", "normalized_value": "(20.1, 115.1)", "confidence": 0.99},
-                    {"raw_key": "作业水深", "canonical_key": "water_depth", "raw_value": "300米", "normalized_value": 300.0, "confidence": 0.99},
-                ],
-                "unresolved": []
-            }
-        return {"slot_candidates": [], "unresolved": []}
-
-    def chat(self, messages, **kwargs):
-        return "请继续提供参数。"
-
-    def filter_reply(self, reply):
-        return reply
+from src.task_intent_builder import TaskIntentBuilder, TaskPersistenceError
+from tests.interaction_plan_support import (
+    ScriptedLLM,
+    extraction_result,
+    make_plan,
+    slot_candidate,
+)
+from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 
 
 class FailureRecoveryBenchmarkTest(unittest.TestCase):
     def setUp(self):
         self.kb = KnowledgeBase()
-        self.llm = FaultyLLM()
+        self.llm = ScriptedLLM(default_reply="测试回复。")
         self.dm = DialogueManager(self.llm, self.kb)
 
-    def _setup_full_confirming_task(self):
-        self.dm.process("执行紧急管缆巡检")
-        self.dm.process("提供详细参数，水深300米")
-        # equipment_type 的 allowed_values 来自 robot_category_labels（大类全称），
-        # 但设备解析链写入的是型号 full_name。如果 normalizer 无法匹配，
-        # 手动将 equipment_type 设为合法大类值以推进到 confirming 阶段。
-        eq_slot = self.dm.slot_store.slots.get("equipment_type")
-        if not eq_slot:
-            from src.slot_store import Slot
-            eq_slot = Slot("equipment_type", "AUV", status="valid")
-            self.dm.slot_store.slots["equipment_type"] = eq_slot
-        eq_slot.value = "AUV"
-        eq_slot.status = "valid"
-        self.dm.task_state = self.dm.slot_store.get_task_state()
-        self.dm.phase = "confirming"
-        if self.dm.phase == "blocked_soft":
-            self.dm.process("确认忽略警告继续")
+    def _setup_full_confirming_task(self) -> None:
+        seed_complete_valid_pipeline_task(self.dm, self.kb)
+        self.assertEqual(self.dm.phase, "confirming")
+        self.assertTrue(self.dm.task_state)
+        self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
 
-    def test_llm_exception_does_not_pollute_slot_store(self):
-        # 先正常建立任务
-        self.dm.process("执行紧急管缆巡检")
-        ver_before = self.dm.slot_store.version
-        state_before = dict(self.dm.task_state)
+    def _queue_write(self, *candidates: dict) -> None:
+        self.llm.queue_plan(make_plan("WRITE"))
+        self.llm.queue_extraction(extraction_result(*candidates))
 
-        # 模拟 LLM 分类/抽取异常
-        self.llm.should_fail_classify = True
-        try:
-            self.dm.process("破坏性输入")
-        except Exception:
-            pass
+    def test_llm_classification_exception_does_not_pollute_slot_store(self):
+        self._setup_full_confirming_task()
+        version_before = self.dm.slot_store.version
+        snapshot_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+        state_before = copy.deepcopy(self.dm.task_state)
+        phase_before = self.dm.phase
+        extraction_calls_before = len(self.llm.extract_calls)
 
-        # 恢复 LLM 状态
-        self.llm.should_fail_classify = False
-        ver_after = self.dm.slot_store.version
-        state_after = dict(self.dm.task_state)
+        with patch.object(
+            self.llm,
+            "classify_interaction",
+            side_effect=RuntimeError(
+                "Simulated LLM network/classification timeout error"
+            ),
+        ):
+            reply = self.dm.process("任意分类故障输入")
 
-        # 验证 SlotStore 与 task_state 未受污染
-        self.assertEqual(ver_after, ver_before)
-        self.assertEqual(state_after, state_before)
+        self.assertTrue(reply)
+        self.assertEqual(self.dm.slot_store.version, version_before)
+        self.assertEqual(self.dm.slot_store.export_snapshot(), snapshot_before)
+        self.assertEqual(self.dm.task_state, state_before)
+        self.assertEqual(self.dm.phase, phase_before)
+        self.assertEqual(len(self.llm.extract_calls), extraction_calls_before)
         self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
 
     def test_hard_constraint_violation_and_recovery(self):
-        # 1. 建立包含完整合规参数的任务
         self._setup_full_confirming_task()
-        self.assertEqual(self.dm.phase, "confirming")
+        version_before_violation = self.dm.slot_store.version
+        self._queue_write(
+            slot_candidate(
+                "water_depth",
+                9999.0,
+                raw_key="作业水深",
+                raw_value="9999米",
+            )
+        )
 
-        # 2. 提交违规水深 9999m (超出所有设备极限水深 600m)
-        reply1 = self.dm.process("作业水深为9999米")
+        violation_reply = self.dm.process("作业水深为9999米")
+
+        self.assertTrue(violation_reply)
+        self.assertGreater(
+            self.dm.slot_store.version,
+            version_before_violation,
+            "9999m 必须先真实提交，随后由硬约束阻断",
+        )
         self.assertEqual(self.dm.phase, "blocked_hard")
         self.assertEqual(self.dm.task_state.get("water_depth"), 9999.0)
+        self.assertTrue(self.dm._blocking_violations)
+        self.assertTrue(
+            any(v.severity == "hard" for v in self.dm._blocking_violations)
+        )
+        self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
 
-        # 3. 纠正为合规水深 300m — 硬约束解除后可能触发软约束
-        reply2 = self.dm.process("把水深改成300米")
-        self.assertIn(self.dm.phase, ("collecting", "confirming", "blocked_soft"))
+        version_before_recovery = self.dm.slot_store.version
+        self._queue_write(
+            slot_candidate(
+                "water_depth",
+                300.0,
+                raw_key="作业水深",
+                raw_value="300米",
+            )
+        )
+
+        recovery_reply = self.dm.process("把水深改成300米")
+
+        self.assertTrue(recovery_reply)
+        self.assertGreater(
+            self.dm.slot_store.version,
+            version_before_recovery,
+            "修复值必须通过新的 WRITE 事务提交",
+        )
         self.assertNotEqual(self.dm.phase, "blocked_hard")
+        self.assertIn(self.dm.phase, ("collecting", "confirming", "blocked_soft"))
         self.assertEqual(self.dm.task_state.get("water_depth"), 300.0)
+        remaining = self.dm.validator.validate(self.dm.task_state)
+        self.assertFalse(self.dm.validator.has_hard_violations(remaining))
         self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
+        self.assertEqual(len(self.llm.classify_calls), 2)
+        self.assertEqual(len(self.llm.extract_calls), 2)
+        self.assertFalse(self.llm.plans)
+        self.assertFalse(self.llm.extractions)
 
-    def test_publish_failure_rollback(self):
-        # 1. 建立基础任务并达到 confirming 阶段
+    def test_publish_failure_reaches_publish_staging_and_rolls_back(self):
         self._setup_full_confirming_task()
-        self.assertEqual(self.dm.phase, "confirming")
-        ver_before = self.dm.slot_store.version
-        state_before = dict(self.dm.task_state)
+        version_before = self.dm.slot_store.version
+        snapshot_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+        state_before = copy.deepcopy(self.dm.task_state)
+        built_before = copy.deepcopy(self.dm._last_built_json)
+        phase_before = self.dm.phase
+        final_before = copy.deepcopy(self.dm.final_result)
 
-        # 2. 模拟 TaskIntent 发布失败引发回滚
-        def faulty_publish_staging(*args, **kwargs):
-            raise TaskPersistenceError("Simulated filesystem atomic publish lock failure")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            result_dir = Path(tmp_dir)
+            task_dir = result_dir / "task"
+            task_dir.mkdir(parents=True, exist_ok=True)
+            persistence_error = TaskPersistenceError(
+                "Simulated filesystem atomic publish lock failure"
+            )
 
-        from src.task_intent_builder import TaskIntentBuilder
-        old_publish = TaskIntentBuilder.publish_staging
-        TaskIntentBuilder.publish_staging = faulty_publish_staging
+            with patch(
+                "src.task_intent_builder.get_task_dir",
+                return_value=task_dir,
+            ), patch(
+                "src.id_sequence.get_result_dir",
+                return_value=result_dir,
+            ), patch.object(
+                TaskIntentBuilder,
+                "publish_staging",
+                autospec=True,
+                side_effect=persistence_error,
+            ) as mock_publish:
+                with self.assertRaisesRegex(
+                    TaskPersistenceError,
+                    "Simulated filesystem atomic publish lock failure",
+                ):
+                    self.dm.process(
+                        "确认发布",
+                        request_id="publish_failure_rollback_test",
+                    )
 
-        try:
-            # _handle_final_publish_confirmation 会重新全量约束检查，
-            # 如果有软约束未白名单则不走发布路径而是返回提示文本。
-            # 此处确认无论何种路径，任务状态都不被污染。
-            raised = False
-            try:
-                reply = self.dm.process("确认发布")
-            except TaskPersistenceError:
-                raised = True
+                mock_publish.assert_called_once()
 
-            if raised:
-                # 走到了 publish_staging 并被回滚
-                pass
-            else:
-                # 未走到 publish，说明被约束检查拦截 — 状态也不应改变
-                pass
-        finally:
-            TaskIntentBuilder.publish_staging = old_publish
-
-        # 3. 验证 SlotStore 与 task_state 未受污染
+        self.assertEqual(self.dm.phase, phase_before)
+        self.assertEqual(self.dm.slot_store.version, version_before)
+        self.assertEqual(self.dm.slot_store.export_snapshot(), snapshot_before)
+        self.assertEqual(self.dm.task_state, state_before)
+        self.assertEqual(self.dm._last_built_json, built_before)
+        self.assertEqual(self.dm.final_result, final_before)
         self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
-        # 无论哪种路径，版本不应增加（发布没成功）
-        self.assertLessEqual(self.dm.slot_store.version, ver_before + 1)
+        self.assertEqual(self.dm._last_built_json, self.dm.slot_store.get_built_json())
+        self.assertFalse(self.llm.classify_calls)
+        self.assertFalse(self.llm.extract_calls)
 
 
 if __name__ == "__main__":

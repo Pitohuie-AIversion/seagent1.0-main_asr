@@ -251,9 +251,9 @@ async def run_e2e():
         welcome_count = await client.eval_js("document.querySelectorAll('#messages .message[data-message-kind=\"welcome\"]').length")
         assert welcome_count == 1, f"Expected exactly 1 welcome message, found {welcome_count}"
         welcome_text_zh = await client.eval_js("document.querySelector('#messages .message[data-message-kind=\"welcome\"]').innerText")
-        assert "【任务收集】" in welcome_text_zh, "Missing Chinese Task Collection title in welcome message!"
         assert "【知识问答】" in welcome_text_zh, "Missing Chinese Knowledge Q&A title in welcome message!"
-        assert "【紧急模式】" in welcome_text_zh, "Missing Chinese Emergency Mode title in welcome message!"
+        assert "【任务创建与准入】" in welcome_text_zh, "Missing Chinese Task Creation & Admission title in welcome message!"
+        assert "紧急" not in welcome_text_zh, "Welcome message must not describe an emergency mode!"
         assert "不会写入或修改任务信息" in welcome_text_zh, "Missing Knowledge Q&A data isolation note in Chinese!"
 
         # Switch to English
@@ -266,9 +266,9 @@ async def run_e2e():
         await asyncio.sleep(0.5)
 
         welcome_text_en = await client.eval_js("document.querySelector('#messages .message[data-message-kind=\"welcome\"]').innerText")
-        assert "[Task Collection]" in welcome_text_en, "Missing English Task Collection title!"
         assert "[Knowledge Q&A]" in welcome_text_en, "Missing English Knowledge Q&A title!"
-        assert "[Emergency Mode]" in welcome_text_en, "Missing English Emergency Mode title!"
+        assert "[Task Creation & Admission]" in welcome_text_en, "Missing English Task Creation & Admission title!"
+        assert "emergency" not in welcome_text_en.lower(), "Welcome message must not describe an emergency mode!"
         assert "without creating or modifying task data" in welcome_text_en, "Missing English Knowledge Q&A data isolation note!"
 
         req_count_after = len([u for u in client.request_urls if "/api/translate" in u])

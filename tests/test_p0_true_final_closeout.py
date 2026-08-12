@@ -1,16 +1,6 @@
 """
 tests/test_p0_true_final_closeout.py - P0/P1 真正最终收口测试套件
 
-A. 路由测试 (1-8):
-   1. 活动任务下“把设备改成金牛座一号机” → TASK_UPDATE, should_update_slots=True
-   2. “将机器人更换为CRAWLER-1600-001” → TASK_UPDATE
-   3. “设备换成天鹰座一号机” → TASK_UPDATE
-   4. “使用金牛座一号机执行巡检任务” → TASK_CREATE 或 TASK_UPDATE
-   5. expected_slot=equipment 时 “金牛座一号机” → 槽位填报
-   6. 无任务上下文独立输入 “金牛座一号机” → 不得自动写槽位 (CLARIFICATION)
-   7. “金牛座一号机最大水深是多少？” → DEVICE_CAPABILITY, SlotStore 不变
-   8. DialogueManager.process() 端到端设备槽位修改测试
-
 B. staging 内容与正则匹配校验 (9-18):
    9. 同目录、合法前缀但内容与 intent 不一致 → 拒绝发布
    10. staging 内部 intent_id 与参数不一致 → 拒绝发布
@@ -30,110 +20,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-from src.dialogue_manager import DialogueManager
-from src.intent_router import IntentRouter
 from src.knowledge_retriever import KnowledgeBase
-from src.llm_client import LLMClient
 from src.task_intent_builder import TaskIntentBuilder
 from src.exceptions import TaskPersistenceError
-from src.slot_store import Slot
-from tests.test_slot_consistency import seed_complete_valid_pipeline_task
-
-
-class DummyLLM(LLMClient):
-    def __init__(self, default_reply="默认LLM测试回复"):
-        self.llm = None
-        self.default_reply = default_reply
-
-    def chat(self, messages, temperature=0.7, max_tokens=800):
-        return self.default_reply
-
-    def generate(self, messages, temperature=0.7, max_tokens=800):
-        return self.chat(messages, temperature, max_tokens)
-
-    def filter_reply(self, text):
-        return text
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 测试 A: 路由测试 (1-8)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class DeviceAliasRoutingPriorityTest(unittest.TestCase):
-    def setUp(self):
-        self.kb = KnowledgeBase()
-        self.llm = DummyLLM()
-        self.dm = DialogueManager(self.llm, self.kb)
-
-    def test_a1_update_device_to_jinniuzuo_yihaoji_routes_to_task_update(self):
-        """1. 活动任务下'把设备改成金牛座一号机' → TASK_UPDATE, should_update_slots=True"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        res = self.dm.intent_router.route("把设备改成金牛座一号机", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertEqual(res.intent, "TASK_UPDATE")
-        self.assertTrue(res.should_update_slots)
-
-    def test_a2_replace_robot_to_crawler_routes_to_task_update(self):
-        """2. '将机器人更换为CRAWLER-1600-001' → TASK_UPDATE"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        res = self.dm.intent_router.route("将机器人更换为CRAWLER-1600-001", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertEqual(res.intent, "TASK_UPDATE")
-        self.assertTrue(res.should_update_slots)
-
-    def test_a3_change_device_to_tianyingzuo_routes_to_task_update(self):
-        """3. '设备换成天鹰座一号机' → TASK_UPDATE"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        res = self.dm.intent_router.route("设备换成天鹰座一号机", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertEqual(res.intent, "TASK_UPDATE")
-        self.assertTrue(res.should_update_slots)
-
-    def test_a4_use_device_for_inspection_routes_to_create_or_update(self):
-        """4. '使用金牛座一号机执行巡检任务' → TASK_CREATE 或 TASK_UPDATE，不能是 DEVICE_CAPABILITY"""
-        res = self.dm.intent_router.route("使用金牛座一号机执行巡检任务", [], {})
-        self.assertIn(res.intent, ("TASK_CREATE", "TASK_UPDATE"))
-        self.assertTrue(res.should_update_slots)
-
-    def test_a5_expected_slot_equipment_allows_slot_filling(self):
-        """5. expected_slot=equipment/equipment_type 时，输入'金牛座一号机'允许进入槽位填报"""
-        res = self.dm.intent_router.route("金牛座一号机", [], {}, phase="collecting", expected_slots=["equipment_type"])
-        self.assertEqual(res.intent, "TASK_UPDATE")
-        self.assertTrue(res.should_update_slots)
-
-    def test_a6_standalone_device_alias_without_context_no_auto_slot_filling(self):
-        """6. 无任务上下文时单独输入'金牛座一号机' → 不得自动写槽位 (CLARIFICATION)"""
-        res = self.dm.intent_router.route("金牛座一号机", [], {}, phase="collecting", expected_slots=None)
-        self.assertEqual(res.intent, "CLARIFICATION")
-        self.assertFalse(res.should_update_slots)
-
-    def test_a7_device_cap_query_preserves_slot_store_state(self):
-        """7. '金牛座一号机最大水深是多少？' → DEVICE_CAPABILITY，且 SlotStore 快照完全不变"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
-
-        res = self.dm.intent_router.route("金牛座一号机最大水深是多少？", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertEqual(res.intent, "DEVICE_CAPABILITY")
-        self.assertFalse(res.should_update_slots)
-
-        reply = self.dm.process("金牛座一号机最大水深是多少？")
-        snap_after = copy.deepcopy(self.dm.slot_store.export_snapshot())
-        self.assertEqual(snap_before, snap_after)
-
-    def test_a8_end_to_end_device_slot_update_flow(self):
-        """8. DialogueManager.process() 端到端设备槽位修改测试：真正到达统一槽位流水线"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        with patch.object(self.dm.extractor, "extract_updates", return_value={
-            "intent": "TASK_UPDATE",
-            "slot_candidates": [
-                {"canonical_key": "equipment_unit_id", "normalized_value": "AUV-324cc-001", "raw_value": "AUV一号机", "confidence": 1.0}
-            ]
-        }) as mock_ext:
-            reply = self.dm.process("把设备改成AUV一号机")
-            mock_ext.assert_called_once()
-            slot = self.dm.slot_store.slots.get("equipment_type")
-            self.assertIsNotNone(slot)
-            self.assertEqual(slot.value, "水下无人自主航行器 324CC")
-
 
 
 # ─────────────────────────────────────────────────────────────────────────────

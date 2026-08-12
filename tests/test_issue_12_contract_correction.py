@@ -131,7 +131,9 @@ class TestIssue12ContractCorrection(unittest.TestCase):
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].value, "observation_rov")
         self.assertEqual(slots["equipment_family"].value, "轻型工作级深海机器人")
-        self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人")
+        self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人 HP")
+        variant = self.kb.get_rov(slots["equipment_type"].value)
+        self.assertEqual(variant["variant_id"], "light_work_class_rov_hp")
 
     # Scenario 9: 4-level cascade forward completion
     def test_forward_cascade_completion(self):
@@ -200,7 +202,9 @@ class TestIssue12ContractCorrection(unittest.TestCase):
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].value, "observation_rov")
         self.assertEqual(slots["equipment_family"].value, "轻型工作级深海机器人")
-        self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人")
+        self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人 HP")
+        variant = self.kb.get_rov(slots["equipment_type"].value)
+        self.assertEqual(variant["variant_id"], "light_work_class_rov_hp")
         self.assertEqual(slots["equipment_unit_id"].value, "LROV--002")
 
     # Scenario 16: Conflict Fence

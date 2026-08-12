@@ -2,11 +2,9 @@
 tests/test_p0_p1_boundary_fixes.py - P0/P1 边界问题测试套件
 
 A. intent_id 格式及路径安全校验
-B. 设备别名最长匹配优先
 C. 待确认油田受控简称识别
 """
 
-import copy
 import json
 import tempfile
 import unittest
@@ -14,7 +12,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
-from src.intent_router import IntentRouter
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
 from src.slot_store import Slot
@@ -209,56 +206,6 @@ class IntentIdValidationTest(unittest.TestCase):
                         # 不创建任何文件
                         files = list(tmp_task_dir.iterdir())
                         self.assertEqual(len(files), 0, f"非法 ID 不应创建任何文件，得到: {files}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 测试 B: 设备别名最长匹配优先
-# ─────────────────────────────────────────────────────────────────────────────
-
-class LongestMatchDeviceAliasRoutingTest(unittest.TestCase):
-    def setUp(self):
-        self.kb = KnowledgeBase()
-        self.llm = DummyLLM()
-        self.dm = DialogueManager(self.llm, self.kb)
-
-    def test_b7_001_in_device_context_routes_to_clarification(self):
-        """7. '001最大水深是多少？' → CLARIFICATION (001对应多个设备)"""
-        res = self.dm.intent_router.route("001最大水深是多少？", [], {})
-        self.assertEqual(res.intent, "CLARIFICATION")
-        self.assertFalse(res.should_update_slots)
-
-    def test_b8_jinniuzuo_yihaoji_routes_to_device_capability(self):
-        """8. '金牛座一号机最大水深是多少？' → DEVICE_CAPABILITY (金牛座一号机是最长匹配且唯一)"""
-        res = self.dm.intent_router.route("金牛座一号机最大水深是多少？", [], {})
-        self.assertEqual(res.intent, "DEVICE_CAPABILITY")
-
-    def test_b9_yihaoji_routes_to_clarification(self):
-        """9. '一号机最大水深是多少？' → CLARIFICATION (一号机对应多个设备)"""
-        res = self.dm.intent_router.route("一号机最大水深是多少？", [], {})
-        self.assertEqual(res.intent, "CLARIFICATION")
-        self.assertFalse(res.should_update_slots)
-
-    def test_b10_jinniuzuo_001_routes_to_device_capability(self):
-        """10. '金牛座001最大水深是多少？' → DEVICE_CAPABILITY"""
-        res = self.dm.intent_router.route("金牛座001最大水深是多少？", [], {})
-        self.assertEqual(res.intent, "DEVICE_CAPABILITY")
-
-    def test_b11_001_in_non_device_context_not_device_capability(self):
-        """11. '我有001个苹果吗？' 和 '订单001什么时候到？' → 不得为 DEVICE_CAPABILITY"""
-        res1 = self.dm.intent_router.route("我有001个苹果吗？", [], {})
-        self.assertNotEqual(res1.intent, "DEVICE_CAPABILITY")
-
-        res2 = self.dm.intent_router.route("订单001什么时候到？", [], {})
-        self.assertNotEqual(res2.intent, "DEVICE_CAPABILITY")
-
-    def test_b12_longest_match_unique_device_overrides_short_ambiguous(self):
-        """12. 验证最长匹配唯一设备优先于短歧义别名"""
-        # '金牛座一号机' 长度 6，匹配唯一设备 crawler_variant_001
-        # '一号机' 长度 3，匹配 7 个设备
-        # 输入 '金牛座一号机作业水深是多少' 包含 '一号机' 和 '金牛座一号机'
-        # 应按最长匹配 '金牛座一号机' 路由为 DEVICE_CAPABILITY
-        res = self.dm.intent_router.route("金牛座一号机作业水深是多少？", [], {})
-        self.assertEqual(res.intent, "DEVICE_CAPABILITY")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

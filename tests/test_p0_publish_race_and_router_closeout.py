@@ -1,8 +1,7 @@
 """
-tests/test_p0_publish_race_and_router_closeout.py - P0 发布竞态与 P1 路由收口测试套件
+tests/test_p0_publish_race_and_router_closeout.py - P0 发布竞态收口测试套件
 
 A. Staging Race Condition Tests (1-12)
-B. Routing & Intent Classification Tests (13-24)
 """
 
 import copy
@@ -12,30 +11,12 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-from src.dialogue_manager import DialogueManager
-from src.intent_router import IntentRouter
 from src.knowledge_retriever import KnowledgeBase
-from src.llm_client import LLMClient
 from src.task_intent_builder import TaskIntentBuilder
 from src.exceptions import TaskPersistenceError
-from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 
-
-class DummyLLM(LLMClient):
-    def __init__(self, default_reply="默认LLM测试回复"):
-        self.llm = None
-        self.default_reply = default_reply
-
-    def chat(self, messages, temperature=0.7, max_tokens=800):
-        return self.default_reply
-
-    def generate(self, messages, temperature=0.7, max_tokens=800):
-        return self.chat(messages, temperature, max_tokens)
-
-    def filter_reply(self, text):
-        return text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -319,116 +300,6 @@ class StagingRaceConditionTest(unittest.TestCase):
                  patch("os.link", side_effect=PermissionError("Mock disk error")):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 测试 B: 路由与意图分类收口测试 (13-24)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class IntentRouterCloseoutTest(unittest.TestCase):
-    def setUp(self):
-        self.kb = KnowledgeBase()
-        self.llm = DummyLLM()
-        self.dm = DialogueManager(self.llm, self.kb)
-
-    def test_r13_jinniuzuo_why_cannot_work_at_500m(self):
-        """13. '金牛座一号机为什么不能在500米作业？' → DEVICE_CAPABILITY"""
-        res = self.dm.intent_router.route("金牛座一号机为什么不能在500米作业？", [], {})
-        self.assertEqual(res.intent, "DEVICE_CAPABILITY")
-        self.assertFalse(res.should_update_slots)
-
-    def test_r14_jinniuzuo_why_depth_is_500m(self):
-        """14. '金牛座一号机的作业水深为什么是500米？' → DEVICE_CAPABILITY"""
-        res = self.dm.intent_router.route("金牛座一号机的作业水深为什么是500米？", [], {})
-        self.assertEqual(res.intent, "DEVICE_CAPABILITY")
-        self.assertFalse(res.should_update_slots)
-
-    def test_r15_do_you_think_jinniuzuo_can_work_at_500m(self):
-        """15. '你认为金牛座一号机能在500米作业吗？' → DEVICE_CAPABILITY"""
-        res = self.dm.intent_router.route("你认为金牛座一号机能在500米作业吗？", [], {})
-        self.assertEqual(res.intent, "DEVICE_CAPABILITY")
-        self.assertFalse(res.should_update_slots)
-
-    def test_r16_change_depth_to_500m(self):
-        """16. '把作业水深改为500米' → TASK_UPDATE"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        res = self.dm.intent_router.route("把作业水深改为500米", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertEqual(res.intent, "TASK_UPDATE")
-        self.assertTrue(res.should_update_slots)
-
-    def test_r17_adjust_max_depth_to_500m(self):
-        """17. '将最大深度调整到500米' → TASK_UPDATE"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        res = self.dm.intent_router.route("将最大深度调整到500米", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertEqual(res.intent, "TASK_UPDATE")
-        self.assertTrue(res.should_update_slots)
-
-    def test_r18_change_from_500m_to_800m(self):
-        """18. '从500米改到800米' → TASK_UPDATE"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        res = self.dm.intent_router.route("从500米改到800米", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertEqual(res.intent, "TASK_UPDATE")
-        self.assertTrue(res.should_update_slots)
-
-    def test_r19_set_operation_depth_to_500m(self):
-        """19. '设置作业深度为500米' → TASK_UPDATE"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        res = self.dm.intent_router.route("设置作业深度为500米", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertEqual(res.intent, "TASK_UPDATE")
-        self.assertTrue(res.should_update_slots)
-
-    def test_r20_device_capability_query_slot_store_unchanged(self):
-        """20. 能力查询前后 SlotStore 完整快照完全相等"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
-
-        reply = self.dm.process("金牛座一号机为什么不能在500米作业？")
-
-        snap_after = copy.deepcopy(self.dm.slot_store.export_snapshot())
-        self.assertEqual(snap_before, snap_after)
-
-    def test_r21_device_capability_query_does_not_call_extractor(self):
-        """21. 能力查询不得调用 extractor"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        with patch.object(self.dm.extractor, "extract_updates") as mock_ext:
-            reply = self.dm.process("金牛座一号机的作业水深为什么是500米？")
-            mock_ext.assert_not_called()
-
-    def test_r22_update_request_calls_extractor_and_commits(self):
-        """22. 修改请求必须调用 extractor，并到达统一事务提交"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        with patch.object(self.dm.extractor, "extract_updates", return_value={
-            "intent": "TASK_UPDATE",
-            "slot_candidates": [
-                {"canonical_key": "water_depth", "normalized_value": 500.0, "raw_value": "500米", "confidence": 1.0}
-            ]
-        }) as mock_ext:
-            reply = self.dm.process("把作业水深改为500米")
-            mock_ext.assert_called_once()
-            slot = self.dm.slot_store.slots.get("water_depth")
-            self.assertIsNotNone(slot)
-            val = slot.candidate_value or slot.value
-            self.assertEqual(val, 500.0)
-
-    def test_r23_do_i_have_001_apples(self):
-        """23. '我有001个苹果吗？' - 不得产生设备相关 reason，不得修改 SlotStore"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
-
-        res = self.dm.intent_router.route("我有001个苹果吗？", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertNotIn("设备", res.reason)
-        self.assertNotIn("歧义", res.reason)
-
-        reply = self.dm.process("我有001个苹果吗？")
-        snap_after = copy.deepcopy(self.dm.slot_store.export_snapshot())
-        self.assertEqual(snap_before, snap_after)
-
-    def test_r24_when_will_order_001_arrive(self):
-        """24. '订单001什么时候到？' - 不得因'到'识别成 TASK_UPDATE，不得触发设备别名规则"""
-        seed_complete_valid_pipeline_task(self.dm, self.kb)
-        res = self.dm.intent_router.route("订单001什么时候到？", [], self.dm.task_state, phase=self.dm.phase)
-        self.assertNotEqual(res.intent, "TASK_UPDATE")
-        self.assertNotIn("设备", res.reason)
 
 
 if __name__ == "__main__":

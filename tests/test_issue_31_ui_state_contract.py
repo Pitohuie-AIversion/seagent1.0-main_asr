@@ -428,16 +428,28 @@ class TestFlaskAPIIntegration(unittest.TestCase):
         self.assertIn("slots", ui)
 
     def test_api_session_state_returns_ui_state(self):
-        self.client.post(
+        post_resp = self.client.post(
             "/api/chat",
             json={"session_id": "test-s31-state-ut", "message": "hello"},
             content_type="application/json",
         )
+        self.assertEqual(post_resp.status_code, 200)
+        post_data = post_resp.get_json()
+        self.assertIn("ui_state", post_data)
+        post_ui = post_data["ui_state"]
+        self.assertEqual(post_ui["state_status"], "ok")
+        self.assertIn("actions", post_ui)
+        self.assertIn("slots", post_ui)
+
         resp = self.client.get("/api/session/state?session_id=test-s31-state-ut")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
-        if data.get("exists"):
-            self.assertIn("ui_state", data)
+        self.assertIs(data.get("exists"), True)
+        self.assertIn("ui_state", data)
+        ui = data["ui_state"]
+        self.assertEqual(ui["state_status"], "ok")
+        self.assertIn("actions", ui)
+        self.assertIn("slots", ui)
 
     def test_compat_fields_still_present(self):
         resp = self.client.post(

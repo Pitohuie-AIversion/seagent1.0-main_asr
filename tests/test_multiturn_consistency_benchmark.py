@@ -1,141 +1,157 @@
-"""
-tests/test_multiturn_consistency_benchmark.py — 多轮任务一致性 Benchmark 测试
+"""显式 InteractionPlan 驱动的多轮 WRITE 与 SSOT 一致性基准。"""
 
-验证场景：
-用户连续输入：
-1. 创建任务: "执行流花11-1油田管缆巡检"
-2. 补充设备: "使用天鹰座一号机"
-3. 补充 payload: "携带机械臂和前视声呐"
-4. 修改参数: "把水深改成300米"
+from __future__ import annotations
 
-验证：
-- 最终 task_state 与 SlotStore.get_task_state() 完全一致（SSOT）。
-- 每一个 WRITE 轮次 SlotStore.version 递增。
-- 多轮积累参数完整保留，无字段丢失或状态污染。
-"""
-
-import sys
+import copy
 import unittest
-from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.intent_router import IntentRouter
+from tests.interaction_plan_support import (
+    ScriptedLLM,
+    extraction_result,
+    make_plan,
+    slot_candidate,
+)
 
 
-class FakeLLMForMultiTurnBenchmark:
-    def classify_interaction(self, messages, max_tokens=260):
-        last_msg = messages[-1]["content"]
-        if "【最新用户输入】:" in last_msg:
-            user_msg = last_msg.split("【最新用户输入】:")[1].strip().strip('"')
-        else:
-            user_msg = last_msg
-        
-        # 本测试全为 WRITE 交互
-        return {
-            "interaction_type": "WRITE",
-            "query_intent": None,
-            "confidence": 0.98,
-            "reason": "用户正在提交或修改任务参数"
-        }
-
-    def extract_json(self, messages, max_tokens=800):
-        last_msg = messages[-1]["content"]
-        if "【最新用户输入】:" in last_msg:
-            current_input = last_msg.split("【最新用户输入】:")[1].split("\n")[0].strip().strip('"')
-        else:
-            current_input = last_msg
-
-        if "执行流花11-1油田管缆巡检" in current_input or "流花11-1油田" in current_input:
-            return {
-                "slot_candidates": [
-                    {"raw_key": "作业类型标识", "canonical_key": "task_type_key", "raw_value": "管缆巡检", "normalized_value": "pipeline_inspection", "confidence": 0.99},
-                    {"raw_key": "作业类型", "canonical_key": "task_type", "raw_value": "管缆巡检", "normalized_value": "管缆巡检", "confidence": 0.99},
-                    {"raw_key": "目标油田", "canonical_key": "raw_oilfield_name", "raw_value": "流花11-1油田", "normalized_value": "流花11-1油田", "confidence": 0.99},
-                ],
-                "unresolved": []
-            }
-        elif "天鹰座一号机" in current_input:
-            return {
-                "slot_candidates": [
-                    {"raw_key": "使用设备", "canonical_key": "equipment_type", "raw_value": "天鹰座一号机", "normalized_value": "轻型工作级深海机器人", "confidence": 0.95},
-                    {"raw_key": "使用设备", "canonical_key": "equipment_name", "raw_value": "天鹰座一号机", "normalized_value": "天鹰座一号机", "confidence": 0.95},
-                ],
-                "unresolved": []
-            }
-        elif "摄像机" in current_input or "声呐" in current_input:
-            return {
-                "slot_candidates": [
-                    {"raw_key": "携带工具", "canonical_key": "payload", "raw_value": "高清摄像机", "normalized_value": "高清水下摄像机", "confidence": 0.95},
-                    {"raw_key": "携带工具", "canonical_key": "payload", "raw_value": "成像声呐", "normalized_value": "成像声呐", "confidence": 0.95},
-                ],
-                "unresolved": []
-            }
-        elif "300米" in current_input or "水深" in current_input:
-            return {
-                "slot_candidates": [
-                    {"raw_key": "作业水深", "canonical_key": "water_depth", "raw_value": "300米", "normalized_value": 300, "confidence": 0.99}
-                ],
-                "unresolved": []
-            }
-        return {"slot_candidates": [], "unresolved": []}
-
-    def chat(self, messages, **kwargs):
-        return "参数已接收。"
-
-    def filter_reply(self, reply):
-        return reply
+def _payload_addition(*items: str) -> dict:
+    return {
+        "field": "payload",
+        "operation": "add",
+        "items": list(items),
+        "target_items": [],
+        "raw_text": "携带高清水下摄像机和成像声呐",
+        "confidence": 0.99,
+        "source": "user_input",
+    }
 
 
 class MultiTurnConsistencyBenchmarkTest(unittest.TestCase):
     def setUp(self):
-        self.kb = KnowledgeBase()
-        self.llm = FakeLLMForMultiTurnBenchmark()
-        self.dm = DialogueManager(self.llm, self.kb)
+        self.llm = ScriptedLLM(
+            plans=[make_plan("WRITE") for _ in range(4)],
+            extractions=[
+                extraction_result(
+                    slot_candidate(
+                        "task_type_key",
+                        "pipeline_inspection",
+                        raw_key="作业类型标识",
+                        raw_value="管缆巡检",
+                    ),
+                    slot_candidate(
+                        "task_type",
+                        "管缆巡检",
+                        raw_key="作业类型",
+                        raw_value="管缆巡检",
+                    ),
+                ),
+                extraction_result(
+                    slot_candidate(
+                        "oilfield_name",
+                        "流花11-1油田",
+                        raw_key="目标油田",
+                        raw_value="流花11-1油田",
+                    ),
+                ),
+                extraction_result(
+                    slot_candidate(
+                        "equipment_type",
+                        "轻型工作级深海机器人 HP",
+                        raw_key="设备型号",
+                        raw_value="天鹰座一号机",
+                    ),
+                    slot_candidate(
+                        "equipment_unit_id",
+                        "LROV--001",
+                        raw_key="具体机器人",
+                        raw_value="天鹰座一号机",
+                    ),
+                ),
+                extraction_result(
+                    list_mutations=[
+                        _payload_addition("高清水下摄像机", "成像声呐")
+                    ],
+                ),
+                extraction_result(
+                    slot_candidate(
+                        "water_depth",
+                        300.0,
+                        raw_key="作业水深",
+                        raw_value="300米",
+                    ),
+                ),
+            ],
+            default_reply="参数已接收。",
+        )
+        self.dm = DialogueManager(self.llm, KnowledgeBase())
+
+    def _process_write_and_assert_ssot(self, message: str) -> tuple[int, dict]:
+        version_before = self.dm.slot_store.version
+        snapshot_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
+
+        self.dm.process(message)
+
+        version_after = self.dm.slot_store.version
+        self.assertGreater(
+            version_after,
+            version_before,
+            "每个 WRITE 轮必须真实提交并递增版本",
+        )
+        self.assertNotEqual(
+            self.dm.slot_store.export_snapshot(),
+            snapshot_before,
+            "WRITE 轮不得以空更新假通过",
+        )
+        slot_state = self.dm.slot_store.get_task_state()
+        self.assertTrue(slot_state, "SSOT 比较不得建立在两个空状态之上")
+        self.assertEqual(self.dm.task_state, slot_state)
+        return version_after, copy.deepcopy(slot_state)
 
     def test_four_turn_write_accumulation_and_ssot_consistency(self):
-        # Initial state
-        initial_ver = self.dm.slot_store.version
+        _, state_1 = self._process_write_and_assert_ssot(
+            "执行流花11-1油田管缆巡检"
+        )
+        self.assertEqual(state_1["task_type_key"], "pipeline_inspection")
+        self.assertEqual(state_1["task_type"], "管缆巡检")
+        self.assertEqual(state_1["raw_oilfield_name"], "流花11-1油田")
 
-        # Turn 1: 创建任务
-        r1 = self.dm.process("执行流花11-1油田管缆巡检")
-        v1 = self.dm.slot_store.version
-        self.assertGreater(v1, initial_ver)
-        self.assertEqual(self.dm.task_state.get("task_type_key"), "pipeline_inspection")
-        self.assertEqual(self.dm.task_state.get("raw_oilfield_name"), "流花11-1油田")
-        self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
+        _, state_2 = self._process_write_and_assert_ssot("使用天鹰座一号机")
+        self.assertEqual(state_2["equipment_type"], "轻型工作级深海机器人 HP")
+        self.assertEqual(state_2["equipment_unit_id"], "LROV--001")
+        self.assertEqual(state_2["raw_oilfield_name"], "流花11-1油田")
 
-        # Turn 2: 补充设备
-        r2 = self.dm.process("使用天鹰座一号机")
-        v2 = self.dm.slot_store.version
-        self.assertGreater(v2, v1)
-        self.assertEqual(self.dm.task_state.get("equipment_type"), "轻型工作级深海机器人")
-        self.assertEqual(self.dm.task_state.get("raw_oilfield_name"), "流花11-1油田")
-        self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
+        _, state_3 = self._process_write_and_assert_ssot(
+            "携带高清摄像机和成像声呐"
+        )
+        self.assertEqual(
+            state_3["payload"],
+            ["高清水下摄像机", "成像声呐"],
+        )
+        self.assertEqual(state_3["equipment_unit_id"], "LROV--001")
+        self.assertEqual(state_3["raw_oilfield_name"], "流花11-1油田")
 
-        # Turn 3: 补充 payload
-        r3 = self.dm.process("携带高清摄像机和成像声呐")
-        v3 = self.dm.slot_store.version
-        self.assertGreater(v3, v2)
-        payload = self.dm.task_state.get("payload")
-        self.assertIsInstance(payload, list)
-        self.assertIn("高清水下摄像机", payload)
-        self.assertIn("成像声呐", payload)
-        self.assertEqual(self.dm.task_state.get("equipment_type"), "轻型工作级深海机器人")
-        self.assertEqual(self.dm.task_state.get("raw_oilfield_name"), "流花11-1油田")
-        self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
+        _, final_state = self._process_write_and_assert_ssot("把水深改成300米")
+        expected_fields = {
+            "task_type_key": "pipeline_inspection",
+            "task_type": "管缆巡检",
+            "raw_oilfield_name": "流花11-1油田",
+            "equipment_type": "轻型工作级深海机器人 HP",
+            "equipment_unit_id": "LROV--001",
+            "payload": ["高清水下摄像机", "成像声呐"],
+            "water_depth": 300.0,
+        }
+        for key, expected_value in expected_fields.items():
+            self.assertIn(key, final_state)
+            self.assertEqual(final_state[key], expected_value)
 
-        # Turn 4: 修改水深参数
-        r4 = self.dm.process("把水深改成300米")
-        v4 = self.dm.slot_store.version
-        self.assertGreater(v4, v3)
-        self.assertEqual(self.dm.task_state.get("water_depth"), 300)
-        self.assertEqual(self.dm.task_state.get("equipment_type"), "轻型工作级深海机器人")
-        self.assertEqual(self.dm.task_state.get("raw_oilfield_name"), "流花11-1油田")
-        self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
+        self.assertGreaterEqual(len(final_state), len(expected_fields))
+        self.assertEqual(final_state, self.dm.slot_store.get_task_state())
+        self.assertEqual(self.dm.task_state, final_state)
+        self.assertEqual(len(self.llm.classify_calls), 4)
+        self.assertEqual(len(self.llm.extract_calls), 5)
+        self.assertFalse(self.llm.plans)
+        self.assertFalse(self.llm.extractions)
 
 
 if __name__ == "__main__":

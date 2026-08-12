@@ -19,6 +19,8 @@ def make_plan(
     query_intent: str | None = None,
     confidence: float = 0.95,
     emergency_action: str | None = None,
+    pending_action: str | None = None,
+    warning_action: str | None = None,
     subject_type: str | None = None,
     subject_text: str | None = None,
     relation: str | None = None,
@@ -67,6 +69,8 @@ def make_plan(
         "needs_clarification": needs_clarification,
         "clarification_reason": clarification_reason,
         "emergency_action": emergency_action,
+        "pending_action": pending_action,
+        "warning_action": warning_action,
         "confidence": confidence,
         "reason_code": reason_code,
     }
@@ -157,8 +161,9 @@ class ScriptedLLM(LLMClient):
         messages: list[dict],
         max_tokens: int = 800,
         role: Any = None,
+        json_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        del max_tokens, role
+        del max_tokens, role, json_schema
         self.extract_calls.append(deepcopy(messages))
         result = self.extractions.popleft() if self.extractions else self.default_extraction
         return deepcopy(result)

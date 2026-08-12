@@ -2,22 +2,19 @@
 tests/test_p0_security_final_closeout.py - P0/P1 最终安全与逻辑边界收口测试套件
 
 A. intent_id Unicode 数字与严格正则校验
-B. 纯数字设备别名精准语境限制
 C. publish_staging 来源路径与安全防冒充校验
 """
 
-import copy
 import json
 import os
 import tempfile
 import typing
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from src.id_sequence import validate_intent_id
 from src.dialogue_manager import DialogueManager
-from src.intent_router import IntentRouter, IntentRouteResult
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
 from src.task_intent_builder import TaskIntentBuilder
@@ -151,73 +148,6 @@ class IntentIdUnicodeSecurityTest(unittest.TestCase):
                 files = list(tmp_task_dir.iterdir())
                 self.assertEqual(len(files), 0)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 测试 B: 数字设备别名精准语境限制 (9-13)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class NumericDeviceAliasContextTest(unittest.TestCase):
-    def setUp(self):
-        self.kb = KnowledgeBase()
-        self.llm = DummyLLM()
-        self.dm = DialogueManager(self.llm, self.kb)
-
-    def test_b9_apple_query_no_device_reason(self):
-        """9. '我有001个苹果吗？' 不得包含任何设备别名相关的 reason，不误解释 001"""
-        res = self.dm.intent_router.route("我有001个苹果吗？", [], {})
-        reason = res.reason or ""
-        self.assertNotIn("设备别名", reason)
-        self.assertNotIn("多个设备", reason)
-        self.assertNotIn("设备型号歧义", reason)
-        self.assertNotEqual(res.intent, "DEVICE_CAPABILITY")
-
-    def test_b10_order_query_no_device_reason(self):
-        """10. '订单001什么时候到？' 不得包含任何设备别名相关的 reason"""
-        res = self.dm.intent_router.route("订单001什么时候到？", [], {})
-        reason = res.reason or ""
-        self.assertNotIn("设备别名", reason)
-        self.assertNotIn("多个设备", reason)
-        self.assertNotIn("设备型号歧义", reason)
-        self.assertNotEqual(res.intent, "DEVICE_CAPABILITY")
-
-    def test_b11_001_in_explicit_device_cap_context_is_clarification(self):
-        """11. '001最大水深是多少？' 在明确设备能力语境下仍为 CLARIFICATION"""
-        res = self.dm.intent_router.route("001最大水深是多少？", [], {})
-        self.assertEqual(res.intent, "CLARIFICATION")
-        self.assertIn("001", res.reason)
-
-    def test_b12_jinniuzuo_001_in_explicit_device_cap_context_is_device_cap(self):
-        """12. '金牛座001最大水深是多少？' 仍为 DEVICE_CAPABILITY"""
-        res = self.dm.intent_router.route("金牛座001最大水深是多少？", [], {})
-        self.assertEqual(res.intent, "DEVICE_CAPABILITY")
-
-    def test_b13_non_device_numeric_queries_preserve_slot_store_state(self):
-        """13. 普通数字问题 ('第001题答案是什么？', '房间001在哪里？') 不影响 SlotStore 状态"""
-        queries = [
-            "我有001个苹果吗？",
-            "订单001什么时候到？",
-            "第001题答案是什么？",
-            "编号001是否正确？",
-            "房间001在哪里？",
-            "今天是001号吗？",
-        ]
-        snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
-        v_before = self.dm.slot_store.version
-        phase_before = self.dm.phase
-
-        for q in queries:
-            with self.subTest(query=q):
-                res = self.dm.intent_router.route(q, [], self.dm.task_state)
-                reason = res.reason or ""
-                self.assertNotIn("设备别名", reason)
-                self.assertNotIn("多个设备", reason)
-                self.assertNotIn("设备型号歧义", reason)
-
-                reply = self.dm.process(q)
-
-                self.assertEqual(self.dm.slot_store.version, v_before)
-                self.assertEqual(self.dm.phase, phase_before)
-                self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

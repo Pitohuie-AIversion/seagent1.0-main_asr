@@ -1,156 +1,153 @@
-"""
-tests/test_phase19_regression_guard.py — Phase 1.9 Regression Guard & Stability Tests
+"""Phase 1.9 核心回归：READ 不变性、WRITE 提交和发布失败回滚。"""
 
-验证目标：
-1. QUERY 永远不修改状态：
-   - 输入 "金牛座一号机最大水深是多少？"，SlotStore version 保持不变。
-2. WRITE 正常修改状态：
-   - 输入 "执行流花11-1油田管缆巡检"，task_type 与 oilfield_name 成功更新。
-3. Failure recovery 回滚正常：
-   - 模拟 publish failure，验证状态与 SlotStore 原子回滚。
-"""
-
-import sys
+import copy
+import tempfile
 import unittest
 from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
+from src.exceptions import TaskPersistenceError
 from src.knowledge_retriever import KnowledgeBase
-from src.task_intent_builder import TaskIntentBuilder, TaskPersistenceError
-
-
-class Phase19GuardLLM:
-    def classify_interaction(self, messages, max_tokens=260):
-        last_msg = messages[-1]["content"]
-        if "【最新用户输入】:" in last_msg:
-            user_msg = last_msg.split("【最新用户输入】:")[1].split("\n")[0].strip().strip('"')
-        else:
-            user_msg = last_msg
-
-        if "最大水深" in user_msg or "多少" in user_msg:
-            return {
-                "interaction_type": "QUERY",
-                "query_intent": "DEVICE_CAPABILITY",
-                "confidence": 0.98,
-                "reason": "设备能力查询",
-            }
-        else:
-            return {
-                "interaction_type": "WRITE",
-                "query_intent": None,
-                "confidence": 0.98,
-                "reason": "任务修改",
-            }
-
-    def chat(self, messages, temperature=0.7, max_tokens=1500):
-        return "金牛座一号机最大水深为3000米。已更新系统状态。"
-
-    def filter_reply(self, text):
-        return text
-
-    def extract_json(self, messages, max_tokens=800):
-        raw_text = str(messages)
-
-        if "流花11-1" in raw_text or "管缆巡检" in raw_text:
-            return {
-                "task_type": "pipeline_inspection",
-                "slot_candidates": [
-                    {
-                        "raw_key": "任务类型",
-                        "canonical_key": "task_type_key",
-                        "raw_value": "管缆巡检",
-                        "normalized_value": "pipeline_inspection",
-                        "confidence": 0.99,
-                    },
-                    {
-                        "raw_key": "作业水深",
-                        "canonical_key": "water_depth",
-                        "raw_value": "300米",
-                        "normalized_value": 300.0,
-                        "confidence": 0.99,
-                    },
-                ],
-                "unresolved": [],
-            }
-        elif "300米" in raw_text:
-            return {
-                "slot_candidates": [
-                    {
-                        "raw_key": "作业水深",
-                        "canonical_key": "water_depth",
-                        "raw_value": "300米",
-                        "normalized_value": 300.0,
-                        "confidence": 0.99,
-                    }
-                ],
-                "unresolved": [],
-            }
-        return {"slot_candidates": [], "unresolved": []}
+from tests.interaction_plan_support import (
+    ScriptedLLM,
+    extraction_result,
+    make_plan,
+    slot_candidate,
+)
+from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 
 
 class Phase19RegressionGuardTest(unittest.TestCase):
     def setUp(self):
         self.kb = KnowledgeBase()
-        self.llm = Phase19GuardLLM()
+        self.llm = ScriptedLLM(default_reply="测试回复")
         self.dm = DialogueManager(self.llm, self.kb)
 
-    def test_query_does_not_modify_state(self):
-        """1. QUERY 永远不修改 SlotStore 版本和任务状态"""
-        initial_ver = self.dm.slot_store.version
-        initial_state = dict(self.dm.task_state)
+    def test_read_preserves_complete_task_state(self):
+        """READ 不得修改非空 SlotStore、派生缓存或任务阶段。"""
+        seed_complete_valid_pipeline_task(self.dm, self.kb)
+        self.llm.queue_plan(
+            make_plan(
+                "READ",
+                query_intent="DEVICE_CAPABILITY",
+                subject_type="device",
+                subject_text="金牛座一号机",
+                relation="capabilities",
+                source_policy="project_kb",
+            )
+        )
 
-        reply = self.dm.process("金牛座一号机最大水深是多少？")
+        before_snapshot = copy.deepcopy(self.dm.slot_store.export_snapshot())
+        before_task_state = copy.deepcopy(self.dm.task_state)
+        before_built_json = copy.deepcopy(self.dm._last_built_json)
+        before_missing = copy.deepcopy(self.dm._last_missing)
+        before_phase = self.dm.phase
+        before_final_result = copy.deepcopy(self.dm.final_result)
 
-        self.assertEqual(self.dm.slot_store.version, initial_ver)
-        self.assertEqual(self.dm.task_state, initial_state)
-        self.assertIn("最大水深", reply)
+        reply = self.dm.process(
+            "金牛座一号机最大水深是多少？",
+            request_id="req_phase19_read",
+        )
 
-    def test_write_modifies_state(self):
-        """2. WRITE 正常修改任务状态和 task_type"""
-        initial_ver = self.dm.slot_store.version
+        self.assertTrue(reply)
+        self.assertEqual(len(self.llm.classify_calls), 1)
+        self.assertEqual(self.llm.extract_calls, [])
+        self.assertEqual(self.dm.slot_store.export_snapshot(), before_snapshot)
+        self.assertEqual(self.dm.task_state, before_task_state)
+        self.assertEqual(self.dm._last_built_json, before_built_json)
+        self.assertEqual(self.dm._last_missing, before_missing)
+        self.assertEqual(self.dm.phase, before_phase)
+        self.assertEqual(self.dm.final_result, before_final_result)
 
-        reply = self.dm.process("执行流花11-1油田管缆巡检")
+    def test_write_creates_task_and_commits_water_depth(self):
+        """WRITE 必须经过两阶段抽取并真实提交任务类型和水深。"""
+        self.llm.queue_plan(make_plan("WRITE"))
+        self.llm.queue_extraction(
+            extraction_result(
+                slot_candidate(
+                    "task_type",
+                    "管缆巡检",
+                    raw_value="管缆巡检",
+                    raw_key="任务类型",
+                ),
+                slot_candidate(
+                    "task_type_key",
+                    "pipeline_inspection",
+                    raw_value="管缆巡检",
+                    raw_key="任务类型标识",
+                ),
+            )
+        )
+        self.llm.queue_extraction(
+            extraction_result(
+                slot_candidate(
+                    "water_depth",
+                    300.0,
+                    raw_value="300米",
+                    raw_key="作业水深",
+                )
+            )
+        )
+        initial_version = self.dm.slot_store.version
 
-        self.assertGreater(self.dm.slot_store.version, initial_ver)
-        self.assertEqual(self.dm.task_state.get("task_type_key"), "pipeline_inspection")
-        self.assertEqual(self.dm.task_state.get("water_depth"), 300.0)
+        self.dm.process(
+            "执行管缆巡检，水深300米",
+            request_id="req_phase19_write",
+        )
 
-    def test_failure_recovery_rollback(self):
-        """3. Failure recovery：模拟 publish failure，验证状态与 SlotStore 原子回滚"""
-        # 设置必要槽位以推进到确认阶段
-        self.dm.process("执行紧急管缆巡检")
-        self.dm.process("提供详细参数，水深300米")
+        state = self.dm.slot_store.get_task_state()
+        self.assertEqual(len(self.llm.classify_calls), 1)
+        self.assertEqual(len(self.llm.extract_calls), 2)
+        self.assertGreater(self.dm.slot_store.version, initial_version)
+        self.assertEqual(state.get("task_type"), "管缆巡检")
+        self.assertEqual(state.get("task_type_key"), "pipeline_inspection")
+        self.assertEqual(state.get("water_depth"), 300.0)
+        self.assertEqual(self.dm.task_state, state)
 
-        eq_slot = self.dm.slot_store.slots.get("equipment_type")
-        if eq_slot and eq_slot.status != "valid":
-            eq_slot.value = "观察级ROV"
-            eq_slot.status = "valid"
-            self.dm.task_state = self.dm.slot_store.get_task_state()
-            self.dm.phase = "confirming"
+    def test_publish_failure_calls_publisher_and_restores_snapshot(self):
+        """publish_staging 失败必须抛错并精确恢复发布前内存状态。"""
+        seed_complete_valid_pipeline_task(self.dm, self.kb)
+        self.assertEqual(self.dm.phase, "confirming")
+        self.assertEqual(self.dm._last_missing, [])
 
-        ver_before = self.dm.slot_store.version
+        before_snapshot = copy.deepcopy(self.dm.slot_store.export_snapshot())
+        before_task_state = copy.deepcopy(self.dm.task_state)
+        before_built_json = copy.deepcopy(self.dm._last_built_json)
+        before_missing = copy.deepcopy(self.dm._last_missing)
 
-        # 模拟发布阶段存储锁定失败
-        def faulty_publish_staging(*args, **kwargs):
-            raise TaskPersistenceError("Simulated atomic publish failure in Phase 1.9 guard test")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            task_dir = Path(tmp_dir) / "task"
+            task_dir.mkdir(parents=True, exist_ok=True)
 
-        old_publish = TaskIntentBuilder.publish_staging
-        TaskIntentBuilder.publish_staging = faulty_publish_staging
+            with (
+                patch(
+                    "src.task_intent_builder.get_task_dir",
+                    return_value=task_dir,
+                ),
+                patch(
+                    "src.dialogue_manager.TaskIntentBuilder.publish_staging",
+                    side_effect=TaskPersistenceError(
+                        "Simulated atomic publish failure in Phase 1.9 guard"
+                    ),
+                ) as mock_publish,
+            ):
+                with self.assertRaises(TaskPersistenceError):
+                    self.dm.process(
+                        "确认发布",
+                        request_id="req_phase19_publish_failure",
+                    )
 
-        try:
-            try:
-                self.dm.process("确认发布")
-            except TaskPersistenceError:
-                pass
-        finally:
-            TaskIntentBuilder.publish_staging = old_publish
+            mock_publish.assert_called_once()
+            self.assertEqual(list(task_dir.glob("task_intent_*.json")), [])
 
-        # 验证回滚后 TaskState 与 SlotStore 的一致性及版本无非法泄露
-        self.assertEqual(self.dm.task_state, self.dm.slot_store.get_task_state())
-        self.assertLessEqual(self.dm.slot_store.version, ver_before + 1)
+        self.assertEqual(self.llm.classify_calls, [])
+        self.assertEqual(self.dm.phase, "confirming")
+        self.assertIsNone(self.dm.final_result)
+        self.assertEqual(self.dm.slot_store.export_snapshot(), before_snapshot)
+        self.assertEqual(self.dm.task_state, before_task_state)
+        self.assertEqual(self.dm._last_built_json, before_built_json)
+        self.assertEqual(self.dm._last_missing, before_missing)
 
 
 if __name__ == "__main__":

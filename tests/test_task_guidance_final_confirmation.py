@@ -1,30 +1,28 @@
 """
 tests/test_task_guidance_final_confirmation.py
 
-SEAgent G6 Closeout — Final Confirmation Semantics Fix 专项测试。
-验证：
-1. 用户必填字段全部完成 -> phase = confirming，不自动发布；
-2. confirming + "好的" -> phase 仍为 confirming，不调用 publish；
-3. confirming + "确认" -> phase 仍为 confirming，不调用 publish；
-4. confirming + "确认发布" -> 进入正式 publish 处理并下发任务；
-5. blocked_soft + "确认发布" -> 不生成 soft acknowledgement，保持 blocked_soft；
-6. blocked_soft + "忽略警告" -> 生成 ValidationAcknowledgement；
-7. 忽略软警告后，missing 不包含 auto/fixed 字段（如 task_id, intent_id, internal_id）；
-8. confirming 阶段的 responder prompt 明确提示“确认发布”及“任务尚未发布”。
+最终发布与软警告确认的安全边界测试：
+- 普通确认词不得发布任务；
+- 只有最终发布确认路径可以调用 publisher；
+- 软警告确认与最终发布必须分离；
+- 忽略软警告后不得把自动字段列为 missing。
 """
 
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.llm_client import LLMClient
-from src.prompts import build_responder_messages, _CONSTRAINT_INSTRUCTIONS
+from tests.interaction_plan_support import ScriptedLLM, make_plan
 
 
 class TestTaskGuidanceFinalConfirmation(unittest.TestCase):
     def setUp(self):
-        self.llm = LLMClient(None, None)
+        self.llm = ScriptedLLM(
+            plans=[
+                make_plan("WRITE", warning_action="acknowledge"),
+            ]
+        )
         self.kb = KnowledgeBase()
         self.dm = DialogueManager(self.llm, self.kb, session_id="test_sess_confirm")
 
@@ -63,13 +61,6 @@ class TestTaskGuidanceFinalConfirmation(unittest.TestCase):
         dm.task_state = dm.slot_store.get_task_state()
         dm.task_state["task_type_key"] = "pipeline_inspection"
 
-    def test_01_all_required_user_slots_complete_enters_confirming_without_auto_publish(self):
-        """1. 用户必填字段全部完成 -> phase = confirming，不自动发布"""
-        self._fill_all_required_slots(self.dm)
-        self.dm.phase = "confirming"
-
-        self.assertEqual(self.dm.phase, "confirming")
-        self.assertNotEqual(self.dm.phase, "done")
 
     def test_02_confirming_phase_with_haode_does_not_publish(self):
         """2. confirming + “好的” -> phase 仍为 confirming，不调用 publish"""
@@ -102,7 +93,7 @@ class TestTaskGuidanceFinalConfirmation(unittest.TestCase):
         reply = self.dm.process("确认发布")
         self.assertEqual(self.dm.phase, "blocked_soft")
         self.assertIn("当前仍存在软警告", reply)
-        self.assertIn("忽略警告", reply)
+        self.assertIn("接受当前软警告", reply)
 
     def test_06_blocked_soft_phase_with_hulve_jianguo_creates_acknowledgement(self):
         """6. blocked_soft + “忽略警告” -> 触发 soft warning 确认逻辑"""
@@ -118,7 +109,7 @@ class TestTaskGuidanceFinalConfirmation(unittest.TestCase):
         res = self.dm._refresh_validation()
         self.dm.phase = "blocked_soft"
         self.dm._blocking_violations = res.violations
-        self.dm._handle_soft_warning_confirmation("忽略警告", "req_test_07")
+        reply = self.dm._handle_soft_warning_confirmation("忽略警告", "req_test_07")
 
         self.assertEqual(self.dm.phase, "confirming")
         missing_keys = [m["key"] if isinstance(m, dict) else str(m) for m in self.dm._last_missing]
@@ -126,25 +117,10 @@ class TestTaskGuidanceFinalConfirmation(unittest.TestCase):
         self.assertNotIn("intent_id", missing_keys)
         self.assertNotIn("internal_id", missing_keys)
         self.assertEqual(len(missing_keys), 0)
+        self.assertIn("任务尚未发布", reply)
+        self.assertIn("确认发布", reply)
+        self.assertEqual(self.llm.chat_calls, [])
 
-    def test_08_confirming_responder_prompt_contains_explicit_publish_guidance(self):
-        """8. confirming 阶段的 responder prompt 包含‘确认发布’与‘任务尚未发布’指引"""
-        messages = build_responder_messages(
-            task_state={"task_type_key": "pipeline_inspection", "task_type": "管缆巡检"},
-            built_json={"water_depth": 300.0},
-            missing_fields=[],
-            mode="normal",
-            phase="confirming",
-            knowledge_context="",
-            constraint_context={"type": "none", "violations": []},
-            conversation_history=[],
-            latest_user_message="好的",
-            ROV2type={},
-            support_task=["管缆巡检"],
-        )
-        system_prompt = messages[0]["content"]
-        self.assertIn("确认发布", system_prompt)
-        self.assertIn("当前任务尚未发布", system_prompt)
 
 
 if __name__ == "__main__":

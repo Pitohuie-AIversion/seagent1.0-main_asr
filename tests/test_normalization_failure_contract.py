@@ -24,6 +24,7 @@ from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
 from src.slot_store import Slot, SlotStore
 from src.normalizer import FieldNormalizer
+from tests.interaction_plan_support import make_plan
 
 
 def _make_dm(tmp_dir: Path) -> DialogueManager:
@@ -185,17 +186,22 @@ class TestNormalizationFailureContract(unittest.TestCase):
         self.dm.slot_store.commit_transaction(slots, [])
         self.dm.task_state = self.dm.slot_store.get_task_state()
 
-        def stub_llm_extract_json(messages, max_tokens=None):
+        self.dm.llm.classify_interaction = MagicMock(return_value=make_plan("WRITE"))
+
+        def stub_llm_extract_json(messages, max_tokens=None, role=None):
             return {
                 "slot_candidates": [
                     {
+                        "raw_key": "水深",
                         "canonical_key": "water_depth",
                         "normalized_value": "300abc",
                         "raw_value": "差不多很深",
                         "confidence": 0.9,
                         "resolution_method": "llm_semantic",
                     }
-                ]
+                ],
+                "list_mutations": [],
+                "unresolved": [],
             }
 
         with patch.object(self.dm.llm, "extract_json", side_effect=stub_llm_extract_json):
@@ -221,17 +227,22 @@ class TestNormalizationFailureContract(unittest.TestCase):
         self.dm.slot_store.commit_transaction(slots, [])
         self.dm.task_state = self.dm.slot_store.get_task_state()
 
-        def stub_llm_extract_json(messages, max_tokens=None):
+        self.dm.llm.classify_interaction = MagicMock(return_value=make_plan("WRITE"))
+
+        def stub_llm_extract_json(messages, max_tokens=None, role=None):
             return {
                 "slot_candidates": [
                     {
+                        "raw_key": "水深",
                         "canonical_key": "water_depth",
                         "normalized_value": "500",
                         "raw_value": "500米",
                         "confidence": 0.95,
                         "resolution_method": "regex_rule",
                     }
-                ]
+                ],
+                "list_mutations": [],
+                "unresolved": [],
             }
 
         with patch.object(self.dm.llm, "extract_json", side_effect=stub_llm_extract_json):
@@ -332,18 +343,25 @@ class TestNormalizationFailureContract(unittest.TestCase):
         self.dm.slot_store.commit_transaction(slots, [])
         self.dm.task_state = self.dm.slot_store.get_task_state()
 
+        self.dm.llm.classify_interaction = MagicMock(
+            side_effect=[make_plan("WRITE"), make_plan("WRITE")]
+        )
+
         # Step 1: 提交非法修改引发 conflict
-        def stub_invalid_llm(messages, max_tokens=None):
+        def stub_invalid_llm(messages, max_tokens=None, role=None):
             return {
                 "slot_candidates": [
                     {
+                        "raw_key": "水深",
                         "canonical_key": "water_depth",
                         "normalized_value": "300abc",
                         "raw_value": "差不多很深",
                         "confidence": 0.9,
                         "resolution_method": "llm_semantic",
                     }
-                ]
+                ],
+                "list_mutations": [],
+                "unresolved": [],
             }
 
         with patch.object(self.dm.llm, "extract_json", side_effect=stub_invalid_llm):
@@ -354,8 +372,12 @@ class TestNormalizationFailureContract(unittest.TestCase):
         self.assertEqual(slot_conflict.value, 300.0)
 
         # Step 2: 真实 Router + Extractor 管道提交 "取消修改水深"
-        def stub_empty_llm(messages, max_tokens=None):
-            return {"slot_candidates": []}
+        def stub_empty_llm(messages, max_tokens=None, role=None):
+            return {
+                "slot_candidates": [],
+                "list_mutations": [],
+                "unresolved": [],
+            }
 
         with patch.object(self.dm.llm, "extract_json", side_effect=stub_empty_llm):
             self.dm.process("取消修改水深", request_id="req_real_cancel_step2")
@@ -366,31 +388,6 @@ class TestNormalizationFailureContract(unittest.TestCase):
         self.assertIsNone(slot_restored.candidate_value)
         self.assertIsNone(slot_restored.validation_error)
         self.assertEqual(self.dm.slot_store.get_task_state().get("water_depth"), 300.0)
-
-    def test_cancel_task_vs_cancel_slot_modification_are_distinct(self):
-        """验证 IntentRouter 真实区分“取消当前任务”、“取消修改水深”、“不要取消当前任务”与“如果取消任务会怎样？”。"""
-        router = self.dm.intent_router
-
-        # 1. 取消当前任务 -> emergency_intervention / cancel
-        r1 = router.route("取消当前任务", [], {"task_type": "管缆巡检"}, "collecting")
-        self.assertEqual(r1.dialogue_mode, "emergency_intervention")
-        self.assertEqual(r1.emergency_action, "cancel")
-
-        # 2. 取消修改水深 -> task_collection / WRITE
-        r2 = router.route("取消修改水深", [], {"task_type": "管缆巡检"}, "collecting")
-        self.assertEqual(r2.dialogue_mode, "task_collection")
-        self.assertEqual(r2.interaction_type, "WRITE")
-
-        # 3. 不要取消当前任务 -> 只读，无紧急动作
-        r3 = router.route("不要取消当前任务", [], {"task_type": "管缆巡检"}, "collecting")
-        self.assertEqual(r3.dialogue_mode, "knowledge_qa")
-        self.assertIsNone(r3.emergency_action)
-
-        # 4. 如果取消任务会怎样？ -> 只读咨询，无紧急动作
-        r4 = router.route("如果取消任务会怎样？", [], {"task_type": "管缆巡检"}, "collecting")
-        self.assertEqual(r4.dialogue_mode, "knowledge_qa")
-        self.assertIsNone(r4.emergency_action)
-
 
 class TestFieldNormalizerUnit(unittest.TestCase):
     def setUp(self):

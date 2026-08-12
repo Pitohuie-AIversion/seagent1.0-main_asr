@@ -15,6 +15,12 @@ from unittest.mock import patch
 from src.dialogue_manager import DialogueManager
 from src.session_state import StateContractError
 from src.slot_store import Slot, SlotStore
+from tests.interaction_plan_support import (
+    ScriptedLLM,
+    extraction_result,
+    make_plan,
+    slot_candidate,
+)
 
 
 class TestConversationExecutionOwnerV2(unittest.TestCase):
@@ -78,12 +84,45 @@ class TestConversationExecutionOwnerV2(unittest.TestCase):
 
     # 6. Ordinary knowledge QA mode switch preserves SlotStore Task Facts
     def test_06_knowledge_qa_mode_switch_preserves_task_facts(self) -> None:
-        self.dm.process("在井口 A 进行采油树阀门替换任务")
-        state_before = copy.deepcopy(self.dm.slot_store.get_task_state())
+        llm = ScriptedLLM(
+            plans=[make_plan("WRITE"), make_plan("READ")],
+            extractions=[
+                extraction_result(
+                    slot_candidate(
+                        "task_type",
+                        "管缆巡检",
+                        raw_value="管缆巡检",
+                    ),
+                    slot_candidate(
+                        "task_type_key",
+                        "pipeline_inspection",
+                        raw_value="管缆巡检",
+                    ),
+                ),
+                extraction_result(
+                    slot_candidate(
+                        "water_depth",
+                        300.0,
+                        raw_value="300m",
+                    )
+                ),
+            ],
+        )
+        dm = DialogueManager(llm=llm)
+        dm.process("turn:create-task")
+        self.assertEqual(
+            dm.slot_store.slots["task_type_key"].value,
+            "pipeline_inspection",
+        )
+        snapshot_before = copy.deepcopy(dm.slot_store.export_snapshot())
+        state_before = copy.deepcopy(dm.slot_store.get_task_state())
+        extract_count = len(llm.extract_calls)
 
-        self.dm.process("你觉得今天天气怎么样？")
-        self.assertEqual(self.dm.dialogue_mode, "knowledge_qa")
-        self.assertEqual(self.dm.slot_store.get_task_state(), state_before)
+        dm.process("turn:read-only")
+        self.assertEqual(dm.dialogue_mode, "knowledge_qa")
+        self.assertEqual(dm.slot_store.export_snapshot(), snapshot_before)
+        self.assertEqual(dm.slot_store.get_task_state(), state_before)
+        self.assertEqual(len(llm.extract_calls), extract_count)
 
     # 7. Execution stop request state valid
     def test_07_execution_stop_request_valid(self) -> None:
@@ -162,25 +201,31 @@ class TestConversationExecutionOwnerV2(unittest.TestCase):
 
     # 12. Draft cancel and execution cancel distinct semantics
     def test_12_draft_cancel_and_execution_cancel_distinct_semantics(self) -> None:
-        # Draft cancel during active draft collection
-        self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        self.dm.task_state = self.dm.slot_store.get_task_state()
+        llm = ScriptedLLM(
+            plans=[make_plan("CONTROL", emergency_action="cancel")]
+        )
+        dm = DialogueManager(llm=llm)
+        dm.slot_store.slots["task_type_key"] = Slot(
+            "task_type_key",
+            value="pipeline_inspection",
+            status="valid",
+        )
+        dm.task_state = dm.slot_store.get_task_state()
 
-        self.dm.process("取消当前任务")
-        self.assertEqual(self.dm.phase, "rejected")
-        self.assertEqual(self.dm.control_state, "idle")
-        self.assertIsNone(self.dm.last_control_request)
+        dm.process("turn:cancel-draft")
+        self.assertEqual(dm.phase, "rejected")
+        self.assertEqual(dm.control_state, "idle")
+        self.assertIsNone(dm.last_control_request)
 
-        # Execution cancel on published (done) task
-        self.dm._transition_phase("done", reason="test_setup")
+        dm._transition_phase("done", reason="test_setup")
         route_mock = unittest.mock.MagicMock()
         route_mock.emergency_action = "cancel"
-        route_mock.source = "rule"
+        route_mock.source = "interaction_plan"
         route_mock.confidence = 1.0
         route_mock.reason = "user_command"
-        self.dm._handle_emergency_intervention("取消", route_mock)
-        self.assertEqual(self.dm.control_state, "cancel_requested")
-        self.assertIsNotNone(self.dm.last_control_request)
+        dm._handle_emergency_intervention("turn:cancel-execution", route_mock)
+        self.assertEqual(dm.control_state, "cancel_requested")
+        self.assertIsNotNone(dm.last_control_request)
 
     # 13. Reset behavior preserved
     def test_13_reset_behavior_preserved(self) -> None:

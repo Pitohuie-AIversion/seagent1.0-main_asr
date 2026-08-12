@@ -14,7 +14,7 @@ profiles:
     role: extractor
     enable_thinking: false
     temperature: 0.1
-    max_tokens: 800
+    max_tokens: 1600
     stop: []
     response_mode: json
 

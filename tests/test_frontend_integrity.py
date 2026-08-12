@@ -78,19 +78,22 @@ class TestFrontendIntegrity(unittest.TestCase):
         forbidden_emojis = ["⏱️", "📋", "✅", "❓", "📄", "📜", "📡", "🌊", "🛠️"]
         
         i18n_match = re.search(r'const I18N = (\{.*?\n\s*\};)', self.js_content, re.DOTALL)
-        if i18n_match:
-            i18n_block = i18n_match.group(1)
-            header_keys = [
-                "simtime", "curtask", "collected", "missing", "finaljson", "history"
-            ]
-            for key in header_keys:
-                matches = re.findall(rf'{key}:\s*["\'](.*?)["\']', i18n_block)
-                for val in matches:
-                    for emoji in forbidden_emojis:
-                        self.assertNotIn(
-                            emoji, val,
-                            f"Header translation key '{key}' value '{val}' still contains legacy emoji '{emoji}'!"
-                        )
+        self.assertIsNotNone(
+            i18n_match,
+            "Could not locate I18N translation object inside frontend/js/index.js!",
+        )
+        i18n_block = i18n_match.group(1)
+        header_keys = [
+            "simtime", "curtask", "collected", "missing", "finaljson", "history"
+        ]
+        for key in header_keys:
+            matches = re.findall(rf'{key}:\s*["\'](.*?)["\']', i18n_block)
+            for val in matches:
+                for emoji in forbidden_emojis:
+                    self.assertNotIn(
+                        emoji, val,
+                        f"Header translation key '{key}' value '{val}' still contains legacy emoji '{emoji}'!"
+                    )
 
         # Verify SVGs are present in HTML
         self.assertTrue("<svg" in self.html_content, "frontend/index.html is missing high-tech inline SVG tags!")

@@ -63,6 +63,7 @@ task_templates:
         - key: water_depth
           label: "水深（米）"
           type: number
+          exclusive_minimum: 0
         - key: equipment_class
           label: "机器人类别"
           type: string
@@ -110,6 +111,7 @@ task_templates:
         - key: water_depth
           label: "水深（米）"
           type: number
+          exclusive_minimum: 0
         - key: equipment_type
           label: "作业设备类型"
           type: string
@@ -151,6 +153,7 @@ task_templates:
         - key: water_depth
           label: "水深（米）"
           type: number
+          exclusive_minimum: 0
         - key: equipment_class
           label: "机器人类别"
           type: string
@@ -198,6 +201,7 @@ task_templates:
         - key: water_depth
           label: "水深（米）"
           type: number
+          exclusive_minimum: 0
         - key: equipment_type
           label: "作业设备类型"
           type: string
@@ -230,6 +234,7 @@ task_templates:
         - key: water_depth
           label: "水深（米）"
           type: number
+          exclusive_minimum: 0
         - key: oilfield_name
           label: "油田名称"
           type: raw
@@ -288,6 +293,7 @@ task_templates:
         - key: water_depth
           label: "水深（米）"
           type: number
+          exclusive_minimum: 0
         - key: equipment_type
           label: "作业设备类型"
           type: string

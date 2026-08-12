@@ -31,48 +31,15 @@ class TestIssue12SlotCascade(unittest.TestCase):
         opt = schema.get("optional_fields", []) if isinstance(schema, dict) else []
         self.dm.slot_store.init_task_slots(req + opt)
 
-    def _apply_updates(self, updates_or_text, allow_overwrite=True, task_type_key=None):
+    def _apply_updates(self, updates, allow_overwrite=True, task_type_key=None):
+        if not isinstance(updates, dict):
+            raise TypeError("test helper requires explicit structured updates")
+
         slots = self.dm.slot_store.clone_slots()
 
         if task_type_key:
             slots["task_type_key"].value = task_type_key
             slots["task_type_key"].status = "valid"
-
-        if isinstance(updates_or_text, str):
-            updates = {}
-            if "采油树" in updates_or_text or "WROV-250-001" in updates_or_text or "250HP" in updates_or_text:
-                task_type_key = "tree_valve_operation"
-            elif "管道" in updates_or_text:
-                task_type_key = "pipeline_inspection"
-
-            if task_type_key:
-                slots["task_type_key"].value = task_type_key
-                slots["task_type_key"].status = "valid"
-
-            if "WROV-250-001" in updates_or_text:
-                updates["equipment_unit_id"] = "WROV-250-001"
-            if "通用工作级深海机器人 250HP" in updates_or_text:
-                updates["equipment_type"] = "通用工作级深海机器人 250HP"
-            elif "通用工作级深海机器人" in updates_or_text:
-                updates["equipment_family"] = "通用工作级深海机器人"
-            if "水下无人自主航行器 324CC" in updates_or_text:
-                updates["equipment_type"] = "水下无人自主航行器 324CC"
-            elif "水下无人自主航行器" in updates_or_text:
-                updates["equipment_family"] = "水下无人自主航行器"
-            if "观察级" in updates_or_text:
-                if "100HP" in updates_or_text or "型" in updates_or_text or "深海" in updates_or_text:
-                    updates["equipment_type"] = "观察级深海机器人"
-                else:
-                    updates["equipment_class"] = "observation_rov"
-            if "auv" in updates_or_text.lower():
-                updates["equipment_class"] = "auv"
-            if "太空飞船" in updates_or_text:
-                updates["equipment_class"] = "未知太空飞船"
-            if "未知系列" in updates_or_text:
-                updates["equipment_family"] = "未知系列"
-        else:
-            updates = updates_or_text
-
         self.dm._apply_updates_in_transaction(updates, slots, allow_overwrite=allow_overwrite)
         curr_tt = slots.get("task_type_key").value if slots.get("task_type_key") else task_type_key
         self.dm._normalize_and_validate_in_transaction(slots, curr_tt)
@@ -465,7 +432,14 @@ class TestIssue12SlotCascade(unittest.TestCase):
 
     def test_17_class_change_clears_all_downstream_slots(self):
         """17. 修改 equipment_class 时，旧 AUV family/type/unit 不得泄漏，新 domain 唯一项重新自动收敛，不唯一的保持 missing。"""
-        self._apply_updates("AUV 324CC", task_type_key="pipeline_inspection")
+        self._apply_updates(
+            {
+                "equipment_class": "auv",
+                "equipment_family": "水下无人自主航行器",
+                "equipment_type": "水下无人自主航行器 324CC",
+            },
+            task_type_key="pipeline_inspection",
+        )
         self._apply_updates({"equipment_unit_id": "AUV-324cc-001"}, task_type_key="pipeline_inspection")
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].value, "auv")
@@ -652,11 +626,6 @@ class TestIssue12SlotCascade(unittest.TestCase):
         self.assertEqual(slots["equipment_type"].value, "通用工作级深海机器人 250HP")
         self.assertEqual(slots["equipment_unit_id"].value, "WROV-250-001")
 
-    def test_35_existing_dialogue_manager_rov_test_compatibility(self):
-        """35. 确认现有 DialogueManager 公共交互方法兼容正常。"""
-        self._apply_updates("任务类型：采油树阀门操作")
-        res = self.dm.slot_store.get_task_state()
-        self.assertIsNotNone(res)
 
     # ──────────────────────────────────────────────────────────────────────────
     # G. 原子性与事务性 (36-40)
@@ -799,10 +768,10 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
         slots = self.dm.slot_store.slots
         cls_slot = slots.get("equipment_class")
         fam_slot = slots.get("equipment_family")
-        if cls_slot:
-            self.assertNotEqual(cls_slot.status, "valid")
-        if fam_slot:
-            self.assertNotEqual(fam_slot.status, "valid")
+        self.assertIsNotNone(cls_slot)
+        self.assertIsNotNone(fam_slot)
+        self.assertNotEqual(cls_slot.status, "valid")
+        self.assertNotEqual(fam_slot.status, "valid")
 
     def test_42_registry_error_in_unit_path_fail_closed(self):
         """42. unit 路径 resolve_robot_unit 抛 RobotSelectionDataError → fail closed。"""
@@ -818,8 +787,8 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
         slots = self.dm.slot_store.slots
         for key in ("equipment_class", "equipment_family", "equipment_type"):
             sl = slots.get(key)
-            if sl:
-                self.assertNotEqual(sl.status, "valid")
+            self.assertIsNotNone(sl, f"{key} must exist in the canonical slot schema")
+            self.assertNotEqual(sl.status, "valid")
 
     def test_43_non_registry_exception_propagates(self):
         """43. resolve_robot_unit 抛出 TypeError（程序 bug）→ 向上传播。"""
@@ -997,12 +966,6 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
         self.assertEqual(slots["equipment_class"].value, "observation_rov")
         self.assertEqual(slots["equipment_type"].status, "invalid")
         self.assertIsNone(slots["equipment_unit_id"].value)
-
-    def test_68_missing_spec_unit_blocks_publish(self):
-        """68. 无法发布未完成选择的单元。"""
-        dm = DialogueManager(self.llm, self.kb)
-        res = dm.process("确认")
-        self.assertIn(dm.phase, ("collecting", "blocked_hard", "blocked_soft", "idle"))
 
 
 if __name__ == "__main__":

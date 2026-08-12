@@ -13,16 +13,14 @@ from src.llm_client import LLMClient
 from src.output_builder import OutputBuilder
 from src.prompts import build_responder_messages
 from src.task_intent_builder import TaskIntentBuilder
-from src.intent_router import IntentRouter
 from src.simulated_time import get_current_datetime
-
-
-class FixedInteractionLLM:
-    def __init__(self, result):
-        self.result = result
-
-    def classify_interaction(self, messages, max_tokens=260):
-        return dict(self.result)
+from tests.interaction_plan_support import (
+    ScriptedLLM,
+    empty_extraction,
+    extraction_result,
+    make_plan,
+    slot_candidate,
+)
 
 
 class DialogueManagerROVTest(unittest.TestCase):
@@ -32,115 +30,88 @@ class DialogueManagerROVTest(unittest.TestCase):
         cls.llm = MagicMock(spec=LLMClient)
         cls.llm.generate.return_value = "null"
 
-    def test_interaction_router_prioritizes_write_over_entity_keyword_query(self):
-        router = IntentRouter(FixedInteractionLLM({
-            "interaction_type": "WRITE",
-            "query_intent": None,
-            "confidence": 0.95,
-            "reason": "用户提交任务信息",
-        }))
-        route = router.route(
-            "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆类型海底油气管道",
-            conversation_history=[],
-            task_state={},
-            phase="collecting",
-            expected_slots=[],
-        )
-
-        self.assertEqual(route.interaction_type, "WRITE")
-        self.assertIsNone(route.query_intent)
-
-    def test_interaction_router_keeps_real_cable_type_question_as_query(self):
-        router = IntentRouter(FixedInteractionLLM({
-            "interaction_type": "QUERY",
-            "query_intent": "KNOWLEDGE_QA",
-            "confidence": 0.95,
-            "reason": "用户询问业务知识",
-        }))
-        route = router.route(
-            "管缆类型有哪些？",
-            conversation_history=[],
-            task_state={},
-            phase="collecting",
-            expected_slots=[],
-        )
-
-        self.assertEqual(route.interaction_type, "QUERY")
-        self.assertEqual(route.query_intent, "KNOWLEDGE_QA")
-
-    def test_interaction_router_treats_expected_slot_answer_as_write(self):
-        router = IntentRouter(FixedInteractionLLM({
-            "interaction_type": "WRITE",
-            "query_intent": None,
-            "confidence": 0.95,
-            "reason": "用户回答 expected_slots",
-        }))
-        route = router.route(
-            "海底油气管道",
-            conversation_history=[],
-            task_state={"task_type_key": "pipeline_inspection"},
-            phase="collecting",
-            expected_slots=["cable_type"],
-        )
-
-        self.assertEqual(route.interaction_type, "WRITE")
-        self.assertIsNone(route.query_intent)
-
     def test_dialogue_manager_writes_compound_create_message_slots(self):
-        class CompoundExtractor:
-            def __init__(self):
-                self.start_time = get_current_datetime().replace(microsecond=0)
-                self.end_time = self.start_time + timedelta(hours=5)
-
-            @staticmethod
-            def _candidate(key, value, raw):
-                return {
-                    "canonical_key": key,
-                    "normalized_value": value,
-                    "raw_value": raw,
-                    "confidence": 1.0,
-                }
-
-            def extract_updates(self, user_message, current_state, **kwargs):
-                return {
-                    "slot_candidates": [
-                        self._candidate("task_type", "管缆巡检", user_message),
-                        self._candidate("task_type_key", "pipeline_inspection", user_message),
-                        self._candidate("start_time", self.start_time.strftime("%Y-%m-%dT%H:%M:%S"), user_message),
-                        self._candidate("end_time", self.end_time.strftime("%Y-%m-%dT%H:%M:%S"), user_message),
-                        self._candidate("cable_type", "海底油气管道", user_message),
-                    ],
-                    "unresolved": [],
-                }
-
-        dm = DialogueManager(LLMClient(None, None), self.kb)
-        dm.extractor = CompoundExtractor()
+        start_time = get_current_datetime().replace(microsecond=0)
+        end_time = start_time + timedelta(hours=5)
+        llm = ScriptedLLM(
+            plans=[make_plan("WRITE")],
+            extractions=[
+                extraction_result(
+                    slot_candidate(
+                        "task_type_key",
+                        "pipeline_inspection",
+                        raw_key="作业类型标识",
+                        raw_value="管缆巡检",
+                    ),
+                    slot_candidate(
+                        "task_type",
+                        "管缆巡检",
+                        raw_key="作业类型",
+                        raw_value="管缆巡检",
+                    ),
+                ),
+                extraction_result(
+                    slot_candidate(
+                        "start_time",
+                        start_time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        raw_key="开始时间",
+                        raw_value="现在",
+                    ),
+                    slot_candidate(
+                        "end_time",
+                        end_time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        raw_key="结束时间",
+                        raw_value="五小时后",
+                    ),
+                    slot_candidate(
+                        "cable_type",
+                        "海底油气管道",
+                        raw_key="管缆类型",
+                        raw_value="海底油气管道",
+                    ),
+                ),
+            ],
+            default_reply="任务信息已记录。",
+        )
+        dm = DialogueManager(llm, self.kb)
+        version_before = dm.slot_store.version
         dm.process(
             "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆类型海底油气管道",
             request_id="compound_create_test",
         )
 
         state = dm.slot_store.get_task_state()
+        self.assertGreater(dm.slot_store.version, version_before)
+        self.assertTrue(state)
         self.assertEqual(state.get("task_type"), "管缆巡检")
         self.assertEqual(state.get("task_type_key"), "pipeline_inspection")
-        self.assertEqual(state.get("start_time"), dm.extractor.start_time.strftime("%Y-%m-%dT%H:%M:%S"))
-        self.assertEqual(state.get("end_time"), dm.extractor.end_time.strftime("%Y-%m-%dT%H:%M:%S"))
+        self.assertEqual(state.get("start_time"), start_time.strftime("%Y-%m-%dT%H:%M:%S"))
+        self.assertEqual(state.get("end_time"), end_time.strftime("%Y-%m-%dT%H:%M:%S"))
         self.assertEqual(state.get("cable_type"), "海底油气管道")
+        self.assertEqual(dm.task_state, state)
+        self.assertEqual(len(llm.classify_calls), 1)
+        self.assertEqual(len(llm.extract_calls), 2)
 
     def test_write_route_without_extracted_candidates_does_not_mutate_slots(self):
-        class EmptyExtractor:
-            def extract_updates(self, user_message, current_state, **kwargs):
-                return {"slot_candidates": [], "unresolved": []}
-
-        dm = DialogueManager(LLMClient(None, None), self.kb)
-        dm.extractor = EmptyExtractor()
+        llm = ScriptedLLM(
+            plans=[make_plan("WRITE")],
+            extractions=[empty_extraction()],
+            default_reply="请补充具体任务类型信息。",
+        )
+        dm = DialogueManager(llm, self.kb)
         before_version = dm.slot_store.version
+        before_snapshot = dm.slot_store.export_snapshot()
+        before_state = dict(dm.task_state)
         reply = dm.process("请规划一个巡检作业", request_id="empty_write_test")
 
         state = dm.slot_store.get_task_state()
         # 核心不变量：SlotStore 不应因 Stage1 提取失败而被修改
         self.assertEqual(dm.slot_store.version, before_version)
+        self.assertEqual(dm.slot_store.export_snapshot(), before_snapshot)
+        self.assertEqual(dm.task_state, before_state)
         self.assertIsNone(state.get("task_type"))
+        self.assertEqual(len(llm.classify_calls), 1)
+        self.assertEqual(len(llm.extract_calls), 1)
         # 回复已从冷硬错误改为引导性提示，验证包含任务提示、不泄露系统 Prompt
         self.assertTrue(reply and len(reply) > 0, "reply should not be empty")
         self.assertTrue("任务" in reply or "信息" in reply, "reply should convey guidance message")
@@ -170,7 +141,7 @@ class DialogueManagerROVTest(unittest.TestCase):
             {"equipment_name": "观察级"},
         )
         self.assertEqual(dm.task_state.get("equipment_family"), "观察级深海机器人")
-        self.assertEqual(dm.task_state.get("equipment_type"), "观察级深海机器人")
+        self.assertEqual(dm.task_state.get("equipment_type"), "观察级深海机器人 HP")
         # 新契约: power_hp: null 为 unknown，观察级 ROV 正常分配 unit_id
         self.assertEqual(dm.task_state.get("equipment_unit_id"), "OBSROV--001")
 
@@ -226,7 +197,7 @@ class DialogueManagerROVTest(unittest.TestCase):
             "type": "string",
             "allowed_values_ref": "robot_full_names",
         }
-        expected = ["观察级深海机器人"]
+        expected = ["观察级深海机器人 HP"]
         self.assertEqual(
             builder.resolve_allowed_values(
                 variant_field,
@@ -285,10 +256,10 @@ class DialogueManagerROVTest(unittest.TestCase):
 
 
     def test_variant_alias_is_available_to_backend_lookup(self):
-        rov = self.kb.get_rov("巡检ROV")
+        rov = self.kb.get_rov("巡检ROV HP")
         self.assertIsNotNone(rov)
-        self.assertEqual(rov["full_name"], "观察级深海机器人")
-        self.assertIn("巡检ROV", rov["aliases"])
+        self.assertEqual(rov["full_name"], "观察级深海机器人 HP")
+        self.assertIn("巡检ROV HP", rov["aliases"])
 
 
     def test_prompt_enforces_family_variant_unit_dependency(self):
@@ -304,7 +275,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         )
         missing = [
             {"key": "equipment_family", "label": "作业机器人系列", "type": "string", "allowed_values": ["观察级深海机器人"]},
-            {"key": "equipment_type", "label": "作业设备型号", "type": "string", "allowed_values": ["轻型工作级深海机器人"]},
+            {"key": "equipment_type", "label": "作业设备型号", "type": "string", "allowed_values": ["轻型工作级深海机器人 HP"]},
             {"key": "equipment_unit_id", "label": "具体机器人编号", "type": "string", "allowed_values": []},
         ]
         system = build_responder_messages(
@@ -367,7 +338,7 @@ class DialogueManagerROVTest(unittest.TestCase):
                     "key": "equipment_type",
                     "label": "作业设备型号",
                     "type": "string",
-                    "allowed_values": ["轻型工作级深海机器人"],
+                    "allowed_values": ["轻型工作级深海机器人 HP"],
                 }
             ],
             mode="normal",
@@ -385,7 +356,9 @@ class DialogueManagerROVTest(unittest.TestCase):
         )
 
         turn_message = messages[-1]["content"]
-        self.assertNotIn("使用天鹰座", turn_message)
+        self.assertIn("【用户本轮原始请求】", turn_message)
+        self.assertIn("使用天鹰座", turn_message)
+        self.assertIn("【本轮后端处理结果】", turn_message)
         self.assertIn("equipment_family", turn_message)
         self.assertIn("轻型工作级深海机器人", turn_message)
         self.assertIn("已提交", turn_message)
@@ -410,27 +383,28 @@ class DialogueManagerROVTest(unittest.TestCase):
         )
 
         turn_message = messages[-1]["content"]
-        self.assertNotIn("使用天鹰座", turn_message)
+        self.assertIn("【用户本轮原始请求】", turn_message)
+        self.assertIn("使用天鹰座", turn_message)
         self.assertIn("它最大水深是多少？", turn_message)
+        self.assertIn("【本轮后端处理结果】", turn_message)
         self.assertIn("轻型工作级深海机器人", turn_message)
 
     def test_process_passes_committed_slot_delta_to_responder(self):
-        llm = MagicMock(spec=LLMClient)
-        llm.extract_json.return_value = {
-            "intent": "task_update",
-            "slot_candidates": [
-                {
-                    "raw_key": "天鹰座",
-                    "canonical_key": "equipment_family",
-                    "raw_value": "天鹰座",
-                    "normalized_value": "轻型工作级深海机器人",
-                    "confidence": 0.95,
-                }
+        llm = ScriptedLLM(
+            plans=[make_plan("WRITE")],
+            extractions=[
+                extraction_result(
+                    slot_candidate(
+                        "equipment_family",
+                        "轻型工作级深海机器人",
+                        raw_key="机器人系列",
+                        raw_value="天鹰座",
+                        confidence=0.95,
+                    ),
+                ),
             ],
-            "unresolved": [],
-        }
-        llm.chat.return_value = "已记录机器人系列。"
-        llm.filter_reply.return_value = "已记录机器人系列。"
+            default_reply="已记录机器人系列。",
+        )
 
         dm = DialogueManager(llm, self.kb)
         schema = dm.builder.get_schema("pipeline_inspection", "normal")
@@ -442,12 +416,19 @@ class DialogueManagerROVTest(unittest.TestCase):
         slots["task_type"].status = "valid"
         dm.slot_store.commit_transaction(slots, [])
         dm.task_state = dm.slot_store.get_task_state()
+        version_before = dm.slot_store.version
 
         dm.process("使用天鹰座")
 
-        messages = llm.chat.call_args.args[0]
+        self.assertGreater(dm.slot_store.version, version_before)
+        self.assertEqual(len(llm.classify_calls), 1)
+        self.assertEqual(len(llm.extract_calls), 1)
+        self.assertTrue(llm.chat_calls)
+        messages = llm.chat_calls[-1]
         turn_message = messages[-1]["content"]
-        self.assertNotIn("使用天鹰座", turn_message)
+        self.assertIn("【用户本轮原始请求】", turn_message)
+        self.assertIn("使用天鹰座", turn_message)
+        self.assertIn("【本轮后端处理结果】", turn_message)
         self.assertIn("equipment_family", turn_message)
         self.assertIn("轻型工作级深海机器人", turn_message)
         self.assertEqual(
@@ -474,7 +455,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         dm._normalize_and_validate_in_transaction(slots, "pipeline_inspection")
         self.assertEqual(slots["equipment_family"].value, "观察级深海机器人")
         self.assertEqual(slots["equipment_family"].status, "valid")
-        self.assertEqual(slots["equipment_type"].value, "观察级深海机器人")
+        self.assertEqual(slots["equipment_type"].value, "观察级深海机器人 HP")
         self.assertEqual(slots["equipment_type"].status, "valid")
 
     def test_explicit_family_rejects_variant_from_another_family(self):
@@ -495,7 +476,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         dm, slots = self._normal_slots()
         for key, value in {
             "equipment_family": "观察级深海机器人",
-            "equipment_type": "观察级深海机器人",
+            "equipment_type": "观察级深海机器人 HP",
             "equipment_unit_id": "OBSROV--001",
             "equipment_name": "观察级深海机器人-001",
         }.items():
@@ -510,14 +491,14 @@ class DialogueManagerROVTest(unittest.TestCase):
         self.assertEqual(slots["equipment_family"].status, "valid")
         self.assertIsNone(slots["equipment_unit_id"].value)
         self.assertEqual(slots["equipment_unit_id"].status, "missing")
-        self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人")
+        self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人 HP")
         self.assertEqual(slots["equipment_type"].status, "valid")
 
 
     def test_task_intent_robot_type_comes_from_selected_variant(self):
         builder = TaskIntentBuilder(self.kb)
         cases = (
-            ("观察级深海机器人", "pipeline_inspection", "observation_rov"),
+            ("观察级深海机器人 HP", "pipeline_inspection", "observation_rov"),
             ("通用工作级深海机器人 250HP", "tree_valve_operation", "work_class_rov"),
             ("水下无人自主航行器 324CC", "pipeline_inspection", "auv"),
             ("履带式海底重载作业机器人 1600HP", "pipeline_burial", "work_class_rov"),
@@ -538,7 +519,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         dm, slots = self._normal_slots()
         for key, value in {
             "equipment_family": "观察级深海机器人",
-            "equipment_type": "观察级深海机器人",
+            "equipment_type": "观察级深海机器人 HP",
             "equipment_name": "观察级深海机器人-001",
             "equipment_unit_id": "OBSROV--001",
         }.items():

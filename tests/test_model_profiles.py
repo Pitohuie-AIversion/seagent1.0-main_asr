@@ -276,11 +276,17 @@ class TestLegacyModeBehaviors(unittest.TestCase):
 
     @patch("src.llm_client.is_model_profiles_v2_enabled", return_value=False)
     def test_legacy_router_generation_contract(self, mock_v2):
-        """验证 Legacy 模式下，classify_interaction 仍然保持原始调用参数机制。"""
+        """Legacy 配置也不得恢复离线关键词路由器。"""
         client = LLMClient(None, None)
         res = client.classify_interaction([{"role": "user", "content": "巡检任务"}])
         self.assertIsInstance(res, dict)
-        self.assertEqual(res.get("interaction_type"), "WRITE")
+        self.assertEqual(res.get("operation"), "CLARIFY")
+        self.assertEqual(res.get("dialogue_mode"), "knowledge_qa")
+        self.assertTrue(res.get("needs_clarification"))
+        self.assertEqual(
+            res.get("reason_code"),
+            "OFFLINE_SEMANTIC_MODEL_UNAVAILABLE",
+        )
 
     @patch("src.llm_client.is_model_profiles_v2_enabled", return_value=False)
     def test_legacy_extractor_generation_contract(self, mock_v2):

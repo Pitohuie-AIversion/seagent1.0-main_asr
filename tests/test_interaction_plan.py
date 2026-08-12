@@ -7,7 +7,6 @@ import unittest
 from src.interaction_plan import (
     InteractionPlan,
     build_clarify_fallback_plan,
-    has_write_evidence,
     validate_interaction_plan,
 )
 from src.intent_router import IntentRouteResult
@@ -160,76 +159,24 @@ class TestInteractionPlanSchemaAndValidation(unittest.TestCase):
         plan_w_conf = validate_interaction_plan(raw_write_conflict)
         self.assertEqual(plan_w_conf.operation, "CLARIFY")
 
-    # ══════════════════════════════════════════════════════════════════════
-    # WRITE Evidence Gate 专项测试
-    # ══════════════════════════════════════════════════════════════════════
-
-    def test_write_evidence_gate_false_positives(self):
-        # LLM 错误返回 WRITE，但用户输入仅为只读/查询表达 -> 拦截降级至 CLARIFY
-        false_positive_queries = [
-            "介绍一下新型号X",
-            "这个机器人能在500米工作吗？",
-            "哪些机器人支持机械臂",
-            "停止任务会有什么影响",
-            "如果水深改成500米会怎样",
-            "payload",
-            "500米",
-        ]
-        for query in false_positive_queries:
-            raw_write = {
-                "schema_version": 1,
-                "operation": "WRITE",
-                "dialogue_mode": "task_collection",
-                "confidence": 0.95,
-                "reason_code": "LLM_FALSE_POSITIVE",
-                "source_policy": "session_state",
-            }
-            validated = validate_interaction_plan(raw_write, user_message=query)
-            self.assertEqual(
-                validated.operation,
-                "CLARIFY",
-                f"User input '{query}' should be demoted from WRITE candidate to CLARIFY",
-            )
-            self.assertEqual(validated.reason_code, "WRITE_EVIDENCE_MISSING")
-
-    def test_write_evidence_gate_true_positives(self):
-        # 具备确定性写入证据的典型输入 -> 允许通过为 WRITE
-        valid_writes = [
-            "水深改成500米",
-            "创建一个管缆巡检任务",
-            "把机器人换成天鹰座",
-            "增加高清摄像机",
-            "确认发布",
-        ]
-        for msg in valid_writes:
-            raw_write = {
-                "schema_version": 1,
-                "operation": "WRITE",
-                "dialogue_mode": "task_collection",
-                "confidence": 0.95,
-                "reason_code": "TEST_VALID_WRITE",
-                "source_policy": "session_state",
-            }
-            validated = validate_interaction_plan(raw_write, user_message=msg)
-            self.assertEqual(validated.operation, "WRITE", f"User input '{msg}' should pass WRITE evidence gate")
-
-    def test_write_evidence_gate_expected_slot_answer(self):
-        # 追问 expected_slots 的直接回答 -> 允许通过为 WRITE
+    def test_write_plan_is_validated_independently_of_wording(self):
         raw_write = {
             "schema_version": 1,
             "operation": "WRITE",
             "dialogue_mode": "task_collection",
             "confidence": 0.95,
-            "reason_code": "EXPECTED_SLOT_ANSWER",
+            "reason_code": "MODEL_WRITE",
             "source_policy": "session_state",
         }
-        context = {"expected_slots": ["cable_type"]}
-        validated = validate_interaction_plan(
-            raw_write,
-            user_message="海底油气管道",
-            context=context,
-        )
-        self.assertEqual(validated.operation, "WRITE")
+        natural_variants = [
+            "那就照你刚才说的做",
+            "深度别太大，三百米吧",
+            "第二台挺合适，就它了",
+            "水深改成五百米，顺便说说风险",
+        ]
+        for message in natural_variants:
+            validated = validate_interaction_plan(raw_write, user_message=message)
+            self.assertEqual(validated.operation, "WRITE")
 
 
 if __name__ == "__main__":

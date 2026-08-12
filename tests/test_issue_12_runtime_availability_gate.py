@@ -21,29 +21,8 @@ from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
 from src.result_paths import get_task_dir
 from src.simulated_time import get_current_datetime
+from tests.interaction_plan_support import ScriptedLLM
 from tests.test_slot_consistency import seed_complete_valid_pipeline_task
-
-
-class FakeLLMForRuntimeGate:
-    def route_mock(self, user_message: str):
-        return {
-            "interaction_type": "QUERY",
-            "query_intent": "GENERAL_CHAT",
-            "confidence": 0.90,
-            "reason": "测试",
-        }
-
-    def classify_interaction(self, messages, max_tokens=260):
-        return self.route_mock("测试")
-
-    def extract_json(self, messages, max_tokens=800):
-        return {"slot_candidates": [], "unresolved": []}
-
-    def chat(self, messages, **kwargs):
-        return "测试回复"
-
-    def filter_reply(self, reply):
-        return reply
 
 
 class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
@@ -53,7 +32,7 @@ class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
         self.kb = KnowledgeBase()
         self._temp_dir = tempfile.TemporaryDirectory()
         self.kb.state_info.state_file = Path(self._temp_dir.name) / "state.yaml"
-        self.llm = FakeLLMForRuntimeGate()
+        self.llm = ScriptedLLM()
         self.dm = DialogueManager(self.llm, self.kb)
         self.unit_id = "AUV-324cc-001"
         self.created_final_files: list[Path] = []

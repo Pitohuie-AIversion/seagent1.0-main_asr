@@ -23,18 +23,23 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from web_backend import app, DialogueManager as WebDialogueManager
 from src.dialogue_manager import DialogueManager
 from src.exceptions import TaskPersistenceError, IntentIdConflict
 from src.id_sequence import validate_intent_id, validate_uuid4
 from src.knowledge_retriever import KnowledgeBase
-from src.llm_client import LLMClient
 from src.session_state import StateContractError, session_state_from_legacy_snapshot
 from src.slot_store import Slot, SlotStore, SnapshotValidationError
 from src.task_intent_builder import TaskIntentBuilder, get_task_dir
 from src.validator import ValidationResult, Violation
+from tests.interaction_plan_support import (
+    ScriptedLLM,
+    extraction_result,
+    make_plan,
+    slot_candidate,
+)
 
 
 @dataclass
@@ -52,8 +57,83 @@ def _make_dm(tmp_dir: Path) -> DialogueManager:
     shutil.copy("config/state.yaml", state_file)
     kb = KnowledgeBase()
     kb.state_info.state_file = state_file
-    llm = LLMClient(None, None)
+    llm = ScriptedLLM(default_reply="测试回复")
     return DialogueManager(llm, kb)
+
+
+def _task_state_digest(dm: DialogueManager) -> dict:
+    return {
+        "slot_store": copy.deepcopy(dm.slot_store.export_snapshot()),
+        "task_state": copy.deepcopy(dm.task_state),
+        "last_built_json": copy.deepcopy(dm._last_built_json),
+        "last_missing": copy.deepcopy(dm._last_missing),
+        "phase": dm.phase,
+        "mode": dm.mode,
+    }
+
+
+def _process_scripted_read(
+    dm: DialogueManager,
+    user_message: str,
+    *,
+    request_id: str,
+    query_intent: str = "KNOWLEDGE_QA",
+) -> str:
+    before = _task_state_digest(dm)
+    classify_count = len(dm.llm.classify_calls)
+    extract_count = len(dm.llm.extract_calls)
+    dm.llm.queue_plan(make_plan("READ", query_intent=query_intent))
+
+    reply = dm.process(user_message, request_id=request_id)
+
+    assert _task_state_digest(dm) == before
+    assert len(dm.llm.classify_calls) == classify_count + 1
+    assert len(dm.llm.extract_calls) == extract_count
+    return reply
+
+
+def _queue_pipeline_write(dm: DialogueManager, *, water_depth: float = 300.0) -> None:
+    dm.llm.queue_plan(make_plan("WRITE"))
+    dm.llm.queue_extraction(
+        extraction_result(
+            slot_candidate(
+                "task_type_key",
+                "pipeline_inspection",
+                raw_key="任务类型",
+                raw_value="管缆巡检",
+            )
+        )
+    )
+    dm.llm.queue_extraction(
+        extraction_result(
+            slot_candidate(
+                "water_depth",
+                water_depth,
+                raw_key="作业水深",
+                raw_value=f"{water_depth:g}米",
+            )
+        )
+    )
+
+
+def _seed_pipeline_draft(dm: DialogueManager, *, water_depth: float = 300.0) -> None:
+    schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
+    dm.slot_store.init_task_slots(schema)
+    slots = dm.slot_store.clone_slots()
+    slots["task_type"] = Slot(
+        "task_type", value="管缆巡检", status="valid", value_type="string"
+    )
+    slots["task_type_key"] = Slot(
+        "task_type_key",
+        value="pipeline_inspection",
+        status="valid",
+        value_type="string",
+    )
+    slots["water_depth"] = Slot(
+        "water_depth", value=water_depth, status="valid", value_type="number"
+    )
+    dm.slot_store.commit_transaction(slots, [])
+    dm.task_state = dm.slot_store.get_task_state()
 
 
 def normalize_digest(obj: any) -> any:
@@ -303,42 +383,36 @@ def GET_SHADOW_CASE_DEFINITIONS() -> list[dict]:
 
     # A03
     def a03_action(dm, td):
-        dm.process("什么是DVL？", request_id="req_a03")
+        _process_scripted_read(dm, "什么是DVL？", request_id="req_a03")
 
     # A04
     def a04_action(dm, td):
-        dm.process("你好，请介绍一下你自己", request_id="req_a04")
+        _process_scripted_read(
+            dm,
+            "今天天气不错。",
+            request_id="req_a04",
+            query_intent="GENERAL_CHAT",
+        )
 
     # A05
     def a05_setup(dm, td):
-        schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
-        dm.slot_store.init_task_slots(schema)
-        slots = dm.slot_store.clone_slots()
-        slots["water_depth"] = Slot("water_depth", value=300.0, status="valid", value_type="number")
-        dm.slot_store.commit_transaction(slots, [])
-        dm.task_state = dm.slot_store.get_task_state()
+        _seed_pipeline_draft(dm)
 
     def a05_action(dm, td):
-        dm.process("水深测量是用什么仪器？", request_id="req_a05")
+        _process_scripted_read(dm, "水深测量是用什么仪器？", request_id="req_a05")
 
     # A06
-    def stub_extract(messages, max_tokens=None):
-        return {
-            "slot_candidates": [
-                {
-                    "canonical_key": "task_type",
-                    "normalized_value": "管缆巡检",
-                    "raw_value": "管缆巡检",
-                    "confidence": 1.0,
-                    "resolution_method": "canonical_exact",
-                }
-            ]
-        }
-
     def a06_action(dm, td):
-        dm.process("什么是DVL？")
-        with patch.object(dm.llm, "extract_json", side_effect=stub_extract):
-            dm.process("创建一个管缆巡检任务")
+        _process_scripted_read(dm, "什么是DVL？", request_id="req_a06_read")
+        version_before = dm.slot_store.version
+        _queue_pipeline_write(dm)
+        dm.process("创建一个管缆巡检任务", request_id="req_a06_write")
+        state = dm.slot_store.get_task_state()
+        assert dm.slot_store.version > version_before
+        assert state.get("task_type_key") == "pipeline_inspection"
+        assert state.get("water_depth") == 300.0
+        assert len(dm.llm.classify_calls) == 2
+        assert len(dm.llm.extract_calls) == 2
 
     # A07
     def a07_action(dm, td):
@@ -353,17 +427,33 @@ def GET_SHADOW_CASE_DEFINITIONS() -> list[dict]:
         dm._blocking_violations = [v]
 
     def a08_action(dm, td):
+        dm.llm.queue_plan(make_plan("WRITE", warning_action="acknowledge"))
         dm.process("确认忽略警告", request_id="req_a08")
 
     # A09 (Real Hard Constraint Correction Flow)
     def a09_setup(dm, td):
+        _seed_pipeline_draft(dm, water_depth=5000.0)
         dm.phase = "blocked_hard"
-        schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
-        dm.slot_store.init_task_slots(schema)
 
     def a09_action(dm, td):
-        with patch.object(dm.llm, "extract_json", side_effect=stub_extract):
-            dm.process("修改水深为300米", request_id="req_a09")
+        version_before = dm.slot_store.version
+        dm.llm.queue_plan(make_plan("WRITE"))
+        dm.llm.queue_extraction(
+            extraction_result(
+                slot_candidate(
+                    "water_depth",
+                    300.0,
+                    raw_key="作业水深",
+                    raw_value="300米",
+                )
+            )
+        )
+        dm.process("修改水深为300米", request_id="req_a09")
+        assert dm.slot_store.version > version_before
+        assert dm.slot_store.get_task_state().get("water_depth") == 300.0
+        assert dm.phase != "blocked_hard"
+        assert len(dm.llm.classify_calls) == 1
+        assert len(dm.llm.extract_calls) == 1
 
     # A10 (Real Publish Flow)
     def a10_setup(dm, td):
@@ -396,18 +486,29 @@ def GET_SHADOW_CASE_DEFINITIONS() -> list[dict]:
 
     # A12 (Real Draft Cancel Flow)
     def a12_setup(dm, td):
-        schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
-        dm.slot_store.init_task_slots(schema)
+        _seed_pipeline_draft(dm)
 
     def a12_action(dm, td):
+        assert dm.slot_store.get_task_state().get("task_type_key") == "pipeline_inspection"
+        dm.llm.queue_plan(make_plan("CONTROL", emergency_action="cancel"))
         dm.process("取消任务", request_id="req_a12")
+        assert dm.phase == "rejected"
+        assert dm.slot_store.get_task_state().get("task_type_key") is None
+        assert len(dm.llm.classify_calls) == 1
+        assert len(dm.llm.extract_calls) == 0
 
     # A13 (Real Control Action Flow)
     def a13_setup(dm, td):
         _helper_setup_published_task(dm, td, "TI202608090001")
 
     def a13_action(dm, td):
+        dm.llm.queue_plan(make_plan("CONTROL", emergency_action="stop"))
         dm.process("停止当前任务", request_id="req_a13")
+        assert dm.control_state == "stop_requested"
+        assert dm.last_control_request["action"] == "stop"
+        assert dm.last_control_request["target_intent_id"] == "TI202608090001"
+        assert len(dm.llm.classify_calls) == 1
+        assert len(dm.llm.extract_calls) == 0
 
     # A14
     def a14_setup(dm, td):
@@ -426,23 +527,25 @@ def GET_SHADOW_CASE_DEFINITIONS() -> list[dict]:
         dm._set_execution_control_state("stop_requested", req)
 
     def a15_action(dm, td):
-        def stub_extract_a15(messages, max_tokens=None):
-            return {
-                "slot_candidates": [
-                    {
-                        "canonical_key": "water_depth",
-                        "normalized_value": "500",
-                        "raw_value": "500米",
-                        "confidence": 0.95,
-                        "resolution_method": "regex_rule",
-                    }
-                ]
-            }
-        mock_route = MagicMock()
-        mock_route.dialogue_mode = "task_collection"
-        with patch.object(dm.intent_router, "route", return_value=mock_route):
-            with patch.object(dm.llm, "extract_json", side_effect=stub_extract_a15):
-                dm.process("修改水深为500米", request_id="req_a15")
+        version_before = dm.slot_store.version
+        dm.llm.queue_plan(make_plan("WRITE"))
+        dm.llm.queue_extraction(
+            extraction_result(
+                slot_candidate(
+                    "water_depth",
+                    500.0,
+                    raw_key="作业水深",
+                    raw_value="500米",
+                )
+            )
+        )
+        dm.process("修改水深为500米", request_id="req_a15")
+        assert dm.slot_store.version > version_before
+        assert dm.slot_store.get_task_state().get("water_depth") == 500.0
+        assert dm.control_state == "stop_requested"
+        assert dm.last_control_request["target_intent_id"] == "TI202608090001"
+        assert len(dm.llm.classify_calls) == 1
+        assert len(dm.llm.extract_calls) == 1
 
     # A16
     def a16_action(dm, td):
@@ -943,36 +1046,24 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
         """INV-01: QUERY read-only invariant in Strict mode."""
         dm = _make_dm(self.tmp_path / "inv01")
         with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            v_before = dm.slot_store.version
-            snap_before = dm.slot_store.export_snapshot()
-            dm.process("什么是DVL？", request_id="req_inv01")
-            self.assertEqual(v_before, dm.slot_store.version)
-            self.assertEqual(snap_before, dm.slot_store.export_snapshot())
+            reply = _process_scripted_read(dm, "什么是DVL？", request_id="req_inv01")
+            self.assertTrue(reply)
 
     def test_inv02_strict_write_only_mutates_task(self):
         """INV-02: Write path task creation in Strict mode."""
         dm = _make_dm(self.tmp_path / "inv02")
         v_before = dm.slot_store.version
-
-        def stub_extract(messages, max_tokens=None):
-            return {
-                "slot_candidates": [
-                    {
-                        "canonical_key": "task_type",
-                        "normalized_value": "管缆巡检",
-                        "raw_value": "管缆巡检",
-                        "confidence": 1.0,
-                        "resolution_method": "canonical_exact",
-                    }
-                ]
-            }
+        _queue_pipeline_write(dm)
 
         with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with patch.object(dm.llm, "extract_json", side_effect=stub_extract):
-                dm.process("创建一个管缆巡检任务", request_id="req_inv02")
+            dm.process("创建一个管缆巡检任务", request_id="req_inv02")
 
+        state = dm.slot_store.get_task_state()
         self.assertGreater(dm.slot_store.version, v_before)
-        self.assertEqual(dm.slot_store.get_task_state().get("task_type"), "管缆巡检")
+        self.assertEqual(state.get("task_type_key"), "pipeline_inspection")
+        self.assertEqual(state.get("water_depth"), 300.0)
+        self.assertEqual(len(dm.llm.classify_calls), 1)
+        self.assertEqual(len(dm.llm.extract_calls), 2)
 
     def test_inv03_strict_valid_slot_is_fact(self):
         """INV-03: Valid slot value is fact in Strict mode."""
@@ -999,21 +1090,21 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
             dm.slot_store.commit_transaction(slots, [])
             dm.task_state = dm.slot_store.get_task_state()
 
-            def stub_llm_extract_json(messages, max_tokens=None):
-                return {
-                    "slot_candidates": [
-                        {
-                            "canonical_key": "water_depth",
-                            "normalized_value": "300abc",
-                            "raw_value": "差不多很深",
-                            "confidence": 0.9,
-                            "resolution_method": "llm_semantic",
-                        }
-                    ]
-                }
-
-            with patch.object(dm.llm, "extract_json", side_effect=stub_llm_extract_json):
-                dm.process("水深改成差不多很深", request_id="req_inv04_invalid")
+            dm.llm.queue_plan(make_plan("WRITE"))
+            dm.llm.queue_extraction(
+                extraction_result(
+                    slot_candidate(
+                        "water_depth",
+                        "300abc",
+                        raw_key="作业水深",
+                        raw_value="差不多很深",
+                        confidence=0.9,
+                    )
+                )
+            )
+            dm.process("水深改成差不多很深", request_id="req_inv04_invalid")
+            self.assertEqual(len(dm.llm.classify_calls), 1)
+            self.assertEqual(len(dm.llm.extract_calls), 1)
 
             state_after = dm.slot_store.get_task_state()
             self.assertNotIn("water_depth", state_after)
@@ -1038,10 +1129,16 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
         dm = _make_dm(self.tmp_path / "inv06")
         with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
             dm.phase = "blocked_soft"
-            # Generic message does not unblock
-            dm.process("今天天气怎么样", request_id="req_inv06_gen")
+            # A scripted READ does not unblock or extract task slots.
+            _process_scripted_read(
+                dm,
+                "今天天气怎么样",
+                request_id="req_inv06_gen",
+                query_intent="GENERAL_CHAT",
+            )
             self.assertEqual(dm.phase, "blocked_soft")
             # Explicit ack unblocks
+            dm.llm.queue_plan(make_plan("WRITE", warning_action="acknowledge"))
             dm.process("确认忽略警告", request_id="req_inv06_ack")
             self.assertIn(dm.phase, ("collecting", "confirming"))
 
@@ -1129,27 +1226,19 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
     def test_inv11_strict_request_traceability(self):
         """INV-11: Request traceability in Strict mode end-to-end through SlotStore write path and API chat route."""
         dm = _make_dm(self.tmp_path / "inv11")
+        _queue_pipeline_write(dm)
         with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            def stub_extract(messages, max_tokens=None):
-                return {
-                    "slot_candidates": [
-                        {
-                            "canonical_key": "task_type",
-                            "normalized_value": "管缆巡检",
-                            "raw_value": "管缆巡检",
-                            "confidence": 1.0,
-                            "resolution_method": "canonical_exact",
-                        }
-                    ]
-                }
-
-            with patch.object(dm.llm, "extract_json", side_effect=stub_extract):
-                with patch.object(dm.slot_store, "commit_transaction", wraps=dm.slot_store.commit_transaction) as mock_commit:
-                    reply = dm.process("创建一个管缆巡检任务", request_id="req_trace_12345")
-                    self.assertTrue(isinstance(reply, str) and len(reply) > 0)
-                    mock_commit.assert_called()
-                    _, kwargs = mock_commit.call_args
-                    self.assertEqual(kwargs.get("request_id"), "req_trace_12345")
+            with patch.object(dm.slot_store, "commit_transaction", wraps=dm.slot_store.commit_transaction) as mock_commit:
+                reply = dm.process("创建一个管缆巡检任务", request_id="req_trace_12345")
+                self.assertTrue(isinstance(reply, str) and len(reply) > 0)
+                mock_commit.assert_called_once()
+                _, kwargs = mock_commit.call_args
+                self.assertEqual(kwargs.get("request_id"), "req_trace_12345")
+                state = dm.slot_store.get_task_state()
+                self.assertEqual(state.get("task_type_key"), "pipeline_inspection")
+                self.assertEqual(state.get("water_depth"), 300.0)
+                self.assertEqual(len(dm.llm.classify_calls), 1)
+                self.assertEqual(len(dm.llm.extract_calls), 2)
 
         # API route traceability
         client = app.test_client()
@@ -1163,39 +1252,6 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
             data = res.get_json()
             self.assertEqual(data.get("request_id"), "req_custom_12345")
             mock_proc.assert_called_once_with("测试透传", request_id="req_custom_12345")
-
-    # -------------------------------------------------------------------------
-    # ASR Text Entry Parity Check
-    # -------------------------------------------------------------------------
-
-    def test_asr_text_entry_shadow_consistency(self):
-        """Verify post-ASR text-entry semantics produces 100% identical SessionState shadow digest as typed text."""
-        dm_typed = _make_dm(self.tmp_path / "typed")
-        dm_asr = _make_dm(self.tmp_path / "asr")
-
-        def stub_extract(messages, max_tokens=None):
-            return {
-                "slot_candidates": [
-                    {
-                        "canonical_key": "task_type",
-                        "normalized_value": "管缆巡检",
-                        "raw_value": "管缆巡检",
-                        "confidence": 1.0,
-                        "resolution_method": "canonical_exact",
-                    }
-                ]
-            }
-
-        with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True):
-            with patch.object(dm_typed.llm, "extract_json", side_effect=stub_extract):
-                dm_typed.process("创建一个管缆巡检任务", request_id="req_typed")
-            with patch.object(dm_asr.llm, "extract_json", side_effect=stub_extract):
-                dm_asr.process("创建一个管缆巡检任务", request_id="req_asr")
-
-        digest_typed = build_shadow_digest(dm_typed)
-        digest_asr = build_shadow_digest(dm_asr)
-
-        self.assertEqual(digest_typed, digest_asr)
 
     # -------------------------------------------------------------------------
     # Standalone Shadow Comparator & Summary Matrix Test

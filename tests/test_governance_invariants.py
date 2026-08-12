@@ -13,7 +13,6 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from web_backend import app, _sessions_manager, get_or_create_manager
-from src.llm_client import LLMClient
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
 from src.slot_store import SlotStore, Slot
@@ -21,7 +20,7 @@ from src.validator import ValidationResult
 from src.task_intent_builder import TaskIntentBuilder
 from src.exceptions import IntentIdConflict, TaskPersistenceError
 from src.simulated_time import get_current_datetime
-from tests.fixtures.governance_corpus import GOVERNANCE_GOLDEN_CORPUS
+from tests.interaction_plan_support import ScriptedLLM, make_plan
 
 
 def _make_dm(tmp_dir: Path) -> DialogueManager:
@@ -29,7 +28,7 @@ def _make_dm(tmp_dir: Path) -> DialogueManager:
     shutil.copy("config/state.yaml", state_file)
     kb = KnowledgeBase()
     kb.state_info.state_file = state_file
-    llm = LLMClient(None, None)
+    llm = ScriptedLLM()
     return DialogueManager(llm, kb)
 
 
@@ -48,46 +47,64 @@ class TestGovernanceInvariants(unittest.TestCase):
 
     def test_inv01_query_read_only(self):
         """INV-01: QUERY 路径执行前后，SlotStore.version、export_snapshot()、task_state 不变。"""
+        self.dm.llm.queue_plan(
+            make_plan(
+                "READ",
+                query_intent="KNOWLEDGE_QA",
+                subject_type="general_concept",
+                subject_text="DVL",
+                relation="definition",
+                source_policy="general_domain",
+            )
+        )
         v_before = self.dm.slot_store.version
         snap_before = self.dm.slot_store.export_snapshot()
         state_before = dict(self.dm.task_state)
 
-        # 发送问答查询
         reply = self.dm.process("什么是 DVL？", request_id="req_inv01")
         self.assertTrue(isinstance(reply, str) and len(reply) > 0)
 
-        v_after = self.dm.slot_store.version
-        snap_after = self.dm.slot_store.export_snapshot()
-        state_after = self.dm.task_state
-
-        self.assertEqual(v_before, v_after)
-        self.assertEqual(snap_before, snap_after)
-        self.assertEqual(state_before, state_after)
+        self.assertEqual(v_before, self.dm.slot_store.version)
+        self.assertEqual(snap_before, self.dm.slot_store.export_snapshot())
+        self.assertEqual(state_before, self.dm.task_state)
         self.assertNotEqual(self.dm.phase, "done")
 
     def test_inv02_real_write_path_task_create(self):
-        """INV-02: 走真实 DM -> Router -> Extractor -> Normalizer -> SlotStore 链路完成任务类型建单。"""
+        """INV-02: 两阶段真实 WRITE 链路完成任务类型建单。"""
         v_before = self.dm.slot_store.version
+        self.dm.llm.queue_plan(make_plan("WRITE"))
+        task_type_extraction = {
+            "slot_candidates": [
+                {
+                    "raw_key": "任务类型",
+                    "canonical_key": "task_type",
+                    "raw_value": "管缆巡检",
+                    "normalized_value": "管缆巡检",
+                    "confidence": 1.0,
+                },
+                {
+                    "raw_key": "任务类型标识",
+                    "canonical_key": "task_type_key",
+                    "raw_value": "管缆巡检",
+                    "normalized_value": "pipeline_inspection",
+                    "confidence": 1.0,
+                },
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        self.dm.llm.queue_extraction(task_type_extraction)
+        self.dm.llm.queue_extraction(task_type_extraction)
 
-        def stub_llm_extract_json(messages, max_tokens=None):
-            return {
-                "slot_candidates": [
-                    {
-                        "canonical_key": "task_type",
-                        "normalized_value": "管缆巡检",
-                        "raw_value": "管缆巡检",
-                        "confidence": 1.0,
-                        "resolution_method": "canonical_exact",
-                    }
-                ]
-            }
+        self.dm.process("创建一个管缆巡检任务", request_id="req_inv02_create")
 
-        with patch.object(self.dm.llm, "extract_json", side_effect=stub_llm_extract_json):
-            self.dm.process("创建一个管缆巡检任务", request_id="req_inv02_create")
-
+        self.assertEqual(len(self.dm.llm.extract_calls), 2)
         self.assertGreater(self.dm.slot_store.version, v_before)
         self.assertEqual(self.dm.slot_store.get_task_state().get("task_type"), "管缆巡检")
-        self.assertEqual(self.dm.slot_store.get_task_state().get("task_type_key"), "pipeline_inspection")
+        self.assertEqual(
+            self.dm.slot_store.get_task_state().get("task_type_key"),
+            "pipeline_inspection",
+        )
 
     def test_inv02_real_write_path_water_depth(self):
         """INV-02: 走真实 DM WRITE 链路更新水深为规范化数值 300.0。"""
@@ -95,30 +112,39 @@ class TestGovernanceInvariants(unittest.TestCase):
         self.dm.slot_store.init_task_slots(schema)
         slots = self.dm.slot_store.clone_slots()
         slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
-        slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+        slots["task_type_key"] = Slot(
+            "task_type_key",
+            value="pipeline_inspection",
+            status="valid",
+        )
         self.dm.slot_store.commit_transaction(slots, [])
         self.dm.task_state = self.dm.slot_store.get_task_state()
 
         v_before = self.dm.slot_store.version
-
-        def stub_llm_extract_json(messages, max_tokens=None):
-            return {
+        self.dm.llm.queue_plan(make_plan("WRITE"))
+        self.dm.llm.queue_extraction(
+            {
                 "slot_candidates": [
                     {
+                        "raw_key": "水深",
                         "canonical_key": "water_depth",
-                        "normalized_value": "300",
                         "raw_value": "300米",
+                        "normalized_value": 300.0,
                         "confidence": 0.95,
-                        "resolution_method": "regex_rule",
                     }
-                ]
+                ],
+                "list_mutations": [],
+                "unresolved": [],
             }
+        )
 
-        with patch.object(self.dm.llm, "extract_json", side_effect=stub_llm_extract_json):
-            self.dm.process("水深300米", request_id="req_inv02_depth")
+        self.dm.process("水深300米", request_id="req_inv02_depth")
 
         self.assertGreater(self.dm.slot_store.version, v_before)
-        self.assertEqual(self.dm.slot_store.get_task_state().get("water_depth"), 300.0)
+        self.assertEqual(
+            self.dm.slot_store.get_task_state().get("water_depth"),
+            300.0,
+        )
 
     def test_inv03_valid_slot_is_fact(self):
         """INV-03: SlotStore.get_task_state() 仅暴露 status == 'valid' 且 value != None 的槽位。"""
@@ -138,34 +164,46 @@ class TestGovernanceInvariants(unittest.TestCase):
         self.assertNotIn("test_none", state)
 
     def test_inv04_invalid_input_never_overwrites_valid_fact(self):
-        """INV-04: 真实 Pipeline 端到端验证：非法新输入绝不作为正式事实写入/覆盖已有 valid 事实 (SlotStore.get_task_state())。"""
+        """INV-04: 非法候选不得覆盖此前已验证的正式值。"""
         schema = self.dm.builder.get_schema("pipeline_inspection", self.dm.mode)
         self.dm.slot_store.init_task_slots(schema)
 
         slots = self.dm.slot_store.clone_slots()
         slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
-        slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        slots["water_depth"] = Slot("water_depth", value=300.0, status="valid")
+        slots["task_type_key"] = Slot(
+            "task_type_key",
+            value="pipeline_inspection",
+            status="valid",
+        )
+        slots["water_depth"] = Slot(
+            "water_depth",
+            value=300.0,
+            status="valid",
+        )
         self.dm.slot_store.commit_transaction(slots, [])
         self.dm.task_state = self.dm.slot_store.get_task_state()
 
-        self.assertEqual(self.dm.slot_store.get_task_state().get("water_depth"), 300.0)
-
-        def stub_llm_extract_json(messages, max_tokens=None):
-            return {
+        self.dm.llm.queue_plan(make_plan("WRITE"))
+        self.dm.llm.queue_extraction(
+            {
                 "slot_candidates": [
                     {
+                        "raw_key": "水深",
                         "canonical_key": "water_depth",
-                        "normalized_value": "300abc",
                         "raw_value": "差不多很深",
+                        "normalized_value": "300abc",
                         "confidence": 0.9,
-                        "resolution_method": "llm_semantic",
                     }
-                ]
+                ],
+                "list_mutations": [],
+                "unresolved": [],
             }
+        )
 
-        with patch.object(self.dm.llm, "extract_json", side_effect=stub_llm_extract_json):
-            self.dm.process("水深改成差不多很深", request_id="req_inv04_invalid")
+        self.dm.process(
+            "水深改成差不多很深",
+            request_id="req_inv04_invalid",
+        )
 
         state_after = self.dm.slot_store.get_task_state()
         self.assertNotIn("water_depth", state_after)
@@ -181,6 +219,7 @@ class TestGovernanceInvariants(unittest.TestCase):
         """INV-05: blocked_hard 状态下，确认/继续/忽略警告无法绕过硬约束。"""
         self.dm.phase = "blocked_hard"
         mock_violation = MagicMock()
+        self.dm.llm.queue_plan(make_plan("WRITE", warning_action="acknowledge"))
         mock_violation.severity = "hard"
         mock_violation.constraint_id = "HARD_TEST_01"
         mock_violation.message = "测试硬违规水深"
@@ -204,6 +243,7 @@ class TestGovernanceInvariants(unittest.TestCase):
         self.dm._blocking_violations = [mock_violation]
 
         self.dm.task_state["water_depth"] = 5.0
+        self.dm.llm.queue_plan(make_plan("WRITE", warning_action="acknowledge"))
         self.dm.task_state["task_type_key"] = "pipeline_inspection"
 
         self.dm.process("忽略警告", request_id="req_inv06")
@@ -403,142 +443,65 @@ class TestGovernanceInvariants(unittest.TestCase):
         self.dm.slot_store.init_task_slots(schema)
         slots = self.dm.slot_store.clone_slots()
         slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
-        slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
-        slots["water_depth"] = Slot("water_depth", value=300.0, status="valid")
+        slots["task_type_key"] = Slot(
+            "task_type_key",
+            value="pipeline_inspection",
+            status="valid",
+        )
+        slots["water_depth"] = Slot(
+            "water_depth",
+            value=300.0,
+            status="valid",
+        )
         self.dm.slot_store.commit_transaction(slots, [])
         self.dm.task_state = self.dm.slot_store.get_task_state()
 
         v_before = self.dm.slot_store.version
+        self.dm.llm.queue_plan(make_plan("WRITE"))
+        self.dm.llm.queue_extraction(
+            {
+                "slot_candidates": [
+                    {
+                        "raw_key": "水深",
+                        "canonical_key": "water_depth",
+                        "raw_value": "500米",
+                        "normalized_value": 500.0,
+                        "confidence": 0.95,
+                    }
+                ],
+                "list_mutations": [],
+                "unresolved": [],
+            }
+        )
 
-        mock_route = MagicMock()
-        mock_route.dialogue_mode = "task_collection"
-
-        mock_extract = {
-            "slot_candidates": [
-                {
-                    "canonical_key": "water_depth",
-                    "normalized_value": "500",
-                    "raw_value": "500米",
-                    "confidence": 0.95,
-                    "resolution_method": "regex_rule",
-                }
-            ]
-        }
-
-        with patch.object(self.dm.intent_router, "route", return_value=mock_route):
-            with patch.object(self.dm.extractor, "extract_updates", return_value=mock_extract):
-                self.dm.process("水深改成500米", request_id="req_modify_500")
+        self.dm.process("水深改成500米", request_id="req_modify_500")
 
         self.assertGreater(self.dm.slot_store.version, v_before)
-        self.assertEqual(self.dm.slot_store.get_task_state().get("water_depth"), 500.0)
+        self.assertEqual(
+            self.dm.slot_store.get_task_state().get("water_depth"),
+            500.0,
+        )
         self.assertNotEqual(self.dm.phase, "done")
         self.assertIsNone(self.dm.final_result)
 
     def test_emergency_control_routing(self):
-        """测试紧急控制指令路由与状态记录。"""
-        mock_route = MagicMock()
-        mock_route.dialogue_mode = "emergency_intervention"
-        mock_route.emergency_action = "stop"
-        mock_route.source = "rule"
-        mock_route.confidence = 1.0
-        mock_route.reason = "stop keyword"
-
+        """显式 CONTROL Plan 必须进入紧急控制处理且记录动作。"""
+        self.dm.llm.queue_plan(
+            make_plan(
+                "CONTROL",
+                emergency_action="stop",
+                reason_code="TEST_STOP_REQUEST",
+            )
+        )
         self.dm.phase = "done"
-        with patch.object(self.dm.intent_router, "route", return_value=mock_route):
-            reply = self.dm.process("立即停止当前任务", request_id="req_em_stop")
+
+        reply = self.dm.process(
+            "立即停止当前任务",
+            request_id="req_em_stop",
+        )
 
         self.assertEqual(self.dm.control_state, "stop_requested")
-        self.assertIn("已识别针对已发布任务的控制指令【停止】", reply)
-
-    def test_negative_control_request(self):
-        """测试否定式控制请求："不要停止当前任务" 不得触发控制动作。"""
-        reply_neg = self.dm.process("不要停止当前任务", request_id="req_neg_stop")
-        self.assertEqual(self.dm.control_state, "idle")
-
-    def test_query_control_distinction(self):
-        """测试控制询问与硬控制动作的分流区别 (GC-31, GC-33)。"""
-        reply_query = self.dm.process("如果停止当前任务会怎样？", request_id="req_gc31")
-        self.assertEqual(self.dm.control_state, "idle")
-
-    def test_kd02_kb_miss_currently_has_no_general_reasoning(self):
-        """KD-02 Characterization Test: 当 KB found=False 时直接返回预设拒绝文案，未调用 General Reasoning 兜底。"""
-        with patch.object(self.dm.kb, "execute_typed_query", return_value={"found": False, "reason": "no_match"}):
-            reply = self.dm.process("什么是未知的概念？", request_id="req_kd02")
-        self.assertIn("当前知识库未提供该信息", reply)
-
-    def test_kd03_llm_template_currently_disables_thinking(self):
-        """KD-03 Characterization Test: 验证 LLMClient.generate_text 模板渲染硬编码 enable_thinking=False。"""
-        with patch("src.llm_client.SamplingParams", MagicMock()):
-            mock_tok = MagicMock()
-            mock_tok.apply_chat_template.return_value = "prompt"
-            mock_llm = MagicMock()
-            mock_output = MagicMock()
-            mock_output.outputs = [MagicMock(text="response")]
-            mock_llm.generate.return_value = [mock_output]
-
-            llm = LLMClient(mock_llm, mock_tok)
-            llm.generate_text([{"role": "user", "content": "hi"}])
-            mock_tok.apply_chat_template.assert_called_once()
-            _, kwargs = mock_tok.apply_chat_template.call_args
-            self.assertIn("enable_thinking", kwargs)
-            self.assertFalse(kwargs["enable_thinking"])
-
-    def test_governance_corpus_integrity(self):
-        """验证 Golden Corpus 50 条测试案例的数据结构完整性与元数据覆盖度。"""
-        self.assertEqual(len(GOVERNANCE_GOLDEN_CORPUS), 50)
-        categories = {c["category"] for c in GOVERNANCE_GOLDEN_CORPUS}
-        natures = {c["nature"] for c in GOVERNANCE_GOLDEN_CORPUS}
-
-        self.assertIn("general_chat", categories)
-        self.assertIn("persistence", categories)
-        self.assertIn("emergency_control", categories)
-
-        self.assertIn("invariant", natures)
-        self.assertIn("expected_behavior", natures)
-        self.assertIn("known_defect", natures)
-
-    def test_governance_corpus_executable_invariants(self):
-        """真实参数化执行 EXECUTABLE_GOVERNANCE_CASE_IDS 中的关键 Invariant 案例，断言系统不变量。"""
-        executable_case_ids = {
-            "GC-01",
-            "GC-04",
-            "GC-11",
-            "GC-12",
-            "GC-13",
-            "GC-26",
-            "GC-28",
-            "GC-31",
-            "GC-33",
-            "GC-37",
-            "GC-39",
-        }
-        cases_by_id = {c["id"]: c for c in GOVERNANCE_GOLDEN_CORPUS if c["id"] in executable_case_ids}
-        self.assertEqual(len(cases_by_id), len(executable_case_ids))
-
-        for case_id in sorted(executable_case_ids):
-            case = cases_by_id[case_id]
-            user_input = case["input"]
-            v_before = self.dm.slot_store.version
-            self.dm.control_state = "idle"
-            self.dm.phase = "collecting"
-
-            if case_id == "GC-28":
-                self.dm.phase = "done"
-
-            def stub_llm(messages, max_tokens=None):
-                return {"slot_candidates": []}
-
-            with patch.object(self.dm.llm, "extract_json", side_effect=stub_llm):
-                reply = self.dm.process(user_input, request_id=f"req_exec_{case_id}")
-
-            self.assertIsNotNone(reply)
-            if case["nature"] == "invariant" and not case["should_publish"]:
-                if case["category"] in ("general_chat", "general_knowledge", "project_fact"):
-                    self.assertEqual(self.dm.slot_store.version, v_before)
-
-            if case_id == "GC-01":
-                self.assertEqual(self.dm.slot_store.version, v_before)
-            elif case_id == "GC-28":
-                self.assertEqual(self.dm.control_state, "stop_requested")
-            elif case_id in ("GC-31", "GC-33"):
-                self.assertEqual(self.dm.control_state, "idle")
+        self.assertIn(
+            "已识别针对已发布任务的控制指令【停止】",
+            reply,
+        )

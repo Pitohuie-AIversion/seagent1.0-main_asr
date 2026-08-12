@@ -79,19 +79,15 @@
         taskCancelMsg: "任务已取消。如需重新规划，请重新开始。",
         taskRejectedMsg: "⚠️ 任务已被拒绝，请修改参数后重新开始。",
         taskSuccessMsg: "✅ 任务信息已补全并通过约束检查，最终任务描述如下：",
-        welcomeMsg: `您好！我是水下多智能体任务决策助手，当前支持以下三种交互模式，我会根据您的输入自动识别并进入对应流程：
-
-【任务收集】
-按照标准流程收集完整的作业目标、时间、位置、环境、机器人和载荷等信息。
-示例：“在流花11-1油田执行管缆巡检，水深300米，使用观察级深海机器人。”
+        welcomeMsg: `您好！我是水下多智能体任务决策助手，当前支持以下两项核心能力，我会根据您的输入自动识别并进入对应流程：
 
 【知识问答】
 回答机器人能力、设备参数、任务流程和系统功能等问题，不会写入或修改任务信息。
 示例：“金牛座一号机的最大作业水深是多少？”
 
-【紧急模式】
-针对时间紧迫的作业需求，仅优先收集任务执行所必需的关键字段，减少信息填写和确认步骤。
-示例：“紧急巡检PL-003管线泄漏，水深300米，从当前位置立即开始。”
+【任务创建与准入】
+收集作业目标、时间、位置、环境、机器人和载荷等任务信息，执行约束检查；通过准入后，由您确认并发布任务。
+示例：“在流花11-1油田执行管缆巡检，水深300米，使用观察级深海机器人。”
 
 请直接描述您的任务需求或需要查询的问题。`,
         timeAlert: "请选择要设置的模拟时间",
@@ -166,19 +162,15 @@
         taskCancelMsg: "Task cancelled. Click 'Restart' to plan a new one.",
         taskRejectedMsg: "⚠️ Task rejected. Please modify parameters and restart.",
         taskSuccessMsg: "✅ Task information completed and verified. Final task description:",
-        welcomeMsg: `Hello! I am the underwater multi-robot task decision assistant. I currently support three interaction modes and will automatically select the appropriate workflow based on your request:
-
-[Task Collection]
-Collects complete task information through the standard workflow, including the objective, time, location, environment, robot, and payload.
-Example: “Inspect the subsea pipeline at Liuhua 11-1 Oilfield at a depth of 300 m using an observation-class deep-sea robot.”
+        welcomeMsg: `Hello! I am the underwater multi-robot task decision assistant. I currently support two core capabilities and will automatically select the appropriate workflow based on your request:
 
 [Knowledge Q&A]
 Answers questions about robot capabilities, equipment parameters, task workflows, and system functions without creating or modifying task data.
 Example: “What is the maximum operating depth of Taurus Unit 1?”
 
-[Emergency Mode]
-For time-critical operations, collects only the key fields required for execution and reduces nonessential input and confirmation steps.
-Example: “Urgently inspect the PL-003 pipeline leak at a depth of 300 m and start from the current position.”
+[Task Creation & Admission]
+Collects task information such as the objective, time, location, environment, robot, and payload, then performs constraint checks. After admission is approved, you confirm and publish the task.
+Example: “Inspect the subsea pipeline at Liuhua 11-1 Oilfield at a depth of 300 m using an observation-class deep-sea robot.”
 
 Please describe your task request or ask a question directly.`,
         timeAlert: "Please select a time to set",
