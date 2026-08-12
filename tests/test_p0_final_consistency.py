@@ -282,6 +282,19 @@ class P0FinalConsistencyDefectTest(unittest.TestCase):
             self.assertEqual(res.intent, "DEVICE_CAPABILITY", f"Query '{q}' failed to route to DEVICE_CAPABILITY")
             self.assertFalse(res.should_update_slots)
 
+    def test_p4_device_acronyms_support_chinese_neighbors_without_ascii_substring_matches(self):
+        """ROV/AUV 可与中文相邻，但不能匹配普通 ASCII 标识符中的子串。"""
+        for query in ("观察级ROV能在1000米作业吗？", "水下AUV能在800米作业吗？"):
+            with self.subTest(query=query):
+                result = self.dm.intent_router.route(query, [], {})
+                self.assertEqual(result.intent, "DEVICE_CAPABILITY")
+                self.assertFalse(result.should_update_slots)
+
+        for query in ("PROVISION是什么？", "AUVX是什么设备？"):
+            with self.subTest(query=query):
+                result = self.dm.intent_router.route(query, [], {})
+                self.assertNotEqual(result.intent, "DEVICE_CAPABILITY")
+
     def test_p5_device_check_depth_exceeded_response(self):
         """DialogueManager.process('金牛座能在1000米作业吗？')：回复包含500米，明确表示不能满足1000米，不包含'符合条件的设备如下'"""
         self.dm.reset()
