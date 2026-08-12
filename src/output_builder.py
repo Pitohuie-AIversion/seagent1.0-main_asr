@@ -671,11 +671,12 @@ class OutputBuilder:
             ]
 
         if ref == "robot_unit_ids":
-            class_selector = str(task_state.get("equipment_class") or "") if task_state else ""
             family_selector = str(task_state.get("equipment_family") or "") if task_state else ""
             type_selector = task_state.get("equipment_type") if task_state else None
-            if class_selector and family_selector and type_selector:
+            if family_selector and type_selector:
                 try:
+                    family = self.kb.resolve_robot_family(family_selector, task_type_key)
+                    class_selector = family.get("robot_class") if family else ""
                     units = self.kb.list_robot_units(class_selector, family_selector, type_selector, task_type_key)
                     if units:
                         return [u.get("unit_id") for u in units if u and u.get("unit_id")]

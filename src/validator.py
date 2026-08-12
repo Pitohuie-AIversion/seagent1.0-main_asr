@@ -67,13 +67,16 @@ class Violation:
 
 @dataclass
 class ValidationResult:
-    overall_status: str     # "valid" | "pending_runtime_validation" | "warning" | "blocked_soft" | "blocked_hard" | "validation_error"
+    overall_status: str     # "valid" | "pending_runtime_validation" | "warning" | "blocked_soft" | "blocked_hard"
     validated_at: str
     task_version: int
     validation_version: int
     validation_fingerprint: str
     state_snapshot: dict | None
     violations: list[Violation] = field(default_factory=list)
+    runtime_diagnostic: dict | None = None
+    # Backward-compatible input holder for old snapshots/tests. New Validator
+    # results do not use or serialize this field.
     error: dict | None = None
 
     def to_dict(self) -> dict:
@@ -85,7 +88,7 @@ class ValidationResult:
             "validation_fingerprint": self.validation_fingerprint,
             "state_snapshot": copy.deepcopy(self.state_snapshot),
             "violations": [v.to_dict() if hasattr(v, "to_dict") else copy.deepcopy(v) for v in self.violations],
-            "error": copy.deepcopy(self.error),
+            "runtime_diagnostic": copy.deepcopy(self.runtime_diagnostic),
         }
 
     @classmethod
@@ -106,6 +109,7 @@ class ValidationResult:
             validation_fingerprint=str(data.get("validation_fingerprint", "")),
             state_snapshot=copy.deepcopy(data.get("state_snapshot")),
             violations=violations,
+            runtime_diagnostic=copy.deepcopy(data.get("runtime_diagnostic")),
             error=copy.deepcopy(data.get("error")),
         )
 
@@ -161,13 +165,13 @@ def _compute_fingerprint(
     status_ref: str | None,
     state_version: int | None,
     violations: list[Violation],
-    error: dict | None,
+    diagnostic: dict | None = None,
 ) -> str:
     parts = [
         f"tv:{task_version}",
         f"sref:{status_ref or ''}",
         f"sver:{state_version or 0}",
-        f"err:{error.get('code') if error else ''}",
+        f"diag:{diagnostic.get('code') if diagnostic else ''}",
     ]
     v_parts = []
     for v in sorted(violations, key=lambda x: x.constraint_id):
@@ -278,74 +282,31 @@ class TaskValidator:
                 except Exception:
                     previous_result = None
 
-            # 校验原始输入字段的基础合法性 (water_depth, start_time, end_time)
-            error_dict = None
-            if error_dict is None and task_state.get("water_depth") is not None:
-                _, w_err = self._validate_water_depth_value(task_state.get("water_depth"))
-                if w_err:
-                    error_dict = w_err
+            # Field parsing errors belong to Slot/Normalizer, not business
+            # constraint validation. The validator skips malformed scalar fields
+            # here; field-level checks still run inside relevant business checks
+            # when values can be parsed.
+            state_snapshot, runtime_diagnostic = self._resolve_single_unit_snapshot(task_state, is_now=is_now)
 
-            if error_dict is None and task_state.get("start_time") is not None:
-                _, st_err = self._validate_time_value(task_state.get("start_time"), "开始时间 (start_time)")
-                if st_err:
-                    error_dict = st_err
+            # Missing/ambiguous unit and telemetry failures are runtime or slot
+            # readiness diagnostics. They must not become business violations.
+            if purpose in ("publish", "preview") and not (task_state.get("equipment_unit_id") or "").strip():
+                runtime_diagnostic = {
+                    "code": "MISSING_UNIT_ID",
+                    "message": "发布或预览任务前必须指定明确的具体单机编号 (equipment_unit_id)。",
+                }
 
-            if error_dict is None and task_state.get("end_time") is not None:
-                _, et_err = self._validate_time_value(task_state.get("end_time"), "结束时间 (end_time)")
-                if et_err:
-                    error_dict = et_err
-
-            # 尝试确定具体单机并提取状态快照
-            state_snapshot = None
-            if error_dict is None:
-                state_snapshot, error_dict = self._resolve_single_unit_snapshot(task_state, is_now=is_now)
-
-            # 门禁控制 (publish / preview)：必须要求明确 unit_id
-            if purpose in ("publish", "preview") and error_dict is None:
-                unit_id = task_state.get("equipment_unit_id")
-                if not unit_id or not isinstance(unit_id, str) or not unit_id.strip():
-                    error_dict = {
-                        "code": "MISSING_UNIT_ID",
-                        "message": "发布或预览任务前必须指定明确的具体单机编号 (equipment_unit_id)。",
-                    }
-
-            violations: list[Violation] = []
-            is_future_pending_telemetry = (
-                not is_now
-                and purpose != "runtime_execution"
-                and error_dict is not None
-                and error_dict.get("code") in ("INVALID_STATE_SNAPSHOT", "MISSING_TELEMETRY", "EXPIRED_TELEMETRY", "INVALID_STATE_DATA", "STATE_READ_FAILED")
-            )
-
-            if error_dict is None:
-                violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=state_snapshot)
-            elif is_future_pending_telemetry:
-                # 未来任务且已注册单机遥测缺失/过期：不阻断为 validation_error，按 pending_runtime_validation 处理
-                violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=None)
-                error_dict = None
-            else:
-                # 存在 validation_error 时，不得返回空违规列表
-                err_violation = Violation(
-                    constraint_id="VAL_ERR",
-                    constraint_name="单机状态校验失败",
-                    message=error_dict.get("message", "单机校验错误"),
-                    severity="hard",
-                    related_fields=["equipment_unit_id"],
-                    check_type="validation_error",
-                )
-                violations.append(err_violation)
+            violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=state_snapshot)
 
             # 状态优先级规则：
-            # validation_error > blocked_hard > blocked_soft > warning > pending_runtime_validation > valid
-            if error_dict is not None:
-                overall_status = "validation_error"
-            elif any(v.severity == "hard" for v in violations):
+            # blocked_hard > blocked_soft > warning > pending_runtime_validation > valid
+            if any(v.severity == "hard" for v in violations):
                 overall_status = "blocked_hard"
             elif any(v.severity == "soft" for v in violations):
                 overall_status = "blocked_soft"
             elif any(v.severity == "warning" for v in violations):
                 overall_status = "warning"
-            elif not is_now:
+            elif not is_now or runtime_diagnostic is not None:
                 overall_status = "pending_runtime_validation"
             else:
                 overall_status = "valid"
@@ -358,7 +319,7 @@ class TaskValidator:
                 status_ref=status_ref,
                 state_version=state_version,
                 violations=violations,
-                error=error_dict,
+                diagnostic=runtime_diagnostic,
             )
 
             if previous_result and previous_result.validation_fingerprint == fingerprint:
@@ -374,28 +335,21 @@ class TaskValidator:
                 validation_fingerprint=fingerprint,
                 state_snapshot=state_snapshot,
                 violations=violations,
-                error=error_dict,
+                runtime_diagnostic=runtime_diagnostic,
             )
 
         except Exception as e:
             err_dict = {"code": "VALIDATOR_EXCEPTION", "message": f"校验流程内部发生未捕获异常: {e}"}
-            err_v = Violation(
-                constraint_id="VAL_ERR",
-                constraint_name="校验服务异常",
-                message=err_dict["message"],
-                severity="hard",
-                check_type="validation_error",
-            )
-            fp = _compute_fingerprint(task_version, None, None, [err_v], err_dict)
+            fp = _compute_fingerprint(task_version, None, None, [], err_dict)
             return ValidationResult(
-                overall_status="validation_error",
+                overall_status="pending_runtime_validation",
                 validated_at=get_current_datetime().isoformat(timespec="seconds"),
                 task_version=task_version,
                 validation_version=1,
                 validation_fingerprint=fp,
                 state_snapshot=None,
-                violations=[err_v],
-                error=err_dict,
+                violations=[],
+                runtime_diagnostic=err_dict,
             )
 
     def validate(self, task_state: dict) -> list[Violation]:
@@ -407,17 +361,7 @@ class TaskValidator:
         self, task_state: dict, changed_fields: set[str]
     ) -> list[Violation]:
         """增量模式检查"""
-        snapshot, error_dict = self._resolve_single_unit_snapshot(task_state, is_now=self._is_task_start_now(task_state))
-        if error_dict is not None:
-            err_v = Violation(
-                constraint_id="VAL_ERR",
-                constraint_name="单机状态校验失败",
-                message=error_dict.get("message", "单机校验错误"),
-                severity="hard",
-                related_fields=["equipment_unit_id"],
-                check_type="validation_error",
-            )
-            return [err_v]
+        snapshot, _runtime_diagnostic = self._resolve_single_unit_snapshot(task_state, is_now=self._is_task_start_now(task_state))
         return self._run_checks(task_state, trigger_fields=changed_fields, state_snapshot=snapshot)
 
     def has_hard_violations(self, violations: list[Violation]) -> bool:
@@ -635,9 +579,18 @@ class TaskValidator:
         if check == "robot_category" and rov:
             task_type = task_state.get("task_type_key")
             if not self.kb.robot_matches_task(rov, task_type):
+                required = self.kb.get_task_required_capabilities(task_type) if hasattr(self.kb, "get_task_required_capabilities") else []
+                robot_caps = sorted(set(rov.get("capabilities") or []))
+                msg = c["violation_message"].strip()
+                if required:
+                    msg = (
+                        f"当前选择的机器人能力不满足任务要求。"
+                        f"任务需要能力：{'、'.join(required)}；"
+                        f"当前设备能力：{'、'.join(robot_caps) if robot_caps else '未配置'}。"
+                    )
                 return Violation(
-                    c["id"], c["name"], c["violation_message"].strip(),
-                    c["severity"], rel_fields, check_type=check
+                    c["id"], c["name"], msg, c["severity"], rel_fields,
+                    check_type=check, observed_value=robot_caps, threshold=required
                 )
         elif check == "depth_vs_rov_limit" and rov:
             if water_depth is not None:
@@ -1000,16 +953,13 @@ class TaskValidator:
 
         elif check == "robot_communication_status":
             if state_dict and isinstance(state_dict, dict):
-                is_auv = rov.get("robot_class") == "auv" if rov else False
                 details = []
-                if is_auv:
-                    acoustic = state_dict.get("acoustic_comms_status")
-                    if acoustic == "abnormal":
-                        details.append("水声无线通信异常")
-                else:
-                    tether = state_dict.get("tether_connection_status")
-                    if tether in ("abnormal", "weak"):
-                        details.append("与母船连接异常")
+                acoustic = state_dict.get("acoustic_comms_status")
+                if acoustic == "abnormal":
+                    details.append("水声无线通信异常")
+                tether = state_dict.get("tether_connection_status")
+                if tether in ("abnormal", "weak"):
+                    details.append("与母船连接异常")
 
                 if details:
                     detail_str = "、".join(details)

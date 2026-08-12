@@ -153,7 +153,7 @@ class DialogueManager:
         self.builder = OutputBuilder(kb)
         self.validator = TaskValidator(kb)
         self.oilfield_linker = OilfieldEntityLinker(kb.environment, getattr(kb, "constraints", None))
-        self.intent_router = IntentRouter(llm)
+        self.intent_router = IntentRouter(llm, kb)
 
         # 对话核心状态
         self.conversation_history: list[dict] = []
@@ -858,7 +858,9 @@ class DialogueManager:
         # 最终约束全量检查
         val_res = self._refresh_validation(purpose="publish")
         all_violations = val_res.violations
-        has_hard = self.validator.has_hard_violations(all_violations) or val_res.overall_status == "validation_error"
+        runtime_diag = getattr(val_res, "runtime_diagnostic", None) or {}
+        has_hard = self.validator.has_hard_violations(all_violations)
+        has_runtime_blocker = val_res.overall_status == "pending_runtime_validation" and is_now
         unwhitelisted_soft = [v for v in all_violations if v.severity == "soft" and not self._is_whitelisted(v)]
 
         # 检查缺失（排除 auto 和 fixed 等由系统自动管理的字段，如 task_id）
@@ -869,7 +871,7 @@ class DialogueManager:
         else:
             missing = [{"key": "task_type", "label": "任务类型"}]
 
-        if missing or has_hard or unwhitelisted_soft:
+        if missing or has_hard or has_runtime_blocker or unwhitelisted_soft:
             if has_hard:
                 self._transition_phase("blocked_hard", reason="publish_hard_constraint_detected")
                 hard_violations = [v for v in all_violations if v.severity == "hard"]
@@ -877,7 +879,11 @@ class DialogueManager:
                 if hard_violations:
                     reply = "\n".join(v.message for v in hard_violations)
                 else:
-                    reply = val_res.error.get("message") if (val_res and val_res.error) else "当前任务参数包含硬性约束冲突，无法发布。"
+                    reply = "当前任务参数包含硬性约束冲突，无法发布。"
+            elif has_runtime_blocker:
+                self._transition_phase("blocked_hard", reason="publish_runtime_availability_pending")
+                self._blocking_violations = []
+                reply = runtime_diag.get("message") or "当前机器人运行状态未完成确认，无法发布实时任务。"
             elif unwhitelisted_soft:
                 self._transition_phase("blocked_soft", reason="publish_soft_warning_detected")
                 self._blocking_violations = unwhitelisted_soft
@@ -938,8 +944,8 @@ class DialogueManager:
                     if current_state_snap.get("state_version") != val_res.state_snapshot.get("state_version"):
                         re_val_res = self._refresh_validation(purpose="publish")
                         # 重新校验后执行全量门禁检查：
-                        # validation_error / blocked_hard -> 阻断并回滚
-                        if re_val_res.overall_status in ("blocked_hard", "validation_error"):
+                        # blocked_hard -> 阻断并回滚
+                        if re_val_res.overall_status == "blocked_hard":
                             raise TaskPersistenceError(f"单机 {unit_id} 的状态遥测在确认发布过程中发生变更，触发阻断告警。")
                         elif re_val_res.overall_status == "blocked_soft":
                             valid_acks = self._get_valid_acknowledgements(re_val_res)
@@ -2091,13 +2097,14 @@ class DialogueManager:
                 new_slots["pending_oilfield_candidates"].status = "missing"
 
         equipment_keys = {
-            "equipment_class",
             "equipment_family",
             "equipment_type",
             "equipment_name",
             "equipment_unit_id",
         }
         passthrough_keys = {
+            "task_type",
+            "task_type_key",
             "emergency_mode",
             "rov_description",
             "oilfield_name",
@@ -2119,7 +2126,7 @@ class DialogueManager:
             }
             schema_updates = {
                 k: v for k, v in updates.items()
-                if k not in equipment_keys and k not in passthrough_keys
+                if k not in equipment_keys and k not in passthrough_keys and k not in ("task_type", "task_type_key")
             }
             norm_res = self.normalizer.normalize_updates_with_failures(
                 schema_updates,
@@ -2211,7 +2218,6 @@ class DialogueManager:
             allow_overwrite,
         )
         for key in (
-            "equipment_class",
             "equipment_family",
             "equipment_type",
             "equipment_name",
@@ -2338,7 +2344,7 @@ class DialogueManager:
 
     def _auto_collapse_robot_cascade(self, new_slots: dict, allow_overwrite: bool = False) -> None:
         """
-        [Issue #40] 四级级联自动收敛处理。
+        [Issue #40] 机器人实体级联自动收敛处理。
         只在 task_type_key 为 valid 时生效。
         规则：
         1. 前置校验：若已有槽位不属于当前 task 的 feasible_domain，作废该槽位及所有下游依赖。
@@ -2356,9 +2362,9 @@ class DialogueManager:
             domain = self.kb.get_feasible_robot_selection_domain(task_type_key)
         except Exception as exc:
             logger.warning("[DialogueManager] Failed to build feasible robot domain for task '%s': %s", task_type_key, exc)
-            if "equipment_class" not in new_slots:
-                new_slots["equipment_class"] = Slot("equipment_class")
-            slot = new_slots["equipment_class"]
+            if "equipment_family" not in new_slots:
+                new_slots["equipment_family"] = Slot("equipment_family")
+            slot = new_slots["equipment_family"]
             slot.status = "invalid"
             slot.value = None
             slot.validation_error = str(exc)
@@ -2369,21 +2375,10 @@ class DialogueManager:
             reset_slot_to_missing,
         )
 
-        # ── 1. 前置校验：若已有槽位不属于当前 feasible_domain，作废该槽位及下游 ──
-        cls_slot = new_slots.get("equipment_class")
-        if cls_slot and cls_slot.status in ("valid", "candidate") and cls_slot.value:
-            resolved_cls = self.kb._resolve_class_key(str(cls_slot.value))
-            feasible_class_ids = {c["class_id"] for c in domain["classes"]}
-            if not resolved_cls or resolved_cls not in feasible_class_ids:
-                invalidate_robot_cascade_dependents(new_slots, ["equipment_class"])
-                reset_slot_to_missing(cls_slot, source="system_dependency_invalidation")
-
+        families = domain.get("families", [])
         fam_slot = new_slots.get("equipment_family")
         if fam_slot and fam_slot.status in ("valid", "candidate") and fam_slot.value:
-            cur_cls = new_slots.get("equipment_class")
-            cur_cls_id = self.kb._resolve_class_key(str(cur_cls.value)) if cur_cls and cur_cls.value else None
-            cls_node = next((c for c in domain["classes"] if c["class_id"] == cur_cls_id), None)
-            feasible_fam_ids = {f["family_id"] for f in cls_node["families"]} if cls_node else set()
+            feasible_fam_ids = {f["family_id"] for f in families}
             resolved_fam_id = self.kb.resolve_robot_family_id(str(fam_slot.value), task_type_key)
             if not resolved_fam_id or resolved_fam_id not in feasible_fam_ids:
                 invalidate_robot_cascade_dependents(new_slots, ["equipment_family"])
@@ -2391,12 +2386,9 @@ class DialogueManager:
 
         type_slot = new_slots.get("equipment_type")
         if type_slot and type_slot.status in ("valid", "candidate") and type_slot.value:
-            cur_cls = new_slots.get("equipment_class")
             cur_fam = new_slots.get("equipment_family")
-            cur_cls_id = self.kb._resolve_class_key(str(cur_cls.value)) if cur_cls and cur_cls.value else None
             cur_fam_id = self.kb.resolve_robot_family_id(str(cur_fam.value), task_type_key) if cur_fam and cur_fam.value else None
-            cls_node = next((c for c in domain["classes"] if c["class_id"] == cur_cls_id), None)
-            fam_node = next((f for f in cls_node["families"] if f["family_id"] == cur_fam_id), None) if cls_node else None
+            fam_node = next((f for f in families if f["family_id"] == cur_fam_id), None)
             feasible_var_names = (
                 {v["full_name"] for v in fam_node["variants"]} | {v["variant_id"] for v in fam_node["variants"]}
                 if fam_node else set()
@@ -2407,59 +2399,17 @@ class DialogueManager:
 
         unit_slot = new_slots.get("equipment_unit_id")
         if unit_slot and unit_slot.status in ("valid", "candidate") and unit_slot.value:
-            cur_cls = new_slots.get("equipment_class")
             cur_fam = new_slots.get("equipment_family")
             cur_type = new_slots.get("equipment_type")
-            cur_cls_id = self.kb._resolve_class_key(str(cur_cls.value)) if cur_cls and cur_cls.value else None
             cur_fam_id = self.kb.resolve_robot_family_id(str(cur_fam.value), task_type_key) if cur_fam and cur_fam.value else None
             cur_type_val = str(cur_type.value) if cur_type and cur_type.value else None
-            cls_node = next((c for c in domain["classes"] if c["class_id"] == cur_cls_id), None)
-            fam_node = next((f for f in cls_node["families"] if f["family_id"] == cur_fam_id), None) if cls_node else None
+            fam_node = next((f for f in families if f["family_id"] == cur_fam_id), None)
             var_node = next((v for v in fam_node["variants"] if v["full_name"] == cur_type_val or v["variant_id"] == cur_type_val), None) if fam_node else None
             feasible_units = {u["unit_id"] for u in var_node["units"]} if var_node else set()
             if str(unit_slot.value) not in feasible_units:
                 reset_slot_to_missing(unit_slot, source="system_dependency_invalidation")
 
-        # ── 2. 逐级四级 auto-collapse ──
-
-        # Level 1: equipment_class
-        classes = domain["classes"]
-        cls_slot = new_slots.get("equipment_class")
-        if cls_slot and cls_slot.status in ("invalid", "conflict", "unresolved", "candidate"):
-            return
-        if not cls_slot or cls_slot.status != "valid" or not cls_slot.value:
-            if len(classes) == 0:
-                if "equipment_class" not in new_slots:
-                    new_slots["equipment_class"] = Slot("equipment_class")
-                slot = new_slots["equipment_class"]
-                if slot.status not in ("conflict", "invalid"):
-                    slot.status = "invalid"
-                    slot.value = None
-                    slot.validation_error = f"No feasible robot class for task '{task_type_key}'"
-                return
-            elif len(classes) == 1:
-                cls_info = classes[0]
-                if "equipment_class" not in new_slots:
-                    new_slots["equipment_class"] = Slot("equipment_class")
-                cls_slot = new_slots["equipment_class"]
-                cls_slot.value = cls_info["full_name"]
-                cls_slot.status = "valid"
-                cls_slot.source = "auto"
-                cls_slot.raw_value = cls_info["full_name"]
-                cls_slot.confidence = 1.0
-                cls_slot.validation_error = None
-            else:
-                # > 1 候选且未指定 -> 停止自动收敛
-                return
-
-        # Level 2: equipment_family
-        cur_cls_val = str(new_slots["equipment_class"].value)
-        cur_cls_id = self.kb._resolve_class_key(cur_cls_val)
-        cls_node = next((c for c in classes if c["class_id"] == cur_cls_id), None)
-        if not cls_node:
-            return
-
-        families = cls_node["families"]
+        # ── 2. 逐级 auto-collapse: Family -> Variant -> Unit ──
         fam_slot = new_slots.get("equipment_family")
         if fam_slot and fam_slot.status in ("invalid", "conflict", "unresolved", "candidate"):
             return
@@ -2471,7 +2421,7 @@ class DialogueManager:
                 if slot.status not in ("conflict", "invalid"):
                     slot.status = "invalid"
                     slot.value = None
-                    slot.validation_error = f"No feasible robot family under class '{cur_cls_id}' for task '{task_type_key}'"
+                    slot.validation_error = f"No feasible robot family for task '{task_type_key}'"
                 return
             elif len(families) == 1:
                 fam_info = families[0]
@@ -2574,7 +2524,6 @@ class DialogueManager:
         )
 
         EQUIPMENT_KEYS = (
-            "equipment_class",
             "equipment_family",
             "equipment_type",
             "equipment_unit_id",
@@ -2606,7 +2555,7 @@ class DialogueManager:
         if not equipment_updates:
             return
 
-        # 保存 5 槽完整前置快照
+        # 保存机器人实体槽完整前置快照
         equipment_before = {
             k: copy.deepcopy(new_slots[k])
             for k in EQUIPMENT_KEYS
@@ -2658,18 +2607,7 @@ class DialogueManager:
             highest_candidate_val = None
             highest_conflict_reason = None
 
-            # 1. 检查 equipment_class
-            cls_in = equipment_updates.get("equipment_class")
-            if cls_in:
-                active_cls_slot = equipment_before.get("equipment_class")
-                if active_cls_slot and active_cls_slot.status in ("valid", "conflict") and active_cls_slot.value is not None:
-                    res_cls_id = self.kb._resolve_class_key(str(cls_in))
-                    if res_cls_id and res_cls_id != active_cls_slot.value:
-                        highest_conflict_key = "equipment_class"
-                        highest_candidate_val = cls_in
-                        highest_conflict_reason = f"Robot class '{cls_in}' conflicts with active valid class '{active_cls_slot.value}'"
-
-            # 2. 检查 equipment_family (若 class 未冲突)
+            # 1. 检查 equipment_family
             if not highest_conflict_key:
                 fam_in = equipment_updates.get("equipment_family")
                 if fam_in:
@@ -2683,7 +2621,7 @@ class DialogueManager:
                                 highest_candidate_val = fam_in
                                 highest_conflict_reason = f"Robot family '{fam_in}' conflicts with active valid family '{active_fam_slot.value}'"
 
-            # 3. 检查 equipment_type (若 class/family 未冲突)
+            # 2. 检查 equipment_type
             if not highest_conflict_key:
                 type_in = equipment_updates.get("equipment_type")
                 if type_in and "equipment_unit_id" not in equipment_updates:
@@ -2695,7 +2633,7 @@ class DialogueManager:
                             highest_candidate_val = type_in
                             highest_conflict_reason = f"Robot variant '{type_in}' conflicts with active valid type '{active_type_slot.value}'"
 
-            # 4. 检查 equipment_unit_id
+            # 3. 检查 equipment_unit_id
             if not highest_conflict_key:
                 unit_in = equipment_updates.get("equipment_unit_id")
                 if unit_in:
@@ -2720,55 +2658,7 @@ class DialogueManager:
         sandbox_slots = copy.deepcopy(new_slots)
         changed_parents = []
 
-        # 1. equipment_class 更新
-        class_update = equipment_updates.get("equipment_class")
-        if class_update:
-            resolved_class_id = self.kb._resolve_class_key(str(class_update))
-            try:
-                if not resolved_class_id:
-                    classes = self.kb.list_robot_classes(task_type)
-                    for c in classes:
-                        if c.get("class_id") == class_update or c.get("display_name") == class_update:
-                            resolved_class_id = c.get("class_id")
-                            break
-
-                if task_type:
-                    allowed_classes = [c.get("class_id") for c in self.kb.list_robot_classes(task_type)]
-                    if resolved_class_id not in allowed_classes:
-                        resolved_class_id = None
-            except RobotSelectionDataError as _err:
-                _rollback_and_fail(
-                    "equipment_class",
-                    class_update,
-                    f"{_err.error_code}: {_err}",
-                )
-                return
-
-            if resolved_class_id:
-                class_slot = sandbox_slots.get("equipment_class")
-                old_class = (
-                    class_slot.value
-                    if class_slot and class_slot.status in ("valid", "candidate")
-                    else None
-                )
-                if allow_overwrite and old_class and old_class != resolved_class_id:
-                    changed_parents.append("equipment_class")
-                self._apply_slot_update_in_transaction(
-                    "equipment_class",
-                    resolved_class_id,
-                    sandbox_slots,
-                    allow_overwrite,
-                )
-                sandbox_slots["equipment_class"].status = "valid"
-            else:
-                _rollback_and_fail(
-                    "equipment_class",
-                    class_update,
-                    f"Robot class '{class_update}' is unknown or not allowed for task '{task_type}'",
-                )
-                return
-
-        # 2. equipment_family 更新
+        # 1. equipment_family 更新
         family_update = equipment_updates.get("equipment_family")
         resolved_family = None
         if family_update:
@@ -2776,59 +2666,25 @@ class DialogueManager:
             if not resolved_family and not task_type:
                 resolved_family = self.kb.resolve_robot_family(str(family_update), None)
             if resolved_family:
-                explicit_class_in_turn = "equipment_class" in equipment_updates
-                active_class_slot = sandbox_slots.get("equipment_class")
-                active_class = (
-                    active_class_slot.value
-                    if active_class_slot and active_class_slot.status in ("valid", "candidate")
+                family_slot = sandbox_slots.get("equipment_family")
+                current_family_id = (
+                    self.kb.resolve_robot_family_id(str(family_slot.value), task_type)
+                    if family_slot and family_slot.value and family_slot.status in ("valid", "candidate")
                     else None
                 )
-                target_class = resolved_family.get("robot_class")
-
-                if explicit_class_in_turn and active_class and target_class != active_class:
-                    f_slot = sandbox_slots.get("equipment_family") or Slot(slot_name="equipment_family")
-                    f_slot.status = "invalid"
-                    f_slot.value = None
-                    f_slot.candidate_value = family_update
-                    f_slot.validation_error = f"Family '{family_update}' does not belong to selected class '{active_class}'"
-                    sandbox_slots["equipment_family"] = f_slot
-                elif not allow_overwrite and active_class and target_class != active_class:
-                    _rollback_and_fail(
-                        "equipment_family",
-                        family_update,
-                        f"Family '{family_update}' conflicts with active class '{active_class}'",
-                        force_conflict=True,
-                    )
-                    return
-                else:
-                    if active_class and active_class != target_class:
-                        changed_parents.append("equipment_class")
-                    self._apply_slot_update_in_transaction(
-                        "equipment_class",
-                        target_class,
-                        sandbox_slots,
-                        allow_overwrite,
-                    )
-                    sandbox_slots["equipment_class"].status = "valid"
-                    family_slot = sandbox_slots.get("equipment_family")
-                    current_family_id = (
-                        self.kb.resolve_robot_family_id(str(family_slot.value), task_type)
-                        if family_slot and family_slot.value and family_slot.status in ("valid", "candidate")
-                        else None
-                    )
-                    if (
-                        allow_overwrite
-                        and current_family_id
-                        and current_family_id != resolved_family.get("family_id")
-                    ):
-                        changed_parents.append("equipment_family")
-                    self._apply_slot_update_in_transaction(
-                        "equipment_family",
-                        resolved_family.get("full_name", family_update),
-                        sandbox_slots,
-                        allow_overwrite,
-                    )
-                    sandbox_slots["equipment_family"].status = "valid"
+                if (
+                    allow_overwrite
+                    and current_family_id
+                    and current_family_id != resolved_family.get("family_id")
+                ):
+                    changed_parents.append("equipment_family")
+                self._apply_slot_update_in_transaction(
+                    "equipment_family",
+                    resolved_family.get("full_name", family_update),
+                    sandbox_slots,
+                    allow_overwrite,
+                )
+                sandbox_slots["equipment_family"].status = "valid"
             else:
                 _rollback_and_fail(
                     "equipment_family",
@@ -2837,7 +2693,7 @@ class DialogueManager:
                 )
                 return
 
-        # 3. equipment_type (model_variant) 更新
+        # 2. equipment_type (model_variant) 更新
         variant_update = equipment_updates.get("equipment_type")
         selected_variant = None
         if variant_update:
@@ -2875,7 +2731,6 @@ class DialogueManager:
                 selected_variant = None
 
             if selected_variant:
-                robot_cls = selected_variant.get("robot_class")
                 fam_id = selected_variant.get("family_id")
                 fam_full = selected_variant.get("family_full_name")
 
@@ -2922,13 +2777,6 @@ class DialogueManager:
                 if allow_overwrite and old_variant_val and old_variant_val != new_variant_val:
                     changed_parents.append("equipment_type")
                 self._apply_slot_update_in_transaction(
-                    "equipment_class",
-                    robot_cls,
-                    sandbox_slots,
-                    allow_overwrite,
-                )
-                sandbox_slots["equipment_class"].status = "valid"
-                self._apply_slot_update_in_transaction(
                     "equipment_family",
                     fam_full,
                     sandbox_slots,
@@ -2950,7 +2798,7 @@ class DialogueManager:
                 )
                 return
 
-        # 4. equipment_unit_id / equipment_name 更新
+        # 3. equipment_unit_id / equipment_name 更新
         unit_update = (
             _unwrap(equipment_updates.get("equipment_unit_id"))
             or _unwrap(equipment_updates.get("equipment_name"))
@@ -2982,20 +2830,14 @@ class DialogueManager:
 
             if resolved_unit:
                 unit_variant = resolved_unit["robot"]
-                unit_robot_cls = unit_variant.get("robot_class")
                 unit_fam_id = unit_variant.get("family_id")
                 unit_fam_full = unit_variant.get("family_full_name")
                 unit_vid = unit_variant.get("variant_id")
                 unit_variant_full = unit_variant.get("full_name")
 
-                explicit_class_in_turn = equipment_updates.get("equipment_class")
                 explicit_family_in_turn = equipment_updates.get("equipment_family")
                 explicit_type_in_turn = equipment_updates.get("equipment_type")
 
-                explicit_cls_mismatch = (
-                    explicit_class_in_turn is not None
-                    and self.kb._resolve_class_key(str(explicit_class_in_turn)) != unit_robot_cls
-                )
                 explicit_fam_mismatch = False
                 if explicit_family_in_turn is not None:
                     explicit_fam_resolved = self.kb.resolve_robot_family_id(str(explicit_family_in_turn), task_type)
@@ -3010,7 +2852,7 @@ class DialogueManager:
                     if exp_vid and exp_vid != unit_vid:
                         explicit_type_mismatch = True
 
-                parent_mismatch = explicit_cls_mismatch or explicit_fam_mismatch or explicit_type_mismatch
+                parent_mismatch = explicit_fam_mismatch or explicit_type_mismatch
 
                 if parent_mismatch:
                     _rollback_and_fail(
@@ -3023,7 +2865,7 @@ class DialogueManager:
                 # 四级组合权威校验
                 try:
                     self.kb.validate_static_robot_selection(
-                        unit_robot_cls,
+                        unit_variant.get("robot_class"),
                         unit_fam_id,
                         unit_variant_full,
                         resolved_unit["unit_id"],
@@ -3038,14 +2880,7 @@ class DialogueManager:
                     )
                     return
 
-                # 四级校验通过，更新 sandbox
-                self._apply_slot_update_in_transaction(
-                    "equipment_class",
-                    unit_robot_cls,
-                    sandbox_slots,
-                    allow_overwrite,
-                )
-                sandbox_slots["equipment_class"].status = "valid"
+                # 实体链校验通过，更新 sandbox
                 self._apply_slot_update_in_transaction(
                     "equipment_family",
                     unit_fam_full,
@@ -3109,6 +2944,12 @@ class DialogueManager:
 
         existing_task_id = new_slots.get("task_id")
         old_task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
+        committed_task_type_slot = self.slot_store.slots.get("task_type_key") if hasattr(self, "slot_store") else None
+        committed_task_type_key = (
+            committed_task_type_slot.value
+            if committed_task_type_slot and committed_task_type_slot.status == "valid"
+            else None
+        )
 
         # 如果已有 valid 的 task_id，禁止原地跨类别修改任务类型 (Lock task category)
         if existing_task_id and existing_task_id.status == "valid" and existing_task_id.value:
@@ -3137,6 +2978,23 @@ class DialogueManager:
                 if len(values) == 1:
                     new_slots["task_type"].value = values[0]
                     new_slots["task_type"].status = "valid"
+
+            previous_task_type_key = committed_task_type_key or old_task_type_key
+            if previous_task_type_key and target_key != previous_task_type_key:
+                from .slot_store import reset_slot_to_missing
+
+                for robot_key in (
+                    "equipment_family",
+                    "equipment_type",
+                    "equipment_unit_id",
+                    "equipment_name",
+                    "payload",
+                ):
+                    if robot_key in new_slots:
+                        reset_slot_to_missing(
+                            new_slots[robot_key],
+                            source="system_task_type_invalidation",
+                        )
 
         if target_key:
             required_fields = self.builder.get_schema(target_key, self.mode)
@@ -3264,7 +3122,6 @@ class DialogueManager:
                     slot.validation_error = None
 
         for eq_key in (
-            "equipment_class",
             "equipment_family",
             "equipment_type",
             "equipment_name",

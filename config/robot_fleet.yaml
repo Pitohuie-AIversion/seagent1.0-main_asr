@@ -482,14 +482,14 @@ fleet_units:
     variant_id: "light_work_class_rov_hp"
     serial_no: "002"
     display_name: "轻型工作级深海机器人-002"
-    status_ref: "LROV-002"
+    status_ref: "LROV--002"
     aliases: ["002", "二号机", "轻型002", "轻型二号机", "轻型工作级002", "轻型工作级二号机", "天鹰座002", "天鹰座二号机"]
 
   - unit_id: "OBSROV--001"
     variant_id: "observation_rov_hp"
     serial_no: "001"
     display_name: "观察级深海机器人-001"
-    status_ref: "OBSROV-001"
+    status_ref: "OBSROV--001"
     aliases: ["001", "一号机", "观察级001", "观察级一号机", "观察型001", "观察型一号机", "观察级深海机器人001", "观察级深海机器人一号机"]
 
   - unit_id: "AUV-324cc-001"

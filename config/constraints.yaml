@@ -5,23 +5,23 @@
 
 constraints:
 
-  # ── ROV 类型约束 ─────────────────────────────────────────────────────────────
+  # ── 机器人任务能力约束 ──────────────────────────────────────────────────────
   - id: "C001"
-    name: "管缆巡检必须使用观察级ROV或AUV"
+    name: "管缆巡检机器人能力约束"
     applies_to: ["pipeline_inspection"]
     check_type: "robot_category"
     violation_message: >
-      管缆巡检任务要求使用观察级ROV或AUV，
-      当前选择的设备类型或任务能力不符合要求。请更换为具备巡检能力的观察级ROV或AUV。
+      当前选择的机器人能力不满足管缆巡检任务要求，
+      请更换为能力覆盖巡检需求的机器人。
     severity: "hard"   # hard=无法发布; soft=警告但可继续
 
   - id: "C002"
-    name: "采油树阀门插拔必须使用工作级ROV"
+    name: "采油树阀门操作机器人能力约束"
     applies_to: ["tree_valve_operation"]
     check_type: "robot_category"
     violation_message: >
-      采油树控制面板阀门插拔任务要求使用工作级ROV（Work-class ROV），
-      该任务需要机械臂和液压工具支持，观察级ROV无法完成。请更换为工作级ROV。
+      当前选择的机器人能力不满足采油树阀门操作任务要求，
+      该任务需要机械臂和液压工具支持，请更换为能力覆盖要求的机器人。
     severity: "hard"
 
 #  - id: "C003"

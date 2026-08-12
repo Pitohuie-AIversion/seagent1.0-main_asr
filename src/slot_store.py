@@ -81,7 +81,6 @@ BASE_SLOT_TYPES = {
     "task_id": "string",
     "intent_id": "string",
     "internal_id": "string",
-    "equipment_class": "string",
     "equipment_family": "string",
     "equipment_type": "string",
     "equipment_name": "string",
@@ -89,20 +88,20 @@ BASE_SLOT_TYPES = {
 }
 
 ROBOT_CASCADE_DEPENDENCIES = {
-    "equipment_class": (
-        "equipment_family",
-        "equipment_type",
-        "equipment_unit_id",
-        "equipment_name",
-    ),
     "equipment_family": (
         "equipment_type",
         "equipment_unit_id",
         "equipment_name",
+        "payload",
     ),
     "equipment_type": (
         "equipment_unit_id",
         "equipment_name",
+        "payload",
+    ),
+    "equipment_unit_id": (
+        "equipment_name",
+        "payload",
     ),
 }
 

@@ -1460,10 +1460,12 @@ class ParameterExtractor:
         )
 
         constraint_hint = ""
-        if task_type_key == "pipeline_inspection":
-            constraint_hint = "注意：该任务必须使用观察级ROV（category=observation）。"
-        elif task_type_key == "tree_valve_operation":
-            constraint_hint = "注意：该任务必须使用工作级ROV（category=work）。"
+        if task_type_key:
+            capability_union: set[str] = set()
+            for rov in all_rovs:
+                capability_union.update(rov.get("capabilities") or [])
+            if capability_union:
+                constraint_hint = f"注意：该任务候选设备必须从给定列表中按能力匹配，候选能力包括：{'、'.join(sorted(capability_union))}。"
 
         system = f"""\
 你是ROV设备匹配专家。根据用户描述，从给定设备列表中找出最匹配的ROV（最多3个），

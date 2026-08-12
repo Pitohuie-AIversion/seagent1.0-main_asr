@@ -27,7 +27,6 @@ class NormalizationContractError(ValueError):
 NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS: frozenset[str] = frozenset({
     "task_type",
     "task_type_key",
-    "equipment_class",
     "equipment_family",
     "equipment_type",
     "equipment_name",

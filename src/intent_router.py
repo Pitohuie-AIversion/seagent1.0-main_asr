@@ -28,6 +28,7 @@ from .interaction_plan import (
     validate_interaction_plan,
     build_clarify_fallback_plan,
 )
+from .knowledge_retriever import KnowledgeBase
 from .llm_client import LLMClient
 from .model_profile import ModelRole, _is_unsupported_role_keyword_error
 
@@ -221,7 +222,62 @@ class IntentRouteResult:
         return self.dialogue_mode == "task_collection"
 
 
-def _infer_read_query_intent(user_message: str) -> str:
+def _message_mentions_robot_entity(user_message: str, kb: KnowledgeBase | None = None) -> bool:
+    if kb is None:
+        try:
+            kb = KnowledgeBase()
+        except Exception:
+            kb = None
+    if kb is not None:
+        text = user_message.strip()
+        device_context_terms = (
+            "机器人", "设备", "ROV", "AUV", "潜水器", "水下", "作业", "下潜", "水深", "深度",
+            "能力", "载荷", "负载", "工具", "通信", "声呐", "摄像", "母船", "型号", "系列",
+            "一号机", "二号机", "三号机",
+        )
+        has_device_context = any(term.lower() in text.lower() for term in device_context_terms)
+
+        def _norm_target(value: object) -> str:
+            return re.sub(r"\s+", "", str(value or "")).lower()
+
+        def _is_bare_unit_alias(value: object) -> bool:
+            norm = _norm_target(value)
+            return bool(re.fullmatch(r"\d{1,3}", norm)) or norm in {"一号机", "二号机", "三号机"}
+
+        def _target_mentions_entity(value: object, *, allow_bare_unit_alias: bool = False) -> bool:
+            target_norm = _norm_target(value)
+            if not target_norm:
+                return False
+            if _is_bare_unit_alias(target_norm) and not allow_bare_unit_alias:
+                return False
+            return target_norm in text_norm
+
+        try:
+            text_norm = re.sub(r"\s+", "", text).lower()
+            if kb.resolve_robot_family(text, None):
+                return True
+            if kb.get_rov(text):
+                return True
+            if has_device_context and kb.resolve_robot_unit(text, None):
+                return True
+            for family_id, family in kb.robot_fleet.get("robot_families", {}).items():
+                targets = [family_id, family.get("full_name", ""), *family.get("aliases", [])]
+                if any(_target_mentions_entity(target) for target in targets):
+                    return True
+            for robot in kb.get_all_rovs():
+                targets = [robot.get("variant_id", ""), robot.get("full_name", ""), *robot.get("aliases", [])]
+                if any(_target_mentions_entity(target) for target in targets):
+                    return True
+            for unit in kb.robot_fleet.get("fleet_units", []):
+                targets = [unit.get("unit_id", ""), unit.get("display_name", ""), *unit.get("aliases", [])]
+                if any(_target_mentions_entity(target, allow_bare_unit_alias=has_device_context) for target in targets):
+                    return True
+        except Exception:
+            return False
+    return bool(re.search(r"\b(?:ROV|AUV)\b", user_message, re.IGNORECASE))
+
+
+def _infer_read_query_intent(user_message: str, kb: KnowledgeBase | None = None) -> str:
     """LLM-First: 对 READ 场景的描述性 query_intent 做确定性规则补齐。
 
     LLM 的语义判断优先于 operation/dialogue_mode（安全边界），
@@ -234,7 +290,7 @@ def _infer_read_query_intent(user_message: str) -> str:
     # ═══ 0. 知识元问题（什么是 X / 为什么 / 怎么 / 如何 / 对比 / 解释...）优先级最高 ═══
     # 但如果有明确设备名+作业/能力/限制等（如"金牛座为什么不能在500米作业"），
     # 归为 DEVICE_CAPABILITY（问的是设备能力限制，不是元概念）
-    has_device_name_ref = any(
+    has_device_name_ref = _message_mentions_robot_entity(msg, kb) or any(
         d in msg for d in ("天鹰座", "金牛座", "水蛟", "海马", "CRAWLER", "LROV", "亚特兰蒂斯", "OBSROV")
     ) or re.search(r"\bROV\b", msg, re.IGNORECASE) or re.search(r"\bAUV\b", msg, re.IGNORECASE) or "机器人" in msg
     # 设备能力/作业/作业水深限制相关的"为什么/怎么不能"问句（问的是设备性能）
@@ -243,6 +299,8 @@ def _infer_read_query_intent(user_message: str) -> str:
         and any(q in msg for q in ("为什么", "为何", "怎么", "如何", "什么原因"))
         and any(t in msg for t in ("作业", "工作", "使用", "搭载", "下潜", "潜水", "运行", "执行", "能力", "限制", "最大", "不能", "无法", "不行", "支持"))
     )
+    if has_device_name_ref and any(t in msg for t in ("能", "能否", "能不能", "可以", "可不可以", "作业", "工作", "水深", "深度", "最大", "支持", "能力", "限制")):
+        return "DEVICE_CAPABILITY"
     meta_knowledge_patterns = (
         r"什么是", r"什么叫", r"何为", r"为什么", r"怎么(?!样|办|解决|执行|创建)",
         r"如何(?!忽略|启用|开启|关闭|使用|选择)", r"怎样", r"怎么弄", r"怎么创建", r"如何创建",
@@ -499,8 +557,9 @@ def _extract_subject_relation_policy(
 
 
 class IntentRouter:
-    def __init__(self, llm: LLMClient):
+    def __init__(self, llm: LLMClient, kb: KnowledgeBase | None = None):
         self.llm = llm
+        self.kb = kb
 
     @staticmethod
     def _parse_executable_control_action(user_message: str) -> str | None:
@@ -748,6 +807,7 @@ class IntentRouter:
             "task_state": task_state,
             "phase": phase,
         }
+        mentions_robot_entity = _message_mentions_robot_entity(msg, self.kb)
 
         # 1. 优先提取明确的紧急干预动作（紧急控制最高优先级）
         has_control_word = any(
@@ -1120,6 +1180,24 @@ class IntentRouter:
                     context=route_ctx,
                 )
 
+            if mentions_robot_entity and any(
+                kw in msg for kw in ("能", "能否", "能不能", "可以", "可不可以", "支持", "作业", "工作", "水深", "深度", "最大", "能力", "限制", "属于")
+            ):
+                st, stext, rel, sp = _extract_subject_relation_policy(msg, "DEVICE_CAPABILITY", task_state)
+                return self._build_plan_result(
+                    user_message=msg,
+                    operation="READ",
+                    dialogue_mode="knowledge_qa",
+                    query_intent="DEVICE_CAPABILITY",
+                    subject_type=st or "device",
+                    subject_text=stext,
+                    relation=rel or "capabilities",
+                    source_policy=sp or "project_kb",
+                    confidence=0.9,
+                    reason_code="KB_ROBOT_ENTITY_CAPABILITY_READ",
+                    context=route_ctx,
+                )
+
             # C. 规则、概念与差异比较问答 (KNOWLEDGE_QA) -> READ
             if any(kw in msg for kw in (
                 "区别", "差异", "不同", "软约束", "硬约束", "忽略警告", "忽略软警告", "硬约束阻断",
@@ -1192,7 +1270,7 @@ class IntentRouter:
                 )
 
             # G. 特定型号/族机器人的能力与限制查询 (DEVICE_CAPABILITY) -> READ
-            has_specific_family_mention = any(
+            has_specific_family_mention = mentions_robot_entity or any(
                 fam in msg for fam in ("天鹰座", "金牛座", "水蛟", "海马", "CRAWLER", "LROV", "1600", "WORK", "观察级", "工作级", "亚特兰蒂斯", "深海")
             )
             asks_which_robots = any(
@@ -2001,7 +2079,7 @@ class IntentRouter:
         # 如果 operation=CLARIFY 且 LLM 没给出具体 CLARIFICATION 之外的意图，也尝试精确推断（但不覆盖 CLARIFICATION=
         op_val = parsed.get("operation")
         if op_val == "READ":
-            precise_intent = _infer_read_query_intent(user_message)
+            precise_intent = _infer_read_query_intent(user_message, self.kb)
             parsed["query_intent"] = precise_intent
             # 重新提取 subject_type / relation / source_policy 基于更精确的 intent
             st, stext, rel, sp = _extract_subject_relation_policy(user_message, precise_intent, task_state)
@@ -2121,7 +2199,7 @@ class IntentRouter:
                     ):
                         parsed["operation"] = "READ"
                         parsed["dialogue_mode"] = "knowledge_qa"
-                        precise_intent = _infer_read_query_intent(user_message)
+                        precise_intent = _infer_read_query_intent(user_message, self.kb)
                         parsed["query_intent"] = precise_intent
                         parsed["needs_clarification"] = False
                         parsed.pop("clarification_reason", None)

@@ -52,7 +52,7 @@ class TestTaskIntentSemanticMapping(unittest.TestCase):
                 "task_type_key": "pipeline_burial",
                 "equipment_type": "履带式海底重载作业机器人 1600HP",
                 "expected_task_type": "pipeline_burial",
-                "expected_robot_type": "work_class_rov",
+                "expected_robot_type": "cable_burial_robot",
             },
             {
                 "name": "采油树操作 + 工作级ROV",
@@ -170,13 +170,41 @@ class TestTaskIntentSemanticMapping(unittest.TestCase):
                 "details": {"pipeline_type": "subsea_oil_gas", "start_point": None, "end_point": None},
             },
             "equipment": {
-                "robot_type": "work_class_rov",  # 巡检不匹配 work_class_rov
+                "robot_type": "cable_burial_robot",  # 巡检不匹配 cable_burial capability
                 "payload": [],
                 "support_vessel": {"name": None, "latitude": None, "longitude": None},
             },
             "conditions": {},
         }
         self.assertFalse(validate_task_intent(invalid_mismatch_intent))
+
+    def test_validate_task_intent_uses_capability_not_hardcoded_robot_type_matrix(self):
+        """TaskIntent 校验按 KB capability 关系判断，不使用任务到 robot_type 的硬编码白名单。"""
+        intent = {
+            "schema_version": 2,
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+            "task_id": "PB-20260801-001",
+            "intent_id": "TI2026073010",
+            "task_type": "pipeline_burial",
+            "task_type_key": "pipeline_burial",
+            "priority": 7,
+            "time": {"start": "2026-08-01T08:00:00+08:00", "end": "2026-08-01T18:00:00+08:00"},
+            "location": {"oilfield": "流花11-1油田", "water_depth_m": 300.0},
+            "task": {
+                "type": "pipeline_burial",
+                "details": {"pipeline_type": "subsea_oil_gas", "start_point": None, "end_point": None},
+            },
+            "equipment": {
+                "robot_type": "cable_burial_robot",
+                "robot_family": "crawler_heavy_seabed_robot",
+                "robot_variant": "crawler_heavy_seabed_robot_1600hp",
+                "robot_unit_id": "CRAWLER-1600-001",
+                "payload": [],
+                "support_vessel": {"name": None, "latitude": None, "longitude": None},
+            },
+            "conditions": {},
+        }
+        self.assertTrue(validate_task_intent(intent, self.kb.task_schemas))
 
     def test_unknown_equipment_raises_persistence_error(self):
         """未知设备不得默认回退成 observation_rov，必须抛出 TaskPersistenceError"""

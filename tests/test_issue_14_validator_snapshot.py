@@ -100,18 +100,68 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         self.assertEqual(res2.overall_status, "blocked_hard")
         self.assertEqual(res2.state_snapshot["unit_id"], "LROV--002")
 
-    def test_ambiguous_family_returns_validation_error(self):
-        """当只提供 family/type 且对应多台单机时，无法唯一确定单机，应返回 validation_error。"""
+    def test_ambiguous_family_is_runtime_pending_not_val_err(self):
+        """只提供 family/type 且对应多台单机时，应等待明确单机，不生成 VAL_ERR 业务违规。"""
         task_state = {
             "equipment_family": "observation_rov",
             "task_type_key": "pipeline_inspection",
         }
         res = self.validator.validate_task(task_state)
-        self.assertEqual(res.overall_status, "validation_error")
-        self.assertIsNotNone(res.error)
-        self.assertEqual(res.error["code"], "AMBIGUOUS_UNIT_SELECTOR")
-        self.assertGreater(len(res.violations), 0)
-        self.assertEqual(res.violations[0].constraint_id, "VAL_ERR")
+        self.assertEqual(res.overall_status, "pending_runtime_validation")
+        self.assertEqual(res.runtime_diagnostic["code"], "AMBIGUOUS_UNIT_SELECTOR")
+        self.assertEqual(res.violations, [])
+        self.assertIsNone(res.error)
+
+    def test_uncaught_validator_exception_is_not_business_constraint(self):
+        """Validator 内部程序异常不再包装成 VAL_ERR 业务硬约束。"""
+        original = self.validator._resolve_single_unit_snapshot
+        try:
+            def boom(*_args, **_kwargs):
+                raise RuntimeError("synthetic validator bug")
+
+            self.validator._resolve_single_unit_snapshot = boom
+            res = self.validator.validate_task({
+                "equipment_unit_id": "OBSROV--001",
+                "task_type_key": "pipeline_inspection",
+            })
+        finally:
+            self.validator._resolve_single_unit_snapshot = original
+
+        self.assertEqual(res.overall_status, "pending_runtime_validation")
+        self.assertEqual(res.runtime_diagnostic["code"], "VALIDATOR_EXCEPTION")
+        self.assertEqual(res.violations, [])
+
+    def test_communication_status_uses_telemetry_fields_not_robot_class(self):
+        """通信检查读取状态字段本身，不再根据 robot_class 选择水声或脐带缆分支。"""
+        self.kb.state_info.set_status(
+            "OBSROV-001",
+            {
+                "overall_status": "available",
+                "acoustic_comms_status": "abnormal",
+                "tether_connection_status": "normal",
+            },
+        )
+        res_acoustic = self.validator.validate_task({
+            "equipment_unit_id": "OBSROV--001",
+            "task_type_key": "pipeline_inspection",
+        })
+        c27 = next(v for v in res_acoustic.violations if v.constraint_id == "C027")
+        self.assertIn("水声无线通信异常", c27.observed_value)
+
+        self.kb.state_info.set_status(
+            "AUV-324cc-001",
+            {
+                "overall_status": "available",
+                "acoustic_comms_status": "normal",
+                "tether_connection_status": "weak",
+            },
+        )
+        res_tether = self.validator.validate_task({
+            "equipment_unit_id": "AUV-324cc-001",
+            "task_type_key": "pipeline_inspection",
+        })
+        c27 = next(v for v in res_tether.violations if v.constraint_id == "C027")
+        self.assertIn("与母船连接异常", c27.observed_value)
 
     def test_future_task_pending_runtime_validation(self):
         """未来执行的任务（start_time 晚于当前）不使用当前遥测流速阻断，标记为 pending_runtime_validation。"""
