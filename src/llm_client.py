@@ -298,94 +298,22 @@ class LLMClient:
         return None
 
     def _mock_classify_interaction(self, messages: list[dict]) -> dict:
-        """离线交互路由 mock；只返回最小协议结构，不维护业务关键词分类器。"""
-        raw_user_content = self._message_content(messages, len(messages) - 1)
-        text = self._latest_user_message(messages)
-        context = self._json_after_marker(raw_user_content, "【当前上下文状态】") or {}
-        expected_slots = context.get("expected_slots") if isinstance(context, dict) else []
-        lower = text.lower()
-        is_question = bool(re.search(r"(?:什么|哪些|如何|为什么|多少|几|吗|是否|能否|有没有|怎么|呢|[？?])", text))
-
-        interaction_type = "WRITE"
-        query_intent = None
-        reason = "离线测试返回预设 WRITE 结果"
-
-        if any(word in text for word in ("不确认", "不要确认", "不发布", "不要发布", "不取消", "不要取消", "暂不", "先不")) and not re.search(r"(?:[0-9]+|改成|设为|设置为|替换为|调整为)", text):
-            interaction_type = "QUERY"
-            query_intent = "CLARIFICATION"
-            reason = "离线测试: 否定/暂缓控制词"
-        elif any(word in lower for word in ("你好", "您好", "hello", "hi", "thanks", "谢谢", "天气", "不错")) or any(word in text for word in ("你是谁", "你能做什么")):
-            interaction_type = "QUERY"
-            query_intent = "GENERAL_CHAT"
-            reason = "离线测试返回预设 QUERY 普通聊天结果"
-        elif is_question and bool(re.search(r"^\d{3,}", text)):
-            num_match = re.search(r"\d{3,}", text).group(0)
-            interaction_type = "QUERY"
-            query_intent = "CLARIFICATION"
-            reason = f"纯数字序列号 {num_match}"
-        elif text in ("金牛座一号机", "金牛座", "AUV一号机") and not expected_slots and not context.get("has_task"):
-            interaction_type = "QUERY"
-            query_intent = "CLARIFICATION"
-            reason = "无任务上下文时单独输入设备别名，返回 CLARIFICATION"
-        elif any(amb in text for amb in ("一号机", "二号机", "三号机", "1号机", "2号机", "3号机")) and not any(fam in text for fam in ("金牛座", "auv", "AUV", "crawler", "CRAWLER")) and not re.search(r"(?:换成|改成|设为|设置为|替换为|调整为)", text):
-            interaction_type = "QUERY"
-            query_intent = "CLARIFICATION"
-            reason = "歧义设备别名'一号机'应路由到 CLARIFICATION"
-
-
-        elif is_question and (
-            any(kw in text for kw in ("水深", "深度", "能力", "最大", "作业", "支持哪些", "哪些机器人", "哪些设备", "工具", "载荷", "传感器"))
-            or bool(re.search(r"(?:金牛座|CRAWLER|crawler|观察级|通用工作级|履带|rov|auv|ROV|AUV)[- _]?\d{3,}", text))
-        ):
-            # 设备能力/规格查询
-            interaction_type = "QUERY"
-            query_intent = "DEVICE_CAPABILITY"
-            reason = "离线测试: 设备能力查询"
-        elif is_question:
-            interaction_type = "QUERY"
-            query_intent = "CLARIFICATION"
-            reason = "离线测试: 疑问语句缺少明确操作，降级为澄清"
-        else:
-            has_task_write_evidence = bool(expected_slots) or any(
-                kw in text
-                for kw in (
-                    "巡检",
-                    "作业",
-                    "清洗",
-                    "水深",
-                    "设置",
-                    "修改",
-                    "创建",
-                    "新建",
-                    "参数",
-                    "改成",
-                    "设为",
-                    "调整为",
-                    "替换为",
-                    "起点",
-                    "终点",
-                    "目标",
-                    "坐标",
-                    "油田",
-                )
-            )
-            if has_task_write_evidence:
-                interaction_type = "WRITE"
-                query_intent = None
-                reason = "离线测试: 识别到任务创建或参数修改意图"
-            else:
-                interaction_type = "QUERY"
-                query_intent = "CLARIFICATION"
-                reason = "离线测试: 缺少明确写入证据，降级为澄清"
-
-        dialogue_mode = "task_collection" if interaction_type == "WRITE" else "knowledge_qa"
-
+        """离线模式不伪装自然语言理解能力，统一返回无副作用澄清。"""
+        del messages
         return {
-            "dialogue_mode": dialogue_mode,
-            "interaction_type": interaction_type,
-            "query_intent": query_intent,
-            "confidence": 0.95,
-            "reason": reason,
+            "schema_version": 1,
+            "operation": "CLARIFY",
+            "dialogue_mode": "knowledge_qa",
+            "query_intent": "CLARIFICATION",
+            "subject_type": "unknown",
+            "subject_text": None,
+            "relation": "unknown",
+            "source_policy": "none",
+            "needs_clarification": True,
+            "clarification_reason": "离线模式未配置语义规划模型",
+            "emergency_action": None,
+            "confidence": 1.0,
+            "reason_code": "OFFLINE_SEMANTIC_MODEL_UNAVAILABLE",
         }
 
     def _mock_generate_text(self, messages: list[dict]) -> str:

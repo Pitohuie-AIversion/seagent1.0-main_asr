@@ -302,7 +302,9 @@ def build_responder_messages(
 
     recent_history = conversation_history[-16:] if len(conversation_history) > 16 else conversation_history
     turn_message = latest_user_message
-    if accepted_updates:
+    # WRITE 路径必须始终把真实提交结果交给回复模型。空 dict 也有语义：本轮没有
+    # 任何字段通过验证并提交，回复不得根据用户原句自行声称“已设置”。
+    if accepted_updates is not None:
         accepted_json = json.dumps(
             accepted_updates,
             ensure_ascii=False,
@@ -317,7 +319,8 @@ def build_responder_messages(
             "【本轮后端处理结果】\n"
             f"已提交字段更新：\n{accepted_json}\n"
             f"未解析内容：\n{unresolved_json}\n"
-            "请仅依据当前规范化状态继续回复；不得重新解释已提交字段。"
+            "只有上面非空的已提交字段才可描述为本轮已设置或已修改；"
+            "若为空，必须明确说明本轮未写入任何字段。"
         )
     return [
         {"role": "system", "content": system_content},
@@ -409,5 +412,4 @@ def build_status_responder_messages(
         *recent_history,
         {"role": "user", "content": latest_user_message},
     ]
-
 

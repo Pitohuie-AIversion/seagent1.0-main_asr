@@ -24,11 +24,7 @@ import logging
 import math
 import re
 import threading
-import os
-import stat
 import uuid
-import logging
-import threading
 from typing import Any, Dict, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 from datetime import datetime, timezone
@@ -951,7 +947,7 @@ class DialogueManager:
                                 self._transition_phase("blocked_soft", reason="telemetry_soft_warning_detected")
                                 self._blocking_violations = unacked
                                 raise TaskPersistenceError(f"单机 {unit_id} 的状态遥测在确认发布过程中发生变更，触发未确认的软性告警。")
-                        elif re_val_res.overall_status == "pending_runtime_validation" and is_now:
+                        elif re_val_res.overall_status == "pending_runtime_validation" and self.task_start_now:
                             raise TaskPersistenceError(f"单机 {unit_id} 的状态遥测在确认发布过程中发生变更，实时任务无法在缺乏遥测时发布。")
                         val_res = re_val_res
                 except Exception as check_exc:
@@ -1200,6 +1196,11 @@ class DialogueManager:
 
         # ── 独立意图路由分流阶段 ──
         expected_slots = [m["key"] for m in self._last_missing if isinstance(m, dict) and "key" in m]
+        # ════════════════════════════════════════════════════════════════
+        # 修复3的关键：路由切换 dialogue_mode 之前快照保存原始 mode
+        #   否则 L1207-1212 _switch_dialogue_mode(route.dialogue_mode)
+        #   会把原本的 task_collection 先覆盖成 knowledge_qa，
+        #   后续 _already_in_task 检测（用 self.dialogue_mode）永远 False。
         route = self.intent_router.route(
             user_message=user_message,
             conversation_history=self.conversation_history,
@@ -1218,7 +1219,7 @@ class DialogueManager:
         if route.dialogue_mode == "emergency_intervention":
             return self._handle_emergency_intervention(user_message, route, request_id)
 
-        if route.dialogue_mode == "knowledge_qa":
+        if route.interaction_type == "QUERY":
             return self._handle_non_task_route(user_message, route, request_id)
 
         compound_request = analyze_task_request(
@@ -1360,13 +1361,9 @@ class DialogueManager:
 
             task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
 
-        should_extract_task_parameters = (
-            bool(task_type_key)
-            and (
-                had_task_type_key_at_turn_start
-                or self._message_may_contain_task_parameters(user_message)
-            )
-        )
+        # WRITE 已由 TurnPlanner 结合上下文判定。不要再根据原句关键词决定是否
+        # 调用参数抽取，否则自然表达会在模型判断后被第二道语义门静默丢弃。
+        should_extract_task_parameters = bool(task_type_key)
 
         apply_plan: NormalizationApplyPlan | None = None
 
@@ -1883,6 +1880,11 @@ class DialogueManager:
         )
         reply = self._safe_llm_chat(messages, temperature=0.7, max_tokens=1500, role=ModelRole.TASK_RESPONDER)
         reply = self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
+        reply = self._ground_write_reply(
+            reply,
+            accepted_updates=accepted_updates,
+            unresolved_inputs=turn_unresolved,
+        )
         reply = self._ensure_constraint_details(reply, constraint_context)
 
         if payload_mutation_failed and mutation_failure_result:
@@ -1900,64 +1902,25 @@ class DialogueManager:
     # 参数更新与规范化
     # --------------------------------------------------------------------------
     @staticmethod
-    def _message_may_contain_task_parameters(user_message: str) -> bool:
+    def _ground_write_reply(
+        model_reply: str,
+        *,
+        accepted_updates: dict,
+        unresolved_inputs: list,
+    ) -> str:
+        """保证 WRITE 回复不会把未提交候选描述成已写入事实。
+
+        有真实提交时保留模型回复；没有真实提交时不信任任何自然语言成功声明，
+        直接返回由事务结果生成的确定性说明。这里不分析原句或回复关键词。
         """
-        判断首轮建任务输入是否除了任务类型外还可能携带业务参数。
+        if accepted_updates:
+            return model_reply
 
-        目的不是替代 extractor 做字段抽取，而是在“刚识别出 task_type”的首轮
-        避免把纯任务类型短句再次送进 Stage 2，从而减少一次不必要的 LLM 调用。
-        如果文本里出现时间、水深、坐标、设备、工具、母船等参数线索，仍保留
-        Stage 2，避免用户一口气给完整任务信息时丢字段。
-        """
-        text = str(user_message or "").strip()
-        if not text:
-            return False
-
-        parameter_cues = (
-            "开始时间",
-            "结束时间",
-            "时间",
-            "现在",
-            "小时后",
-            "分钟后",
-            "明天",
-            "今天",
-            "水深",
-            "深度",
-            "起始点",
-            "结束点",
-            "坐标",
-            "经纬度",
-            "管缆类型",
-            "油气管道",
-            "电力电缆",
-            "光纤通信缆",
-            "使用",
-            "选用",
-            "型号",
-            "编号",
-            "机器人",
-            "工作级",
-            "观察级",
-            "AUV",
-            "ROV",
-            "工具",
-            "携带",
-            "载荷",
-            "母船",
-            "支持船",
-            "油田",
-            "井口",
-        )
-        if any(cue in text for cue in parameter_cues):
-            return True
-
-        if re.search(r"\([-+]?\d+(?:\.\d+)?,\s*[-+]?\d+(?:\.\d+)?\)", text):
-            return True
-        if re.search(r"\d+(?:\.\d+)?\s*(?:米|m|小时|分钟|号)", text, re.IGNORECASE):
-            return True
-
-        return False
+        reply = "本轮没有任务字段通过验证，因此未写入任务状态。"
+        unresolved = [str(item) for item in unresolved_inputs if str(item).strip()]
+        if unresolved:
+            reply += " 尚未解析的内容：" + "；".join(unresolved) + "。"
+        return reply
 
     def _get_committed_turn_updates(
         self,
