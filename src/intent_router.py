@@ -234,9 +234,33 @@ def _infer_read_query_intent(user_message: str) -> str:
     # ═══ 0. 知识元问题（什么是 X / 为什么 / 怎么 / 如何 / 对比 / 解释...）优先级最高 ═══
     # 但如果有明确设备名+作业/能力/限制等（如"金牛座为什么不能在500米作业"），
     # 归为 DEVICE_CAPABILITY（问的是设备能力限制，不是元概念）
-    has_device_name_ref = any(
-        d in msg for d in ("天鹰座", "金牛座", "水蛟", "海马", "CRAWLER", "LROV", "亚特兰蒂斯", "OBSROV")
-    ) or re.search(r"\bROV\b", msg, re.IGNORECASE) or re.search(r"\bAUV\b", msg, re.IGNORECASE) or "机器人" in msg
+    # Python 的 Unicode ``\b`` 会把中文和 ASCII 字母都视为单词字符，
+    # 因而无法识别“观察级ROV能”这类中英文紧邻写法。这里只排除 ASCII
+    # 标识符字符，既允许中文相邻，也避免把 PROVISION/AUVX 中的子串当设备名。
+    has_device_acronym_ref = bool(
+        re.search(
+            r"(?<![A-Za-z0-9_])(?:ROV|AUV)(?![A-Za-z0-9_])",
+            msg,
+            re.IGNORECASE,
+        )
+    )
+    has_device_name_ref = (
+        any(
+            d in msg
+            for d in (
+                "天鹰座",
+                "金牛座",
+                "水蛟",
+                "海马",
+                "CRAWLER",
+                "LROV",
+                "亚特兰蒂斯",
+                "OBSROV",
+            )
+        )
+        or has_device_acronym_ref
+        or "机器人" in msg
+    )
     # 设备能力/作业/作业水深限制相关的"为什么/怎么不能"问句（问的是设备性能）
     device_capability_why = bool(
         has_device_name_ref
