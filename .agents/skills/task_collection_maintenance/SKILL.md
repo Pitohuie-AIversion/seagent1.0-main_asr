@@ -45,3 +45,16 @@ Task templates are defined in [task_schemas.yaml](file:///root/mzy/seagent1.0-ma
 - **Missing fields detection**: Compiles a list of required fields that have not yet been successfully filled, which the dialogue manager uses to generate follow-up questions.
 - **ID Generation**: Interfaces with [id_sequence.py](file:///root/mzy/seagent1.0-main_asr/src/id_sequence.py) to build incremental `task_id` tags (e.g. based on date and serial sequence) while scanning existing files to prevent duplicates.
 - **Data Type Validation**: Verify that coordinates, numeric values, datetimes, and lists adhere to correct schemas, and references (vessels, payloads) are matched correctly in assets. Caches lookup results to improve normalization efficiency.
+
+## 5. Pending Action & Confirm/Reject Flow (`src/interaction_plan.py`, `src/intent_router.py`)
+`InteractionPlan` carries a `pending_action` field (`"confirm"`, `"reject"`, or `None`) that signals whether the current LLM turn is closing a proposed action:
+- When `pending_action=confirm`, the dialogue manager treats the turn as the user accepting a suggested option (e.g. an assistant-recommended ROV).
+- When `pending_action=reject`, the suggestion is discarded and the dialogue continues to collect the field.
+- All other turns must have `pending_action=None`; the intent router enforces this in its prompt schema.
+
+## 6. Grounded Recommendation Logic (`src/dialogue_manager.py`)
+When the intent router produces a plan with `operation=READ` and `relation=recommend`, the dialogue manager intercepts the turn in `_build_grounded_recommendation()` before forwarding to the LLM:
+- Grounds the recommendation against the live robot fleet and slot values already confirmed.
+- Returns a structured response directly if a valid recommendation can be made without a full LLM call.
+- Falls through to `_build_grounded_device_class_answer()` for device-class queries if the recommend branch does not match.
+- `_scope_confirmed_recommendation()` handles cases where the user selects a previously offered recommendation option.

@@ -58,3 +58,16 @@ Dialogue states track consecutive hard validation failures:
 - **Automatic Rejection**: If the failure count for any hard constraint reaches **4 turns**, the dialogue phase is set to `rejected` and the task fails.
 - **Warning Threshold**: At 3 consecutive turns, the system transitions to a final warning state (`hard_final_warning`) to notify the user.
 - **Counter Reset**: Once a hard violation is successfully corrected (the user changes parameters to satisfy the constraint), the refusal counter for that constraint ID is cleared.
+
+## 6. Constraint-Aware Robot Selection (`src/output_builder.py`)
+The output builder implements constraint-aware robot selection when multiple candidate ROVs are available:
+- Filters the candidate list by comparing each robot's capability profile against the active hard and soft constraints.
+- Robots that would immediately trigger a hard constraint violation (e.g. forbidden seabed type, depth out of range) are excluded from the recommended set.
+- Robots that trigger only soft warnings are retained but ranked lower.
+- The final selected robot is written into the task slot deterministically (no random tie-breaking).
+
+## 7. Validation Fallback Disabled (`src/dialogue_manager.py`)
+The previous behavior of falling back to a clarification question when slot validation failed has been **disabled**. Current behavior:
+- If a slot value fails schema validation, the dialogue manager does **not** silently re-prompt with a generic clarification.
+- Instead, the validation error is surfaced through structured slot schema filtering so the responder can generate a targeted correction message.
+- This change prevents ambiguous clarification loops that previously obscured the root validation failure from the user.

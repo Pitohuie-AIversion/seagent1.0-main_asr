@@ -19,11 +19,14 @@ SEAgent 通过 **WRITE/QUERY 双通道路由**、**SlotStore 统一状态中心*
 ## 2. 当前核心能力
 
 - **多模态自然语言交互**：支持文本输入与基于 Qwen ASR 的语音转写输入，结合领域词汇+上下文纠错与油田实体 Link 打分匹配。
+- **LLM 语义权威路由（ADR-005）**：以 `InteractionPlan.operation` 为每轮路由的唯一权威字段，后端不根据关键词覆盖路由决策；低置信度写操作降级 CLARIFY，模型失效 fail-safe 澄清。
 - **WRITE / QUERY 意图解耦**：精准区分写任务参数 (`WRITE`) 与读知识/状态 (`QUERY`)，确保查询交互绝对不污染任务状态。
 - **SlotStore 状态中心**：提供 Single Source of Truth，支持全局版本自增、只读快照断言与事务回滚。
+- **约束驱动机器人候选自动收敛（ADR-008）**：`get_feasible_robot_selection_domain()` 基于已确认 `water_depth`、`payload` 与即时遥测状态自动过滤候选树，执行"0 关闭 / 1 自动绑定 / 多等待消歧"三段决策。
 - **设备候选与别名层级解析**：支持系列（Family）、型号（Variant）与单机（Unit）分层别名映射及 `canonical_exact` -> `alias_exact` -> `llm_semantic` 递进解析。
-- **物理与海况强约束校验**：集成水深、海况、载荷及机器人在 `config/state.yaml` 中的实时遥测状态校验。
+- **物理与海况强约束校验**：集成水深、海况、载荷及机器人在 `config/state.yaml` 中的实时遥测状态校验；约束失败直接阻断，不退化为追问。
 - **TaskIntent 原子落盘保障**：基于 Staging 暂存区、跨进程排他锁 `TaskPublishLock` 与 `_atomic_commit_noreplace` 硬链接提交，确保任务文件全有或全无落盘。
+- **快照恢复内存原子性（ADR-007）**：`load_snapshot()` 采用隔离候选管理器方案，恢复要么完整生效，要么完全不影响当前会话。
 
 ---
 
@@ -123,12 +126,18 @@ python -m unittest discover tests
 ## 8. 文档导航
 
 - 📘 **系统架构总览**：[docs/architecture/overview.md](file:///root/mzy/seagent1.0-main_asr/docs/architecture/overview.md)
+- 🏛️ **治理基线**：[docs/architecture/governance-baseline.md](file:///root/mzy/seagent1.0-main_asr/docs/architecture/governance-baseline.md)
 - 🛠️ **开发与测试指南**：[docs/development/testing.md](file:///root/mzy/seagent1.0-main_asr/docs/development/testing.md)
 - 🤝 **团队贡献指南**：[CONTRIBUTING.md](file:///root/mzy/seagent1.0-main_asr/CONTRIBUTING.md)
 - 🏛️ **架构决策记录 (ADR)**：
   - [ADR-001: WRITE/QUERY 双通道路由](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-001-write-query-routing.md)
   - [ADR-002: SlotStore 作为统一状态中心](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-002-slotstore-source-of-truth.md)
   - [ADR-003: TaskIntent 安全原子持久化](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-003-task-intent-atomic-persistence.md)
+  - [ADR-004: 确定性任务请求守卫](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-004-deterministic-task-request-guard.md)
+  - [ADR-005: LLM 语义权威](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-005-llm-semantic-authority.md)
+  - [ADR-006: 双能力欢迎消息](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-006-two-capability-welcome-message.md)
+  - [ADR-007: 快照恢复内存原子性](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-007-atomic-snapshot-restore.md)
+  - [ADR-008: 约束驱动机器人候选收敛](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-008-constraint-aware-robot-selection.md)
 - 📊 **阶段进展报表**：[docs/progress/phase-1-5-validation.md](file:///root/mzy/seagent1.0-main_asr/docs/progress/phase-1-5-validation.md)
 - 📜 **版本演进日志**：[CHANGELOG.md](file:///root/mzy/seagent1.0-main_asr/CHANGELOG.md)
 
@@ -136,10 +145,10 @@ python -m unittest discover tests
 
 ## 9. 当前项目状态与已知限制
 
-- **状态**：Phase 1.5 阶段，核心架构闭环已完成并包含完整 CI 测试防线。
+- **状态**：Phase 2 阶段，LLM 语义权威路由（ADR-005）、约束驱动机器人候选收敛（ADR-008）与快照恢复内存原子性（ADR-007）已合并 main。核心架构闭环完成，CI 测试防线建立。
 - **已知限制**：
   - 极度冷门或未录入别名表的设备俗称仍需依赖 LLM 语义解析，可能带来微小延时。
-  - 遥测数据（`config/state.yaml`）超过 1 小时未更新会被校验器判定为过期数据并阻断执行。
+  - 遥测快照窗口为 24 小时；超时遥测数据阻断发布。
   - TaskIntent 原子落盘依靠底层硬链接 `os.link` 保证，若在跨网络挂载盘（如 NFS）运行需确保跨文件系统链接支持。
-
-TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 /root/miniconda3/envs/seagent/bin/python run.py
+  - `burial_depth`、航程、续航过滤暂未接入约束驱动候选域（当前 schema 无对应任务字段）。
+  - `ui_state_builder.py` 任务终态与会话交互终态过紧耦合（KD-01，待修复）。
