@@ -1146,6 +1146,7 @@ class DialogueManager:
                 user_message, current_state,
                 task_type_key=None,
                 task_type_map=self.kb.get_task_type_map(),
+                task_type_catalog=self.kb.get_task_type_catalog(),
                 required=None,
                 conversation_history=self.conversation_history,
             )
@@ -1221,6 +1222,7 @@ class DialogueManager:
                 user_message, current_state,
                 task_type_key=task_type_key,
                 task_type_map=self.kb.get_task_type_map(),
+                task_type_catalog=self.kb.get_task_type_catalog(),
                 required=required_field_defs,
                 ROV2type=self.kb.ROV2type,
                 conversation_history=self.conversation_history,

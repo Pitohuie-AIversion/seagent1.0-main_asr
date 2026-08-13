@@ -179,235 +179,111 @@ def has_write_evidence(
     plan_candidate: InteractionPlan | dict | None = None,
 ) -> bool:
     """
-    LLM-First 架构下的 WRITE Evidence Gate：
-    放宽证据判定标准，让 LLM 有更多机会表达自然语言意图，
-    但保留安全底线（纯查询/纯条件问句不允许 WRITE）。
+    LLM-First 架构下的 WRITE safety gate。
 
-    主要放宽点：
-    - 自然语言创建意图（"想去做..."、"准备做..."、"做巡检吧"等口语化表达）视为 WRITE
-    - expected_slots 追问场景下，只要不是纯否定/纯元问题就视为 WRITE
-    - 含数字+任务上下文的场景（"水深500"）视为 WRITE
-    - 纯条件问句+纯知识查询才会被拦截
+    这里只判断用户交互行为是否允许进入 Extractor，不判断任务类型或业务字段。
+    task_type 语义识别必须交给 Extractor + Schema catalog + Normalizer。
     """
     msg = (user_message or "").strip()
     if not msg:
         return False
 
-    # ═══ 安全底线 0：无条件/假设性问句 或 疑问形式的影响/后果评估，绝对不允许 WRITE ═══
-    # 例如："停止任务会有什么影响"、"如果水深改成500米会怎样" —— 都是知识/影响评估，不是实际写入
-    is_hypothetical_or_impact_query = bool(
-        (
-            any(cond in msg for cond in ("如果", "要是", "假如", "假使", "若", "假设", "万一"))
-            and (
-                any(q in msg for q in ("会怎样", "怎么办", "会发生", "会有什么", "影响", "后果", "如何", "怎么", "为什么", "什么"))
-                or re.search(r"[会将可能]\s*(?:怎样|如何|怎么|什么样|什么)", msg)
-            )
-        )
-        or (
-            re.search(r"(?:会有什么|有什么|会有哪些).*(?:影响|后果|问题|风险|副作用|变化)", msg)
-        )
-        or (
-            re.search(r"(?:停止|取消|暂停|撤销|放弃|终止).*(?:任务|作业|巡检|采集).*(?:什么|为何|为什么|如何|怎么|影响|后果)", msg)
-        )
-    )
-    if is_hypothetical_or_impact_query:
-        return False
-
-    # ── 安全底线：纯条件问句+元问题查询绝对不允许 WRITE ──
-    is_pure_conditional_meta_question = (
-        any(cond in msg for cond in ("如果", "要是", "假如", "假使", "若", "假设", "万一"))
-        and any(q in msg for q in ("怎么办", "如何", "怎么", "为什么", "什么是", "为何", "需要准备"))
-        and not any(t in msg for t in ("任务", "巡检", "埋设", "作业", "采集", "阀门", "管缆"))
-    )
-    if is_pure_conditional_meta_question:
-        return False
-
-    # ── 安全底线：纯知识库查询（无任何任务创建/修改信号）不 WRITE ──
-    has_task_domain_signal = any(
-        kw in msg for kw in (
-            "巡检", "埋设", "作业", "任务", "采集", "阀门", "管缆", "管道", "油气",
-            "ROV", "AUV", "机器人", "设备", "支持船",
-            "水深", "深度", "开始时间", "结束时间", "管缆位置", "管缆类型", "油田", "井口",
-        )
-    )
-    is_pure_knowledge_query = (
-        (bool(re.search(r"[呢吗？?]$", msg))
-         or any(q in msg for q in ("介绍", "说明", "什么是", "为何", "为什么", "含义", "概念", "区别", "差异", "不同",
-                                   "有哪些", "属于哪个", "属于", "搭载哪些", "支持哪些", "适合作业", "工作吗", "作业吗",
-                                   "能做什么", "可以做什么", "最大水深是", "最大水深多少", "有什么影响", "会发生什么")))
-        and not has_task_domain_signal
-    )
-    if is_pure_knowledge_query:
-        return False
-
-    # 1. 显式写入动词（原始严格逻辑保留）
-    has_explicit_write_verb = any(
-        kw in msg for kw in (
-            "改成", "改到", "改为", "设为", "设置为", "修改为", "修改到", "变更为", "调整为", "调整到", "调整至", "切换为", "换成", "指定为",
-            "创建一个", "新建一个", "发起一个", "帮我发起", "我要执行", "增加", "添加", "加上", "带上", "配备",
-            "搭载", "安装", "配置", "配", "挂载", "删除", "移除", "去掉", "清空", "清掉", "都不要", "不要了", "取消修改", "撤销修改", "取消水深修改",
-            "不修改", "确认发布", "确认开始", "确认无误"
-        )
-    ) or bool(re.search(r"取消.*修改", msg))
-    if has_explicit_write_verb:
-        return True
-
-    # 2. Expected Slot 追问回答：大幅放宽
-    if expected_slots and len(expected_slots) > 0:
-        is_pure_negation = (
-            all(k in msg for k in ("不要",)) or any(k in msg for k in ("不确认", "暂不确认", "不发布", "先不发布"))
-            and not has_task_domain_signal
-        )
-        is_pure_meta_query = (
-            any(k in msg for k in ("为什么", "什么是", "凭什么", "帮助", "规则"))
-            and not has_task_domain_signal
-        )
-        if not is_pure_negation and not is_pure_meta_query:
-            return True
-
-    # 3. ── 放宽：自然语言任务创建意图 ──
-    natural_creation_patterns = (
-        r"(?:我想|想|要|准备|打算|计划|帮我|请|给我|需要|让|叫|派|安排|请让|请叫|请派|请安排)\s*(?:去|做|弄|搞|来|整|规划|安排|执行|完成|开始|进行)?\s*(?:个|个水下|一个)?\s*(?:管缆|管道|油气|水下|ROV|AUV|)?\s*(?:巡检|埋设|采集|勘探|作业|任务|操作|阀门|检查|检测|探测|扫测|维修|维护|清洗|修理)",
-        r"(?:管缆|管道|油气|水下)?\s*(?:巡检|埋设|采集|勘探|作业|任务|阀门操作|检查|检测|探测|扫测|维修|维护|清洗)\s*(?:吧|好了|一下|的话|呢)?\s*(?:明天|今天|后天|下午|上午)?",
-        r"(?:开始|做|弄|搞|去|执行|来|完成|进行)\s*(?:管缆|管道|油气|水下|ROV|AUV|)?\s*(?:巡检|埋设|采集|勘探|作业|阀门|检查|检测|探测|扫测|维修|维护|清洗)",
-    )
-    for pat in natural_creation_patterns:
-        if re.search(pat, msg):
-            return True
-
-    has_natural_creation_keyword = any(
-        phrase in msg
-        for phrase in (
-            "做个巡检", "做个管缆", "做个任务", "弄个巡检", "搞个巡检", "去巡检吧", "去作业吧",
-            "做巡检吧", "来个巡检", "安排个巡检", "规划个巡检", "做管道巡检", "做管缆巡检",
-            "我要巡检", "想做巡检", "要做巡检", "准备巡检", "准备做巡检",
-            "我做巡检", "我作业", "我去巡检", "去检查管道", "去检查一下", "去扫测一下",
-            "检查管道", "检查一下管道", "执行巡检", "进行巡检", "完成巡检", "开始巡检",
-        )
-    )
-    if has_natural_creation_keyword:
-        return True
-
-    # 3.5 ── 额外：主语指定型任务创建（让 X 去 Y） 如 "让机器人 A 去检查管道" ──
-    explicit_actor_command = bool(
-        re.search(
-            r"(?:让|请|帮|叫|派|安排)\s*(?:机器人|设备|ROV|AUV|金牛座|天鹰座|水蛟|海马|CRAWLER|LROV|观察级|工作级|亚特兰蒂斯|[A-Z]号机|机器人\s*[A-Z])"
-            r"\s*(?:去|来|开始|执行|做|进行|完成)\s*(?:检查|巡检|检测|探测|扫测|维修|维护|清洗|作业|任务|阀门|埋设|采集|勘探|管道)",
-            msg,
-        )
-    )
-    if explicit_actor_command:
-        return True
-
-    # 4. 参数修改/填写：放宽
-    has_modify_verb = bool(
-        re.search(
-            r"(?:改成|改到|改为|设为|设置为|修改为|修改到|变更为|调整为|调整到|调整至|切换为|换成|指定为|为\s*[0-9]+|调(?:到|为|整)|改(?:成|为|到))",
-            msg,
-        )
-    ) or any(k in msg for k in ("取消修改", "撤销修改", "取消水深修改", "不修改", "取消更新"))
-    if has_modify_verb:
-        return True
-
-    # ── 放宽：数字+参数名 或 上下文有任务时的纯数字 ──
-    has_numeric_assignment = bool(
-        re.search(
-            r"(?:水深|深度|开始时间|结束时间|水温|时间|米|m|度)\s*[:：等于为是约大概\s]*[0-9]+",
-            msg,
-        )
-    )
-    if has_numeric_assignment:
-        return True
-
+    has_expected_slot = bool(expected_slots)
     task_context_exists = bool(
-        (task_state and (
-            task_state.get("task_type_key") or task_state.get("task_type") or task_state.get("equipment_family")
-        )) or (expected_slots and len(expected_slots) > 0)
+        (task_state and (task_state.get("task_type_key") or task_state.get("task_type")))
+        or has_expected_slot
     )
-    if task_context_exists and re.search(r"[0-9]{2,}", msg) and not is_pure_knowledge_query:
-        return True
 
-    has_explicit_field_assignment = bool(
-        re.search(
-            r"(?:水深|深度|开始时间|结束时间|管缆位置|管缆类型|支持船|机器人|设备|工具|载荷|井口|油田)\s*[:：等于为是就用选]\s*[\u4e00-\u9fa5A-Za-z0-9_\-\.\:]+",
-            msg,
+    is_hypothetical = any(
+        marker in msg
+        for marker in ("如果", "要是", "假如", "假使", "若", "假设", "万一")
+    )
+    is_question = bool(re.search(r"[呢吗？?]$", msg)) or any(
+        q in msg
+        for q in (
+            "想知道",
+            "想了解",
+            "我要知道",
+            "我要了解",
+            "帮我查",
+            "查一下",
+            "查看",
+            "查询",
+            "介绍",
+            "说明",
+            "告诉我",
+            "为什么",
+            "什么是",
+            "是什么",
+            "怎么办",
+            "如何",
+            "怎么",
+            "能不能",
+            "可不可以",
+            "是否",
+            "会不会",
+            "有没有",
+            "有哪些",
+            "多少",
+            "区别",
+            "差异",
+            "影响",
+            "后果",
+            "风险",
         )
     )
-    if has_explicit_field_assignment:
-        return True
+    if is_hypothetical or is_question:
+        return False
 
-    # ── 放宽：口语化设备选择 ──
-    device_selection_patterns = (
-        r"(?:用|选|选择|使用|采用|就用|选个|挑个|拿个)\s*(?:[A-Za-z0-9_\-]+|金牛座|天鹰座|水蛟|海马|CRAWLER|LROV|1600|WORK|观察级|工作级|亚特兰蒂斯|深海|OBSROV-\d+)",
-        r"(?:金牛座|天鹰座|水蛟|海马|CRAWLER|LROV|1600|WORK|观察级|工作级|亚特兰蒂斯|深海)\s*(?:吧|好了|就可以|就行|够用)",
-    )
-    for pat in device_selection_patterns:
-        if re.search(pat, msg):
-            return True
-
-    has_device_use_cmd = bool(
-        re.search(
-            r"(?:使用|选用|选择|采用|搭载|配备|换成)\s*(?:[A-Za-z0-9_\-]+|金牛座|天鹰座|水蛟|海马|CRAWLER|LROV|1600|WORK|观察级|工作级|亚特兰蒂斯|OBSROV-\d+)",
-            msg,
+    if has_expected_slot:
+        is_negation_or_publish_refusal = any(
+            token in msg
+            for token in ("不确认", "暂不确认", "不发布", "先不发布", "不要", "不用")
         )
-    )
-    if has_device_use_cmd:
-        return True
-
-    # ── 放宽：多设备组合（隐含任务创建/设备配置）
-    #    例如 "ROV和AUV我都想用一下"、"金牛座和天鹰座都配" ──
-    multi_device_patterns = (
-        # 设备A 和/跟/与 设备B (都)? (想|要|用|选|配|搭载|需要)...
-        r"(?:ROV|AUV|机器人|CRAWLER|LROV|金牛座|天鹰座|水蛟|海马|观察级|工作级|OBSROV-\d+|支持船)\s*(?:和|跟|与|加|及)\s*(?:ROV|AUV|机器人|CRAWLER|LROV|金牛座|天鹰座|水蛟|海马|观察级|工作级|OBSROV-\d+|支持船)\s*(?:.*)?(?:都|全|一起|一块儿|同时)?\s*(?:想|要|用|选|配|搭配|装备|带上|需要|安排)",
-    )
-    for pat in multi_device_patterns:
-        if re.search(pat, msg):
-            return True
-
-    # ── 放宽：设备类别词 + 想用/要用/想选 等口语化配置意图 ──
-    colloquial_equipment_intent = bool(
-        re.search(
-            r"(?:ROV|AUV|机器人|CRAWLER|LROV|金牛座|天鹰座|水蛟|海马|观察级|工作级|OBSROV-\d+|支持船|机械臂|声呐|摄像机)\s*(?:.*)?(?:我想|我要|想|要|准备|打算|计划)\s*(?:用|选|配|装备|安排)",
-            msg,
+        is_meta_question = any(
+            token in msg
+            for token in ("为什么", "什么是", "凭什么", "帮助", "规则")
         )
+        return not (is_negation_or_publish_refusal or is_meta_question)
+
+    explicit_write_patterns = (
+        r"(?:创建|新建|发起|生成|建立|登记|新增|开)\s*(?:一个|个|一下)?",
+        r"(?:我要|我想|想要|准备|打算|计划|需要|帮我|请|给我|安排)\s*(?:做|弄|搞|执行|开始|进行|完成|安排|规划)",
+        r"(?:改成|改到|改为|设为|设置为|修改为|修改到|变更为|调整为|调整到|调整至|切换为|换成|替换为|指定为)",
+        r"(?:增加|添加|加上|带上|配备|搭载|安装|配置|挂载|删除|移除|去掉|清空|清掉)",
+        r"(?:确认发布|确认开始|确认无误|确认修改|确认使用|就这个|就这样|就用这个)",
     )
-    if colloquial_equipment_intent:
+    if any(re.search(pattern, msg, flags=re.IGNORECASE) for pattern in explicit_write_patterns):
         return True
 
-    # 5. 增删替换证据
-    has_add_delete_replace = (
-        any(v in msg for v in ("增加", "添加", "加上", "带上", "配备", "搭载", "安装", "配置", "配", "挂载", "加个", "加一套"))
-        and any(n in msg for n in ("摄像机", "机械臂", "声呐", "声纳", "抓手", "传感器", "工具", "载荷", "payload", "激光", "测距仪", "流速仪", "高度计", "水听器", "高清"))
-    ) or (
-        any(v in msg for v in ("删除", "移除", "去掉", "取消", "卸载", "拿掉", "不要"))
-        and any(n in msg for n in ("侧扫声呐", "摄像机", "机械臂", "抓手", "传感器", "工具", "载荷", "payload", "激光", "测距仪", "流速仪", "高度计", "水听器"))
-    ) or (
-        any(v in msg for v in ("替换", "换成", "更换", "换个", "换一套"))
-        and any(n in msg for n in ("天鹰座", "金牛座", "水蛟", "海马", "机器人", "设备", "支持船", "A", "B", "C"))
+    assignment_pattern = (
+        r"[\u4e00-\u9fa5A-Za-z0-9_（）()]+"
+        r"\s*(?:[:：=]|等于|为|是|就用|选|使用)"
+        r"\s*[\u4e00-\u9fa5A-Za-z0-9_\-\.\:/、]+"
     )
-    if has_add_delete_replace:
+    if re.search(assignment_pattern, msg):
         return True
 
-    # 6. 确认/发布证据
-    if any(k in msg for k in (
-        "确认这个修改", "使用这个值", "改为这个型号", "确认修改", "确认使用",
-        "确认发布", "确认开始", "确认无误", "确认", "就这个", "就这样", "就用这个", "没问题就这样",
-        "好的就这样", "可以就这样",
-    )):
+    if task_context_exists and re.search(r"\d+(?:\.\d+)?\s*(?:米|m|小时|分钟|点)?", msg, re.IGNORECASE):
         return True
 
-    # ── 放宽：LLM 先提出 WRITE 且有 task_state/expected_slots 上下文时，
-    #    若包含设备系列名/油田名/电缆名等领域词，允许通过（让 Extractor 后续判断能否抽取）──
-    if plan_candidate is not None and task_context_exists:
-        domain_keywords = (
-            "管缆", "管道", "电力", "光纤", "油气", "海底",
-            "金牛座", "天鹰座", "水蛟", "海马", "CRAWLER", "LROV", "观察级", "工作级", "亚特兰蒂斯", "深海", "1600", "WORK",
-            "机械臂", "摄像机", "声呐", "声纳", "抓手", "传感器",
-            "支持船", "井口", "油田",
-            "北纬", "东经", "纬度", "经度",
-        )
-        if any(kw in msg for kw in domain_keywords):
-            return True
+    if plan_candidate is None:
+        return False
+
+    operation = None
+    confidence = 0.0
+    if isinstance(plan_candidate, InteractionPlan):
+        operation = plan_candidate.operation
+        confidence = plan_candidate.confidence
+    elif isinstance(plan_candidate, dict):
+        operation = plan_candidate.get("operation") or plan_candidate.get("interaction_type") or plan_candidate.get("intent")
+        try:
+            confidence = float(plan_candidate.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+    if str(operation or "").upper() in {"WRITE", "TASK_CREATE", "TASK_UPDATE", "CREATE", "UPDATE"}:
+        return confidence >= 0.3
 
     return False
 

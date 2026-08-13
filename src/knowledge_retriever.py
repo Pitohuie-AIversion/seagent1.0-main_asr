@@ -1401,6 +1401,19 @@ class KnowledgeBase:
                 mapping[value] = template_key
         return mapping
 
+    def get_task_type_catalog(self) -> list[dict[str, object]]:
+        """从 task_schemas.yaml 动态构建任务类型语义候选 catalog。"""
+        catalog: list[dict[str, object]] = []
+        for template_key, cfg in self.task_schemas.get("task_templates", {}).items():
+            catalog.append(
+                {
+                    "task_type_key": template_key,
+                    "display_name": cfg.get("display_name", template_key),
+                    "task_type_values": list(cfg.get("task_type_values", []) or []),
+                }
+            )
+        return catalog
+
     def get_all_task_type_values(self) -> list[str]:
         """返回所有合法 task_type 值的平铺列表（供 LLM 提示和拒绝判断用）"""
         values: list[str] = []

@@ -157,7 +157,7 @@ class OutputBuilder:
             raw = task_state.get(key)
             allowed = self._get_template_task_type_values(task_type_key)
             if raw is None:
-                return allowed[0] if allowed else None
+                return None
             return raw if raw in allowed else None
 
         raw = task_state.get(key)

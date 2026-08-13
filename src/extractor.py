@@ -128,26 +128,228 @@ EXTRACTION_SYSTEM = """\
 """
 
 
-def _build_task_type_rules(task_type_map: dict[str, str]) -> str:
+def _catalog_from_task_type_map(task_type_map: dict[str, str] | None) -> list[dict[str, object]]:
     groups: dict[str, list[str]] = {}
-    for display, tkey in task_type_map.items():
-        groups.setdefault(tkey, []).append(display)
+    for task_type_value, template_key in (task_type_map or {}).items():
+        groups.setdefault(template_key, []).append(task_type_value)
+    return [
+        {
+            "task_type_key": template_key,
+            "display_name": values[0] if len(values) == 1 else template_key,
+            "task_type_values": values,
+        }
+        for template_key, values in groups.items()
+    ]
 
+
+def _normalize_task_type_catalog(
+    task_type_catalog: list[dict] | None,
+    task_type_map: dict[str, str] | None,
+) -> list[dict[str, object]]:
+    raw_catalog = task_type_catalog or _catalog_from_task_type_map(task_type_map)
+    catalog: list[dict[str, object]] = []
+    for item in raw_catalog:
+        if not isinstance(item, dict):
+            continue
+        template_key = str(item.get("task_type_key") or "").strip()
+        if not template_key:
+            continue
+        values = [
+            str(value).strip()
+            for value in (item.get("task_type_values") or [])
+            if str(value).strip()
+        ]
+        catalog.append(
+            {
+                "task_type_key": template_key,
+                "display_name": str(item.get("display_name") or template_key).strip(),
+                "task_type_values": values,
+            }
+        )
+    return catalog
+
+
+def _build_task_type_rules(task_type_catalog: list[dict]) -> str:
     lines = []
-    for tkey, values in groups.items():
-        values_str = " / ".join(f'"{v}"' for v in values)
+    for item in task_type_catalog:
+        tkey = item["task_type_key"]
+        display_name = item.get("display_name") or tkey
+        values = list(item.get("task_type_values") or [])
+        values_str = " / ".join(str(v) for v in values)
         lines.append(
-            f'   - 识别为 {tkey} 类任务时 → task_type_key: "{tkey}"，'
-            f'并根据用户描述推断 task_type 为 {values_str} 其中之一'
+            f'   - task_type_key: "{tkey}"；'
+            f'display_name: {display_name}；'
+            f'task_type_values: {values_str}'
         )
     lines.append(
-        '   - 无法确定具体 task_type 值时只输出 task_type_key，'
-        '不要猜测或伪造 task_type'
+        '   - 先根据用户语义选择 task_type_key；'
+        '再且仅能从对应 task_type_values 中选择 task_type'
+    )
+    lines.append(
+        '   - 如果该 task_type_key 只有一个 task_type_values，'
+        '可以输出该唯一 task_type'
+    )
+    lines.append(
+        '   - 如果 task_type_values 有多个且用户语义不足以唯一选择，'
+        '只输出 task_type_key，不要猜测或伪造 task_type'
     )
     lines.append(
         '   - 用户描述的任务类型不在上述范围内时，不提取任何 task_type 字段'
     )
     return "\n".join(lines)
+
+
+def _task_type_catalog_indexes(task_type_catalog: list[dict]) -> tuple[dict[str, dict], dict[str, str], dict[str, str]]:
+    by_key: dict[str, dict] = {}
+    display_to_key: dict[str, str] = {}
+    value_to_key: dict[str, str] = {}
+    for item in task_type_catalog:
+        template_key = str(item.get("task_type_key") or "")
+        if not template_key:
+            continue
+        by_key[template_key] = item
+        display = item.get("display_name")
+        if display:
+            display_to_key[FieldNormalizer.make_match_key(display)] = template_key
+        for value in item.get("task_type_values") or []:
+            value_to_key[FieldNormalizer.make_match_key(value)] = template_key
+    return by_key, display_to_key, value_to_key
+
+
+def _match_catalog_value(value: object, values: list[str]) -> str | None:
+    needle = FieldNormalizer.make_match_key(value)
+    if not needle:
+        return None
+    matches = [
+        candidate
+        for candidate in values
+        if FieldNormalizer.make_match_key(candidate) == needle
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _resolve_template_key_from_candidate(
+    candidate: dict,
+    task_type_catalog: list[dict],
+) -> tuple[str | None, str | None]:
+    by_key, display_to_key, value_to_key = _task_type_catalog_indexes(task_type_catalog)
+    for input_key in ("normalized_value", "raw_value"):
+        value = candidate.get(input_key)
+        if value is None or value == "":
+            continue
+        value_str = str(value).strip()
+        match_key = FieldNormalizer.make_match_key(value)
+        if value_str in by_key:
+            return value_str, "task_type_key_exact"
+        if match_key in display_to_key:
+            return display_to_key[match_key], "template_display_name"
+        if match_key in value_to_key:
+            return value_to_key[match_key], "template_from_task_type_value"
+    return None, None
+
+
+def _enforce_task_type_catalog_candidates(
+    candidates: list[dict],
+    task_type_catalog: list[dict],
+) -> tuple[list[dict], list[str]]:
+    if not task_type_catalog:
+        return candidates, []
+
+    by_key, display_to_key, value_to_key = _task_type_catalog_indexes(task_type_catalog)
+    normalized: list[dict] = []
+    unresolved: list[str] = []
+    resolved_template_key: str | None = None
+    has_task_type = False
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        canonical_key = str(candidate.get("canonical_key") or "").strip()
+        if canonical_key not in ("task_type", "task_type_key"):
+            normalized.append(candidate)
+            continue
+
+        if canonical_key == "task_type_key":
+            template_key, method = _resolve_template_key_from_candidate(candidate, task_type_catalog)
+            if not template_key or template_key not in by_key:
+                unresolved.append(f"task_type_key 表达 {candidate.get('raw_value')!r} 不属于当前合法任务模板。")
+                continue
+            copy_candidate = dict(candidate)
+            copy_candidate["normalized_value"] = template_key
+            copy_candidate["resolution_method"] = method or "task_type_key_exact"
+            normalized.append(copy_candidate)
+            resolved_template_key = template_key
+            continue
+
+        # canonical_key == "task_type"
+        matched_value = None
+        matched_template_key = None
+        for input_key in ("normalized_value", "raw_value"):
+            value = candidate.get(input_key)
+            if value is None or value == "":
+                continue
+            match_key = FieldNormalizer.make_match_key(value)
+            if match_key in value_to_key:
+                candidate_template_key = value_to_key[match_key]
+                values = list(by_key[candidate_template_key].get("task_type_values") or [])
+                matched_value = _match_catalog_value(value, values)
+                matched_template_key = candidate_template_key
+                break
+            if match_key in display_to_key:
+                matched_template_key = display_to_key[match_key]
+                break
+
+        if not matched_value:
+            if matched_template_key and not resolved_template_key:
+                resolved_template_key = matched_template_key
+                key_candidate = dict(candidate)
+                key_candidate["raw_key"] = "作业类型标识"
+                key_candidate["canonical_key"] = "task_type_key"
+                key_candidate["normalized_value"] = matched_template_key
+                key_candidate["resolution_method"] = "template_display_name"
+                normalized.append(key_candidate)
+            elif resolved_template_key:
+                allowed_values = by_key[resolved_template_key].get("task_type_values") or []
+                unresolved.append(
+                    f"task_type 表达 {candidate.get('raw_value')!r} 不属于 {resolved_template_key} 的合法候选：{allowed_values}。"
+                )
+            continue
+
+        if resolved_template_key and matched_template_key != resolved_template_key:
+            unresolved.append(
+                f"task_type 表达 {candidate.get('raw_value')!r} 与 task_type_key={resolved_template_key} 不一致。"
+            )
+            continue
+
+        copy_candidate = dict(candidate)
+        copy_candidate["normalized_value"] = matched_value
+        copy_candidate["resolution_method"] = "canonical_exact"
+        normalized.append(copy_candidate)
+        has_task_type = True
+        if not resolved_template_key and matched_template_key:
+            resolved_template_key = matched_template_key
+            key_candidate = dict(candidate)
+            key_candidate["raw_key"] = "作业类型标识"
+            key_candidate["canonical_key"] = "task_type_key"
+            key_candidate["normalized_value"] = matched_template_key
+            key_candidate["resolution_method"] = "template_from_task_type_value"
+            normalized.append(key_candidate)
+
+    if resolved_template_key and not has_task_type:
+        values = list(by_key[resolved_template_key].get("task_type_values") or [])
+        if len(values) == 1:
+            normalized.append(
+                {
+                    "raw_key": "任务类型",
+                    "canonical_key": "task_type",
+                    "raw_value": values[0],
+                    "normalized_value": values[0],
+                    "confidence": 1.0,
+                    "resolution_method": "single_schema_candidate",
+                }
+            )
+
+    return normalized, unresolved
 
 
 class ParameterExtractor:
@@ -160,6 +362,7 @@ class ParameterExtractor:
         current_state: dict,
         task_type_key: str | None,
         task_type_map: dict[str, str] | None = None,
+        task_type_catalog: list[dict] | None = None,
         required: list[dict] | None = None,
         ROV2type: list[dict] | None = None,
         conversation_history: list[dict] | None = None,
@@ -169,7 +372,11 @@ class ParameterExtractor:
         today_str = now.isoformat()
 
         known = {k: v for k, v in current_state.items() if v is not None}
-        task_type_rules = _build_task_type_rules(task_type_map or {})
+        normalized_task_type_catalog = _normalize_task_type_catalog(
+            task_type_catalog,
+            task_type_map,
+        )
+        task_type_rules = _build_task_type_rules(normalized_task_type_catalog)
 
         if task_type_key is None:
             system_prompt = EXTRACTION_TASK.format(
@@ -226,6 +433,11 @@ class ParameterExtractor:
         if not isinstance(unresolved, list):
             unresolved = []
 
+        raw_candidates, catalog_unresolved = _enforce_task_type_catalog_candidates(
+            raw_candidates,
+            normalized_task_type_catalog,
+        )
+
         normalized_candidates, resolver_unresolved = self._normalize_candidates(
             raw_candidates,
             allowed_keys,
@@ -261,7 +473,7 @@ class ParameterExtractor:
                 if cand.get("canonical_key") != "payload"
             ]
 
-        all_unresolved = [*unresolved, *resolver_unresolved, *mutation_unresolved]
+        all_unresolved = [*unresolved, *catalog_unresolved, *resolver_unresolved, *mutation_unresolved]
 
         return {
             "slot_candidates": normalized_candidates,
@@ -689,6 +901,15 @@ class ParameterExtractor:
             field_recently_asked = ParameterExtractor._is_recently_asked_field(
                 field, conversation_history
             )
+            tasktype_exact_reply_ok = False
+            if key == "task_type":
+                allowed_list = field.get("allowed_values") or []
+                tasktype_exact_reply_ok = any(
+                    isinstance(allowed_value, str)
+                    and allowed_value
+                    and text.strip() == allowed_value
+                    for allowed_value in allowed_list
+                )
             if key == "water_depth":
                 if has_field_ref and bool(best_label):
                     tail = text[best_label_pos + len(best_label):]
@@ -736,16 +957,18 @@ class ParameterExtractor:
                     threshold_ok = (
                         has_explicit_assign_syntax
                         or field_specific_implicit_ok
+                        or tasktype_exact_reply_ok
                         or (has_naked_concat_match and field_recently_asked)
                     )
                 else:
                     threshold_ok = (
                         has_explicit_assign_syntax
                         or field_specific_implicit_ok
+                        or tasktype_exact_reply_ok
                         or field_recently_asked
                     )
             else:
-                threshold_ok = has_field_ref
+                threshold_ok = has_field_ref or tasktype_exact_reply_ok
             if not threshold_ok:
                 continue
 
@@ -1132,6 +1355,8 @@ class ParameterExtractor:
                 "normalized_value": value,
                 "confidence": confidence,
             }
+            if candidate.get("resolution_method"):
+                trusted_candidate["resolution_method"] = candidate["resolution_method"]
             resolved_candidate, unresolved_reason = self._resolve_candidate_value(
                 trusted_candidate,
                 required_by_key,
