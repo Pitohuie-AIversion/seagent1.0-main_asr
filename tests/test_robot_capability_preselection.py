@@ -252,13 +252,13 @@ class TestRobotCapabilityPreselection(unittest.TestCase):
         self.assertIsNone(new_slots["equipment_class"].value)
         self.assertEqual(new_slots["equipment_class"].status, "missing")
 
-    def test_16_double_dash_unit_ids_preserved(self):
-        """16. 校验双横线编号 (LROV--001 / LROV--002 / OBSROV--001) 完好未被篡改"""
+    def test_16_powered_unit_ids_preserved(self):
+        """16. 校验带规格的正式单机编号完整保留。"""
         units = self.kb.robot_fleet.get("fleet_units", [])
         unit_ids = [u["unit_id"] for u in units]
-        self.assertIn("LROV--001", unit_ids)
-        self.assertIn("LROV--002", unit_ids)
-        self.assertIn("OBSROV--001", unit_ids)
+        self.assertIn("LROV-150-001", unit_ids)
+        self.assertIn("LROV-150-002", unit_ids)
+        self.assertIn("OBSROV-75-001", unit_ids)
 
     def test_17_candidate_class_does_not_auto_bind_family(self):
         """17. equipment_class 为 candidate 状态时不得向下自动绑定 family"""

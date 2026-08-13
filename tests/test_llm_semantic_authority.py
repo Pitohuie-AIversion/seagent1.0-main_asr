@@ -233,8 +233,8 @@ def test_completed_update_that_resolves_soft_block_enters_confirmation() -> None
         "water_depth": 100.0,
         "equipment_class": "observation_rov",
         "equipment_family": "观察级深海机器人",
-        "equipment_type": "观察级深海机器人 HP",
-        "equipment_unit_id": "OBSROV--001",
+        "equipment_type": "观察级深海机器人 75HP",
+        "equipment_unit_id": "OBSROV-75-001",
         "payload": ["成像声呐"],
         "support_vessel": "海洋石油681",
     }
@@ -469,16 +469,16 @@ def test_generic_knowledge_query_with_device_subject_uses_variant_evidence() -> 
         "给我介绍一下它",
         context={
             "subject_type": "device",
-            "subject_text": "观察级深海机器人 HP",
+            "subject_text": "观察级深海机器人 75HP",
             "relation": "describe",
         },
     )
 
     assert evidence["requested_query_type"] == "KNOWLEDGE_QA"
     assert evidence["query_type"] == "DEVICE_CAPABILITY"
-    assert evidence["matched_entity"] == "variant:observation_rov_hp"
+    assert evidence["matched_entity"] == "variant:observation_rov_75hp"
     assert [item["full_name"] for item in evidence["results"]] == [
-        "观察级深海机器人 HP"
+        "观察级深海机器人 75HP"
     ]
 
 
@@ -486,23 +486,23 @@ def test_device_alias_in_generic_read_is_grounded_without_phrase_routing() -> No
     kb = KnowledgeBase()
 
     for message in (
-        "先别改任务，给我介绍一下观察级深海机器人 HP。",
-        "能说说观察级深海机器人 HP 吗？",
+        "先别改任务，给我介绍一下观察级深海机器人 75HP。",
+        "能说说观察级深海机器人 75HP 吗？",
     ):
         evidence = kb.execute_typed_query("KNOWLEDGE_QA", message, context={})
 
         assert evidence["query_type"] == "DEVICE_CAPABILITY"
-        assert evidence["matched_entity"] == "variant:observation_rov_hp"
-        assert evidence["results"][0]["full_name"] == "观察级深海机器人 HP"
+        assert evidence["matched_entity"] == "variant:observation_rov_75hp"
+        assert evidence["results"][0]["full_name"] == "观察级深海机器人 75HP"
 
 
 def test_realtime_device_status_is_not_rewritten_as_static_capability() -> None:
     evidence = KnowledgeBase().execute_typed_query(
         "KNOWLEDGE_QA",
-        "观察级深海机器人 HP 现在状态怎么样？",
+        "观察级深海机器人 75HP 现在状态怎么样？",
         context={
             "subject_type": "device",
-            "subject_text": "观察级深海机器人 HP",
+            "subject_text": "观察级深海机器人 75HP",
             "relation": "status",
             "source_policy": "realtime_state",
         },
@@ -515,7 +515,7 @@ def test_realtime_device_status_is_not_rewritten_as_static_capability() -> None:
 def test_structured_non_device_subject_keeps_general_knowledge_evidence() -> None:
     evidence = KnowledgeBase().execute_typed_query(
         "KNOWLEDGE_QA",
-        "观察级深海机器人 HP 为什么不能绕过硬约束？",
+        "观察级深海机器人 75HP 为什么不能绕过硬约束？",
         context={
             "subject_type": "system_rule",
             "subject_text": "硬约束",
@@ -538,12 +538,12 @@ def test_dialogue_manager_passes_structured_read_subject_to_retriever() -> None:
                 "READ",
                 query_intent="KNOWLEDGE_QA",
                 subject_type="device",
-                subject_text="观察级深海机器人 HP",
+                subject_text="观察级深海机器人 75HP",
                 relation="describe",
                 source_policy="project_kb",
             )
         ],
-        replies=["观察级深海机器人 HP 的最大作业水深为 600 米。"],
+        replies=["观察级深海机器人 75HP 的最大作业水深为 600 米。"],
     )
     dm = DialogueManager(llm, KnowledgeBase())
     before = dm.slot_store.export_snapshot()
@@ -553,8 +553,8 @@ def test_dialogue_manager_passes_structured_read_subject_to_retriever() -> None:
 
     system_prompt = llm.chat_calls[0][0]["content"]
     assert '"query_type": "DEVICE_CAPABILITY"' in system_prompt
-    assert '"matched_entity": "variant:observation_rov_hp"' in system_prompt
-    assert "观察级深海机器人 HP" in reply
+    assert '"matched_entity": "variant:observation_rov_75hp"' in system_prompt
+    assert "观察级深海机器人 75HP" in reply
     assert dm.slot_store.version == version
     assert dm.slot_store.export_snapshot() == before
 
@@ -915,7 +915,7 @@ def test_accepting_class_recommendation_cannot_write_family_or_variant() -> None
                 ),
                 slot_candidate(
                     "equipment_type",
-                    "轻型工作级深海机器人 HP",
+                    "轻型工作级深海机器人 150HP",
                     raw_value="确认",
                 ),
             )

@@ -14,6 +14,7 @@ sys.modules['transformers'] = MagicMock()
 import unittest
 from flask import json
 import web_backend
+from src.asr_service import ASRUnavailableError
 
 class TestASRAPI(unittest.TestCase):
     def setUp(self):
@@ -107,6 +108,21 @@ class TestASRAPI(unittest.TestCase):
         # The translated text from mock_llm is "在流花油田使用机械臂进行采油树控制面板插入。"
         self.assertEqual(res_data["corrected_text"], "在流花油田使用机械臂进行采油树控制面板插入。")
         self.assertTrue(res_data["normalization_changed"])
+
+    def test_asr_unavailable_returns_503_without_transcript(self):
+        self.mock_asr.transcribe_file.side_effect = ASRUnavailableError(
+            "ASR service is unavailable"
+        )
+        response = self.client.post(
+            "/api/asr",
+            data={"audio": (io.BytesIO(b"fake wav data"), "test.wav")},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(503, response.status_code)
+        res_data = json.loads(response.data)
+        self.assertEqual("service_unavailable", res_data["error"])
+        self.assertNotIn("text", res_data)
 
 if __name__ == "__main__":
     unittest.main()

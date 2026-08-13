@@ -82,22 +82,22 @@ class AccumulationFixtureConsistencyTest(unittest.TestCase):
     def test_factories_use_current_fleet_units(self):
         unit_ids = {item["unit_id"] for item in self.fleet["fleet_units"]}
         status_refs = {item["status_ref"] for item in self.fleet["fleet_units"]}
-        self.assertIn("OBSROV--001", unit_ids)
+        self.assertIn("OBSROV-75-001", unit_ids)
         self.assertIn("WROV-250-001", unit_ids)
-        self.assertIn("OBSROV-001", status_refs)
+        self.assertIn("OBSROV-75-001", status_refs)
         self.assertIn("WROV-250-001", status_refs)
         self.assertIn("AUV-324cc-001", status_refs)
         self.assertIn("TOWED-1500-001", status_refs)
         self.assertIn("SPECIAL-600-001", status_refs)
-        self.assertIn("LROV--001", status_refs)
-        self.assertIn("OBSROV--001", build_pipeline_task())
+        self.assertIn("LROV-150-001", status_refs)
+        self.assertIn("OBSROV-75-001", build_pipeline_task())
         self.assertIn("管缆类型为海底油气管道", build_pipeline_task())
         self.assertIn("WROV-250-001", build_tree_task())
         self.assertIn(
-            "OBSROV--001",
+            "OBSROV-75-001",
             build_tree_task(
                 equipment_model="观察级深海机器人",
-                unit_id="OBSROV--001",
+                unit_id="OBSROV-75-001",
             ),
         )
         self.assertIn(
@@ -111,11 +111,11 @@ class AccumulationFixtureConsistencyTest(unittest.TestCase):
 
     def test_unit_verifier_can_separate_resolution_from_completion(self):
         incomplete = {
-            "collected": {"equipment_unit_id": "LROV--001"},
+            "collected": {"equipment_unit_id": "LROV-150-001"},
             "missing": ["cable_type"],
         }
-        resolved_only = verify_collected_unit("LROV--001", require_complete=False)
-        completed = verify_collected_unit("LROV--001")
+        resolved_only = verify_collected_unit("LROV-150-001", require_complete=False)
+        completed = verify_collected_unit("LROV-150-001")
         self.assertTrue(resolved_only(0, incomplete)[0])
         self.assertFalse(completed(0, incomplete)[0])
         self.assertTrue(
@@ -152,7 +152,7 @@ class AccumulationFixtureConsistencyTest(unittest.TestCase):
                 "start_point": {"lat": 17.6, "lon": 111.0},
                 "end_point": {"lat": 17.7, "lon": 111.1},
                 "water_depth": 300.0,
-                "equipment_unit_id": "OBSROV--001",
+                "equipment_unit_id": "OBSROV-75-001",
                 "payload": ["高清水下摄像机", "前视声呐"],
                 "support_vessel": "海洋石油681",
             },
@@ -181,7 +181,7 @@ class AccumulationFixtureConsistencyTest(unittest.TestCase):
                 "start_point": {"lat": 17.6, "lon": 111.0},
                 "end_point": {"lat": 17.7, "lon": 111.1},
                 "water_depth": 300.0,
-                "equipment_unit_id": "OBSROV--001",
+                "equipment_unit_id": "OBSROV-75-001",
                 "payload": ["高清水下摄像机", "前视声呐"],
                 "support_vessel": "海洋石油681",
             },
@@ -262,7 +262,7 @@ class AccumulationFixtureConsistencyTest(unittest.TestCase):
     def test_state_file_guard_restores_existing_file_byte_for_byte(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_file = Path(temp_dir) / "state.yaml"
-            original = b"robots:\n  OBSROV-001:\n    current_velocity: 0.3\n"
+            original = b"robots:\n  OBSROV-75-001:\n    current_velocity: 0.3\n"
             state_file.write_bytes(original)
             with preserve_file_bytes(state_file):
                 state_file.write_text("robots: {}\n", encoding="utf-8")
@@ -283,7 +283,6 @@ class AccumulationFixtureConsistencyTest(unittest.TestCase):
             "(19.8,113.5)",
             "(20.5,114.2)",
             "设备名称sealien_",
-            "C011",
             '"robot_name":"sealien_',
         )
         for name in ("测试集05.md", "测试机.md"):

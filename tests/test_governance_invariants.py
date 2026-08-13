@@ -152,7 +152,7 @@ class TestGovernanceInvariants(unittest.TestCase):
         slots["test_valid"] = Slot("test_valid", value="val_1", status="valid")
         slots["test_cand"] = Slot("test_cand", value="val_2", status="candidate", candidate_value="val_2")
         slots["test_invalid"] = Slot("test_invalid", value="val_3", status="invalid")
-        slots["test_none"] = Slot("test_none", value=None, status="valid")
+        slots["test_none"] = Slot("test_none", value=None, status="missing")
 
         self.dm.slot_store.commit_transaction(slots, [])
         state = self.dm.slot_store.get_task_state()
@@ -300,8 +300,7 @@ class TestGovernanceInvariants(unittest.TestCase):
             "task_type_key": "pipeline_inspection",
             "equipment_class": "observation_rov",
             "equipment_family": "观察级深海机器人",
-            "equipment_specification": {"value": "观察级深海机器人", "unit": None},
-            "equipment_unit_id": "OBSROV--001",
+            "equipment_unit_id": "OBSROV-75-001",
             "equipment_type": "observation_rov",
             "cable_type": "电力缆",
             "start_point": {"lat": 20.0, "lon": 110.0},
@@ -321,7 +320,14 @@ class TestGovernanceInvariants(unittest.TestCase):
         self.dm._last_built_json = dict(valid_state)
         self.dm.phase = "confirming"
 
-        mock_snap = {"state_version": 0, "status_ref": "OBSROV-001"}
+        # The fixture uses a private copy of the current state registry.  Keep
+        # the real version guard active instead of assuming that copy starts at
+        # version zero.
+        actual_snapshot = self.dm.kb.get_unit_state_snapshot("OBSROV-75-001")
+        mock_snap = {
+            "state_version": actual_snapshot["state_version"],
+            "status_ref": actual_snapshot["status_ref"],
+        }
         mock_val_res = ValidationResult(
             overall_status="valid",
             validated_at=now_str,

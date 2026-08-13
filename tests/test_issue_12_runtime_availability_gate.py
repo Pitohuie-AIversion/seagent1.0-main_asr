@@ -6,7 +6,7 @@ tests/test_issue_12_runtime_availability_gate.py — 运行时设备可用性门
 2. Test 2：设备离线 → 阻止发布
 3. Test 3：设备忙碌 → 阻止发布
 4. Test 4：状态记录不存在 → 阻止发布
-5. Test 5：状态快照过期 → 边界判断 (<=300s有效, >300s过期)
+5. Test 5：状态快照过期 → 边界判断（一天内有效，超过一天过期）
 6. Test 6：确认发布时重新检查 → 不使用预览缓存，重读最新状态
 """
 
@@ -23,6 +23,9 @@ from src.result_paths import get_task_dir
 from src.simulated_time import get_current_datetime
 from tests.interaction_plan_support import ScriptedLLM
 from tests.test_slot_consistency import seed_complete_valid_pipeline_task
+
+
+ONE_DAY_SECONDS = 24 * 60 * 60
 
 
 class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
@@ -67,11 +70,28 @@ class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
             self.dm._last_built_json["intent_id"] = intent_id
 
         if unit_id:
-            self.dm.slot_store.slots["equipment_unit_id"].value = unit_id
-            self.dm.slot_store.slots["equipment_unit_id"].status = "valid"
-            self.dm.task_state["equipment_unit_id"] = unit_id
-            if isinstance(self.dm._last_built_json, dict):
-                self.dm._last_built_json["equipment_unit_id"] = unit_id
+            resolved = self.kb.resolve_robot_unit(
+                unit_id,
+                task_type_key="pipeline_inspection",
+            )
+            if resolved:
+                robot = resolved["robot"]
+                equipment_values = {
+                    "equipment_class": robot["robot_class"],
+                    "equipment_family": robot["family_full_name"],
+                    "equipment_type": robot["full_name"],
+                    "equipment_unit_id": unit_id,
+                }
+            else:
+                # Some negative tests intentionally place a family/variant/alias
+                # in the concrete-unit slot to verify fail-closed rejection.
+                equipment_values = {"equipment_unit_id": unit_id}
+            for key, value in equipment_values.items():
+                self.dm.slot_store.slots[key].value = value
+                self.dm.slot_store.slots[key].status = "valid"
+                self.dm.task_state[key] = value
+                if isinstance(self.dm._last_built_json, dict):
+                    self.dm._last_built_json[key] = value
 
         self.dm.phase = "confirming"
         return intent_id
@@ -83,7 +103,7 @@ class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
             self.kb.state_info._save_state_unlocked(snap)
 
     def test_1_online_idle_fresh_state_allows_publish(self):
-        """Test 1：设备在线、空闲且状态更新时间在 300s 以内 → 允许发布。"""
+        """Test 1：设备在线、空闲且状态更新时间在一天以内 → 允许发布。"""
         intent_id = self._setup_confirming_task(self.unit_id)
         now_dt = get_current_datetime()
         ts_fresh = (now_dt - timedelta(seconds=10)).isoformat(timespec="microseconds")
@@ -182,32 +202,39 @@ class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
         self.assertFalse(final_file.exists(), "Final file should not be created")
 
     def test_5_expired_state_blocks_publish_with_boundary_check(self):
-        """Test 5：状态快照过期判定，300 秒以内 (如 290s) 有效，超过 300 秒 (如 350s) 过期阻止发布。"""
-        # 边界 1：290 秒 -> 有效
+        """Test 5：状态快照在一天内有效，超过一天则阻止发布。"""
+        # 边界 1：距离一天还差 10 秒 -> 有效
         self._setup_confirming_task(self.unit_id)
         now_dt = get_current_datetime()
-        ts_290 = (now_dt - timedelta(seconds=290)).isoformat(timespec="microseconds")
+        ts_within_one_day = (
+            now_dt - timedelta(seconds=ONE_DAY_SECONDS - 10)
+        ).isoformat(timespec="microseconds")
         self._set_raw_state(
             self.unit_id,
             {
                 "overall_status": "available",
-                "updated_at": ts_290,
-                "update_timestamp": ts_290,
+                "updated_at": ts_within_one_day,
+                "update_timestamp": ts_within_one_day,
                 "version": 1,
             },
         )
-        res_290 = self.kb.state_info.check_runtime_availability(self.unit_id)
-        self.assertTrue(res_290["available"], "290s should be fresh/valid (<= 300s)")
+        within_one_day = self.kb.state_info.check_runtime_availability(self.unit_id)
+        self.assertTrue(
+            within_one_day["available"],
+            "a state snapshot younger than one day should remain valid",
+        )
 
-        # 边界 2：超过 300 秒 (350 秒) -> 过期阻止发布
+        # 边界 2：超过一天 10 秒 -> 过期阻止发布
         intent_id = self._setup_confirming_task(self.unit_id)
-        ts_350 = (now_dt - timedelta(seconds=350)).isoformat(timespec="microseconds")
+        ts_over_one_day = (
+            now_dt - timedelta(seconds=ONE_DAY_SECONDS + 10)
+        ).isoformat(timespec="microseconds")
         self._set_raw_state(
             self.unit_id,
             {
                 "overall_status": "available",
-                "updated_at": ts_350,
-                "update_timestamp": ts_350,
+                "updated_at": ts_over_one_day,
+                "update_timestamp": ts_over_one_day,
                 "version": 1,
             },
         )
@@ -271,10 +298,12 @@ class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
         self.assertFalse(final_file.exists(), "Final file should not be created")
 
     def test_7_version_0_expired_state_blocks_publish(self):
-        """Test 7: version=0 且时间戳过期 → 阻止发布 (STATE_EXPIRED)。"""
+        """Test 7: version=0 且时间戳超过一天 → 阻止发布 (STATE_EXPIRED)。"""
         intent_id = self._setup_confirming_task(self.unit_id)
         now_dt = get_current_datetime()
-        ts_expired = (now_dt - timedelta(seconds=400)).isoformat(timespec="microseconds")
+        ts_expired = (
+            now_dt - timedelta(seconds=ONE_DAY_SECONDS + 100)
+        ).isoformat(timespec="microseconds")
 
         self._set_raw_state(
             self.unit_id,
@@ -347,7 +376,7 @@ class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
 
     def test_10_non_exact_unit_id_blocks_publish(self):
         """Test 10: family/variant/alias 不是精确 unit_id → 阻止发布 (UNIT_NOT_FOUND)。"""
-        variant_name = "light_work_class_rov_hp"
+        variant_name = "light_work_class_rov_150hp"
         intent_id = self._setup_confirming_task(variant_name)
 
         reply = self.dm.process("确认发布")

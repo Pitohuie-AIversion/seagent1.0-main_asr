@@ -138,6 +138,7 @@ class IntentIdValidationTest(unittest.TestCase):
                 self.assertNotEqual(intent_val, bad_val)
                 self.assertTrue(isinstance(intent_val, str))
                 self.assertTrue(intent_val.startswith("TI"))
+                self.assertEqual(self.dm.slot_store.slots["intent_id"].value_type, "string")
 
     def test_a5_done_invalid_id_downgrades_and_no_file_read(self):
         """5. done + 非法 ID ('bad-id' 或 '../../outside'): 不得读取非法路径，降级并生成新 ID"""
@@ -221,7 +222,7 @@ class ControlledOilfieldAbbreviationRejectionTest(unittest.TestCase):
     def _setup_pending_oilfield(self, candidate_name="流花11-1油田"):
         self.dm.reset()
         seed_complete_valid_pipeline_task(self.dm, self.kb)
-        self.dm.slot_store.slots["oilfield_name"] = Slot("oilfield_name", value=candidate_name, status="pending_confirmation")
+        self.dm.slot_store.slots["oilfield_name"] = Slot("oilfield_name", value=None, status="missing")
         self.dm.slot_store.slots["pending_oilfield_name"] = Slot("pending_oilfield_name", value=candidate_name, status="valid")
         self.dm.slot_store.slots["pending_oilfield_candidates"] = Slot(
             "pending_oilfield_candidates",

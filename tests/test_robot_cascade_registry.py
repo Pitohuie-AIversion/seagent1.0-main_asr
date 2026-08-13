@@ -355,6 +355,62 @@ class TestRobotCascadeRegistry(unittest.TestCase):
                 custom_kb.list_robot_units("work_class_rov", "general_work_class_rov", "general_work_class_rov_250hp")
             self.assertEqual(cm.exception.error_code, "INVALID_MODEL_VARIANTS_CONFIG")
 
+    def test_41_unit_query_rejects_family_class_mismatch(self):
+        """41. Unit 查询必须校验 Family -> Class，不能只校验 Variant -> Family。"""
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            self.kb.list_robot_units(
+                "auv",
+                "general_work_class_rov",
+                "general_work_class_rov_250hp",
+            )
+        self.assertEqual(cm.exception.error_code, "FAMILY_CLASS_MISMATCH")
+
+    def test_42_unit_query_rejects_task_incompatible_class(self):
+        """42. 最终 Unit 查询不得通过全库型号回退绕过任务准入域。"""
+        with self.assertRaises(RobotSelectionDataError) as cm:
+            self.kb.list_robot_units(
+                "work_class_rov",
+                "general_work_class_rov",
+                "general_work_class_rov_250hp",
+                task_type_key="pipeline_inspection",
+            )
+        self.assertEqual(cm.exception.error_code, "CLASS_NOT_ALLOWED_FOR_TASK")
+
+    def test_43_exact_unit_id_rejects_conflicting_variant_selector(self):
+        """43. 精确 Unit ID 不得忽略同任务域内的冲突 Variant 选择。"""
+        resolved = self.kb.resolve_robot_unit(
+            "CRAWLER-1600-001",
+            task_type_key="pipeline_burial",
+            variant_selector="拖曳式海底重载作业机器人 1500HP",
+        )
+        self.assertIsNone(resolved)
+
+    def test_44_powered_variant_names_match_hard_specs(self):
+        """44. 非 AUV 型号的规范名称必须体现已确认的 HP 规格。"""
+        expected = {
+            "light_work_class_rov_150hp": (150, "轻型工作级深海机器人 150HP"),
+            "observation_rov_75hp": (75, "观察级深海机器人 75HP"),
+        }
+        variants = self.kb.robot_fleet["model_variants"]
+        for variant_id, (power_hp, full_name) in expected.items():
+            with self.subTest(variant_id=variant_id):
+                variant = variants[variant_id]
+                self.assertEqual(variant["hard_params"]["power_hp"], power_hp)
+                self.assertEqual(variant["full_name"], full_name)
+
+    def test_45_legacy_unit_ids_resolve_to_powered_canonical_ids(self):
+        """45. 历史双横线编号仅作为唯一输入别名，解析结果必须规范化。"""
+        expected = {
+            "LROV--001": "LROV-150-001",
+            "LROV--002": "LROV-150-002",
+            "OBSROV--001": "OBSROV-75-001",
+        }
+        for legacy_id, canonical_id in expected.items():
+            with self.subTest(legacy_id=legacy_id):
+                resolved = self.kb.resolve_robot_unit(legacy_id)
+                self.assertIsNotNone(resolved)
+                self.assertEqual(resolved["unit_id"], canonical_id)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@ from pathlib import Path
 from datetime import timedelta
 import sys
 import unittest
+import uuid
 from unittest.mock import MagicMock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -141,9 +142,9 @@ class DialogueManagerROVTest(unittest.TestCase):
             {"equipment_name": "观察级"},
         )
         self.assertEqual(dm.task_state.get("equipment_family"), "观察级深海机器人")
-        self.assertEqual(dm.task_state.get("equipment_type"), "观察级深海机器人 HP")
+        self.assertEqual(dm.task_state.get("equipment_type"), "观察级深海机器人 75HP")
         # 新契约: power_hp: null 为 unknown，观察级 ROV 正常分配 unit_id
-        self.assertEqual(dm.task_state.get("equipment_unit_id"), "OBSROV--001")
+        self.assertEqual(dm.task_state.get("equipment_unit_id"), "OBSROV-75-001")
 
     def test_equipment_transaction_with_rov_alias_work(self):
         dm = self._commit_equipment_update(
@@ -197,7 +198,7 @@ class DialogueManagerROVTest(unittest.TestCase):
             "type": "string",
             "allowed_values_ref": "robot_full_names",
         }
-        expected = ["观察级深海机器人 HP"]
+        expected = ["观察级深海机器人 75HP"]
         self.assertEqual(
             builder.resolve_allowed_values(
                 variant_field,
@@ -256,10 +257,10 @@ class DialogueManagerROVTest(unittest.TestCase):
 
 
     def test_variant_alias_is_available_to_backend_lookup(self):
-        rov = self.kb.get_rov("巡检ROV HP")
+        rov = self.kb.get_rov("巡检ROV 75HP")
         self.assertIsNotNone(rov)
-        self.assertEqual(rov["full_name"], "观察级深海机器人 HP")
-        self.assertIn("巡检ROV HP", rov["aliases"])
+        self.assertEqual(rov["full_name"], "观察级深海机器人 75HP")
+        self.assertIn("巡检ROV 75HP", rov["aliases"])
 
 
     def test_prompt_enforces_family_variant_unit_dependency(self):
@@ -275,7 +276,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         )
         missing = [
             {"key": "equipment_family", "label": "作业机器人系列", "type": "string", "allowed_values": ["观察级深海机器人"]},
-            {"key": "equipment_type", "label": "作业设备型号", "type": "string", "allowed_values": ["轻型工作级深海机器人 HP"]},
+            {"key": "equipment_type", "label": "作业设备型号", "type": "string", "allowed_values": ["轻型工作级深海机器人 150HP"]},
             {"key": "equipment_unit_id", "label": "具体机器人编号", "type": "string", "allowed_values": []},
         ]
         system = build_responder_messages(
@@ -338,7 +339,7 @@ class DialogueManagerROVTest(unittest.TestCase):
                     "key": "equipment_type",
                     "label": "作业设备型号",
                     "type": "string",
-                    "allowed_values": ["轻型工作级深海机器人 HP"],
+                    "allowed_values": ["轻型工作级深海机器人 150HP"],
                 }
             ],
             mode="normal",
@@ -455,7 +456,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         dm._normalize_and_validate_in_transaction(slots, "pipeline_inspection")
         self.assertEqual(slots["equipment_family"].value, "观察级深海机器人")
         self.assertEqual(slots["equipment_family"].status, "valid")
-        self.assertEqual(slots["equipment_type"].value, "观察级深海机器人 HP")
+        self.assertEqual(slots["equipment_type"].value, "观察级深海机器人 75HP")
         self.assertEqual(slots["equipment_type"].status, "valid")
 
     def test_explicit_family_rejects_variant_from_another_family(self):
@@ -476,8 +477,8 @@ class DialogueManagerROVTest(unittest.TestCase):
         dm, slots = self._normal_slots()
         for key, value in {
             "equipment_family": "观察级深海机器人",
-            "equipment_type": "观察级深海机器人 HP",
-            "equipment_unit_id": "OBSROV--001",
+            "equipment_type": "观察级深海机器人 75HP",
+            "equipment_unit_id": "OBSROV-75-001",
             "equipment_name": "观察级深海机器人-001",
         }.items():
             slots[key].value = value
@@ -491,14 +492,14 @@ class DialogueManagerROVTest(unittest.TestCase):
         self.assertEqual(slots["equipment_family"].status, "valid")
         self.assertIsNone(slots["equipment_unit_id"].value)
         self.assertEqual(slots["equipment_unit_id"].status, "missing")
-        self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人 HP")
+        self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人 150HP")
         self.assertEqual(slots["equipment_type"].status, "valid")
 
 
     def test_task_intent_robot_type_comes_from_selected_variant(self):
         builder = TaskIntentBuilder(self.kb)
         cases = (
-            ("观察级深海机器人 HP", "pipeline_inspection", "observation_rov"),
+            ("观察级深海机器人 75HP", "pipeline_inspection", "observation_rov"),
             ("通用工作级深海机器人 250HP", "tree_valve_operation", "work_class_rov"),
             ("水下无人自主航行器 324CC", "pipeline_inspection", "auv"),
             ("履带式海底重载作业机器人 1600HP", "pipeline_burial", "work_class_rov"),
@@ -514,14 +515,85 @@ class DialogueManagerROVTest(unittest.TestCase):
                     expected,
                 )
 
+    def test_emergency_schema_uses_variant_and_prepares_task_intent(self):
+        output_builder = OutputBuilder(self.kb)
+        intent_builder = TaskIntentBuilder(self.kb)
+        cases = {
+            "pipeline_inspection": {
+                "task_id": "PI-20260813-001",
+                "task_type": "管缆巡检",
+                "start_time": "2026-08-13T10:00:00",
+                "start_point": {"lat": 20.0, "lon": 110.0},
+                "end_point": {"lat": 21.0, "lon": 111.0},
+                "water_depth": 100.0,
+                "equipment_type": "观察级深海机器人 75HP",
+                "expected_robot_type": "observation_rov",
+            },
+            "pipeline_burial": {
+                "task_id": "PB-20260813-001",
+                "task_type": "管缆埋设",
+                "start_time": "2026-08-13T10:00:00",
+                "start_point": {"lat": 20.0, "lon": 110.0},
+                "end_point": {"lat": 21.0, "lon": 111.0},
+                "water_depth": 100.0,
+                "equipment_type": "履带式海底重载作业机器人 1600HP",
+                "expected_robot_type": "work_class_rov",
+            },
+            "tree_valve_operation": {
+                "task_id": "CT-20260813-001",
+                "task_type": "采油树控制面板插入",
+                "start_time": "2026-08-13T10:00:00",
+                "oilfield_coordinates": {"lat": 20.0, "lon": 110.0},
+                "water_depth": 100.0,
+                "equipment_type": "通用工作级深海机器人 250HP",
+                "expected_robot_type": "work_class_rov",
+            },
+        }
+
+        for task_type_key, case in cases.items():
+            with self.subTest(task_type_key=task_type_key):
+                schema = output_builder.get_schema(task_type_key, "emergency")
+                equipment_field = next(
+                    field for field in schema if field["key"] == "equipment_type"
+                )
+                self.assertEqual(
+                    equipment_field["allowed_values_ref"],
+                    "robot_variant_full_names",
+                )
+
+                state = {
+                    key: value
+                    for key, value in case.items()
+                    if key != "expected_robot_type"
+                }
+                state["internal_id"] = str(uuid.uuid4())
+                built_json, missing = output_builder.build(
+                    state,
+                    task_type_key,
+                    mode="emergency",
+                )
+                self.assertEqual(missing, [])
+
+                intent = intent_builder.prepare(
+                    state,
+                    built_json,
+                    mode="emergency",
+                    task_type_key=task_type_key,
+                    intent_id="TI2026081301",
+                )
+                self.assertEqual(
+                    intent["equipment"]["robot_type"],
+                    case["expected_robot_type"],
+                )
+
 
     def test_model_change_updates_family_and_clears_old_unit_via_slot_store(self):
         dm, slots = self._normal_slots()
         for key, value in {
             "equipment_family": "观察级深海机器人",
-            "equipment_type": "观察级深海机器人 HP",
+            "equipment_type": "观察级深海机器人 75HP",
             "equipment_name": "观察级深海机器人-001",
-            "equipment_unit_id": "OBSROV--001",
+            "equipment_unit_id": "OBSROV-75-001",
         }.items():
             slots[key].value = value
             slots[key].status = "valid"

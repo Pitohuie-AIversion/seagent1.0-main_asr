@@ -57,13 +57,13 @@ class MultiTurnConsistencyBenchmarkTest(unittest.TestCase):
                 extraction_result(
                     slot_candidate(
                         "equipment_type",
-                        "轻型工作级深海机器人 HP",
+                        "轻型工作级深海机器人 150HP",
                         raw_key="设备型号",
                         raw_value="天鹰座一号机",
                     ),
                     slot_candidate(
                         "equipment_unit_id",
-                        "LROV--001",
+                        "LROV-150-001",
                         raw_key="具体机器人",
                         raw_value="天鹰座一号机",
                     ),
@@ -117,8 +117,8 @@ class MultiTurnConsistencyBenchmarkTest(unittest.TestCase):
         self.assertEqual(state_1["raw_oilfield_name"], "流花11-1油田")
 
         _, state_2 = self._process_write_and_assert_ssot("使用天鹰座一号机")
-        self.assertEqual(state_2["equipment_type"], "轻型工作级深海机器人 HP")
-        self.assertEqual(state_2["equipment_unit_id"], "LROV--001")
+        self.assertEqual(state_2["equipment_type"], "轻型工作级深海机器人 150HP")
+        self.assertEqual(state_2["equipment_unit_id"], "LROV-150-001")
         self.assertEqual(state_2["raw_oilfield_name"], "流花11-1油田")
 
         _, state_3 = self._process_write_and_assert_ssot(
@@ -128,7 +128,7 @@ class MultiTurnConsistencyBenchmarkTest(unittest.TestCase):
             state_3["payload"],
             ["高清水下摄像机", "成像声呐"],
         )
-        self.assertEqual(state_3["equipment_unit_id"], "LROV--001")
+        self.assertEqual(state_3["equipment_unit_id"], "LROV-150-001")
         self.assertEqual(state_3["raw_oilfield_name"], "流花11-1油田")
 
         _, final_state = self._process_write_and_assert_ssot("把水深改成300米")
@@ -136,8 +136,8 @@ class MultiTurnConsistencyBenchmarkTest(unittest.TestCase):
             "task_type_key": "pipeline_inspection",
             "task_type": "管缆巡检",
             "raw_oilfield_name": "流花11-1油田",
-            "equipment_type": "轻型工作级深海机器人 HP",
-            "equipment_unit_id": "LROV--001",
+            "equipment_type": "轻型工作级深海机器人 150HP",
+            "equipment_unit_id": "LROV-150-001",
             "payload": ["高清水下摄像机", "成像声呐"],
             "water_depth": 300.0,
         }

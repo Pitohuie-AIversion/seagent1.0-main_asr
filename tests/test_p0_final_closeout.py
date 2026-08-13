@@ -241,7 +241,7 @@ class PendingOilfieldRejectionTest(unittest.TestCase):
         self.dm.reset()
         seed_complete_valid_pipeline_task(self.dm, self.kb)
         self.dm.slot_store.slots["oilfield_name"] = Slot(
-            "oilfield_name", value=candidate_name, status="pending_confirmation")
+            "oilfield_name", value=None, status="missing")
         self.dm.slot_store.slots["pending_oilfield_name"] = Slot(
             "pending_oilfield_name", value=candidate_name, status="valid")
         self.dm.slot_store.slots["pending_oilfield_candidates"] = Slot(

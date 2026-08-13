@@ -26,7 +26,7 @@ class TestSnapshotRestoreRevalidation(unittest.TestCase):
         kb = KnowledgeBase()
         store = SlotStore(kb)
         store.init_task_slots([{"key": "equipment_unit_id", "label": "设备编号", "type": "string"}])
-        store.slots["equipment_unit_id"].value = "OBSROV-001"
+        store.slots["equipment_unit_id"].value = "OBSROV-75-001"
         store.slots["equipment_unit_id"].status = "valid"
 
         # 模拟构建 ValidationResult & Acknowledgement
@@ -36,7 +36,7 @@ class TestSnapshotRestoreRevalidation(unittest.TestCase):
             task_version=1,
             validation_version=2,
             validation_fingerprint="fp12345",
-            state_snapshot={"unit_id": "OBSROV-001", "status_ref": "OBSROV-001", "state_version": 81},
+            state_snapshot={"unit_id": "OBSROV-75-001", "status_ref": "OBSROV-75-001", "state_version": 81},
             violations=[Violation("C014", "流速偏高", "流速偏高", "soft")],
         )
         ack = ValidationAcknowledgement(
@@ -45,7 +45,7 @@ class TestSnapshotRestoreRevalidation(unittest.TestCase):
             task_version=1,
             validation_version=2,
             validation_fingerprint="fp12345",
-            status_ref="OBSROV-001",
+            status_ref="OBSROV-75-001",
             state_version=81,
         )
         store.validation_result = res
@@ -73,7 +73,7 @@ class TestSnapshotRestoreRevalidation(unittest.TestCase):
             task_version=1,
             validation_version=2,
             validation_fingerprint="fp12345",
-            state_snapshot={"unit_id": "OBSROV--001", "status_ref": "OBSROV-001", "state_version": 81},
+            state_snapshot={"unit_id": "OBSROV-75-001", "status_ref": "OBSROV-75-001", "state_version": 81},
             violations=[Violation("C014", "流速偏高", "流速偏高", "soft")],
         )
         ack = ValidationAcknowledgement(
@@ -82,7 +82,7 @@ class TestSnapshotRestoreRevalidation(unittest.TestCase):
             task_version=1,
             validation_version=2,
             validation_fingerprint="fp12345",
-            status_ref="OBSROV-001",
+            status_ref="OBSROV-75-001",
             state_version=80,  # 不匹配 81
         )
         store.validation_result = res

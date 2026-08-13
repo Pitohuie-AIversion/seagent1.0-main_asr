@@ -121,7 +121,7 @@ class TestIssue12DialogueCascade(unittest.TestCase):
         self._apply_updates({
             "equipment_class": "observation_rov",
             "equipment_family": "轻型工作级深海机器人",
-            "equipment_type": "轻型工作级深海机器人 HP",
+            "equipment_type": "轻型工作级深海机器人 150HP",
         }, task_type_key="pipeline_inspection")
 
         missing = self.dm.slot_store.get_missing_slots(
@@ -133,8 +133,8 @@ class TestIssue12DialogueCascade(unittest.TestCase):
 
         unit_field = next((m for m in missing if m.get("key") == "equipment_unit_id"), None)
         self.assertIsNotNone(unit_field)
-        self.assertIn("LROV--001", unit_field["allowed_values"])
-        self.assertIn("LROV--002", unit_field["allowed_values"])
+        self.assertIn("LROV-150-001", unit_field["allowed_values"])
+        self.assertIn("LROV-150-002", unit_field["allowed_values"])
 
     # ── Test 6: 直接输入 AUV unit 自动补全 ─────────────────────────────────────
     def test_06_direct_unit_input_auto_completes(self):

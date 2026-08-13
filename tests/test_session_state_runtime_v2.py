@@ -32,6 +32,32 @@ class TestSessionStateRuntimeV2(unittest.TestCase):
             "changed_at": datetime.now(timezone.utc).isoformat(),
         }
 
+    @staticmethod
+    def _runtime_fingerprint(dm: DialogueManager) -> dict:
+        """Capture all snapshot-owned runtime state for fail-closed assertions."""
+        return {
+            "session_id": dm.session_id,
+            "conversation_history": copy.deepcopy(dm.conversation_history),
+            "slot_store": copy.deepcopy(dm.slot_store.export_snapshot()),
+            "task_state": copy.deepcopy(dm.task_state),
+            "mode": dm.mode,
+            "phase": dm.phase,
+            "final_result": copy.deepcopy(dm.final_result),
+            "awaiting_final_confirm": dm.awaiting_final_confirm,
+            "task_start_now": dm.task_start_now,
+            "blocking_violations": copy.deepcopy(dm._blocking_violations),
+            "soft_whitelist": copy.deepcopy(dm._soft_whitelist),
+            "hard_refusal_counts": copy.deepcopy(dm._hard_refusal_counts),
+            "pending_rov_candidates": copy.deepcopy(dm._pending_rov_candidates),
+            "last_built_json": copy.deepcopy(dm._last_built_json),
+            "last_missing": copy.deepcopy(dm._last_missing),
+            "control_state": dm.control_state,
+            "last_control_request": copy.deepcopy(dm.last_control_request),
+            "dialogue_mode": dm.dialogue_mode,
+            "last_mode_transition": copy.deepcopy(dm.last_mode_transition),
+            "mode_transition_history": copy.deepcopy(dm.mode_transition_history),
+        }
+
     # 1. flag=false export snapshot legacy behavior unchanged
     @patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False)
     def test_01_flag_false_export_snapshot_legacy_behavior_unchanged(self, mock_flag) -> None:
@@ -207,6 +233,45 @@ class TestSessionStateRuntimeV2(unittest.TestCase):
     # 14. session_state_v2=false default verified
     def test_14_session_state_v2_false_default_verified(self) -> None:
         self.assertFalse(is_session_state_v2_enabled())
+
+    # 15. flag=false invalid task phase fails closed without mutating runtime state
+    @patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False)
+    def test_15_flag_false_invalid_phase_does_not_mutate_manager(self, mock_flag) -> None:
+        before = self._runtime_fingerprint(self.dm)
+        invalid_snapshot = self.dm.export_snapshot()
+        invalid_snapshot["phase"] = "invalid_phase_name"
+
+        with self.assertRaises(ValueError):
+            self.dm.load_snapshot(invalid_snapshot)
+
+        self.assertEqual(self._runtime_fingerprint(self.dm), before)
+
+    # 16. flag=false invalid task mode fails closed without mutating runtime state
+    @patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False)
+    def test_16_flag_false_invalid_task_mode_does_not_mutate_manager(self, mock_flag) -> None:
+        before = self._runtime_fingerprint(self.dm)
+        invalid_snapshot = self.dm.export_snapshot()
+        invalid_snapshot["mode"] = "invalid_task_mode"
+
+        with self.assertRaises(ValueError):
+            self.dm.load_snapshot(invalid_snapshot)
+
+        self.assertEqual(self._runtime_fingerprint(self.dm), before)
+
+    # 17. a late field validation error cannot leak an earlier session_id assignment
+    @patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=False)
+    def test_17_failed_restore_does_not_partially_replace_session_id(self, mock_flag) -> None:
+        self.dm.session_id = "original-session"
+        self.dm.conversation_history = [{"role": "user", "content": "保留当前会话"}]
+        before = self._runtime_fingerprint(self.dm)
+        invalid_snapshot = self.dm.export_snapshot()
+        invalid_snapshot["session_id"] = "replacement-session"
+        invalid_snapshot["conversation_history"] = "not-a-list"
+
+        with self.assertRaisesRegex(ValueError, "conversation_history must be a list"):
+            self.dm.load_snapshot(invalid_snapshot)
+
+        self.assertEqual(self._runtime_fingerprint(self.dm), before)
 
 
 if __name__ == "__main__":

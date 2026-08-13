@@ -60,7 +60,7 @@ class TestDialogueValidationGate(unittest.TestCase):
             "task_version": 1,
             "validation_version": 1,
             "validation_fingerprint": "abc12345",
-            "state_snapshot": {"unit_id": "OBSROV--001", "status_ref": "OBSROV-001", "state_version": 1},
+            "state_snapshot": {"unit_id": "OBSROV-75-001", "status_ref": "OBSROV-75-001", "state_version": 1},
             "violations": [],
         })
         store.validation_acknowledgements = [
@@ -69,7 +69,7 @@ class TestDialogueValidationGate(unittest.TestCase):
                 "task_version": 1,
                 "validation_version": 1,
                 "validation_fingerprint": "abc12345",
-                "status_ref": "OBSROV-001",
+                "status_ref": "OBSROV-75-001",
                 "state_version": 1,
             })
         ]
@@ -106,7 +106,7 @@ class TestDialogueValidationGate(unittest.TestCase):
 
         dm.task_state.update({
             "task_type_key": "pipeline_inspection",
-            "equipment_unit_id": "OBSROV--001",
+            "equipment_unit_id": "OBSROV-75-001",
             "water_depth": 300,
             "support_vessel": "海洋石油681",
             "oilfield_name": "东方1-1油田",
@@ -114,7 +114,7 @@ class TestDialogueValidationGate(unittest.TestCase):
         })
 
         # 模拟设置浑浊度 15 (触发 C014 soft warning)
-        dm.kb.state_info.set_status("OBSROV-001", {"turbidity": 15, "current_velocity": 0.2})
+        dm.kb.state_info.set_status("OBSROV-75-001", {"turbidity": 15, "current_velocity": 0.2})
         res1 = dm.validator.validate_task(dm.task_state)
         self.assertEqual(res1.overall_status, "blocked_soft")
 
@@ -125,7 +125,7 @@ class TestDialogueValidationGate(unittest.TestCase):
         self.assertGreater(len(dm.slot_store.validation_acknowledgements), 0)
 
         # 模拟设备遥测状态升级：浑浊度变为 20
-        dm.kb.state_info.set_status("OBSROV-001", {"turbidity": 20, "current_velocity": 0.2})
+        dm.kb.state_info.set_status("OBSROV-75-001", {"turbidity": 20, "current_velocity": 0.2})
 
         res2 = dm.validator.validate_task(dm.task_state, task_version=dm.slot_store.version, previous_result=res1)
         self.assertEqual(res2.overall_status, "blocked_soft")
@@ -143,14 +143,14 @@ class TestDialogueValidationGate(unittest.TestCase):
 
         dm.task_state.update({
             "task_type_key": "pipeline_inspection",
-            "equipment_unit_id": "OBSROV--001",
+            "equipment_unit_id": "OBSROV-75-001",
             "water_depth": 300,
             "support_vessel": "海洋石油681",
             "oilfield_name": "东方1-1油田",
             "start_time": now_str,
         })
 
-        dm.kb.state_info.set_status("OBSROV-001", {"current_velocity": 1.5})
+        dm.kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 1.5})
         res = dm.validator.validate_task(dm.task_state)
         self.assertEqual(res.overall_status, "blocked_hard")
 

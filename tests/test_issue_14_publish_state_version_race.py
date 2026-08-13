@@ -28,7 +28,7 @@ def _setup_dm(tmp_dir: Path, intent_suffix: str) -> DialogueManager:
         "task_type": "海底管道巡检",
         "task_type_key": "pipeline_inspection",
         "cable_type": "海底油气管道",
-        "equipment_unit_id": "OBSROV--001",
+        "equipment_unit_id": "OBSROV-75-001",
         "start_time": now_str,
         "end_time": "2099-01-01T18:00:00+08:00",
         "water_depth": 300,
@@ -46,7 +46,14 @@ def _setup_dm(tmp_dir: Path, intent_suffix: str) -> DialogueManager:
     for slot_name, slot in dm.slot_store.slots.items():
         if slot.status != "valid":
             slot.status = "valid"
-            slot.value = {} if slot_name == "equipment_specification" else "auto_populated"
+            slot.value = {
+                "number": 1.0,
+                "boolean": False,
+                "list": [],
+                "coord": {"lat": 0.0, "lon": 0.0},
+                "datetime": now_str,
+                "object": {},
+            }.get(slot.value_type, "auto_populated")
     dm.slot_store.slots["intent_id"].value = f"TI20260806{intent_suffix}"
     dm.slot_store.slots["intent_id"].status = "valid"
     dm.slot_store.slots["task_id"].value = f"PI-20260806-{intent_suffix}"
@@ -71,7 +78,7 @@ class TestPublishStateVersionRace(unittest.TestCase):
         dm = _setup_dm(tmp_dir, "0001")
         kb = dm.kb
 
-        kb.state_info.set_status("OBSROV-001", {"current_velocity": 0.2, "turbidity": 3})
+        kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.2, "turbidity": 3})
 
         val_res = dm._refresh_validation(purpose="publish")
         self.assertIn(val_res.overall_status, ("valid", "warning", "pending_runtime_validation"))
@@ -107,7 +114,7 @@ class TestPublishStateVersionRace(unittest.TestCase):
         dm = _setup_dm(tmp_dir, "0002")
         kb = dm.kb
 
-        kb.state_info.set_status("OBSROV-001", {"current_velocity": 0.2, "turbidity": 3})
+        kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.2, "turbidity": 3})
 
         original_get_snapshot = kb.state_info.get_unit_state_snapshot
         call_count = [0]
@@ -141,7 +148,7 @@ class TestPublishStateVersionRace(unittest.TestCase):
         dm = _setup_dm(tmp_dir, "0003")
         kb = dm.kb
 
-        kb.state_info.set_status("OBSROV-001", {"current_velocity": 0.2, "turbidity": 3})
+        kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.2, "turbidity": 3})
 
         original_get_snapshot = kb.state_info.get_unit_state_snapshot
         call_count = [0]
@@ -175,14 +182,14 @@ class TestPublishStateVersionRace(unittest.TestCase):
         kb = KnowledgeBase()
         kb.state_info.state_file = state_file
 
-        current_snap = kb.state_info.get_unit_state_snapshot("OBSROV--001")
+        current_snap = kb.state_info.get_unit_state_snapshot("OBSROV-75-001")
         current_ver = current_snap["state_version"]
 
         barrier = threading.Barrier(2)
         step = []
 
         def worker_guard():
-            with kb.state_info.guard_unit_state_version("OBSROV--001", current_ver):
+            with kb.state_info.guard_unit_state_version("OBSROV-75-001", current_ver):
                 step.append("guard_entered")
                 barrier.wait(timeout=5)  # 通知并等待 worker_update 试图获取排他锁
                 step.append("guard_holding")
@@ -190,7 +197,7 @@ class TestPublishStateVersionRace(unittest.TestCase):
 
         def worker_update():
             barrier.wait(timeout=5)  # 确保 worker_guard 已进入 guard
-            kb.state_info.set_status("OBSROV-001", {"current_velocity": 0.5})
+            kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.5})
             step.append("update_finished")
 
         t1 = threading.Thread(target=worker_guard)

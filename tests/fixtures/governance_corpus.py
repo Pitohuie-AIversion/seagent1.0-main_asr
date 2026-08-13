@@ -197,10 +197,10 @@ GOVERNANCE_GOLDEN_CORPUS: list[CorpusCase] = [
     {
         "id": "GC-18",
         "category": "task_create",
-        "input": "选择 OBSROV--001 节点",
+        "input": "选择 OBSROV-75-001 节点",
         "nature": "invariant",
-        "expected_effect": "绑定真实配置中的单机 OBSROV--001",
-        "slot_mutation": "equipment_unit_id=OBSROV--001",
+        "expected_effect": "绑定真实配置中的单机 OBSROV-75-001",
+        "slot_mutation": "equipment_unit_id=OBSROV-75-001",
         "should_publish": False,
     },
     {

@@ -41,7 +41,7 @@ def base_robot_state(**overrides):
 def base_task(**overrides):
     task = {
         "task_type_key": "pipeline_inspection",
-        "equipment_unit_id": "OBSROV--001",
+        "equipment_unit_id": "OBSROV-75-001",
         "water_depth": 300,
         "support_vessel": "海洋石油681",
         "start_point": copy.deepcopy(SAFE_POINT),
@@ -84,7 +84,7 @@ CONSTRAINT_TRIGGER_MATRIX = {
         },
     },
     "C010": {"task": {"start_point": DVL_RISK_POINT}},
-    "C0011": {"state": {"obstacle_density": "high"}},
+    "C011": {"state": {"obstacle_density": "high"}},
     "C012": {"state": {"mothership_support": "weak"}},
     "C013": {"state": {"turbidity": 6}},
     "C014": {"state": {"turbidity": 11}},
@@ -133,7 +133,7 @@ class ConstraintCoverageMatrixTest(unittest.TestCase):
             if res_unit:
                 unit_id = res_unit.get("unit_id") or (res_unit.get("unit", {}).get("unit_id") if isinstance(res_unit.get("unit"), dict) else None)
         if not unit_id:
-            unit_id = "OBSROV--001"
+            unit_id = "OBSROV-75-001"
 
         matched = None
         for u in self.kb.robot_fleet.get("fleet_units", []):
@@ -195,6 +195,15 @@ class ConstraintCoverageMatrixTest(unittest.TestCase):
             "Every active constraint needs a direct trigger scenario",
         )
 
+    def test_current_constraint_id_and_hard_block_copy(self):
+        constraints = {item["id"]: item for item in self.kb.get_constraints()}
+        self.assertIn("C011", constraints)
+        self.assertNotIn(
+            "确认船只调度后再发布",
+            constraints["C007"]["violation_message"],
+        )
+        self.assertIn("更新为可用", constraints["C007"]["violation_message"])
+
     def test_each_matrix_scenario_triggers_its_constraint_and_severity(self):
         constraints = {item["id"]: item for item in self.kb.get_constraints()}
         for constraint_id, scenario in CONSTRAINT_TRIGGER_MATRIX.items():
@@ -254,15 +263,46 @@ class ConstraintCoverageMatrixTest(unittest.TestCase):
                 }
                 self.assertEqual(expected, actual)
 
+    def test_invalid_state_timestamp_fails_closed(self):
+        violations = self.validate(state={"update_timestamp": "not-a-timestamp"})
+        self.assertEqual(["VAL_ERR"], [item.constraint_id for item in violations])
+        self.assertEqual("hard", violations[0].severity)
+
+    def test_current_velocity_thresholds_are_configuration_driven(self):
+        constraint = copy.deepcopy(
+            next(item for item in self.kb.get_constraints() if item["id"] == "C015")
+        )
+        constraint["id"] = "CUSTOM_CURRENT_RANGE"
+        constraint["thresholds"] = {
+            "min_exclusive": 0.6,
+            "max_inclusive": 0.7,
+        }
+        snapshot = {"state": base_robot_state(current_velocity=0.65)}
+
+        violation = self.validator._check_one(
+            constraint,
+            "current_velocity",
+            base_task(),
+            None,
+            None,
+            None,
+            None,
+            snapshot,
+        )
+
+        self.assertIsNotNone(violation)
+        self.assertEqual("CUSTOM_CURRENT_RANGE", violation.constraint_id)
+        self.assertEqual(0.7, violation.threshold)
+
     def test_every_fleet_variant_resolves_for_its_supported_task(self):
         expected_tasks = {
             "CRAWLER-1600-001": "pipeline_burial",
             "TOWED-1500-001": "pipeline_burial",
             "SPECIAL-600-001": "pipeline_burial",
             "WROV-250-001": "tree_valve_operation",
-            "LROV--001": "pipeline_inspection",
-            "LROV--002": "pipeline_inspection",
-            "OBSROV--001": "pipeline_inspection",
+            "LROV-150-001": "pipeline_inspection",
+            "LROV-150-002": "pipeline_inspection",
+            "OBSROV-75-001": "pipeline_inspection",
             "AUV-324cc-001": "pipeline_inspection",
         }
         fleet_ids = {unit["unit_id"] for unit in self.kb.robot_fleet["fleet_units"]}

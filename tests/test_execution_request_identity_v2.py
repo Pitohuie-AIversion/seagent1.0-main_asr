@@ -56,7 +56,7 @@ class TestExecutionRequestIdentityV2(unittest.TestCase):
     def _modify_published_task(self) -> None:
         slots_mod = self.dm.slot_store.clone_slots()
         slots_mod["water_depth"] = Slot("water_depth", value=500.0, status="valid")
-        slots_mod["intent_id"] = Slot("intent_id", value=None, status="unfilled")
+        slots_mod["intent_id"] = Slot("intent_id", value=None, status="missing")
         self.dm.slot_store.commit_transaction(slots_mod, [])
         self.dm.task_state = self.dm.slot_store.get_task_state()
         self.dm.final_result = None

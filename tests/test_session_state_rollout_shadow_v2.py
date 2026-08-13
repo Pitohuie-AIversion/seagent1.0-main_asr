@@ -10,6 +10,7 @@ Provides reproducible, dual-executed shadow comparison between:
 
 Automatically categorizes outcomes into:
   - PARITY
+  - FAIL_CLOSED_PARITY
   - EXPECTED_FAIL_CLOSED_DELTA
   - UNEXPECTED_BEHAVIOR_DELTA (asserted to be strictly 0)
 
@@ -295,6 +296,26 @@ def classify_shadow_outcomes(
             return "EXPECTED_FAIL_CLOSED_DELTA", f"Legacy succeeded, Strict failed closed with {strict.exception_type} and 0 state pollution"
         else:
             return "UNEXPECTED_BEHAVIOR_DELTA", f"Fail closed violation: legacy_ok={legacy.succeeded}, strict_ok={strict.succeeded}, exc={strict.exception_type}, atomic={strict_atomicity_pass}"
+    elif expected_kind == "fail_closed_parity":
+        accepted_errors = {"StateContractError", "ValueError", "SnapshotValidationError"}
+        both_failed_closed = (
+            not legacy.succeeded
+            and not strict.succeeded
+            and legacy.exception_type in accepted_errors
+            and strict.exception_type in accepted_errors
+        )
+        both_atomic = (
+            legacy.before_digest == legacy.after_digest
+            and strict.before_digest == strict.after_digest
+        )
+        if both_failed_closed and both_atomic:
+            return "FAIL_CLOSED_PARITY", "Both sides failed closed with 0 state pollution"
+        return "UNEXPECTED_BEHAVIOR_DELTA", (
+            "Fail-closed parity violation: "
+            f"legacy_ok={legacy.succeeded}, strict_ok={strict.succeeded}, "
+            f"legacy_exc={legacy.exception_type}, strict_exc={strict.exception_type}, "
+            f"atomic={both_atomic}"
+        )
     else:
         raise ValueError(f"Unknown expected_kind: {expected_kind}")
 
@@ -345,7 +366,7 @@ def _helper_setup_published_task(dm: DialogueManager, task_dir: Path, intent_id:
     slots["task_id"] = Slot("task_id", value="PI-20260809-001", status="valid", value_type="string")
     slots["equipment_class"] = Slot("equipment_class", value="观察级ROV", status="valid", value_type="string")
     slots["equipment_type"] = Slot("equipment_type", value="观察级深海机器人", status="valid", value_type="string")
-    slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV--001", status="valid", value_type="string")
+    slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV-75-001", status="valid", value_type="string")
     dm.slot_store.commit_transaction(slots, [])
     dm.task_state = dm.slot_store.get_task_state()
 
@@ -357,10 +378,17 @@ def _helper_setup_published_task(dm: DialogueManager, task_dir: Path, intent_id:
         "task_type": "pipeline_inspection",
         "task_type_key": "pipeline_inspection",
         "priority": 1,
-        "time": {"start": "now", "end": "now+1h"},
+        "time": {
+            "start": "2026-08-09T10:00:00+08:00",
+            "end": "2026-08-09T11:00:00+08:00",
+        },
         "location": {"oilfield": "A区", "water_depth_m": 300.0},
-        "task": {"type": "pipeline_inspection", "details": "管缆巡检"},
-        "equipment": {"robot_type": "observation_rov", "payload": [], "support_vessel": "Vessel1"},
+        "task": {"type": "pipeline_inspection", "details": {}},
+        "equipment": {
+            "robot_type": "observation_rov",
+            "payload": [],
+            "support_vessel": {"name": "Vessel1", "latitude": None, "longitude": None},
+        },
         "conditions": {"water_depth": 300.0},
     }
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -469,7 +497,7 @@ def GET_SHADOW_CASE_DEFINITIONS() -> list[dict]:
         slots["task_id"] = Slot("task_id", value="PI-20260809-001", status="valid", value_type="string")
         slots["equipment_class"] = Slot("equipment_class", value="观察级ROV", status="valid", value_type="string")
         slots["equipment_type"] = Slot("equipment_type", value="观察级深海机器人", status="valid", value_type="string")
-        slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV--001", status="valid", value_type="string")
+        slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV-75-001", status="valid", value_type="string")
         dm.slot_store.commit_transaction(slots, [])
         dm.task_state = dm.slot_store.get_task_state()
         dm.phase = "confirming"
@@ -766,7 +794,7 @@ def GET_SHADOW_CASE_DEFINITIONS() -> list[dict]:
         {"case_id": "B11", "name": "Action / State Mismatch", "setup": b11_setup, "action": b11_action, "kind": "strict_fail_closed", "canon": None},
         {"case_id": "B12", "name": "Invalid Request Status", "setup": b12_setup, "action": b12_action, "kind": "strict_fail_closed", "canon": None},
         {"case_id": "B13", "name": "Ambiguous Legacy Snapshot", "setup": None, "action": b13_action, "kind": "strict_fail_closed", "canon": None},
-        {"case_id": "B14", "name": "Invalid Snapshot Phase", "setup": None, "action": b14_action, "kind": "strict_fail_closed", "canon": None},
+        {"case_id": "B14", "name": "Invalid Snapshot Phase", "setup": None, "action": b14_action, "kind": "fail_closed_parity", "canon": None},
     ]
 
 
@@ -808,6 +836,12 @@ class TestShadowComparatorUnit(unittest.TestCase):
         st = ShadowOutcome(False, "StateContractError", "Strict failed", {"phase": "c"}, {"phase": "c"})
         cls, reason = classify_shadow_outcomes(leg, st, expected_kind="strict_fail_closed")
         self.assertEqual(cls, "UNEXPECTED_BEHAVIOR_DELTA")
+
+    def test_comparator_fail_closed_parity(self):
+        leg = ShadowOutcome(False, "ValueError", "Legacy failed", {"phase": "c"}, {"phase": "c"})
+        st = ShadowOutcome(False, "StateContractError", "Strict failed", {"phase": "c"}, {"phase": "c"})
+        cls, reason = classify_shadow_outcomes(leg, st, expected_kind="fail_closed_parity")
+        self.assertEqual(cls, "FAIL_CLOSED_PARITY")
 
     def test_comparator_both_failed_on_success_parity(self):
         leg = ShadowOutcome(False, "RuntimeError", "Legacy failed", {"phase": "c"}, {"phase": "c"})
@@ -1036,7 +1070,7 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
         defs = {c["case_id"]: c for c in GET_SHADOW_CASE_DEFINITIONS()}
         c = defs["B14"]
         res = run_shadow_case(c["case_id"], c["name"], self.tmp_path, c["setup"], c["action"], c["kind"], canonicalizer=c["canon"])
-        self.assertEqual(res["classification"], "EXPECTED_FAIL_CLOSED_DELTA")
+        self.assertEqual(res["classification"], "FAIL_CLOSED_PARITY")
 
     # -------------------------------------------------------------------------
     # Governance Invariants In Strict Mode (INV-01 ~ INV-11)
@@ -1161,7 +1195,7 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
             slots["task_id"] = Slot("task_id", value="PI-20260809-001", status="valid", value_type="string")
             slots["equipment_class"] = Slot("equipment_class", value="观察级ROV", status="valid", value_type="string")
             slots["equipment_type"] = Slot("equipment_type", value="观察级深海机器人", status="valid", value_type="string")
-            slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV--001", status="valid", value_type="string")
+            slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV-75-001", status="valid", value_type="string")
             dm.slot_store.commit_transaction(slots, [])
             dm.task_state = dm.slot_store.get_task_state()
             dm.phase = "confirming"
@@ -1272,6 +1306,8 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
                 self.assertEqual(actual_class, "PARITY", f"Case {r['case_id']} expected PARITY, got {actual_class}: {r['reason']}")
             elif expected_kind == "strict_fail_closed":
                 self.assertEqual(actual_class, "EXPECTED_FAIL_CLOSED_DELTA", f"Case {r['case_id']} expected EXPECTED_FAIL_CLOSED_DELTA, got {actual_class}: {r['reason']}")
+            elif expected_kind == "fail_closed_parity":
+                self.assertEqual(actual_class, "FAIL_CLOSED_PARITY", f"Case {r['case_id']} expected FAIL_CLOSED_PARITY, got {actual_class}: {r['reason']}")
 
 
 if __name__ == "__main__":

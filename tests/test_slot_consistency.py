@@ -68,7 +68,7 @@ def seed_complete_valid_pipeline_task(dm, kb):
     allowed_rovs = kb.get_task_allowed_robot_variants(task_type_key)
     selected_rov = allowed_rovs[0] if allowed_rovs else kb.get_all_rovs()[0]
     equipment_type = selected_rov["full_name"]
-    equipment_unit_id = selected_rov.get("unit_ids", ["OBSROV-HP-001"])[0]
+    equipment_unit_id = selected_rov.get("unit_ids", ["OBSROV-75-001"])[0]
 
     supported_payloads = selected_rov.get("supported_payloads", [])
     payload = supported_payloads[:2] if supported_payloads else ["多波束测深仪", "高清水下摄像机"]
@@ -1639,13 +1639,13 @@ class SlotConsistencyTest(unittest.TestCase):
         dm._apply_updates_in_transaction({"equipment_type": "观察级ROV"}, dm.slot_store.slots)
         eq_slot = dm.slot_store.slots.get("equipment_type")
         self.assertIsNotNone(eq_slot)
-        self.assertEqual(eq_slot.value, "观察级深海机器人 HP")
+        self.assertEqual(eq_slot.value, "观察级深海机器人 75HP")
         self.assertNotEqual(eq_slot.value, "观察级ROV")
 
         dm._normalize_and_validate_in_transaction(dm.slot_store.slots, "pipeline_inspection")
         eq_slot_after = dm.slot_store.slots.get("equipment_type")
         self.assertEqual(eq_slot_after.status, "valid")
-        self.assertEqual(eq_slot_after.value, "观察级深海机器人 HP")
+        self.assertEqual(eq_slot_after.value, "观察级深海机器人 75HP")
 
 
     # 53. 损坏计数器文件 Fail Closed 测试

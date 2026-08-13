@@ -1284,7 +1284,7 @@ class TestPreviewReserve(unittest.TestCase):
             "internal_id": "12345678-1234-4234-8234-1234567890ab",
             "equipment_class": "observation_rov",
             "equipment_type": "观察级ROV",
-            "equipment_unit_id": "OBSROV-HP-001",
+            "equipment_unit_id": "OBSROV-75-001",
             # 故意不传 task_id（草稿 preview 不在 task_state 中）
         }
         cand_built = dict(cand_state)

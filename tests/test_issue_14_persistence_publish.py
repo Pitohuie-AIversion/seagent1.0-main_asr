@@ -48,7 +48,7 @@ class TestPersistencePublish(unittest.TestCase):
                 "internal_id": "88888888-8888-4888-8888-888888888888",
                 "intent_id": "TI20260810001",
                 "task_type_key": "pipeline_inspection",
-                "equipment_unit_id": "OBSROV--001",
+                "equipment_unit_id": "OBSROV-75-001",
                 "equipment_type": "observation_rov",
                 "water_depth": 300,
                 "support_vessel": "海洋石油681",
@@ -58,7 +58,7 @@ class TestPersistencePublish(unittest.TestCase):
             }
             built_json = dict(task_state)
 
-            self.dm.kb.state_info.set_status("OBSROV-001", {"current_velocity": 0.2, "turbidity": 3})
+            self.dm.kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.2, "turbidity": 3})
             val_res = self.dm.validator.validate_task(task_state)
             self.assertEqual(val_res.overall_status, "valid")
 
@@ -85,7 +85,7 @@ class TestPersistencePublish(unittest.TestCase):
             self.assertIn("validation", cond)
             val_info = cond["validation"]
             self.assertEqual(val_info["overall_status"], "valid")
-            self.assertEqual(val_info["status_ref"], "OBSROV-001")
+            self.assertEqual(val_info["status_ref"], "OBSROV-75-001")
             self.assertIn("state_version", val_info)
             self.assertIn("validation_version", val_info)
             self.assertIn("validation_fingerprint", val_info)
@@ -98,7 +98,7 @@ class TestPersistencePublish(unittest.TestCase):
             "internal_id": "99999999-9999-4999-9999-999999999999",
             "intent_id": "TI20260810002",
             "task_type_key": "pipeline_inspection",
-            "equipment_unit_id": "OBSROV--001",
+            "equipment_unit_id": "OBSROV-75-001",
             "start_time": "2099-01-01 10:00:00",
             "end_time": "2099-01-01 18:00:00",
         }

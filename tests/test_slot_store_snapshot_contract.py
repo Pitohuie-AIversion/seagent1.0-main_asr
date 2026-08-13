@@ -222,6 +222,120 @@ class TestSlotStoreSnapshotContract(unittest.TestCase):
 
         self.assertEqual(exported1, exported2)
 
+    def test_commit_transaction_rejects_non_restorable_state_atomically(self):
+        invalid_transactions = [
+            (
+                "invalid_status",
+                lambda slots: setattr(slots["task_type"], "status", "fixed"),
+                [],
+            ),
+            (
+                "valid_null_value",
+                lambda slots: setattr(slots["task_type"], "status", "valid"),
+                [],
+            ),
+            (
+                "invalid_unresolved_container",
+                lambda slots: None,
+                "not-a-list",
+            ),
+        ]
+
+        for name, mutate_slots, unresolved in invalid_transactions:
+            with self.subTest(name=name):
+                before_store = copy.deepcopy(self.store.export_snapshot())
+                slots, _, version = self.store.snapshot()
+                mutate_slots(slots)
+                before_input = {
+                    key: copy.deepcopy(slot.to_dict())
+                    for key, slot in slots.items()
+                }
+
+                with self.assertRaises(SnapshotValidationError):
+                    self.store.commit_transaction(
+                        slots,
+                        unresolved,
+                        expected_version=version,
+                    )
+
+                self.assertEqual(self.store.export_snapshot(), before_store)
+                self.assertEqual(
+                    {key: slot.to_dict() for key, slot in slots.items()},
+                    before_input,
+                )
+
+    def test_commit_transaction_accepts_all_six_statuses_and_round_trips(self):
+        slots, unresolved, version = self.store.snapshot()
+        slots.update(
+            {
+                "status_missing": Slot("status_missing", status="missing"),
+                "status_candidate": Slot(
+                    "status_candidate",
+                    status="candidate",
+                    candidate_value="candidate-value",
+                ),
+                "status_valid": Slot(
+                    "status_valid",
+                    value="valid-value",
+                    status="valid",
+                ),
+                "status_invalid": Slot(
+                    "status_invalid",
+                    status="invalid",
+                    candidate_value="bad-value",
+                    validation_error="invalid test value",
+                ),
+                "status_conflict": Slot(
+                    "status_conflict",
+                    value="current-value",
+                    status="conflict",
+                    candidate_value="replacement-value",
+                ),
+                "status_unresolved": Slot(
+                    "status_unresolved",
+                    status="unresolved",
+                    raw_value="ambiguous input",
+                    candidate_value="possible-value",
+                ),
+            }
+        )
+
+        self.store.commit_transaction(
+            slots,
+            unresolved,
+            expected_version=version,
+        )
+
+        exported = self.store.export_snapshot()
+        restored = SlotStore.from_snapshot(exported)
+        self.assertEqual(restored.export_snapshot(), exported)
+        self.assertEqual(
+            {
+                restored.slots[key].status
+                for key in slots
+                if key.startswith("status_")
+            },
+            {"missing", "candidate", "valid", "invalid", "conflict", "unresolved"},
+        )
+
+    def test_commit_transaction_canonicalizes_stale_default_string_type(self):
+        slots, unresolved, version = self.store.snapshot()
+        slots["water_depth"] = Slot("water_depth")
+        slots["water_depth"].value = 300.0
+        slots["water_depth"].status = "valid"
+        self.assertEqual(slots["water_depth"].value_type, "string")
+
+        self.store.commit_transaction(
+            slots,
+            unresolved,
+            expected_version=version,
+        )
+
+        self.assertEqual(slots["water_depth"].value_type, "string")
+        self.assertEqual(self.store.slots["water_depth"].value_type, "number")
+        exported = self.store.export_snapshot()
+        self.assertEqual(SlotStore.from_snapshot(exported).export_snapshot(), exported)
+
     # 5. Legacy V1 Migration Compatibility
     def test_legacy_v1_robot_specification_migration(self):
         # Case B: Legal legacy specification migrates to canonical equipment_type

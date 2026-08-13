@@ -131,8 +131,8 @@ class TestIssue12BusinessScenarios(unittest.TestCase):
 
     # 场景 6：观察级 ROV 完整级联
     def test_scenario_6_missing_spec_blocks_publish(self):
-        """场景 6：输入观察级 ROV (OBSROV--001) 4 级槽位均有效。"""
-        self._apply_updates({"equipment_unit_id": "OBSROV--001"}, task_type_key="pipeline_inspection")
+        """场景 6：输入观察级 ROV (OBSROV-75-001) 4 级槽位均有效。"""
+        self._apply_updates({"equipment_unit_id": "OBSROV-75-001"}, task_type_key="pipeline_inspection")
         slots = self.dm.slot_store.slots
 
         self.assertEqual(slots["equipment_class"].value, "observation_rov")

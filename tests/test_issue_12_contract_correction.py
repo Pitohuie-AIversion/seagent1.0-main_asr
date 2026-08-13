@@ -121,8 +121,8 @@ class TestIssue12ContractCorrection(unittest.TestCase):
         self.assertEqual(slots["equipment_family"].value, "水下无人自主航行器")
         self.assertEqual(slots["equipment_type"].value, "水下无人自主航行器 324CC")
 
-    # Scenario 8: Null HP model variants (light_work_class_rov, observation_rov) remain selectable
-    def test_null_hp_variant_selectable(self):
+    # Scenario 8: Powered light-work-class variant remains selectable
+    def test_powered_light_work_class_variant_selectable(self):
         self.dm._handle_equipment_updates_in_transaction(
             {"equipment_type": "轻型工作级深海机器人"},
             self.dm.slot_store.slots,
@@ -131,9 +131,9 @@ class TestIssue12ContractCorrection(unittest.TestCase):
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].value, "observation_rov")
         self.assertEqual(slots["equipment_family"].value, "轻型工作级深海机器人")
-        self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人 HP")
+        self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人 150HP")
         variant = self.kb.get_rov(slots["equipment_type"].value)
-        self.assertEqual(variant["variant_id"], "light_work_class_rov_hp")
+        self.assertEqual(variant["variant_id"], "light_work_class_rov_150hp")
 
     # Scenario 9: 4-level cascade forward completion
     def test_forward_cascade_completion(self):
@@ -197,15 +197,15 @@ class TestIssue12ContractCorrection(unittest.TestCase):
 
     # Scenario 15: Mutating equipment_unit_id does not clear parent fields
     def test_mutate_unit_id_preserves_parents(self):
-        self.dm._handle_equipment_updates_in_transaction({"equipment_unit_id": "LROV--001"}, self.dm.slot_store.slots, allow_overwrite=True)
-        self.dm._handle_equipment_updates_in_transaction({"equipment_unit_id": "LROV--002"}, self.dm.slot_store.slots, allow_overwrite=True)
+        self.dm._handle_equipment_updates_in_transaction({"equipment_unit_id": "LROV-150-001"}, self.dm.slot_store.slots, allow_overwrite=True)
+        self.dm._handle_equipment_updates_in_transaction({"equipment_unit_id": "LROV-150-002"}, self.dm.slot_store.slots, allow_overwrite=True)
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].value, "observation_rov")
         self.assertEqual(slots["equipment_family"].value, "轻型工作级深海机器人")
-        self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人 HP")
+        self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人 150HP")
         variant = self.kb.get_rov(slots["equipment_type"].value)
-        self.assertEqual(variant["variant_id"], "light_work_class_rov_hp")
-        self.assertEqual(slots["equipment_unit_id"].value, "LROV--002")
+        self.assertEqual(variant["variant_id"], "light_work_class_rov_150hp")
+        self.assertEqual(slots["equipment_unit_id"].value, "LROV-150-002")
 
     # Scenario 16: Conflict Fence
     def test_conflict_fence(self):

@@ -123,7 +123,7 @@ def _helper_setup_published_task(dm: DialogueManager, task_dir: Path, intent_id:
     slots["task_id"] = Slot("task_id", value="PI-20260810-001", status="valid", value_type="string")
     slots["equipment_class"] = Slot("equipment_class", value="观察级ROV", status="valid", value_type="string")
     slots["equipment_type"] = Slot("equipment_type", value="观察级深海机器人", status="valid", value_type="string")
-    slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV--001", status="valid", value_type="string")
+    slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV-75-001", status="valid", value_type="string")
     dm.slot_store.commit_transaction(slots, [])
     dm.task_state = dm.slot_store.get_task_state()
 
@@ -135,10 +135,17 @@ def _helper_setup_published_task(dm: DialogueManager, task_dir: Path, intent_id:
         "task_type": "pipeline_inspection",
         "task_type_key": "pipeline_inspection",
         "priority": 1,
-        "time": {"start": "now", "end": "now+1h"},
+        "time": {
+            "start": "2026-08-10T10:00:00+08:00",
+            "end": "2026-08-10T11:00:00+08:00",
+        },
         "location": {"oilfield": "A区", "water_depth_m": 300.0},
-        "task": {"type": "pipeline_inspection", "details": "管缆巡检"},
-        "equipment": {"robot_type": "observation_rov", "payload": [], "support_vessel": "Vessel1"},
+        "task": {"type": "pipeline_inspection", "details": {}},
+        "equipment": {
+            "robot_type": "observation_rov",
+            "payload": [],
+            "support_vessel": {"name": "Vessel1", "latitude": None, "longitude": None},
+        },
         "conditions": {"water_depth": 300.0},
     }
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -238,7 +245,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
             slots["task_id"] = Slot("task_id", value="PI-20260810-001", status="valid", value_type="string")
             slots["equipment_class"] = Slot("equipment_class", value="观察级ROV", status="valid", value_type="string")
             slots["equipment_type"] = Slot("equipment_type", value="观察级深海机器人", status="valid", value_type="string")
-            slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV--001", status="valid", value_type="string")
+            slots["equipment_unit_id"] = Slot("equipment_unit_id", value="OBSROV-75-001", status="valid", value_type="string")
             dm.slot_store.commit_transaction(slots, [])
             dm.task_state = dm.slot_store.get_task_state()
             dm.phase = "confirming"

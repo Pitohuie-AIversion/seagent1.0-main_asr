@@ -43,6 +43,7 @@ class FakeKnowledgeBaseForDefects:
                 "name": "流速状态监测-中",
                 "applies_to": ["all"],
                 "check_type": "current_velocity",
+                "thresholds": {"min_exclusive": 0.5, "max_inclusive": 0.8},
                 "violation_message": "流速中等 {current_velocity}",
                 "severity": "soft"
             },
@@ -51,6 +52,7 @@ class FakeKnowledgeBaseForDefects:
                 "name": "流速状态监测-高",
                 "applies_to": ["all"],
                 "check_type": "current_velocity",
+                "thresholds": {"min_exclusive": 0.8, "max_inclusive": 1.2},
                 "violation_message": "流速较高 {current_velocity}",
                 "severity": "soft"
             },
@@ -59,6 +61,7 @@ class FakeKnowledgeBaseForDefects:
                 "name": "流速状态监测-禁止",
                 "applies_to": ["all"],
                 "check_type": "current_velocity",
+                "thresholds": {"min_exclusive": 1.2},
                 "violation_message": "流速超限 {current_velocity}",
                 "severity": "hard"
             },
@@ -67,6 +70,7 @@ class FakeKnowledgeBaseForDefects:
                 "name": "环境信息已过期",
                 "applies_to": ["all"],
                 "check_type": "state_timestamp",
+                "thresholds": {"max_age_seconds": 3600},
                 "violation_message": "环境信息已过期 {update_timestamp}",
                 "severity": "soft"
             }

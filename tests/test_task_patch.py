@@ -23,6 +23,7 @@ from src.model_profile import (
     ModelProfileConfigError,
 )
 from src.dialogue_manager import DialogueManager
+from src.slot_store import Slot
 from tests.interaction_plan_support import make_plan
 
 
@@ -792,7 +793,13 @@ class TestFeatureFlag(unittest.TestCase):
         dm.extractor.extract_updates = MagicMock(return_value=bad_extraction)
         dm.task_type_key = "pipeline_inspection"
         dm.slot_store.commit_transaction(
-            {"task_type_key": MagicMock(value="pipeline_inspection", status="valid")},
+            {
+                "task_type_key": Slot(
+                    "task_type_key",
+                    value="pipeline_inspection",
+                    status="valid",
+                )
+            },
             [],
         )
 
@@ -817,7 +824,13 @@ class TestFeatureFlag(unittest.TestCase):
         dm.extractor.extract_updates = MagicMock(return_value=bad_extraction)
         dm.task_type_key = "pipeline_inspection"
         dm.slot_store.commit_transaction(
-            {"task_type_key": MagicMock(value="pipeline_inspection", status="valid")},
+            {
+                "task_type_key": Slot(
+                    "task_type_key",
+                    value="pipeline_inspection",
+                    status="valid",
+                )
+            },
             [],
         )
 
@@ -854,7 +867,13 @@ class TestFeatureFlag(unittest.TestCase):
         dm.extractor.extract_updates = MagicMock(return_value=bad_extraction)
         dm.task_type_key = "pipeline_inspection"
         dm.slot_store.commit_transaction(
-            {"task_type_key": MagicMock(value="pipeline_inspection", status="valid")},
+            {
+                "task_type_key": Slot(
+                    "task_type_key",
+                    value="pipeline_inspection",
+                    status="valid",
+                )
+            },
             [],
         )
 
