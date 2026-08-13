@@ -192,6 +192,105 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         self.assertNotEqual(res.overall_status, "validation_error")
         self.assertIsNone(res.error)
 
+    def test_publish_rejects_payload_unsupported_by_concrete_variant(self):
+        """最终 Unit 已确定时，发布闸门必须独立拒绝型号不支持的载荷。"""
+        task_state = {
+            "task_type_key": "pipeline_inspection",
+            "equipment_class": "auv",
+            "equipment_family": "水下无人自主航行器",
+            "equipment_type": "水下无人自主航行器 324CC",
+            "equipment_unit_id": "AUV-324cc-001",
+            "payload": ["电磁检测传感器"],
+        }
+
+        for purpose in ("preview", "publish", "runtime_execution"):
+            with self.subTest(purpose=purpose):
+                res = self.validator.validate_task(task_state, purpose=purpose)
+
+                self.assertEqual(res.overall_status, "validation_error")
+                self.assertIsNotNone(res.error)
+                self.assertEqual(
+                    res.error["code"],
+                    "ROBOT_SELECTION_NOT_FEASIBLE",
+                )
+                self.assertEqual(res.violations[0].constraint_id, "VAL_ERR")
+                self.assertEqual(res.violations[0].severity, "hard")
+                self.assertIsNone(res.state_snapshot)
+
+    def test_real_registry_recovers_variant_when_static_helper_omits_it(self):
+        """真实 KB 的 helper 漏 variant_id 时仍须由 canonical Unit 反推并拦载荷。"""
+        task_state = {
+            "task_type_key": "pipeline_inspection",
+            "equipment_unit_id": "AUV-324cc-001",
+            "payload": ["电磁检测传感器"],
+        }
+        original = self.kb.validate_robot_selection_from_task_state
+        try:
+            self.kb.validate_robot_selection_from_task_state = (
+                lambda *_args, **_kwargs: {"unit_id": "AUV-324cc-001"}
+            )
+            res = self.validator.validate_task(task_state, purpose="publish")
+        finally:
+            self.kb.validate_robot_selection_from_task_state = original
+
+        self.assertEqual(res.overall_status, "validation_error")
+        self.assertEqual(res.error["code"], "ROBOT_SELECTION_NOT_FEASIBLE")
+        self.assertEqual(
+            res.violations[0].related_fields,
+            ["payload", "equipment_type", "equipment_unit_id"],
+        )
+
+    def test_real_registry_rejects_helper_unit_variant_mismatch(self):
+        """坏 helper 不得用另一型号的能力替 canonical Unit 放行载荷。"""
+        task_state = {
+            "task_type_key": "pipeline_inspection",
+            "equipment_unit_id": "AUV-324cc-001",
+            "payload": ["电磁检测传感器"],
+        }
+        original = self.kb.validate_robot_selection_from_task_state
+        try:
+            self.kb.validate_robot_selection_from_task_state = (
+                lambda *_args, **_kwargs: {
+                    "unit_id": "AUV-324cc-001",
+                    "variant_id": "observation_rov_75hp",
+                }
+            )
+            res = self.validator.validate_task(task_state, purpose="publish")
+        finally:
+            self.kb.validate_robot_selection_from_task_state = original
+
+        self.assertEqual(res.overall_status, "validation_error")
+        self.assertEqual(res.error["code"], "STATIC_ROBOT_VALIDATOR_FAILURE")
+
+    def test_real_registry_rejects_helper_substituting_another_unit(self):
+        """坏 helper 不得用另一台内部自洽 Unit 的能力替换用户显式 Unit。"""
+        task_state = {
+            "task_type_key": "pipeline_inspection",
+            "equipment_unit_id": "AUV-324cc-001",
+            "payload": ["电磁检测传感器"],
+        }
+        original = self.kb.validate_robot_selection_from_task_state
+        try:
+            self.kb.validate_robot_selection_from_task_state = (
+                lambda *_args, **_kwargs: {
+                    "unit_id": "LROV-150-001",
+                    "variant_id": "light_work_class_rov_150hp",
+                }
+            )
+            for purpose in ("preview", "publish", "runtime_execution"):
+                with self.subTest(purpose=purpose):
+                    res = self.validator.validate_task(
+                        task_state,
+                        purpose=purpose,
+                    )
+                    self.assertEqual(res.overall_status, "validation_error")
+                    self.assertEqual(
+                        res.error["code"],
+                        "STATIC_ROBOT_VALIDATOR_FAILURE",
+                    )
+        finally:
+            self.kb.validate_robot_selection_from_task_state = original
+
     def test_publish_fails_closed_when_static_robot_validator_is_unavailable(self):
         """发布边界不能因降级 KB 缺少四级校验器而跳过静态关系校验。"""
 

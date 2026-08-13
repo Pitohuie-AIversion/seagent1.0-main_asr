@@ -846,6 +846,58 @@ class TestFeatureFlag(unittest.TestCase):
         self.assertIsNone(dm.final_result)
         self.assertNotEqual(dm.phase, "done")
 
+    def test_v2_malformed_candidate_shapes_do_not_mutate_slotstore(self):
+        """Schema 投影前必须原子拒绝非 dict、缺 key、非字符串 key。"""
+        malformed_candidates = (
+            "not-a-dict",
+            {
+                "normalized_value": 300,
+                "raw_value": "水深300米",
+                "confidence": 1.0,
+            },
+            {
+                "canonical_key": 123,
+                "normalized_value": 300,
+                "raw_value": "水深300米",
+                "confidence": 1.0,
+            },
+        )
+        for malformed in malformed_candidates:
+            with self.subTest(malformed=malformed):
+                dm = DialogueManager(llm=self._make_write_llm())
+                dm.extractor.extract_updates = MagicMock(
+                    return_value={
+                        "slot_candidates": [malformed],
+                        "list_mutations": [],
+                        "unresolved": [],
+                    }
+                )
+                dm.task_type_key = "pipeline_inspection"
+                dm.slot_store.commit_transaction(
+                    {
+                        "task_type_key": Slot(
+                            "task_type_key",
+                            value="pipeline_inspection",
+                            status="valid",
+                        )
+                    },
+                    [],
+                )
+                version_before = dm.slot_store.version
+                snapshot_before = copy.deepcopy(dm.slot_store.export_snapshot())
+
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=True,
+                ):
+                    with self.assertRaises(TaskPatchValidationError):
+                        dm.process("水深300米")
+
+                self.assertEqual(dm.slot_store.version, version_before)
+                self.assertEqual(dm.slot_store.export_snapshot(), snapshot_before)
+                self.assertIsNone(dm.final_result)
+                self.assertNotEqual(dm.phase, "done")
+
     def test_v2_missing_mutation_field_does_not_mutate_slotstore(self):
         dm = DialogueManager(llm=self._make_write_llm())
         bad_extraction = {

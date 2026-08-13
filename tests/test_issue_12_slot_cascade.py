@@ -1098,10 +1098,11 @@ class TestIssue12SlotCascade(unittest.TestCase):
                 )
 
                 slots = store.clone_slots()
-                payload_slot = slots["payload"]
-                payload_slot.value = ["电磁检测传感器"]
-                payload_slot.status = "candidate"
-                payload_slot.candidate_value = None
+                self.dm._apply_updates_in_transaction(
+                    {"payload": ["电磁检测传感器"]},
+                    slots,
+                    allow_overwrite=True,
+                )
                 self.dm._normalize_and_validate_in_transaction(
                     slots,
                     "pipeline_inspection",
@@ -1120,6 +1121,312 @@ class TestIssue12SlotCascade(unittest.TestCase):
                     slots["equipment_unit_id"].value,
                     "OBSROV-75-001",
                 )
+
+    def test_16o_task_switch_normalizes_payload_against_target_schema(self):
+        """同轮切换任务时，新任务字段必须按目标任务 Schema 归一化。"""
+        self.dm.slot_store.init_task_slots(
+            self.dm.builder.get_schema("pipeline_inspection", "normal")
+        )
+        slots = self.dm.slot_store.clone_slots()
+        slots["task_type_key"].value = "pipeline_inspection"
+        slots["task_type_key"].status = "valid"
+
+        self.dm._apply_updates_in_transaction(
+            {
+                "task_type_key": "pipeline_burial",
+                "payload": ["高压水射流喷冲埋设模块"],
+            },
+            slots,
+            allow_overwrite=True,
+        )
+        self.dm._normalize_and_validate_in_transaction(
+            slots,
+            "pipeline_burial",
+        )
+
+        self.assertEqual(slots["task_type_key"].value, "pipeline_burial")
+        self.assertEqual(slots["task_type_key"].status, "valid")
+        self.assertEqual(slots["payload"].status, "valid")
+        self.assertEqual(
+            slots["payload"].value,
+            ["高压水射流喷冲埋设模块"],
+        )
+
+    def test_16p_locked_task_switch_keeps_current_schema_for_payload(self):
+        """任务编号拒绝切类时，同轮字段仍按当前任务 Schema 独立校验。"""
+        self.dm.slot_store.init_task_slots(
+            self.dm.builder.get_schema("pipeline_inspection", "normal")
+        )
+        slots = self.dm.slot_store.clone_slots()
+        slots["task_type_key"].value = "pipeline_inspection"
+        slots["task_type_key"].status = "valid"
+        slots["task_type"].value = "管缆巡检"
+        slots["task_type"].status = "valid"
+        slots["task_id"].value = "PI-20260813-001"
+        slots["task_id"].status = "valid"
+        slots["task_id"].source = "auto_reserved"
+        slots["payload"].value = ["电磁检测传感器"]
+        slots["payload"].status = "valid"
+        slots["water_depth"].value = 100.0
+        slots["water_depth"].status = "valid"
+        self.dm._normalize_and_validate_in_transaction(
+            slots,
+            "pipeline_inspection",
+        )
+
+        self.dm._apply_updates_in_transaction(
+            {
+                "task_type_key": "pipeline_burial",
+                "payload": ["高压水射流喷冲埋设模块"],
+                "water_depth": 321.0,
+            },
+            slots,
+            allow_overwrite=True,
+        )
+
+        self.assertEqual(slots["task_type_key"].value, "pipeline_inspection")
+        self.assertEqual(slots["task_type_key"].status, "valid")
+        self.assertIn("任务编号已锁定", slots["task_type_key"].validation_error)
+        self.assertEqual(slots["task_type"].value, "管缆巡检")
+        self.assertEqual(slots["task_id"].value, "PI-20260813-001")
+        self.assertEqual(slots["water_depth"].value, 321.0)
+        self.assertEqual(slots["water_depth"].status, "candidate")
+        self.assertEqual(slots["payload"].value, ["电磁检测传感器"])
+        self.assertEqual(slots["payload"].status, "conflict")
+        self.assertEqual(
+            slots["payload"].candidate_value,
+            ["高压水射流喷冲埋设模块"],
+        )
+        self.assertIsNotNone(slots["payload"].validation_error)
+
+        # Production performs the regular second-stage reconciliation after
+        # applying updates. It may derive robot slots from the still-valid old
+        # facts, but it must not revive the rejected burial payload.
+        self.dm._normalize_and_validate_in_transaction(
+            slots,
+            slots["task_type_key"].value,
+        )
+        self.assertEqual(slots["task_type_key"].value, "pipeline_inspection")
+        self.assertEqual(slots["task_type"].value, "管缆巡检")
+        self.assertEqual(slots["task_id"].value, "PI-20260813-001")
+        self.assertEqual(slots["water_depth"].value, 321.0)
+        self.assertEqual(slots["water_depth"].status, "valid")
+        self.assertEqual(slots["payload"].value, ["电磁检测传感器"])
+        self.assertEqual(slots["payload"].status, "conflict")
+
+    def test_16pa_task_type_key_display_value_uses_target_schema(self):
+        """task_type_key 的中文任务值与实际 handler 使用同一解析规则。"""
+        self.dm.slot_store.init_task_slots(
+            self.dm.builder.get_schema("pipeline_inspection", "normal")
+        )
+        slots = self.dm.slot_store.clone_slots()
+        slots["task_type_key"].value = "pipeline_inspection"
+        slots["task_type_key"].status = "valid"
+
+        self.dm._apply_updates_in_transaction(
+            {
+                "task_type_key": "管缆埋设",
+                "payload": ["高压水射流喷冲埋设模块"],
+            },
+            slots,
+            allow_overwrite=True,
+        )
+        self.dm._normalize_and_validate_in_transaction(
+            slots,
+            slots["task_type_key"].value,
+        )
+
+        self.assertEqual(slots["task_type_key"].value, "pipeline_burial")
+        self.assertEqual(slots["task_type"].value, "管缆埋设")
+        self.assertEqual(slots["payload"].status, "valid")
+        self.assertEqual(
+            slots["payload"].value,
+            ["高压水射流喷冲埋设模块"],
+        )
+
+    def test_16pb_conflicting_task_selectors_reject_turn_atomically(self):
+        """同轮 task_type 与 task_type_key 指向不同任务时不得按顺序部分提交。"""
+        self.dm.slot_store.init_task_slots(
+            self.dm.builder.get_schema("pipeline_inspection", "normal")
+        )
+        slots = self.dm.slot_store.clone_slots()
+        slots["task_type_key"].value = "pipeline_inspection"
+        slots["task_type_key"].status = "valid"
+        slots["task_type"].value = "管缆巡检"
+        slots["task_type"].status = "valid"
+        before = {
+            key: copy.deepcopy(slot.to_dict())
+            for key, slot in slots.items()
+        }
+
+        self.dm._apply_updates_in_transaction(
+            {
+                "task_type": "采油树控制面板插入",
+                "task_type_key": "pipeline_burial",
+                "payload": ["高压水射流喷冲埋设模块"],
+            },
+            slots,
+            allow_overwrite=True,
+        )
+
+        self.assertEqual(slots["task_type_key"].value, "pipeline_inspection")
+        self.assertIn("互相冲突", slots["task_type_key"].validation_error)
+        for key, slot in slots.items():
+            if key == "task_type_key":
+                continue
+            self.assertEqual(slot.to_dict(), before[key], key)
+
+    def test_16pc_conflicting_concrete_task_values_are_order_independent(self):
+        """同一类别的插入/拔出冲突也必须在任何写入前拒绝。"""
+        cases = (
+            (
+                ("task_type", "采油树控制面板插入"),
+                ("task_type_key", "采油树控制面板拔出"),
+            ),
+            (
+                ("task_type_key", "采油树控制面板拔出"),
+                ("task_type", "采油树控制面板插入"),
+            ),
+        )
+        for ordered_items in cases:
+            with self.subTest(order=ordered_items):
+                self.dm.slot_store.init_task_slots(
+                    self.dm.builder.get_schema("pipeline_inspection", "normal")
+                )
+                slots = self.dm.slot_store.clone_slots()
+                slots["task_type_key"].value = "pipeline_inspection"
+                slots["task_type_key"].status = "valid"
+                slots["task_type"].value = "管缆巡检"
+                slots["task_type"].status = "valid"
+                before_task_type = slots["task_type"].to_dict()
+
+                self.dm._apply_updates_in_transaction(
+                    dict(ordered_items),
+                    slots,
+                    allow_overwrite=True,
+                )
+
+                self.assertEqual(
+                    slots["task_type_key"].value,
+                    "pipeline_inspection",
+                )
+                self.assertIn(
+                    "具体任务类型互相冲突",
+                    slots["task_type_key"].validation_error,
+                )
+                self.assertEqual(
+                    slots["task_type"].to_dict(),
+                    before_task_type,
+                )
+
+    def test_16q_list_mutation_ignores_nonvalid_variant_context(self):
+        """列表增量的 fallback 也只能使用 valid 机器人型号。"""
+        store = SlotStore(kb=self.kb)
+        required_schema = self.dm.builder.get_schema(
+            "pipeline_inspection",
+            "normal",
+        )
+        store.init_task_slots(required_schema)
+        slots = store.clone_slots()
+        slots["task_type_key"].value = "pipeline_inspection"
+        slots["task_type_key"].status = "valid"
+        variants = (
+            Slot(
+                "equipment_type",
+                value="水下无人自主航行器 324CC",
+                status="candidate",
+                source="user_input",
+                candidate_value="水下无人自主航行器 324CC",
+            ),
+            Slot(
+                "equipment_type",
+                value="水下无人自主航行器 324CC",
+                status="conflict",
+                source="user_input",
+                candidate_value="观察级深海机器人 75HP",
+                validation_error="等待用户确认型号修改",
+            ),
+        )
+
+        for variant in variants:
+            with self.subTest(status=variant.status):
+                case_slots = copy.deepcopy(slots)
+                case_slots["equipment_type"] = copy.deepcopy(variant)
+                before_variant = case_slots["equipment_type"].to_dict()
+
+                result = store.apply_list_mutation(
+                    case_slots,
+                    {
+                        "field": "payload",
+                        "operation": "add",
+                        "items": ["电磁检测传感器"],
+                        "raw_text": "添加电磁检测传感器",
+                        "confidence": 1.0,
+                        "source": "user_input",
+                    },
+                    required_schema=required_schema,
+                    payload_catalog=self.kb.assets.get("payload_catalog", {}),
+                )
+
+                self.assertTrue(result["success"])
+                self.assertTrue(result["changed"])
+                self.assertEqual(case_slots["payload"].status, "candidate")
+                self.assertEqual(
+                    case_slots["payload"].value,
+                    ["电磁检测传感器"],
+                )
+                self.assertIsNone(case_slots["payload"].validation_error)
+                self.assertEqual(
+                    case_slots["equipment_type"].to_dict(),
+                    before_variant,
+                )
+
+    def test_16r_candidate_task_type_cannot_authorize_robot_selection(self):
+        """未确认的任务类型不构成 capability/registry 选型上下文。"""
+        slots = self.dm.slot_store.clone_slots()
+        slots["task_type_key"].value = "pipeline_inspection"
+        slots["task_type_key"].status = "candidate"
+
+        self.dm._apply_updates_in_transaction(
+            {"equipment_unit_id": "OBSROV-75-001"},
+            slots,
+            allow_overwrite=True,
+        )
+
+        self.assertEqual(slots["task_type_key"].status, "candidate")
+        for key in (
+            "equipment_class",
+            "equipment_family",
+            "equipment_type",
+            "equipment_unit_id",
+        ):
+            self.assertNotEqual(slots[key].status, "valid", key)
+
+    def test_16s_oilfield_linker_ignores_nonvalid_coordinate_context(self):
+        """候选/冲突坐标不得参与油田实体规范化打分。"""
+        for status in ("candidate", "conflict", "invalid"):
+            with self.subTest(status=status):
+                slots = self.dm.slot_store.clone_slots()
+                slots["start_point"] = Slot(
+                    "start_point",
+                    value={"lat": 19.5, "lon": 115.5},
+                    status=status,
+                    candidate_value={"lat": 20.0, "lon": 116.0},
+                    validation_error=(
+                        "等待用户确认坐标" if status != "candidate" else None
+                    ),
+                )
+                self.dm.oilfield_linker.link = MagicMock(
+                    wraps=self.dm.oilfield_linker.link,
+                )
+
+                self.dm._link_oilfield_update_in_transaction(
+                    {"oilfield_name": "流花"},
+                    slots,
+                )
+
+                _, coords = self.dm.oilfield_linker.link.call_args.args
+                self.assertIsNone(coords)
 
     def test_16h_restore_rejects_fuzzy_unit_substrings_atomically(self):
         """只有显式 Registry alias 可迁移，模糊 Unit 片段必须拒绝。"""
@@ -1248,36 +1555,60 @@ class TestIssue12SlotCascade(unittest.TestCase):
 
     def test_19_equipment_type_change_clears_unit_and_name(self):
         """19. equipment_type 合法变化时清空 unit_id 和 name。"""
-        self._apply_updates({"equipment_unit_id": "WROV-250-001"})
+        self._apply_updates(
+            {"equipment_unit_id": "WROV-250-001"},
+            task_type_key="tree_valve_operation",
+        )
         self.assertEqual(self.dm.slot_store.slots["equipment_unit_id"].value, "WROV-250-001")
 
-        self._apply_updates({"equipment_type": "通用工作级深海机器人 250HP"})
+        self._apply_updates(
+            {"equipment_type": "通用工作级深海机器人 250HP"},
+            task_type_key="tree_valve_operation",
+        )
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_type"].value, "通用工作级深海机器人 250HP")
 
     def test_20_same_parent_value_recommitted_does_not_clear_downstream(self):
         """20. 相同 parent 值重复提交不清空下级有效槽位。"""
-        self._apply_updates({"equipment_unit_id": "WROV-250-001"})
+        self._apply_updates(
+            {"equipment_unit_id": "WROV-250-001"},
+            task_type_key="tree_valve_operation",
+        )
         unit_before = self.dm.slot_store.slots["equipment_unit_id"].value
 
-        self._apply_updates({"equipment_family": "通用工作级深海机器人"})
+        self._apply_updates(
+            {"equipment_family": "通用工作级深海机器人"},
+            task_type_key="tree_valve_operation",
+        )
         self.assertEqual(self.dm.slot_store.slots["equipment_unit_id"].value, unit_before)
 
     def test_21_unknown_class_does_not_clear_existing_cascade(self):
         """21. 未知 class 输入标记 invalid/conflict，不清空原有的已确认级联。"""
-        self._apply_updates({"equipment_unit_id": "WROV-250-001"})
+        self._apply_updates(
+            {"equipment_unit_id": "WROV-250-001"},
+            task_type_key="tree_valve_operation",
+        )
         fam_before = self.dm.slot_store.slots["equipment_family"].value
 
-        self._apply_updates({"equipment_class": "未知太空飞船"})
+        self._apply_updates(
+            {"equipment_class": "未知太空飞船"},
+            task_type_key="tree_valve_operation",
+        )
         self.assertIn(self.dm.slot_store.slots["equipment_class"].status, ("invalid", "conflict"))
         self.assertEqual(self.dm.slot_store.slots["equipment_family"].value, fam_before)
 
     def test_22_unknown_family_does_not_clear_existing_cascade(self):
         """22. 未知 family 输入标记 invalid/conflict，不清空原有的已确认级联。"""
-        self._apply_updates({"equipment_unit_id": "WROV-250-001"})
+        self._apply_updates(
+            {"equipment_unit_id": "WROV-250-001"},
+            task_type_key="tree_valve_operation",
+        )
         unit_before = self.dm.slot_store.slots["equipment_unit_id"].value
 
-        self._apply_updates({"equipment_family": "未知系列"})
+        self._apply_updates(
+            {"equipment_family": "未知系列"},
+            task_type_key="tree_valve_operation",
+        )
         self.assertIn(self.dm.slot_store.slots["equipment_family"].status, ("invalid", "conflict"))
         self.assertEqual(self.dm.slot_store.slots["equipment_unit_id"].value, unit_before)
 
@@ -1336,19 +1667,27 @@ class TestIssue12SlotCascade(unittest.TestCase):
         self.assertEqual(slots["equipment_unit_id"].value, "AUV-324cc-001")
 
     def test_28_inconsistent_same_turn_combination_rejects_child(self):
-        """28. 同轮提交中 family 不属于 class 时，下级被标记 invalid，不得产生混合状态。"""
+        """28. 同轮 class/family 组合不合法时原子拒绝，不得产生半提交状态。"""
         updates = {
             "equipment_class": "auv",
             "equipment_family": "通用工作级深海机器人",  # belongs to work_class_rov
         }
-        self._apply_updates(updates)
+        self._apply_updates(updates, task_type_key="pipeline_inspection")
         slots = self.dm.slot_store.slots
-        self.assertEqual(slots["equipment_class"].value, "auv")
+        self.assertIsNone(slots["equipment_class"].value)
+        self.assertEqual(slots["equipment_class"].status, "missing")
         self.assertEqual(slots["equipment_family"].status, "invalid")
+        self.assertEqual(
+            slots["equipment_family"].candidate_value,
+            "通用工作级深海机器人",
+        )
 
     def test_29_no_hybrid_new_class_and_old_family_state(self):
         """29. 不得出现新 class + 旧 family/type/unit 的混合残余提交。"""
-        self._apply_updates({"equipment_unit_id": "WROV-250-001"})
+        self._apply_updates(
+            {"equipment_unit_id": "WROV-250-001"},
+            task_type_key="tree_valve_operation",
+        )
         self._apply_updates({"equipment_class": "cable_burial_robot"}, task_type_key="pipeline_burial")
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].value, "cable_burial_robot")
@@ -1360,7 +1699,10 @@ class TestIssue12SlotCascade(unittest.TestCase):
 
     def test_30_legacy_equipment_type_populates_canonical_slots(self):
         """30. 提交 equipment_type 时，能够自动补全 canonical equipment_class 与 equipment_family。"""
-        self._apply_updates({"equipment_type": "通用工作级深海机器人 250HP"})
+        self._apply_updates(
+            {"equipment_type": "通用工作级深海机器人 250HP"},
+            task_type_key="tree_valve_operation",
+        )
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].value, "work_class_rov")
         self.assertEqual(slots["equipment_family"].value, "通用工作级深海机器人")
@@ -1368,7 +1710,10 @@ class TestIssue12SlotCascade(unittest.TestCase):
 
     def test_31_auv_equipment_type_populates_family(self):
         """31. AUV equipment_type 自动补全 family 及 class。"""
-        self._apply_updates({"equipment_type": "水下无人自主航行器 324CC"})
+        self._apply_updates(
+            {"equipment_type": "水下无人自主航行器 324CC"},
+            task_type_key="pipeline_inspection",
+        )
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].value, "auv")
         self.assertEqual(slots["equipment_family"].value, "水下无人自主航行器")
@@ -1376,14 +1721,20 @@ class TestIssue12SlotCascade(unittest.TestCase):
 
     def test_32_non_auv_equipment_type_populates_family(self):
         """32. 非 AUV equipment_type 自动补全 family 及 class。"""
-        self._apply_updates({"equipment_type": "通用工作级深海机器人 250HP"})
+        self._apply_updates(
+            {"equipment_type": "通用工作级深海机器人 250HP"},
+            task_type_key="tree_valve_operation",
+        )
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].value, "work_class_rov")
         self.assertEqual(slots["equipment_family"].value, "通用工作级深海机器人")
 
     def test_33_equipment_type_change_clears_old_unit_id(self):
         """33. equipment_type 变化继续触发清空旧 unit_id 与 equipment_name。"""
-        self._apply_updates({"equipment_unit_id": "WROV-250-001"})
+        self._apply_updates(
+            {"equipment_unit_id": "WROV-250-001"},
+            task_type_key="tree_valve_operation",
+        )
         self.assertEqual(self.dm.slot_store.slots["equipment_unit_id"].value, "WROV-250-001")
 
         self._apply_updates({"equipment_type": "轻型工作级深海机器人 150HP"}, task_type_key="pipeline_inspection")
@@ -1408,7 +1759,10 @@ class TestIssue12SlotCascade(unittest.TestCase):
 
     def test_34_direct_unit_input_populates_full_canonical_cascade(self):
         """34. 现有 unit 输入成功后反填完整 canonical 级联 (class, family, type, unit_id, name)。"""
-        self._apply_updates({"equipment_unit_id": "WROV-250-001"})
+        self._apply_updates(
+            {"equipment_unit_id": "WROV-250-001"},
+            task_type_key="tree_valve_operation",
+        )
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].value, "work_class_rov")
         self.assertEqual(slots["equipment_family"].value, "通用工作级深海机器人")

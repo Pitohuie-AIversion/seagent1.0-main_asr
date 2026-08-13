@@ -305,6 +305,56 @@ class SlotConsistencyTest(unittest.TestCase):
         self.assertEqual(result["unresolved"], [])
         self.assertEqual(llm.extract_json.call_count, 2)
 
+    def test_extractor_preserves_conflicting_duplicate_task_selectors(self):
+        """Task selector conflicts must survive normalization for DM preflight."""
+        builder = OutputBuilder(self.kb)
+        required = builder.get_required(
+            "tree_valve_operation",
+            task_state={"task_type_key": "tree_valve_operation"},
+        )
+        llm = MagicMock(spec=LLMClient)
+        llm.extract_json.return_value = {
+            "slot_candidates": [
+                {
+                    "raw_key": "任务类型",
+                    "canonical_key": "task_type",
+                    "raw_value": "插入",
+                    "normalized_value": "采油树控制面板插入",
+                    "confidence": 1.0,
+                },
+                {
+                    "raw_key": "任务类型",
+                    "canonical_key": "task_type",
+                    "raw_value": "拔出",
+                    "normalized_value": "采油树控制面板拔出",
+                    "confidence": 1.0,
+                },
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+
+        result = ParameterExtractor(llm).extract_updates(
+            "插入还是拔出",
+            {"task_type_key": "tree_valve_operation"},
+            task_type_key="tree_valve_operation",
+            task_type_map=self.kb.get_task_type_map(),
+            required=required,
+        )
+
+        values = [
+            item["normalized_value"]
+            for item in result["slot_candidates"]
+            if item["canonical_key"] == "task_type"
+        ]
+        self.assertEqual(
+            values,
+            ["采油树控制面板插入", "采油树控制面板拔出"],
+        )
+        self.assertTrue(
+            any("同轮具体任务类型互相冲突" in item for item in result["unresolved"])
+        )
+
     def test_confirmation_publish_skips_parameter_extraction(self):
         self.dm.phase = "confirming"
         self.llm.extract_json.reset_mock()

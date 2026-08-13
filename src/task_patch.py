@@ -34,6 +34,7 @@ def _source_for_resolution_method(resolution_method: str | None) -> str:
         "alias_exact": "alias_mapping",
         "llm_semantic": "llm_semantic_match",
         "type_normalization": "user_input",
+        "visible_ordinal_selection": "assistant_option_selection",
     }
     return source_map.get(resolution_method, "user_input")
 

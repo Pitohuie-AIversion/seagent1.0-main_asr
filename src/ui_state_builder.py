@@ -57,7 +57,7 @@ _PHASE_ACTIONS: dict = {
         "can_cancel": True,
     },
     "done": {
-        "can_send": False,
+        "can_send": True,
         "can_modify": False,
         "can_confirm": False,
         "can_ignore_soft_warning": False,
@@ -65,7 +65,7 @@ _PHASE_ACTIONS: dict = {
         "can_cancel": False,
     },
     "rejected": {
-        "can_send": False,
+        "can_send": True,
         "can_modify": False,
         "can_confirm": False,
         "can_ignore_soft_warning": False,
@@ -87,8 +87,8 @@ _NORMAL_CHAT_ACTIONS: dict = {
 def _compute_actions(phase: str, dialogue_mode: str) -> dict:
     """
     根据 phase 和 dialogue_mode 计算当前允许的操作集合。
-    核心规则（P1-1 修复）：
-    如果任务处于终态（done / rejected），无论本轮对话模式为何，全面禁用交互。
+    终态发布物仍保持只读，但不关闭对话输入；后端允许 READ/CLARIFY，
+    后续 WRITE 则沿安全事务创建新草稿，不覆盖原发布物。
     """
     if phase in ("done", "rejected"):
         return dict(_PHASE_ACTIONS[phase])
@@ -99,8 +99,7 @@ def _compute_actions(phase: str, dialogue_mode: str) -> dict:
 
 def _compute_read_only(phase: str, dialogue_mode: str = "task_collection") -> bool:
     """
-    核心规则（P1-1 修复）：
-    只要任务进入终态（done / rejected），无论本轮 dialogue_mode 是什么，均严格为只读。
+    只要任务进入终态（done / rejected），任务对象均严格为只读。
     """
     return phase in ("done", "rejected")
 

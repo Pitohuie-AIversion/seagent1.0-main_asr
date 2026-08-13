@@ -91,6 +91,7 @@ from .slot_store import (
     SnapshotValidationError,
     ValidationAcknowledgement,
     normalize_slot_value_type,
+    reset_slot_to_missing,
     validate_specification_object,
     validate_specification_selector_input,
 )
@@ -99,6 +100,11 @@ from .exceptions import TaskPersistenceError, IntentIdConflict, IdReservationErr
 from .intent_router import IntentRouter, IntentRouteResult
 from .task_request_guard import analyze_task_request
 from .result_paths import get_task_dir
+from .visible_selection_provenance import (
+    build_candidate_terms,
+    parse_ordinal_reference,
+    visible_ordinal_matches_candidate,
+)
 
 
 HARD_REFUSAL_LIMIT = 4   # 连续拒绝上限
@@ -138,6 +144,25 @@ ROBOT_CASCADE_FIELDS = {
     "equipment_family",
     "equipment_type",
     "equipment_unit_id",
+}
+OILFIELD_CONTEXT_FIELDS = {
+    "oilfield_name",
+    "oilfield_coordinates",
+    "raw_oilfield_name",
+    "oilfield_match_status",
+    "oilfield_match_confidence",
+    "oilfield_match_evidence",
+    "oilfield_match_candidates",
+    "oilfield_entity_id",
+    "pending_oilfield_name",
+    "pending_oilfield_candidates",
+}
+TASK_TRANSITION_NON_INHERITED_FIELDS = {
+    "task_type",
+    "payload",
+    "equipment_name",
+    *ROBOT_CASCADE_FIELDS,
+    *OILFIELD_CONTEXT_FIELDS,
 }
 
 # 软约束忽略关键词
@@ -415,8 +440,10 @@ class DialogueManager:
             reply = self._handle_knowledge_query(user_message, route, request_id)
         elif query_intent in ("TASK_STATUS", "DEVICE_STATUS", "ENVIRONMENT_QUERY"):
             reply = self._handle_status_query(user_message, route)
-        elif query_intent in ("GENERAL_CHAT", "CLARIFICATION"):
+        elif query_intent == "GENERAL_CHAT":
             reply = self._handle_general_chat(user_message, route)
+        elif query_intent == "CLARIFICATION":
+            reply = self._handle_clarification(user_message, route)
         elif query_intent == "UNKNOWN":
             reply = self._handle_unknown_intent(user_message, route)
         else:
@@ -492,7 +519,11 @@ class DialogueManager:
             None,
         )
 
-    def _build_grounded_recommendation(self, route: IntentRouteResult) -> str | None:
+    def _build_grounded_recommendation(
+        self,
+        route: IntentRouteResult,
+        user_message: str | None = None,
+    ) -> str | None:
         """把模型的推荐选择约束到当前待填字段的配置候选中。
 
         设计原则：
@@ -520,12 +551,51 @@ class DialogueManager:
             # 当前任务阶段无合法候选（字段尚未解析或不在缺失列表中），不拦截
             return None
 
+        # OutputBuilder.build() 的 missing_fields 只承担确定性完整性校验，运行时
+        # 不携带候选描述。推荐属于只读语义判断：从同一 task_state 下的权威 schema
+        # 补齐别名和候选证据，但保留原 missing field 的 allowed_values 作为最终边界。
+        semantic_field_def = dict(field_def or {})
+        task_type_key = self.task_state.get("task_type_key")
+        if task_type_key:
+            required = self.builder.get_required(
+                task_type_key,
+                self.mode,
+                self.task_state,
+            )
+            authoritative = next(
+                (
+                    item
+                    for item in required
+                    if isinstance(item, dict) and item.get("key") == target_key
+                ),
+                {},
+            )
+            allowed_set = set(allowed_values)
+            for evidence_key in (
+                "alias_mappings",
+                "ambiguous_aliases",
+                "candidate_evidence",
+            ):
+                value = authoritative.get(evidence_key)
+                if evidence_key == "candidate_evidence" and isinstance(value, list):
+                    value = [
+                        item
+                        for item in value
+                        if isinstance(item, dict)
+                        and item.get("canonical_value") in allowed_set
+                    ]
+                if value:
+                    semantic_field_def[evidence_key] = value
+        semantic_field_def["allowed_values"] = allowed_values
+
         selected = plan.subject_text
         task_name = self.task_state.get("task_type") or self.task_state.get("task_type_key")
         task_prefix = f"针对当前【{task_name}】任务，" if task_name else ""
 
-        # 优先采用 LLM 推荐值（精确匹配配置候选）
-        if selected and selected in allowed_values:
+        # 兼容直接调用：没有用户原句时，模型初选若已是合法候选可直接使用。
+        # 真实对话中则必须结合用户原句和候选证据复核，避免 TurnPlanner 在缺少
+        # 候选说明时碰巧输出一个合法、但并不符合用户偏好的枚举值。
+        if not user_message and selected and selected in allowed_values:
             chosen = selected
             return (
                 f"{task_prefix}我明确推荐{label}【{chosen}】。"
@@ -533,36 +603,59 @@ class DialogueManager:
                 "本轮仅提供建议，尚未写入任务。若接受，请确认采用该选择。"
             )
 
-        # LLM 推荐的名称与配置不匹配（幻觉或别名），从合法候选中直接给出推荐。
-        # 记录实际不匹配情况以便诊断。
-        if selected:
-            logger.info(
-                "[GROUNDED_RECOMMEND] LLM subject_text=%r 不在合法%s候选中，"
-                "将直接从配置候选推荐。allowed=%r",
-                selected, label, allowed_values,
-            )
-
         if len(allowed_values) == 1:
-            # 唯一候选，直接推荐
             chosen = allowed_values[0]
             return (
                 f"{task_prefix}当前任务的{label}唯一合法选项为【{chosen}】，"
                 "本轮建议采用该值，尚未写入任务。若接受，请确认采用该选择。"
             )
-        else:
-            # 多个合法候选，列出供用户选择，并推荐第一个作为默认建议
-            first = allowed_values[0]
-            candidates = "、".join(map(str, allowed_values))
-            return (
-                f"{task_prefix}当前任务允许的{label}选项有：{candidates}。\n"
-                f"如无特殊要求，建议选择【{first}】。"
-                "本轮仅提供建议，尚未写入任务。若接受，请确认采用该选择；"
-                "若需其他选项，请直接告知。"
+
+        # 有原始用户表达时以它为唯一偏好证据；TurnPlanner 初选可能缺少候选说明，
+        # 把它再次塞给消歧模型反而会制造冲突。仅在没有原句的兼容调用中使用初选。
+        semantic_input = user_message or selected or ""
+        if semantic_input:
+            chosen = self.extractor.resolve_allowed_candidate(
+                semantic_input,
+                target_key,
+                semantic_field_def,
+                current_state=self.task_state,
+                conversation_history=self.conversation_history,
             )
+            if chosen in allowed_values:
+                return (
+                    f"{task_prefix}我明确推荐{label}【{chosen}】。"
+                    "该建议由模型结合当前合法候选及候选证据完成语义匹配；"
+                    "本轮仅提供建议，尚未写入任务。若接受，请确认采用该选择。"
+                )
+            # 用户没有给出足以区分候选的偏好时，允许 TurnPlanner 在合法域内
+            # 直接做一次语义选择。这不是按列表顺序默认；selected 必须是模型明确
+            # 输出且仍属于当前 allowed_values。包含明确偏好时，上面的证据解析优先。
+            if selected in allowed_values:
+                return (
+                    f"{task_prefix}我明确推荐{label}【{selected}】。"
+                    "该值是模型在当前任务合法候选域内给出的选择；"
+                    "本轮仅提供建议，尚未写入任务。若接受，请确认采用该选择。"
+                )
+            logger.info(
+                "[GROUNDED_RECOMMEND] subject_text=%r 无法唯一映射到合法%s候选，"
+                "allowed=%r",
+                selected,
+                label,
+                allowed_values,
+            )
+
+        # 多候选仍无法消歧时只展示权威候选，不用列表顺序伪造推荐。
+        candidates = "、".join(map(str, allowed_values))
+        return (
+            f"{task_prefix}当前任务允许的{label}选项有：{candidates}。\n"
+            "目前信息不足以可靠推荐其中一个，请补充偏好或作业侧重点。"
+            "本轮尚未写入任务。"
+        )
 
     def _resolve_project_robot_classes(self, text: str) -> list[tuple[str, str]]:
         """仅依据 robot_fleet 配置识别文本中明确提到的机器人类别。"""
-        compact = str(text or "").lower().replace(" ", "")
+        raw_text = str(text or "")
+        compact = raw_text.lower().replace(" ", "")
         matched: set[str] = set()
         classes = self.kb.get_robot_classes()
 
@@ -574,6 +667,27 @@ class DialogueManager:
                 if name
             ):
                 matched.add(class_id)
+
+        # “ROV”是类别族称而不是某个固定 class。仅当当前任务的权威可行域中
+        # 恰好存在一个 ROV class 时才消歧，避免在全局多类别下武断映射。
+        if re.search(r"(?<![A-Za-z0-9_])ROV(?![A-Za-z0-9_])", raw_text, re.IGNORECASE):
+            task_type_key = self.task_state.get("task_type_key")
+            if task_type_key:
+                domain = self.kb.get_feasible_robot_selection_domain(
+                    task_type_key,
+                    self.task_state,
+                )
+                rov_classes = [
+                    node.get("class_id")
+                    for node in domain.get("classes", [])
+                    if node.get("class_id") in classes
+                    and (
+                        str(node.get("class_id")).endswith("_rov")
+                        or "ROV" in str(classes[node.get("class_id")].get("full_name") or "")
+                    )
+                ]
+                if len(rov_classes) == 1:
+                    matched.add(rov_classes[0])
 
         for family in self.kb.robot_fleet.get("robot_families", {}).values():
             class_id = family.get("robot_class")
@@ -615,6 +729,54 @@ class DialogueManager:
             return None
 
         templates = self.kb.task_schemas.get("task_templates", {})
+        task_type_key = self.task_state.get("task_type_key")
+
+        if plan.relation == "compare" and len(mentioned) >= 2 and task_type_key:
+            required = self.builder.get_required(
+                task_type_key,
+                self.mode,
+                self.task_state,
+            )
+            class_field = next(
+                (field for field in required if field.get("key") == "equipment_class"),
+                {},
+            )
+            evidence_by_name = {
+                item.get("canonical_value"): item
+                for item in class_field.get("candidate_evidence", [])
+                if item.get("canonical_value")
+            }
+            results = [
+                {
+                    "class_id": class_id,
+                    "full_name": class_name,
+                    "candidate_evidence": evidence_by_name.get(class_name, {}),
+                }
+                for class_id, class_name in mentioned
+            ]
+            messages = build_knowledge_responder_messages(
+                {
+                    "found": True,
+                    "query_type": "DEVICE_CAPABILITY",
+                    "query_mode": "device_class_compare",
+                    "relation": "compare",
+                    "task_type": self.task_state.get("task_type") or task_type_key,
+                    "results": results,
+                },
+                self.conversation_history,
+                user_message,
+            )
+            reply = self._safe_llm_chat(
+                messages,
+                temperature=0.1,
+                role=ModelRole.KNOWLEDGE_QA,
+            )
+            if reply and reply.strip():
+                return self._safe_llm_filter_reply(
+                    reply,
+                    role=ModelRole.FILTER_REPLY,
+                )
+
         lines = ["依据项目配置："]
         for class_id, class_name in mentioned:
             supported_tasks: list[str] = []
@@ -661,7 +823,10 @@ class DialogueManager:
         route: IntentRouteResult,
         request_id: str = "req_default",
     ) -> str:
-        grounded_recommendation = self._build_grounded_recommendation(route)
+        grounded_recommendation = self._build_grounded_recommendation(
+            route,
+            user_message=user_message,
+        )
         if grounded_recommendation is not None:
             return grounded_recommendation
 
@@ -671,6 +836,15 @@ class DialogueManager:
         )
         if grounded_class_answer is not None:
             return grounded_class_answer
+
+        plan = route.interaction_plan
+        if (
+            plan is not None
+            and plan.source_policy == "general_domain"
+            and plan.subject_type in {"general_concept", "unknown"}
+            and plan.relation != "status"
+        ):
+            return self._handle_general_chat(user_message, route)
 
         context = {
             "task_type_key": self.task_state.get("task_type_key"),
@@ -683,7 +857,6 @@ class DialogueManager:
             "user_requirements": self.slot_store.get_built_json(),
             "missing_slots": [m.get("label") for m in self._last_missing if isinstance(m, dict)],
         }
-        plan = route.interaction_plan
         if plan is not None:
             context.update({
                 "subject_type": plan.subject_type,
@@ -807,10 +980,20 @@ class DialogueManager:
 
     def _handle_general_chat(self, user_message: str, route: IntentRouteResult) -> str:
         messages = build_general_chat_messages(self.conversation_history, user_message)
-        reply = self._safe_llm_chat(messages, temperature=0.7, role=ModelRole.KNOWLEDGE_QA)
+        reply = self._safe_llm_chat(messages, temperature=0.7, role=ModelRole.GENERAL_REASONING)
         if not reply or not reply.strip():
             reply = "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
         return self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
+
+    def _handle_clarification(self, user_message: str, route: IntentRouteResult) -> str:
+        plan = route.interaction_plan
+        # 离线协议明确表示“没有语义模型”，不把内部能力状态当成对用户的澄清问题；
+        # 继续走无副作用通用回复，保留 mock/降级环境的基本可用性。
+        if plan is not None and plan.reason_code == "OFFLINE_SEMANTIC_MODEL_UNAVAILABLE":
+            return self._handle_general_chat(user_message, route)
+        if plan is not None and plan.clarification_reason:
+            return plan.clarification_reason
+        return "我还不能安全判断您是想查询信息还是修改任务，请再说明一下本轮目的。"
 
     def _handle_unknown_intent(self, user_message: str, route: IntentRouteResult) -> str:
         return "对不起，我没有完全理解您的意思。请问您是要新建水下任务、修改任务参数，还是查询设备工具与系统功能？"
@@ -1471,7 +1654,14 @@ class DialogueManager:
 
         new_slots, new_unresolved, expected_version = self.slot_store.snapshot()
 
-        task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
+        task_type_slot = new_slots.get("task_type_key")
+        task_type_key = (
+            task_type_slot.value
+            if task_type_slot
+            and task_type_slot.status == "valid"
+            and task_type_slot.value is not None
+            else None
+        )
         had_task_type_key_at_turn_start = task_type_key is not None
         current_state = self.slot_store.get_task_state()
         state_before_turn = dict(current_state)
@@ -1598,7 +1788,14 @@ class DialogueManager:
 
             self._apply_updates_in_transaction(stage1_updates, new_slots)
 
-            task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
+            task_type_slot = new_slots.get("task_type_key")
+            task_type_key = (
+                task_type_slot.value
+                if task_type_slot
+                and task_type_slot.status == "valid"
+                and task_type_slot.value is not None
+                else None
+            )
 
         # WRITE 已由 TurnPlanner 结合上下文判定。不要再根据原句关键词决定是否
         # 调用参数抽取，否则自然表达会在模型判断后被第二道语义门静默丢弃。
@@ -1619,26 +1816,309 @@ class DialogueManager:
                 ROV2type=self.kb.ROV2type,
                 conversation_history=self.conversation_history,
                 allow_empty_for_side_effect=has_acknowledge_action,
+                allow_task_type_transition=True,
             )
+            if task_patch_v2_active:
+                # Validate the raw extractor protocol before any semantic or
+                # target-schema projection can remove malformed foreign
+                # entries.  This is pure and preserves TaskPatch V2's atomic
+                # fail-closed boundary for both candidates and mutations.
+                build_task_patch(extraction_res, allowed_keys=None)
+
+            (
+                extracted_task_type_updates,
+                duplicate_task_selector_error,
+            ) = self._task_selector_updates_from_extraction(extraction_res)
+            extraction_selector_error = next(
+                (
+                    item
+                    for item in extraction_res.get("unresolved", [])
+                    if "同轮具体任务类型互相冲突" in str(item)
+                ),
+                None,
+            )
+            (
+                pending_task_type_key,
+                effective_task_type_key,
+                task_type_change_locked,
+                task_type_preflight_error,
+            ) = self._resolve_task_type_update_context(
+                extracted_task_type_updates,
+                new_slots,
+            )
+            task_type_preflight_error = (
+                duplicate_task_selector_error
+                or extraction_selector_error
+                or task_type_preflight_error
+            )
+            if task_type_preflight_error:
+                self._record_task_type_update_error(
+                    new_slots,
+                    task_type_preflight_error,
+                )
+                if task_type_preflight_error not in turn_unresolved:
+                    turn_unresolved.append(task_type_preflight_error)
+                if task_type_preflight_error not in new_unresolved:
+                    new_unresolved.append(task_type_preflight_error)
+                self.slot_store.commit_transaction(
+                    new_slots,
+                    new_unresolved,
+                    request_id=request_id,
+                    expected_version=expected_version,
+                )
+                return reply_write_without_candidates()
+
+            effective_task_type_key = effective_task_type_key or task_type_key
+            transition_state = dict(current_state)
+            transition_state_active = False
+            if (
+                pending_task_type_key
+                and pending_task_type_key != task_type_key
+                and not task_type_change_locked
+            ):
+                transition_state_active = True
+                transition_state = self._build_task_transition_state(
+                    current_state,
+                    task_type_key,
+                    pending_task_type_key,
+                )
+                transition_shared_keys = self._task_transition_shared_field_keys(
+                    task_type_key,
+                    pending_task_type_key,
+                )
+                (
+                    discovery_updates,
+                    discovery_touched_keys,
+                ) = self._normalize_transition_discovery_candidates(
+                    extraction_res,
+                    pending_task_type_key,
+                    transition_state,
+                    transition_shared_keys,
+                )
+                for touched_key in discovery_touched_keys:
+                    transition_state.pop(touched_key, None)
+                transition_state.update(discovery_updates)
+                target_required = self.builder.get_required(
+                    pending_task_type_key,
+                    self.mode,
+                    transition_state,
+                )
+                target_extraction = self.extractor.extract_updates(
+                    user_message,
+                    transition_state,
+                    task_type_key=pending_task_type_key,
+                    task_type_map=self.kb.get_task_type_map(),
+                    required=target_required,
+                    ROV2type=self.kb.ROV2type,
+                    conversation_history=self.conversation_history,
+                    allow_empty_for_side_effect=has_acknowledge_action,
+                )
+                if task_patch_v2_active:
+                    build_task_patch(target_extraction, allowed_keys=None)
+                (
+                    _target_task_type_updates,
+                    duplicate_target_selector_error,
+                ) = self._task_selector_updates_from_extraction(
+                    target_extraction,
+                )
+                duplicate_target_selector_error = (
+                    duplicate_target_selector_error
+                    or next(
+                        (
+                            item
+                            for item in target_extraction.get("unresolved", [])
+                            if "同轮具体任务类型互相冲突" in str(item)
+                        ),
+                        None,
+                    )
+                )
+                if duplicate_target_selector_error:
+                    self._record_task_type_update_error(
+                        new_slots,
+                        duplicate_target_selector_error,
+                    )
+                    if duplicate_target_selector_error not in turn_unresolved:
+                        turn_unresolved.append(duplicate_target_selector_error)
+                    if duplicate_target_selector_error not in new_unresolved:
+                        new_unresolved.append(duplicate_target_selector_error)
+                    self.slot_store.commit_transaction(
+                        new_slots,
+                        new_unresolved,
+                        request_id=request_id,
+                        expected_version=expected_version,
+                    )
+                    return reply_write_without_candidates()
+                extraction_res = self._merge_task_transition_extractions(
+                    extraction_res,
+                    target_extraction,
+                    transition_shared_keys,
+                )
+                (
+                    final_task_type_updates,
+                    duplicate_final_selector_error,
+                ) = self._task_selector_updates_from_extraction(extraction_res)
+                (
+                    _final_pending_task_type_key,
+                    final_effective_task_type_key,
+                    _final_task_type_change_locked,
+                    final_preflight_error,
+                ) = self._resolve_task_type_update_context(
+                    final_task_type_updates,
+                    new_slots,
+                )
+                final_preflight_error = (
+                    duplicate_final_selector_error or final_preflight_error
+                )
+                if (
+                    final_preflight_error
+                    or final_effective_task_type_key != pending_task_type_key
+                ):
+                    error = final_preflight_error or (
+                        "目标任务二次抽取结果与首次任务类型不一致，请只指定一个任务类型。"
+                    )
+                    self._record_task_type_update_error(new_slots, error)
+                    if error not in turn_unresolved:
+                        turn_unresolved.append(error)
+                    if error not in new_unresolved:
+                        new_unresolved.append(error)
+                    self.slot_store.commit_transaction(
+                        new_slots,
+                        new_unresolved,
+                        request_id=request_id,
+                        expected_version=expected_version,
+                    )
+                    return reply_write_without_candidates()
+                effective_task_type_key = final_effective_task_type_key
+                (
+                    transition_updates,
+                    transition_touched_keys,
+                ) = self._normalize_transition_discovery_candidates(
+                    extraction_res,
+                    pending_task_type_key,
+                    transition_state,
+                    transition_shared_keys,
+                )
+                for touched_key in transition_touched_keys:
+                    transition_state.pop(touched_key, None)
+                transition_state.update(transition_updates)
+
             extraction_res = self._scope_confirmed_recommendation(
                 extraction_res,
                 plan,
                 user_message,
             )
+            extraction_res = self._scope_visible_ordinal_selections(
+                extraction_res,
+                user_message,
+                self.builder.get_required(
+                    effective_task_type_key,
+                    self.mode,
+                    transition_state,
+                ),
+            )
+            field_defs = self.builder.get_schema(effective_task_type_key, self.mode)
+            effective_schema_keys = {
+                str(field.get("key"))
+                for field in field_defs
+                if field.get("key")
+            }
+            control_candidate_keys = {
+                "task_type",
+                "task_type_key",
+                "emergency_mode",
+                "rov_description",
+                "equipment_name",
+            }
+            # ``oilfield_name`` is a legacy cross-task collection field, but
+            # it must not become a side channel for target-only facts when a
+            # task-id lock has rejected the requested category switch.
+            if not (
+                task_type_change_locked
+                and pending_task_type_key
+                and pending_task_type_key != task_type_key
+            ):
+                control_candidate_keys.add("oilfield_name")
+            projected_candidates = []
+            for candidate in extraction_res.get("slot_candidates", []):
+                if not isinstance(candidate, dict):
+                    continue
+                candidate_key = str(candidate.get("canonical_key") or "")
+                if (
+                    candidate_key in effective_schema_keys
+                    or candidate_key in control_candidate_keys
+                ):
+                    projected_candidates.append(candidate)
+                    continue
+                raw_value = candidate.get(
+                    "raw_value",
+                    candidate.get("normalized_value", ""),
+                )
+                message = (
+                    f"字段 {candidate_key or '未知字段'} 表达“{raw_value}”"
+                    f"不属于目标任务 {effective_task_type_key}，未写入。"
+                )
+                extraction_res.setdefault("unresolved", []).append(message)
+            extraction_res["slot_candidates"] = projected_candidates
+
+            filtered_mutations = []
+            for mutation in extraction_res.get("list_mutations", []):
+                # Structural validation belongs to TaskPatch.  Preserve
+                # malformed entries here so V2 rejects them atomically instead
+                # of downgrading a missing/non-string field into an ordinary
+                # foreign-schema unresolved item.
+                if (
+                    not isinstance(mutation, dict)
+                    or not isinstance(mutation.get("field"), str)
+                    or not mutation.get("field", "").strip()
+                ):
+                    filtered_mutations.append(mutation)
+                    continue
+                mutation_key = mutation["field"].strip()
+                if mutation_key in effective_schema_keys:
+                    filtered_mutations.append(mutation)
+                    continue
+                message = (
+                    f"列表字段 {mutation_key or '未知字段'} 不属于目标任务 "
+                    f"{effective_task_type_key}，未写入。"
+                )
+                extraction_res.setdefault("unresolved", []).append(message)
+            extraction_res["list_mutations"] = filtered_mutations
+
+            # Payload and other dynamically constrained fields must be
+            # evaluated against the robot explicitly selected in this same
+            # turn.  Project that robot tuple into an isolated sandbox first;
+            # never mutate the transaction merely to compute allowed values.
+            evaluation_slots, effective_state = (
+                self._build_post_update_evaluation_context(
+                    new_slots,
+                    effective_task_type_key,
+                    transition_state,
+                    extraction_res,
+                    transition_state_active=transition_state_active,
+                )
+            )
+            required_field_defs = self.builder.get_required(
+                effective_task_type_key,
+                self.mode,
+                effective_state,
+            )
 
             if task_patch_v2_active:
-                field_defs = self.builder.get_schema(task_type_key, self.mode)
-                allowed_stage2 = self.extractor._allowed_candidate_keys(task_type_key, field_defs)
+                allowed_stage2 = self.extractor._allowed_candidate_keys(
+                    effective_task_type_key,
+                    field_defs,
+                )
                 patch = build_task_patch(extraction_res, allowed_keys=allowed_stage2)
 
                 if norm_v2_active:
-                    current_state_dict = {
-                        k: s.value for k, s in new_slots.items()
-                        if s.status == "valid" and s.value is not None
-                    }
+                    current_state_dict = dict(effective_state)
 
                     def allowed_resolver(fdef: dict[str, Any], state: dict[str, Any]) -> list[Any] | None:
-                        return self.builder._resolve_allowed(fdef, task_type_key, state)
+                        return self.builder._resolve_allowed(
+                            fdef,
+                            effective_task_type_key,
+                            state,
+                        )
 
                     normalized_patch = normalize_task_patch(
                         patch,
@@ -1721,6 +2201,10 @@ class DialogueManager:
             mutation_failure_result = None
 
             if list_mutations:
+                # Use the same post-update sandbox as ordinary V2
+                # normalization.  In particular, a same-turn robot change
+                # must affect payload add/remove validation immediately.
+                mutation_slots = copy.deepcopy(evaluation_slots)
                 for mutation in list_mutations:
                     m_field = mutation.get("field")
                     if m_field == "payload":
@@ -1728,16 +2212,15 @@ class DialogueManager:
                         merged_updates.pop("payload", None)
                         merged_updates_meta.pop("payload", None)
 
-                        field_defs = self.builder.get_schema(task_type_key, self.mode)
                         mut_res = self.slot_store.apply_list_mutation(
-                            new_slots,
+                            mutation_slots,
                             mutation,
                             required_schema=field_defs,
                             payload_catalog=self.kb.assets.get("payload_catalog"),
                             allowed_values_resolver=lambda f: self.builder.resolve_allowed_values(
                                 f,
-                                task_type_key,
-                                {k: v.value for k, v in new_slots.items() if v and v.value is not None},
+                                effective_task_type_key,
+                                effective_state,
                             ),
                         )
                         if mut_res.get("success"):
@@ -1753,7 +2236,35 @@ class DialogueManager:
                         else:
                             payload_mutation_failed = True
                             mutation_failure_result = mut_res
+                            payload_slot = new_slots.get("payload")
+                            if payload_slot is None:
+                                payload_slot = Slot(
+                                    "payload",
+                                    value_type="list",
+                                    status="missing",
+                                )
+                                new_slots["payload"] = payload_slot
+                            payload_slot.raw_value = mutation.get("raw_text")
+                            payload_slot.source = mutation.get(
+                                "source",
+                                "user_input",
+                            )
+                            payload_slot.confidence = mutation.get(
+                                "confidence",
+                                0.95,
+                            )
+                            payload_slot.validation_error = mut_res.get("error")
                             break
+                    else:
+                        # List mutations are currently schema-supported only
+                        # for payload. Keep the isolated sandbox contract if a
+                        # future list field is introduced instead of mutating
+                        # the transaction before validation completes.
+                        payload_mutation_failed = True
+                        mutation_failure_result = {
+                            "error": f"不支持的列表字段 '{m_field}'",
+                        }
+                        break
 
             raw_stage2 = self._merge_coordinate_updates(user_message, {k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, required_field_defs)
             for k, v in raw_stage2.items():
@@ -1763,6 +2274,8 @@ class DialogueManager:
                     merged_updates_meta[k] = c_info
                 merged_updates[k] = v
 
+            if transition_state_active:
+                self._clear_non_inherited_transition_slots(new_slots)
             raw_linked = self._link_oilfield_update_in_transaction({k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, new_slots)
             if "oilfield_name" in stage2_updates and "oilfield_name" not in raw_linked:
                 stage2_updates.pop("oilfield_name", None)
@@ -1860,6 +2373,16 @@ class DialogueManager:
                     apply_plan,
                     new_slots,
                     allow_overwrite=had_task_type_key_at_turn_start,
+                    transition_from_task_type_key=(
+                        task_type_key
+                        if effective_task_type_key != task_type_key
+                        else None
+                    ),
+                    transition_to_task_type_key=(
+                        effective_task_type_key
+                        if effective_task_type_key != task_type_key
+                        else None
+                    ),
                 )
                 task_type_updates = {
                     k: v for k, v in stage2_updates.items()
@@ -1883,10 +2406,14 @@ class DialogueManager:
                         allow_overwrite=had_task_type_key_at_turn_start,
                     )
             else:
+                # The transition was already cleared before oilfield linking
+                # at the shared Stage-2 seam.  Clearing again here would erase
+                # newly linked target-task metadata.
                 self._apply_updates_in_transaction(
                     stage2_updates,
                     new_slots,
                     allow_overwrite=had_task_type_key_at_turn_start,
+                    transition_slots_already_cleared=transition_state_active,
                 )
 
             for key in stage2_updates:
@@ -1905,7 +2432,12 @@ class DialogueManager:
                 proposed_pending_rov = self.extractor.resolve_rov_description(
                     stage2_updates["rov_description"].get("value") if isinstance(stage2_updates["rov_description"], dict) else str(stage2_updates["rov_description"]),
                     all_rovs,
-                    new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
+                    (
+                        new_slots["task_type_key"].value
+                        if new_slots.get("task_type_key")
+                        and new_slots["task_type_key"].status == "valid"
+                        else None
+                    )
                 )
         else:
             if extraction_res.get("unresolved"):
@@ -1915,8 +2447,10 @@ class DialogueManager:
 
         # Compute proposed mode change without mutating self.mode before commit
         proposed_mode = self.mode
-        if merged_updates.get("emergency_mode"):
+        if merged_updates.get("emergency_mode") is True:
             proposed_mode = "emergency"
+        elif merged_updates.get("emergency_mode") is False:
+            proposed_mode = "normal"
 
         # Compute changed fields based on proposed updates
         changed_fields = set()
@@ -1929,8 +2463,22 @@ class DialogueManager:
         proposed_whitelist = {item for item in self._soft_whitelist if item[0] not in changed_fields}
 
         # Normalize and validate inside transaction working dict new_slots
-        curr_task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
-        skip_keys = apply_plan.normalized_schema_keys if apply_plan is not None else None
+        curr_task_type_slot = new_slots.get("task_type_key")
+        curr_task_type_key = (
+            curr_task_type_slot.value
+            if curr_task_type_slot
+            and curr_task_type_slot.status == "valid"
+            and curr_task_type_slot.value is not None
+            else None
+        )
+        skip_keys = None
+        if apply_plan is not None:
+            # Dynamic allowed-value fields were normalized before specialized
+            # robot updates were committed.  Revalidate them once more against
+            # the final authoritative robot tuple.  Static scalar fields may
+            # safely keep the V2 single-normalization fast path.
+            dynamic_keys = self._dynamic_allowed_schema_keys(field_defs)
+            skip_keys = set(apply_plan.normalized_schema_keys) - dynamic_keys
         self._normalize_and_validate_in_transaction(new_slots, curr_task_type_key, skip_schema_keys=skip_keys)
 
         curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
@@ -2292,9 +2840,20 @@ class DialogueManager:
             updates.get("oilfield_coordinates")
             or updates.get("start_point")
             or updates.get("cable_position")
-            or (new_slots.get("oilfield_coordinates").value if new_slots.get("oilfield_coordinates") else None)
-            or (new_slots.get("start_point").value if new_slots.get("start_point") else None)
-            or (new_slots.get("cable_position").value if new_slots.get("cable_position") else None)
+            or next(
+                (
+                    new_slots[key].value
+                    for key in (
+                        "oilfield_coordinates",
+                        "start_point",
+                        "cable_position",
+                    )
+                    if new_slots.get(key)
+                    and new_slots[key].status == "valid"
+                    and new_slots[key].value is not None
+                ),
+                None,
+            )
         )
         match = self.oilfield_linker.link(str(raw_name), coords)
         linked = dict(updates)
@@ -2342,6 +2901,7 @@ class DialogueManager:
         updates: dict,
         new_slots: dict,
         allow_overwrite: bool = False,
+        transition_slots_already_cleared: bool = False,
     ):
         # main extractor 会携带 raw/confidence/source；LHL 归一化器只接收值本身。
         # 在事务入口拆开二者，既保留确定性归一化，也保留槽位审计信息。
@@ -2364,6 +2924,35 @@ class DialogueManager:
             else:
                 plain_updates[key] = item
         updates = plain_updates
+
+        task_type_slot = new_slots.get("task_type_key")
+        task_type_key = (
+            task_type_slot.value
+            if task_type_slot and task_type_slot.status == "valid"
+            else None
+        )
+        (
+            pending_task_type_key,
+            normalization_task_type_key,
+            _task_type_change_locked,
+            task_type_preflight_error,
+        ) = self._resolve_task_type_update_context(updates, new_slots)
+        if task_type_preflight_error:
+            self._record_task_type_update_error(
+                new_slots,
+                task_type_preflight_error,
+            )
+            return
+
+        if (
+            pending_task_type_key
+            and task_type_key
+            and pending_task_type_key != task_type_key
+            and not _task_type_change_locked
+            and not transition_slots_already_cleared
+        ):
+            self._clear_non_inherited_transition_slots(new_slots)
+            task_type_slot = new_slots.get("task_type_key")
 
         if updates.get("__clear_oilfield_name"):
             if "oilfield_name" in new_slots:
@@ -2400,26 +2989,54 @@ class DialogueManager:
             "internal_id",
         }
 
-        task_type_slot = new_slots.get("task_type_key")
-        task_type_key = task_type_slot.value if task_type_slot else None
+        # Schema fields in a task-switch turn belong to the target task. Keep
+        # the real task-type mutation in the normal apply loop (so task-id
+        # locks and cascade invalidation remain atomic), but select the target
+        # schema for this transaction's normalization.
         failures = {}
-        if task_type_key:
+        if normalization_task_type_key:
+            evaluation_slots = copy.deepcopy(new_slots)
+            evaluation_task_slot = evaluation_slots.get("task_type_key")
+            if evaluation_task_slot is None:
+                evaluation_task_slot = Slot(
+                    "task_type_key",
+                    value_type="string",
+                )
+                evaluation_slots["task_type_key"] = evaluation_task_slot
+            evaluation_task_slot.value = normalization_task_type_key
+            evaluation_task_slot.status = "valid"
+            evaluation_task_slot.candidate_value = None
+            evaluation_task_slot.validation_error = None
+
+            evaluation_equipment_updates = {
+                key: value
+                for key, value in updates.items()
+                if key in equipment_keys
+            }
+            if evaluation_equipment_updates:
+                self._project_equipment_updates_for_evaluation(
+                    evaluation_equipment_updates,
+                    evaluation_slots,
+                    normalization_task_type_key,
+                )
             current_state = {
                 key: slot.value
-                for key, slot in new_slots.items()
-                if slot.value is not None
+                for key, slot in evaluation_slots.items()
+                if slot.status == "valid" and slot.value is not None
             }
+            if pending_task_type_key:
+                current_state["task_type_key"] = pending_task_type_key
             schema_updates = {
                 k: v for k, v in updates.items()
                 if k not in equipment_keys and k not in passthrough_keys
             }
             norm_res = self.normalizer.normalize_updates_with_failures(
                 schema_updates,
-                self.builder.get_schema(task_type_key, self.mode),
+                self.builder.get_schema(normalization_task_type_key, self.mode),
                 current_state,
                 lambda field_def, state: self.builder._resolve_allowed(
                     field_def,
-                    task_type_key,
+                    normalization_task_type_key,
                     state,
                 ),
             )
@@ -2491,11 +3108,19 @@ class DialogueManager:
                 slot.confidence = meta.get("confidence", 1.0)
                 slot.source = meta.get("source", "user_input")
 
-        if updates.get("emergency_mode"):
-            if "emergency_mode" not in new_slots:
-                new_slots["emergency_mode"] = Slot("emergency_mode")
-            new_slots["emergency_mode"].value = True
-            new_slots["emergency_mode"].status = "valid"
+        if "emergency_mode" in updates:
+            em_val = updates["emergency_mode"]
+            if em_val is True:
+                if "emergency_mode" not in new_slots:
+                    new_slots["emergency_mode"] = Slot("emergency_mode")
+                new_slots["emergency_mode"].value = True
+                new_slots["emergency_mode"].status = "valid"
+                self.mode = "emergency"
+            elif em_val is False:
+                if "emergency_mode" in new_slots:
+                    new_slots["emergency_mode"].value = False
+                    new_slots["emergency_mode"].status = "valid"
+                self.mode = "normal"
 
         self._handle_equipment_updates_in_transaction(
             updates,
@@ -2523,6 +3148,8 @@ class DialogueManager:
         plan: NormalizationApplyPlan,
         new_slots: dict,
         allow_overwrite: bool = False,
+        transition_from_task_type_key: str | None = None,
+        transition_to_task_type_key: str | None = None,
     ) -> None:
         """根据 NormalizationApplyPlan 修改 working dict new_slots。"""
         # 1. 成功 outcomes 写入 new_slots
@@ -2584,7 +3211,12 @@ class DialogueManager:
                 slot.source = failure.source
                 slot.validation_error = failure.error_message
 
-        self._auto_collapse_robot_cascade(new_slots, allow_overwrite)
+        if not (
+            transition_from_task_type_key
+            and transition_to_task_type_key
+            and transition_from_task_type_key != transition_to_task_type_key
+        ):
+            self._auto_collapse_robot_cascade(new_slots, allow_overwrite)
 
     @staticmethod
     def _source_for_resolution_method(resolution_method: str | None) -> str:
@@ -2594,6 +3226,7 @@ class DialogueManager:
             "llm_semantic": "llm_semantic_match",
             "type_normalization": "user_input",
             "assistant_recommendation": "assistant_recommendation",
+            "visible_ordinal_selection": "assistant_option_selection",
         }
         return source_map.get(resolution_method, "user_input")
 
@@ -2610,6 +3243,9 @@ class DialogueManager:
             or plan.relation != "recommend"
         ):
             return extraction_result
+        if parse_ordinal_reference(user_message) is not None:
+            # 编号候选由通用可见来源门禁处理，不能套用机器人单一推荐协议。
+            return extraction_result
 
         result = copy.deepcopy(extraction_result or {})
         result.setdefault("slot_candidates", [])
@@ -2617,6 +3253,8 @@ class DialogueManager:
         result.setdefault("unresolved", [])
 
         target_key = RECOMMENDATION_FIELD_BY_SUBJECT.get(plan.subject_type or "")
+        if not target_key:
+            return extraction_result
         selected = plan.subject_text
         field_def = self._missing_field_definition(target_key or "")
         allowed_values = list((field_def or {}).get("allowed_values") or [])
@@ -2655,6 +3293,78 @@ class DialogueManager:
                 "resolution_method": "assistant_recommendation",
             }
         )
+        return result
+
+    def _scope_visible_ordinal_selections(
+        self,
+        extraction_result: dict,
+        user_message: str,
+        required_fields: list[dict],
+    ) -> dict:
+        """只授权紧邻助手回复中真实可见的编号候选选择。"""
+        result = copy.deepcopy(extraction_result or {})
+        candidates = result.setdefault("slot_candidates", [])
+        result.setdefault("list_mutations", [])
+        unresolved = result.setdefault("unresolved", [])
+        required_by_key = {
+            str(field.get("key")): field
+            for field in required_fields or []
+            if isinstance(field, dict) and field.get("key")
+        }
+        previous_assistant = (
+            self.conversation_history[-1].get("content", "")
+            if self.conversation_history
+            and self.conversation_history[-1].get("role") == "assistant"
+            else ""
+        )
+
+        authorized: list[dict] = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            reference = parse_ordinal_reference(candidate.get("raw_value"))
+            if reference is None and len(candidates) == 1:
+                reference = parse_ordinal_reference(user_message)
+            if reference is None:
+                authorized.append(candidate)
+                continue
+
+            key = str(candidate.get("canonical_key") or "")
+            field_definition = required_by_key.get(key) or {}
+            allowed_values = list(field_definition.get("allowed_values") or [])
+            if not allowed_values:
+                # 数字、时间等非枚举值不依赖候选列表顺序，保持原抽取结果。
+                authorized.append(candidate)
+                continue
+
+            selected = candidate.get("normalized_value")
+            selected_values = selected if isinstance(selected, list) else [selected]
+            valid_visible_selection = bool(
+                len(selected_values) == 1
+                and isinstance(selected_values[0], str)
+                and selected_values[0] in allowed_values
+                and visible_ordinal_matches_candidate(
+                    previous_assistant,
+                    reference,
+                    selected_values[0],
+                    build_candidate_terms(field_definition),
+                )
+            )
+            if valid_visible_selection:
+                accepted = copy.deepcopy(candidate)
+                accepted["resolution_method"] = "visible_ordinal_selection"
+                accepted["source"] = "assistant_option_selection"
+                authorized.append(accepted)
+                continue
+
+            message = (
+                f"{FIELD_LABELS.get(key, key or '该字段')}的编号选择“{reference.raw_text}”"
+                "无法对应紧邻上一轮助手明确展示的可见候选，未写入"
+            )
+            if message not in unresolved:
+                unresolved.append(message)
+
+        result["slot_candidates"] = authorized
         return result
 
     @staticmethod
@@ -3272,9 +3982,12 @@ class DialogueManager:
             if k in new_slots
         }
 
+        task_type_slot = new_slots.get("task_type_key")
         task_type = (
-            new_slots.get("task_type_key").value
-            if new_slots.get("task_type_key")
+            task_type_slot.value
+            if task_type_slot
+            and task_type_slot.status == "valid"
+            and task_type_slot.value is not None
             else None
         )
 
@@ -3310,6 +4023,22 @@ class DialogueManager:
                 target_slot.candidate_value = candidate_val
                 target_slot.validation_error = error_msg
                 new_slots[target_key] = target_slot
+
+        if not task_type:
+            for target_key in (
+                "equipment_unit_id",
+                "equipment_name",
+                "equipment_type",
+                "equipment_family",
+                "equipment_class",
+            ):
+                if target_key in equipment_updates:
+                    _rollback_and_fail(
+                        target_key,
+                        equipment_updates[target_key],
+                        "Task type must be confirmed before robot selection",
+                    )
+                    return
 
         # Conflict Fence
         if not allow_overwrite:
@@ -3615,15 +4344,10 @@ class DialogueManager:
             or _unwrap(equipment_updates.get("equipment_name"))
         )
         if unit_update:
-            variant_slot = sandbox_slots.get("equipment_type")
             variant_context = (
                 selected_variant.get("full_name")
                 if selected_variant
-                else (
-                    variant_slot.value
-                    if variant_slot and variant_slot.status == "valid"
-                    else None
-                )
+                else None
             )
             resolved_unit = self.kb.resolve_robot_unit(
                 str(unit_update),
@@ -3756,18 +4480,538 @@ class DialogueManager:
                 new_slots[k] = sandbox_slots[k]
 
 
-    def _handle_task_type_update_in_transaction(self, key: str, value: str, new_slots: dict):
+    def _resolve_task_type_target(self, key: str, value: object) -> str | None:
+        """Resolve either task selector field through one authoritative rule."""
+        if not isinstance(value, str):
+            return None
         task_type_map = self.kb.get_task_type_map()
         templates = self.kb.task_schemas.get("task_templates", {})
 
-        target_key = None
         if value in task_type_map:
-            target_key = task_type_map[value]
-        elif key == "task_type_key" and value in templates:
-            target_key = value
+            return task_type_map[value]
+        if key == "task_type_key" and value in templates:
+            return str(value)
+        return None
+
+    def _task_transition_shared_field_keys(
+        self,
+        current_task_type_key: str,
+        target_task_type_key: str,
+    ) -> set[str]:
+        """Return schema facts that are safe to inherit across a task switch.
+
+        A matching key is not enough: both schemas must declare the same field
+        contract.  Task-specific payload and robot selectors are always
+        re-evaluated in the target domain even though their YAML keys match.
+        """
+        current_by_key = {
+            str(field.get("key")): field
+            for field in self.builder.get_schema(current_task_type_key, self.mode)
+            if isinstance(field, dict) and field.get("key")
+        }
+        target_by_key = {
+            str(field.get("key")): field
+            for field in self.builder.get_schema(target_task_type_key, self.mode)
+            if isinstance(field, dict) and field.get("key")
+        }
+        ignored_contract_keys = {"label"}
+
+        def comparable(field: dict) -> dict:
+            return {
+                key: copy.deepcopy(value)
+                for key, value in field.items()
+                if key not in ignored_contract_keys
+            }
+
+        return {
+            key
+            for key in current_by_key.keys() & target_by_key.keys()
+            if key not in TASK_TRANSITION_NON_INHERITED_FIELDS
+            and current_by_key[key].get("type") not in {"auto", "fixed"}
+            and target_by_key[key].get("type") not in {"auto", "fixed"}
+            and comparable(current_by_key[key]) == comparable(target_by_key[key])
+        }
+
+    def _build_task_transition_state(
+        self,
+        current_state: dict,
+        current_task_type_key: str,
+        target_task_type_key: str,
+    ) -> dict:
+        """Project current facts into one clean target-task evaluation view."""
+        shared_keys = self._task_transition_shared_field_keys(
+            current_task_type_key,
+            target_task_type_key,
+        )
+        target_state = {
+            key: copy.deepcopy(value)
+            for key, value in current_state.items()
+            if key in shared_keys and value is not None
+        }
+        target_state["task_type_key"] = target_task_type_key
+        return target_state
+
+    def _build_post_update_evaluation_context(
+        self,
+        new_slots: dict,
+        target_task_type_key: str,
+        base_state: dict,
+        extraction: dict,
+        *,
+        transition_state_active: bool,
+    ) -> tuple[dict, dict]:
+        """Project same-turn robot selectors into an isolated evaluation view.
+
+        Dynamic schema values (notably payload) depend on the selected Variant.
+        Reuse the KnowledgeBase static tuple authority to derive a canonical
+        Class -> Family -> Variant -> Unit view before normalizing dependent
+        fields.  The real transaction and its specialized equipment handler
+        are not mutated or invoked here.
+        """
+        sandbox_slots = copy.deepcopy(new_slots)
+        if transition_state_active:
+            self._clear_non_inherited_transition_slots(sandbox_slots)
+
+        task_slot = sandbox_slots.get("task_type_key")
+        if task_slot is None:
+            task_slot = Slot("task_type_key", value_type="string")
+            sandbox_slots["task_type_key"] = task_slot
+        task_slot.value = target_task_type_key
+        task_slot.status = "valid"
+        task_slot.candidate_value = None
+        task_slot.validation_error = None
+
+        # The transition discovery pass may already have normalized safe
+        # shared facts (for example water_depth/start_time) that are not yet
+        # committed to ``new_slots``.  Materialize those facts only inside the
+        # evaluation sandbox so the robot feasibility domain sees the same
+        # target-task context that dependent fields will use.
+        for key, value in base_state.items():
+            if key == "task_type_key" or value is None:
+                continue
+            slot = sandbox_slots.get(key)
+            if slot is None:
+                slot = Slot(key, value_type=BASE_SLOT_TYPES.get(key, "string"))
+                sandbox_slots[key] = slot
+            if slot.status not in ("missing", "valid"):
+                continue
+            slot.value = copy.deepcopy(value)
+            slot.status = "valid"
+            slot.candidate_value = None
+            slot.validation_error = None
+
+        equipment_updates: dict[str, dict[str, Any]] = {}
+        for candidate in extraction.get("slot_candidates", []):
+            if not isinstance(candidate, dict):
+                continue
+            key = str(candidate.get("canonical_key") or "")
+            if key == "equipment_model":
+                key = "equipment_type"
+            if key not in ROBOT_CASCADE_FIELDS and key != "equipment_name":
+                continue
+            value = candidate.get("normalized_value")
+            if value is None or value == "":
+                continue
+            equipment_updates[key] = {
+                "value": value,
+                "raw_value": candidate.get("raw_value", value),
+                "confidence": candidate.get("confidence", 1.0),
+                "source": self._source_for_resolution_method(
+                    candidate.get("resolution_method")
+                ),
+            }
+
+        projected_equipment = False
+        if equipment_updates:
+            projected_equipment = self._project_equipment_updates_for_evaluation(
+                equipment_updates,
+                sandbox_slots,
+                target_task_type_key,
+            )
+
+        effective_state = {
+            key: copy.deepcopy(slot.value)
+            for key, slot in sandbox_slots.items()
+            if slot.status == "valid" and slot.value is not None
+        }
+        # Safe shared values extracted in the discovery pass have not yet been
+        # committed to sandbox_slots; overlay them for target-schema catalogs.
+        effective_state.update(copy.deepcopy(base_state))
+        effective_state["task_type_key"] = target_task_type_key
+
+        if equipment_updates:
+            # A failed same-turn robot selector must not silently fall back to
+            # the previous robot when evaluating its dependent payload.
+            for key in (*ROBOT_CASCADE_FIELDS, "equipment_name"):
+                effective_state.pop(key, None)
+            if projected_equipment:
+                for key in (*ROBOT_CASCADE_FIELDS, "equipment_name"):
+                    slot = sandbox_slots.get(key)
+                    if slot and slot.status == "valid" and slot.value is not None:
+                        effective_state[key] = copy.deepcopy(slot.value)
+
+        return sandbox_slots, effective_state
+
+    def _project_equipment_updates_for_evaluation(
+        self,
+        updates: dict,
+        sandbox_slots: dict,
+        task_type_key: str,
+    ) -> bool:
+        """Purely project a canonical robot lineage for dynamic-value lookup.
+
+        This is intentionally not the mutating equipment handler.  It invokes
+        the same KnowledgeBase static tuple authority on an isolated state and
+        materializes only its canonical result, keeping the real equipment
+        handler as the single transaction commit path.
+        """
+        selection_state: dict[str, Any] = {"task_type_key": task_type_key}
+
+        def value_of(value: Any) -> Any:
+            return value.get("value") if isinstance(value, dict) else value
+
+        for key in ROBOT_CASCADE_FIELDS:
+            value = value_of(updates.get(key))
+            if value not in (None, ""):
+                selection_state[key] = value
+        if "equipment_unit_id" not in selection_state:
+            equipment_name = value_of(updates.get("equipment_name"))
+            if equipment_name not in (None, ""):
+                selection_state["equipment_unit_id"] = equipment_name
+
+        if len(selection_state) == 1:
+            return False
+        try:
+            canonical = self.kb.validate_robot_selection_from_task_state(
+                selection_state,
+                require_unit=False,
+            )
+        except (RobotSelectionDataError, TypeError, ValueError):
+            return False
+        if not isinstance(canonical, dict):
+            return False
+
+        # The canonical result describes the deepest explicitly selected
+        # level.  Any older descendant not present in that result belongs to
+        # the previous selection and must not constrain dynamic values in this
+        # evaluation sandbox (for example, Class-only AUV after an old ROV).
+        for key in (*ROBOT_CASCADE_FIELDS, "equipment_name"):
+            slot = sandbox_slots.get(key)
+            if slot is not None:
+                reset_slot_to_missing(
+                    slot,
+                    source="evaluation_projection",
+                )
+
+        canonical_values = {
+            "equipment_class": canonical.get("robot_class"),
+            "equipment_family": canonical.get("family_name"),
+            "equipment_type": canonical.get("equipment_type")
+            or canonical.get("variant_name"),
+            "equipment_unit_id": canonical.get("unit_id"),
+            "equipment_name": canonical.get("unit_display_name"),
+        }
+        for key, value in canonical_values.items():
+            if value is None or value == "":
+                continue
+            slot = sandbox_slots.get(key)
+            if slot is None:
+                slot = Slot(key, value_type=BASE_SLOT_TYPES.get(key, "string"))
+                sandbox_slots[key] = slot
+            slot.value = copy.deepcopy(value)
+            slot.status = "valid"
+            slot.candidate_value = None
+            slot.validation_error = None
+
+        # A Class- or Family-only selector can still have exactly one feasible
+        # descendant chain.  Collapse that chain now, while still operating on
+        # the isolated sandbox, so payload and other dynamic catalogs are
+        # evaluated against the same final Variant that the real transaction
+        # will auto-bind later.
+        self._auto_collapse_robot_cascade(sandbox_slots)
+        return True
+
+    @staticmethod
+    def _dynamic_allowed_schema_keys(field_defs: list[dict]) -> set[str]:
+        """Fields whose allowed values depend on the finalized robot tuple."""
+        dynamic_refs = {
+            "supported_payloads",
+            "onboard_payloads",
+            "all_payloads",
+        }
+        result: set[str] = set()
+        for field in field_defs:
+            if not isinstance(field, dict) or not field.get("key"):
+                continue
+            ref = str(field.get("allowed_values_ref") or "")
+            if ref in dynamic_refs or ref.startswith("payload_options."):
+                result.add(str(field["key"]))
+        return result
+
+    @staticmethod
+    def _clear_non_inherited_transition_slots(new_slots: dict) -> None:
+        """Remove stale task-specific facts before target-task updates apply."""
+        for key in TASK_TRANSITION_NON_INHERITED_FIELDS:
+            slot = new_slots.get(key)
+            if slot is not None:
+                reset_slot_to_missing(
+                    slot,
+                    source="task_type_change_invalidation",
+                )
+
+    def _normalize_transition_discovery_candidates(
+        self,
+        extraction: dict,
+        target_task_type_key: str,
+        base_state: dict,
+        shared_keys: set[str],
+    ) -> tuple[dict, set[str]]:
+        """Normalize safe first-pass siblings before building target catalogs.
+
+        Touched keys are returned separately so an invalid new value can evict
+        a stale inherited fact rather than leaving it to constrain the target
+        robot domain.
+        """
+        raw_updates: dict[str, object] = {}
+        for candidate in extraction.get("slot_candidates", []):
+            if not isinstance(candidate, dict):
+                continue
+            key = str(candidate.get("canonical_key") or "")
+            if key in shared_keys:
+                raw_updates[key] = candidate.get("normalized_value")
+        if not raw_updates:
+            return {}, set()
+
+        normalized = self.normalizer.normalize_updates_with_failures(
+            raw_updates,
+            self.builder.get_schema(target_task_type_key, self.mode),
+            base_state,
+            lambda field_def, state: self.builder._resolve_allowed(
+                field_def,
+                target_task_type_key,
+                state,
+            ),
+        )
+        return normalized.normalized_updates, set(raw_updates)
+
+    @staticmethod
+    def _merge_task_transition_extractions(
+        initial: dict,
+        target: dict,
+        shared_keys: set[str] | None = None,
+    ) -> dict:
+        """Merge a selector-discovery pass with a target-schema pass.
+
+        Target-schema ordinary fields and list mutations are authoritative.
+        Task selectors from both passes are retained so the shared preflight
+        can reject category or concrete-operation disagreement instead of
+        silently choosing whichever extraction happened last.
+        """
+        initial = initial if isinstance(initial, dict) else {}
+        target = target if isinstance(target, dict) else {}
+        selector_keys = {"task_type", "task_type_key"}
+        initial_candidates = [
+            copy.deepcopy(candidate)
+            for candidate in initial.get("slot_candidates", [])
+            if isinstance(candidate, dict)
+        ]
+        target_candidates = [
+            copy.deepcopy(candidate)
+            for candidate in target.get("slot_candidates", [])
+            if isinstance(candidate, dict)
+        ]
+        initial_selectors = [
+            candidate
+            for candidate in initial_candidates
+            if candidate.get("canonical_key") in selector_keys
+        ]
+        target_selectors = [
+            candidate
+            for candidate in target_candidates
+            if candidate.get("canonical_key") in selector_keys
+        ]
+        target_ordinary = [
+            candidate
+            for candidate in target_candidates
+            if candidate.get("canonical_key") not in selector_keys
+        ]
+        target_ordinary_keys = {
+            str(candidate.get("canonical_key"))
+            for candidate in target_ordinary
+        }
+        candidates = [
+            candidate
+            for candidate in initial_candidates
+            if candidate.get("canonical_key") in (shared_keys or set())
+            and str(candidate.get("canonical_key")) not in target_ordinary_keys
+        ]
+        candidates.extend(target_ordinary)
+        for selector_key in ("task_type", "task_type_key"):
+            first = [
+                candidate
+                for candidate in initial_selectors
+                if candidate.get("canonical_key") == selector_key
+            ]
+            second = [
+                candidate
+                for candidate in target_selectors
+                if candidate.get("canonical_key") == selector_key
+            ]
+            def unique_values(items: list[dict]) -> list[object]:
+                values: list[object] = []
+                for item in items:
+                    value = item.get("normalized_value")
+                    if not any(value == existing for existing in values):
+                        values.append(value)
+                return values
+
+            first_values = unique_values(first)
+            second_values = unique_values(second)
+            if first and second and first_values != second_values:
+                candidates.extend([*first, *second])
+            else:
+                candidates.extend(second or first)
+        return {
+            "slot_candidates": candidates,
+            "list_mutations": copy.deepcopy(
+                target.get("list_mutations", [])
+                if isinstance(target.get("list_mutations", []), list)
+                else []
+            ),
+            "unresolved": copy.deepcopy(
+                target.get("unresolved", [])
+                if isinstance(target.get("unresolved", []), list)
+                else []
+            ),
+        }
+
+    @staticmethod
+    def _task_selector_updates_from_extraction(
+        extraction: dict,
+    ) -> tuple[dict[str, object], str | None]:
+        """Return task selectors, rejecting duplicate values in one result."""
+        updates: dict[str, object] = {}
+        for candidate in extraction.get("slot_candidates", []):
+            if not isinstance(candidate, dict):
+                continue
+            key = candidate.get("canonical_key")
+            if key not in {"task_type", "task_type_key"}:
+                continue
+            value = candidate.get("normalized_value")
+            if not isinstance(value, str) or not value.strip():
+                return {}, "任务类型字段必须是非空字符串，请重新指定任务类型。"
+            value = value.strip()
+            if key in updates and updates[key] != value:
+                return {}, "同轮具体任务类型互相冲突，请只指定一种任务操作。"
+            updates[str(key)] = value
+        return updates, None
+
+    def _resolve_task_type_update_context(
+        self,
+        updates: dict,
+        new_slots: dict,
+    ) -> tuple[str | None, str | None, bool, str | None]:
+        """Preflight task selectors and choose the schema for sibling updates.
+
+        A reserved task ID locks the category, but does not turn ordinary
+        sibling updates into an all-or-nothing operation. In that case sibling
+        values are evaluated against the current task schema. Conflicting task
+        selectors are different: there is no authoritative target schema, so
+        the turn must stop before any field is mutated.
+        """
+        task_type_slot = new_slots.get("task_type_key")
+        current_task_type_key = (
+            task_type_slot.value
+            if task_type_slot
+            and task_type_slot.status == "valid"
+            and task_type_slot.value is not None
+            else None
+        )
+        resolved_targets = {
+            target
+            for key in ("task_type", "task_type_key")
+            if key in updates
+            for target in [self._resolve_task_type_target(key, updates[key])]
+            if target is not None
+        }
+        if len(resolved_targets) > 1:
+            logger.warning(
+                "[DialogueManager] Rejecting conflicting task type targets: %s",
+                sorted(resolved_targets),
+            )
+            return (
+                None,
+                current_task_type_key,
+                False,
+                "同轮任务类型信息互相冲突，请只指定一个任务类型。",
+            )
+
+        task_type_map = self.kb.get_task_type_map()
+        concrete_task_values = {
+            value
+            for key in ("task_type", "task_type_key")
+            if key in updates
+            for value in [updates[key]]
+            if isinstance(value, str) and value in task_type_map
+        }
+        if len(concrete_task_values) > 1:
+            logger.warning(
+                "[DialogueManager] Rejecting conflicting concrete task values: %s",
+                sorted(concrete_task_values),
+            )
+            return (
+                None,
+                current_task_type_key,
+                False,
+                "同轮具体任务类型互相冲突，请只指定一种任务操作。",
+            )
+
+        pending_task_type_key = (
+            next(iter(resolved_targets)) if resolved_targets else None
+        )
+        existing_task_id = new_slots.get("task_id")
+        task_type_change_locked = bool(
+            pending_task_type_key
+            and current_task_type_key
+            and pending_task_type_key != current_task_type_key
+            and existing_task_id
+            and existing_task_id.status == "valid"
+            and existing_task_id.value
+        )
+        effective_task_type_key = (
+            current_task_type_key
+            if task_type_change_locked
+            else (pending_task_type_key or current_task_type_key)
+        )
+        return (
+            pending_task_type_key,
+            effective_task_type_key,
+            task_type_change_locked,
+            None,
+        )
+
+    @staticmethod
+    def _record_task_type_update_error(new_slots: dict, message: str) -> None:
+        slot = new_slots.get("task_type_key")
+        if slot is None:
+            slot = Slot("task_type_key")
+            new_slots["task_type_key"] = slot
+        slot.validation_error = message
+
+    def _handle_task_type_update_in_transaction(self, key: str, value: str, new_slots: dict):
+        task_type_map = self.kb.get_task_type_map()
+        templates = self.kb.task_schemas.get("task_templates", {})
+        target_key = self._resolve_task_type_target(key, value)
 
         existing_task_id = new_slots.get("task_id")
-        old_task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
+        old_task_type_slot = new_slots.get("task_type_key")
+        old_task_type_key = (
+            old_task_type_slot.value
+            if old_task_type_slot
+            and old_task_type_slot.status == "valid"
+            and old_task_type_slot.value is not None
+            else None
+        )
 
         # 如果已有 valid 的 task_id，禁止原地跨类别修改任务类型 (Lock task category)
         if existing_task_id and existing_task_id.status == "valid" and existing_task_id.value:
@@ -3865,7 +5109,14 @@ class DialogueManager:
 
     def _handle_rov_description_in_transaction(self, description: str, new_slots: dict):
         all_rovs = self.kb.get_all_rovs()
-        task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else None
+        task_type_slot = new_slots.get("task_type_key")
+        task_type_key = (
+            task_type_slot.value
+            if task_type_slot
+            and task_type_slot.status == "valid"
+            and task_type_slot.value is not None
+            else None
+        )
         candidates = self.extractor.resolve_rov_description(
             description, all_rovs, task_type_key
         )
@@ -4124,6 +5375,21 @@ class DialogueManager:
     # --------------------------------------------------------------------------
 
     def _merge_oilfield_context_violations(self, new_violations: list[Violation]) -> list[Violation]:
+        task_type_key = self.task_state.get("task_type_key")
+        if task_type_key:
+            schema_keys = {
+                str(field.get("key"))
+                for field in self.builder.get_schema(task_type_key, self.mode)
+                if isinstance(field, dict) and field.get("key")
+            }
+            # Oilfield linker metadata is task-scoped.  Even if an old/legacy
+            # snapshot leaked an entity id, it must not inject C028/C029 into a
+            # known task whose schema has no oilfield contract.  A missing task
+            # key is retained as a fail-closed compatibility path for direct
+            # validation of pre-schema/legacy state.
+            if "oilfield_name" not in schema_keys:
+                return new_violations
+
         entity_id = self.task_state.get("oilfield_entity_id")
         if not entity_id:
             return new_violations
@@ -4140,8 +5406,25 @@ class DialogueManager:
             if ctx_res and ctx_res.issues:
                 merged = list(new_violations)
                 existing_ids = {v.constraint_id for v in merged}
+                applicable_ids = None
+                if task_type_key:
+                    applicable_ids = {
+                        str(item.get("id"))
+                        for item in self.kb.get_constraints()
+                        if isinstance(item, dict)
+                        and (
+                            task_type_key in (item.get("applies_to") or [])
+                            or "all" in (item.get("applies_to") or [])
+                        )
+                    }
                 for issue in ctx_res.issues:
-                    if issue.constraint_id not in existing_ids:
+                    if (
+                        (
+                            applicable_ids is None
+                            or issue.constraint_id in applicable_ids
+                        )
+                        and issue.constraint_id not in existing_ids
+                    ):
                         merged.append(
                             Violation(
                                 constraint_id=issue.constraint_id,

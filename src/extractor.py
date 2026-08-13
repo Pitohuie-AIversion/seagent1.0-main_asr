@@ -40,7 +40,7 @@ EXTRACTION_TASK = """\
 你当前不是对话助手，而是结构化候选抽取器。
 - 只允许输出一个 JSON object，不得输出任何自然语言解释。
 - 必须严格遵守以下输出 JSON 结构。
-- 可能提供的最近历史消息用于解析当前回复所指的字段、编号选项或单一推荐；只有最新 user 消息能授权本轮字段更新。
+- 可能提供的最近历史消息用于理解上下文；编号选择只能引用紧邻上一条 assistant 消息中明确展示的有序候选，不能利用 required/allowed_values 的后台顺序；只有最新 user 消息能授权本轮字段更新。
 - 用户本轮明确接受上一轮助手给出的单一推荐时，可以从紧邻的上一条 assistant 消息复制被接受的推荐值；助手之前自行提到的值不能在没有本轮用户授权时写入。
 - 上游计划已判定本轮包含任务状态变更；必须输出候选、列表变更、时长关系之一，无法落实时必须说明 unresolved，禁止四者同时为空。
 
@@ -73,9 +73,10 @@ EXTRACTION_TASK = """\
 2. 如果无法识别任何任务字段，不得猜测候选；将无法落实的变更写入 unresolved。
 3. 只支持上述任务；用户明确描述了不支持的任务时，不提取 task_type，并把任务描述写入 unresolved。
 4. 如果最新用户消息中对同一字段多次修正，以最后出现的候选为准。
-5. 最新用户消息选择编号或接受单一推荐时，只能根据最近历史中明确列出的选项或紧邻助手消息中的明确推荐映射；多个候选但没有唯一选择时写入 unresolved，不得猜测。
-6. 如用户明确说任务紧急（"紧急"、"急"、"加急"等），提取 canonical_key: "emergency_mode" 且 normalized_value: true。
-7. 本阶段只允许输出 task_type、task_type_key、emergency_mode。
+5. 最新用户消息选择编号时，只能根据紧邻上一条 assistant 消息中明确编号展示的选项映射；即使 allowed_values 有固定顺序，只要该顺序未向用户展示就必须写入 unresolved。接受单一推荐时只能使用紧邻助手明确推荐的值；不得猜测。
+6. 仅当用户明确提及无歧义的紧急词汇（如"紧急"、"加急"、"应急救援"、"应急抢修"等）时，才提取 canonical_key: "emergency_mode" 且 normalized_value: true。严禁因语气词、标点符号（如感叹号）或"赶紧/优先"等泛化词语擅自判断为紧急模式。
+7. 若用户明确表示"取消紧急"、"非紧急"、"正常模式"、"按普通模式"、"不紧急"等，提取 canonical_key: "emergency_mode" 且 normalized_value: false。
+8. 本阶段只允许输出 task_type、task_type_key、emergency_mode。
 """
 
 EXTRACTION_SYSTEM = """\
@@ -86,7 +87,7 @@ EXTRACTION_SYSTEM = """\
 - 只允许输出一个 JSON object，不得输出任何自然语言解释。
 - 即使当前任务已确认、已发布、已锁定，只要用户本轮明确补充、修改或确认字段，也必须抽取为候选列表。
 - 如果用户本轮没有任何字段更新，返回 slot_candidates 为空列表的 JSON。
-- 可能提供的最近历史消息用于解析当前回复所指的字段、编号选项或单一推荐；只有最新 user 消息能授权本轮字段更新。
+- 可能提供的最近历史消息用于理解上下文；编号选择只能引用紧邻上一条 assistant 消息中明确展示的有序候选，不能利用 required/allowed_values 的后台顺序；只有最新 user 消息能授权本轮字段更新。
 - 用户本轮明确接受上一轮助手给出的单一推荐时，可以从紧邻的上一条 assistant 消息复制被接受的推荐值；助手之前自行提到的值不能在没有本轮用户授权时写入。
 - 上游计划已判定本轮包含任务状态变更；必须输出候选、列表变更、时长关系之一，无法落实时必须说明 unresolved，禁止四者同时为空。
 
@@ -113,7 +114,7 @@ EXTRACTION_SYSTEM = """\
 【提取规则】
 1. 只提取用户明确提供或可以高置信度推断的信息，不猜测。
 2. 每一个提取的字段，必须包含 raw_key（用户所用的词）、canonical_key（规范化字段名）、raw_value（用户说原始值）、normalized_value（转换后的标准化值，例如数字、日期等）和 confidence（置信度）。
-3. 通常以最新用户消息为候选值来源；唯一例外是用户本轮明确接受紧邻上一条助手消息中的单一推荐或明确选定其列出的编号选项。此时最新用户消息仍是写入授权来源，可以从该助手消息复制被接受的值；不能从更早历史、并列但未选中的候选或助手未经确认的推测中取值。
+3. 通常以最新用户消息为候选值来源；唯一例外是用户本轮明确接受紧邻上一条助手消息中的单一推荐，或明确选定该消息中按顺序展示的编号选项。此时最新用户消息仍是写入授权来源，可以从该助手消息复制被接受的值；不能从更早历史、后台 allowed_values 顺序、并列但未编号的候选或助手未经确认的推测中取值。
 4. 如果最新用户消息中对同一字段出现多个候选或多次反悔/修正，以文本中最后出现的候选为准。
 5. 对于时间信息：将口语时间转换为 YYYY-MM-DDTHH:MM:SS 格式，无时间部分时补 T00:00:00；"现在/当前/立即"等表达必须基于【当前时间】换算。用户提供持续时长时，将其换算为正数秒写入 time_relation；不要自行计算 end_time。没有持续时长时 time_relation 必须为 null。
 6. 对于坐标：normalized_value 提取为 {{"lat": float, "lon": float}} 格式，统一十进制度。
@@ -124,8 +125,8 @@ EXTRACTION_SYSTEM = """\
 10. 严格区分机器人系列与型号：equipment_family 只能填写 robot_families 的系列全名；equipment_type 只能填写该系列 model_variants 的型号全名。用户只明确系列时不得猜测型号；只明确型号时可由后端根据 family_id 补齐系列。
 11. 若确定ROV型号，可自动识别出ROV类型：{ROV2type}
 12. 机器人能力、最大水深、载荷、功率、尺寸、状态、任务阈值和作业限制必须以所需字段、允许值、ROV2type和后续知识库/约束校验为准；不得凭通用知识补全或改写配置中没有的信息。
-13. 如用户明确说任务紧急（"紧急"、"急"、"加急"等），提取 canonical_key: "emergency_mode" 且 normalized_value: true。
-14. 最新用户消息选择编号或接受单一推荐时，只能根据最近历史中明确列出的选项或紧邻助手消息中的明确推荐映射；多个候选但没有唯一选择时写入 unresolved，不得猜测。
+13. 仅当用户明确提及无歧义的紧急词汇（如"紧急"、"加急"、"应急救援"、"应急抢修"等）时，才可提取 canonical_key: "emergency_mode" 且 normalized_value: true。严禁因语气词、标点符号（如感叹号）或"赶紧/优先"等泛化词语擅自判断为紧急模式。若用户明确表示"取消紧急"、"非紧急"、"正常模式"、"按普通模式"、"不紧急"等，提取 canonical_key: "emergency_mode" 且 normalized_value: false。
+14. 最新用户消息选择编号时，只能根据紧邻上一条 assistant 消息中明确编号展示的选项映射；候选顺序未向用户展示时必须写入 unresolved。接受单一推荐时只能使用紧邻助手明确推荐的值；不得猜测。
 15. 只根据所需字段中定义的key提取，不新增其他字段。
 16. 任务维度中无法识别或无法映射的片段写入 unresolved；上游只有在 WRITE 时才调用本抽取器，因此没有可验证候选时不得返回全空，必须说明 unresolved。
 
@@ -181,6 +182,7 @@ class ParameterExtractor:
         ROV2type: list[dict] | None = None,
         conversation_history: list[dict] | None = None,
         allow_empty_for_side_effect: bool = False,
+        allow_task_type_transition: bool = False,
     ) -> dict:
         from .simulated_time import get_current_datetime
         now = get_current_datetime()
@@ -188,13 +190,23 @@ class ParameterExtractor:
 
         known = {k: v for k, v in current_state.items() if v is not None}
         task_type_rules = _build_task_type_rules(task_type_map or {})
+        extraction_required = required or []
+        if allow_task_type_transition and task_type_key is not None:
+            extraction_required = self._with_task_type_transition_values(
+                extraction_required,
+                task_type_map or {},
+            )
 
         if task_type_key is None:
             system_prompt = EXTRACTION_TASK.format(
                 task_type_rules=task_type_rules,
             )
         else:
-            required_json = json.dumps(required, ensure_ascii=False, indent=2) if required else "[]"
+            required_json = (
+                json.dumps(extraction_required, ensure_ascii=False, indent=2)
+                if extraction_required
+                else "[]"
+            )
             system_prompt = EXTRACTION_SYSTEM.format(
                 today=today_str,
                 current_state=json.dumps(known, ensure_ascii=False, indent=2),
@@ -213,7 +225,7 @@ class ParameterExtractor:
 
         extraction_context = self._select_extraction_history(
             user_message,
-            required,
+            extraction_required,
             conversation_history,
         )
         messages = [
@@ -239,7 +251,10 @@ class ParameterExtractor:
         if not isinstance(result, dict):
             result = {}
 
-        allowed_keys = self._allowed_candidate_keys(task_type_key, required)
+        allowed_keys = self._allowed_candidate_keys(
+            task_type_key,
+            extraction_required,
+        )
         raw_candidates = result.get("slot_candidates")
         if not isinstance(raw_candidates, list):
             # 兼容模型偶尔返回的扁平 JSON，但仍执行字段白名单检查。
@@ -275,7 +290,7 @@ class ParameterExtractor:
         normalized_candidates, resolver_unresolved = self._normalize_candidates(
             raw_candidates,
             allowed_keys,
-            required or [],
+            extraction_required,
             current_state,
             conversation_history or [],
         )
@@ -289,6 +304,19 @@ class ParameterExtractor:
                 cand for cand in normalized_candidates
                 if cand.get("canonical_key") != "payload"
             ]
+
+        selector_values: dict[str, object] = {}
+        for candidate in normalized_candidates:
+            key = candidate.get("canonical_key")
+            if key not in {"task_type", "task_type_key"}:
+                continue
+            value = candidate.get("normalized_value")
+            if key in selector_values and selector_values[key] != value:
+                unresolved.append(
+                    "同轮具体任务类型互相冲突，请只指定一种任务操作。"
+                )
+            else:
+                selector_values[str(key)] = value
 
         all_unresolved = [
             *unresolved,
@@ -306,6 +334,41 @@ class ParameterExtractor:
             ],
             "list_mutations": list_mutations,
         }
+
+    @staticmethod
+    def _with_task_type_transition_values(
+        required: list[dict],
+        task_type_map: dict[str, str],
+    ) -> list[dict]:
+        """Broaden only task selectors for a possible category transition.
+
+        Ordinary fields remain scoped to the active task schema.  This lets a
+        first pass discover a new task category without unioning incompatible
+        robot/payload candidate domains from every task template.
+        """
+        expanded = [dict(field) for field in required]
+        all_task_values = list(dict.fromkeys(
+            value
+            for value in task_type_map
+            if isinstance(value, str) and value.strip()
+        ))
+        if not all_task_values:
+            return expanded
+
+        task_field = next(
+            (field for field in expanded if field.get("key") == "task_type"),
+            None,
+        )
+        if task_field is None:
+            expanded.append({
+                "key": "task_type",
+                "label": "任务类型",
+                "type": "tasktype",
+                "allowed_values": all_task_values,
+            })
+        else:
+            task_field["allowed_values"] = all_task_values
+        return expanded
 
     def _extract_temporal_relation(
         self,
@@ -467,6 +530,8 @@ class ParameterExtractor:
             if field.get("key")
         }
         normalized_by_key: dict[str, dict] = {}
+        task_selector_candidates: list[dict] = []
+        task_selector_values: dict[str, object] = {}
         unresolved: list[str] = []
 
         for candidate in candidates:
@@ -512,6 +577,19 @@ class ParameterExtractor:
                 continue
 
             canonical_k = resolved_candidate["canonical_key"]
+            if canonical_k in {"task_type", "task_type_key"}:
+                selector_value = resolved_candidate.get("normalized_value")
+                if canonical_k not in task_selector_values:
+                    task_selector_values[canonical_k] = selector_value
+                    task_selector_candidates.append(resolved_candidate)
+                elif task_selector_values[canonical_k] != selector_value:
+                    # Task selectors define the schema used by every sibling
+                    # field.  Unlike an ordinary corrected value, two
+                    # different selectors in one model result must survive
+                    # normalization so DialogueManager can reject the turn
+                    # before mutating any task field.
+                    task_selector_candidates.append(resolved_candidate)
+                continue
             field_def = required_by_key.get(canonical_k)
             is_list_field = (field_def and field_def.get("type") == "list") or canonical_k == "payload"
 
@@ -540,7 +618,10 @@ class ParameterExtractor:
             else:
                 normalized_by_key[canonical_k] = resolved_candidate
 
-        return list(normalized_by_key.values()), unresolved
+        return [
+            *normalized_by_key.values(),
+            *task_selector_candidates,
+        ], unresolved
 
     def _resolve_candidate_value(
         self,
@@ -692,6 +773,12 @@ class ParameterExtractor:
                 "content": (
                     "你是受约束的候选语义解析器，只能输出 JSON object。"
                     "请结合 aliases、ambiguous_aliases、candidate_evidence、当前状态和历史，"
+                    "理解简称、错别字、模糊描述、用途偏好和上下文指代，不要求用户逐字"
+                    "复述标准名称。若证据足以支持唯一候选，应主动完成语义映射；若多个"
+                    "候选仍同样合理，则 matched=false，不能按列表顺序猜测。用户请求推荐"
+                    "时，可以依据用途和偏好做相对选择：只要某个候选的证据明确覆盖这些"
+                    "偏好、而其他候选没有对应证据，就应视为唯一支持并返回 matched=true；"
+                    "不要因为用户没有主动说出标准名称，或没有提供全部任务参数而拒绝推荐。"
                     "从 allowed_values 中选择唯一标准值；不能生成 allowed_values 之外的值。"
                     "输出格式："
                     "{\"matched\": true/false, \"canonical_key\": string|null, "
@@ -711,6 +798,35 @@ class ParameterExtractor:
         if not isinstance(result, dict) or not result.get("matched"):
             return None
         return result
+
+    def resolve_allowed_candidate(
+        self,
+        raw_value: object,
+        field_key: str,
+        field_def: dict,
+        current_state: dict | None = None,
+        conversation_history: list[dict] | None = None,
+    ) -> object | None:
+        """用模型理解模糊表达，但只返回当前字段的权威候选值。"""
+        allowed_values = list((field_def or {}).get("allowed_values") or [])
+        if not field_key or not allowed_values:
+            return None
+
+        semantic = self._resolve_candidate_semantically(
+            raw_value,
+            field_key,
+            [field_def],
+            current_state or {},
+            conversation_history or [],
+        )
+        if not semantic or semantic.get("canonical_key") != field_key:
+            return None
+
+        canonical = semantic.get("canonical_value")
+        return next(
+            (allowed for allowed in allowed_values if canonical == allowed),
+            None,
+        )
 
     @staticmethod
     def _validate_resolved_candidate(

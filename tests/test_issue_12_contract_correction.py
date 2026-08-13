@@ -26,6 +26,12 @@ class TestIssue12ContractCorrection(unittest.TestCase):
         self.slot_store = SlotStore(kb=self.kb)
         self.dm = DialogueManager(kb=self.kb)
 
+    def _set_task_type(self, task_type_key: str) -> None:
+        """Direct cascade tests must establish the same task domain as production."""
+        slot = self.dm.slot_store.slots["task_type_key"]
+        slot.value = task_type_key
+        slot.status = "valid"
+
     # Scenario 1: task_schemas.yaml contains equipment_class, family, type, unit in order and no equipment_specification
     def test_task_schemas_no_equipment_specification(self):
         templates = self.kb.task_schemas.get("task_templates", {})
@@ -98,6 +104,7 @@ class TestIssue12ContractCorrection(unittest.TestCase):
     # Scenario 7: User HP / CC resolution to equipment_type
     def test_user_hp_cc_resolution(self):
         # 250HP -> General Work Class 250HP
+        self._set_task_type("tree_valve_operation")
         self.dm._handle_equipment_updates_in_transaction(
             {"equipment_type": "250HP"},
             self.dm.slot_store.slots,
@@ -111,6 +118,7 @@ class TestIssue12ContractCorrection(unittest.TestCase):
 
         # 324CC -> AUV 324CC
         self.dm.slot_store = SlotStore(kb=self.kb)
+        self._set_task_type("pipeline_inspection")
         self.dm._handle_equipment_updates_in_transaction(
             {"equipment_type": "324CC"},
             self.dm.slot_store.slots,
@@ -123,6 +131,7 @@ class TestIssue12ContractCorrection(unittest.TestCase):
 
     # Scenario 8: Powered light-work-class variant remains selectable
     def test_powered_light_work_class_variant_selectable(self):
+        self._set_task_type("pipeline_inspection")
         self.dm._handle_equipment_updates_in_transaction(
             {"equipment_type": "轻型工作级深海机器人"},
             self.dm.slot_store.slots,
@@ -137,6 +146,7 @@ class TestIssue12ContractCorrection(unittest.TestCase):
 
     # Scenario 9: 4-level cascade forward completion
     def test_forward_cascade_completion(self):
+        self._set_task_type("tree_valve_operation")
         self.dm._handle_equipment_updates_in_transaction({"equipment_class": "work_class_rov"}, self.dm.slot_store.slots, allow_overwrite=True)
         self.assertEqual(self.dm.slot_store.slots["equipment_class"].value, "work_class_rov")
 
@@ -151,6 +161,7 @@ class TestIssue12ContractCorrection(unittest.TestCase):
 
     # Scenario 10: Reverse auto-fill from equipment_unit_id
     def test_reverse_autofill_from_unit_id(self):
+        self._set_task_type("tree_valve_operation")
         self.dm._handle_equipment_updates_in_transaction({"equipment_unit_id": "WROV-250-001"}, self.dm.slot_store.slots, allow_overwrite=True)
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].value, "work_class_rov")
@@ -161,6 +172,7 @@ class TestIssue12ContractCorrection(unittest.TestCase):
 
     # Scenario 11: Reverse auto-fill from equipment_type
     def test_reverse_autofill_from_equipment_type(self):
+        self._set_task_type("tree_valve_operation")
         self.dm._handle_equipment_updates_in_transaction({"equipment_type": "通用工作级深海机器人 250HP"}, self.dm.slot_store.slots, allow_overwrite=True)
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].value, "work_class_rov")
@@ -171,6 +183,7 @@ class TestIssue12ContractCorrection(unittest.TestCase):
     def test_cascade_invalidation_mutate_class(self):
         self.test_forward_cascade_completion()
         # Mutate class
+        self._set_task_type("pipeline_inspection")
         self.dm._handle_equipment_updates_in_transaction({"equipment_class": "auv"}, self.dm.slot_store.slots, allow_overwrite=True)
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_class"].value, "auv")
@@ -181,6 +194,7 @@ class TestIssue12ContractCorrection(unittest.TestCase):
     # Scenario 13: Cascade invalidation on mutating equipment_family
     def test_cascade_invalidation_mutate_family(self):
         self.test_forward_cascade_completion()
+        self._set_task_type("pipeline_inspection")
         self.dm._handle_equipment_updates_in_transaction({"equipment_family": "轻型工作级深海机器人"}, self.dm.slot_store.slots, allow_overwrite=True)
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_family"].value, "轻型工作级深海机器人")
@@ -190,13 +204,15 @@ class TestIssue12ContractCorrection(unittest.TestCase):
     # Scenario 14: Cascade invalidation on mutating equipment_type
     def test_cascade_invalidation_mutate_type(self):
         self.test_forward_cascade_completion()
-        self.dm._handle_equipment_updates_in_transaction({"equipment_type": "特种工作级深海机器人 600HP"}, self.dm.slot_store.slots, allow_overwrite=True)
+        self._set_task_type("pipeline_inspection")
+        self.dm._handle_equipment_updates_in_transaction({"equipment_type": "轻型工作级深海机器人 150HP"}, self.dm.slot_store.slots, allow_overwrite=True)
         slots = self.dm.slot_store.slots
-        self.assertEqual(slots["equipment_type"].value, "特种工作级深海机器人 600HP")
+        self.assertEqual(slots["equipment_type"].value, "轻型工作级深海机器人 150HP")
         self.assertEqual(slots["equipment_unit_id"].status, "missing")
 
     # Scenario 15: Mutating equipment_unit_id does not clear parent fields
     def test_mutate_unit_id_preserves_parents(self):
+        self._set_task_type("pipeline_inspection")
         self.dm._handle_equipment_updates_in_transaction({"equipment_unit_id": "LROV-150-001"}, self.dm.slot_store.slots, allow_overwrite=True)
         self.dm._handle_equipment_updates_in_transaction({"equipment_unit_id": "LROV-150-002"}, self.dm.slot_store.slots, allow_overwrite=True)
         slots = self.dm.slot_store.slots

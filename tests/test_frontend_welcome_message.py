@@ -207,3 +207,23 @@ class TestFrontendWelcomeMessage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEmergencyModeControl(unittest.TestCase):
+    def test_emergency_mode_state_commit_and_reset(self):
+        from src.dialogue_manager import DialogueManager
+        from src.knowledge_retriever import KnowledgeBase
+        from tests.test_p0_security_final_closeout import DummyLLM
+
+        dm = DialogueManager(DummyLLM(), KnowledgeBase())
+        self.assertEqual(dm.mode, "normal")
+
+        # Set emergency_mode = True
+        dm._apply_updates_in_transaction({"emergency_mode": True}, dm.slot_store.slots, allow_overwrite=True)
+        self.assertEqual(dm.mode, "emergency")
+        self.assertTrue(dm.slot_store.slots["emergency_mode"].value)
+
+        # Reset emergency_mode = False
+        dm._apply_updates_in_transaction({"emergency_mode": False}, dm.slot_store.slots, allow_overwrite=True)
+        self.assertEqual(dm.mode, "normal")
+        self.assertFalse(dm.slot_store.slots["emergency_mode"].value)

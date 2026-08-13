@@ -787,6 +787,32 @@ class SlotStore:
         confidence = mutation.get("confidence", 0.95)
         source = mutation.get("source", "user_input")
 
+        schema_field = next(
+            (
+                field
+                for field in required_schema or []
+                if isinstance(field, dict) and field.get("key") == field_name
+            ),
+            None,
+        )
+        if required_schema is not None and schema_field is None:
+            return {
+                "success": False,
+                "changed": False,
+                "operation": op,
+                "old_value": copy.deepcopy(
+                    new_slots.get(field_name).value
+                    if new_slots.get(field_name) is not None
+                    else []
+                ),
+                "new_value": copy.deepcopy(
+                    new_slots.get(field_name).value
+                    if new_slots.get(field_name) is not None
+                    else []
+                ),
+                "error": f"列表字段 '{field_name}' 不属于当前任务 schema",
+            }
+
         if payload_catalog is None:
             if self.kb and hasattr(self.kb, "assets") and isinstance(self.kb.assets, dict):
                 payload_catalog = self.kb.assets.get("payload_catalog", {})
@@ -798,22 +824,47 @@ class SlotStore:
                     payload_catalog = {}
 
         allowed_values = []
-        if required_schema:
-            for f in required_schema:
-                if f.get("key") == field_name:
-                    if allowed_values_resolver:
-                        allowed_values = allowed_values_resolver(f) or []
-                    else:
-                        allowed_values = f.get("allowed_values") or []
-                        if not allowed_values and f.get("allowed_values_ref") and self.kb:
-                            try:
-                                from .output_builder import OutputBuilder
-                                task_type_key = new_slots.get("task_type_key").value if new_slots.get("task_type_key") else ""
-                                current_state = {k: v.value for k, v in new_slots.items() if v and v.value is not None}
-                                allowed_values = OutputBuilder(self.kb).resolve_allowed_values(f, str(task_type_key or ""), current_state) or []
-                            except Exception:
-                                pass
-                    break
+        constrained_field = bool(
+            schema_field
+            and (
+                "allowed_values" in schema_field
+                or schema_field.get("allowed_values_ref")
+            )
+        )
+        if schema_field is not None:
+            if allowed_values_resolver:
+                allowed_values = allowed_values_resolver(schema_field) or []
+            else:
+                allowed_values = schema_field.get("allowed_values") or []
+                if (
+                    not allowed_values
+                    and schema_field.get("allowed_values_ref")
+                    and self.kb
+                ):
+                    try:
+                        from .output_builder import OutputBuilder
+                        task_type_slot = new_slots.get("task_type_key")
+                        task_type_key = (
+                            task_type_slot.value
+                            if task_type_slot
+                            and task_type_slot.status == "valid"
+                            and task_type_slot.value is not None
+                            else ""
+                        )
+                        current_state = {
+                            k: v.value
+                            for k, v in new_slots.items()
+                            if v
+                            and v.status == "valid"
+                            and v.value is not None
+                        }
+                        allowed_values = OutputBuilder(self.kb).resolve_allowed_values(
+                            schema_field,
+                            str(task_type_key or ""),
+                            current_state,
+                        ) or []
+                    except Exception:
+                        pass
 
         def _resolve(item_str: str) -> Tuple[Optional[str], Optional[str]]:
             """解析项的 (catalog_id, task_canonical_name)。
@@ -826,6 +877,9 @@ class SlotStore:
                 return None, None
 
             text_key = normalize_payload_match_key(text)
+
+            if constrained_field and not allowed_values:
+                return None, None
 
             if allowed_values:
                 for a_val in allowed_values:

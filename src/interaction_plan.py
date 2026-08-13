@@ -54,6 +54,17 @@ VALID_EMERGENCY_ACTIONS = {"stop", "pause", "abort", "cancel"}
 VALID_PENDING_ACTIONS = {"confirm", "reject"}
 VALID_WARNING_ACTIONS = {"acknowledge"}
 MIN_PLAN_CONFIDENCE = 0.6
+VALID_QUERY_INTENTS = {
+    "TASK_STATUS",
+    "TOOL_QUERY",
+    "DEVICE_CAPABILITY",
+    "DEVICE_STATUS",
+    "ENVIRONMENT_QUERY",
+    "KNOWLEDGE_QA",
+    "GENERAL_CHAT",
+    "CLARIFICATION",
+    "UNKNOWN",
+}
 
 
 @dataclass(frozen=True)
@@ -191,94 +202,110 @@ def validate_interaction_plan(
         ):
             raise ValueError(f"schema_version 非法: {schema_version!r}")
 
-        confidence = data.get("confidence")
+        operation_raw = data.get("operation")
+        operation = (
+            operation_raw.strip().upper()
+            if isinstance(operation_raw, str)
+            else None
+        )
+        if operation not in VALID_OPERATIONS:
+            raise ValueError(f"operation 非法: {operation_raw!r}")
+
+        confidence_raw = data.get("confidence", 1.0)
         if (
-            confidence is None
-            or isinstance(confidence, bool)
-            or not isinstance(confidence, (int, float))
+            isinstance(confidence_raw, bool)
+            or not isinstance(confidence_raw, (int, float))
+            or not math.isfinite(float(confidence_raw))
+            or not 0.0 <= float(confidence_raw) <= 1.0
         ):
-            raise ValueError("confidence 缺失或类型非法")
-        confidence = float(confidence)
-        if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
-            raise ValueError(f"confidence 数值非法: {confidence!r}")
-        if confidence < MIN_PLAN_CONFIDENCE:
+            confidence = 0.0
+        else:
+            confidence = float(confidence_raw)
+        if operation in {"WRITE", "CONTROL"} and confidence < MIN_PLAN_CONFIDENCE:
             return build_clarify_fallback_plan(
-                f"置信度过低({confidence:.2f})",
+                f"涉及状态变更的计划置信度过低({confidence:.2f})",
                 reason_code="LOW_CONFIDENCE_CLARIFY",
                 confidence=confidence,
             )
 
-        operation = data.get("operation")
-        if not isinstance(operation, str) or operation not in VALID_OPERATIONS:
-            raise ValueError(f"operation 非法: {operation!r}")
+        # operation 是唯一语义权威。模式和澄清状态由执行器推导，避免模型在
+        # 重复字段上产生轻微不一致后让安全的 READ 整轮失败。
+        dialogue_mode = {
+            "READ": "knowledge_qa",
+            "WRITE": "task_collection",
+            "CONTROL": "emergency_intervention",
+            "CLARIFY": "knowledge_qa",
+        }[operation]
+        needs_clarification = operation == "CLARIFY"
 
-        dialogue_mode = data.get("dialogue_mode")
-        if (
-            not isinstance(dialogue_mode, str)
-            or dialogue_mode not in VALID_DIALOGUE_MODES
-        ):
-            raise ValueError(f"dialogue_mode 非法: {dialogue_mode!r}")
-
-        subject_type = _enum_or_default(
-            data, "subject_type", VALID_SUBJECT_TYPES, "unknown"
+        subject_type_raw = data.get("subject_type")
+        subject_type = (
+            subject_type_raw
+            if isinstance(subject_type_raw, str)
+            and subject_type_raw in VALID_SUBJECT_TYPES
+            else "unknown"
         )
-        relation = _enum_or_default(data, "relation", VALID_RELATIONS, "unknown")
-        source_policy = _enum_or_default(
-            data, "source_policy", VALID_SOURCE_POLICIES, "none"
+        relation_raw = data.get("relation")
+        relation = (
+            relation_raw
+            if isinstance(relation_raw, str) and relation_raw in VALID_RELATIONS
+            else "unknown"
         )
-        query_intent = _optional_string(data, "query_intent")
-        subject_text = _optional_string(data, "subject_text")
-        clarification_reason = _optional_string(data, "clarification_reason")
+        source_policy_raw = data.get("source_policy")
+        source_policy = (
+            source_policy_raw
+            if isinstance(source_policy_raw, str)
+            and source_policy_raw in VALID_SOURCE_POLICIES
+            else "none"
+        )
 
-        needs_clarification = data.get("needs_clarification", False)
-        if not isinstance(needs_clarification, bool):
-            raise TypeError("needs_clarification 必须为布尔值")
+        subject_text_raw = data.get("subject_text")
+        subject_text = subject_text_raw if isinstance(subject_text_raw, str) else None
+        clarification_raw = data.get("clarification_reason")
+        clarification_reason = (
+            clarification_raw if isinstance(clarification_raw, str) else None
+        )
 
-        emergency_action = data.get("emergency_action")
-        if emergency_action is not None and (
-            not isinstance(emergency_action, str)
-            or emergency_action not in VALID_EMERGENCY_ACTIONS
-        ):
-            raise ValueError(f"emergency_action 非法: {emergency_action!r}")
-
-        pending_action = data.get("pending_action")
-        if pending_action is not None and (
-            not isinstance(pending_action, str)
-            or pending_action not in VALID_PENDING_ACTIONS
-        ):
-            raise ValueError(f"pending_action 非法: {pending_action!r}")
-        if pending_action is not None and operation != "WRITE":
-            raise ValueError("pending_action 只能用于 WRITE")
-
-        warning_action = data.get("warning_action")
-        if warning_action is not None and (
-            not isinstance(warning_action, str)
-            or warning_action not in VALID_WARNING_ACTIONS
-        ):
-            raise ValueError(f"warning_action 非法: {warning_action!r}")
-        if warning_action is not None and operation != "WRITE":
-            raise ValueError("warning_action 只能用于 WRITE")
-
-        if operation == "CONTROL":
-            if (
-                dialogue_mode != "emergency_intervention"
-                or emergency_action not in VALID_EMERGENCY_ACTIONS
-            ):
-                raise ValueError("CONTROL 缺少合法 emergency_action 或模式矛盾")
-        elif operation == "WRITE":
-            if dialogue_mode != "task_collection" or emergency_action is not None:
-                raise ValueError("WRITE 必须使用 task_collection 且不可携带控制动作")
-        elif operation == "READ":
-            if dialogue_mode != "knowledge_qa" or emergency_action is not None:
-                raise ValueError("READ 必须使用 knowledge_qa 且不可携带控制动作")
+        query_raw = data.get("query_intent")
+        if operation == "READ":
+            if query_raw is None:
+                query_intent = "GENERAL_CHAT"
+            elif isinstance(query_raw, str) and query_raw in VALID_QUERY_INTENTS:
+                query_intent = query_raw
+            else:
+                query_intent = "KNOWLEDGE_QA"
+        elif operation == "CLARIFY":
+            query_intent = "CLARIFICATION"
         else:
-            if dialogue_mode != "knowledge_qa" or emergency_action is not None:
-                raise ValueError("CLARIFY 必须为无副作用 knowledge_qa")
-            needs_clarification = True
+            query_intent = None
 
-        reason_code = data.get("reason_code", "OK")
-        if not isinstance(reason_code, str):
-            raise TypeError("reason_code 必须为字符串")
+        emergency_raw = data.get("emergency_action")
+        if operation == "CONTROL":
+            if emergency_raw not in VALID_EMERGENCY_ACTIONS:
+                raise ValueError("CONTROL 缺少合法 emergency_action")
+            emergency_action = emergency_raw
+        else:
+            emergency_action = None
+
+        pending_raw = data.get("pending_action")
+        pending_action = (
+            pending_raw
+            if operation == "WRITE" and pending_raw in VALID_PENDING_ACTIONS
+            else None
+        )
+        warning_raw = data.get("warning_action")
+        warning_action = (
+            warning_raw
+            if operation == "WRITE" and warning_raw in VALID_WARNING_ACTIONS
+            else None
+        )
+
+        reason_raw = data.get("reason_code", "OK")
+        reason_code = (
+            reason_raw.strip()
+            if isinstance(reason_raw, str) and reason_raw.strip()
+            else "OK"
+        )
 
         return InteractionPlan(
             schema_version=schema_version,
@@ -292,9 +319,9 @@ def validate_interaction_plan(
             source_policy=source_policy,
             needs_clarification=needs_clarification,
             clarification_reason=clarification_reason,
-            emergency_action=emergency_action if operation == "CONTROL" else None,
+            emergency_action=emergency_action,
             confidence=confidence,
-            reason_code=reason_code.strip() or "OK",
+            reason_code=reason_code,
             pending_action=pending_action,
         )
     except (TypeError, ValueError) as exc:

@@ -525,6 +525,7 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
                 extraction_result(initial_type),
                 extraction_result(initial_type),
                 extraction_result(replacement_type),
+                extraction_result(replacement_type),
             ],
             default_reply="测试回复。",
         )
@@ -558,7 +559,7 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
         self.assertEqual(dm.task_state.get("task_type_key"), "pipeline_burial")
         self.assertEqual(dm.task_state, dm.slot_store.get_task_state())
         self.assertEqual(len(llm.classify_calls), 2)
-        self.assertEqual(len(llm.extract_calls), 3)
+        self.assertEqual(len(llm.extract_calls), 4)
         self.assertFalse(llm.plans)
         self.assertFalse(llm.extractions)
 
@@ -1090,6 +1091,19 @@ class TestPreviewReserve(unittest.TestCase):
         from src.id_sequence import peek_daily_task_id
         self.peek = peek_daily_task_id
         self._tmp = tempfile.mkdtemp()
+        self._tmp_task_dir = Path(self._tmp) / "task"
+        self._tmp_history_dir = Path(self._tmp) / "history"
+        self._tmp_task_dir.mkdir(parents=True, exist_ok=True)
+        self._tmp_history_dir.mkdir(parents=True, exist_ok=True)
+        self._patcher_paths = patch.dict(
+            os.environ,
+            {
+                "SEAGENT_RESULT_DIR": self._tmp,
+                "SEAGENT_TASK_DIR": str(self._tmp_task_dir),
+                "SEAGENT_HISTORY_DIR": str(self._tmp_history_dir),
+            },
+        )
+        self._patcher_paths.start()
         self._patcher_result = patch("src.id_sequence.get_result_dir", return_value=Path(self._tmp))
         self._patcher_result.start()
         # 隔离内存计数器
@@ -1099,6 +1113,7 @@ class TestPreviewReserve(unittest.TestCase):
 
     def tearDown(self):
         self._patcher_result.stop()
+        self._patcher_paths.stop()
         import src.id_sequence as _idseq
         _idseq._COUNTERS.clear()
         _idseq._COUNTERS.update(self._orig_counters)
@@ -1172,6 +1187,7 @@ class TestPreviewReserve(unittest.TestCase):
 
         with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
              patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.result_paths.get_task_dir", return_value=tmp_task_dir), \
              patch("src.id_sequence.get_result_dir", return_value=Path(self._tmp)):
 
             dm_a = create_dialogue_manager()

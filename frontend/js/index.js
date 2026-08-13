@@ -656,11 +656,12 @@ Please describe your task request or ask a question directly.`,
       window.currentActions = currentActions;
       window.applyInteractionState = applyInteractionState;
       currentReadOnly = !!readOnly;
-      const canSend = !!currentActions.can_send && !currentReadOnly && !isSending;
+      // read_only 约束任务编辑，不等于关闭整个对话。终态仍可继续查询和讨论。
+      const canSend = !!currentActions.can_send && !isSending;
       messageInput.disabled = !canSend;
       sendBtn.disabled = !canSend;
       voiceBtn.disabled = !canSend;
-      isDone = currentReadOnly;
+      isDone = !currentActions.can_send;
     }
 
     function cancelActiveRequest() {

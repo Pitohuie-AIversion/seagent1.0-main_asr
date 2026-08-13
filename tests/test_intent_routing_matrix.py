@@ -86,7 +86,7 @@ class TestInteractionPlanRoutingContract(unittest.TestCase):
         self.assertEqual(result.query_intent, "CLARIFICATION")
         self.assertFalse(result.should_update_slots)
 
-    def test_invalid_plan_fails_closed_to_clarify(self):
+    def test_redundant_dialogue_mode_is_derived_from_operation(self):
         contradictory_plan = make_plan("WRITE")
         contradictory_plan["dialogue_mode"] = "knowledge_qa"
         llm = ScriptedLLM(plans=[contradictory_plan])
@@ -94,13 +94,9 @@ class TestInteractionPlanRoutingContract(unittest.TestCase):
 
         result = router.route("任意输入", [], {})
 
-        self.assertEqual(result.interaction_plan.operation, "CLARIFY")
-        self.assertEqual(
-            result.interaction_plan.reason_code,
-            "VALIDATION_FALLBACK_CLARIFY",
-        )
-        self.assertEqual(result.dialogue_mode, "knowledge_qa")
-        self.assertFalse(result.should_update_slots)
+        self.assertEqual(result.interaction_plan.operation, "WRITE")
+        self.assertEqual(result.dialogue_mode, "task_collection")
+        self.assertTrue(result.should_update_slots)
 
 
 class TestReadAndClarifyStateInvariance(unittest.TestCase):

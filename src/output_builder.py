@@ -446,13 +446,45 @@ class OutputBuilder:
                 for c in classes:
                     if c.get("class_id") not in feasible_class_ids:
                         continue
+                    class_id = c.get("class_id")
                     name = c.get("full_name") or c.get("class_id")
                     if name:
+                        class_node = next(
+                            (
+                                node
+                                for node in domain["classes"]
+                                if node.get("class_id") == class_id
+                            ),
+                            {},
+                        )
+                        feasible_family_ids = {
+                            node.get("family_id")
+                            for node in class_node.get("families", [])
+                        }
+                        aliases = [str(name), str(class_id)]
+                        descriptions: list[str] = []
+                        for family_id, family in self.kb.robot_fleet.get(
+                            "robot_families", {}
+                        ).items():
+                            if family_id not in feasible_family_ids:
+                                continue
+                            aliases.extend(
+                                [
+                                    str(family.get("full_name") or ""),
+                                    *(str(alias) for alias in family.get("aliases", []) or []),
+                                ]
+                            )
+                            brief = " ".join(str(family.get("brief") or "").split())
+                            if brief:
+                                descriptions.append(brief[:500])
                         catalog.append({
                             "canonical_value": name,
-                            "aliases": [],
+                            "aliases": list(
+                                dict.fromkeys(alias for alias in aliases if alias)
+                            ),
                             "display_name": c.get("full_name"),
                             "parent": None,
+                            "description": "\n".join(descriptions),
                         })
                 return catalog
             except RobotSelectionDataError as exc:

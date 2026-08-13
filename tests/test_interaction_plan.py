@@ -87,7 +87,7 @@ class TestInteractionPlanSchemaAndValidation(unittest.TestCase):
         self.assertEqual(plan1.operation, "CLARIFY")
         self.assertTrue(plan1.needs_clarification)
 
-        # 2. confidence 为 NaN
+        # 2. READ 的异常 confidence 退化为 0，不阻断无副作用回答
         raw_nan = {
             "operation": "READ",
             "dialogue_mode": "knowledge_qa",
@@ -95,9 +95,10 @@ class TestInteractionPlanSchemaAndValidation(unittest.TestCase):
             "source_policy": "project_kb",
         }
         plan_nan = validate_interaction_plan(raw_nan)
-        self.assertEqual(plan_nan.operation, "CLARIFY")
+        self.assertEqual(plan_nan.operation, "READ")
+        self.assertEqual(plan_nan.confidence, 0.0)
 
-        # 3. confidence 为 Inf
+        # 3. READ 的 Inf 同样作为非关键元数据降级
         raw_inf = {
             "operation": "READ",
             "dialogue_mode": "knowledge_qa",
@@ -105,7 +106,8 @@ class TestInteractionPlanSchemaAndValidation(unittest.TestCase):
             "source_policy": "project_kb",
         }
         plan_inf = validate_interaction_plan(raw_inf)
-        self.assertEqual(plan_inf.operation, "CLARIFY")
+        self.assertEqual(plan_inf.operation, "READ")
+        self.assertEqual(plan_inf.confidence, 0.0)
 
         # 4. 置信度过低 (< 0.6)
         raw_low = {
@@ -138,7 +140,7 @@ class TestInteractionPlanSchemaAndValidation(unittest.TestCase):
         plan_ctrl = validate_interaction_plan(raw_control_no_act)
         self.assertEqual(plan_ctrl.operation, "CLARIFY")
 
-        # 7. READ 包含紧急控制动作 (矛盾)
+        # 7. READ 携带多余控制元数据时丢弃副作用字段
         raw_read_with_action = {
             "operation": "READ",
             "dialogue_mode": "knowledge_qa",
@@ -147,9 +149,10 @@ class TestInteractionPlanSchemaAndValidation(unittest.TestCase):
             "source_policy": "project_kb",
         }
         plan_read_act = validate_interaction_plan(raw_read_with_action)
-        self.assertEqual(plan_read_act.operation, "CLARIFY")
+        self.assertEqual(plan_read_act.operation, "READ")
+        self.assertIsNone(plan_read_act.emergency_action)
 
-        # 8. WRITE 与 knowledge_qa 冲突
+        # 8. dialogue_mode 是冗余字段，WRITE 模式由 operation 推导
         raw_write_conflict = {
             "operation": "WRITE",
             "dialogue_mode": "knowledge_qa",
@@ -157,7 +160,8 @@ class TestInteractionPlanSchemaAndValidation(unittest.TestCase):
             "source_policy": "session_state",
         }
         plan_w_conf = validate_interaction_plan(raw_write_conflict)
-        self.assertEqual(plan_w_conf.operation, "CLARIFY")
+        self.assertEqual(plan_w_conf.operation, "WRITE")
+        self.assertEqual(plan_w_conf.dialogue_mode, "task_collection")
 
     def test_write_plan_is_validated_independently_of_wording(self):
         raw_write = {

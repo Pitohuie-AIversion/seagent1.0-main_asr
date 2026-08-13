@@ -126,7 +126,7 @@ class TestUIStateContract(unittest.TestCase):
     # 5. actions 计算 - done
     def test_actions_done_phase(self):
         actions = _compute_actions("done", "task_collection")
-        self.assertFalse(actions["can_send"])
+        self.assertTrue(actions["can_send"])
         self.assertFalse(actions["can_modify"])
         self.assertFalse(actions["can_confirm"])
         self.assertFalse(actions["can_publish"])
@@ -136,10 +136,10 @@ class TestUIStateContract(unittest.TestCase):
     # 6. actions 计算 - rejected
     def test_actions_rejected_phase(self):
         actions = _compute_actions("rejected", "task_collection")
-        self.assertFalse(actions["can_send"])
+        self.assertTrue(actions["can_send"])
         self.assertTrue(_compute_read_only("rejected"))
 
-    # P1-1 修复验证: 终态做问答保留只读和禁用
+    # 终态任务保持只读，但对话仍可继续
     def test_done_phase_with_knowledge_qa_preserves_readonly(self):
         mgr = make_mock_manager(
             phase="done",
@@ -150,7 +150,7 @@ class TestUIStateContract(unittest.TestCase):
         )
         ui = build_frontend_ui_state(mgr)
         self.assertTrue(ui["read_only"], "Done task must stay read_only even during QA")
-        self.assertFalse(ui["actions"]["can_send"], "Done task must stay non-sendable")
+        self.assertTrue(ui["actions"]["can_send"], "Done task must allow read-only chat")
         self.assertEqual(len(ui["slots"]), 2, "Task slots must not be cleared during QA")
 
     # P1-1 修复验证: 活动任务期间问答保留已有 slots

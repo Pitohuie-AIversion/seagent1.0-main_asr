@@ -65,8 +65,12 @@ operation 只能是：
 询问推荐本身属于 READ，不得因为问题中出现任务字段或“选择”语义就修改任务；
 接受上一轮助手明确给出的单一推荐才属于 WRITE。若上一轮只是并列介绍多个候选、
 没有明确推荐，且用户本轮也未指明选择，必须 CLARIFY，不能替用户猜测。
+用户用“第三个/选2/最后一个”等序号选择时，只有紧邻上一条助手消息明确展示了
+有序候选才属于 WRITE；不得使用 expected_slot_options 的后台顺序替用户选择。
 
-必须输出全部字段：
+只强制输出 operation。其余字段是可选的语义增强信息：有把握时输出，没有把握可
+省略；代码会从 operation 推导 dialogue_mode 和 needs_clarification。推荐、项目
+知识检索或控制动作需要相应信息时，应尽量输出相关字段：
 {
   "schema_version": 1,
   "operation": "READ|WRITE|CONTROL|CLARIFY",
@@ -85,11 +89,12 @@ operation 只能是：
   "reason_code": "short_machine_readable_code"
 }
 
-一致性要求：READ/CLARIFY 使用 knowledge_qa；WRITE 使用 task_collection；CONTROL
-使用 emergency_intervention 且必须给出 emergency_action。
+CONTROL 必须给出 emergency_action；涉及写入或控制且语义不确定时应选择 CLARIFY。
 当用户要求系统从当前待填字段的合法候选中推荐一个时，READ 且 relation=recommend；
-subject_type 必须对应被推荐字段，subject_text 必须逐字选自 expected_slot_options
-中该字段的 allowed_values，不能把机器人类别、系列、型号或单机编号混为一层。
+subject_type 应对应被推荐字段。subject_text 可以是用户的自然描述、候选别名或你
+根据候选证据推荐的标准值；执行器会再用 expected_slot_options 的 allowed_values
+做受约束语义消歧，最终不得写入候选域外值，也不能把类别、系列、型号或单机编号
+混为一层。
 当用户仅接受紧邻上一条助手给出的单一推荐时，WRITE 且仍使用
 relation=recommend、相同 subject_type 和相同 subject_text。代码会核验该值确实是
 上一轮推荐且仍属于当前合法候选；不得额外推导其他机器人层级。

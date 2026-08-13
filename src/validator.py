@@ -425,6 +425,181 @@ class TaskValidator:
             },
         }
 
+    def _validate_concrete_robot_payload_feasibility(
+        self,
+        task_state: dict,
+        canonical_selection: dict | None,
+    ) -> dict | None:
+        """Validate payload compatibility for a concrete selected Variant.
+
+        Snapshot restore intentionally validates only the static four-level
+        lineage.  Publish and execution need one additional fail-closed gate:
+        a payload that was collected before (or in the same turn as) a robot
+        change must still be supported by the final canonical Variant.
+        """
+        if not isinstance(task_state, dict) or task_state.get("payload") is None:
+            return None
+        if not isinstance(canonical_selection, dict):
+            return None
+        if task_state.get("equipment_type") is None and task_state.get(
+            "equipment_unit_id"
+        ) is None:
+            return None
+
+        fleet = getattr(self.kb, "robot_fleet", None)
+        variants = fleet.get("model_variants") if isinstance(fleet, dict) else None
+        evaluator = getattr(type(self.kb), "evaluate_static_robot_variant", None)
+        authoritative_gate = isinstance(variants, dict) and callable(evaluator)
+        if not authoritative_gate:
+            # Compatibility fakes used by older callers expose the static tuple
+            # API but do not own a fleet registry/evaluator.  They remain on the
+            # legacy contract; real KnowledgeBase instances never use this path.
+            return None
+
+        variant_id = canonical_selection.get("variant_id")
+        canonical_unit_id = canonical_selection.get("unit_id")
+        explicit_unit_selector = task_state.get("equipment_unit_id")
+        if explicit_unit_selector is not None:
+            exact_unit_resolver = getattr(
+                type(self.kb),
+                "_resolve_robot_unit_exact",
+                None,
+            )
+            if not callable(exact_unit_resolver):
+                return {
+                    "code": "STATIC_ROBOT_VALIDATOR_FAILURE",
+                    "message": "权威机器人注册表缺少精确 Unit 解析器。",
+                }
+            try:
+                explicit_unit = exact_unit_resolver(
+                    self.kb,
+                    explicit_unit_selector,
+                    task_state.get("task_type_key"),
+                )
+            except RobotSelectionDataError as exc:
+                return {
+                    "code": "STATIC_ROBOT_VALIDATOR_FAILURE",
+                    "message": f"显式机器人 Unit 无法安全解析：{exc}",
+                    "details": exc.to_dict(),
+                }
+            explicit_unit_id = (
+                explicit_unit.get("unit_id")
+                if isinstance(explicit_unit, dict)
+                else None
+            )
+            if not isinstance(explicit_unit_id, str) or not explicit_unit_id:
+                return {
+                    "code": "STATIC_ROBOT_VALIDATOR_FAILURE",
+                    "message": (
+                        f"显式机器人 Unit '{explicit_unit_selector}' 无法在 "
+                        "fleet registry 中唯一解析。"
+                    ),
+                }
+            if canonical_unit_id != explicit_unit_id:
+                return {
+                    "code": "STATIC_ROBOT_VALIDATOR_FAILURE",
+                    "message": (
+                        f"显式机器人 Unit '{explicit_unit_id}' 与静态校验器返回的 "
+                        f"canonical Unit '{canonical_unit_id}' 不一致。"
+                    ),
+                }
+
+        if isinstance(canonical_unit_id, str) and canonical_unit_id.strip():
+            # Independently bind Unit -> Variant from the registry.  This both
+            # fills a legacy helper omission and rejects a malformed helper
+            # result that pairs a real Unit with the wrong Variant.
+            fleet_units = fleet.get("fleet_units")
+            matching_units = [
+                unit
+                for unit in (fleet_units if isinstance(fleet_units, list) else [])
+                if isinstance(unit, dict)
+                and unit.get("unit_id") == canonical_unit_id
+            ]
+            if len(matching_units) != 1:
+                return {
+                    "code": "STATIC_ROBOT_VALIDATOR_FAILURE",
+                    "message": (
+                        f"canonical unit_id '{canonical_unit_id}' 无法在 fleet registry "
+                        "中唯一绑定机器人型号。"
+                    ),
+                }
+            registry_variant_id = matching_units[0].get("variant_id")
+            if (
+                isinstance(variant_id, str)
+                and variant_id.strip()
+                and variant_id != registry_variant_id
+            ):
+                return {
+                    "code": "STATIC_ROBOT_VALIDATOR_FAILURE",
+                    "message": (
+                        f"canonical unit_id '{canonical_unit_id}' 属于型号 "
+                        f"'{registry_variant_id}'，但静态校验器返回 '{variant_id}'。"
+                    ),
+                }
+            variant_id = registry_variant_id
+
+        if not isinstance(variant_id, str) or not variant_id.strip():
+            # Unit-level tuple results historically only guaranteed unit_id.
+            # If neither a concrete Unit nor Variant is available, the
+            # authoritative publish gate cannot safely determine capabilities.
+            return {
+                "code": "STATIC_ROBOT_VALIDATOR_FAILURE",
+                "message": (
+                    "机器人四级静态校验器未返回 canonical variant_id，"
+                    "且无法由 canonical unit_id 安全反推。"
+                ),
+            }
+
+        variant_cfg = variants.get(variant_id)
+        if not isinstance(variant_cfg, dict):
+            return {
+                "code": "ROBOT_FEASIBILITY_CHECK_FAILED",
+                "message": (
+                    f"无法读取已选机器人型号 '{variant_id}' 的载荷能力配置，"
+                    "不能安全继续发布或执行。"
+                ),
+            }
+
+        try:
+            feasibility = evaluator(
+                variant_id,
+                variant_cfg,
+                {"payload": copy.deepcopy(task_state.get("payload"))},
+            )
+        except RobotSelectionDataError as exc:
+            return {
+                "code": exc.error_code,
+                "message": f"机器人载荷可行性校验失败：{exc}",
+                "details": exc.to_dict(),
+            }
+        except Exception as exc:
+            return {
+                "code": "ROBOT_FEASIBILITY_CHECK_FAILED",
+                "message": f"机器人载荷可行性校验失败：{exc}",
+            }
+
+        eligible = getattr(feasibility, "eligible", None)
+        reasons = getattr(feasibility, "reasons", None)
+        if not isinstance(eligible, bool) or not isinstance(reasons, tuple):
+            return {
+                "code": "ROBOT_FEASIBILITY_CHECK_FAILED",
+                "message": "机器人载荷可行性校验器返回了非法结构。",
+            }
+        if eligible:
+            return None
+        return {
+            "code": "ROBOT_SELECTION_NOT_FEASIBLE",
+            "message": (
+                f"已选机器人型号 '{variant_id}' 不支持当前载荷要求："
+                + "; ".join(str(reason) for reason in reasons)
+            ),
+            "details": {
+                "variant_id": variant_id,
+                "payload": copy.deepcopy(task_state.get("payload")),
+                "reasons": list(reasons),
+            },
+        }
+
     def validate_task(
         self,
         task_state: dict,
@@ -503,6 +678,15 @@ class TaskValidator:
                     canonical_selection,
                 )
 
+            if (
+                error_dict is None
+                and purpose in ("publish", "preview", "runtime_execution")
+            ):
+                error_dict = self._validate_concrete_robot_payload_feasibility(
+                    task_state,
+                    canonical_selection,
+                )
+
             # 尝试确定具体单机并提取状态快照
             state_snapshot = None
             if error_dict is None:
@@ -524,29 +708,42 @@ class TaskValidator:
                 error_dict = None
             else:
                 # 存在 validation_error 时，不得返回空违规列表
-                feasibility_error = error_dict.get("code") in {
+                payload_feasibility_error = error_dict.get("code") in {
+                    "ROBOT_SELECTION_NOT_FEASIBLE",
+                    "INVALID_PAYLOAD_REQUIREMENTS",
+                    "INVALID_VARIANT_PAYLOAD_CONFIG",
+                }
+                feasibility_error = payload_feasibility_error or error_dict.get("code") in {
                     "NO_FEASIBLE_ROBOT_CANDIDATE",
                     "ROBOT_FEASIBILITY_CHECK_FAILED",
                 }
                 err_violation = Violation(
                     constraint_id="VAL_ERR",
                     constraint_name=(
-                        "机器人候选可行性校验失败"
-                        if feasibility_error
-                        else "单机状态校验失败"
+                        "机器人载荷可行性校验失败"
+                        if payload_feasibility_error
+                        else (
+                            "机器人候选可行性校验失败"
+                            if feasibility_error
+                            else "单机状态校验失败"
+                        )
                     ),
                     message=error_dict.get("message", "机器人选择校验错误"),
                     severity="hard",
                     related_fields=(
-                        [
-                            "equipment_class",
-                            "equipment_family",
-                            "water_depth",
-                            "payload",
-                            "start_time",
-                        ]
-                        if feasibility_error
-                        else ["equipment_unit_id"]
+                        ["payload", "equipment_type", "equipment_unit_id"]
+                        if payload_feasibility_error
+                        else (
+                            [
+                                "equipment_class",
+                                "equipment_family",
+                                "water_depth",
+                                "payload",
+                                "start_time",
+                            ]
+                            if feasibility_error
+                            else ["equipment_unit_id"]
+                        )
                     ),
                     check_type="validation_error",
                 )

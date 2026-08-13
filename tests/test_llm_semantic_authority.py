@@ -136,7 +136,9 @@ def test_pending_action_is_a_validated_write_side_effect() -> None:
 
     invalid = _plan("READ", "knowledge_qa")
     invalid["pending_action"] = "reject"
-    assert validate_interaction_plan(invalid).operation == "CLARIFY"
+    validated = validate_interaction_plan(invalid)
+    assert validated.operation == "READ"
+    assert validated.pending_action is None
 
 def test_warning_action_is_a_validated_write_side_effect() -> None:
     candidate = _plan("WRITE", "task_collection")
@@ -145,7 +147,9 @@ def test_warning_action_is_a_validated_write_side_effect() -> None:
 
     invalid = _plan("READ", "knowledge_qa")
     invalid["warning_action"] = "acknowledge"
-    assert validate_interaction_plan(invalid).operation == "CLARIFY"
+    validated = validate_interaction_plan(invalid)
+    assert validated.operation == "READ"
+    assert validated.warning_action is None
 
 
 def test_blocked_soft_uses_model_warning_action_without_phrase_gate() -> None:
@@ -463,13 +467,14 @@ def test_missing_operation_is_not_inferred_from_task_context() -> None:
     assert result.operation == "CLARIFY"
 
 
-def test_low_confidence_plan_fails_closed() -> None:
+def test_low_confidence_read_remains_safe_and_side_effect_free() -> None:
     result = validate_interaction_plan(
         _plan("READ", "knowledge_qa", confidence=0.4),
         user_message="介绍一下机器人",
     )
 
-    assert result.operation == "CLARIFY"
+    assert result.operation == "READ"
+    assert result.confidence == 0.4
 
 
 def test_generate_json_enables_native_vllm_json_constraint(monkeypatch) -> None:
@@ -631,6 +636,41 @@ def test_dialogue_manager_passes_structured_read_subject_to_retriever() -> None:
     assert "观察级深海机器人 75HP" in reply
     assert dm.slot_store.version == version
     assert dm.slot_store.export_snapshot() == before
+
+
+def test_build_responder_messages_filters_internal_metadata_slots() -> None:
+    built_json = {
+        "task_type": "采油树控制面板插入",
+        "task_type_key": "tree_valve_operation",
+        "water_depth": 100.0,
+        "oilfield_name": "流花11-1油田",
+        "oilfield_match_evidence": ["名称包含匹配“流花11-1油田”"],
+        "oilfield_match_candidates": [{"id": "liuhua_11_1", "name": "流花11-1油田", "evidence": ["拼音匹配"]}],
+        "raw_oilfield_name": "流花",
+        "oilfield_match_status": "accepted",
+        "oilfield_match_confidence": 0.82,
+    }
+    messages = build_responder_messages(
+        task_state=built_json,
+        built_json=built_json,
+        missing_fields=[],
+        mode="normal",
+        phase="confirming",
+        knowledge_context="",
+        constraint_context={"type": "none"},
+        conversation_history=[],
+        latest_user_message="确认发布",
+        ROV2type={},
+        support_task=["采油树控制面板插入"],
+    )
+    system_content = messages[0]["content"]
+    assert "oilfield_name" in system_content
+    assert "oilfield_match_evidence" not in system_content
+    assert "oilfield_match_candidates" not in system_content
+    assert "raw_oilfield_name" not in system_content
+    assert "oilfield_match_status" not in system_content
+    assert "oilfield_match_confidence" not in system_content
+
 
 
 def test_empty_commit_result_is_explicitly_grounded_for_responder() -> None:

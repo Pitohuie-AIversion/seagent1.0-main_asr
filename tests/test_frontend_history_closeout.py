@@ -121,8 +121,8 @@ class TestFrontendHistoryCloseout(unittest.TestCase):
             ("blocked_soft", True, True, False, False),
             ("blocked_hard", True, False, False, False),
             ("confirming", True, False, True, False),
-            ("done", False, False, False, True),
-            ("rejected", False, False, False, True),
+            ("done", True, False, False, True),
+            ("rejected", True, False, False, True),
         ]
 
         for phase, exp_can_send, exp_can_ignore, exp_can_pub, exp_read_only in phases_test:

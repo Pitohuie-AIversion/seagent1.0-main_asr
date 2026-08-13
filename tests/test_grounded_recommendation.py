@@ -9,8 +9,8 @@ tests/test_grounded_recommendation.py
 3. allowed_values 为空（字段未解析） → 返回 None，不拦截
 4. LLM subject_text 精确匹配 allowed_values → 使用 subject_text 推荐
 5. LLM subject_text 不匹配、唯一候选 → 直接推荐唯一候选（不报错）
-6. LLM subject_text 不匹配、多个候选 → 列出全部候选并建议第一个（不报错）
-7. LLM subject_text 为 None、多个候选 → 列出全部候选并建议第一个
+6. LLM subject_text 不匹配、多个候选 → 语义解析失败时列出并询问偏好
+7. LLM subject_text 为 None、多个候选 → 列出候选但不按顺序猜测
 """
 from __future__ import annotations
 
@@ -45,6 +45,9 @@ class TestBuildGroundedRecommendation(unittest.TestCase):
         mgr = object.__new__(DialogueManager)
         # 注入所需属性
         mgr.task_state = task_state or {}
+        mgr.conversation_history = []
+        mgr.extractor = MagicMock()
+        mgr.extractor.resolve_allowed_candidate.return_value = None
         mgr._last_missing = []
         if missing_field_def is not None:
             mgr._missing_field_definition = lambda key: (
@@ -127,7 +130,7 @@ class TestBuildGroundedRecommendation(unittest.TestCase):
         self.assertNotIn("重量级ROV", result)
 
     # ------------------------------------------------------------------
-    # Case 6: LLM subject_text 不匹配、多个候选 → 列出全部，建议第一个，不报错
+    # Case 6: LLM subject_text 不匹配、多个候选 → 列出全部并询问偏好
     # ------------------------------------------------------------------
     def test_mismatch_multiple_candidates_lists_all(self):
         from src.dialogue_manager import DialogueManager
@@ -142,8 +145,8 @@ class TestBuildGroundedRecommendation(unittest.TestCase):
         # 两个候选都应出现
         self.assertIn("观察级ROV", result)
         self.assertIn("AUV", result)
-        # 第一个为建议值
-        self.assertIn("观察级ROV", result)
+        self.assertNotIn("建议选择【观察级ROV】", result)
+        self.assertIn("请补充偏好", result)
         # 不出现错误消息
         self.assertNotIn("无法从当前任务", result)
         self.assertNotIn("重量级ROV", result)
@@ -162,6 +165,7 @@ class TestBuildGroundedRecommendation(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertIn("观察级ROV", result)
         self.assertIn("AUV", result)
+        self.assertNotIn("建议选择【观察级ROV】", result)
         self.assertNotIn("无法从当前任务", result)
 
     # ------------------------------------------------------------------

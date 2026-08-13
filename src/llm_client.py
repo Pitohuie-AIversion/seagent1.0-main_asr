@@ -68,23 +68,9 @@ INTERACTION_PLAN_JSON_SCHEMA: dict[str, Any] = {
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "reason_code": {"type": "string"},
     },
-    "required": [
-        "schema_version",
-        "operation",
-        "dialogue_mode",
-        "query_intent",
-        "subject_type",
-        "subject_text",
-        "relation",
-        "source_policy",
-        "warning_action",
-        "needs_clarification",
-        "clarification_reason",
-        "emergency_action",
-        "pending_action",
-        "confidence",
-        "reason_code",
-    ],
+    # operation 是唯一必须由模型表达的语义决策；其余字段都是可选的增强信息，
+    # 由 InteractionPlan 校验器推导或降级，避免安全 READ 被元数据瑕疵阻断。
+    "required": ["operation"],
     "additionalProperties": False,
 }
 

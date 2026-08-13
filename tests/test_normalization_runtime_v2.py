@@ -33,7 +33,12 @@ from src.normalization_contract import (
 from src.normalizer import FieldNormalizer
 from src.slot_store import Slot, SlotStore
 from src.task_patch import ListMutationPatch, SlotPatch, TaskPatch
-from tests.interaction_plan_support import ScriptedLLM, make_plan
+from tests.interaction_plan_support import (
+    ScriptedLLM,
+    extraction_result,
+    make_plan,
+    slot_candidate,
+)
 
 
 class TestNormalizationRuntimeV2Flags(unittest.TestCase):
@@ -598,6 +603,955 @@ class TestRuntimeV2Integration(unittest.TestCase):
         self.assertEqual(snapshots["V2"]["slots"]["task_type"]["value"], "管缆巡检")
         self.assertEqual(snapshots["G2.1"]["slots"]["task_type_key"]["value"], "pipeline_inspection")
         self.assertEqual(snapshots["Legacy"]["slots"]["task_type_key"]["value"], "pipeline_inspection")
+
+    def test_task_type_lock_uses_current_schema_for_sibling_updates(self):
+        """V2 锁定切类时，旧 Schema 合法字段可更新，目标任务专属值不得通过。"""
+        self._setup_stage2_task("pipeline_inspection")
+        tid_slot = Slot(
+            slot_name="task_id",
+            value="PI-20260813-001",
+            status="valid",
+            source="auto_reserved",
+        )
+        depth_slot = Slot(
+            slot_name="water_depth",
+            value=100.0,
+            value_type="number",
+            status="valid",
+        )
+        seeded_slots = self.dm.slot_store.clone_slots()
+        seeded_slots["task_id"] = tid_slot
+        seeded_slots["water_depth"] = depth_slot
+        self.dm.slot_store.commit_transaction(seeded_slots, [])
+        self.dm._rebuild_cache(commit_derived=False)
+        self.dm.extractor.extract_updates = MagicMock(
+            return_value={
+                "slot_candidates": [
+                    {
+                        "canonical_key": "task_type_key",
+                        "normalized_value": "pipeline_burial",
+                        "raw_value": "管缆埋设",
+                        "confidence": 1.0,
+                        "resolution_method": "canonical_exact",
+                    },
+                    {
+                        "canonical_key": "water_depth",
+                        "normalized_value": 321.0,
+                        "raw_value": "321米",
+                        "confidence": 1.0,
+                        "resolution_method": "type_normalization",
+                    },
+                    {
+                        "canonical_key": "payload",
+                        "normalized_value": ["高压水射流喷冲埋设模块"],
+                        "raw_value": "高压水射流喷冲埋设模块",
+                        "confidence": 1.0,
+                        "resolution_method": "canonical_exact",
+                    },
+                ],
+                "list_mutations": [],
+                "unresolved": [],
+            }
+        )
+
+        with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True), \
+             patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=True):
+            self.dm.process("改成管缆埋设，水深321米并带高压水射流喷冲埋设模块")
+
+        self.assertEqual(
+            self.dm.slot_store.slots["task_type_key"].value,
+            "pipeline_inspection",
+        )
+        self.assertIn(
+            "任务编号已锁定",
+            self.dm.slot_store.slots["task_type_key"].validation_error,
+        )
+        self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 321.0)
+        self.assertEqual(self.dm.slot_store.slots["water_depth"].status, "valid")
+        self.assertNotEqual(self.dm.slot_store.slots["payload"].status, "valid")
+
+    def test_task_switch_payload_mutation_uses_target_schema_in_legacy_and_v2(self):
+        """未锁定切换任务时，Payload ListMutation 必须按目标任务 Schema 解析。"""
+        extraction_res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "task_type_key",
+                    "normalized_value": "pipeline_burial",
+                    "raw_value": "管缆埋设",
+                    "confidence": 1.0,
+                    "resolution_method": "canonical_exact",
+                }
+            ],
+            "list_mutations": [
+                {
+                    "field": "payload",
+                    "operation": "add",
+                    "items": ["高压水射流喷冲埋设模块"],
+                    "target_items": [],
+                    "raw_text": "添加高压水射流喷冲埋设模块",
+                    "confidence": 1.0,
+                    "source": "user_input",
+                }
+            ],
+            "unresolved": [],
+        }
+
+        for name, task_patch_flag, normalization_flag in (
+            ("legacy", False, False),
+            ("v2", True, True),
+        ):
+            with self.subTest(runtime=name):
+                dm = DialogueManager(llm=MagicMock())
+                self._setup_stage2_task("pipeline_inspection", dm=dm)
+                dm.extractor.extract_updates = MagicMock(
+                    return_value=copy.deepcopy(extraction_res)
+                )
+
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=task_patch_flag,
+                ), patch(
+                    "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                    return_value=normalization_flag,
+                ):
+                    dm.process("改成管缆埋设并添加高压水射流喷冲埋设模块")
+
+                self.assertEqual(
+                    dm.slot_store.slots["task_type_key"].value,
+                    "pipeline_burial",
+                )
+                self.assertEqual(dm.slot_store.slots["payload"].status, "valid")
+                self.assertEqual(
+                    dm.slot_store.slots["payload"].value,
+                    ["高压水射流喷冲埋设模块"],
+                )
+
+    def test_task_switch_target_only_field_reextracted_in_legacy_and_v2(self):
+        """切类时必须把同一句话按目标 Schema 重抽，不能提前丢失专属字段。"""
+        selector_pass = extraction_result(
+            slot_candidate(
+                "task_type_key",
+                "tree_valve_operation",
+                raw_key="任务类型",
+                raw_value="采油树控制面板插入",
+            )
+        )
+        target_pass = extraction_result(
+            slot_candidate(
+                "task_type",
+                "采油树控制面板插入",
+                raw_key="任务类型",
+            ),
+            slot_candidate(
+                "task_type_key",
+                "tree_valve_operation",
+                raw_key="任务类型键",
+            ),
+            slot_candidate(
+                "wellhead_id",
+                "WH-17",
+                raw_key="井口编号",
+            ),
+        )
+
+        for name, task_patch_flag, normalization_flag in (
+            ("legacy", False, False),
+            ("v2", True, True),
+        ):
+            with self.subTest(runtime=name):
+                llm = ScriptedLLM(
+                    extractions=[selector_pass, target_pass],
+                    default_extraction=target_pass,
+                )
+                dm = DialogueManager(llm=llm)
+                self._setup_stage2_task("pipeline_inspection", dm=dm)
+
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=task_patch_flag,
+                ), patch(
+                    "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                    return_value=normalization_flag,
+                ):
+                    dm.process("改成采油树控制面板插入，井口编号 WH-17")
+
+                self.assertEqual(
+                    dm.slot_store.slots["task_type_key"].value,
+                    "tree_valve_operation",
+                )
+                self.assertEqual(
+                    dm.slot_store.slots["task_type"].value,
+                    "采油树控制面板插入",
+                )
+                self.assertEqual(dm.slot_store.slots["wellhead_id"].value, "WH-17")
+                self.assertEqual(dm.slot_store.slots["wellhead_id"].status, "valid")
+                self.assertEqual(dm.task_state.get("wellhead_id"), "WH-17")
+                self.assertEqual(len(llm.extract_calls), 2)
+                self.assertTrue(
+                    any(
+                        "wellhead_id" in str(message.get("content", ""))
+                        for message in llm.extract_calls[-1]
+                        if message.get("role") == "system"
+                    )
+                )
+
+    def test_task_switch_keeps_first_pass_shared_field_when_target_pass_omits_it(self):
+        """目标二抽漏掉共享字段时，首抽值仍须按目标 Schema 复验并提交。"""
+        selector_pass = extraction_result(
+            slot_candidate(
+                "task_type_key",
+                "tree_valve_operation",
+                raw_key="任务类型",
+            ),
+            slot_candidate(
+                "water_depth",
+                321.0,
+                raw_key="水深",
+                raw_value="321米",
+            ),
+        )
+        target_pass = extraction_result(
+            slot_candidate("task_type", "采油树控制面板插入"),
+            slot_candidate("task_type_key", "tree_valve_operation"),
+            slot_candidate("wellhead_id", "WH-17"),
+        )
+
+        for name, task_patch_flag, normalization_flag in (
+            ("legacy", False, False),
+            ("v2", True, True),
+        ):
+            with self.subTest(runtime=name):
+                llm = ScriptedLLM(
+                    extractions=[selector_pass, target_pass],
+                    default_extraction=target_pass,
+                )
+                dm = DialogueManager(llm=llm)
+                self._setup_stage2_task("pipeline_inspection", dm=dm)
+
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=task_patch_flag,
+                ), patch(
+                    "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                    return_value=normalization_flag,
+                ):
+                    dm.process("改成采油树控制面板插入，水深321米，井口WH-17")
+
+                self.assertEqual(dm.task_state.get("task_type_key"), "tree_valve_operation")
+                self.assertEqual(dm.task_state.get("water_depth"), 321.0)
+                self.assertEqual(dm.task_state.get("wellhead_id"), "WH-17")
+
+    def test_task_switch_target_pass_overrides_first_pass_shared_field(self):
+        """两遍都抽到同一共享字段时，以目标 Schema 二抽结果为准。"""
+        selector_pass = extraction_result(
+            slot_candidate("task_type_key", "tree_valve_operation"),
+            slot_candidate("water_depth", 321.0, raw_value="321米"),
+        )
+        target_pass = extraction_result(
+            slot_candidate("task_type", "采油树控制面板插入"),
+            slot_candidate("task_type_key", "tree_valve_operation"),
+            slot_candidate("water_depth", 456.0, raw_value="456米"),
+        )
+
+        for name, task_patch_flag, normalization_flag in (
+            ("legacy", False, False),
+            ("v2", True, True),
+        ):
+            with self.subTest(runtime=name):
+                llm = ScriptedLLM(
+                    extractions=[selector_pass, target_pass],
+                    default_extraction=target_pass,
+                )
+                dm = DialogueManager(llm=llm)
+                self._setup_stage2_task("pipeline_inspection", dm=dm)
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=task_patch_flag,
+                ), patch(
+                    "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                    return_value=normalization_flag,
+                ):
+                    dm.process("改成采油树任务，水深456米")
+
+                self.assertEqual(dm.task_state.get("water_depth"), 456.0)
+
+    def test_task_switch_payload_mutation_ignores_old_robot_and_payload(self):
+        """旧任务设备/载荷不得缩窄目标任务的动态 payload 合法域。"""
+        selector_pass = extraction_result(
+            slot_candidate("task_type_key", "tree_valve_operation"),
+        )
+        target_pass = extraction_result(
+            slot_candidate("task_type", "采油树控制面板插入"),
+            slot_candidate("task_type_key", "tree_valve_operation"),
+            list_mutations=[
+                {
+                    "field": "payload",
+                    "operation": "add",
+                    "items": ["多功能液压机械臂"],
+                    "target_items": [],
+                    "raw_text": "添加多功能液压机械臂",
+                    "confidence": 1.0,
+                    "source": "user_input",
+                }
+            ],
+        )
+
+        for name, task_patch_flag, normalization_flag in (
+            ("legacy", False, False),
+            ("v2", True, True),
+        ):
+            with self.subTest(runtime=name):
+                llm = ScriptedLLM(
+                    extractions=[selector_pass, target_pass],
+                    default_extraction=target_pass,
+                )
+                dm = DialogueManager(llm=llm)
+                self._setup_stage2_task("pipeline_inspection", dm=dm)
+                slots = dm.slot_store.clone_slots()
+                for key, value in (
+                    ("equipment_class", "observation_rov"),
+                    ("equipment_family", "观察级深海机器人"),
+                    ("equipment_type", "观察级深海机器人 75HP"),
+                    ("equipment_unit_id", "OBSROV-75-001"),
+                ):
+                    slots[key] = Slot(key, value=value, status="valid")
+                slots["payload"] = Slot(
+                    "payload",
+                    value_type="list",
+                    value=["电磁检测传感器"],
+                    status="valid",
+                )
+                dm.slot_store.commit_transaction(slots, [])
+                dm._rebuild_cache(commit_derived=False)
+
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=task_patch_flag,
+                ), patch(
+                    "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                    return_value=normalization_flag,
+                ):
+                    dm.process("改成采油树控制面板插入并添加多功能液压机械臂")
+
+                self.assertEqual(dm.task_state.get("task_type_key"), "tree_valve_operation")
+                self.assertEqual(dm.task_state.get("payload"), ["多功能液压机械臂"])
+                self.assertNotIn("电磁检测传感器", dm.task_state.get("payload", []))
+
+    def test_task_switch_payload_candidate_ignores_old_robot_and_payload(self):
+        """普通 payload candidate 也必须按清洁的目标任务状态规范化。"""
+        selector_pass = extraction_result(
+            slot_candidate("task_type_key", "tree_valve_operation"),
+        )
+        target_pass = extraction_result(
+            slot_candidate("task_type", "采油树控制面板插入"),
+            slot_candidate("task_type_key", "tree_valve_operation"),
+            slot_candidate("payload", ["多功能液压机械臂"]),
+        )
+
+        for name, task_patch_flag, normalization_flag in (
+            ("legacy", False, False),
+            ("v2", True, True),
+        ):
+            with self.subTest(runtime=name):
+                llm = ScriptedLLM(
+                    extractions=[selector_pass, target_pass],
+                    default_extraction=target_pass,
+                )
+                dm = DialogueManager(llm=llm)
+                self._setup_stage2_task("pipeline_inspection", dm=dm)
+                slots = dm.slot_store.clone_slots()
+                slots["equipment_type"] = Slot(
+                    "equipment_type",
+                    value="观察级深海机器人 75HP",
+                    status="valid",
+                )
+                slots["payload"] = Slot(
+                    "payload",
+                    value_type="list",
+                    value=["电磁检测传感器"],
+                    status="valid",
+                )
+                dm.slot_store.commit_transaction(slots, [])
+                dm._rebuild_cache(commit_derived=False)
+
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=task_patch_flag,
+                ), patch(
+                    "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                    return_value=normalization_flag,
+                ):
+                    dm.process("改成采油树插入并携带多功能液压机械臂")
+
+                self.assertEqual(dm.task_state.get("task_type_key"), "tree_valve_operation")
+                self.assertEqual(dm.task_state.get("payload"), ["多功能液压机械臂"])
+
+    def test_task_switch_target_robot_uses_same_turn_depth_not_stale_depth(self):
+        """目标机器人候选必须按本轮新水深生成，不能被旧水深提前过滤。"""
+        selector_pass = extraction_result(
+            slot_candidate("task_type_key", "pipeline_burial"),
+            slot_candidate("water_depth", 400.0, raw_value="400米"),
+        )
+        target_pass = extraction_result(
+            slot_candidate("task_type", "管缆埋设"),
+            slot_candidate("task_type_key", "pipeline_burial"),
+            slot_candidate("water_depth", 400.0, raw_value="400米"),
+            slot_candidate(
+                "equipment_type",
+                "履带式海底重载作业机器人 1600HP",
+            ),
+        )
+
+        for name, task_patch_flag, normalization_flag in (
+            ("legacy", False, False),
+            ("v2", True, True),
+        ):
+            with self.subTest(runtime=name):
+                llm = ScriptedLLM(
+                    extractions=[selector_pass, target_pass],
+                    default_extraction=target_pass,
+                )
+                dm = DialogueManager(llm=llm)
+                self._setup_stage2_task("pipeline_inspection", dm=dm)
+                slots = dm.slot_store.clone_slots()
+                slots["water_depth"] = Slot(
+                    "water_depth",
+                    value_type="number",
+                    value=600.0,
+                    status="valid",
+                )
+                dm.slot_store.commit_transaction(slots, [])
+                dm._rebuild_cache(commit_derived=False)
+
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=task_patch_flag,
+                ), patch(
+                    "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                    return_value=normalization_flag,
+                ):
+                    dm.process("改成管缆埋设，水深400米，使用履带式1600HP")
+
+                self.assertEqual(dm.task_state.get("task_type_key"), "pipeline_burial")
+                self.assertEqual(dm.task_state.get("water_depth"), 400.0)
+                self.assertEqual(
+                    dm.task_state.get("equipment_type"),
+                    "履带式海底重载作业机器人 1600HP",
+                )
+
+    def test_target_pass_conflicting_concrete_task_type_is_rejected_atomically(self):
+        """目标二抽同键给出插入/拔出时必须拒绝，不能 last-wins。"""
+        selector_pass = extraction_result(
+            slot_candidate("task_type_key", "tree_valve_operation"),
+        )
+        target_pass = extraction_result(
+            slot_candidate("task_type", "采油树控制面板插入"),
+            slot_candidate("task_type", "采油树控制面板拔出"),
+            slot_candidate("task_type_key", "tree_valve_operation"),
+            slot_candidate("wellhead_id", "WH-17"),
+        )
+
+        for name, task_patch_flag, normalization_flag in (
+            ("legacy", False, False),
+            ("v2", True, True),
+        ):
+            with self.subTest(runtime=name):
+                llm = ScriptedLLM(
+                    extractions=[selector_pass, target_pass],
+                    default_extraction=target_pass,
+                )
+                dm = DialogueManager(llm=llm)
+                self._setup_stage2_task("pipeline_inspection", dm=dm)
+                before = dm.slot_store.get_task_state()
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=task_patch_flag,
+                ), patch(
+                    "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                    return_value=normalization_flag,
+                ):
+                    dm.process("改成采油树插入或拔出，井口WH-17")
+
+                self.assertEqual(dm.slot_store.get_task_state(), before)
+                self.assertIn(
+                    "同轮具体任务类型互相冲突",
+                    dm.slot_store.slots["task_type_key"].validation_error,
+                )
+
+    def test_cross_pass_conflicting_concrete_task_type_is_rejected_atomically(self):
+        """首抽与目标二抽的具体操作冲突时也必须拒绝，不能让二抽覆盖。"""
+        selector_pass = extraction_result(
+            slot_candidate("task_type", "采油树控制面板插入"),
+            slot_candidate("task_type_key", "tree_valve_operation"),
+        )
+        target_pass = extraction_result(
+            slot_candidate("task_type", "采油树控制面板拔出"),
+            slot_candidate("task_type_key", "tree_valve_operation"),
+            slot_candidate("wellhead_id", "WH-17"),
+        )
+
+        for name, task_patch_flag, normalization_flag in (
+            ("legacy", False, False),
+            ("v2", True, True),
+        ):
+            with self.subTest(runtime=name):
+                llm = ScriptedLLM(
+                    extractions=[selector_pass, target_pass],
+                    default_extraction=target_pass,
+                )
+                dm = DialogueManager(llm=llm)
+                self._setup_stage2_task("pipeline_inspection", dm=dm)
+                before = dm.slot_store.get_task_state()
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=task_patch_flag,
+                ), patch(
+                    "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                    return_value=normalization_flag,
+                ):
+                    dm.process("改成采油树插入，井口WH-17")
+
+                self.assertEqual(dm.slot_store.get_task_state(), before)
+                self.assertIn(
+                    "同轮具体任务类型互相冲突",
+                    dm.slot_store.slots["task_type_key"].validation_error,
+                )
+
+    def test_malformed_target_task_selector_fails_closed_without_exception(self):
+        """模型返回 list/dict 任务 selector 时必须结构化拒绝，不能 TypeError。"""
+        selector_pass = extraction_result(
+            slot_candidate("task_type_key", "tree_valve_operation"),
+        )
+        malformed_values = (["tree_valve_operation"], {"key": "tree_valve_operation"})
+        for malformed in malformed_values:
+            for name, task_patch_flag, normalization_flag in (
+                ("legacy", False, False),
+                ("v2", True, True),
+            ):
+                with self.subTest(runtime=name, malformed=malformed):
+                    target_pass = extraction_result(
+                        slot_candidate("task_type_key", malformed),
+                        slot_candidate("wellhead_id", "WH-17"),
+                    )
+                    llm = ScriptedLLM(
+                        extractions=[selector_pass, target_pass],
+                        default_extraction=target_pass,
+                    )
+                    dm = DialogueManager(llm=llm)
+                    self._setup_stage2_task("pipeline_inspection", dm=dm)
+                    before = dm.slot_store.get_task_state()
+                    with patch(
+                        "src.dialogue_manager.is_task_patch_v2_enabled",
+                        return_value=task_patch_flag,
+                    ), patch(
+                        "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                        return_value=normalization_flag,
+                    ):
+                        dm.process("改成采油树任务，井口WH-17")
+
+                    self.assertEqual(dm.slot_store.get_task_state(), before)
+                    self.assertIn(
+                        "非空字符串",
+                        dm.slot_store.slots["task_type_key"].validation_error,
+                    )
+
+    def test_same_turn_explicit_robot_revalidates_payload_in_legacy_and_v2(self):
+        """同轮机器人更新后必须按最终 Variant 复验普通 payload candidate。"""
+        extraction = extraction_result(
+            slot_candidate("equipment_unit_id", "AUV-324cc-001"),
+            slot_candidate("payload", ["电磁检测传感器"]),
+        )
+
+        for name, task_patch_flag, normalization_flag in (
+            ("legacy", False, False),
+            ("v2", True, True),
+        ):
+            with self.subTest(runtime=name):
+                dm = DialogueManager(llm=MagicMock())
+                self._setup_stage2_task("pipeline_inspection", dm=dm)
+                dm.extractor.extract_updates = MagicMock(
+                    return_value=copy.deepcopy(extraction)
+                )
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=task_patch_flag,
+                ), patch(
+                    "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                    return_value=normalization_flag,
+                ):
+                    dm.process("改用AUV-324cc-001并携带电磁检测传感器")
+
+                self.assertEqual(
+                    dm.task_state.get("equipment_unit_id"),
+                    "AUV-324cc-001",
+                )
+                self.assertNotEqual(dm.slot_store.slots["payload"].status, "valid")
+                self.assertNotIn("payload", dm.task_state)
+
+    def test_same_turn_parent_robot_selector_collapses_before_payload_validation(self):
+        """Class/Family 唯一下级须先在沙箱收敛，再校验依赖 Variant 的载荷。"""
+        for selector_key, selector_value in (
+            ("equipment_class", "auv"),
+            ("equipment_family", "水下无人自主航行器"),
+        ):
+            extraction = extraction_result(
+                slot_candidate(selector_key, selector_value),
+                slot_candidate("payload", ["INS惯性导航系统"]),
+            )
+            for name, task_patch_flag, normalization_flag in (
+                ("legacy", False, False),
+                ("v2", True, True),
+            ):
+                with self.subTest(runtime=name, selector=selector_key):
+                    dm = DialogueManager(llm=MagicMock())
+                    self._setup_stage2_task("pipeline_inspection", dm=dm)
+                    dm.extractor.extract_updates = MagicMock(
+                        return_value=copy.deepcopy(extraction)
+                    )
+                    with patch(
+                        "src.dialogue_manager.is_task_patch_v2_enabled",
+                        return_value=task_patch_flag,
+                    ), patch(
+                        "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                        return_value=normalization_flag,
+                    ):
+                        dm.process("改用AUV并携带INS惯性导航系统")
+
+                    self.assertEqual(
+                        dm.task_state.get("equipment_type"),
+                        "水下无人自主航行器 324CC",
+                    )
+                    self.assertEqual(
+                        dm.task_state.get("equipment_unit_id"),
+                        "AUV-324cc-001",
+                    )
+                    self.assertEqual(
+                        dm.task_state.get("payload"),
+                        ["INS惯性导航系统"],
+                    )
+
+    def test_unit_only_replaces_old_complete_cascade_before_payload_validation(self):
+        """Unit-only 更新不能被旧 Variant 上下文限制或错绑同尾号机器。"""
+        for unit_selector in ("AUV-324cc-001", "AUV001"):
+            extraction = extraction_result(
+                slot_candidate("equipment_unit_id", unit_selector),
+                slot_candidate("payload", ["INS惯性导航系统"]),
+            )
+            for name, task_patch_flag, normalization_flag in (
+                ("legacy", False, False),
+                ("v2", True, True),
+            ):
+                with self.subTest(runtime=name, unit=unit_selector):
+                    dm = DialogueManager(llm=MagicMock())
+                    self._setup_stage2_task("pipeline_inspection", dm=dm)
+                    dm._handle_equipment_updates_in_transaction(
+                        {"equipment_unit_id": "OBSROV-75-001"},
+                        dm.slot_store.slots,
+                        allow_overwrite=True,
+                    )
+                    dm.extractor.extract_updates = MagicMock(
+                        return_value=copy.deepcopy(extraction)
+                    )
+                    with patch(
+                        "src.dialogue_manager.is_task_patch_v2_enabled",
+                        return_value=task_patch_flag,
+                    ), patch(
+                        "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                        return_value=normalization_flag,
+                    ):
+                        dm.process("改用AUV一号机并携带INS惯性导航系统")
+
+                    self.assertEqual(dm.task_state.get("equipment_class"), "auv")
+                    self.assertEqual(
+                        dm.task_state.get("equipment_family"),
+                        "水下无人自主航行器",
+                    )
+                    self.assertEqual(
+                        dm.task_state.get("equipment_type"),
+                        "水下无人自主航行器 324CC",
+                    )
+                    self.assertEqual(
+                        dm.task_state.get("equipment_unit_id"),
+                        "AUV-324cc-001",
+                    )
+                    self.assertEqual(
+                        dm.task_state.get("payload"),
+                        ["INS惯性导航系统"],
+                    )
+
+    def test_same_turn_robot_payload_list_mutation_uses_post_update_variant(self):
+        """Payload ListMutation 必须使用同轮目标 Variant，合法项接受、非法项拒绝。"""
+        for payload_name, should_succeed in (
+            ("USBL定位设备", True),
+            ("电磁检测传感器", False),
+        ):
+            extraction = extraction_result(
+                slot_candidate("equipment_unit_id", "AUV-324cc-001"),
+                list_mutations=[
+                    {
+                        "field": "payload",
+                        "operation": "add",
+                        "items": [payload_name],
+                        "target_items": [],
+                        "raw_text": f"添加{payload_name}",
+                        "confidence": 1.0,
+                        "source": "user_input",
+                    }
+                ],
+            )
+            for name, task_patch_flag, normalization_flag in (
+                ("legacy", False, False),
+                ("v2", True, True),
+            ):
+                with self.subTest(
+                    runtime=name,
+                    payload=payload_name,
+                    should_succeed=should_succeed,
+                ):
+                    dm = DialogueManager(llm=MagicMock())
+                    self._setup_stage2_task("pipeline_inspection", dm=dm)
+                    dm.extractor.extract_updates = MagicMock(
+                        return_value=copy.deepcopy(extraction)
+                    )
+                    with patch(
+                        "src.dialogue_manager.is_task_patch_v2_enabled",
+                        return_value=task_patch_flag,
+                    ), patch(
+                        "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                        return_value=normalization_flag,
+                    ):
+                        dm.process(f"改用AUV-324cc-001并添加{payload_name}")
+
+                    self.assertEqual(
+                        dm.task_state.get("equipment_unit_id"),
+                        "AUV-324cc-001",
+                    )
+                    if should_succeed:
+                        self.assertEqual(dm.task_state.get("payload"), [payload_name])
+                    else:
+                        self.assertNotEqual(
+                            dm.slot_store.slots["payload"].status,
+                            "valid",
+                        )
+                        self.assertNotIn("payload", dm.task_state)
+
+    def test_task_switch_target_oilfield_is_linked_after_old_task_slots_clear(self):
+        """清除旧任务专属槽位不能误删目标二抽后产生的油田实体。"""
+        selector_pass = extraction_result(
+            slot_candidate("task_type_key", "tree_valve_operation"),
+        )
+        target_pass = extraction_result(
+            slot_candidate("task_type", "采油树控制面板插入"),
+            slot_candidate("task_type_key", "tree_valve_operation"),
+            slot_candidate("oilfield_name", "陵水17-2"),
+        )
+
+        for name, task_patch_flag, normalization_flag in (
+            ("legacy", False, False),
+            ("v2", True, True),
+        ):
+            with self.subTest(runtime=name):
+                llm = ScriptedLLM(
+                    extractions=[selector_pass, target_pass],
+                    default_extraction=target_pass,
+                )
+                dm = DialogueManager(llm=llm)
+                self._setup_stage2_task("pipeline_inspection", dm=dm)
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=task_patch_flag,
+                ), patch(
+                    "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                    return_value=normalization_flag,
+                ):
+                    dm.process("改成采油树控制面板插入，油田是陵水17-2")
+
+                self.assertEqual(dm.task_state.get("task_type_key"), "tree_valve_operation")
+                self.assertEqual(dm.task_state.get("oilfield_name"), "陵水17-2气田")
+                self.assertTrue(dm.task_state.get("oilfield_entity_id"))
+
+    def test_task_switch_clears_old_oilfield_lineage_and_constraints(self):
+        """离开采油树任务后旧油田实体不得残留或注入 C028/C029。"""
+        selector_pass = extraction_result(
+            slot_candidate("task_type_key", "pipeline_inspection"),
+        )
+        target_pass = extraction_result(
+            slot_candidate("task_type", "管缆巡检"),
+            slot_candidate("task_type_key", "pipeline_inspection"),
+            slot_candidate("water_depth", 2000.0, raw_value="2000米"),
+        )
+        oilfield_values = {
+            "oilfield_name": "陵水17-2气田",
+            "raw_oilfield_name": "陵水17-2",
+            "oilfield_match_status": "accepted",
+            "oilfield_match_confidence": 1.0,
+            "oilfield_match_evidence": ["test"],
+            "oilfield_entity_id": "lingshui_17_2",
+            "pending_oilfield_name": "旧候选",
+            "pending_oilfield_candidates": [{"id": "old"}],
+        }
+
+        for name, task_patch_flag, normalization_flag in (
+            ("legacy", False, False),
+            ("v2", True, True),
+        ):
+            with self.subTest(runtime=name):
+                llm = ScriptedLLM(
+                    extractions=[selector_pass, target_pass],
+                    default_extraction=target_pass,
+                )
+                dm = DialogueManager(llm=llm)
+                self._setup_stage2_task("tree_valve_operation", dm=dm)
+                slots = dm.slot_store.clone_slots()
+                for key, value in oilfield_values.items():
+                    slots[key] = Slot(key, value=value, status="valid")
+                dm.slot_store.commit_transaction(slots, [])
+                dm._rebuild_cache(commit_derived=False)
+
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=task_patch_flag,
+                ), patch(
+                    "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                    return_value=normalization_flag,
+                ):
+                    dm.process("改成管缆巡检，水深2000米")
+
+                self.assertEqual(dm.task_state.get("task_type_key"), "pipeline_inspection")
+                for key in oilfield_values:
+                    slot = dm.slot_store.slots.get(key)
+                    self.assertTrue(
+                        slot is None
+                        or (
+                            slot.status == "missing"
+                            and slot.value in (None, [])
+                            and key not in dm.task_state
+                        ),
+                        key,
+                    )
+                self.assertEqual(dm._merge_oilfield_context_violations([]), [])
+
+    def test_locked_task_switch_rejects_target_only_oilfield_without_pollution(self):
+        """任务编号锁定类别后，目标任务专属 linker 字段不得污染当前任务。"""
+        extraction_res = extraction_result(
+            slot_candidate(
+                "task_type_key",
+                "tree_valve_operation",
+                raw_key="任务类型",
+                raw_value="采油树控制面板插入",
+            ),
+            slot_candidate(
+                "oilfield_name",
+                "陵水17-2",
+                raw_key="油田名称",
+            ),
+            slot_candidate(
+                "water_depth",
+                321.0,
+                raw_key="水深",
+                raw_value="321米",
+            ),
+        )
+        oilfield_keys = (
+            "oilfield_name",
+            "raw_oilfield_name",
+            "oilfield_match_status",
+            "oilfield_entity_id",
+            "pending_oilfield_name",
+        )
+
+        for name, task_patch_flag, normalization_flag in (
+            ("legacy", False, False),
+            ("v2", True, True),
+        ):
+            with self.subTest(runtime=name):
+                dm = DialogueManager(llm=MagicMock())
+                self._setup_stage2_task("pipeline_inspection", dm=dm)
+                slots = dm.slot_store.clone_slots()
+                slots["task_id"] = Slot(
+                    "task_id",
+                    value="PI-20260813-001",
+                    status="valid",
+                    source="auto_reserved",
+                )
+                dm.slot_store.commit_transaction(slots, [])
+                dm._rebuild_cache(commit_derived=False)
+                dm.extractor.extract_updates = MagicMock(
+                    return_value=copy.deepcopy(extraction_res)
+                )
+
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=task_patch_flag,
+                ), patch(
+                    "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                    return_value=normalization_flag,
+                ):
+                    dm.process("改成采油树任务，在陵水17-2，水深321米")
+
+                self.assertEqual(
+                    dm.slot_store.slots["task_type_key"].value,
+                    "pipeline_inspection",
+                )
+                self.assertIn(
+                    "任务编号已锁定",
+                    dm.slot_store.slots["task_type_key"].validation_error,
+                )
+                self.assertEqual(dm.slot_store.slots["water_depth"].value, 321.0)
+                self.assertEqual(dm.slot_store.slots["water_depth"].status, "valid")
+                for key in oilfield_keys:
+                    slot = dm.slot_store.slots.get(key)
+                    self.assertTrue(
+                        slot is None
+                        or (slot.value is None and slot.status == "missing"),
+                        key,
+                    )
+
+    def test_list_mutation_requires_field_membership_in_effective_schema(self):
+        """ListMutation 不得把普通模式字段写入不含该字段的紧急 Schema。"""
+        for name, task_patch_flag, normalization_flag in (
+            ("legacy", False, False),
+            ("v2", True, True),
+        ):
+            with self.subTest(runtime=name):
+                dm = DialogueManager(llm=MagicMock())
+                dm.mode = "emergency"
+                self._setup_stage2_task("pipeline_inspection", dm=dm)
+                dm.extractor.extract_updates = MagicMock(
+                    return_value={
+                        "slot_candidates": [],
+                        "list_mutations": [
+                            {
+                                "field": "payload",
+                                "operation": "add",
+                                "items": ["高清水下摄像机"],
+                                "target_items": [],
+                                "raw_text": "添加高清水下摄像机",
+                                "confidence": 1.0,
+                                "source": "user_input",
+                            }
+                        ],
+                        "unresolved": [],
+                    }
+                )
+
+                with patch(
+                    "src.dialogue_manager.is_task_patch_v2_enabled",
+                    return_value=task_patch_flag,
+                ), patch(
+                    "src.dialogue_manager.is_normalization_contract_v2_enabled",
+                    return_value=normalization_flag,
+                ):
+                    dm.process("添加高清水下摄像机")
+
+                payload = dm.slot_store.slots.get("payload")
+                self.assertTrue(
+                    payload is None
+                    or (payload.value in (None, []) and payload.status == "missing")
+                )
+                self.assertTrue(
+                    any("列表字段 payload" in item for item in dm.slot_store.unresolved)
+                )
 
     def test_v2_equipment_handler_called_exactly_once(self):
         self._setup_stage2_task("pipeline_inspection")
