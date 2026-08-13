@@ -128,6 +128,8 @@ EXTRACTION_SYSTEM = """\
 """
 
 
+# TaskType 边界修复：兼容旧的 {task_type_value: template_key} 输入，把它升格成 catalog；
+# 这样旧调用方也能走“模板 key + 合法叶子值”的统一校验路径。
 def _catalog_from_task_type_map(task_type_map: dict[str, str] | None) -> list[dict[str, object]]:
     groups: dict[str, list[str]] = {}
     for task_type_value, template_key in (task_type_map or {}).items():
@@ -142,6 +144,8 @@ def _catalog_from_task_type_map(task_type_map: dict[str, str] | None) -> list[di
     ]
 
 
+# TaskType 边界修复：清洗外部传入的 catalog，只保留可用模板和合法叶子值；
+# 为什么：Extractor 后续只能在这份配置候选集内归一化，不能接受 LLM 伪造任务类型。
 def _normalize_task_type_catalog(
     task_type_catalog: list[dict] | None,
     task_type_map: dict[str, str] | None,
@@ -169,6 +173,8 @@ def _normalize_task_type_catalog(
     return catalog
 
 
+# TaskType 边界修复：把 catalog 写入 Stage1/Stage2 prompt，并明确多叶子模板不能猜；
+# 为什么：比如“采油树面板”只能确定模板，不能自动落到“插入”或“拔出”。
 def _build_task_type_rules(task_type_catalog: list[dict]) -> str:
     lines = []
     for item in task_type_catalog:
@@ -199,6 +205,8 @@ def _build_task_type_rules(task_type_catalog: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# TaskType 边界修复：建立 key/display/value 三类索引，支持精确匹配展示名和合法叶子值；
+# 为什么：既能识别“管缆巡检”，也能拒绝不属于当前模板的叶子值。
 def _task_type_catalog_indexes(task_type_catalog: list[dict]) -> tuple[dict[str, dict], dict[str, str], dict[str, str]]:
     by_key: dict[str, dict] = {}
     display_to_key: dict[str, str] = {}
@@ -248,6 +256,8 @@ def _resolve_template_key_from_candidate(
     return None, None
 
 
+# TaskType 边界修复：对 LLM 返回的 task_type/task_type_key 做 catalog 强制收敛；
+# 为什么：task_type 必须来自对应模板 task_type_values，多候选模板只保留 task_type_key，不做语义硬猜。
 def _enforce_task_type_catalog_candidates(
     candidates: list[dict],
     task_type_catalog: list[dict],
@@ -372,6 +382,8 @@ class ParameterExtractor:
         today_str = now.isoformat()
 
         known = {k: v for k, v in current_state.items() if v is not None}
+        # TaskType 边界修复：每轮提取都先归一化 catalog 并生成 prompt 规则；
+        # 为什么：Stage1 和 Stage2 使用同一份配置候选，避免前后阶段 task_type 口径不一致。
         normalized_task_type_catalog = _normalize_task_type_catalog(
             task_type_catalog,
             task_type_map,
@@ -433,6 +445,8 @@ class ParameterExtractor:
         if not isinstance(unresolved, list):
             unresolved = []
 
+        # TaskType 边界修复：LLM 原始候选进入 normalizer 前先经过 catalog enforcement；
+        # 为什么：把非法 display_name/跨模板叶子值拦截成 unresolved，不让后续状态写入错误任务类型。
         raw_candidates, catalog_unresolved = _enforce_task_type_catalog_candidates(
             raw_candidates,
             normalized_task_type_catalog,

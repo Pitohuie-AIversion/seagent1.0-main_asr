@@ -978,7 +978,24 @@ class SlotStore:
         allowed_values_resolver: Optional[Callable[[Dict[str, Any]], List[Any]]] = None,
         slots: Optional[Dict[str, Slot]] = None,
     ) -> List[Dict[str, Any]]:
-        """Return missing fields and optionally fill dynamic allowed values."""
+        # Missing/Responder 状态一致性修复：保留旧方法名给历史调用方使用，但统一转到
+        # get_unsatisfied_required_fields，避免前端、Responder 和发布门禁各自维护一套 missing 规则。
+        """Compatibility wrapper for unsatisfied required fields."""
+        return self.get_unsatisfied_required_fields(
+            required_schema,
+            allowed_values_resolver=allowed_values_resolver,
+            slots=slots,
+        )
+
+    def get_unsatisfied_required_fields(
+        self,
+        required_schema: List[Dict[str, Any]],
+        allowed_values_resolver: Optional[Callable[[Dict[str, Any]], List[Any]]] = None,
+        slots: Optional[Dict[str, Slot]] = None,
+    ) -> List[Dict[str, Any]]:
+        # Missing/Responder 状态一致性修复：新增唯一完整性判断入口，只根据 schema +
+        # SlotStore 状态判断字段是否满足；候选值仍沿用传入 schema/解析器，不在 SlotStore 重做业务检索。
+        """Return required schema fields that are not backed by valid slot facts."""
         def _is_required_value_filled(slot: Slot | None) -> bool:
             if not slot or slot.status != "valid":
                 return False
@@ -996,10 +1013,25 @@ class SlotStore:
             missing_fields = []
             for field in required_schema:
                 key = field["key"]
+                ftype = field.get("type")
+                # Missing/Responder 状态一致性修复：auto/fixed 由系统生成或固定，不应出现在用户待补字段里。
+                if ftype in ("auto", "fixed"):
+                    continue
                 slot = source_slots.get(key)
                 if _is_required_value_filled(slot):
                     continue
-                missing_fields.append(copy.deepcopy(field))
+                missing_field = copy.deepcopy(field)
+                # Missing/Responder 状态一致性修复：把未满足字段的当前 slot 状态一起带出，
+                # 让 Responder/UI/发布检查看到同一份 candidate/unresolved/invalid/conflict 事实。
+                missing_field["status"] = slot.status if slot else "missing"
+                if slot:
+                    if slot.candidate_value is not None:
+                        missing_field["candidate_value"] = copy.deepcopy(slot.candidate_value)
+                    if slot.raw_value is not None:
+                        missing_field["raw_value"] = copy.deepcopy(slot.raw_value)
+                    if slot.validation_error:
+                        missing_field["validation_error"] = slot.validation_error
+                missing_fields.append(missing_field)
 
         if allowed_values_resolver is not None:
             for field in missing_fields:

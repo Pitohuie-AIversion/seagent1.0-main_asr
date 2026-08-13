@@ -285,6 +285,55 @@ class DialogueManager:
 
         self.phase = new_phase
 
+    # Missing/Responder 状态一致性修复：下面这些 helper 是 DialogueManager 内唯一的 missing 刷新入口。
+    # 它们把 Builder/KB 提供的 required schema 和 SlotStore 的权威状态合成 _last_missing，
+    # 避免 Responder、前端 ui_state 和最终发布检查分别通过 builder.build() 算出不同结果。
+    def _task_type_missing_field(self) -> dict:
+        return {
+            "key": "task_type",
+            "label": "任务类型",
+            "type": "tasktype",
+            "status": "missing",
+            "allowed_values": self.kb.get_all_task_type_values(),
+        }
+
+    def _get_required_schema_for_missing(
+        self,
+        task_type_key: str,
+        mode: str | None = None,
+        task_state: dict | None = None,
+    ) -> list[dict]:
+        return self.builder.get_required(
+            task_type_key,
+            mode or self.mode,
+            task_state if task_state is not None else self.task_state,
+        )
+
+    def _refresh_missing_fields(self, slots: dict | None = None) -> list[dict]:
+        task_type_key = self.task_state.get("task_type_key")
+        if not task_type_key:
+            self._last_missing = [self._task_type_missing_field()]
+            return self._last_missing
+
+        required = self._get_required_schema_for_missing(task_type_key)
+        self._last_missing = self.slot_store.get_unsatisfied_required_fields(
+            required,
+            slots=slots,
+        )
+        return self._last_missing
+
+    def _get_working_missing_fields(
+        self,
+        task_type_key: str | None,
+        mode: str,
+        task_state: dict,
+        slots: dict[str, Slot],
+    ) -> list[dict]:
+        if not task_type_key:
+            return [self._task_type_missing_field()]
+        required = self._get_required_schema_for_missing(task_type_key, mode, task_state)
+        return self.slot_store.get_unsatisfied_required_fields(required, slots=slots)
+
     def _build_session_state_contract(self) -> SessionState:
         """从 DialogueManager 当前 Runtime 内存字段构造 SessionState 合约。无副作用，纯只读校验。"""
         conv = ConversationState(
@@ -731,15 +780,9 @@ class DialogueManager:
         all_violations = val_res.violations
         has_hard = self.validator.has_hard_violations(all_violations)
 
-        # 检查缺失（排除 auto 和 fixed 等由系统自动管理的字段，如 task_id）
-        if task_type_key:
-            _built_for_publish, missing = self.builder.build(
-                self.task_state,
-                task_type_key,
-                self.mode,
-            )
-        else:
-            missing = [{"key": "task_type", "label": "任务类型"}]
+        # Missing/Responder 状态一致性修复：发布门禁读统一 _last_missing，
+        # 不再用 OutputBuilder.build() 的兼容 missing 作为第二套完整性状态机。
+        missing = self._refresh_missing_fields()
 
         if missing or has_hard:
             if has_hard:
@@ -1142,6 +1185,8 @@ class DialogueManager:
 
         if task_type_key is None:
             # Stage 1: Extract task type
+            # TaskType 边界修复：Stage1 传入 schema catalog，让 Extractor 只在配置的模板/叶子值内识别任务类型；
+            # 为什么：避免 IntentRouter 或业务关键词把“采油树面板”直接猜成 tree_valve_operation 的某个叶子值。
             extraction_res = self.extractor.extract_updates(
                 user_message, current_state,
                 task_type_key=None,
@@ -1218,6 +1263,8 @@ class DialogueManager:
             current_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
             field_defs = self.builder.get_schema(task_type_key, self.mode)
             required_field_defs = self.builder.get_required(task_type_key, self.mode, current_state)
+            # TaskType 边界修复：Stage2 同样传入 schema catalog 和 required_field_defs；
+            # 为什么：用户补答“采油树控制面板插入”时可精确填 task_type，但仍不能接受模板外候选。
             extraction_res = self.extractor.extract_updates(
                 user_message, current_state,
                 task_type_key=task_type_key,
@@ -1573,23 +1620,19 @@ class DialogueManager:
 
         proposed_phase = self.phase
 
-        # Check required missing in working new_slots via SlotStore SSOT.
-        if curr_task_type_key:
-            working_state = {
-                key: slot.value
-                for key, slot in new_slots.items()
-                if slot.status == "valid"
-            }
-            _working_built, missing = self.builder.build(
-                working_state,
-                curr_task_type_key,
-                proposed_mode,
-            )
-            self._last_missing = missing
-        else:
-            missing = [{"key": "task_type", "label": "任务类型", "type": "string",
-                        "allowed_values": self.kb.get_all_task_type_values()}]
-            self._last_missing = missing
+        # Missing/Responder 状态一致性修复：事务提交前只用工作副本 new_slots 预测 missing，
+        # 用于 phase/intent_id 预判；真正 _last_missing 会在 commit 成功后从 SlotStore 刷新。
+        working_state = {
+            key: slot.value
+            for key, slot in new_slots.items()
+            if slot.status == "valid"
+        }
+        missing = self._get_working_missing_fields(
+            curr_task_type_key,
+            proposed_mode,
+            working_state,
+            new_slots,
+        )
 
         # Auto-generate intent_id inside new_slots BEFORE commit when all required slots are present or when revising a done task
         if old_phase == "done" or (curr_task_type_key and not missing):
@@ -1633,17 +1676,17 @@ class DialogueManager:
         # Re-derive from slot_store (SSOT)
         self.task_state = self.slot_store.get_task_state()
         if curr_task_type_key:
-            built, missing = self.builder.build(
+            # Missing/Responder 状态一致性修复：Builder 仍生成最终 JSON，但其 missing 只作兼容返回，
+            # 业务使用的 missing 在下一行由 SlotStore 权威状态刷新。
+            built, _builder_missing = self.builder.build(
                 self.task_state,
                 curr_task_type_key,
                 self.mode,
             )
-            self._last_missing = missing
+            missing = self._refresh_missing_fields()
         else:
             built = {}
-            missing = [{"key": "task_type", "label": "任务类型", "type": "string",
-                        "allowed_values": self.kb.get_all_task_type_values()}]
-            self._last_missing = missing
+            missing = self._refresh_missing_fields()
         self._last_built_json = built
 
         self.task_start_now = self.is_start_time_near_now()
@@ -2765,11 +2808,15 @@ class DialogueManager:
 
         if target_key:
             if value in task_type_map:
+                # TaskType 边界修复：只有明确合法叶子 task_type 才同步写入 task_type_key；
+                # 为什么：前端应保留中文 task_type 值，内部模板 key 只作为路由/Schema 标识。
                 new_slots["task_type"].value = value
                 new_slots["task_type"].status = "valid"
                 new_slots["task_type_key"].value = target_key
                 new_slots["task_type_key"].status = "valid"
             elif key == "task_type_key" and value in templates:
+                # TaskType 边界修复：模板只有一个合法叶子值时才自动填 task_type；
+                # 为什么：多叶子模板必须继续追问插入/拔出，不能默认 allowed[0]。
                 new_slots["task_type_key"].value = value
                 new_slots["task_type_key"].status = "valid"
                 values = templates[value].get("task_type_values", [])
@@ -3467,19 +3514,16 @@ class DialogueManager:
             self.task_state["equipment_family"] = family
 
         if task_type_key:
-            b_dict, missing = self.builder.build(self.task_state, task_type_key, self.mode)
+            # Missing/Responder 状态一致性修复：缓存重建时继续让 Builder 负责构建 JSON/派生 task_id，
+            # 但 _last_missing 改由 SlotStore 统一刷新，避免恢复会话后状态源分叉。
+            b_dict, _builder_missing = self.builder.build(self.task_state, task_type_key, self.mode)
             if commit_derived and "task_id" in b_dict and not self.task_state.get("task_id"):
                 self._commit_internal_slot_values(
                     {"task_id": b_dict["task_id"]}
                 )
-            self._last_missing = missing
+            self._refresh_missing_fields()
         else:
-            self._last_missing = [{
-                "key": "task_type",
-                "label": "任务类型",
-                "type": "string",
-                "allowed_values": self.kb.get_all_task_type_values()
-            }]
+            self._refresh_missing_fields()
         self.task_state = self.slot_store.get_task_state()
         self._last_built_json = self.slot_store.get_built_json()
         self.task_start_now = self.is_start_time_near_now()

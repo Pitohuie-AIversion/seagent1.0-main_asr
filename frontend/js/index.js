@@ -900,7 +900,9 @@ Please describe your task request or ask a question directly.`,
         const invalidSlots = slots.filter(s => s.status === 'invalid');
         const conflictSlots = slots.filter(s => s.status === 'conflict');
         const unresolvedSlots = slots.filter(s => s.status === 'unresolved');
-        const missingSlots = slots.filter(s => s.status === 'missing');
+        // Missing/Responder 状态一致性修复：缺失字段列表改读后端统一 uiState.missing_fields，
+        // 不再用 slots.status === 'missing' 自己推断，避免 unresolved/candidate 被前端漏掉。
+        const missingFields = Array.isArray(uiState.missing_fields) ? uiState.missing_fields : [];
 
         collectedDiv.innerHTML = '';
         if (validSlots.length === 0 && candidateSlots.length === 0 && invalidSlots.length === 0 && conflictSlots.length === 0 && unresolvedSlots.length === 0) {
@@ -955,12 +957,14 @@ Please describe your task request or ask a question directly.`,
           missingHtml += '</div>';
         }
 
-        if (missingSlots.length === 0 && validSlots.length > 0 && candidateSlots.length === 0 && invalidSlots.length === 0) {
+        // Missing/Responder 状态一致性修复：完整性展示只看统一 missingFields 是否为空；
+        // UI 文案保留原来的字段 label，不额外写入 status/allowed_values，避免前端展示变形。
+        if (missingFields.length === 0) {
           missingHtml += I18N[currentLang].allCollected;
         } else {
-          for (const slot of missingSlots) {
-            const labelObj = slot.label || {};
-            const label = (typeof labelObj === 'string') ? labelObj : (labelObj[currentLang] || labelObj.zh || slot.key);
+          for (const field of missingFields) {
+            const labelObj = field.label || {};
+            const label = (typeof labelObj === 'string') ? labelObj : (labelObj[currentLang] || labelObj.zh || field.key);
             const row = document.createElement('div');
             row.className = 'field-row missing';
             row.innerHTML = svgWarning;

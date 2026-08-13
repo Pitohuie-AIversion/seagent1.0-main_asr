@@ -30,6 +30,26 @@ class LHLV4MissingPayloadBoundariesTest(unittest.TestCase):
 
         self.assertEqual(store.get_missing_slots(schema, slots=working_slots), [])
 
+    def test_unsatisfied_required_fields_reports_non_valid_slot_statuses(self):
+        store = SlotStore()
+        schema = [
+            {"key": "task_type", "label": "任务类型", "type": "tasktype", "allowed_values": ["采油树控制面板插入", "采油树控制面板拔出"]},
+            {"key": "task_id", "label": "任务编号", "type": "auto"},
+            {"key": "support_vessel", "label": "支持船编号", "type": "string"},
+        ]
+        working_slots = {
+            "task_type": Slot("task_type", value=None, candidate_value="采油树控制面板插拔", status="unresolved"),
+            "task_id": Slot("task_id", value=None, candidate_value="TV-20260813-001", status="candidate"),
+            "support_vessel": Slot("support_vessel", value="海洋石油681", status="valid"),
+        }
+
+        missing = store.get_unsatisfied_required_fields(schema, slots=working_slots)
+
+        self.assertEqual([m["key"] for m in missing], ["task_type"])
+        self.assertEqual(missing[0]["status"], "unresolved")
+        self.assertEqual(missing[0]["candidate_value"], "采油树控制面板插拔")
+        self.assertEqual(missing[0]["allowed_values"], ["采油树控制面板插入", "采油树控制面板拔出"])
+
     def test_ui_publish_action_requires_phase_confirming_and_no_missing_slots(self):
         class _SlotStore:
             version = 1
@@ -61,6 +81,40 @@ class LHLV4MissingPayloadBoundariesTest(unittest.TestCase):
 
         self.assertFalse(ui["actions"]["can_publish"])
         self.assertTrue(ui["actions"]["can_confirm"])
+        self.assertFalse(ui["is_complete"])
+        self.assertEqual([m["key"] for m in ui["missing_fields"]], ["support_vessel"])
+
+    def test_ui_publish_action_enabled_when_unified_missing_empty(self):
+        class _SlotStore:
+            version = 1
+            validation_result = None
+
+            def get_slot_snapshot(self):
+                return {"support_vessel": {"value": "海洋石油681", "status": "valid", "version": 1}}
+
+        class _Builder:
+            def get_schema(self, *_args, **_kwargs):
+                return [{"key": "support_vessel", "label": "支持船编号", "type": "string"}]
+
+            def resolve_allowed_values(self, *_args, **_kwargs):
+                return []
+
+        class _Manager:
+            phase = "confirming"
+            dialogue_mode = "task_collection"
+            mode = "normal"
+            task_state = {"task_type_key": "pipeline_inspection"}
+            task_id_preview = None
+            slot_store = _SlotStore()
+            builder = _Builder()
+
+            def _refresh_missing_fields(self):
+                return []
+
+        ui = build_frontend_ui_state(_Manager())
+
+        self.assertTrue(ui["is_complete"])
+        self.assertTrue(ui["actions"]["can_publish"])
 
     def test_write_payload_allowed_values_use_selected_variant_supported_payloads_only(self):
         kb = KnowledgeBase()

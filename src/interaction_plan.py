@@ -178,6 +178,8 @@ def has_write_evidence(
     task_state: dict | None = None,
     plan_candidate: InteractionPlan | dict | None = None,
 ) -> bool:
+    # IntentRouter 边界修复：这个 gate 只判断“是否允许进入写入/抽取流程”，不再含业务词典；
+    # 为什么：任务类型语义归属必须交给 Extractor + schema catalog，避免“采油树”等词在路由层被硬编码写入。
     """
     LLM-First 架构下的 WRITE safety gate。
 

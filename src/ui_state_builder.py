@@ -377,22 +377,33 @@ def _build_frontend_ui_state_locked(manager: "DialogueManager") -> dict:
 
         slots = _build_slots(manager, slot_snapshot=slot_snapshot)
         constraint_state = _build_constraint_state(manager)
-        actions = _compute_actions(phase, dialogue_mode)
-        if actions.get("can_publish"):
+        # Missing/Responder 状态一致性修复：ui_state 直接暴露统一 missing_fields/is_complete，
+        # 前端和发布按钮不再从 slots.status 或 builder.build() 重新推导完整性。
+        missing_fields = list(getattr(manager, "_last_missing", []) or [])
+        if hasattr(manager, "_refresh_missing_fields"):
             try:
-                if task_type_key:
-                    _built_for_publish, missing = manager.builder.build(
-                        getattr(manager, "task_state", {}),
-                        task_type_key,
-                        mode,
-                    )
-                else:
-                    missing = [{"key": "task_type", "label": "任务类型"}]
-                if missing:
-                    actions["can_publish"] = False
+                missing_fields = list(manager._refresh_missing_fields() or [])
             except Exception as exc:
-                logger.warning("build_frontend_ui_state: publish action missing check failed: %s", exc)
-                actions["can_publish"] = False
+                logger.warning("build_frontend_ui_state: refresh missing failed: %s", exc)
+        elif task_type_key:
+            # Missing/Responder 状态一致性修复：测试/历史 fake manager 可能没有 _refresh_missing_fields；
+            # 降级时仍只走 SlotStore 的 missing 接口，不回退到 builder.build() 的第二套判断。
+            try:
+                if hasattr(manager.builder, "get_required"):
+                    required_schema = manager.builder.get_required(task_type_key, mode, getattr(manager, "task_state", {}))
+                else:
+                    required_schema = manager.builder.get_schema(task_type_key, mode)
+                if hasattr(manager.slot_store, "get_unsatisfied_required_fields"):
+                    missing_fields = list(manager.slot_store.get_unsatisfied_required_fields(required_schema) or [])
+                elif hasattr(manager.slot_store, "get_missing_slots"):
+                    missing_fields = list(manager.slot_store.get_missing_slots(required_schema) or [])
+            except Exception as exc:
+                logger.warning("build_frontend_ui_state: fallback missing failed: %s", exc)
+        is_complete = not missing_fields
+        actions = _compute_actions(phase, dialogue_mode)
+        # Missing/Responder 状态一致性修复：confirming 只是阶段允许发布，真正打开发布还必须统一 missing 为空。
+        if actions.get("can_publish") and not is_complete:
+            actions["can_publish"] = False
         read_only = _compute_read_only(phase, dialogue_mode)
 
         return {
@@ -406,6 +417,9 @@ def _build_frontend_ui_state_locked(manager: "DialogueManager") -> dict:
             "slot_version": slot_version,
             "read_only": read_only,
             "slots": slots,
+            # Missing/Responder 状态一致性修复：给前端提供唯一缺失字段列表和完整性布尔值。
+            "missing_fields": missing_fields,
+            "is_complete": is_complete,
             "constraint_state": constraint_state,
             "actions": actions,
         }
@@ -424,6 +438,9 @@ def _build_frontend_ui_state_locked(manager: "DialogueManager") -> dict:
             "slot_version": 0,
             "read_only": True,
             "slots": [],
+            # Missing/Responder 状态一致性修复：错误兜底也保持 ui_state 合同字段存在，前端不用再推断。
+            "missing_fields": [],
+            "is_complete": False,
             "constraint_state": {
                 "status": "none",
                 "overall_status": "none",

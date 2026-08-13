@@ -119,7 +119,7 @@ class TestFrontendHistoryCloseout(unittest.TestCase):
         phases_test = [
             ("collecting", True, False, False),
             ("blocked_hard", True, False, False),
-            ("confirming", True, True, False),
+            ("confirming", True, False, False),
             ("done", False, False, True),
             ("rejected", False, False, True),
         ]

@@ -152,7 +152,8 @@ class OutputBuilder:
         if ftype == "fixed":
             return field_def.get("fixed_value")
 
-        # tasktype: allowed_values 来自本模板的 task_type_values
+        # TaskType 边界修复：tasktype 字段只接受本模板 task_type_values 中的显式值；
+        # 为什么：raw 缺失时返回 None，避免再默认 allowed[0] 导致前端/最终 JSON 自动写错叶子任务类型。
         if ftype == "tasktype":
             raw = task_state.get(key)
             allowed = self._get_template_task_type_values(task_type_key)
@@ -585,7 +586,8 @@ class OutputBuilder:
         task_type_key: str = "",
         task_state: dict | None = None,
     ) -> list[str]:
-        # tasktype：合法值来自本模板的 task_type_values
+        # TaskType 边界修复：tasktype 的 allowed_values 直接来自当前模板 task_type_values；
+        # 为什么：Responder/前端展示候选必须和 Extractor 的合法语义候选保持同源。
         if field_def.get("type") == "tasktype":
             return self._get_template_task_type_values(task_type_key)
 

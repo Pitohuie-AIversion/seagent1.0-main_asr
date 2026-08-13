@@ -1401,6 +1401,8 @@ class KnowledgeBase:
                 mapping[value] = template_key
         return mapping
 
+    # TaskType 边界修复：把 task_schemas.yaml 中的模板 key、展示名和合法 task_type_values 组成 catalog，
+    # 供 Extractor 按配置判断任务类型，避免再用硬编码业务词把“采油树”直接猜成某个叶子类型。
     def get_task_type_catalog(self) -> list[dict[str, object]]:
         """从 task_schemas.yaml 动态构建任务类型语义候选 catalog。"""
         catalog: list[dict[str, object]] = []

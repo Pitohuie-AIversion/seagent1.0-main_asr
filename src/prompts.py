@@ -291,13 +291,16 @@ def build_responder_messages(
         status_lines = []
         for k, info in slot_snapshot.items():
             st = info.get("status")
-            if st in ("candidate", "invalid", "conflict"):
+            # Missing/Responder 状态一致性修复：unresolved/pending 也不是有效事实，
+            # 必须进入 Snapshot Notice，防止 Responder 把这些槽位误说成已完成。
+            if st in ("candidate", "pending", "unresolved", "invalid", "conflict"):
                 status_lines.append(
                     f"  - 槽位 [{k}] 状态: {st} | 当前值: {info.get('value')} | 候选值: {info.get('candidate_value')} | 错误: {info.get('validation_error')}"
                 )
         if status_lines:
             status_desc = "\n".join(status_lines)
-            system_content += f"\n\n【槽位状态 Snapshot Notice】:\n{status_desc}\n注意：以上状态为 candidate/invalid/conflict 的槽位未算作有效事实，严禁描述为已完成。"
+            # Missing/Responder 状态一致性修复：同步提示文案中的未满足状态集合，和 SlotStore 完整性规则保持一致。
+            system_content += f"\n\n【槽位状态 Snapshot Notice】:\n{status_desc}\n注意：以上状态为 candidate/pending/unresolved/invalid/conflict 的槽位未算作有效事实，严禁描述为已完成。"
 
     recent_history = conversation_history[-16:] if len(conversation_history) > 16 else conversation_history
     turn_message = latest_user_message
