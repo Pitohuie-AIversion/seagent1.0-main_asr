@@ -35,7 +35,8 @@ _SYSTEM_OWNED_FIELDS = {
     "update_timestamp",
 }
 
-ROBOT_STATE_MAX_AGE_SECONDS = 300
+ROBOT_STATE_MAX_AGE_SECONDS = 24 * 60 * 60
+TELEMETRY_MAX_FUTURE_SKEW_SECONDS = 5 * 60
 
 
 
@@ -479,7 +480,7 @@ class RobotStateInfo:
                 "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
             }
 
-        # 5. 所有状态记录均强制校验 300 秒 TTL
+        # 5. 所有状态记录均强制校验配置的 TTL（默认 1 天）
         if not state_updated_at_str:
             return {
                 "available": False,
@@ -498,6 +499,18 @@ class RobotStateInfo:
                 updated_dt = updated_dt.astimezone(now_dt.tzinfo)
 
             age_seconds = (now_dt - updated_dt).total_seconds()
+            if age_seconds < -TELEMETRY_MAX_FUTURE_SKEW_SECONDS:
+                return {
+                    "available": False,
+                    "reason_code": "INVALID_STATE_DATA",
+                    "message": (
+                        f"无法发布任务：机器人 {clean_unit_id} 状态时间戳明显晚于系统时间，"
+                        "无法确认当前可用性。\n请校准设备时钟并刷新状态后重新确认发布。"
+                    ),
+                    "unit_id": clean_unit_id,
+                    "checked_at": checked_at_str,
+                    "state_updated_at": str(state_updated_at_str),
+                }
             if age_seconds > max_age_seconds:
                 return {
                     "available": False,

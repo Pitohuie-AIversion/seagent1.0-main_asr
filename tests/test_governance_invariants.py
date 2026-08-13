@@ -402,7 +402,15 @@ class TestGovernanceInvariants(unittest.TestCase):
                 "time": {"start": "2026-08-10 09:00:00", "end": "2026-08-10 18:00:00"},
                 "location": {"oilfield": "东方1-1油田", "water_depth_m": 300},
                 "task": {"type": "pipeline_inspection", "details": {}},
-                "equipment": {"robot_type": "observation_rov", "payload": [], "support_vessel": "海洋石油681"},
+                "equipment": {
+                    "robot_type": "observation_rov",
+                    "payload": [],
+                    "support_vessel": {
+                        "name": "海洋石油681",
+                        "latitude": None,
+                        "longitude": None,
+                    },
+                },
                 "conditions": {},
             }
             staging = ti_builder.create_staging(dummy_artifact)

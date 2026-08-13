@@ -15,8 +15,9 @@ Issue #31：统一前后端任务 UI 状态契约 (Python stdlib unittest 版本
 import json
 import os
 import sys
+import threading
 import unittest
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
 # 确保项目根目录在 sys.path
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -461,6 +462,92 @@ class TestFlaskAPIIntegration(unittest.TestCase):
         data = resp.get_json()
         for field in ("done", "rejected", "collected", "missing"):
             self.assertIn(field, data)
+
+    def test_api_reset_waits_for_session_lock_before_resetting_manager(self):
+        import web_backend
+
+        sid = "test-s31-reset-lock"
+        manager = web_backend.DialogueManager(
+            web_backend._shared_llm,
+            web_backend._shared_kb,
+            session_id=sid,
+        )
+        with web_backend._sessions_lock:
+            web_backend._sessions_manager[sid] = manager
+
+        result = {}
+
+        def invoke_reset():
+            with web_backend.app.test_client() as client:
+                response = client.post(
+                    "/api/reset",
+                    json={"session_id": sid},
+                    content_type="application/json",
+                )
+                result["status_code"] = response.status_code
+                result["payload"] = response.get_json()
+
+        with manager._session_lock:
+            worker = threading.Thread(target=invoke_reset)
+            worker.start()
+            worker.join(timeout=0.2)
+            self.assertTrue(
+                worker.is_alive(),
+                "reset must wait for an in-flight operation holding the session lock",
+            )
+
+        worker.join(timeout=2.0)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result.get("status_code"), 200)
+        self.assertEqual(result.get("payload"), {"ok": True, "reset": True})
+        with web_backend._sessions_lock:
+            self.assertNotIn(sid, web_backend._sessions_manager)
+
+    def test_api_chat_rejects_manager_invalidated_before_processing(self):
+        import web_backend
+
+        sid = "test-s31-invalidated-manager"
+        manager = web_backend.DialogueManager(
+            web_backend._shared_llm,
+            web_backend._shared_kb,
+            session_id=sid,
+        )
+        with web_backend._sessions_lock:
+            web_backend._sessions_manager[sid] = manager
+
+        manager_captured = threading.Event()
+        result = {}
+
+        def capture_manager(requested_sid):
+            self.assertEqual(requested_sid, sid)
+            manager_captured.set()
+            return manager
+
+        def invoke_chat():
+            with web_backend.app.test_client() as client:
+                response = client.post(
+                    "/api/chat",
+                    json={"session_id": sid, "message": "你好"},
+                    content_type="application/json",
+                )
+                result["status_code"] = response.status_code
+                result["payload"] = response.get_json()
+
+        with patch.object(web_backend, "get_or_create_manager", side_effect=capture_manager):
+            with manager._session_lock:
+                worker = threading.Thread(target=invoke_chat)
+                worker.start()
+                self.assertTrue(manager_captured.wait(timeout=1.0))
+                with web_backend._sessions_lock:
+                    web_backend._sessions_manager.pop(sid, None)
+
+            worker.join(timeout=2.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result.get("status_code"), 409)
+        self.assertEqual(result.get("payload", {}).get("error"), "SessionReset")
+        with web_backend._sess_lock:
+            self.assertNotIn(sid, web_backend._sessions)
 
 
 if __name__ == "__main__":

@@ -49,7 +49,7 @@ class TestPersistencePublish(unittest.TestCase):
                 "intent_id": "TI20260810001",
                 "task_type_key": "pipeline_inspection",
                 "equipment_unit_id": "OBSROV-75-001",
-                "equipment_type": "observation_rov",
+                "equipment_type": "观察级深海机器人 75HP",
                 "water_depth": 300,
                 "support_vessel": "海洋石油681",
                 "oilfield_name": "东方1-1油田",

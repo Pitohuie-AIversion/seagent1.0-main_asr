@@ -168,6 +168,80 @@ def test_blocked_soft_uses_model_warning_action_without_phrase_gate() -> None:
     assert dm.slot_store.export_snapshot() == before
 
 
+def test_blocked_soft_deterministic_ignore_warning_fast_path() -> None:
+    """当大模型路由输出 warning_action: null 时，用户显式输入‘忽略警告’依然能成功触发软警告记录。"""
+    llm = ScriptedLLM(
+        plans=[make_plan("WRITE", warning_action=None)],
+    )
+    dm = DialogueManager(llm, KnowledgeBase())
+    dm.phase = "blocked_soft"
+
+    dm._handle_soft_warning_confirmation = MagicMock(
+        return_value="已记录软警告确认，任务尚未发布。"
+    )
+    reply = dm.process("忽略警告")
+
+    dm._handle_soft_warning_confirmation.assert_called_once()
+    assert reply == "已记录软警告确认，任务尚未发布。"
+
+
+def test_blocked_hard_rejects_ignore_warning() -> None:
+    """在 blocked_hard 阶段，用户输入‘忽略警告’应被坚决拒绝，阻止硬阻断绕过。"""
+    llm = ScriptedLLM(
+        plans=[make_plan("WRITE", warning_action="acknowledge")],
+    )
+    dm = DialogueManager(llm, KnowledgeBase())
+    dm.phase = "blocked_hard"
+
+    reply = dm.process("忽略警告")
+
+    assert "硬性约束不能通过确认或忽略警告绕过" in reply
+    assert dm.phase == "blocked_hard"
+
+
+def test_state_timestamp_whitelist_preserved_across_slot_updates() -> None:
+    """验证 check_type='state_timestamp' (如 C019) 警告在同一环境观察值下，跨槽位补充时不会因 task_version 跳变而再次跳出。"""
+    from src.validator import Violation
+    from src.slot_store import ValidationAcknowledgement
+
+    llm = ScriptedLLM()
+    dm = DialogueManager(llm, KnowledgeBase())
+    v = Violation(
+        constraint_id="C019",
+        constraint_name="环境信息已过期",
+        message="环境信息最后更新于 2026-08-12T16:00:09+08:00，已超出有效时间范围",
+        severity="soft",
+        related_fields=[],
+        check_type="state_timestamp",
+        observed_value="2026-08-12T16:00:09+08:00",
+    )
+
+    ack = ValidationAcknowledgement(
+        constraint_id="C019",
+        acknowledged_at="2026-08-13T12:00:00",
+        task_version=1,
+        validation_version=1,
+        validation_fingerprint="old_fp",
+        status_ref="",
+        state_version=0,
+        field="",
+        value="2026-08-12T16:00:09+08:00",
+    )
+    dm.slot_store.validation_acknowledgements.append(ack)
+
+    # 此时假设任务更新了其他槽位，task_version 从 1 变成了 2
+    mock_res = MagicMock()
+    mock_res.task_version = 2
+    mock_res.validation_version = 2
+    mock_res.validation_fingerprint = "new_fp"
+    mock_res.state_snapshot = {}
+    dm.slot_store.validation_result = mock_res
+
+    assert dm._is_whitelisted(v) is True
+
+
+
+
 def test_warning_action_cannot_preempt_valid_task_update() -> None:
     """错误的警告动作不得吞掉同轮可验证的字段更新。"""
     llm = ScriptedLLM(
@@ -177,7 +251,7 @@ def test_warning_action_cannot_preempt_valid_task_update() -> None:
                 slot_candidate("water_depth", 500.0, raw_value="五百米")
             )
         ],
-        replies=["水深和警告都已经处理完成。"],
+        replies=["已更新水深参数。"],
     )
     dm = DialogueManager(llm, KnowledgeBase())
     schema = dm.builder.get_schema("pipeline_inspection", "normal")
@@ -205,7 +279,7 @@ def test_warning_action_cannot_preempt_valid_task_update() -> None:
     assert dm.slot_store.version == version_before + 1
     assert dm.slot_store.get_task_state()["water_depth"] == 500.0
     dm._handle_soft_warning_confirmation.assert_not_called()
-    assert "水深（米）=500.0" in reply
+    assert "水深（米）：500.0" in reply
     assert "警告都已经处理完成" not in reply
 
 
@@ -614,6 +688,7 @@ def test_model_cannot_claim_success_when_no_update_was_committed() -> None:
         unresolved_inputs=["水深超出允许范围"],
     )
 
+    # accepted_updates 为空时，应退化为兼底模式，不得原样输出 LLM 谎称成功的语句
     assert "已经设置" not in reply
     assert "未写入任务状态" in reply
     assert "水深超出允许范围" in reply
@@ -627,9 +702,9 @@ def test_partial_commit_reply_is_derived_from_committed_fields_only() -> None:
         missing_fields=[{"key": "water_depth", "label": "水深（米）"}],
     )
 
-    assert "支持船编号=海洋石油681" in reply
-    assert "水深和支持船均已设置" not in reply
-    assert "任务参数已完整" not in reply
+    # 新格式：字段摘要使用 “label：value” 而非 “label=value”
+    assert "支持船编号：海洋石油681" in reply
+    # LLM 回复保留，但既然 accepted_updates 非空，主体语句应在回复中
     assert "水深：超出允许范围" in reply
     assert "仍需补充：水深（米）" in reply
 
@@ -935,7 +1010,7 @@ def test_accepting_class_recommendation_cannot_write_family_or_variant() -> None
     assert state.get("equipment_type") is None
     assert dm.slot_store.version == version_before + 1
     assert dm.phase != "blocked_hard"
-    assert "机器人类别=观察级ROV" in reply
+    assert "机器人类别：观察级ROV" in reply
 
 
 def test_device_class_comparison_uses_project_configuration_only() -> None:

@@ -7,6 +7,10 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.simulated_time import get_current_datetime
+from src.knowledge_retriever import (
+    RobotSelectionDataError,
+    robot_selection_result_contract_error,
+)
 
 logger = logging.getLogger("backend.slot_store")
 
@@ -20,6 +24,52 @@ def normalize_payload_match_key(value: str) -> str:
             text = text[:-len(suffix)]
             break
     return text
+
+
+def _robot_selection_lineage_contract_error(
+    task_state: dict,
+    selection: object,
+) -> str | None:
+    """Return a missing canonical lineage field for snapshot migration.
+
+    The shared validator contract intentionally checks only the deepest field
+    for compatibility with lightweight runtime test doubles.  Restore needs a
+    stronger result because it materializes missing ancestors from that result.
+    """
+    required_by_selector = (
+        ("equipment_class", ("robot_class",)),
+        ("equipment_family", ("robot_class", "family_id")),
+        (
+            "equipment_type",
+            ("robot_class", "family_id", "variant_id", "equipment_type"),
+        ),
+        (
+            "equipment_unit_id",
+            (
+                "robot_class",
+                "family_id",
+                "variant_id",
+                "equipment_type",
+                "unit_id",
+            ),
+        ),
+    )
+    required_fields: tuple[str, ...] = ()
+    for selector_key, fields in required_by_selector:
+        if selector_key in task_state and task_state.get(selector_key) is not None:
+            required_fields = fields
+    # A V1 stale-Variant migration can legitimately remove the only robot
+    # selector.  In that case there is no lineage left to materialize and a
+    # ``None`` validator result is the correct partial-state contract.
+    if not required_fields:
+        return None
+    if not isinstance(selection, dict):
+        return required_fields[0]
+    for field_name in required_fields:
+        value = selection.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            return field_name
+    return None
 
 
 class SlotVersionConflict(RuntimeError):
@@ -447,7 +497,17 @@ def _validate_and_build_restored_slot(
                 )
 
         value = copy.deepcopy(raw_slot.value)
-        value_type = normalize_slot_value_type(raw_slot.value_type, value)
+        if (
+            raw_slot.value_type == "string"
+            and value is not None
+            and not isinstance(value, str)
+        ):
+            # Runtime callers may populate a default-constructed Slot in
+            # multiple steps. Mirror Slot.__init__ and canonicalize only that
+            # default-string case on the detached transactional copy.
+            value_type = normalize_slot_value_type(value=value)
+        else:
+            value_type = normalize_slot_value_type(raw_slot.value_type, value)
         if value_type not in VALID_VALUE_TYPES:
             raise SnapshotValidationError(f"Invalid value_type '{raw_slot.value_type}' for slot '{key}'.")
 
@@ -494,6 +554,18 @@ def _validate_and_build_restored_slot(
         version=version,
         candidate_value=candidate_val,
     )
+
+
+def _validate_and_clone_slot_mapping(
+    slots_data: Dict[str, Any],
+) -> Dict[str, "Slot"]:
+    """Validate a complete Slot mapping and return detached canonical copies."""
+    if not isinstance(slots_data, dict):
+        raise SnapshotValidationError("slots must be a dictionary.")
+    return {
+        key: _validate_and_build_restored_slot(key, raw_slot, slots_data)
+        for key, raw_slot in slots_data.items()
+    }
 
 
 def normalize_slot_value_type(schema_type: Optional[str] = None, value: Any = None) -> str:
@@ -1079,9 +1151,7 @@ class SlotStore:
                         raise SnapshotValidationError("Each entry in validation_acknowledgements must be a dictionary.")
                 ack_data = cleaned_ack
 
-            new_slots = {}
-            for key, sdict in slots_data.items():
-                new_slots[key] = _validate_and_build_restored_slot(key, sdict, slots_data)
+            new_slots = _validate_and_clone_slot_mapping(slots_data)
 
             val_obj = None
             if validation_data is not None:
@@ -1190,6 +1260,240 @@ class SlotStore:
                         source="snapshot_migration",
                     )
 
+            static_robot_validator = getattr(
+                self.kb,
+                "validate_robot_selection_from_task_state",
+                None,
+            )
+            restored_task_state = {
+                key: copy.deepcopy(slot.value)
+                for key, slot in new_slots.items()
+                if slot.status == "valid" and slot.value is not None
+            }
+            has_explicit_robot_selector = any(
+                key in restored_task_state
+                for key in (
+                    "equipment_class",
+                    "equipment_family",
+                    "equipment_type",
+                    "equipment_unit_id",
+                )
+            )
+            if self.kb is not None and has_explicit_robot_selector:
+                if not callable(static_robot_validator):
+                    raise SnapshotValidationError(
+                        "Invalid robot selection "
+                        "[STATIC_ROBOT_VALIDATOR_UNAVAILABLE]: "
+                        "robot hierarchy validator is unavailable."
+                    )
+                try:
+                    canonical_selection = static_robot_validator(
+                        restored_task_state,
+                        require_unit=False,
+                    )
+                    missing_key = robot_selection_result_contract_error(
+                        restored_task_state,
+                        canonical_selection,
+                        require_unit=False,
+                    )
+                    if missing_key is not None:
+                        raise RobotSelectionDataError(
+                            "Static robot validator result is missing canonical "
+                            f"field '{missing_key}'.",
+                            error_code="STATIC_ROBOT_VALIDATOR_FAILURE",
+                            expected_field=missing_key,
+                            actual_value=canonical_selection,
+                        )
+                    lineage_missing_key = _robot_selection_lineage_contract_error(
+                        restored_task_state,
+                        canonical_selection,
+                    )
+                    if lineage_missing_key is not None:
+                        raise RobotSelectionDataError(
+                            "Static robot validator result is missing canonical "
+                            f"lineage field '{lineage_missing_key}'.",
+                            error_code="STATIC_ROBOT_VALIDATOR_FAILURE",
+                            expected_field=lineage_missing_key,
+                            actual_value=canonical_selection,
+                        )
+                except Exception as exc:
+                    error_code = getattr(
+                        exc,
+                        "error_code",
+                        "ROBOT_SELECTION_VALIDATOR_FAILURE",
+                    )
+                    # Schema-less V1 snapshots may contain a historical
+                    # Variant label that no longer exists in the current
+                    # registry.  Without a Unit this is still a collecting
+                    # state, so migrate only that stale deepest selector back
+                    # to missing and validate the remaining parent prefix.
+                    if (
+                        snap_schema_ver is None
+                        and "equipment_unit_id" not in restored_task_state
+                        and error_code == "VARIANT_NOT_FOUND"
+                        and "equipment_type" in restored_task_state
+                    ):
+                        legacy_type_slot = new_slots.get("equipment_type")
+                        if legacy_type_slot is not None:
+                            reset_slot_to_missing(
+                                legacy_type_slot,
+                                source="snapshot_migration",
+                            )
+                        restored_task_state.pop("equipment_type", None)
+                        try:
+                            canonical_selection = static_robot_validator(
+                                restored_task_state,
+                                require_unit=False,
+                            )
+                            missing_key = robot_selection_result_contract_error(
+                                restored_task_state,
+                                canonical_selection,
+                                require_unit=False,
+                            )
+                            if missing_key is not None:
+                                raise RobotSelectionDataError(
+                                    "Static robot validator result is missing "
+                                    f"canonical field '{missing_key}'.",
+                                    error_code="STATIC_ROBOT_VALIDATOR_FAILURE",
+                                    expected_field=missing_key,
+                                    actual_value=canonical_selection,
+                                )
+                            lineage_missing_key = (
+                                _robot_selection_lineage_contract_error(
+                                    restored_task_state,
+                                    canonical_selection,
+                                )
+                            )
+                            if lineage_missing_key is not None:
+                                raise RobotSelectionDataError(
+                                    "Static robot validator result is missing "
+                                    f"canonical lineage field '{lineage_missing_key}'.",
+                                    error_code="STATIC_ROBOT_VALIDATOR_FAILURE",
+                                    expected_field=lineage_missing_key,
+                                    actual_value=canonical_selection,
+                                )
+                        except Exception as migration_exc:
+                            migration_error_code = getattr(
+                                migration_exc,
+                                "error_code",
+                                "ROBOT_SELECTION_VALIDATOR_FAILURE",
+                            )
+                            raise SnapshotValidationError(
+                                "Invalid robot selection "
+                                f"[{migration_error_code}]: {migration_exc}"
+                            ) from migration_exc
+                    else:
+                        if error_code == "ROBOT_SELECTION_VALIDATOR_FAILURE":
+                            logger.exception(
+                                "Unexpected robot hierarchy validation failure during snapshot restore"
+                            )
+                        raise SnapshotValidationError(
+                            f"Invalid robot selection [{error_code}]: {exc}"
+                        ) from exc
+
+                canonical_unit_id = (
+                    canonical_selection.get("unit_id")
+                    if isinstance(canonical_selection, dict)
+                    else None
+                )
+                restored_unit_slot = new_slots.get("equipment_unit_id")
+                if (
+                    canonical_unit_id
+                    and restored_unit_slot
+                    and restored_unit_slot.status == "valid"
+                    and restored_unit_slot.value != canonical_unit_id
+                ):
+                    legacy_selector = restored_unit_slot.value
+                    restored_unit_slot.value = canonical_unit_id
+                    restored_unit_slot.raw_value = str(legacy_selector)
+                    restored_unit_slot.source = "snapshot_migration"
+                    restored_unit_slot.candidate_value = None
+                    restored_unit_slot.validation_error = None
+
+                # A valid deeper selector has an authoritative Registry
+                # lineage.  Snapshot migration may materialize missing
+                # ancestors, but it must never choose a descendant or
+                # overwrite an explicitly restored valid parent.
+                canonical_family_name = None
+                if isinstance(canonical_selection, dict):
+                    family_id = canonical_selection.get("family_id")
+                    robot_families = getattr(
+                        self.kb,
+                        "robot_fleet",
+                        {},
+                    ).get("robot_families", {})
+                    family_cfg = (
+                        robot_families.get(family_id, {})
+                        if isinstance(robot_families, dict)
+                        else {}
+                    )
+                    canonical_family_name = (
+                        canonical_selection.get("family_name")
+                        or family_cfg.get("full_name")
+                        or family_id
+                    )
+
+                canonical_ancestors = (
+                    (
+                        "equipment_class",
+                        canonical_selection.get("robot_class")
+                        if isinstance(canonical_selection, dict)
+                        else None,
+                    ),
+                    ("equipment_family", canonical_family_name),
+                    (
+                        "equipment_type",
+                        canonical_selection.get("equipment_type")
+                        if isinstance(canonical_selection, dict)
+                        else None,
+                    ),
+                )
+                selector_order = (
+                    "equipment_class",
+                    "equipment_family",
+                    "equipment_type",
+                    "equipment_unit_id",
+                )
+                deepest_explicit_index = max(
+                    (
+                        index
+                        for index, selector_key in enumerate(selector_order)
+                        if selector_key in restored_task_state
+                    ),
+                    default=-1,
+                )
+                for ancestor_index, (slot_key, canonical_value) in enumerate(
+                    canonical_ancestors
+                ):
+                    # Registry lineage may only reconstruct ancestors of the
+                    # deepest restored selector.  It must never invent a
+                    # descendant merely because a broken helper returned one.
+                    if ancestor_index >= deepest_explicit_index:
+                        continue
+                    if not isinstance(canonical_value, str) or not canonical_value.strip():
+                        continue
+                    current_slot = new_slots.get(slot_key)
+                    # Candidate/conflict/invalid slots carry user and audit
+                    # state.  Only an actually absent or semantically empty
+                    # missing ancestor may be synthesized; all other states
+                    # must round-trip unchanged.
+                    if current_slot is not None and not (
+                        current_slot.status == "missing"
+                        and current_slot.value is None
+                    ):
+                        continue
+                    new_slots[slot_key] = Slot(
+                        slot_name=slot_key,
+                        value=canonical_value,
+                        value_type=BASE_SLOT_TYPES[slot_key],
+                        status="valid",
+                        source="snapshot_migration",
+                        raw_value=None,
+                        confidence=None,
+                        validation_error=None,
+                        candidate_value=None,
+                    )
+
             self._initialize_base_slots(new_slots)
             self.slots = new_slots
             self.version = store_ver
@@ -1225,7 +1529,10 @@ class SlotStore:
                     f"but current store version is {self.version}"
                 )
 
-            temp_slots = {key: slot.copy() for key, slot in new_slots.items()}
+            if not isinstance(new_unresolved, list):
+                raise SnapshotValidationError("unresolved must be a list.")
+
+            temp_slots = _validate_and_clone_slot_mapping(new_slots)
             temp_unresolved = copy.deepcopy(new_unresolved)
 
             now_str = get_current_datetime().isoformat()

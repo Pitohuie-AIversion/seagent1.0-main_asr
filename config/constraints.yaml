@@ -87,12 +87,12 @@ constraints:
     severity: "soft"
 
   - id: "C029"
-    name: "作业水深超过油田知识库参考水深"
+    name: "作业水深超过油田知识库校验上限"
     applies_to: ["tree_valve_operation"]
     check_type: "oilfield_reference_depth_exceeded"
     violation_message: >
       您输入的实际作业水深为 {actual_depth} 米，
-      超过 {oilfield_name}知识库记录的参考水深 {reference_depth} 米。
+      超过 {oilfield_name}知识库记录的校验上限 {maximum_reference_depth} 米。
       请核对目标油田、实际坐标和作业水深，并将水深修改至合理范围后继续。
     severity: "hard"
 
@@ -149,7 +149,7 @@ constraints:
     check_type: "vessel_availability"
     violation_message: >
       所选支持船"{vessel_id}"当前标记为不可用，请选择其他可用的支持船只，
-      或确认船只调度后再发布任务。
+      或等待资产状态更新为可用后重新校验。硬约束解除前无法发布任务。
     severity: "hard"
 
   # ── 静态环境信息约束──────────────────────────────────────────────────────────────
@@ -180,7 +180,7 @@ constraints:
 
   # ── 动态环境信息约束──────────────────────────────────────────────────────────────
 
-  - id: "C0011"
+  - id: "C011"
     name: "障碍物密集区警示"
     applies_to: ["all"]
     check_type: "obstacle_dense"
@@ -200,6 +200,9 @@ constraints:
     name: "浑浊度-中等警示"
     applies_to: ["all"]
     check_type: "turbidity"
+    thresholds:
+      min_exclusive: 5
+      max_inclusive: 10
     violation_message: >
       当前作业区域水体浑浊度中等（{turbidity}），视觉感知效果略有下降。
     severity: "soft"
@@ -208,6 +211,8 @@ constraints:
     name: "浑浊度-高等警示"
     applies_to: ["all"]
     check_type: "turbidity"
+    thresholds:
+      min_exclusive: 10
     violation_message: >
       当前作业区域水体浑浊度较高（{turbidity}），视觉感知效果将下降。建议优先使用声呐等声学设备进行探测。
     severity: "soft"
@@ -216,6 +221,9 @@ constraints:
     name: "流速状态监测-中"
     applies_to: ["all"]
     check_type: "current_velocity"
+    thresholds:
+      min_exclusive: 0.5
+      max_inclusive: 0.8
     # 等级1：不支持悬浮高精度作业
     violation_message: >
       当前流速 {current_velocity} m/s，不支持悬浮高精度作业，可正常航行。
@@ -225,6 +233,9 @@ constraints:
     name: "流速状态监测-高"
     applies_to: [ "all" ]
     check_type: "current_velocity"
+    thresholds:
+      min_exclusive: 0.8
+      max_inclusive: 1.2
     # 等级2：不支持高精度作业
     violation_message: >
       当前流速 {current_velocity} m/s，不支持高精度作业，仅支持基础航行。
@@ -234,6 +245,8 @@ constraints:
     name: "流速状态监测-禁止"
     applies_to: ["all"]
     check_type: "current_velocity"
+    thresholds:
+      min_exclusive: 1.2
     # 等级3：超过安全上限（拒绝）
     violation_message: >
       当前流速 {current_velocity} m/s，已超过安全上限。强流环境可能导致ROV失控或无法精确定位，任务已禁止执行。建议等待海况改善后重新执行。
@@ -243,6 +256,8 @@ constraints:
     name: "环境信息置信度过低"
     applies_to: ["all"]
     check_type: "state_confidence"
+    thresholds:
+      max_exclusive: 0.5
     violation_message: >
       当前环境信息置信度为 {confidence}，数据可靠性不足，作业判断存在风险，请谨慎参考或重新获取环境数据。
     severity: "soft"
@@ -251,6 +266,8 @@ constraints:
     name: "环境信息已过期"
     applies_to: ["all"]
     check_type: "state_timestamp"
+    thresholds:
+      max_age_seconds: 3600
     violation_message: >
       环境信息最后更新于 {update_timestamp}，已超出有效时间范围，无法反映实时海况，可能影响作业安全，请更新环境信息后再继续。
     severity: "soft"

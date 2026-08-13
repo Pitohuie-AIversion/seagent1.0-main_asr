@@ -17,6 +17,7 @@
     let isSending = false;
     let currentRequestSeq = 0;
     let currentAbortController = null;
+    let asrAbortController = null;
     let sessionGeneration = 0;
     window.sessionGeneration = sessionGeneration;
     let currentActions = { can_send: true };
@@ -39,6 +40,15 @@
     let recordedChunks = [];
     let recordingSampleRate = 16000;
     let isRecording = false;
+
+    const RESET_ACTIONS = Object.freeze({
+      can_send: true,
+      can_modify: true,
+      can_confirm: false,
+      can_ignore_soft_warning: false,
+      can_publish: false,
+      can_cancel: true,
+    });
 
     // --- i18n configurations ---
     let currentLang = 'zh';
@@ -111,6 +121,7 @@
         restoreFailed: "还原失败: ",
         restoreNetError: "还原失败，请检查网络",
         networkError: "网络错误，请重试。",
+        resetFailed: "重新开始失败，当前会话已保留，请重试。",
         emergencyBadge: "紧急",
 
         // Telemetry labels
@@ -194,6 +205,7 @@ Please describe your task request or ask a question directly.`,
         restoreFailed: "Restore failed: ",
         restoreNetError: "Restore failed, please check network",
         networkError: "Network error, please try again.",
+        resetFailed: "Restart failed. The current session was preserved; please try again.",
         emergencyBadge: "Emergency",
 
         // Telemetry labels
@@ -267,27 +279,27 @@ Please describe your task request or ask a question directly.`,
       "拖曳式海底重载作业机器人 1500HP": { zh: "拖曳式海底重载作业机器人 1500HP", en: "Towed Heavy-Duty Seabed Robot 1500HP" },
       "特种工作级深海机器人 600HP": { zh: "特种工作级深海机器人 600HP", en: "Special Work-Class Deep-Sea Robot 600HP" },
       "通用工作级深海机器人 250HP": { zh: "通用工作级深海机器人 250HP", en: "General Work-Class Deep-Sea ROV 250HP" },
-      "轻型工作级深海机器人 HP": { zh: "轻型工作级深海机器人 HP", en: "Light Work-Class Deep-Sea ROV HP" },
-      "观察级深海机器人 HP": { zh: "观察级深海机器人 HP", en: "Observation-Class Deep-Sea ROV HP" },
-      "水下无人自主航行器 HP": { zh: "水下无人自主航行器 HP", en: "Autonomous Underwater Vehicle HP" },
+      "轻型工作级深海机器人 150HP": { zh: "轻型工作级深海机器人 150HP", en: "Light Work-Class Deep-Sea ROV 150HP" },
+      "观察级深海机器人 75HP": { zh: "观察级深海机器人 75HP", en: "Observation-Class Deep-Sea ROV 75HP" },
+      "水下无人自主航行器 324CC": { zh: "水下无人自主航行器 324CC", en: "Autonomous Underwater Vehicle 324CC" },
 
       // 实体机器人编号与展示名称（来源：robot_fleet.yaml）
       "CRAWLER-1600-001": { zh: "CRAWLER-1600-001", en: "CRAWLER-1600-001" },
       "TOWED-1500-001": { zh: "TOWED-1500-001", en: "TOWED-1500-001" },
       "SPECIAL-600-001": { zh: "SPECIAL-600-001", en: "SPECIAL-600-001" },
       "WROV-250-001": { zh: "WROV-250-001", en: "WROV-250-001" },
-      "LROV-HP-001": { zh: "LROV-HP-001", en: "LROV-HP-001" },
-      "LROV-HP-002": { zh: "LROV-HP-002", en: "LROV-HP-002" },
-      "OBSROV-HP-001": { zh: "OBSROV-HP-001", en: "OBSROV-HP-001" },
-      "AUV-HP-001": { zh: "AUV-HP-001", en: "AUV-HP-001" },
+      "LROV-150-001": { zh: "LROV-150-001", en: "LROV-150-001" },
+      "LROV-150-002": { zh: "LROV-150-002", en: "LROV-150-002" },
+      "OBSROV-75-001": { zh: "OBSROV-75-001", en: "OBSROV-75-001" },
+      "AUV-324cc-001": { zh: "AUV-324cc-001", en: "AUV-324cc-001" },
       "履带式海底重载作业机器人1600HP-001": { zh: "履带式海底重载作业机器人1600HP-001", en: "Crawler-Type Heavy-Duty Seabed Robot 1600HP-001" },
       "拖曳式海底重载作业机器人1500HP-001": { zh: "拖曳式海底重载作业机器人1500HP-001", en: "Towed Heavy-Duty Seabed Robot 1500HP-001" },
       "特种工作级深海机器人600HP-001": { zh: "特种工作级深海机器人600HP-001", en: "Special Work-Class Deep-Sea Robot 600HP-001" },
       "通用工作级深海机器人250HP-001": { zh: "通用工作级深海机器人250HP-001", en: "General Work-Class Deep-Sea ROV 250HP-001" },
-      "轻型工作级深海机器人HP-001": { zh: "轻型工作级深海机器人HP-001", en: "Light Work-Class Deep-Sea ROV HP-001" },
-      "轻型工作级深海机器人HP-002": { zh: "轻型工作级深海机器人HP-002", en: "Light Work-Class Deep-Sea ROV HP-002" },
-      "观察级深海机器人HP-001": { zh: "观察级深海机器人HP-001", en: "Observation-Class Deep-Sea ROV HP-001" },
-      "水下无人自主航行器HP-001": { zh: "水下无人自主航行器HP-001", en: "Autonomous Underwater Vehicle HP-001" },
+      "轻型工作级深海机器人150HP-001": { zh: "轻型工作级深海机器人150HP-001", en: "Light Work-Class Deep-Sea ROV 150HP-001" },
+      "轻型工作级深海机器人150HP-002": { zh: "轻型工作级深海机器人150HP-002", en: "Light Work-Class Deep-Sea ROV 150HP-002" },
+      "观察级深海机器人75HP-001": { zh: "观察级深海机器人75HP-001", en: "Observation-Class Deep-Sea ROV 75HP-001" },
+      "水下无人自主航行器-324cc-001": { zh: "水下无人自主航行器-324cc-001", en: "Autonomous Underwater Vehicle 324CC-001" },
 
       // 支持船（来源：assets.yaml）
       "海洋石油681": { zh: "海洋石油681", en: "Haiyang Shiyou 681" },
@@ -785,7 +797,7 @@ Please describe your task request or ask a question directly.`,
         const valueSpan = document.createElement('span');
         valueSpan.className = 'field-value';
 
-        const displayVal = (slot.status === 'candidate' || slot.status === 'pending')
+        const displayVal = slot.status === 'candidate'
           ? (slot.candidate_value !== null && slot.candidate_value !== undefined ? slot.candidate_value : slot.value)
           : (slot.status === 'invalid' ? (slot.raw_value ?? slot.candidate_value ?? slot.value) : slot.value);
 
@@ -893,7 +905,7 @@ Please describe your task request or ask a question directly.`,
         // ── 新路径：按 6 个互斥集合渲染字段面板 ───────────────────────
         const slots = Array.isArray(uiState.slots) ? uiState.slots : [];
         const validSlots = slots.filter(s => s.status === 'valid');
-        const candidateSlots = slots.filter(s => s.status === 'candidate' || s.status === 'pending');
+        const candidateSlots = slots.filter(s => s.status === 'candidate');
         const invalidSlots = slots.filter(s => s.status === 'invalid');
         const conflictSlots = slots.filter(s => s.status === 'conflict');
         const unresolvedSlots = slots.filter(s => s.status === 'unresolved');
@@ -950,7 +962,11 @@ Please describe your task request or ask a question directly.`,
             missingHtml += nameEl.outerHTML;
           }
           if (uiState.actions && uiState.actions.can_ignore_soft_warning) {
-            missingHtml += `<div style="margin-top:6px; font-size:0.8em; opacity:0.7;">输入"忽略警告"可继续。</div>`;
+            const ignoreBtnText = currentLang === 'zh' ? '⚠️ 忽略软警告' : '⚠️ Ignore Warning';
+            missingHtml += `<div style="margin-top:8px; display:flex; align-items:center; justify-content:space-between; gap:6px;">
+              <span style="font-size:0.8em; opacity:0.7;">输入"忽略警告"或点击：</span>
+              <button type="button" class="btn-ignore-warning-action" onclick="window.sendMessage('忽略警告')" style="background: rgba(255,190,0,0.18); border: 1px solid #ffbe00; color: #ffbe00; border-radius: 4px; padding: 4px 10px; font-size: 0.8em; font-weight: 500; cursor: pointer; transition: all 0.2s ease;">${ignoreBtnText}</button>
+            </div>`;
           }
           missingHtml += '</div>';
         }
@@ -1153,14 +1169,15 @@ Please describe your task request or ask a question directly.`,
       return new Blob([view], { type: 'audio/wav' });
     }
 
-    async function uploadAudioForAsr(audioBlob) {
+    async function uploadAudioForAsr(audioBlob, signal) {
       const formData = new FormData();
       formData.append('audio', audioBlob, 'voice_input.wav');
       formData.append('language', currentLang === 'zh' ? 'Chinese' : 'English');
 
       const res = await fetch(API_BASE + '/api/asr', {
         method: 'POST',
-        body: formData
+        body: formData,
+        signal: signal,
       });
 
       const data = await res.json();
@@ -1170,18 +1187,66 @@ Please describe your task request or ask a question directly.`,
       return data;
     }
 
+    async function releaseVoiceRecordingResources() {
+      const processor = recorderProcessor;
+      const source = recorderSource;
+      const stream = mediaStream;
+      const context = audioContext;
+
+      recorderProcessor = null;
+      recorderSource = null;
+      mediaStream = null;
+      audioContext = null;
+
+      if (processor) {
+        processor.onaudioprocess = null;
+        try { processor.disconnect(); } catch (e) {}
+      }
+      if (source) {
+        try { source.disconnect(); } catch (e) {}
+      }
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+      if (context && context.state !== 'closed') {
+        try { await context.close(); } catch (e) {}
+      }
+    }
+
+    async function cancelVoiceActivity() {
+      if (asrAbortController) {
+        try { asrAbortController.abort(); } catch (e) {}
+      }
+      asrAbortController = null;
+      isRecording = false;
+      await releaseVoiceRecordingResources();
+      recordedChunks = [];
+
+      const audioWaveformWrapper = document.getElementById('audioWaveformWrapper');
+      if (audioWaveformWrapper) audioWaveformWrapper.style.display = 'none';
+      voiceBtn.classList.remove('recording');
+      voiceBtn.textContent = I18N[currentLang].voiceBtn;
+      setAsrStatus('', false);
+    }
+
     async function startVoiceRecording() {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error(I18N[currentLang].voiceNotSupport);
       }
 
-      mediaStream = await navigator.mediaDevices.getUserMedia({
+      const recordingGeneration = sessionGeneration;
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true
         }
       });
+      if (recordingGeneration !== sessionGeneration) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      mediaStream = stream;
 
       audioContext = new (window.AudioContext || window.webkitAudioContext)();
       recordingSampleRate = audioContext.sampleRate;
@@ -1207,6 +1272,7 @@ Please describe your task request or ask a question directly.`,
     }
 
     async function stopVoiceRecording() {
+      const asrGeneration = sessionGeneration;
       isRecording = false;
       voiceBtn.classList.remove('recording');
       voiceBtn.textContent = I18N[currentLang].voiceBtn;
@@ -1214,29 +1280,27 @@ Please describe your task request or ask a question directly.`,
       // Hide center pulsing visual
       document.getElementById("audioWaveformWrapper").style.display = "none";
 
-      if (recorderProcessor) recorderProcessor.disconnect();
-      if (recorderSource) recorderSource.disconnect();
-      if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
-      if (audioContext) await audioContext.close();
+      const chunks = recordedChunks;
+      recordedChunks = [];
+      await releaseVoiceRecordingResources();
+      if (asrGeneration !== sessionGeneration) return;
 
-      recorderProcessor = null;
-      recorderSource = null;
-      mediaStream = null;
-      audioContext = null;
-
-      if (!recordedChunks.length) {
+      if (!chunks.length) {
         setAsrStatus(I18N[currentLang].voiceNoAudio);
         return;
       }
 
-      const samples = mergeFloat32Chunks(recordedChunks);
+      const samples = mergeFloat32Chunks(chunks);
       const audioBlob = encodeWav(samples, recordingSampleRate);
 
       setAsrStatus(I18N[currentLang].voiceTranscribing);
       voiceBtn.disabled = true;
 
+      const controller = new AbortController();
+      asrAbortController = controller;
       try {
-        const data = await uploadAudioForAsr(audioBlob);
+        const data = await uploadAudioForAsr(audioBlob, controller.signal);
+        if (asrGeneration !== sessionGeneration) return;
         const transcript = (data.corrected_text || data.text || data.transcript || '').trim();
         const directToLlm = data.direct_to_llm !== false;
 
@@ -1259,9 +1323,11 @@ Please describe your task request or ask a question directly.`,
           messageInput.focus();
         }
       } catch (err) {
+        if (err.name === 'AbortError' || asrGeneration !== sessionGeneration) return;
         setAsrStatus(`${I18N[currentLang].voiceError}${escapeHtml(err.message || err)}`);
       } finally {
-        if (!isDone) voiceBtn.disabled = false;
+        if (asrAbortController === controller) asrAbortController = null;
+        if (asrGeneration === sessionGeneration && !isDone) voiceBtn.disabled = false;
       }
     }
 
@@ -1517,29 +1583,37 @@ Please describe your task request or ask a question directly.`,
 
     async function reset() {
       window.reset = reset;
-      if (currentAbortController) { try { currentAbortController.abort(); } catch(e){} }
-      currentRequestSeq++;
+      cancelActiveRequest();
       sessionGeneration++;
       window.sessionGeneration = sessionGeneration;
-      isSending = false;
-      sendBtn.disabled = true;
-      messageInput.disabled = true;
+      isSending = true;
+      applyInteractionState(currentActions, currentReadOnly);
+      await cancelVoiceActivity();
+      const resetSessionId = sessionId;
 
-      try { localStorage.removeItem('seagent_session_id'); } catch(e){}
-
-      if (sessionId) {
+      if (resetSessionId) {
         try {
-          await fetch(API_BASE + '/api/reset', {
+          const res = await fetch(API_BASE + '/api/reset', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: sessionId })
+            body: JSON.stringify({ session_id: resetSessionId })
           });
+          const data = await res.json();
+          if (!res.ok || data.ok !== true || data.reset !== true) {
+            throw new Error(data.msg || `HTTP ${res.status}`);
+          }
         } catch (err) {
           console.error('Reset failed', err);
+          isSending = false;
+          applyInteractionState(currentActions, currentReadOnly);
+          addMessage('bot', I18N[currentLang].resetFailed);
+          return false;
         }
       }
+
+      try { localStorage.removeItem('seagent_session_id'); } catch(e){}
       sessionId = null;
-      isDone = false;
+      lastResponseData = null;
       messageContainer.innerHTML = '';
       addWelcomeMessage();
       document.getElementById('taskInfo').innerHTML = '-';
@@ -1549,14 +1623,10 @@ Please describe your task request or ask a question directly.`,
       document.getElementById('historyList').style.display = 'none';
       messageInput.value = '';
 
-      sendBtn.disabled = false;
-      messageInput.disabled = false;
-      voiceBtn.disabled = false;
-      voiceBtn.classList.remove('recording');
-      voiceBtn.textContent = I18N[currentLang].voiceBtn;
-      setAsrStatus('', false);
+      isSending = false;
+      applyInteractionState(RESET_ACTIONS, false);
       messageInput.focus();
-
+      return true;
     }
 
     sendBtn.addEventListener('click', () => sendMessage(messageInput.value));

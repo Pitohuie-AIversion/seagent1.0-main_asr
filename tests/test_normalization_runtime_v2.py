@@ -1174,8 +1174,9 @@ class TestRuntimeV2Integration(unittest.TestCase):
         wd_slot.value = 500
         wd_slot.status = "valid"
         eq_slot = Slot("equipment_type")
-        eq_slot.value = "HYSY-601-ROV"
+        eq_slot.value = "通用工作级深海机器人 250HP"
         eq_slot.status = "valid"
+        eq_slot.source = "user_input"
         ttk_slot = dm.slot_store.slots["task_type_key"]
         tt_slot = dm.slot_store.slots["task_type"]
         dm.slot_store.commit_transaction({"task_type": tt_slot, "task_type_key": ttk_slot, "water_depth": wd_slot, "equipment_type": eq_slot}, [])

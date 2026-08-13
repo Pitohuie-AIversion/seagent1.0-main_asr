@@ -30,6 +30,7 @@ from src.llm_client import LLMClient
 from src.output_builder import OutputBuilder
 from src.result_paths import get_history_dir, get_task_dir
 from src.simulated_time import (
+    SimulatedTime,
     get_business_date,
     get_business_datetime,
     get_business_timezone,
@@ -137,6 +138,12 @@ def _worker_reserve_task_id(result_queue, prefix, date_text, width, tmp_dir):
 
 class Issue11DeterministicTaskIdTest(unittest.TestCase):
     def setUp(self):
+        self._sim_time_patcher = patch(
+            "src.simulated_time._simulated_time",
+            SimulatedTime(),
+        )
+        self._sim_time_patcher.start()
+        self.addCleanup(self._sim_time_patcher.stop)
         self.tmp_dir_obj = tempfile.TemporaryDirectory()
         self.tmp_dir = self.tmp_dir_obj.name
         self.env_patcher = patch.dict(os.environ, {"SEAGENT_RESULT_DIR": self.tmp_dir})

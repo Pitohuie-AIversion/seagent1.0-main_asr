@@ -411,6 +411,43 @@ class TestRobotCascadeRegistry(unittest.TestCase):
                 self.assertIsNotNone(resolved)
                 self.assertEqual(resolved["unit_id"], canonical_id)
 
+    def test_46_static_validation_rejects_fuzzy_variant_substrings(self):
+        """发布级静态 gate 只接受 Variant 的完整注册标识。"""
+        for selector in ("75", "观察级75"):
+            with self.subTest(selector=selector):
+                with self.assertRaises(RobotSelectionDataError) as cm:
+                    self.kb.validate_static_robot_selection(
+                        "observation_rov",
+                        "observation_rov",
+                        selector,
+                        "OBSROV-75-001",
+                        "pipeline_inspection",
+                    )
+                self.assertEqual(cm.exception.error_code, "VARIANT_NOT_FOUND")
+
+    def test_47_task_state_static_validation_rejects_fuzzy_unit_substrings(self):
+        """Snapshot/publish 不得把唯一模糊子串静默迁移为真实 Unit。"""
+        for selector in ("OBS", "75", "OBSROV-75"):
+            with self.subTest(selector=selector):
+                with self.assertRaises(RobotSelectionDataError) as cm:
+                    self.kb.validate_robot_selection_from_task_state(
+                        {
+                            "task_type_key": "pipeline_inspection",
+                            "equipment_unit_id": selector,
+                        }
+                    )
+                self.assertEqual(cm.exception.error_code, "UNIT_NOT_FOUND")
+
+        canonical = self.kb.validate_robot_selection_from_task_state(
+            {
+                "task_type_key": "pipeline_inspection",
+                "equipment_type": "巡检ROV 75HP",
+                "equipment_unit_id": "OBSROV--001",
+            }
+        )
+        self.assertEqual(canonical["variant_id"], "observation_rov_75hp")
+        self.assertEqual(canonical["unit_id"], "OBSROV-75-001")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -60,7 +60,7 @@ mappings:
     replacement_test: "tests/test_equipment_resolution_e2e.py::EquipmentResolutionE2ETest.test_alias_to_unit_variant_family_e2e_flow"
     invariant_type: "EQUIPMENT_RESOLUTION"
     original_assertions: "asserts equipment_name alias resolves to unit & variant"
-    replacement_assertions: "asserts alias '观察级一号机' resolves to OBSROV--001 unit_id and variant full_name"
+    replacement_assertions: "asserts alias '观察级一号机' resolves to OBSROV-75-001 unit_id and variant full_name"
     missing_assertions: []
     equivalence_status: "FULL"
     equivalence_reason: "Covered by dedicated equipment resolution E2E pipeline test"
@@ -89,8 +89,8 @@ mappings:
   - original_test: "test_variant_alias_is_available_to_backend_lookup (test_dialogue_manager_rov.DialogueManagerROVTest.test_variant_alias_is_available_to_backend_lookup)"
     replacement_test: "tests/test_equipment_resolution_e2e.py::EquipmentResolutionE2ETest.test_alias_tianying_to_unit_variant_e2e_flow"
     invariant_type: "EQUIPMENT_RESOLUTION"
-    original_assertions: "asserts variant alias 天鹰座001 resolves to LROV--001"
-    replacement_assertions: "asserts alias '天鹰座001' resolves to unit_id LROV--001 and variant full_name"
+    original_assertions: "asserts variant alias 天鹰座001 resolves to LROV-150-001"
+    replacement_assertions: "asserts alias '天鹰座001' resolves to unit_id LROV-150-001 and variant full_name"
     missing_assertions: []
     equivalence_status: "FULL"
     equivalence_reason: "Covered by dedicated equipment resolution E2E pipeline test"

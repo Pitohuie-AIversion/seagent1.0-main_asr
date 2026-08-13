@@ -471,6 +471,14 @@ class TestPublicAPICompatibility(unittest.TestCase):
         filter_res = self.client.filter_reply("测试脱敏文本")
         self.assertIsInstance(filter_res, str)
 
+    def test_filter_reply_domain_protection_restores_dvl(self):
+        """测试脱敏过滤触发误杀时，自动还原被误替换的水下设备术语 DVL。"""
+        with patch.object(self.client, "generate_text", return_value="当前区域 [无法透露底座模型或实现细节] 风险高，定位能力可能不稳定。"):
+            res = self.client.filter_reply("当前区域 DVL 风险高，定位能力可能不稳定。")
+            self.assertIn("DVL", res)
+            self.assertNotIn("无法透露底座模型", res)
+
+
 
 class TestFeatureFlagStrictType(unittest.TestCase):
     """测试 model_profiles_v2 Feature Flag 严格类型校验与解析异常捕获。"""

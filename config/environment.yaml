@@ -1,7 +1,14 @@
 # ==============================================================================
 # 海域作业环境知识库 — 定期更新（模拟当前环境状态）
-# last_updated: 2026-04-10T08:00:00
 # ==============================================================================
+
+metadata:
+  schema_version: 2
+  last_updated: "2026-08-13"
+  authority: "internal_simulation"
+  description: >
+    本文件是任务准入使用的内部模拟环境知识库。油气田坐标、海床类型、禁入区外包框和
+    DVL风险框若标记为internal_simulation，均不得解释为测绘成果或法定边界。
 
 oil_fields:
   # ===============================
@@ -13,7 +20,13 @@ oil_fields:
     lat_range: [20.81, 20.82]
     lon_range: [115.73, 115.74]
     water_depth: 305
+    maximum_reference_water_depth: 330
     seabed_type: "soft"
+    provenance:
+      water_depth_source_url: "https://buy.cnooc.com.cn/cbjyweb/001/001001/20211102/7bf16c53-2d35-4973-aec7-20dbd1d41184.html"
+      water_depth_basis: "油田平均水深约305m，平台预定场址约330m；330m用作知识库校验上限"
+      coordinates_status: "internal_simulation"
+      seabed_status: "internal_simulation"
     notes: >
       海床表层以软泥沉积为主，承载能力较弱，重载设备直接坐底存在下陷风险。
       适合悬浮式工作级ROV开展巡检、采油树操作和水下设备安装等作业；
@@ -25,15 +38,16 @@ oil_fields:
     lat_range: [21.65, 21.66]
     lon_range: [116.18, 116.19]
     water_depth: 136
+    maximum_reference_water_depth: 136
     seabed_type: "soft"
+    provenance:
+      water_depth_source_url: "https://buy.cnooc.com.cn/cbjyweb/001/001001/20220923/f89b99c4-020d-405b-990e-8d14361bb6ca.html"
+      water_depth_basis: "陆丰油田群二期所在海域约135.2m；默认值和校验上限保守取整为136m"
+      coordinates_status: "internal_simulation"
+      seabed_status: "internal_simulation"
     notes: >
-      区域: 南海东部;
-      盆地: 珠江口盆地;
-      状态: 2025年亿吨级油田发现;
-      水深: 约113m;
-      坐标类型: 项目共享坐标;
-      证据等级: A;
-      来源: 惠州32-5平台至惠州25-8平台海管更换项目
+      陆丰14-8属于陆丰油田群二期开发范围，所在海域参考水深约135.2m。
+      当前坐标框和软底质用于项目内部模拟；实际任务应以作业点测绘和地质资料为准。
 
   # ===============================
   # 南海西部 - 珠江口盆地西部
@@ -44,7 +58,13 @@ oil_fields:
     lat_range: [19.72, 19.73]
     lon_range: [112.37, 112.38]
     water_depth: 150
+    maximum_reference_water_depth: 155
     seabed_type: "soft"
+    provenance:
+      water_depth_source_url: "https://buy.cnooc.com.cn/cbjyweb/031/031001/20240426/9056d685-987f-4f29-bd49-3a1fd81b0365.html"
+      water_depth_basis: "项目公开资料记载所在海域约155m；150m保留为默认代表值，155m用作知识库校验上限"
+      coordinates_status: "internal_simulation"
+      seabed_status: "internal_simulation"
     notes: >
       海床表层以可扰动的松散沉积物为主，海管海缆可采用挖沟埋设方式施工。
       适合悬浮式工作级ROV开展海管海缆巡检、平台结构检查和水下接口操作；
@@ -59,7 +79,13 @@ oil_fields:
     lat_range: [17.50, 17.55]
     lon_range: [110.10, 110.20]
     water_depth: 1500
+    maximum_reference_water_depth: 1587
     seabed_type: "soft"
+    provenance:
+      water_depth_source_url: "https://buy.cnooc.com.cn/cbjyweb/024/024001/024001001/20230626/ceb28a13-f8cd-4aa6-9b02-c98a1508b9c2.html"
+      water_depth_basis: "气田海域约1220m至1560m，公开井位最深1587m；1500m为默认代表值，1587m用作知识库校验上限"
+      coordinates_status: "internal_simulation"
+      seabed_status: "internal_simulation"
     notes: >
       海床以低强度软黏土和粉质黏土为主，天然承载能力较弱，重载设备直接坐底容易下陷。
       适合悬浮式工作级ROV或AUV开展巡检、采油树操作、管汇干预和管缆检测；
@@ -88,6 +114,9 @@ forbidden_areas:
     aliases: ["广东珠江口中华白海豚国家级自然保护区核心保护区", "广东珠江口中华白海豚国家级自然保护区", "珠江口中华白海豚国家级自然保护区", "珠江口中华白海豚保护区", "珠江口中华白海豚核心保护区", "中华白海豚保护区核心区", "Pearl River Chinese White Dolphin Reserve Core Area"]
     lat_range: [21.95, 22.55]
     lon_range: [113.45, 114.05]
+    provenance:
+      authority: "internal_simulation"
+      boundary_basis: "工程安全保守外包框；不是法定保护区边界"
     notes: >
       该区域为中华白海豚重要栖息与活动保护海域，属于海洋生物保护敏感区。
       任务坐标命中该保守拦截框时，系统应立即执行长期硬阻断，默认永久禁入，不进入后续设备调度或作业规划流程。
@@ -98,6 +127,9 @@ forbidden_areas:
     aliases: ["广东内伶仃岛—福田国家级自然保护区核心保护区", "广东内伶仃岛—福田国家级自然保护区", "内伶仃岛—福田国家级自然保护区", "内伶仃岛—福田核心保护区", "内伶仃福田核心区", "内伶仃岛福田保护区", "Neilingding Futian Reserve Core Area"]
     lat_range: [22.3, 22.6]
     lon_range: [113.7, 114.15]
+    provenance:
+      authority: "internal_simulation"
+      boundary_basis: "工程安全保守外包框；不是法定保护区边界"
     notes: >
       该区域覆盖内伶仃岛及福田红树林生态保护核心敏感海域，是鸟类栖息、红树林湿地维持和近岸生态系统稳定的重要保护区。
       任务坐标命中该保守拦截框时，系统应立即长期硬阻断；允许误拦相邻海域，不允许漏放潜在保护区任务。
@@ -108,6 +140,9 @@ forbidden_areas:
     aliases: ["广东南澎列岛国家级自然保护区核心保护区", "广东南澎列岛国家级自然保护区", "南澎列岛国家级自然保护区", "南澎列岛保护区", "南澎列岛核心保护区", "南澎列岛国家级自然保护区核心区", "Nanpeng Islands Reserve Core Area"]
     lat_range: [23.12, 23.45]
     lon_range: [117.05, 117.45]
+    provenance:
+      authority: "internal_simulation"
+      boundary_basis: "工程安全保守外包框；不是法定保护区边界"
     notes: >
       该区域为南澎列岛海岛与周边海域生态保护敏感区，涉及岛礁生态系统、海鸟栖息环境及近岸海洋生物资源保护。
       任务坐标命中该保守拦截框时，系统应立即执行长期硬阻断，默认永久禁入，不生成作业方案。
@@ -121,6 +156,9 @@ forbidden_areas:
     aliases: ["广东徐闻珊瑚礁国家级自然保护区核心保护区", "广东徐闻珊瑚礁国家级自然保护区", "徐闻珊瑚礁国家级自然保护区", "徐闻珊瑚礁保护区", "徐闻珊瑚礁核心保护区", "徐闻珊瑚礁保护区核心区", "Xuwen Coral Reef Reserve Core Area"]
     lat_range: [20.3, 20.55]
     lon_range: [109.75, 110.0]
+    provenance:
+      authority: "internal_simulation"
+      boundary_basis: "工程安全保守外包框；不是法定保护区边界"
     notes: >
       该区域为徐闻珊瑚礁生态保护敏感区，珊瑚礁生境脆弱、恢复周期长，对悬浮泥沙、水下噪声、机械扰动和污染物输入高度敏感。
       任务坐标命中该保守拦截框时，系统应立即执行长期硬阻断，默认永久禁入。
@@ -134,6 +172,9 @@ forbidden_areas:
     aliases: ["广西合浦营盘港—英罗港儒艮国家级自然保护区核心保护区", "广西合浦营盘港—英罗港儒艮国家级自然保护区", "合浦营盘港—英罗港儒艮国家级自然保护区", "合浦儒艮保护区", "合浦儒艮核心保护区", "营盘港—英罗港儒艮核心区", "Hepu Dugong Reserve Core Area"]
     lat_range: [21.25, 21.55]
     lon_range: [109.5, 109.8]
+    provenance:
+      authority: "internal_simulation"
+      boundary_basis: "工程安全保守外包框；不是法定保护区边界"
     notes: >
       该区域为合浦营盘港—英罗港儒艮及海草床生态保护敏感区，是海洋哺乳动物栖息、觅食及近岸生态系统维持的重要区域。
       任务坐标命中该保守拦截框时，系统应立即长期硬阻断，默认永久禁入，不允许进入调度、路径规划或作业执行阶段。
@@ -147,6 +188,9 @@ forbidden_areas:
     aliases: ["海南东寨港国家级自然保护区核心保护区", "海南东寨港国家级自然保护区", "东寨港国家级自然保护区", "东寨港保护区", "东寨港核心保护区", "东寨港红树林核心区", "Dongzhaigang Reserve Core Area"]
     lat_range: [19.80, 20.05]
     lon_range: [110.50, 110.65]
+    provenance:
+      authority: "internal_simulation"
+      boundary_basis: "工程安全保守外包框；不是法定保护区边界"
     notes: >
       该区域为东寨港红树林湿地与近岸海洋生态保护敏感区，承担水鸟栖息、幼鱼庇护、岸线稳定和蓝碳生态功能。
       任务坐标命中该保守拦截框时，系统应立即执行长期硬阻断，默认永久禁入。
@@ -157,6 +201,9 @@ forbidden_areas:
     aliases: ["海南三亚珊瑚礁国家级自然保护区核心保护区", "海南三亚珊瑚礁国家级自然保护区", "三亚珊瑚礁国家级自然保护区", "三亚珊瑚礁保护区", "三亚珊瑚礁核心保护区", "三亚珊瑚礁保护区核心区", "Sanya Coral Reef Reserve Core Area"]
     lat_range: [18.10, 18.32]
     lon_range: [109.28, 109.75]
+    provenance:
+      authority: "internal_simulation"
+      boundary_basis: "工程安全保守外包框；不是法定保护区边界"
     notes: >
       该区域覆盖三亚珊瑚礁保护相关片区，包括东瑁洲—西瑁洲、鹿回头—榆林角及亚龙湾等生态敏感海域。
       任务坐标命中该保守拦截框时，系统应立即执行长期硬阻断；允许误拦，不允许漏拦，默认永久禁入。
@@ -172,8 +219,12 @@ dvl_bottom_lock_failure_areas:
     aliases: ["南海北部陆坡DVL风险区", "南海陆坡DVL底锁风险区", "南海北部深水DVL风险区", "南海北部陆坡底锁风险区"]
     lat_range: [18.00, 22.50]
     lon_range: [112.00, 118.00]
+    provenance:
+      authority: "internal_simulation"
+      boundary_basis: "基于区域沉积和内潮风险的工程提示框；不是DVL确定失效边界"
     notes: >
-      南海北部陆坡存在复杂沉积环境和强内潮动力过程。内潮及底边界层流动可导致海底沉积物再悬浮，改变近底声学传播环境，增加水下声学导航设备底锁稳定性风险，DVL可能失效。
+      南海北部陆坡存在复杂沉积环境和强内潮动力过程。内潮及底边界层流动可导致海底沉积物再悬浮，改变近底声学传播环境，增加水下声学导航设备底锁稳定性风险。
+      该区域仅用于风险提示，不作为DVL失效确定区域；作业前仍需结合实际海床声学资料和DVL质量指标判断。
 
 
   # =====================================
@@ -184,8 +235,12 @@ dvl_bottom_lock_failure_areas:
     aliases: ["珠江口盆地DVL风险区", "珠江口深水DVL底锁风险区", "珠江口盆地软沉积风险区"]
     lat_range: [20.0, 22.0]
     lon_range: [113.0, 116.0]
+    provenance:
+      authority: "internal_simulation"
+      boundary_basis: "基于区域沉积风险的工程提示框；不是DVL确定失效边界"
     notes: >
-      珠江口盆地属于南海北部重要沉积盆地，发育厚层海相沉积，深水区域可能存在低速沉积层和复杂海底声学传播环境。该区域仅用于风险提示DVL失效确定区域。
+      珠江口盆地属于南海北部重要沉积盆地，发育厚层海相沉积，深水区域可能存在低速沉积层和复杂海底声学传播环境。
+      该区域仅用于风险提示，不作为DVL失效确定区域；作业前需获取实际作业点海床声学和地质资料。
 
 
   # =====================================
@@ -196,5 +251,9 @@ dvl_bottom_lock_failure_areas:
     aliases: ["南海东北部内潮区", "南海内潮DVL风险区", "南海底边界层扰动区"]
     lat_range: [20.0, 23.0]
     lon_range: [116.0, 121.0]
+    provenance:
+      authority: "internal_simulation"
+      boundary_basis: "基于区域内潮扰动风险的工程提示框；不是DVL确定失效边界"
     notes: >
       南海东北部存在强内潮活动，观测研究显示内潮可增强底层流速并引起沉积物再悬浮。强底流和悬浮颗粒变化可能影响近底声学环境，增加DVL bottom lock稳定性风险。
+      该区域仅用于风险提示，不作为DVL失效确定区域。

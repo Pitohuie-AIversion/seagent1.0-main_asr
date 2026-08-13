@@ -53,6 +53,7 @@ from .session_state import (
     TaskLifecycleState,
     VALID_DIALOGUE_MODES,
     VALID_PHASES,
+    VALID_TASK_MODES,
     session_state_from_legacy_snapshot,
     session_state_to_legacy_fields,
     validate_task_phase_transition,
@@ -215,6 +216,7 @@ class DialogueManager:
         source: str = "rule",
         confidence: float = 1.0,
         reason: str = "",
+        restore_transition_state: tuple[dict | None, list[dict]] | None = None,
     ) -> None:
         """Issue #10 统一模式切换方法：记录切换元数据与历史轨迹。"""
         old_mode = getattr(self, "dialogue_mode", "task_collection")
@@ -233,7 +235,11 @@ class DialogueManager:
         }
 
         cand_mode = new_mode
-        if old_mode != new_mode:
+        if restore_transition_state is not None:
+            restored_last, restored_history = restore_transition_state
+            cand_last_transition = copy.deepcopy(restored_last)
+            cand_history = copy.deepcopy(restored_history)
+        elif old_mode != new_mode:
             cand_last_transition = transition
             hist = list(getattr(self, "mode_transition_history", []) or [])
             hist.append(transition)
@@ -252,7 +258,7 @@ class DialogueManager:
             )
 
         self.dialogue_mode = cand_mode
-        if old_mode != new_mode:
+        if old_mode != new_mode or restore_transition_state is not None:
             self.last_mode_transition = cand_last_transition
             self.mode_transition_history = cand_history
 
@@ -487,31 +493,72 @@ class DialogueManager:
         )
 
     def _build_grounded_recommendation(self, route: IntentRouteResult) -> str | None:
-        """把模型的推荐选择约束到当前待填字段的配置候选中。"""
+        """把模型的推荐选择约束到当前待填字段的配置候选中。
+
+        设计原则：
+        - 仅拦截 operation=READ、relation=recommend 的询问。
+        - 合法候选（allowed_values）来自项目配置，是唯一可信来源。
+        - LLM 的 subject_text 可能与配置名称存在出入（幻觉、别名等），
+          因此优先从 allowed_values 中选取推荐值，而不依赖 subject_text 精确匹配。
+        - 若 subject_type 无对应字段或当前任务无合法候选，则不拦截，
+          让后续知识库检索逻辑处理。
+        """
         plan = route.interaction_plan
         if plan is None or plan.operation != "READ" or plan.relation != "recommend":
             return None
 
         target_key = RECOMMENDATION_FIELD_BY_SUBJECT.get(plan.subject_type or "")
-        field_def = self._missing_field_definition(target_key or "")
+        if not target_key:
+            # subject_type 不在推荐字段映射中，不拦截
+            return None
+
+        field_def = self._missing_field_definition(target_key)
         allowed_values = list((field_def or {}).get("allowed_values") or [])
+        label = FIELD_LABELS.get(target_key, target_key or "该字段")
+
+        if not allowed_values:
+            # 当前任务阶段无合法候选（字段尚未解析或不在缺失列表中），不拦截
+            return None
+
         selected = plan.subject_text
-        label = FIELD_LABELS.get(target_key or "", target_key or "该字段")
-
-        if not target_key or not selected or selected not in allowed_values:
-            candidates = "、".join(map(str, allowed_values)) or "无"
-            return (
-                f"无法从当前任务的合法{label}候选中验证这项推荐，因此本轮没有"
-                f"给出或写入选择。当前合法候选：{candidates}。"
-            )
-
         task_name = self.task_state.get("task_type") or self.task_state.get("task_type_key")
         task_prefix = f"针对当前【{task_name}】任务，" if task_name else ""
-        return (
-            f"{task_prefix}我明确推荐{label}【{selected}】。"
-            "该值来自当前任务经过项目配置约束筛选后的合法候选；"
-            "本轮仅提供建议，尚未写入任务。若接受，请确认采用该选择。"
-        )
+
+        # 优先采用 LLM 推荐值（精确匹配配置候选）
+        if selected and selected in allowed_values:
+            chosen = selected
+            return (
+                f"{task_prefix}我明确推荐{label}【{chosen}】。"
+                "该值来自当前任务经过项目配置约束筛选后的合法候选；"
+                "本轮仅提供建议，尚未写入任务。若接受，请确认采用该选择。"
+            )
+
+        # LLM 推荐的名称与配置不匹配（幻觉或别名），从合法候选中直接给出推荐。
+        # 记录实际不匹配情况以便诊断。
+        if selected:
+            logger.info(
+                "[GROUNDED_RECOMMEND] LLM subject_text=%r 不在合法%s候选中，"
+                "将直接从配置候选推荐。allowed=%r",
+                selected, label, allowed_values,
+            )
+
+        if len(allowed_values) == 1:
+            # 唯一候选，直接推荐
+            chosen = allowed_values[0]
+            return (
+                f"{task_prefix}当前任务的{label}唯一合法选项为【{chosen}】，"
+                "本轮建议采用该值，尚未写入任务。若接受，请确认采用该选择。"
+            )
+        else:
+            # 多个合法候选，列出供用户选择，并推荐第一个作为默认建议
+            first = allowed_values[0]
+            candidates = "、".join(map(str, allowed_values))
+            return (
+                f"{task_prefix}当前任务允许的{label}选项有：{candidates}。\n"
+                f"如无特殊要求，建议选择【{first}】。"
+                "本轮仅提供建议，尚未写入任务。若接受，请确认采用该选择；"
+                "若需其他选项，请直接告知。"
+            )
 
     def _resolve_project_robot_classes(self, text: str) -> list[tuple[str, str]]:
         """仅依据 robot_fleet 配置识别文本中明确提到的机器人类别。"""
@@ -1320,6 +1367,7 @@ class DialogueManager:
         if self.phase == "blocked_hard" and (
             self._is_confirmation_only(user_message)
             or self._is_final_publish_confirmation(user_message)
+            or self._is_ignore_warning(user_message)
         ):
             return self._reject_hard_constraint_bypass(user_message)
 
@@ -1371,7 +1419,13 @@ class DialogueManager:
         )
 
         plan = route.interaction_plan
-        if plan and plan.warning_action == "acknowledge":
+        is_ignore_warning_cmd = self._is_ignore_warning(user_message)
+        has_acknowledge_action = bool(
+            (plan and plan.warning_action == "acknowledge")
+            or (self.phase == "blocked_soft" and is_ignore_warning_cmd)
+        )
+
+        if has_acknowledge_action:
             if self.phase == "blocked_hard":
                 return self._reject_hard_constraint_bypass(user_message)
             # warning_action 是 WRITE 中的次级副作用，不能在字段抽取前抢占整轮。
@@ -1448,7 +1502,7 @@ class DialogueManager:
 
         def reply_write_without_candidates() -> str:
             """依据事务结果回复，禁止模型在零提交时声称写入成功。"""
-            if plan and plan.warning_action == "acknowledge":
+            if has_acknowledge_action:
                 self._switch_dialogue_mode(
                     "task_collection",
                     source="interaction_plan",
@@ -1491,9 +1545,7 @@ class DialogueManager:
                 task_type_map=self.kb.get_task_type_map(),
                 required=None,
                 conversation_history=self.conversation_history,
-                allow_empty_for_side_effect=bool(
-                    plan and plan.warning_action == "acknowledge"
-                ),
+                allow_empty_for_side_effect=has_acknowledge_action,
             )
 
             if is_task_patch_v2_enabled():
@@ -1566,9 +1618,7 @@ class DialogueManager:
                 required=required_field_defs,
                 ROV2type=self.kb.ROV2type,
                 conversation_history=self.conversation_history,
-                allow_empty_for_side_effect=bool(
-                    plan and plan.warning_action == "acknowledge"
-                ),
+                allow_empty_for_side_effect=has_acknowledge_action,
             )
             extraction_res = self._scope_confirmed_recommendation(
                 extraction_res,
@@ -2117,30 +2167,38 @@ class DialogueManager:
         missing_fields: list[dict] | None = None,
         display_updates: dict | None = None,
     ) -> str:
-        """保证 WRITE 回复不会把未提交候选描述成已写入事实。
+        """在 LLM 自然语言回复后追加事实锚点摘要，防止回复内容与实际写入状态不一致。
 
-        写入回执完全由 SlotStore 事务结果生成，不分析原句或模型回复关键词。
-        ``model_reply`` 仅保留兼容签名；不能作为字段写入事实来源。
+        设计原则：
+        - ``model_reply`` 作为主体自然语言回复，原样保留，不得丢弃。
+        - 仅将 FIELD_LABELS 中有中文标签的用户可见字段写入摘要，内部元数据字段不得出现。
+        - 当 ``accepted_updates`` 非空时，在回复末尾追加一行简明的字段确认摘要。
+        - 当 LLM 回复为空时，退化为纯摘要模式（兜底）。
         """
-        del model_reply
-
         unresolved = [str(item) for item in unresolved_inputs if str(item).strip()]
-        if accepted_updates:
+
+        # 只展示 FIELD_LABELS 中有中文标签的用户可见字段
+        user_visible_updates = {
+            key: value
+            for key, value in accepted_updates.items()
+            if key in FIELD_LABELS
+        }
+
+        suffix_parts: list[str] = []
+        if user_visible_updates:
             committed = []
-            for key, value in accepted_updates.items():
-                label = FIELD_LABELS.get(key, key)
-                value = (display_updates or {}).get(key, value)
-                if isinstance(value, (dict, list)):
-                    rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            for key, value in user_visible_updates.items():
+                label = FIELD_LABELS[key]
+                display_value = (display_updates or {}).get(key, value)
+                if isinstance(display_value, (dict, list)):
+                    rendered = json.dumps(display_value, ensure_ascii=False, separators=(",", ":"))
                 else:
-                    rendered = str(value)
-                committed.append(f"{label}={rendered}")
-            reply = "已写入本轮通过验证的字段：" + "；".join(committed) + "。"
-        else:
-            reply = "本轮没有任务字段通过验证，因此未写入任务状态。"
+                    rendered = str(display_value)
+                committed.append(f"{label}：{rendered}")
+            suffix_parts.append("✅ 已记录：" + "；".join(committed) + "。")
 
         if unresolved:
-            reply += " 未写入或仍需确认的内容：" + "；".join(unresolved) + "。"
+            suffix_parts.append("⚠️ 未写入或仍需确认：" + "；".join(unresolved) + "。")
 
         if missing_fields is not None:
             labels = [
@@ -2149,10 +2207,24 @@ class DialogueManager:
                 if isinstance(item, dict) and (item.get("label") or item.get("key"))
             ]
             if labels:
-                reply += " 仍需补充：" + "、".join(labels) + "。"
-            elif accepted_updates:
-                reply += " 所有必填字段已收集完成，任务尚未发布。"
-        return reply
+                suffix_parts.append("仍需补充：" + "、".join(labels) + "。")
+            elif user_visible_updates:
+                suffix_parts.append("所有必填字段已收集完成，任务尚未发布。")
+
+        suffix = "\n".join(suffix_parts)
+
+        # 区分有提交和无提交的响应安全规则：
+        # 1. 若本轮没有任何字段写入 (accepted_updates 为空)，忽略 LLM 可能的虚假写入声明，输出客观验证事实。
+        if not accepted_updates:
+            reply = "本轮没有任务字段通过验证，因此未写入任务状态。"
+            if suffix:
+                reply = f"{reply}\n{suffix}"
+            return reply
+
+        # 2. 若有字段通过验证，以 LLM 自然语言回复为主体，末尾追加规则生成的客观校验/记录摘要。
+        if model_reply and model_reply.strip():
+            return f"{model_reply.rstrip()}\n\n{suffix}".rstrip() if suffix else model_reply.strip()
+        return suffix if suffix else "已写入本轮通过验证的字段。"
 
     def _get_committed_update_display_values(self, accepted_updates: dict) -> dict:
         """从领域配置生成写入回执的展示值，不改变 SlotStore 标准值。"""
@@ -2175,6 +2247,17 @@ class DialogueManager:
         if not proposed_updates:
             return {}
 
+        # 内部元数据字段：由 oilfield linker 等中间件写入，仅供后端推理，不得面向用户展示
+        _INTERNAL_METADATA_KEYS = {
+            "raw_oilfield_name",
+            "oilfield_match_status",
+            "oilfield_match_confidence",
+            "oilfield_match_evidence",
+            "oilfield_match_candidates",
+            "oilfield_entity_id",
+            "pending_oilfield_name",
+            "pending_oilfield_candidates",
+        }
         ignored_keys = {
             "task_id",
             "intent_id",
@@ -2182,10 +2265,9 @@ class DialogueManager:
             "task_type_key",
             "emergency_mode",
             "rov_description",
-            "pending_oilfield_candidates",
             "__clear_oilfield_name",
             "__clear_pending_oilfield",
-        }
+        } | _INTERNAL_METADATA_KEYS
         accepted: dict = {}
         for key, value in self.task_state.items():
             if key in ignored_keys or key.startswith("__") or value is None:
@@ -2624,7 +2706,24 @@ class DialogueManager:
 
         task_type_key = str(task_type_slot.value)
         try:
-            domain = self.kb.get_feasible_robot_selection_domain(task_type_key)
+            task_state = {
+                key: copy.deepcopy(slot.value)
+                for key, slot in new_slots.items()
+                if slot.status == "valid" and slot.value is not None
+            }
+            domain = self.kb.get_feasible_robot_selection_domain(
+                task_type_key,
+                task_state,
+            )
+            # The admission domain contains only task/class/capability and
+            # registry hierarchy rules.  It deliberately excludes mutable
+            # task facts (depth/payload) and runtime telemetry.  Keeping this
+            # second view lets us distinguish a structurally stale selector
+            # from an explicit, structurally valid selector that is currently
+            # infeasible and must remain visible to the Validator.
+            admission_domain = self.kb.get_feasible_robot_selection_domain(
+                task_type_key,
+            )
         except Exception as exc:
             logger.warning("[DialogueManager] Failed to build feasible robot domain for task '%s': %s", task_type_key, exc)
             if "equipment_class" not in new_slots:
@@ -2632,6 +2731,7 @@ class DialogueManager:
             slot = new_slots["equipment_class"]
             slot.status = "invalid"
             slot.value = None
+            slot.source = "system_candidate_resolution"
             slot.validation_error = str(exc)
             return
 
@@ -2640,56 +2740,340 @@ class DialogueManager:
             reset_slot_to_missing,
         )
 
-        # ── 1. 前置校验：若已有槽位不属于当前 feasible_domain，作废该槽位及下游 ──
+        # Auto-bound values express candidate uniqueness, not a durable user
+        # preference. Recompute only the automatic suffix below the deepest
+        # explicit user choice. Automatic ancestors of an explicit family,
+        # variant, or unit must remain in place so that choice can still be
+        # validated against its parent chain.
+        cascade_keys = (
+            "equipment_class",
+            "equipment_family",
+            "equipment_type",
+            "equipment_unit_id",
+        )
+        for key in cascade_keys:
+            slot = new_slots.get(key)
+            if (
+                slot
+                and slot.status == "invalid"
+                and slot.source == "system_candidate_resolution"
+            ):
+                reset_slot_to_missing(
+                    slot,
+                    source="system_candidate_recompute",
+                )
+
+        explicit_indices = [
+            index
+            for index, key in enumerate(cascade_keys)
+            if (
+                (slot := new_slots.get(key))
+                and slot.status == "valid"
+                and slot.value is not None
+                and slot.source != "auto"
+            )
+        ]
+        deepest_explicit = max(explicit_indices, default=-1)
+        for index, key in enumerate(cascade_keys):
+            slot = new_slots.get(key)
+            if (
+                index > deepest_explicit
+                and slot
+                and slot.status == "valid"
+                and slot.source == "auto"
+            ):
+                reset_slot_to_missing(slot, source="system_candidate_recompute")
+
+        # ── 1. 前置校验：分离“静态归属”和“当前可行性” ──
+        # 任务类型/父层切换后已不在 admission domain 的旧值必须清理，
+        # 无论其是否来自用户。但对仍在 admission domain、只因水深/
+        # 载荷/运行状态而不在 feasible domain 的明确用户选择，必须保留
+        # 给 Validator 产生硬约束；只重算 source=auto 的候选结论。
+        def should_invalidate(
+            slot: Any,
+            *,
+            admitted: bool,
+            feasible: bool,
+            level_index: int,
+        ) -> bool:
+            if not admitted:
+                return True
+            return (
+                not feasible
+                and bool(slot and slot.source == "auto")
+                and level_index > deepest_explicit
+            )
+
+        def class_node(selection_domain: dict, class_id: str | None) -> dict | None:
+            return next(
+                (
+                    item
+                    for item in selection_domain.get("classes", [])
+                    if item.get("class_id") == class_id
+                ),
+                None,
+            )
+
+        def family_node(parent: dict | None, family_id: str | None) -> dict | None:
+            return next(
+                (
+                    item
+                    for item in (parent or {}).get("families", [])
+                    if item.get("family_id") == family_id
+                ),
+                None,
+            )
+
+        def variant_node(parent: dict | None, variant_id: str | None) -> dict | None:
+            return next(
+                (
+                    item
+                    for item in (parent or {}).get("variants", [])
+                    if item.get("variant_id") == variant_id
+                ),
+                None,
+            )
+
         cls_slot = new_slots.get("equipment_class")
-        if cls_slot and cls_slot.status in ("valid", "candidate") and cls_slot.value:
+        if cls_slot and cls_slot.status == "valid" and cls_slot.value:
             resolved_cls = self.kb._resolve_class_key(str(cls_slot.value))
-            feasible_class_ids = {c["class_id"] for c in domain["classes"]}
-            if not resolved_cls or resolved_cls not in feasible_class_ids:
+            admitted_cls = class_node(admission_domain, resolved_cls) is not None
+            feasible_cls = class_node(domain, resolved_cls) is not None
+            if should_invalidate(
+                cls_slot,
+                admitted=admitted_cls,
+                feasible=feasible_cls,
+                level_index=0,
+            ):
                 invalidate_robot_cascade_dependents(new_slots, ["equipment_class"])
                 reset_slot_to_missing(cls_slot, source="system_dependency_invalidation")
 
         fam_slot = new_slots.get("equipment_family")
-        if fam_slot and fam_slot.status in ("valid", "candidate") and fam_slot.value:
+        if fam_slot and fam_slot.status == "valid" and fam_slot.value:
             cur_cls = new_slots.get("equipment_class")
-            cur_cls_id = self.kb._resolve_class_key(str(cur_cls.value)) if cur_cls and cur_cls.value else None
-            cls_node = next((c for c in domain["classes"] if c["class_id"] == cur_cls_id), None)
-            feasible_fam_ids = {f["family_id"] for f in cls_node["families"]} if cls_node else set()
-            resolved_fam_id = self.kb.resolve_robot_family_id(str(fam_slot.value), task_type_key)
-            if not resolved_fam_id or resolved_fam_id not in feasible_fam_ids:
+            cur_cls_id = (
+                self.kb._resolve_class_key(str(cur_cls.value))
+                if cur_cls and cur_cls.status == "valid" and cur_cls.value
+                else None
+            )
+            resolved_fam_id = self.kb._resolve_family_key(str(fam_slot.value))
+            family_cfg = self.kb.robot_fleet.get("robot_families", {}).get(
+                resolved_fam_id,
+                {},
+            )
+            canonical_cls_id = family_cfg.get("robot_class")
+            parent_matches = cur_cls_id is None or cur_cls_id == canonical_cls_id
+            admitted_fam = family_node(
+                class_node(admission_domain, canonical_cls_id),
+                resolved_fam_id,
+            ) is not None and parent_matches
+            feasible_fam = family_node(
+                class_node(domain, canonical_cls_id),
+                resolved_fam_id,
+            ) is not None and parent_matches
+            if should_invalidate(
+                fam_slot,
+                admitted=admitted_fam,
+                feasible=feasible_fam,
+                level_index=1,
+            ):
                 invalidate_robot_cascade_dependents(new_slots, ["equipment_family"])
                 reset_slot_to_missing(fam_slot, source="system_dependency_invalidation")
 
         type_slot = new_slots.get("equipment_type")
-        if type_slot and type_slot.status in ("valid", "candidate") and type_slot.value:
+        if type_slot and type_slot.status == "valid" and type_slot.value:
             cur_cls = new_slots.get("equipment_class")
             cur_fam = new_slots.get("equipment_family")
-            cur_cls_id = self.kb._resolve_class_key(str(cur_cls.value)) if cur_cls and cur_cls.value else None
-            cur_fam_id = self.kb.resolve_robot_family_id(str(cur_fam.value), task_type_key) if cur_fam and cur_fam.value else None
-            cls_node = next((c for c in domain["classes"] if c["class_id"] == cur_cls_id), None)
-            fam_node = next((f for f in cls_node["families"] if f["family_id"] == cur_fam_id), None) if cls_node else None
-            feasible_var_names = (
-                {v["full_name"] for v in fam_node["variants"]} | {v["variant_id"] for v in fam_node["variants"]}
-                if fam_node else set()
+            cur_cls_id = (
+                self.kb._resolve_class_key(str(cur_cls.value))
+                if cur_cls and cur_cls.status == "valid" and cur_cls.value
+                else None
             )
-            if str(type_slot.value) not in feasible_var_names:
+            cur_fam_id = (
+                self.kb._resolve_family_key(str(cur_fam.value))
+                if cur_fam and cur_fam.status == "valid" and cur_fam.value
+                else None
+            )
+            try:
+                resolved_variant = self.kb._resolve_robot_variant_exact(
+                    str(type_slot.value),
+                )
+            except RobotSelectionDataError:
+                resolved_variant = None
+            resolved_variant_id = (
+                resolved_variant.get("variant_id") if resolved_variant else None
+            )
+            canonical_cls_id = (
+                resolved_variant.get("robot_class") if resolved_variant else None
+            )
+            canonical_fam_id = (
+                resolved_variant.get("family_id") if resolved_variant else None
+            )
+            parents_match = (
+                (cur_cls_id is None or cur_cls_id == canonical_cls_id)
+                and (cur_fam_id is None or cur_fam_id == canonical_fam_id)
+            )
+            admitted_var = variant_node(
+                family_node(
+                    class_node(admission_domain, canonical_cls_id),
+                    canonical_fam_id,
+                ),
+                resolved_variant_id,
+            ) is not None and parents_match
+            feasible_var = variant_node(
+                family_node(
+                    class_node(domain, canonical_cls_id),
+                    canonical_fam_id,
+                ),
+                resolved_variant_id,
+            ) is not None and parents_match
+            if should_invalidate(
+                type_slot,
+                admitted=admitted_var,
+                feasible=feasible_var,
+                level_index=2,
+            ):
                 invalidate_robot_cascade_dependents(new_slots, ["equipment_type"])
                 reset_slot_to_missing(type_slot, source="system_dependency_invalidation")
 
         unit_slot = new_slots.get("equipment_unit_id")
-        if unit_slot and unit_slot.status in ("valid", "candidate") and unit_slot.value:
+        if unit_slot and unit_slot.status == "valid" and unit_slot.value:
             cur_cls = new_slots.get("equipment_class")
             cur_fam = new_slots.get("equipment_family")
             cur_type = new_slots.get("equipment_type")
-            cur_cls_id = self.kb._resolve_class_key(str(cur_cls.value)) if cur_cls and cur_cls.value else None
-            cur_fam_id = self.kb.resolve_robot_family_id(str(cur_fam.value), task_type_key) if cur_fam and cur_fam.value else None
-            cur_type_val = str(cur_type.value) if cur_type and cur_type.value else None
-            cls_node = next((c for c in domain["classes"] if c["class_id"] == cur_cls_id), None)
-            fam_node = next((f for f in cls_node["families"] if f["family_id"] == cur_fam_id), None) if cls_node else None
-            var_node = next((v for v in fam_node["variants"] if v["full_name"] == cur_type_val or v["variant_id"] == cur_type_val), None) if fam_node else None
-            feasible_units = {u["unit_id"] for u in var_node["units"]} if var_node else set()
-            if str(unit_slot.value) not in feasible_units:
+            cur_cls_id = (
+                self.kb._resolve_class_key(str(cur_cls.value))
+                if cur_cls and cur_cls.status == "valid" and cur_cls.value
+                else None
+            )
+            cur_fam_id = (
+                self.kb._resolve_family_key(str(cur_fam.value))
+                if cur_fam and cur_fam.status == "valid" and cur_fam.value
+                else None
+            )
+            try:
+                resolved_variant = (
+                    self.kb._resolve_robot_variant_exact(str(cur_type.value))
+                    if cur_type and cur_type.status == "valid" and cur_type.value
+                    else None
+                )
+                resolved_unit = self.kb._resolve_robot_unit_exact(
+                    str(unit_slot.value),
+                    task_type_key,
+                )
+            except RobotSelectionDataError:
+                resolved_variant = None
+                resolved_unit = None
+            resolved_variant_id = (
+                resolved_variant.get("variant_id") if resolved_variant else None
+            )
+            resolved_unit_id = (
+                resolved_unit.get("unit_id") if resolved_unit else None
+            )
+            unit_robot = resolved_unit.get("robot") if resolved_unit else None
+            canonical_unit_cls_id = (
+                unit_robot.get("robot_class") if unit_robot else None
+            )
+            canonical_unit_fam_id = (
+                unit_robot.get("family_id") if unit_robot else None
+            )
+            canonical_unit_var_id = (
+                unit_robot.get("variant_id") if unit_robot else None
+            )
+            parents_match = (
+                (cur_cls_id is None or cur_cls_id == canonical_unit_cls_id)
+                and (cur_fam_id is None or cur_fam_id == canonical_unit_fam_id)
+                and (
+                    resolved_variant_id is None
+                    or resolved_variant_id == canonical_unit_var_id
+                )
+            )
+            admission_var = variant_node(
+                family_node(
+                    class_node(admission_domain, canonical_unit_cls_id),
+                    canonical_unit_fam_id,
+                ),
+                canonical_unit_var_id,
+            )
+            feasible_var_node = variant_node(
+                family_node(
+                    class_node(domain, canonical_unit_cls_id),
+                    canonical_unit_fam_id,
+                ),
+                canonical_unit_var_id,
+            )
+            admitted_unit = any(
+                item.get("unit_id") == resolved_unit_id
+                for item in (admission_var or {}).get("units", [])
+            ) and parents_match
+            feasible_unit = any(
+                item.get("unit_id") == resolved_unit_id
+                for item in (feasible_var_node or {}).get("units", [])
+            ) and parents_match
+            if should_invalidate(
+                unit_slot,
+                admitted=admitted_unit,
+                feasible=feasible_unit,
+                level_index=3,
+            ):
                 reset_slot_to_missing(unit_slot, source="system_dependency_invalidation")
+
+        # A valid deeper selector has one authoritative registry lineage.
+        # Restore/migration callers may legitimately provide only Family,
+        # Variant, or Unit, so materialize only missing ancestors before the
+        # normal forward collapse.  Explicit ancestors were already checked
+        # above and are never overwritten here.
+        canonical_state = {
+            key: copy.deepcopy(slot.value)
+            for key, slot in new_slots.items()
+            if key in cascade_keys
+            and slot.status == "valid"
+            and slot.value is not None
+        }
+        if canonical_state:
+            try:
+                canonical_selection = (
+                    self.kb.validate_robot_selection_from_task_state(
+                        {
+                            "task_type_key": task_type_key,
+                            **canonical_state,
+                        },
+                        require_unit=False,
+                    )
+                )
+            except RobotSelectionDataError:
+                canonical_selection = None
+
+            if isinstance(canonical_selection, dict):
+                canonical_ancestors = (
+                    ("equipment_class", "robot_class"),
+                    ("equipment_family", "family_name"),
+                    ("equipment_type", "equipment_type"),
+                )
+                for slot_key, result_key in canonical_ancestors:
+                    canonical_value = canonical_selection.get(result_key)
+                    current_slot = new_slots.get(slot_key)
+                    if (
+                        isinstance(canonical_value, str)
+                        and canonical_value.strip()
+                        and (
+                            current_slot is None
+                            or (
+                                current_slot.status == "missing"
+                                and current_slot.value is None
+                            )
+                        )
+                    ):
+                        if current_slot is None:
+                            current_slot = Slot(slot_key)
+                            new_slots[slot_key] = current_slot
+                        current_slot.value = canonical_value
+                        current_slot.status = "valid"
+                        current_slot.source = "auto"
+                        current_slot.raw_value = canonical_value
+                        current_slot.confidence = 1.0
+                        current_slot.candidate_value = None
+                        current_slot.validation_error = None
 
         # ── 2. 逐级四级 auto-collapse ──
 
@@ -2706,6 +3090,7 @@ class DialogueManager:
                 if slot.status not in ("conflict", "invalid"):
                     slot.status = "invalid"
                     slot.value = None
+                    slot.source = "system_candidate_resolution"
                     slot.validation_error = f"No feasible robot class for task '{task_type_key}'"
                 return
             elif len(classes) == 1:
@@ -2742,6 +3127,7 @@ class DialogueManager:
                 if slot.status not in ("conflict", "invalid"):
                     slot.status = "invalid"
                     slot.value = None
+                    slot.source = "system_candidate_resolution"
                     slot.validation_error = f"No feasible robot family under class '{cur_cls_id}' for task '{task_type_key}'"
                 return
             elif len(families) == 1:
@@ -2778,6 +3164,7 @@ class DialogueManager:
                 if slot.status not in ("conflict", "invalid"):
                     slot.status = "invalid"
                     slot.value = None
+                    slot.source = "system_candidate_resolution"
                     slot.validation_error = f"No feasible robot variant under family '{cur_fam_id}' for task '{task_type_key}'"
                 return
             elif len(variants) == 1:
@@ -2813,6 +3200,7 @@ class DialogueManager:
                 if slot.status not in ("conflict", "invalid"):
                     slot.status = "invalid"
                     slot.value = None
+                    slot.source = "system_candidate_resolution"
                     slot.validation_error = f"No fleet units configured for variant '{cur_type_val}'"
                 return
             elif len(units) == 1:
@@ -3019,7 +3407,7 @@ class DialogueManager:
                 class_slot = sandbox_slots.get("equipment_class")
                 old_class = (
                     class_slot.value
-                    if class_slot and class_slot.status in ("valid", "candidate")
+                    if class_slot and class_slot.status == "valid"
                     else None
                 )
                 if allow_overwrite and old_class and old_class != resolved_class_id:
@@ -3051,7 +3439,7 @@ class DialogueManager:
                 active_class_slot = sandbox_slots.get("equipment_class")
                 active_class = (
                     active_class_slot.value
-                    if active_class_slot and active_class_slot.status in ("valid", "candidate")
+                    if active_class_slot and active_class_slot.status == "valid"
                     else None
                 )
                 target_class = resolved_family.get("robot_class")
@@ -3084,7 +3472,7 @@ class DialogueManager:
                     family_slot = sandbox_slots.get("equipment_family")
                     current_family_id = (
                         self.kb.resolve_robot_family_id(str(family_slot.value), task_type)
-                        if family_slot and family_slot.value and family_slot.status in ("valid", "candidate")
+                        if family_slot and family_slot.value and family_slot.status == "valid"
                         else None
                     )
                     if (
@@ -3115,7 +3503,7 @@ class DialogueManager:
             active_fam_slot = sandbox_slots.get("equipment_family")
             active_family = (
                 active_fam_slot.value
-                if active_fam_slot and active_fam_slot.status in ("valid", "candidate")
+                if active_fam_slot and active_fam_slot.status == "valid"
                 else None
             )
             active_fam_info = self.kb.resolve_robot_family(str(active_family), task_type) if active_family else None
@@ -3186,7 +3574,7 @@ class DialogueManager:
                 old_variant_slot = sandbox_slots.get("equipment_type")
                 old_variant_val = (
                     old_variant_slot.value
-                    if old_variant_slot and old_variant_slot.status in ("valid", "candidate")
+                    if old_variant_slot and old_variant_slot.status == "valid"
                     else None
                 )
                 new_variant_val = selected_variant.get("full_name", variant_update)
@@ -3233,7 +3621,7 @@ class DialogueManager:
                 if selected_variant
                 else (
                     variant_slot.value
-                    if variant_slot and variant_slot.status in ("valid", "candidate")
+                    if variant_slot and variant_slot.status == "valid"
                     else None
                 )
             )
@@ -3413,6 +3801,49 @@ class DialogueManager:
             required_fields = self.builder.get_schema(target_key, self.mode)
             schema_keys = {f["key"] for f in required_fields}
 
+            # A candidate/conflict/invalid/unresolved robot selector belongs
+            # to the task context in which it was produced.  When the task
+            # type actually changes, it must not block the new task's
+            # admission-domain collapse.  Keep valid committed selectors for
+            # the normal cross-task admission check; clear only the first
+            # non-effective selector and its dependent suffix.
+            if target_key != old_task_type_key:
+                from .slot_store import (
+                    invalidate_robot_cascade_dependents,
+                    reset_slot_to_missing,
+                )
+
+                for selector_key in (
+                    "equipment_class",
+                    "equipment_family",
+                    "equipment_type",
+                    "equipment_unit_id",
+                ):
+                    selector_slot = new_slots.get(selector_key)
+                    if not selector_slot or selector_slot.status not in {
+                        "candidate",
+                        "conflict",
+                        "invalid",
+                        "unresolved",
+                    }:
+                        continue
+                    invalidate_robot_cascade_dependents(
+                        new_slots,
+                        [selector_key],
+                    )
+                    reset_slot_to_missing(
+                        selector_slot,
+                        source="task_type_change_invalidation",
+                    )
+                    if selector_key == "equipment_unit_id":
+                        equipment_name_slot = new_slots.get("equipment_name")
+                        if equipment_name_slot is not None:
+                            reset_slot_to_missing(
+                                equipment_name_slot,
+                                source="task_type_change_invalidation",
+                            )
+                    break
+
             # Clean up old dynamic slots in new_slots that do not belong to BASE_SLOT_TYPES, schema_keys, or ALLOWED_INTERNAL_SLOTS
             from .slot_store import BASE_SLOT_TYPES, ALLOWED_INTERNAL_SLOTS
             to_remove = [
@@ -3464,7 +3895,7 @@ class DialogueManager:
                 continue
             ftype = field_def["type"]
             slot = new_slots.get(key)
-            if not slot or slot.status in ("fixed", "auto", "conflict", "invalid") or key.startswith("equipment_"):
+            if not slot or slot.status in ("conflict", "invalid") or key.startswith("equipment_"):
                 continue
 
             target_val = slot.candidate_value if slot.candidate_value is not None else slot.value
@@ -3473,7 +3904,29 @@ class DialogueManager:
                     slot.status = "missing"
                 continue
 
-            temp_state = {k: (s.candidate_value if s.candidate_value is not None else s.value) for k, s in new_slots.items() if s.status not in ("invalid", "missing") and (s.value is not None or s.candidate_value is not None)}
+            temp_state = {
+                state_key: (
+                    state_slot.candidate_value
+                    if state_slot.candidate_value is not None
+                    else state_slot.value
+                )
+                for state_key, state_slot in new_slots.items()
+                if (
+                    state_slot.status not in ("invalid", "missing")
+                    and (
+                        state_slot.value is not None
+                        or state_slot.candidate_value is not None
+                    )
+                    # Robot hierarchy fields are authoritative only after the
+                    # dedicated equipment handler marks them valid.  A
+                    # restored candidate/conflict must not influence dynamic
+                    # payload or other schema candidate normalization.
+                    and (
+                        not state_key.startswith("equipment_")
+                        or state_slot.status == "valid"
+                    )
+                )
+            }
 
             allowed = self.builder._resolve_allowed(field_def, task_type_key, temp_state)
             if allowed:
@@ -3534,22 +3987,14 @@ class DialogueManager:
                     slot.status = "valid"
                     slot.validation_error = None
 
-        for eq_key in (
-            "equipment_class",
-            "equipment_family",
-            "equipment_type",
-            "equipment_name",
-            "equipment_unit_id",
-        ):
-            eq_slot = new_slots.get(eq_key)
-            if (
-                eq_slot
-                and eq_slot.status == "candidate"
-                and eq_slot.value is not None
-                and not eq_slot.validation_error
-            ):
-                eq_slot.status = "valid"
-
+        # Non-equipment facts become authoritative only after normalization.
+        # Equipment updates are validated and promoted inside the dedicated
+        # four-level handler.  Never scan/promote arbitrary equipment
+        # candidates here: a restored candidate is pending user confirmation,
+        # not a value submitted by this transaction.
+        # Recompute the robot domain now so water_depth/start_time/payload from
+        # this same transaction can participate in candidate convergence.
+        self._auto_collapse_robot_cascade(new_slots, allow_overwrite=True)
 
 
         # 字段自身的格式/候选合法性与任务组合约束是两类状态：
@@ -3930,6 +4375,15 @@ class DialogueManager:
             ):
                 return True
 
+            # 对于 check_type == 'state_timestamp' (如 C019)，只要环境观察值未改变，在补充槽位过程中保持白名单有效
+            ack_val = getattr(ack, "value", None) if not isinstance(ack, dict) else ack.get("value")
+            if (
+                getattr(v, "check_type", None) == "state_timestamp"
+                and ack_val is not None
+                and ack_val == getattr(v, "observed_value", None)
+            ):
+                return True
+
         return False
 
     @staticmethod
@@ -3985,6 +4439,29 @@ class DialogueManager:
             "ok",
             "继续",
         }
+
+    @staticmethod
+    def _is_ignore_warning(message: str) -> bool:
+        """仅识别明确具有忽略/无视软警告语义的独立控制指令。"""
+        text = re.sub(r"[\s，,。.!！?？、；;：:]+", "", message).lower()
+        negated = ["不忽略", "不要忽略", "不能忽略", "别忽略", "不无视", "不要无视", "不是忽略"]
+        if any(neg in text for neg in negated):
+            return False
+        return text in {
+            "忽略警告",
+            "忽略软警告",
+            "忽略",
+            "无视警告",
+            "无视软警告",
+            "忽略此警告",
+            "忽略当前警告",
+            "无视此警告",
+            "无视当前警告",
+            "接受风险",
+            "忽略风险",
+            "无视",
+        }
+
 
 
     def _ensure_constraint_details(self, reply: str, constraint_context: dict) -> str:
@@ -4094,26 +4571,27 @@ class DialogueManager:
         return self.final_result
 
     def reset(self):
-        self.conversation_history = []
-        self.slot_store = SlotStore(self.kb)
-        self.task_state = self.slot_store.get_task_state()
-        self.mode = "normal"
-        self.phase = "collecting"
-        self.final_result = None
-        self.awaiting_final_confirm = False
-        self.task_start_now = False
-        self._blocking_violations = []
-        self._soft_whitelist = set()
-        self._hard_refusal_counts = {}
-        self._pending_rov_candidates = []
-        self._last_built_json = {}
-        self._last_missing = []
-        self.control_state = "idle"
-        self.last_control_request = None
-        self.dialogue_mode = "task_collection"
-        self.last_mode_transition = None
-        self.mode_transition_history = []
-        self._run_session_state_shadow_check(checkpoint="reset")
+        with self._session_lock:
+            self.conversation_history = []
+            self.slot_store = SlotStore(self.kb)
+            self.task_state = self.slot_store.get_task_state()
+            self.mode = "normal"
+            self.phase = "collecting"
+            self.final_result = None
+            self.awaiting_final_confirm = False
+            self.task_start_now = False
+            self._blocking_violations = []
+            self._soft_whitelist = set()
+            self._hard_refusal_counts = {}
+            self._pending_rov_candidates = []
+            self._last_built_json = {}
+            self._last_missing = []
+            self.control_state = "idle"
+            self.last_control_request = None
+            self.dialogue_mode = "task_collection"
+            self.last_mode_transition = None
+            self.mode_transition_history = []
+            self._run_session_state_shadow_check(checkpoint="reset")
 
     def _commit_internal_slot_values(
         self,
@@ -4189,7 +4667,16 @@ class DialogueManager:
         self.task_state = self.slot_store.get_task_state()
         task_type_key = self.task_state.get("task_type_key")
         eq_type = self.task_state.get("equipment_type") or self.task_state.get("equipment_name")
-        if commit_derived and eq_type and not self.task_state.get("equipment_family"):
+        family_slot = self.slot_store.slots.get("equipment_family")
+        family_is_materializable = family_slot is None or (
+            family_slot.status == "missing" and family_slot.value is None
+        )
+        if (
+            commit_derived
+            and eq_type
+            and not self.task_state.get("equipment_family")
+            and family_is_materializable
+        ):
             rov = self.kb.get_rov(eq_type)
             family = (rov.get("family_full_name") if rov else None) or (rov.get("family") if rov else None) or "ROV"
 
@@ -4239,8 +4726,60 @@ class DialogueManager:
     # --------------------------------------------------------------------------
 
     def load_snapshot(self, snapshot: dict) -> None:
-        """兼容恢复旧版扁平快照和 snapshot_version=2 完整快照。原子验证 schema。"""
-        if is_session_state_v2_enabled():
+        """原子恢复旧版扁平快照和 snapshot_version=2 完整快照。"""
+        session_state_v2_active = is_session_state_v2_enabled()
+
+        with self._session_lock:
+            candidate = DialogueManager(
+                llm=self.llm,
+                kb=self.kb,
+                session_id=self.session_id,
+            )
+            # Legacy restore does not own this field, so preserve its existing
+            # value unless the SessionState contract explicitly replaces it.
+            candidate.awaiting_final_confirm = self.awaiting_final_confirm
+            candidate._load_snapshot_in_place(
+                snapshot,
+                session_state_v2_active=session_state_v2_active,
+            )
+            self._commit_snapshot_runtime_state(candidate)
+            self._run_session_state_shadow_check(checkpoint="load_snapshot")
+
+    def _commit_snapshot_runtime_state(self, candidate: "DialogueManager") -> None:
+        """Commit a fully validated candidate restore to the live manager."""
+        runtime_fields = (
+            "session_id",
+            "conversation_history",
+            "slot_store",
+            "task_state",
+            "mode",
+            "phase",
+            "final_result",
+            "awaiting_final_confirm",
+            "task_start_now",
+            "_blocking_violations",
+            "_soft_whitelist",
+            "_hard_refusal_counts",
+            "_pending_rov_candidates",
+            "_last_built_json",
+            "_last_missing",
+            "control_state",
+            "last_control_request",
+            "dialogue_mode",
+            "last_mode_transition",
+            "mode_transition_history",
+        )
+        for field_name in runtime_fields:
+            setattr(self, field_name, getattr(candidate, field_name))
+
+    def _load_snapshot_in_place(
+        self,
+        snapshot: dict,
+        *,
+        session_state_v2_active: bool,
+    ) -> None:
+        """Restore and validate a snapshot on an isolated candidate manager."""
+        if session_state_v2_active:
             contract_state = session_state_from_legacy_snapshot(snapshot)
         else:
             contract_state = None
@@ -4257,6 +4796,11 @@ class DialogueManager:
 
         mode = snapshot.get("mode", "normal")
         phase = snapshot.get("phase", "collecting")
+
+        if type(mode) is not str or mode not in VALID_TASK_MODES:
+            raise ValueError(f"Invalid task mode in snapshot: {mode}")
+        if type(phase) is not str or phase not in VALID_PHASES:
+            raise ValueError(f"Invalid task phase in snapshot: {phase}")
 
         # 校验模式与控制快照字段（原子校验，失败则不更改内存状态）
         valid_modes = {"task_collection", "knowledge_qa", "emergency_intervention", "uncertain"}
@@ -4364,7 +4908,18 @@ class DialogueManager:
                         status="valid",
                         value_type=vtype,
                     )
-            candidate_store.commit_transaction(new_slots, [])
+            # Route the migrated flat state through SlotStore's authoritative
+            # snapshot validator before committing it to the candidate
+            # manager.  This keeps legacy restore behavior aligned with v2
+            # snapshots (including exact selector rules and alias migration)
+            # without mutating the live manager on failure.
+            migrated_snapshot = candidate_store.export_snapshot()
+            migrated_snapshot["slots"] = {
+                key: slot.to_dict()
+                for key, slot in new_slots.items()
+            }
+            migrated_snapshot["unresolved"] = []
+            candidate_store.restore_snapshot(migrated_snapshot)
 
 
         # 候选 SlotStore 校验系统标识合法性与互斥结构完整性
@@ -4398,15 +4953,22 @@ class DialogueManager:
         self.slot_store = candidate_store
         self.task_state = self.slot_store.get_task_state()
 
-        if is_session_state_v2_enabled() and contract_state is not None:
+        if session_state_v2_active and contract_state is not None:
             self._apply_session_state_contract(contract_state)
         else:
             self.mode = mode
-            self.dialogue_mode = dialogue_mode
-            self.last_mode_transition = copy.deepcopy(last_mode_transition)
-            self.mode_transition_history = copy.deepcopy(validated_history)
-            self.control_state = control_state
-            self.last_control_request = copy.deepcopy(last_control_request)
+            self._switch_dialogue_mode(
+                dialogue_mode,
+                source="snapshot_restore",
+                reason="restore validated snapshot state",
+                restore_transition_state=(last_mode_transition, validated_history),
+            )
+            self._set_execution_control_state(
+                control_state,
+                last_control_request,
+                source="snapshot_restore",
+                reason="restore validated snapshot state",
+            )
 
         self.final_result = None
         self.task_start_now = False
@@ -4476,10 +5038,18 @@ class DialogueManager:
                     logger.warning("[load_snapshot] done-phase validation error: %s", _e)
 
             if validated:
-                self.phase = "done"
+                self._transition_phase(
+                    "done",
+                    source="snapshot_restore",
+                    reason="validated published task file",
+                )
                 self.final_result = _loaded_intent
             else:
-                self.phase = "collecting"
+                self._transition_phase(
+                    "collecting",
+                    source="snapshot_restore",
+                    reason="published task validation failed",
+                )
                 today = get_current_datetime().strftime("%Y%m%d")
                 task_dir = _ti_builder_module.get_task_dir(create=False)
                 new_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
@@ -4487,13 +5057,18 @@ class DialogueManager:
                 if "intent_id" not in new_slots:
                     new_slots["intent_id"] = Slot("intent_id")
                 new_slots["intent_id"].value = new_id
+                new_slots["intent_id"].value_type = "string"
                 new_slots["intent_id"].status = "valid"
                 new_slots["intent_id"].source = "auto"
                 self.slot_store.commit_transaction(new_slots, self.slot_store.unresolved)
                 self.task_state = self.slot_store.get_task_state()
                 self._last_built_json = self.slot_store.get_built_json()
         else:
-            self.phase = phase
+            self._transition_phase(
+                phase,
+                source="snapshot_restore",
+                reason="restore validated snapshot phase",
+            )
             if not is_valid_id:
                 today = get_current_datetime().strftime("%Y%m%d")
                 task_dir = _ti_builder_module.get_task_dir(create=False)
@@ -4502,13 +5077,12 @@ class DialogueManager:
                 if "intent_id" not in new_slots:
                     new_slots["intent_id"] = Slot("intent_id")
                 new_slots["intent_id"].value = new_id
+                new_slots["intent_id"].value_type = "string"
                 new_slots["intent_id"].status = "valid"
                 new_slots["intent_id"].source = "auto"
                 self.slot_store.commit_transaction(new_slots, self.slot_store.unresolved)
                 self.task_state = self.slot_store.get_task_state()
                 self._last_built_json = self.slot_store.get_built_json()
 
-        if is_session_state_v2_enabled():
+        if session_state_v2_active:
             _ = self._build_session_state_contract()
-
-        self._run_session_state_shadow_check(checkpoint="load_snapshot")

@@ -223,7 +223,7 @@ model_variants:
       max_operating_speed_kn: null
       max_endurance_h: "不适用"
 
-  special_work_class_robot_hp:
+  special_work_class_robot_600hp:
     family_id: "special_work_class_robot"
     full_name: "特种工作级深海机器人 600HP"
     aliases: ["特种工作级深海机器人600HP", "特种工作级ROV 600HP", "特种型600HP", "600HP特种工作级机器人", "凤凰座600HP"]
@@ -315,17 +315,17 @@ model_variants:
       max_operating_speed_kn: null
       max_endurance_h: "不适用"
 
-  light_work_class_rov_hp:
+  light_work_class_rov_150hp:
     family_id: "light_work_class_rov"
-    full_name: "轻型工作级深海机器人 HP"
-    aliases: ["轻型工作级深海机器人 HP", "轻型工作级ROV HP", "轻型ROV HP", "轻型 HP", "天鹰座 HP"]
+    full_name: "轻型工作级深海机器人 150HP"
+    aliases: ["轻型工作级深海机器人150HP", "轻型工作级ROV 150HP", "轻型ROV 150HP", "轻型150HP", "150HP轻型工作级机器人", "天鹰座150HP"]
     hard_params:
       max_depth_m: 600
       max_burial_depth_m: "不适用"
       dimensions: "1.2m×0.85m×0.6m"
       diameter_mm: "不适用"
       weight_in_air_kg: 200
-      power_hp: null
+      power_hp: 150
       supported_seabed: ["hard", "soft"]
       onboard_payloads:
         - "高清水下摄像机"
@@ -360,17 +360,17 @@ model_variants:
       max_operating_speed_kn: null
       max_endurance_h: "不适用"
 
-  observation_rov_hp:
+  observation_rov_75hp:
     family_id: "observation_rov"
-    full_name: "观察级深海机器人 HP"
-    aliases: ["观察级深海机器人 HP", "观察级ROV HP", "观察型ROV HP", "观察级 HP", "巡检ROV HP"]
+    full_name: "观察级深海机器人 75HP"
+    aliases: ["观察级深海机器人75HP", "观察级ROV 75HP", "观察型ROV 75HP", "观察级75HP", "75HP观察级机器人", "巡检ROV 75HP"]
     hard_params:
       max_depth_m: 600
       max_burial_depth_m: "不适用"
       dimensions: "1.2m×0.85m×0.6m"
       diameter_mm: "不适用"
       weight_in_air_kg: 160
-      power_hp: null
+      power_hp: 75
       supported_seabed: ["hard", "soft"]
       onboard_payloads:
         - "高清水下摄像机"
@@ -458,7 +458,7 @@ fleet_units:
     aliases: ["001", "一号机", "拖曳式001", "拖曳式一号机", "拖曳式海底重载作业机器人001", "拖曳式海底重载作业机器人一号机", "御夫座001", "御夫座一号机"]
 
   - unit_id: "SPECIAL-600-001"
-    variant_id: "special_work_class_robot_hp"
+    variant_id: "special_work_class_robot_600hp"
     serial_no: "001"
     display_name: "特种工作级深海机器人600HP-001"
     status_ref: "SPECIAL-600-001"
@@ -471,26 +471,26 @@ fleet_units:
     status_ref: "WROV-250-001"
     aliases: ["001", "一号机", "通用型001", "通用型一号机", "通用工作级001", "通用工作级一号机", "通用工作级深海机器人001", "通用工作级深海机器人一号机"]
 
-  - unit_id: "LROV--001"
-    variant_id: "light_work_class_rov_hp"
+  - unit_id: "LROV-150-001"
+    variant_id: "light_work_class_rov_150hp"
     serial_no: "001"
-    display_name: "轻型工作级深海机器人HP-001"
-    status_ref: "LROV--001"
-    aliases: ["001", "一号机", "轻型001", "轻型一号机", "轻型工作级001", "轻型工作级一号机", "天鹰座001", "天鹰座一号机"]
+    display_name: "轻型工作级深海机器人150HP-001"
+    status_ref: "LROV-150-001"
+    aliases: ["LROV--001", "001", "一号机", "轻型001", "轻型一号机", "轻型工作级001", "轻型工作级一号机", "天鹰座001", "天鹰座一号机"]
 
-  - unit_id: "LROV--002"
-    variant_id: "light_work_class_rov_hp"
+  - unit_id: "LROV-150-002"
+    variant_id: "light_work_class_rov_150hp"
     serial_no: "002"
-    display_name: "轻型工作级深海机器人-002"
-    status_ref: "LROV-002"
-    aliases: ["002", "二号机", "轻型002", "轻型二号机", "轻型工作级002", "轻型工作级二号机", "天鹰座002", "天鹰座二号机"]
+    display_name: "轻型工作级深海机器人150HP-002"
+    status_ref: "LROV-150-002"
+    aliases: ["LROV--002", "002", "二号机", "轻型002", "轻型二号机", "轻型工作级002", "轻型工作级二号机", "天鹰座002", "天鹰座二号机"]
 
-  - unit_id: "OBSROV--001"
-    variant_id: "observation_rov_hp"
+  - unit_id: "OBSROV-75-001"
+    variant_id: "observation_rov_75hp"
     serial_no: "001"
-    display_name: "观察级深海机器人-001"
-    status_ref: "OBSROV-001"
-    aliases: ["001", "一号机", "观察级001", "观察级一号机", "观察型001", "观察型一号机", "观察级深海机器人001", "观察级深海机器人一号机"]
+    display_name: "观察级深海机器人75HP-001"
+    status_ref: "OBSROV-75-001"
+    aliases: ["OBSROV--001", "001", "一号机", "观察级001", "观察级一号机", "观察型001", "观察型一号机", "观察级深海机器人001", "观察级深海机器人一号机"]
 
   - unit_id: "AUV-324cc-001"
     variant_id: "autonomous_underwater_vehicle_324cc"

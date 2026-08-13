@@ -3,6 +3,7 @@ task_intent_builder.py — 生成符合 TaskIntent 规范的 JSON 文件
 """
 import fcntl
 import json
+import math
 import os
 import re
 import stat
@@ -90,6 +91,110 @@ def _is_exact_schema_version(val: Any, expected: int) -> bool:
     return type(val) is int and val == expected
 
 
+def _parse_optional_task_time(value: Any, field_name: str) -> tuple[datetime | None, str | None]:
+    if value is None:
+        return None, None
+    if not isinstance(value, str) or not value.strip():
+        return None, f"time.{field_name} must be an ISO-8601 string or null"
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00")), None
+    except ValueError:
+        return None, f"time.{field_name} is not a valid ISO-8601 timestamp"
+
+
+def _is_finite_number(value: Any) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+    )
+
+
+def _coordinate_error(value: Any, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return f"{field_name} must be a coordinate object or null"
+    lat = value.get("latitude", value.get("lat"))
+    lon = value.get("longitude", value.get("lon"))
+    if not _is_finite_number(lat) or not -90.0 <= float(lat) <= 90.0:
+        return f"{field_name}.latitude must be finite and between -90 and 90"
+    if not _is_finite_number(lon) or not -180.0 <= float(lon) <= 180.0:
+        return f"{field_name}.longitude must be finite and between -180 and 180"
+    return None
+
+
+def _task_intent_payload_error(intent: dict) -> str | None:
+    """Validate nested TaskIntent payload semantics shared by read and write paths."""
+    priority = intent.get("priority")
+    if isinstance(priority, bool) or not isinstance(priority, int) or priority not in range(1, 11):
+        return "priority must be an integer between 1 and 10"
+
+    time_info = intent.get("time")
+    if not isinstance(time_info, dict):
+        return "time must be an object"
+    start_time, start_error = _parse_optional_task_time(time_info.get("start"), "start")
+    if start_error:
+        return start_error
+    end_time, end_error = _parse_optional_task_time(time_info.get("end"), "end")
+    if end_error:
+        return end_error
+    if start_time is not None and end_time is not None:
+        try:
+            if end_time <= start_time:
+                return "time.end must be later than time.start"
+        except TypeError:
+            return "time.start and time.end must use compatible timezone forms"
+
+    location = intent.get("location")
+    if not isinstance(location, dict):
+        return "location must be an object"
+    oilfield = location.get("oilfield")
+    if oilfield is not None and (not isinstance(oilfield, str) or not oilfield.strip()):
+        return "location.oilfield must be a non-empty string or null"
+    water_depth = location.get("water_depth_m")
+    if water_depth is not None and (
+        not _is_finite_number(water_depth) or float(water_depth) <= 0
+    ):
+        return "location.water_depth_m must be a finite positive number or null"
+
+    task = intent.get("task")
+    if not isinstance(task, dict):
+        return "task must be an object"
+    details = task.get("details")
+    if not isinstance(details, dict):
+        return "task.details must be an object"
+    for key in ("start_point", "end_point", "target"):
+        error = _coordinate_error(details.get(key), f"task.details.{key}")
+        if error:
+            return error
+
+    equipment = intent.get("equipment")
+    if not isinstance(equipment, dict):
+        return "equipment must be an object"
+    payload = equipment.get("payload")
+    if not isinstance(payload, list) or any(
+        not isinstance(item, str) or not item.strip() for item in payload
+    ):
+        return "equipment.payload must be a list of non-empty strings"
+    support_vessel = equipment.get("support_vessel")
+    if not isinstance(support_vessel, dict):
+        return "equipment.support_vessel must be an object"
+    vessel_name = support_vessel.get("name")
+    if vessel_name is not None and (
+        not isinstance(vessel_name, str) or not vessel_name.strip()
+    ):
+        return "equipment.support_vessel.name must be a non-empty string or null"
+    for field_name in ("latitude", "longitude"):
+        value = support_vessel.get(field_name)
+        if value is not None and not _is_finite_number(value):
+            return f"equipment.support_vessel.{field_name} must be finite or null"
+
+    if not isinstance(intent.get("conditions"), dict):
+        return "conditions must be an object"
+    return None
+
+
 def validate_task_intent_v1(intent: dict) -> bool:
     """v1 历史 TaskIntent 结构校验：schema_version 缺失或等于精确整数 1，internal_id 与 task_id 必须同时不存在。"""
     if not isinstance(intent, dict):
@@ -129,7 +234,7 @@ def validate_task_intent_v1(intent: dict) -> bool:
     cond_info = intent.get("conditions")
     if not isinstance(cond_info, dict):
         return False
-    return True
+    return _task_intent_payload_error(intent) is None
 
 
 def validate_task_intent_v2(intent: dict, task_schemas: dict | None = None) -> bool:
@@ -180,7 +285,7 @@ def validate_task_intent_v2(intent: dict, task_schemas: dict | None = None) -> b
     cond_info = intent.get("conditions")
     if not isinstance(cond_info, dict):
         return False
-    return True
+    return _task_intent_payload_error(intent) is None
 
 
 def validate_task_intent(intent: Any, task_schemas: dict | None = None) -> bool:
@@ -748,9 +853,6 @@ class TaskIntentBuilder:
         if top_task_type not in TASK_ALLOWED_ROBOT_TYPES:
             raise TaskPersistenceError(f"非法输出任务类型: {top_task_type}")
 
-        if intent.get("task", {}).get("type") != top_task_type:
-            raise TaskPersistenceError("task.type 与顶层 task_type 不一致")
-
         priority = intent.get("priority")
         if isinstance(priority, bool) or not isinstance(priority, int) or priority not in range(1, 11):
             raise TaskPersistenceError("priority 超出范围")
@@ -759,7 +861,14 @@ class TaskIntentBuilder:
             if not isinstance(intent.get(section), dict):
                 raise TaskPersistenceError(f"TaskIntent section must be dict: {section}")
 
+        if intent["task"].get("type") != top_task_type:
+            raise TaskPersistenceError("task.type 与顶层 task_type 不一致")
+
         robot_type = intent["equipment"].get("robot_type")
         allowed_robots = TASK_ALLOWED_ROBOT_TYPES.get(top_task_type, set())
         if robot_type not in allowed_robots:
             raise TaskPersistenceError(f"任务类型 {top_task_type} 不支持机器人类型 {robot_type}")
+
+        payload_error = _task_intent_payload_error(intent)
+        if payload_error:
+            raise TaskPersistenceError(f"TaskIntent 嵌套字段非法: {payload_error}")

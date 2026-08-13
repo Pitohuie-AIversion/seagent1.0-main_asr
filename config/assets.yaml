@@ -50,7 +50,8 @@ cable_types:
 
 # ==============================================================================
 # 任务工具知识 — 仅用于回答“某类任务常用/建议工具”类问题
-# 最终 JSON 中 payload 字段的合法值来自 robot_fleet.yaml 的 supported_payloads
+# 最终 JSON 中 payload 字段的合法值来自 robot_fleet.yaml 的
+# onboard_payloads 与 supported_payloads 并集
 # ==============================================================================
 
 payload_options:
@@ -129,13 +130,13 @@ payload_options:
 payload_catalog:
   multi_function_hydraulic_arm:
     name: "多功能液压机械臂"
-    aliases: ["机械臂", "液压机械臂", "抓手", "电液机械臂"]
+    aliases: ["多功能机械臂", "液压机械臂"]
     description: "多自由度高负载液压抓取与干预工具，用于水下采油树控制面板阀门操作、插拔面板、清理障碍物及重型水下工装抓握。"
     capabilities: ["插拔", "抓取", "阀门拧转", "水下干预"]
 
   side_scan_sonar:
     name: "侧扫声呐"
-    aliases: ["侧扫声呐", "侧扫声纳", "声呐", "声纳"]
+    aliases: ["侧扫声呐", "侧扫声纳"]
     description: "利用水声发射和接收原理对海底两侧进行高分辨率声学成像的设备，主要用于大面积海底地貌扫描、管缆悬空/埋设巡检及水下目标物搜寻。"
     capabilities: ["声学成像", "海底扫测", "管缆路由巡检", "目标物搜寻"]
 
@@ -153,7 +154,7 @@ payload_catalog:
 
   hd_camera:
     name: "高清水下摄像机"
-    aliases: ["摄像机", "高清摄像机", "水下摄像机", "双目视觉模块", "视觉系统"]
+    aliases: ["摄像机", "高清摄像机", "水下摄像机"]
     description: "提供水下高分辨率光学彩色画面，用于管缆外观腐蚀检测、油田水下结构件近距离外观巡检与作业过程实时监控。"
     capabilities: ["光学巡检", "外观检测", "实时作业监控"]
 
@@ -205,12 +206,86 @@ payload_catalog:
     description: "通过高压水流冲刷松散海床土壤开辟沟槽，将海底管缆顺畅埋入泥面以下指定深度。"
     capabilities: ["开沟埋设", "土壤冲刷", "海缆埋设"]
 
+  multibeam_sonar:
+    name: "多波束声呐"
+    aliases: ["多波束声纳", "多波束测深声呐"]
+    description: "通过多个声学波束对海床和水下目标进行条带式测量与成像，用于地形测绘、目标轮廓获取和管缆路由调查。"
+    capabilities: ["海床测绘", "地形测量", "目标轮廓成像"]
 
+  electromagnetic_detector:
+    name: "电磁检测传感器"
+    aliases: ["电磁检测仪", "电磁传感器"]
+    description: "利用电磁响应检测金属管缆的位置或异常特征，用于管缆跟踪和缺陷辅助判断。"
+    capabilities: ["金属管缆探测", "路由跟踪", "异常检测"]
 
+  corrosion_probe:
+    name: "腐蚀检测探头"
+    aliases: ["腐蚀探头", "腐蚀检测传感器"]
+    description: "用于采集水下金属结构或管缆表面的腐蚀相关信号，辅助评估腐蚀位置和程度。"
+    capabilities: ["腐蚀检测", "表面状态评估"]
 
+  thickness_sensor:
+    name: "厚度检测传感器"
+    aliases: ["厚度传感器", "壁厚检测传感器"]
+    description: "用于测量管道或水下结构件的材料厚度，辅助识别减薄、磨损和腐蚀缺陷。"
+    capabilities: ["壁厚测量", "减薄检测", "缺陷评估"]
+
+  leak_detector:
+    name: "泄漏检测传感器"
+    aliases: ["泄漏传感器", "泄漏检测仪"]
+    description: "用于感知管缆或水下设施周边的泄漏迹象，为异常定位和风险确认提供检测信息。"
+    capabilities: ["泄漏检测", "异常定位", "风险监测"]
+
+  cable_burial_device:
+    name: "海缆压埋装置"
+    aliases: ["压埋装置", "海缆压埋设备"]
+    description: "用于在开沟或喷冲后引导海缆进入沟槽并完成压埋，支持管缆埋设作业。"
+    capabilities: ["海缆压埋", "入沟引导"]
+
+  burial_depth_controller:
+    name: "埋深控制装置"
+    aliases: ["埋深控制器", "埋深闭环控制装置"]
+    description: "根据埋深测量结果调节埋设作业参数，使管缆埋深保持在任务要求范围内。"
+    capabilities: ["埋深测量反馈", "闭环控制"]
+
+  mechanical_trenching_module:
+    name: "机械切割开沟模块"
+    aliases: ["机械开沟模块", "切割开沟模块"]
+    description: "通过机械切割方式破开较硬海床并形成沟槽，用于不适合单纯水射流喷冲的埋设工况。"
+    capabilities: ["机械开沟", "硬质海床切割"]
+
+  seabed_geology_detector:
+    name: "海床地质探测设备"
+    aliases: ["海床地质探测仪", "海床地质传感器"]
+    description: "用于获取海床底质和浅层地质信息，为开沟方式选择及埋设参数设置提供依据。"
+    capabilities: ["海床底质探测", "浅层地质调查", "施工辅助"]
+
+  stereo_vision_module:
+    name: "双目视觉模块"
+    aliases: ["双目相机", "双目视觉"]
+    description: "通过双摄像头获取目标的深度与空间信息，用于目标识别、距离估计和机械臂对准。"
+    capabilities: ["立体视觉", "距离估计", "目标定位"]
+
+  three_dimensional_vision:
+    name: "三维视觉系统"
+    aliases: ["3D视觉系统", "三维视觉"]
+    description: "融合视觉或深度信息构建目标区域的三维表示，用于结构识别、姿态估计和精细操作定位。"
+    capabilities: ["三维重建", "姿态估计", "精细定位"]
+
+  electro_hydraulic_arm:
+    name: "电液机械臂"
+    aliases: ["电液作业机械臂", "电液操作臂"]
+    description: "采用电液驱动执行水下抓取、插拔和阀门操作，为精细干预任务提供稳定的操作能力。"
+    capabilities: ["抓取", "插拔", "阀门操作", "水下干预"]
+
+  gripper:
+    name: "夹爪"
+    aliases: ["机械夹爪", "抓手"]
+    description: "安装在机械臂末端，用于夹持、抓取和固定水下目标或作业工具。"
+    capabilities: ["夹持", "抓取", "目标固定"]
 
 # ==============================================================================
-# 输出约束引用表 — output_builder 通过 allowed_values_ref 查此表
+# 兼容引用表 — 运行时以 vessels[].id 动态生成合法值；此镜像必须保持一致
 # ==============================================================================
 
 # vessel_ids: 所有支持船的合法 id（与 vessels[].id 保持同步）

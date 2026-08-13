@@ -69,9 +69,9 @@ The system classifies all natural language user inputs into two primary interact
 ### 5.1 Resolution Hierarchy
 ```
 User Alias (e.g., "观察级一号机")
-  └── Equipment Display Name ("观察级深海机器人-001")
-        └── equipment_unit_id ("OBSROV--001")
-              └── equipment_variant / equipment_type ("观察级深海机器人")
+  └── Equipment Display Name ("观察级深海机器人75HP-001")
+        └── equipment_unit_id ("OBSROV-75-001")
+              └── equipment_variant / equipment_type ("观察级深海机器人 75HP")
                     └── equipment_family ("观察级深海机器人")
 ```
 

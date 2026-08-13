@@ -39,7 +39,7 @@ class TestTaskGuidanceFinalConfirmation(unittest.TestCase):
         new_slots["equipment_class"].status = "valid"
         new_slots["equipment_family"].value = "观察级深海机器人"
         new_slots["equipment_family"].status = "valid"
-        new_slots["equipment_type"].value = "观察级深海机器人"
+        new_slots["equipment_type"].value = "观察级深海机器人 75HP"
         new_slots["equipment_type"].status = "valid"
         new_slots["equipment_unit_id"].value = "OBSROV-75-001"
         new_slots["equipment_unit_id"].status = "valid"

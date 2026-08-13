@@ -107,6 +107,7 @@ class OilfieldContextResult:
     reference_water_depth: float | int | None
     coordinate_status: str
     depth_status: str
+    maximum_reference_water_depth: float | int | None = None
     feedback: tuple[str, ...] = ()
     issues: tuple[OilfieldIssue, ...] = ()
 
@@ -129,6 +130,7 @@ class OilfieldContextResult:
             "lat_range": self.coordinate_range.get("lat"),
             "lon_range": self.coordinate_range.get("lon"),
             "water_depth": self.reference_water_depth,
+            "maximum_reference_water_depth": self.maximum_reference_water_depth,
         }
 
     @property
@@ -224,6 +226,7 @@ class OilfieldEntityLinker:
             "lon": round((coordinate_range["lon"][0] + coordinate_range["lon"][1]) / 2, 6),
         }
         reference_depth = _get_reference_water_depth(entity)
+        maximum_reference_depth = _get_maximum_reference_water_depth(entity)
 
         coordinate_status = "not_provided"
         depth_status = "not_provided"
@@ -231,7 +234,8 @@ class OilfieldEntityLinker:
             f"已匹配{entity.get('name')}。知识库记录的油田范围为北纬"
             f"{_format_number(coordinate_range['lat'][0])}～{_format_number(coordinate_range['lat'][1])}度、"
             f"东经{_format_number(coordinate_range['lon'][0])}～{_format_number(coordinate_range['lon'][1])}度，"
-            f"参考水深为{_format_number(reference_depth)}米。当前暂采用油田范围中心坐标"
+            f"默认参考水深为{_format_number(reference_depth)}米，知识库校验上限为"
+            f"{_format_number(maximum_reference_depth)}米。当前暂采用油田范围中心坐标"
             f"（{_format_number(default_coordinates['lat'])}，{_format_number(default_coordinates['lon'])}）"
             f"和参考水深{_format_number(reference_depth)}米，您后续可以提供实际作业坐标和水深进行覆盖。"
         ]
@@ -258,7 +262,8 @@ class OilfieldEntityLinker:
             if depth_status == "within_reference":
                 feedback.append(
                     f"实际作业水深{_format_number(depth_values['actual_depth'])}米未超过"
-                    f"{entity.get('name')}知识库参考水深{_format_number(depth_values['reference_depth'])}米，"
+                    f"{entity.get('name')}知识库校验上限"
+                    f"{_format_number(depth_values['maximum_reference_depth'])}米，"
                     "已采用实际水深覆盖默认值。"
                 )
             elif depth_status == "exceeded_reference":
@@ -278,6 +283,7 @@ class OilfieldEntityLinker:
             reference_water_depth=reference_depth,
             coordinate_status=coordinate_status,
             depth_status=depth_status,
+            maximum_reference_water_depth=maximum_reference_depth,
             feedback=tuple(feedback),
             issues=tuple(issues),
         )
@@ -489,6 +495,34 @@ def _get_reference_water_depth(entity: dict[str, Any]) -> float | int | None:
     return int(value) if value.is_integer() else value
 
 
+def _get_maximum_reference_water_depth(entity: dict[str, Any]) -> float | int:
+    depth = entity.get("maximum_reference_water_depth")
+    if depth in (None, ""):
+        raise ValueError(
+            "油田知识库缺少最大参考水深: "
+            f"entity_id={entity.get('id')}, field=maximum_reference_water_depth"
+        )
+    value = _as_float(depth)
+    if value is None:
+        raise ValueError(
+            "油田最大参考水深配置无效: "
+            f"entity_id={entity.get('id')}, maximum_reference_water_depth={depth}"
+        )
+    if value < 0:
+        raise ValueError(
+            "油田最大参考水深不能为负: "
+            f"entity_id={entity.get('id')}, maximum_reference_water_depth={depth}"
+        )
+    reference_depth = _get_reference_water_depth(entity)
+    if reference_depth is not None and value < float(reference_depth):
+        raise ValueError(
+            "油田最大参考水深不能小于默认参考水深: "
+            f"entity_id={entity.get('id')}, water_depth={reference_depth}, "
+            f"maximum_reference_water_depth={depth}"
+        )
+    return int(value) if value.is_integer() else value
+
+
 def _check_coordinates(coords: object, entity: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     if not isinstance(coords, dict):
         return "invalid", {}
@@ -522,11 +556,12 @@ def _check_water_depth(water_depth: object, entity: dict[str, Any]) -> tuple[str
     if actual_depth < 0:
         return "invalid", {"actual_depth": actual_depth}
 
-    reference_depth = _get_reference_water_depth(entity)
-    if reference_depth is None:
-        return "unavailable", {"actual_depth": actual_depth}
-    values = {"actual_depth": actual_depth, "reference_depth": reference_depth}
-    if actual_depth <= float(reference_depth):
+    maximum_reference_depth = _get_maximum_reference_water_depth(entity)
+    values = {
+        "actual_depth": actual_depth,
+        "maximum_reference_depth": maximum_reference_depth,
+    }
+    if actual_depth <= float(maximum_reference_depth):
         return "within_reference", values
     return "exceeded_reference", values
 

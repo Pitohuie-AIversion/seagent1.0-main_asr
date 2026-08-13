@@ -27,7 +27,7 @@
 - Consumes: `OutputBuilder.get_required()`, `SlotStore.get_missing_slots()`, `build_responder_messages()`.
 - Produces: behavioral tests for selected-model filtering, schema immutability, prompt candidates, and no-unit handling.
 
-- [ ] Write tests asserting that `观察级深海机器人 HP` resolves only `OBSROV-HP-001`.
+- [ ] Write tests asserting that `观察级深海机器人 75HP` resolves only `OBSROV-75-001`.
 - [ ] Write a SlotStore test whose resolver injects candidates without mutating the input Schema.
 - [ ] Write prompt tests for non-empty and empty `equipment_unit_id` candidate lists.
 - [ ] Run `env TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 /root/miniconda3/envs/seagent/bin/python -m unittest tests.test_equipment_unit_candidates` and verify failures are caused by missing state-aware APIs and prompt instructions.

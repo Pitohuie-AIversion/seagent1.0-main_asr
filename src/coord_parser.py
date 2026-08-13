@@ -14,11 +14,12 @@ import re
 from typing import Any
 
 
-COORD_FIELDS = {
+COORD_FIELD_ORDER = (
     "start_point",
     "end_point",
     "oilfield_coordinates",
-}
+)
+COORD_FIELDS = frozenset(COORD_FIELD_ORDER)
 
 FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "start_point": ("起始点", "开始点", "起点", "起始坐标", "开始坐标", "起始位置", "起始端"),
@@ -94,7 +95,9 @@ def parse_coordinate_updates(
     anchor and exactly one coordinate field is currently needed, a bare pair is
     assigned to that field.
     """
-    fields = set(candidate_fields) & COORD_FIELDS
+    # Bare coordinate pairs carry positional meaning.  Preserve the schema
+    # order instead of deriving it from a hash-randomized set iteration.
+    fields = [field for field in COORD_FIELD_ORDER if field in candidate_fields]
     if not text or not fields:
         return {}
 

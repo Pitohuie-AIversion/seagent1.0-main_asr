@@ -23,6 +23,7 @@ from src.dialogue_manager import DialogueManager
 from src.simulated_time import get_simulated_time
 from src.history_manager import save_conversation, list_history, load_history
 from src.asr_normalizer import normalize_terminology
+from src.asr_service import ASRUnavailableError
 from src.ui_state_builder import build_frontend_ui_state
 from src.exceptions import (
     StatePersistenceError,
@@ -399,6 +400,16 @@ def api_asr():
             "elapsed_ms": result["elapsed_ms"],
             "segments": result["segments"],
         })
+    except ASRUnavailableError as e:
+        logging.error("ASR service unavailable: %s", e)
+        return jsonify({
+            "ok": False,
+            "code": 503,
+            "error": "service_unavailable",
+            "msg": "语音识别服务当前不可用，请稍后重试。",
+            "request_id": req_id,
+            "retryable": True
+        }), 503
     except Exception as e:
         logging.error(f"ASR processing exception: {e}", exc_info=True)
         return jsonify({
@@ -432,11 +443,20 @@ def api_chat():
 
         mgr = get_or_create_manager(sid)
 
-        with _sess_lock:
-            if sid not in _sessions:
-                _sessions[sid] = Session(sid)
-
         with mgr._session_lock:
+            with _sessions_lock:
+                if _sessions_manager.get(sid) is not mgr:
+                    return jsonify({
+                        "ok": False,
+                        "code": 409,
+                        "error": "SessionReset",
+                        "msg": "当前会话已重新开始，请在新会话中重试。",
+                        "request_id": request_id,
+                        "retryable": True,
+                    }), 409
+            with _sess_lock:
+                if sid not in _sessions:
+                    _sessions[sid] = Session(sid)
             reply = mgr.process(
                 msg,
                 request_id=request_id,
@@ -543,14 +563,32 @@ def api_chat():
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
     sid = (request.json or {}).get("session_id")
-    if sid:
-        with _sessions_lock:
-            mgr = _sessions_manager.pop(sid, None)
-            if mgr:
-                mgr.reset()
+    if not isinstance(sid, str) or not sid.strip():
+        return jsonify({
+            "ok": False,
+            "code": 400,
+            "error": "MissingSessionId",
+            "msg": "session_id 不能为空",
+            "retryable": False,
+        }), 400
+
+    with _sessions_lock:
+        mgr = _sessions_manager.get(sid)
+    if mgr is None:
         with _sess_lock:
             _sessions.pop(sid, None)
-    return jsonify({"ok": True})
+        return jsonify({"ok": True, "reset": True})
+
+    with mgr._session_lock:
+        with _sessions_lock:
+            if _sessions_manager.get(sid) is not mgr:
+                return jsonify({"ok": True, "reset": True})
+            _sessions_manager.pop(sid, None)
+        with _sess_lock:
+            _sessions.pop(sid, None)
+        mgr.reset()
+
+    return jsonify({"ok": True, "reset": True})
 
 
 @app.route("/api/session/state", methods=["GET"])

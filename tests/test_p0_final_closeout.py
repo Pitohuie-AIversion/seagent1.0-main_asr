@@ -31,9 +31,9 @@ class SnapshotIntentIdPreservationTest(unittest.TestCase):
 
     def _make_confirming_snap(self, intent_id, status="valid", store_version=3, slot_version=2):
         slots = {
-            "task_type_key": {"slot_name": "task_type_key", "value": "pipeline_inspection",
+            "task_type_key": {"slot_name": "task_type_key", "value": "pipeline_burial",
                               "status": "valid", "version": 1},
-            "task_type": {"slot_name": "task_type", "value": "管缆巡检", "status": "valid", "version": 1},
+            "task_type": {"slot_name": "task_type", "value": "管缆埋设", "status": "valid", "version": 1},
             "water_depth": {"slot_name": "water_depth", "value": 300.0, "status": "valid", "version": 1},
             "start_time": {"slot_name": "start_time", "value": "2026-08-01T08:00:00+08:00",
                            "status": "valid", "version": 1},
@@ -44,8 +44,10 @@ class SnapshotIntentIdPreservationTest(unittest.TestCase):
                             "status": "valid", "version": 1},
             "end_point": {"slot_name": "end_point", "value": {"lat": 21.2, "lon": 112.6},
                           "status": "valid", "version": 1},
-            "equipment_type": {"slot_name": "equipment_type", "value": "crawler", "status": "valid", "version": 1},
-            "robot_id": {"slot_name": "robot_id", "value": "CRAWLER-1600-001", "status": "valid", "version": 1},
+            "equipment_class": {"slot_name": "equipment_class", "value": "cable_burial_robot", "status": "valid", "version": 1},
+            "equipment_family": {"slot_name": "equipment_family", "value": "crawler_heavy_seabed_robot", "status": "valid", "version": 1},
+            "equipment_type": {"slot_name": "equipment_type", "value": "履带式海底重载作业机器人 1600HP", "status": "valid", "version": 1},
+            "equipment_unit_id": {"slot_name": "equipment_unit_id", "value": "CRAWLER-1600-001", "status": "valid", "version": 1},
             "payload": {"slot_name": "payload", "value": ["高清水下摄像机"], "status": "valid", "version": 1},
             "support_vessel": {"slot_name": "support_vessel", "value": "海洋石油681",
                                "status": "valid", "version": 1},

@@ -67,7 +67,7 @@ CONSTRAINT_TRIGGER_MATRIX = {
         "task": {
             "task_type_key": "tree_valve_operation",
             "equipment_unit_id": None,
-            "equipment_type": "观察级深海机器人",
+            "equipment_type": "观察级深海机器人 75HP",
         },
     },
     "C004": {"task": {"water_depth": 601}},
@@ -279,16 +279,21 @@ class ConstraintCoverageMatrixTest(unittest.TestCase):
         }
         snapshot = {"state": base_robot_state(current_velocity=0.65)}
 
-        violation = self.validator._check_one(
-            constraint,
-            "current_velocity",
-            base_task(),
-            None,
-            None,
-            None,
-            None,
-            snapshot,
-        )
+        with patch.object(
+            self.validator,
+            "_is_task_start_now",
+            return_value=True,
+        ):
+            violation = self.validator._check_one(
+                constraint,
+                "current_velocity",
+                base_task(),
+                None,
+                None,
+                None,
+                None,
+                snapshot,
+            )
 
         self.assertIsNotNone(violation)
         self.assertEqual("CUSTOM_CURRENT_RANGE", violation.constraint_id)

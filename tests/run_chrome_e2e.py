@@ -568,6 +568,8 @@ async def run_e2e():
         (() => {
           try {
             const oldGen = typeof window.sessionGeneration === 'number' ? window.sessionGeneration : -1;
+            const waveform = document.querySelector('#audioWaveformWrapper');
+            if (waveform) waveform.style.display = 'flex';
             if (typeof window.reset === 'function') {
               window.reset();
             }
@@ -581,6 +583,20 @@ async def run_e2e():
         res_89 = await client.eval_js(js_reset_isolation)
         print(f"DEBUG Case 8.9 result: {res_89}")
         assert res_89, "Case 8.9 Failed: Reset did not isolate old generation"
+        await client.wait_for_condition(
+            """
+            (() => {
+              const actions = window.currentActions || {};
+              const sendEnabled = document.querySelector('#sendBtn').disabled === false;
+              const inputEnabled = document.querySelector('#messageInput').disabled === false;
+              const voiceEnabled = document.querySelector('#voiceBtn').disabled === false;
+              const waveform = document.querySelector('#audioWaveformWrapper');
+              const waveformHidden = !waveform || waveform.style.display === 'none';
+              return actions.can_send === true && sendEnabled && inputEnabled && voiceEnabled && waveformHidden;
+            })()
+            """,
+            timeout=5.0,
+        )
 
         # 10. ASR 存在警告/风险时不自动发送
         js_asr_risk = """

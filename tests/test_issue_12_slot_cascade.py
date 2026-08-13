@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from src.dialogue_manager import DialogueManager
-from src.knowledge_retriever import KnowledgeBase
+from src.knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from src.llm_client import LLMClient
 from src.slot_store import (
     ROBOT_CASCADE_DEPENDENCIES,
@@ -80,7 +80,7 @@ class TestIssue12SlotCascade(unittest.TestCase):
     # ──────────────────────────────────────────────────────────────────────────
 
     def test_05_legacy_snapshot_without_canonical_slots_can_be_restored(self):
-        """5. 不包含新槽位的旧 snapshot 可以正常恢复。"""
+        """5. 旧 snapshot 可恢复；已淘汰型号降级为待重新选择。"""
         legacy_snapshot = {
             "store_version": 2,
             "slots": {
@@ -107,9 +107,49 @@ class TestIssue12SlotCascade(unittest.TestCase):
         store.restore_snapshot(legacy_snapshot)
         self.assertEqual(store.version, 2)
         self.assertEqual(store.slots["equipment_family"].value, "观察级深海机器人")
+        self.assertEqual(store.slots["equipment_type"].status, "missing")
+        self.assertIsNone(store.slots["equipment_type"].value)
+        self.assertEqual(store.slots["equipment_type"].source, "snapshot_migration")
 
-    def test_06_restored_legacy_snapshot_auto_adds_missing_canonical_slots(self):
-        """6. 恢复旧 snapshot 后自动补入 missing 状态的 canonical slots。"""
+    def test_05b_v1_stale_type_only_downgrades_to_missing(self):
+        """V1 只有已淘汰 Variant 时可安全降级，不要求不存在的父级 lineage。"""
+        snapshot = {
+            "store_version": 2,
+            "slots": {
+                "task_type_key": Slot(
+                    "task_type_key",
+                    value="pipeline_inspection",
+                    status="valid",
+                ).to_dict(),
+                "equipment_type": Slot(
+                    "equipment_type",
+                    value="已淘汰的旧型号",
+                    status="valid",
+                    source="snapshot",
+                ).to_dict(),
+            },
+            "unresolved": [],
+        }
+
+        store = SlotStore(kb=self.kb)
+        store.restore_snapshot(snapshot)
+
+        self.assertEqual(store.slots["equipment_type"].status, "missing")
+        self.assertIsNone(store.slots["equipment_type"].value)
+        self.assertEqual(
+            store.slots["equipment_type"].source,
+            "snapshot_migration",
+        )
+        for key in (
+            "equipment_class",
+            "equipment_family",
+            "equipment_unit_id",
+        ):
+            self.assertEqual(store.slots[key].status, "missing")
+            self.assertIsNone(store.slots[key].value)
+
+    def test_06_restored_legacy_snapshot_derives_canonical_ancestors(self):
+        """6. 恢复旧 snapshot 后从型号反推并补入唯一父级。"""
         legacy_snapshot = {
             "store_version": 1,
             "slots": {
@@ -124,7 +164,20 @@ class TestIssue12SlotCascade(unittest.TestCase):
         store = SlotStore(kb=self.kb)
         store.restore_snapshot(legacy_snapshot)
         self.assertIn("equipment_class", store.slots)
-        self.assertEqual(store.slots["equipment_class"].status, "missing")
+        self.assertEqual(store.slots["equipment_class"].value, "work_class_rov")
+        self.assertEqual(store.slots["equipment_class"].status, "valid")
+        self.assertEqual(
+            store.slots["equipment_family"].value,
+            "通用工作级深海机器人",
+        )
+        self.assertEqual(
+            store.slots["equipment_class"].source,
+            "snapshot_migration",
+        )
+        self.assertEqual(
+            store.slots["equipment_family"].source,
+            "snapshot_migration",
+        )
         self.assertNotIn("equipment_specification", store.slots)
 
     def test_07_legacy_valid_slots_unaffected(self):
@@ -430,6 +483,725 @@ class TestIssue12SlotCascade(unittest.TestCase):
         self.assertEqual(store.version, before_version)
         self.assertEqual(store.export_snapshot(), before_snapshot)
 
+    def test_16b_mixed_robot_hierarchy_restore_is_atomic(self):
+        """完整 Unit 存在时，快照中的显式父级必须与 Registry 四级关系一致。"""
+        store = SlotStore(kb=self.kb)
+        before_snapshot = copy.deepcopy(store.export_snapshot())
+        mixed_snapshot = copy.deepcopy(before_snapshot)
+        mixed_snapshot["slots"].update(
+            {
+                "task_type_key": Slot(
+                    "task_type_key",
+                    value="pipeline_inspection",
+                    status="valid",
+                ).to_dict(),
+                "equipment_class": Slot(
+                    "equipment_class",
+                    value="auv",
+                    status="valid",
+                ).to_dict(),
+                "equipment_family": Slot(
+                    "equipment_family",
+                    value="观察级深海机器人",
+                    status="valid",
+                ).to_dict(),
+                "equipment_type": Slot(
+                    "equipment_type",
+                    value="观察级深海机器人 75HP",
+                    status="valid",
+                ).to_dict(),
+                "equipment_unit_id": Slot(
+                    "equipment_unit_id",
+                    value="OBSROV-75-001",
+                    status="valid",
+                ).to_dict(),
+            }
+        )
+
+        with self.assertRaisesRegex(
+            SnapshotValidationError,
+            "FAMILY_CLASS_MISMATCH",
+        ):
+            store.restore_snapshot(mixed_snapshot)
+
+        self.assertEqual(store.export_snapshot(), before_snapshot)
+
+    def test_16bb_flat_legacy_mixed_robot_hierarchy_is_atomic(self):
+        """无 slot_store 的旧版顶层 task_state 也必须经过同一四级闸门。"""
+        before_snapshot = copy.deepcopy(self.dm.export_snapshot())
+        legacy_snapshot = {
+            "conversation_history": [],
+            "mode": "normal",
+            "phase": "collecting",
+            "task_state": {
+                "task_type_key": "pipeline_inspection",
+                "equipment_class": "auv",
+                "equipment_family": "观察级深海机器人",
+                "equipment_type": "观察级深海机器人 75HP",
+                "equipment_unit_id": "OBSROV-75-001",
+            },
+        }
+
+        with self.assertRaisesRegex(
+            SnapshotValidationError,
+            "FAMILY_CLASS_MISMATCH",
+        ):
+            self.dm.load_snapshot(legacy_snapshot)
+
+        self.assertEqual(self.dm.export_snapshot(), before_snapshot)
+
+    def test_16bc_flat_legacy_unit_only_restore_derives_canonical_ancestors(self):
+        """旧版顶层 Unit-only 状态经同一 SlotStore 边界反推完整父级。"""
+        legacy_snapshot = {
+            "conversation_history": [],
+            "mode": "normal",
+            "phase": "collecting",
+            "task_state": {
+                "task_type_key": "pipeline_inspection",
+                "equipment_unit_id": "OBSROV-75-001",
+            },
+        }
+
+        self.dm.load_snapshot(legacy_snapshot)
+
+        state = self.dm.task_state
+        self.assertEqual(state["equipment_class"], "observation_rov")
+        self.assertEqual(state["equipment_family"], "观察级深海机器人")
+        self.assertEqual(state["equipment_type"], "观察级深海机器人 75HP")
+        self.assertEqual(state["equipment_unit_id"], "OBSROV-75-001")
+        for key in (
+            "equipment_class",
+            "equipment_family",
+            "equipment_type",
+        ):
+            self.assertEqual(
+                self.dm.slot_store.slots[key].source,
+                "snapshot_migration",
+            )
+
+    def test_16c_partial_robot_hierarchy_restore_remains_supported(self):
+        """收集中的部分级联没有 Unit 时仍可恢复。"""
+        store = SlotStore(kb=self.kb)
+        snapshot = copy.deepcopy(store.export_snapshot())
+        snapshot["slots"].update(
+            {
+                "task_type_key": Slot(
+                    "task_type_key",
+                    value="pipeline_inspection",
+                    status="valid",
+                ).to_dict(),
+                "equipment_class": Slot(
+                    "equipment_class",
+                    value="auv",
+                    status="valid",
+                ).to_dict(),
+            }
+        )
+
+        store.restore_snapshot(snapshot)
+
+        self.assertEqual(store.slots["equipment_class"].value, "auv")
+        self.assertIsNone(store.slots["equipment_unit_id"].value)
+
+    def test_16d_restore_rejects_explicit_invalid_robot_selectors(self):
+        """valid 状态的空值或错误类型不是“部分选择”，必须原子拒绝。"""
+        cases = (
+            ("equipment_unit_id", "", "INVALID_UNIT_SELECTOR"),
+            ("equipment_unit_id", 123, "INVALID_UNIT_SELECTOR"),
+            ("equipment_class", "", "INVALID_ROBOT_CLASS_SELECTOR"),
+            ("equipment_family", 0, "INVALID_FAMILY_SELECTOR"),
+            ("equipment_type", "", "INVALID_VARIANT_SELECTOR"),
+        )
+
+        for field, value, error_code in cases:
+            with self.subTest(field=field, value=value):
+                store = SlotStore(kb=self.kb)
+                before_snapshot = copy.deepcopy(store.export_snapshot())
+                snapshot = copy.deepcopy(before_snapshot)
+                snapshot["slots"]["task_type_key"] = Slot(
+                    "task_type_key",
+                    value="pipeline_inspection",
+                    status="valid",
+                ).to_dict()
+                snapshot["slots"][field] = Slot(
+                    field,
+                    value=value,
+                    status="valid",
+                ).to_dict()
+
+                with self.assertRaisesRegex(SnapshotValidationError, error_code):
+                    store.restore_snapshot(snapshot)
+
+                self.assertEqual(store.export_snapshot(), before_snapshot)
+
+    def test_16e_restore_rejects_mixed_partial_hierarchy_without_unit(self):
+        """即使尚未选择 Unit，已提供的 Class/Family/Variant 也必须逐边一致。"""
+        store = SlotStore(kb=self.kb)
+        before_snapshot = copy.deepcopy(store.export_snapshot())
+        snapshot = copy.deepcopy(before_snapshot)
+        snapshot["slots"].update(
+            {
+                "task_type_key": Slot(
+                    "task_type_key",
+                    value="pipeline_inspection",
+                    status="valid",
+                ).to_dict(),
+                "equipment_class": Slot(
+                    "equipment_class",
+                    value="auv",
+                    status="valid",
+                ).to_dict(),
+                "equipment_family": Slot(
+                    "equipment_family",
+                    value="观察级深海机器人",
+                    status="valid",
+                ).to_dict(),
+                "equipment_type": Slot(
+                    "equipment_type",
+                    value="观察级深海机器人 75HP",
+                    status="valid",
+                ).to_dict(),
+            }
+        )
+
+        with self.assertRaisesRegex(
+            SnapshotValidationError,
+            "FAMILY_CLASS_MISMATCH",
+        ):
+            store.restore_snapshot(snapshot)
+
+        self.assertEqual(store.export_snapshot(), before_snapshot)
+
+    def test_16f_restore_migrates_legacy_unit_alias_to_canonical_id(self):
+        """可唯一解析的旧 Unit alias 在候选快照中迁移为正式 fleet unit_id。"""
+        store = SlotStore(kb=self.kb)
+        snapshot = copy.deepcopy(store.export_snapshot())
+        snapshot["slots"].update(
+            {
+                "task_type_key": Slot(
+                    "task_type_key",
+                    value="pipeline_inspection",
+                    status="valid",
+                ).to_dict(),
+                "equipment_unit_id": Slot(
+                    "equipment_unit_id",
+                    value="OBSROV--001",
+                    status="valid",
+                    source="snapshot",
+                ).to_dict(),
+            }
+        )
+
+        store.restore_snapshot(snapshot)
+
+        restored = store.slots["equipment_unit_id"]
+        self.assertEqual(restored.value, "OBSROV-75-001")
+        self.assertEqual(restored.raw_value, "OBSROV--001")
+        self.assertEqual(restored.source, "snapshot_migration")
+
+    def test_16g_restore_rejects_broken_validator_result_atomically(self):
+        """可调用但返回空/错结构的 Registry validator 也必须失败关闭。"""
+        for broken_result in (
+            None,
+            {},
+            {"foo": "bar"},
+            {"unit_id": "OBSROV-75-001"},
+        ):
+            with self.subTest(broken_result=broken_result):
+                store = SlotStore(kb=self.kb)
+                before_snapshot = copy.deepcopy(store.export_snapshot())
+                snapshot = copy.deepcopy(before_snapshot)
+                snapshot["slots"].update(
+                    {
+                        "task_type_key": Slot(
+                            "task_type_key",
+                            value="pipeline_inspection",
+                            status="valid",
+                        ).to_dict(),
+                        "equipment_unit_id": Slot(
+                            "equipment_unit_id",
+                            value="OBSROV-75-001",
+                            status="valid",
+                        ).to_dict(),
+                    }
+                )
+                original = self.kb.validate_robot_selection_from_task_state
+                try:
+                    self.kb.validate_robot_selection_from_task_state = (
+                        lambda *_args, _result=broken_result, **_kwargs: _result
+                    )
+                    with self.assertRaisesRegex(
+                        SnapshotValidationError,
+                        "STATIC_ROBOT_VALIDATOR_FAILURE",
+                    ):
+                        store.restore_snapshot(snapshot)
+                finally:
+                    self.kb.validate_robot_selection_from_task_state = original
+
+                self.assertEqual(store.export_snapshot(), before_snapshot)
+
+    def test_16ga_broken_helper_cannot_materialize_descendants(self):
+        """Registry helper 的多余返回字段不得替用户选择下级机器人。"""
+        cases = (
+            (
+                "equipment_class",
+                "observation_rov",
+                (),
+            ),
+            (
+                "equipment_family",
+                "观察级深海机器人",
+                (("equipment_class", "observation_rov"),),
+            ),
+        )
+        complete_lineage = {
+            "robot_class": "observation_rov",
+            "family_id": "observation_rov",
+            "family_name": "观察级深海机器人",
+            "variant_id": "observation_rov_75hp",
+            "equipment_type": "观察级深海机器人 75HP",
+            "unit_id": "OBSROV-75-001",
+        }
+
+        for explicit_key, explicit_value, expected_ancestors in cases:
+            with self.subTest(explicit_key=explicit_key):
+                store = SlotStore(kb=self.kb)
+                snapshot = copy.deepcopy(store.export_snapshot())
+                snapshot["slots"].update(
+                    {
+                        "task_type_key": Slot(
+                            "task_type_key",
+                            value="pipeline_inspection",
+                            status="valid",
+                        ).to_dict(),
+                        explicit_key: Slot(
+                            explicit_key,
+                            value=explicit_value,
+                            status="valid",
+                            source="user_input",
+                        ).to_dict(),
+                    }
+                )
+                original = self.kb.validate_robot_selection_from_task_state
+                try:
+                    self.kb.validate_robot_selection_from_task_state = (
+                        lambda *_args, **_kwargs: copy.deepcopy(complete_lineage)
+                    )
+                    store.restore_snapshot(snapshot)
+                finally:
+                    self.kb.validate_robot_selection_from_task_state = original
+
+                self.assertEqual(store.slots[explicit_key].source, "user_input")
+                for ancestor_key, ancestor_value in expected_ancestors:
+                    self.assertEqual(store.slots[ancestor_key].value, ancestor_value)
+                    self.assertEqual(
+                        store.slots[ancestor_key].source,
+                        "snapshot_migration",
+                    )
+                deepest_index = (
+                    "equipment_class",
+                    "equipment_family",
+                    "equipment_type",
+                    "equipment_unit_id",
+                ).index(explicit_key)
+                for descendant_key in (
+                    "equipment_class",
+                    "equipment_family",
+                    "equipment_type",
+                    "equipment_unit_id",
+                )[deepest_index + 1 :]:
+                    self.assertEqual(store.slots[descendant_key].status, "missing")
+                    self.assertIsNone(store.slots[descendant_key].value)
+
+    def test_16j_type_only_restore_materializes_canonical_ancestors(self):
+        """Variant 可唯一反推 Class/Family，但恢复不向下选 Unit。"""
+        store = SlotStore(kb=self.kb)
+        snapshot = copy.deepcopy(store.export_snapshot())
+        snapshot["slots"].update(
+            {
+                "task_type_key": Slot(
+                    "task_type_key",
+                    value="pipeline_inspection",
+                    status="valid",
+                ).to_dict(),
+                "equipment_type": Slot(
+                    "equipment_type",
+                    value="观察级深海机器人 75HP",
+                    status="valid",
+                    source="user_input",
+                ).to_dict(),
+            }
+        )
+
+        store.restore_snapshot(snapshot)
+
+        self.assertEqual(store.slots["equipment_class"].value, "observation_rov")
+        self.assertEqual(
+            store.slots["equipment_family"].value,
+            "观察级深海机器人",
+        )
+        self.assertEqual(
+            store.slots["equipment_class"].source,
+            "snapshot_migration",
+        )
+        self.assertEqual(
+            store.slots["equipment_family"].source,
+            "snapshot_migration",
+        )
+        self.assertEqual(store.slots["equipment_type"].source, "user_input")
+        self.assertIsNone(store.slots["equipment_unit_id"].value)
+        self.assertEqual(store.slots["equipment_unit_id"].status, "missing")
+
+    def test_16k_unit_only_restore_materializes_all_canonical_ancestors(self):
+        """Unit 可唯一反推 Class/Family/Variant，且保留显式 Unit。"""
+        store = SlotStore(kb=self.kb)
+        snapshot = copy.deepcopy(store.export_snapshot())
+        snapshot["slots"].update(
+            {
+                "task_type_key": Slot(
+                    "task_type_key",
+                    value="pipeline_inspection",
+                    status="valid",
+                ).to_dict(),
+                "equipment_unit_id": Slot(
+                    "equipment_unit_id",
+                    value="OBSROV-75-001",
+                    status="valid",
+                    source="user_input",
+                ).to_dict(),
+            }
+        )
+
+        store.restore_snapshot(snapshot)
+
+        self.assertEqual(store.slots["equipment_class"].value, "observation_rov")
+        self.assertEqual(
+            store.slots["equipment_family"].value,
+            "观察级深海机器人",
+        )
+        self.assertEqual(
+            store.slots["equipment_type"].value,
+            "观察级深海机器人 75HP",
+        )
+        for key in (
+            "equipment_class",
+            "equipment_family",
+            "equipment_type",
+        ):
+            self.assertEqual(store.slots[key].source, "snapshot_migration")
+        self.assertEqual(store.slots["equipment_unit_id"].value, "OBSROV-75-001")
+        self.assertEqual(store.slots["equipment_unit_id"].source, "user_input")
+
+    def test_16l_restore_preserves_nonvalid_ancestor_audit_state(self):
+        """反推只补 missing 祖先，不覆盖 candidate/conflict/invalid 审计态。"""
+        cases = (
+            Slot(
+                "equipment_family",
+                status="candidate",
+                source="user_input",
+                raw_value="候选观察级",
+                candidate_value="观察级深海机器人",
+                version=7,
+            ),
+            Slot(
+                "equipment_family",
+                value="旧机器人族",
+                status="conflict",
+                source="user_input",
+                raw_value="换成观察级",
+                candidate_value="观察级深海机器人",
+                version=7,
+            ),
+            Slot(
+                "equipment_family",
+                status="invalid",
+                source="user_input",
+                raw_value="未知机器人族",
+                validation_error="无法规范化机器人族",
+                candidate_value="未知机器人族",
+                version=7,
+            ),
+        )
+
+        for family_slot in cases:
+            with self.subTest(status=family_slot.status):
+                store = SlotStore(kb=self.kb)
+                snapshot = copy.deepcopy(store.export_snapshot())
+                expected_family = family_slot.to_dict()
+                snapshot["slots"].update(
+                    {
+                        "task_type_key": Slot(
+                            "task_type_key",
+                            value="pipeline_inspection",
+                            status="valid",
+                        ).to_dict(),
+                        "equipment_family": expected_family,
+                        "equipment_unit_id": Slot(
+                            "equipment_unit_id",
+                            value="OBSROV-75-001",
+                            status="valid",
+                            source="user_input",
+                        ).to_dict(),
+                    }
+                )
+
+                store.restore_snapshot(snapshot)
+
+                self.assertEqual(
+                    store.slots["equipment_family"].to_dict(),
+                    expected_family,
+                )
+                self.assertEqual(
+                    store.slots["equipment_class"].value,
+                    "observation_rov",
+                )
+                self.assertEqual(
+                    store.slots["equipment_type"].value,
+                    "观察级深海机器人 75HP",
+                )
+
+    def test_16m_nonvalid_parent_does_not_constrain_valid_unit_on_recollapse(self):
+        """非 valid Family 的旧值不属于 task_state，不能误清有效 Type/Unit。"""
+        families = (
+            Slot(
+                "equipment_family",
+                value="轻型工作级深海机器人",
+                status="conflict",
+                source="user_input",
+                raw_value="改成观察级",
+                candidate_value="观察级深海机器人",
+                validation_error="等待用户确认机器人族修改",
+                version=7,
+            ),
+            Slot(
+                "equipment_family",
+                value="轻型工作级深海机器人",
+                status="candidate",
+                source="user_input",
+                raw_value="候选轻型工作级",
+                candidate_value="轻型工作级深海机器人",
+                version=7,
+            ),
+        )
+
+        for nonvalid_family in families:
+            with self.subTest(status=nonvalid_family.status):
+                store = SlotStore(kb=self.kb)
+                snapshot = copy.deepcopy(store.export_snapshot())
+                snapshot["slots"].update(
+                    {
+                        "task_type_key": Slot(
+                            "task_type_key",
+                            value="pipeline_inspection",
+                            status="valid",
+                        ).to_dict(),
+                        "equipment_family": nonvalid_family.to_dict(),
+                        "equipment_unit_id": Slot(
+                            "equipment_unit_id",
+                            value="OBSROV-75-001",
+                            status="valid",
+                            source="user_input",
+                        ).to_dict(),
+                    }
+                )
+                store.restore_snapshot(snapshot)
+                before_family = copy.deepcopy(
+                    store.slots["equipment_family"].to_dict()
+                )
+
+                slots = store.clone_slots()
+                self.dm._normalize_and_validate_in_transaction(
+                    slots,
+                    "pipeline_inspection",
+                )
+
+                self.assertEqual(
+                    slots["equipment_family"].to_dict(),
+                    before_family,
+                )
+                self.assertEqual(
+                    slots["equipment_type"].value,
+                    "观察级深海机器人 75HP",
+                )
+                self.assertEqual(slots["equipment_type"].status, "valid")
+                self.assertEqual(
+                    slots["equipment_unit_id"].value,
+                    "OBSROV-75-001",
+                )
+                self.assertEqual(slots["equipment_unit_id"].status, "valid")
+
+                # Cache rebuild is also exercised by unrelated confirmations
+                # (for example oilfield confirmation). It may derive a truly
+                # missing Family, but must not overwrite audit-bearing states.
+                self.dm.slot_store = store
+                self.dm._rebuild_cache()
+                self.assertEqual(
+                    self.dm.slot_store.slots["equipment_family"].to_dict(),
+                    before_family,
+                )
+                self.assertEqual(
+                    self.dm.slot_store.slots["equipment_unit_id"].value,
+                    "OBSROV-75-001",
+                )
+
+    def test_16n_nonvalid_variant_does_not_filter_payload_normalization(self):
+        """未确认 Type 不能作为动态 payload 合法值的机器人事实。"""
+        variants = (
+            Slot(
+                "equipment_type",
+                value="水下无人自主航行器 324CC",
+                status="candidate",
+                source="user_input",
+                candidate_value="水下无人自主航行器 324CC",
+                version=5,
+            ),
+            Slot(
+                "equipment_type",
+                value="观察级深海机器人 75HP",
+                status="conflict",
+                source="user_input",
+                candidate_value="水下无人自主航行器 324CC",
+                validation_error="等待用户确认型号修改",
+                version=5,
+            ),
+        )
+
+        for nonvalid_variant in variants:
+            with self.subTest(status=nonvalid_variant.status):
+                store = SlotStore(kb=self.kb)
+                store.init_task_slots(
+                    self.dm.builder.get_schema(
+                        "pipeline_inspection",
+                        "normal",
+                    )
+                )
+                snapshot = copy.deepcopy(store.export_snapshot())
+                snapshot["slots"].update(
+                    {
+                        "task_type_key": Slot(
+                            "task_type_key",
+                            value="pipeline_inspection",
+                            status="valid",
+                        ).to_dict(),
+                        "equipment_type": nonvalid_variant.to_dict(),
+                        "equipment_unit_id": Slot(
+                            "equipment_unit_id",
+                            value="OBSROV-75-001",
+                            status="valid",
+                            source="user_input",
+                        ).to_dict(),
+                    }
+                )
+                store.restore_snapshot(snapshot)
+                before_variant = copy.deepcopy(
+                    store.slots["equipment_type"].to_dict()
+                )
+
+                slots = store.clone_slots()
+                payload_slot = slots["payload"]
+                payload_slot.value = ["电磁检测传感器"]
+                payload_slot.status = "candidate"
+                payload_slot.candidate_value = None
+                self.dm._normalize_and_validate_in_transaction(
+                    slots,
+                    "pipeline_inspection",
+                )
+
+                self.assertEqual(
+                    slots["equipment_type"].to_dict(),
+                    before_variant,
+                )
+                self.assertEqual(slots["payload"].status, "valid")
+                self.assertEqual(
+                    slots["payload"].value,
+                    ["电磁检测传感器"],
+                )
+                self.assertEqual(
+                    slots["equipment_unit_id"].value,
+                    "OBSROV-75-001",
+                )
+
+    def test_16h_restore_rejects_fuzzy_unit_substrings_atomically(self):
+        """只有显式 Registry alias 可迁移，模糊 Unit 片段必须拒绝。"""
+        for selector in ("OBS", "75", "OBSROV-75"):
+            with self.subTest(selector=selector):
+                store = SlotStore(kb=self.kb)
+                before_snapshot = copy.deepcopy(store.export_snapshot())
+                snapshot = copy.deepcopy(before_snapshot)
+                snapshot["slots"].update(
+                    {
+                        "task_type_key": Slot(
+                            "task_type_key",
+                            value="pipeline_inspection",
+                            status="valid",
+                        ).to_dict(),
+                        "equipment_unit_id": Slot(
+                            "equipment_unit_id",
+                            value=selector,
+                            status="valid",
+                        ).to_dict(),
+                    }
+                )
+
+                with self.assertRaisesRegex(
+                    SnapshotValidationError,
+                    "UNIT_NOT_FOUND",
+                ):
+                    store.restore_snapshot(snapshot)
+                self.assertEqual(store.export_snapshot(), before_snapshot)
+
+    def test_16i_v1_variant_fallback_revalidates_helper_result(self):
+        """V1 清退旧 Variant 后的第二次 helper 调用也必须校验返回契约。"""
+        for broken_result in (None, {}, {"foo": "bar"}):
+            with self.subTest(broken_result=broken_result):
+                store = SlotStore(kb=self.kb)
+                before_snapshot = copy.deepcopy(store.export_snapshot())
+                snapshot = copy.deepcopy(before_snapshot)
+                snapshot.pop("snapshot_schema_version", None)
+                snapshot["slots"].update(
+                    {
+                        "task_type_key": Slot(
+                            "task_type_key",
+                            value="pipeline_inspection",
+                            status="valid",
+                        ).to_dict(),
+                        "equipment_class": Slot(
+                            "equipment_class",
+                            value="observation_rov",
+                            status="valid",
+                        ).to_dict(),
+                        "equipment_type": Slot(
+                            "equipment_type",
+                            value="已淘汰的旧型号",
+                            status="valid",
+                        ).to_dict(),
+                    }
+                )
+                call_count = 0
+                original = self.kb.validate_robot_selection_from_task_state
+
+                def stateful_validator(*_args, **_kwargs):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count == 1:
+                        raise RobotSelectionDataError(
+                            "legacy variant is stale",
+                            error_code="VARIANT_NOT_FOUND",
+                        )
+                    return broken_result
+
+                try:
+                    self.kb.validate_robot_selection_from_task_state = stateful_validator
+                    with self.assertRaisesRegex(
+                        SnapshotValidationError,
+                        "STATIC_ROBOT_VALIDATOR_FAILURE",
+                    ):
+                        store.restore_snapshot(snapshot)
+                finally:
+                    self.kb.validate_robot_selection_from_task_state = original
+
+                self.assertEqual(store.export_snapshot(), before_snapshot)
+
     def test_17_class_change_clears_all_downstream_slots(self):
         """17. 修改 equipment_class 时，旧 AUV family/type/unit 不得泄漏，新 domain 唯一项重新自动收敛，不唯一的保持 missing。"""
         self._apply_updates(
@@ -614,8 +1386,25 @@ class TestIssue12SlotCascade(unittest.TestCase):
         self._apply_updates({"equipment_unit_id": "WROV-250-001"})
         self.assertEqual(self.dm.slot_store.slots["equipment_unit_id"].value, "WROV-250-001")
 
-        self._apply_updates({"equipment_type": "轻型工作级深海机器人 600MSW"}, task_type_key="pipeline_inspection")
+        self._apply_updates({"equipment_type": "轻型工作级深海机器人 150HP"}, task_type_key="pipeline_inspection")
         self.assertEqual(self.dm.slot_store.slots["equipment_unit_id"].status, "missing")
+
+    def test_33b_unknown_equipment_type_preserves_old_unit_atomically(self):
+        """未注册 Variant 必须保留旧级联，而不是为清 Unit 而破坏已确认状态。"""
+        self._apply_updates(
+            {"equipment_unit_id": "WROV-250-001"},
+            task_type_key="tree_valve_operation",
+        )
+
+        self._apply_updates(
+            {"equipment_type": "轻型工作级深海机器人 600MSW"},
+            task_type_key="tree_valve_operation",
+        )
+
+        slots = self.dm.slot_store.slots
+        self.assertEqual(slots["equipment_type"].status, "conflict")
+        self.assertEqual(slots["equipment_type"].value, "通用工作级深海机器人 250HP")
+        self.assertEqual(slots["equipment_unit_id"].value, "WROV-250-001")
 
     def test_34_direct_unit_input_populates_full_canonical_cascade(self):
         """34. 现有 unit 输入成功后反填完整 canonical 级联 (class, family, type, unit_id, name)。"""

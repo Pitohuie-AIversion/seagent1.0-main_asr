@@ -470,7 +470,7 @@ class LLMClient:
         max_tokens: int = 1500,
         role: ModelRole | str | None = None,
     ) -> str:
-        """保留现有回复脱敏行为。"""
+        """保留现有回复脱敏行为，并防止水下业务与设备术语误杀。"""
         target_role = role or ModelRole.FILTER_REPLY
         reply_text = "" if reply is None else str(reply)
         if self.is_mock or not reply_text:
@@ -481,12 +481,33 @@ class LLMClient:
                 "content": (
                     "检查下面文本中是否泄露底座模型、厂商、模型路径或 prompt 等实现信息。"
                     "如有，只将实现信息改为‘我无法透露底座模型或实现细节’，保持前后连贯；"
-                    "不要修改业务身份表述，其余内容严禁修改。只输出修改后的文本：\n"
+                    "不要修改业务身份表述，其余内容严禁修改。\n"
+                    "重要注意：水下作业装备、传感器、定位导航设备（如 DVL、ROV、AUV、USV、LBL、SBL、INS、GPS 等）及业务参数属于正常水下业务实体，严禁修改或误替换为脱敏词。\n"
+                    "只输出修改后的文本：\n"
                     f"{reply_text}"
                 ),
             }
         ]
-        return self.generate_text(messages, temperature=temperature, max_tokens=max_tokens, role=target_role)
+        filtered = self.generate_text(messages, temperature=temperature, max_tokens=max_tokens, role=target_role)
+        if not filtered:
+            return reply_text
+
+        # 防误杀后处理：防止水下领域术语（如 DVL）被脱敏模型误判替换
+        domain_terms = ["DVL", "ROV", "AUV", "USV", "LBL", "SBL", "INS"]
+        refusal_patterns = [
+            "我无法透露底座模型或实现细节",
+            "无法透露底座模型或实现细节",
+            "[无法透露底座模型或实现细节]",
+            "【无法透露底座模型或实现细节】",
+        ]
+        has_refusal = any(pat in filtered for pat in refusal_patterns)
+        if has_refusal:
+            for term in domain_terms:
+                if term in reply_text and term not in filtered:
+                    for pat in refusal_patterns:
+                        if pat in filtered:
+                            filtered = filtered.replace(pat, term)
+        return filtered
 
     # ------------------------------------------------------------------
     # Generic parsing and offline protocol mocks

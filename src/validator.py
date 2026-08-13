@@ -8,6 +8,7 @@ validator.py — 结构化约束验证服务 (Issue #14 增强版)
 
 import copy
 import hashlib
+import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -19,11 +20,37 @@ from .exceptions import (
     StateSelectorError,
     StateSnapshotValidationError,
 )
-from .knowledge_retriever import KnowledgeBase
+from .knowledge_retriever import (
+    KnowledgeBase,
+    RobotSelectionDataError,
+    robot_selection_result_contract_error,
+)
 from .simulated_time import get_current_datetime, get_current_timestamp
+from .state_info import TELEMETRY_MAX_FUTURE_SKEW_SECONDS
 
 
 START_TIME_PAST_GRACE_MINUTES = 5
+
+
+def _matches_numeric_thresholds(value: Any, thresholds: dict[str, Any]) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"telemetry value must be numeric, got {type(value).__name__}")
+    if not math.isfinite(float(value)):
+        raise ValueError("telemetry value must be finite")
+    if "min_exclusive" in thresholds and value <= thresholds["min_exclusive"]:
+        return False
+    if "max_exclusive" in thresholds and value >= thresholds["max_exclusive"]:
+        return False
+    if "max_inclusive" in thresholds and value > thresholds["max_inclusive"]:
+        return False
+    return True
+
+
+def _display_threshold(thresholds: dict[str, Any]) -> Any:
+    for key in ("max_inclusive", "min_exclusive", "max_exclusive"):
+        if key in thresholds:
+            return thresholds[key]
+    return None
 
 
 @dataclass
@@ -255,6 +282,149 @@ class TaskValidator:
     # 公开接口
     # ──────────────────────────────────────────────────────────────────────────
 
+    def validate_robot_selection_tuple(
+        self,
+        task_state: dict,
+        *,
+        require_unit: bool = False,
+    ) -> tuple[dict | None, dict | None]:
+        """Validate a complete robot tuple without reading runtime telemetry."""
+        validator = getattr(self.kb, "validate_robot_selection_from_task_state", None)
+        if not callable(validator):
+            if require_unit or task_state.get("equipment_unit_id") is not None:
+                return None, {
+                    "code": "STATIC_ROBOT_VALIDATOR_UNAVAILABLE",
+                    "message": "机器人四级静态校验器不可用，无法安全继续。",
+                }
+            return None, None
+        try:
+            selection = validator(task_state, require_unit=require_unit)
+            missing_key = robot_selection_result_contract_error(
+                task_state,
+                selection,
+                require_unit=require_unit,
+            )
+            if missing_key is not None:
+                return None, {
+                    "code": "STATIC_ROBOT_VALIDATOR_FAILURE",
+                    "message": (
+                        "机器人四级静态校验器返回结果不完整，"
+                        f"缺少规范字段 {missing_key}。"
+                    ),
+                }
+            return selection, None
+        except RobotSelectionDataError as exc:
+            return None, {
+                "code": exc.error_code,
+                "message": f"机器人四级选择关系不一致：{exc}",
+                "details": exc.to_dict(),
+            }
+        except Exception as exc:
+            return None, {
+                "code": "STATIC_ROBOT_VALIDATOR_FAILURE",
+                "message": f"机器人四级静态校验失败：{exc}",
+            }
+
+    def _validate_partial_robot_selection_feasibility(
+        self,
+        task_state: dict,
+        canonical_selection: dict | None,
+    ) -> dict | None:
+        """Fail closed when an explicit Class/Family has no feasible child.
+
+        Concrete Variant/Unit selections deliberately stay on the normal
+        constraint path so the existing depth and runtime gates can report
+        C004/C020 with their more specific diagnostics.
+        """
+        if not isinstance(task_state, dict) or not isinstance(
+            canonical_selection,
+            dict,
+        ):
+            return None
+        if task_state.get("equipment_type") is not None or task_state.get(
+            "equipment_unit_id"
+        ) is not None:
+            return None
+
+        has_explicit_class = task_state.get("equipment_class") is not None
+        has_explicit_family = task_state.get("equipment_family") is not None
+        task_type_key = task_state.get("task_type_key")
+        if not task_type_key or not (has_explicit_class or has_explicit_family):
+            return None
+
+        domain_builder = getattr(
+            self.kb,
+            "get_feasible_robot_selection_domain",
+            None,
+        )
+        if not callable(domain_builder):
+            return None
+
+        try:
+            domain = domain_builder(task_type_key, task_state)
+        except RobotSelectionDataError as exc:
+            return {
+                "code": exc.error_code,
+                "message": f"机器人候选域校验失败：{exc}",
+                "details": exc.to_dict(),
+            }
+        except Exception as exc:
+            return {
+                "code": "ROBOT_FEASIBILITY_CHECK_FAILED",
+                "message": f"机器人候选域计算失败：{exc}",
+            }
+
+        if not isinstance(domain, dict) or not isinstance(
+            domain.get("classes"),
+            list,
+        ):
+            return {
+                "code": "ROBOT_FEASIBILITY_CHECK_FAILED",
+                "message": "机器人候选域返回了非法结构，无法安全继续。",
+            }
+
+        class_id = canonical_selection.get("robot_class")
+        class_node = next(
+            (
+                item
+                for item in domain["classes"]
+                if item.get("class_id") == class_id
+            ),
+            None,
+        )
+        family_id = canonical_selection.get("family_id")
+        family_node = None
+        if class_node is not None and has_explicit_family:
+            family_node = next(
+                (
+                    item
+                    for item in class_node.get("families", [])
+                    if item.get("family_id") == family_id
+                ),
+                None,
+            )
+
+        if class_node is not None and (
+            not has_explicit_family or family_node is not None
+        ):
+            return None
+
+        selected_level = "Family" if has_explicit_family else "Class"
+        selected_value = family_id if has_explicit_family else class_id
+        return {
+            "code": "NO_FEASIBLE_ROBOT_CANDIDATE",
+            "message": (
+                f"当前任务条件下，已选机器人 {selected_level} "
+                f"'{selected_value}' 没有可行的下级机器人候选。"
+                "请修改任务条件或更换机器人选择。"
+            ),
+            "details": {
+                "task_type_key": task_type_key,
+                "selected_level": selected_level.lower(),
+                "selected_value": selected_value,
+            },
+        }
+
     def validate_task(
         self,
         task_state: dict,
@@ -295,19 +465,48 @@ class TaskValidator:
                 if et_err:
                     error_dict = et_err
 
+            canonical_selection = None
+            if error_dict is None:
+                canonical_selection, error_dict = self.validate_robot_selection_tuple(
+                    task_state,
+                    require_unit=purpose
+                    in ("publish", "preview", "runtime_execution"),
+                )
+
+            # During collection, a task/robot capability mismatch is an
+            # ordinary hard constraint (C001/C002), not malformed registry
+            # structure.  Keep the strict static gate for publish/preview/
+            # execution, while allowing the existing robot_category rules to
+            # explain and block an incompatible interactive choice.
+            if (
+                purpose == "interactive"
+                and error_dict is not None
+                and error_dict.get("code")
+                in {
+                    "CLASS_NOT_ALLOWED_FOR_TASK",
+                    "FAMILY_CAPABILITY_MISMATCH",
+                }
+                # C001/C002 need a concrete Variant/Unit from which to build
+                # their robot-category fact.  With only Class/Family present,
+                # suppressing the static error would leave no later check and
+                # incorrectly accept an inadmissible partial selection.
+                and (
+                    task_state.get("equipment_type") is not None
+                    or task_state.get("equipment_unit_id") is not None
+                )
+            ):
+                error_dict = None
+
+            if error_dict is None:
+                error_dict = self._validate_partial_robot_selection_feasibility(
+                    task_state,
+                    canonical_selection,
+                )
+
             # 尝试确定具体单机并提取状态快照
             state_snapshot = None
             if error_dict is None:
                 state_snapshot, error_dict = self._resolve_single_unit_snapshot(task_state, is_now=is_now)
-
-            # 门禁控制 (publish / preview)：必须要求明确 unit_id
-            if purpose in ("publish", "preview") and error_dict is None:
-                unit_id = task_state.get("equipment_unit_id")
-                if not unit_id or not isinstance(unit_id, str) or not unit_id.strip():
-                    error_dict = {
-                        "code": "MISSING_UNIT_ID",
-                        "message": "发布或预览任务前必须指定明确的具体单机编号 (equipment_unit_id)。",
-                    }
 
             violations: list[Violation] = []
             is_future_pending_telemetry = (
@@ -325,12 +524,30 @@ class TaskValidator:
                 error_dict = None
             else:
                 # 存在 validation_error 时，不得返回空违规列表
+                feasibility_error = error_dict.get("code") in {
+                    "NO_FEASIBLE_ROBOT_CANDIDATE",
+                    "ROBOT_FEASIBILITY_CHECK_FAILED",
+                }
                 err_violation = Violation(
                     constraint_id="VAL_ERR",
-                    constraint_name="单机状态校验失败",
-                    message=error_dict.get("message", "单机校验错误"),
+                    constraint_name=(
+                        "机器人候选可行性校验失败"
+                        if feasibility_error
+                        else "单机状态校验失败"
+                    ),
+                    message=error_dict.get("message", "机器人选择校验错误"),
                     severity="hard",
-                    related_fields=["equipment_unit_id"],
+                    related_fields=(
+                        [
+                            "equipment_class",
+                            "equipment_family",
+                            "water_depth",
+                            "payload",
+                            "start_time",
+                        ]
+                        if feasibility_error
+                        else ["equipment_unit_id"]
+                    ),
                     check_type="validation_error",
                 )
                 violations.append(err_violation)
@@ -407,7 +624,33 @@ class TaskValidator:
         self, task_state: dict, changed_fields: set[str]
     ) -> list[Violation]:
         """增量模式检查"""
-        snapshot, error_dict = self._resolve_single_unit_snapshot(task_state, is_now=self._is_task_start_now(task_state))
+        canonical_selection, error_dict = self.validate_robot_selection_tuple(
+            task_state
+        )
+        if (
+            error_dict is not None
+            and error_dict.get("code")
+            in {
+                "CLASS_NOT_ALLOWED_FOR_TASK",
+                "FAMILY_CAPABILITY_MISMATCH",
+            }
+            and (
+                task_state.get("equipment_type") is not None
+                or task_state.get("equipment_unit_id") is not None
+            )
+        ):
+            error_dict = None
+        if error_dict is None:
+            error_dict = self._validate_partial_robot_selection_feasibility(
+                task_state,
+                canonical_selection,
+            )
+        snapshot = None
+        if error_dict is None:
+            snapshot, error_dict = self._resolve_single_unit_snapshot(
+                task_state,
+                is_now=self._is_task_start_now(task_state),
+            )
         if error_dict is not None:
             err_v = Violation(
                 constraint_id="VAL_ERR",
@@ -540,6 +783,43 @@ class TaskValidator:
         overall_val = state_dict.get("overall_status")
         if overall_val == "unknown":
             return {"code": "INVALID_STATE_DATA", "message": f"单机 '{unit_id}' 的 overall_status 为无法识别的值 'unknown'。"}
+        timestamp_values = [
+            ("state.updated_at", state_dict.get("updated_at")),
+            ("state.update_timestamp", state_dict.get("update_timestamp")),
+            ("snapshot.updated_at", snapshot.get("updated_at")),
+        ]
+        now_dt = get_current_datetime()
+        for field_name, timestamp_value in timestamp_values:
+            if timestamp_value is None:
+                continue
+            if not isinstance(timestamp_value, str) or not timestamp_value.strip():
+                return {
+                    "code": "INVALID_STATE_DATA",
+                    "message": f"单机 '{unit_id}' 的 {field_name} 必须是非空 ISO 时间字符串。",
+                }
+            try:
+                parsed_timestamp = datetime.fromisoformat(
+                    timestamp_value.strip().replace("Z", "+00:00")
+                )
+            except ValueError:
+                return {
+                    "code": "INVALID_STATE_DATA",
+                    "message": f"单机 '{unit_id}' 的 {field_name} 时间格式无法解析。",
+                }
+            if parsed_timestamp.tzinfo is None:
+                parsed_timestamp = parsed_timestamp.replace(tzinfo=now_dt.tzinfo)
+            else:
+                parsed_timestamp = parsed_timestamp.astimezone(now_dt.tzinfo)
+            if (
+                parsed_timestamp - now_dt
+            ).total_seconds() > TELEMETRY_MAX_FUTURE_SKEW_SECONDS:
+                return {
+                    "code": "INVALID_STATE_DATA",
+                    "message": (
+                        f"单机 '{unit_id}' 的 {field_name} 明显晚于系统时间，"
+                        "请校准设备时钟并刷新遥测。"
+                    ),
+                }
         return None
 
     def _run_checks(
@@ -822,55 +1102,47 @@ class TaskValidator:
             if state_dict and isinstance(state_dict, dict):
                 turb = state_dict.get("turbidity")
                 if turb is not None:
-                    if c["id"] == "C013" and 5 < turb <= 10:
+                    thresholds = c["thresholds"]
+                    if _matches_numeric_thresholds(turb, thresholds):
                         msg = c["violation_message"].replace("{turbidity}", str(turb))
                         return Violation(
                             c["id"], c["name"], msg.strip(), c["severity"],
-                            rel_fields, check_type=check, observed_value=turb, threshold=10
-                        )
-                    elif c["id"] == "C014" and turb > 10:
-                        msg = c["violation_message"].replace("{turbidity}", str(turb))
-                        return Violation(
-                            c["id"], c["name"], msg.strip(), c["severity"],
-                            rel_fields, check_type=check, observed_value=turb, threshold=10
+                            rel_fields, check_type=check, observed_value=turb,
+                            threshold=_display_threshold(thresholds),
                         )
 
         elif check == "current_velocity":
             if state_dict and isinstance(state_dict, dict):
                 vel = state_dict.get("current_velocity")
                 if vel is not None:
-                    if c["id"] == "C015" and 0.5 < vel <= 0.8:
+                    thresholds = c["thresholds"]
+                    if _matches_numeric_thresholds(vel, thresholds):
                         msg = c["violation_message"].replace("{current_velocity}", f"{vel:.2f}")
                         return Violation(
                             c["id"], c["name"], msg.strip(), c["severity"],
-                            rel_fields, check_type=check, observed_value=vel, threshold=0.8
-                        )
-                    elif c["id"] == "C016" and 0.8 < vel <= 1.2:
-                        msg = c["violation_message"].replace("{current_velocity}", f"{vel:.2f}")
-                        return Violation(
-                            c["id"], c["name"], msg.strip(), c["severity"],
-                            rel_fields, check_type=check, observed_value=vel, threshold=1.2
-                        )
-                    elif c["id"] == "C017" and vel > 1.2:
-                        msg = c["violation_message"].replace("{current_velocity}", f"{vel:.2f}")
-                        return Violation(
-                            c["id"], c["name"], msg.strip(), c["severity"],
-                            rel_fields, check_type=check, observed_value=vel, threshold=1.2
+                            rel_fields, check_type=check, observed_value=vel,
+                            threshold=_display_threshold(thresholds),
                         )
 
         elif check == "state_confidence":
             if state_dict and isinstance(state_dict, dict):
                 confidence = state_dict.get("confidence")
-                if confidence is not None and confidence < 0.5:
+                thresholds = c["thresholds"]
+                if confidence is not None and _matches_numeric_thresholds(confidence, thresholds):
                     msg = c["violation_message"].replace("{confidence}", str(confidence))
                     return Violation(
                         c["id"], c["name"], msg.strip(), c["severity"],
-                        rel_fields, check_type=check, observed_value=confidence, threshold=0.5
+                        rel_fields, check_type=check, observed_value=confidence,
+                        threshold=_display_threshold(thresholds),
                     )
 
         elif check == "state_timestamp":
             if state_dict and isinstance(state_dict, dict):
-                timestamp_str = state_dict.get("update_timestamp") or state_dict.get("updated_at")
+                timestamp_str = (
+                    state_dict.get("update_timestamp")
+                    or state_dict.get("updated_at")
+                    or (state_snapshot.get("updated_at") if state_snapshot else None)
+                )
                 if timestamp_str is not None:
                     try:
                         if isinstance(timestamp_str, str):
@@ -889,14 +1161,21 @@ class TaskValidator:
                         now_sim = get_current_datetime()
                         dt_ts = dt.timestamp()
                         now_ts = now_sim.timestamp()
-                        if (now_ts - dt_ts) > 3600:
+                        max_age_seconds = c["thresholds"]["max_age_seconds"]
+                        if (now_ts - dt_ts) > max_age_seconds:
                             msg = c["violation_message"].replace("{update_timestamp}", str(timestamp_str))
                             return Violation(
                                 c["id"], c["name"], msg.strip(), c["severity"],
-                                rel_fields, check_type=check, observed_value=timestamp_str, threshold=3600
+                                rel_fields, check_type=check, observed_value=timestamp_str,
+                                threshold=max_age_seconds,
                             )
-                    except Exception:
-                        pass
+                    except (TypeError, ValueError, OverflowError) as exc:
+                        return Violation(
+                            c["id"], c["name"],
+                            f"环境信息更新时间格式非法，无法完成时效校验: {exc}",
+                            "hard", rel_fields, check_type=check,
+                            observed_value=timestamp_str,
+                        )
 
         elif check == "robot_overall_status":
             if state_dict and isinstance(state_dict, dict):

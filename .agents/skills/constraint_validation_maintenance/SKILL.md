@@ -14,8 +14,9 @@ Validation rules are set in [constraints.yaml](file:///root/mzy/seagent1.0-main_
 
 ## 2. Maintaining Geofences & Environment Map (`config/environment.yaml`, `src/environment_info.py`)
 Environmental features checks are queryable via [environment_info.py](file:///root/mzy/seagent1.0-main_asr/src/environment_info.py) based on coordinates:
-- **No-Go Zones**: Managed under `exclusion_zones` in [environment.yaml](file:///root/mzy/seagent1.0-main_asr/config/environment.yaml). If coordinates (`start_point`, `end_point`, `oilfield_coordinates`, or `cable_position`) fall within these bounds, a hard block is flagged.
+- **No-Go Zones**: Managed under `forbidden_areas` in [environment.yaml](file:///root/mzy/seagent1.0-main_asr/config/environment.yaml). If coordinates (`start_point`, `end_point`, `oilfield_coordinates`, or `cable_position`) fall within these bounds, a hard block is flagged.
 - **Oilfields & Seabed Types**: Under `oil_fields` in `environment.yaml`. Seabed types can be `soft` or `hard`. The validator compares these with the ROV's `forbidden_seabed` parameter in `robot_fleet.yaml`. If matched, a hard violation is raised.
+- **Oilfield Depth Semantics**: `water_depth` is the default representative depth used to prefill a task. `maximum_reference_water_depth` is the separately sourced upper bound used by hard constraint C029. Never use an average/default depth as the hard upper bound.
 - **DVL Failure Areas**: Under `dvl_bottom_lock_failure_areas` in `environment.yaml`. Triggers a soft warning.
 
 ## 3. Telemetry State Parameters & Validation (`config/state.yaml`, `src/state_info.py`, `src/validator.py`)

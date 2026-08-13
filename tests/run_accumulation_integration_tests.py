@@ -77,7 +77,7 @@ def build_pipeline_task(
     end=SAFE_PIPELINE_END,
     water_depth="300米",
     equipment_model="观察级深海机器人",
-    unit_id="OBSROV--001",
+    unit_id="OBSROV-75-001",
     payload="高清水下摄像机和前视声呐",
     include_priority=True,
 ):
@@ -207,7 +207,7 @@ def verify_complete_pipeline_extraction(step, response):
         "start_point": {"lat": 17.6, "lon": 111.0},
         "end_point": {"lat": 17.7, "lon": 111.1},
         "water_depth": 300.0,
-        "equipment_unit_id": "OBSROV--001",
+        "equipment_unit_id": "OBSROV-75-001",
         "payload": ["高清水下摄像机", "前视声呐"],
         "support_vessel": "海洋石油681",
     }
@@ -426,7 +426,7 @@ def _run_tests():
         # TS-01
         IntegrationTestCase(
             "TS-01", "语义补全完成后，设备与环境均正常，应允许",
-            "OBSROV-001", normal_params_inspection,
+            "OBSROV-75-001", normal_params_inspection,
             [
                 build_pipeline_task(include_priority=False),
                 build_pipeline_task(),
@@ -448,7 +448,7 @@ def _run_tests():
         # TS-02
         IntegrationTestCase(
             "TS-02", "语义补全完成后，环境为禁入区，应拒绝",
-            "OBSROV-001", normal_params_inspection,
+            "OBSROV-75-001", normal_params_inspection,
             [
                 build_pipeline_task(start=FORBIDDEN_PIPELINE_START, end=FORBIDDEN_PIPELINE_END),
                 f"将位置修改为：起始点{SAFE_PIPELINE_START}，结束点{SAFE_PIPELINE_END}，管缆类型为海底油气管道"
@@ -489,7 +489,7 @@ def _run_tests():
         # TS-04
         IntegrationTestCase(
             "TS-04", "语义补全完成后，浑浊度高，应允许但提示",
-            "OBSROV-001", {**normal_params_inspection, "turbidity": 15},
+            "OBSROV-75-001", {**normal_params_inspection, "turbidity": 15},
             [
                 build_pipeline_task()
             ],
@@ -613,7 +613,7 @@ def _run_tests():
         # TS-10
         IntegrationTestCase(
             "TS-10", "语义补全完成后，环境信息过期，应暂缓",
-            "OBSROV-001", {**normal_params_inspection, "update_timestamp": stale_timestamp},
+            "OBSROV-75-001", {**normal_params_inspection, "update_timestamp": stale_timestamp},
             [
                 build_pipeline_task(),
                 "补充确认：开始时间现在，结束时间五小时后，管缆类型为海底油气管道",
@@ -668,7 +668,7 @@ def _run_tests():
         # TS-12
         IntegrationTestCase(
             "TS-12", "语义补全完成后，但高障碍物密度区域，应允许但提示降低速度",
-            "OBSROV-001", {**normal_params_inspection, "obstacle_density": "high"},
+            "OBSROV-75-001", {**normal_params_inspection, "obstacle_density": "high"},
             [
                 build_pipeline_task(),
                 "管缆类型为海底油气管道"
@@ -676,7 +676,7 @@ def _run_tests():
             [
                 lambda step, res: (True, ""),
                 lambda step, res: (
-                    "C0011" in res.get("reply", "")
+                    "C011" in res.get("reply", "")
                     or "当前区域障碍物密集" in res.get("reply", "")
                     or "提高避障优先级" in res.get("reply", ""),
                     f"Expected obstacle density warning. Got reply: {res.get('reply')[:80]}..."
@@ -711,7 +711,7 @@ def _run_tests():
                 "我想做管缆巡检，优先级 7",
                 "开始时间现在",
                 "结束时间五小时后",
-                "设备型号为观察级深海机器人，具体机器人编号为OBSROV--001",
+                "设备型号为观察级深海机器人，具体机器人编号为OBSROV-75-001",
                 "管缆类型为海底油气管道",
                 f"管缆位置在{SAFE_PIPELINE_START}，起始点和结束点分别是{SAFE_PIPELINE_START}和{SAFE_PIPELINE_END}",
                 "水深300米",
@@ -857,7 +857,7 @@ def _run_tests():
         # TS-23
         IntegrationTestCase(
             "TS-23", "硬约束解除后软约束应继续提示（回归测试）",
-            "OBSROV-001", {**normal_params_inspection, "turbidity": 15},
+            "OBSROV-75-001", {**normal_params_inspection, "turbidity": 15},
             [
                 build_pipeline_task(water_depth="800米"),
                 "水深改成300米"
@@ -904,24 +904,24 @@ def _run_tests():
         # TS-26
         IntegrationTestCase(
             "TS-26", "轻型工作级设备应完成管缆巡检参数收集",
-            "LROV--001", normal_params_inspection,
+            "LROV-150-001", normal_params_inspection,
             [
                 build_pipeline_task(
                     equipment_model="轻型工作级深海机器人",
-                    unit_id="LROV--001",
+                    unit_id="LROV-150-001",
                 ),
                 "管缆类型为海底油气管道",
             ],
             [
-                verify_collected_unit("LROV--001", require_complete=False),
-                verify_collected_unit("LROV--001"),
+                verify_collected_unit("LROV-150-001", require_complete=False),
+                verify_collected_unit("LROV-150-001"),
             ],
         ),
 
         # TS-27
         IntegrationTestCase(
             "TS-27", "确认发布应返回最终JSON并生成任务与历史产物",
-            "OBSROV-001", normal_params_inspection,
+            "OBSROV-75-001", normal_params_inspection,
             [
                 build_pipeline_task(),
                 "管缆类型为海底油气管道",
@@ -940,7 +940,7 @@ def _run_tests():
         # TS-28
         IntegrationTestCase(
             "TS-28", "完整首轮消息应直接提取所有明确字段",
-            "OBSROV-001", normal_params_inspection,
+            "OBSROV-75-001", normal_params_inspection,
             [build_pipeline_task()],
             [verify_complete_pipeline_extraction],
         ),
@@ -948,11 +948,11 @@ def _run_tests():
         # TS-29
         IntegrationTestCase(
             "TS-29", "设备类型与任务不匹配（观察级ROV尝试采油树插拔应拒绝并提示需工作级ROV）",
-            "OBSROV-001", normal_params_inspection,
+            "OBSROV-75-001", normal_params_inspection,
             [
                 build_tree_task(
                     equipment_model="观察级深海机器人",
-                    unit_id="OBSROV--001"
+                    unit_id="OBSROV-75-001"
                 )
             ],
             [
@@ -994,7 +994,7 @@ def _run_tests():
         # TS-31
         IntegrationTestCase(
             "TS-31", "软警告触发后回复‘忽略警告’应放行并成功生成发布产物",
-            "OBSROV-001", {**normal_params_inspection, "turbidity": 15},
+            "OBSROV-75-001", {**normal_params_inspection, "turbidity": 15},
             [
                 build_pipeline_task(),
                 "管缆类型为海底油气管道",
@@ -1065,10 +1065,10 @@ def _run_tests():
         # TS-34
         IntegrationTestCase(
             "TS-34", "端口更新state后发送‘重新检查’应强制读取最新state快照解封",
-            "OBSROV-001", {**normal_params_inspection, "current_velocity": 1.5},
+            "OBSROV-75-001", {**normal_params_inspection, "current_velocity": 1.5},
             [
                 build_pipeline_task(),
-                lambda: set_robot_state("OBSROV-001", {**normal_params_inspection, "current_velocity": 0.3}),
+                lambda: set_robot_state("OBSROV-75-001", {**normal_params_inspection, "current_velocity": 0.3}),
                 "重新检查",
             ],
             [
@@ -1115,9 +1115,9 @@ def _run_tests():
         # TS-36
         IntegrationTestCase(
             "TS-36", "结束时间早于开始时间逻辑倒错拦截",
-            "OBSROV-001", normal_params_inspection,
+            "OBSROV-75-001", normal_params_inspection,
             [
-                "我想做管缆巡检，开始时间五小时后，结束时间现在，管缆位置在(17.60,111.00)，管缆类型海底油气管道，起始点(17.60,111.00)，结束点(17.70,111.10)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船为海洋石油681，优先级 7"
+                "我想做管缆巡检，开始时间五小时后，结束时间现在，管缆位置在(17.60,111.00)，管缆类型海底油气管道，起始点(17.60,111.00)，结束点(17.70,111.10)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV-75-001，携带工具为高清水下摄像机和前视声呐，支持船为海洋石油681，优先级 7"
             ],
             [verify_end_time_order_hard_block],
         ),
@@ -1125,9 +1125,9 @@ def _run_tests():
         # TS-37
         IntegrationTestCase(
             "TS-37", "过去时间作为开始时间触发C030软警告",
-            "OBSROV-001", normal_params_inspection,
+            "OBSROV-75-001", normal_params_inspection,
             [
-                "我想做管缆巡检，开始时间2020-01-01T08:00:00，结束时间2020-01-01T13:00:00，管缆位置在(17.60,111.00)，管缆类型海底油气管道，起始点(17.60,111.00)，结束点(17.70,111.10)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV--001，携带工具为高清水下摄像机和前视声呐，支持船为海洋石油681，优先级 7"
+                "我想做管缆巡检，开始时间2020-01-01T08:00:00，结束时间2020-01-01T13:00:00，管缆位置在(17.60,111.00)，管缆类型海底油气管道，起始点(17.60,111.00)，结束点(17.70,111.10)，水深300米，设备型号为观察级深海机器人，具体机器人编号为OBSROV-75-001，携带工具为高清水下摄像机和前视声呐，支持船为海洋石油681，优先级 7"
             ],
             [verify_past_start_time_soft_warning],
         ),
@@ -1135,7 +1135,7 @@ def _run_tests():
         # TS-38
         IntegrationTestCase(
             "TS-38", "指定不可用支持船触发C007硬阻断",
-            "OBSROV-001", normal_params_inspection,
+            "OBSROV-75-001", normal_params_inspection,
             [
                 build_pipeline_task(),
                 "支持船选择海洋石油708"
@@ -1150,7 +1150,7 @@ def _run_tests():
         # TS-39
         IntegrationTestCase(
             "TS-39", "已完成发布会话再次请求发布保持幂等性拦截",
-            "OBSROV-001", normal_params_inspection,
+            "OBSROV-75-001", normal_params_inspection,
             [
                 build_pipeline_task(),
                 "管缆类型为海底油气管道",

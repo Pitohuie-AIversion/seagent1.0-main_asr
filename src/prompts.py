@@ -183,7 +183,7 @@ def build_responder_messages(
         for idx, m in enumerate(missing_fields, start=1):
             line = f"  {idx}. {m['label']}"
             if m.get("type") == "coord":
-                line += "  ← 示例：北纬19.8度，东经113.5度；纬度范围 -90~90，经度范围 -180~180，东经为 0~180。"
+                line += "  ← 示例：北纬19.8度，东经113.5度；纬度范围 -90 至 90，经度范围 -180 至 180，东经为 0 至 180。"
             allowed = m.get("allowed_values", [])
             if allowed:
                 line += (

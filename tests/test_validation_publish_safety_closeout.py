@@ -68,6 +68,9 @@ class TestValidationPublishSafetyCloseout(unittest.TestCase):
             "unit_id": "WROV-250-001",
         }
         mock_kb.robot_matches_task.return_value = True
+        mock_kb.validate_robot_selection_from_task_state.return_value = {
+            "unit_id": "WROV-250-001",
+        }
 
         v_handler = TaskValidator(mock_kb)
         task_state = {
@@ -137,6 +140,9 @@ class TestValidationPublishSafetyCloseout(unittest.TestCase):
             "state": {"overall_status": "available"},
         }
         mock_kb.robot_matches_task.return_value = True
+        mock_kb.validate_robot_selection_from_task_state.return_value = {
+            "unit_id": "WROV-250-001",
+        }
 
         custom_validator = TaskValidator(mock_kb)
         val_res = custom_validator.validate_task(task_state, purpose="publish")
@@ -184,6 +190,9 @@ class TestValidationPublishSafetyCloseout(unittest.TestCase):
             "unit_id": "WROV-250-001",
         }
         mock_kb.robot_matches_task.return_value = True
+        mock_kb.validate_robot_selection_from_task_state.return_value = {
+            "unit_id": "WROV-250-001",
+        }
 
         v_handler = TaskValidator(mock_kb)
         task_state = {
@@ -277,6 +286,9 @@ class TestValidationPublishSafetyCloseout(unittest.TestCase):
     def test_08_validator_exception_fail_closed(self):
         mock_kb = MagicMock(spec=KnowledgeBase)
         mock_kb.get_unit_state_snapshot.side_effect = RuntimeError("Telemetry DB connection dropped")
+        mock_kb.validate_robot_selection_from_task_state.return_value = {
+            "unit_id": "WROV-250-001",
+        }
         v_handler = TaskValidator(mock_kb)
 
         task_state = {

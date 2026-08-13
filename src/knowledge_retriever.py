@@ -6,11 +6,14 @@ knowledge_retriever.py — 知识库加载与按需检索
 
 import yaml
 import math
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import re
 from typing import Any
+from zoneinfo import ZoneInfo
 from .environment_info import EnvironmentInfo
+from .simulated_time import get_current_datetime
 from .state_info import RobotStateInfo
 
 CONFIG_DIR = Path(__file__).parent.parent / "config"
@@ -23,6 +26,85 @@ def _load(filename: str) -> dict | list:
 
 def _norm(value: object) -> str:
     return str(value or "").lower().replace(" ", "")
+
+
+def _payload_match_key(value: object) -> str:
+    text = str(value or "").strip().lower().replace(" ", "")
+    for suffix in ("（可选）", "(可选)"):
+        if text.endswith(suffix):
+            return text[: -len(suffix)]
+    return text
+
+
+def robot_selection_result_contract_error(
+    task_state: dict,
+    selection: object,
+    *,
+    require_unit: bool = False,
+) -> str | None:
+    """Return the missing canonical key for an invalid static-validator result.
+
+    Callers at publish/restore boundaries must not treat ``None`` or an empty
+    mapping as successful validation when an explicit selector was supplied.
+    The deepest explicit selector determines the minimum canonical result that
+    the registry validator must return.
+    """
+    if not isinstance(task_state, dict):
+        raise RobotSelectionDataError(
+            "task_state must be a dictionary.",
+            error_code="INVALID_TASK_STATE",
+            actual_value=task_state,
+        )
+
+    selector_contract = (
+        ("equipment_class", "robot_class", "INVALID_ROBOT_CLASS_SELECTOR"),
+        ("equipment_family", "family_id", "INVALID_FAMILY_SELECTOR"),
+        ("equipment_type", "variant_id", "INVALID_VARIANT_SELECTOR"),
+        ("equipment_unit_id", "unit_id", "INVALID_UNIT_SELECTOR"),
+    )
+    explicit_selectors: dict[str, str] = {}
+    for selector_key, canonical_key, error_code in selector_contract:
+        if selector_key not in task_state or task_state[selector_key] is None:
+            continue
+        selector_value = task_state[selector_key]
+        if not isinstance(selector_value, str) or not selector_value.strip():
+            raise RobotSelectionDataError(
+                f"{selector_key} must be a non-empty string when explicitly provided.",
+                error_code=error_code,
+                expected_field=selector_key,
+                actual_value=selector_value,
+            )
+        explicit_selectors[selector_key] = canonical_key
+
+    if require_unit and "equipment_unit_id" not in explicit_selectors:
+        raise RobotSelectionDataError(
+            "A concrete equipment_unit_id is required.",
+            error_code="MISSING_UNIT_ID",
+            expected_field="equipment_unit_id",
+            actual_value=task_state.get("equipment_unit_id"),
+        )
+
+    expected_key = "unit_id" if require_unit else None
+    if expected_key is None:
+        for selector_key, canonical_key, _error_code in reversed(selector_contract):
+            if selector_key in explicit_selectors:
+                expected_key = explicit_selectors[selector_key]
+                break
+    if expected_key is None:
+        return None
+    if not isinstance(selection, dict):
+        return expected_key
+    canonical_value = selection.get(expected_key)
+    if not isinstance(canonical_value, str) or not canonical_value.strip():
+        return expected_key
+    return None
+
+
+@dataclass(frozen=True)
+class RobotVariantFeasibility:
+    eligible: bool
+    reasons: tuple[str, ...] = ()
+    requires_installation: tuple[str, ...] = ()
 
 
 class RobotSelectionDataError(ValueError):
@@ -388,15 +470,370 @@ class KnowledgeBase:
             "variant_id": variant_id,
         }
 
+    @staticmethod
+    def _validated_positive_number(
+        value: Any,
+        *,
+        error_code: str,
+        field_name: str,
+    ) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise RobotSelectionDataError(
+                f"{field_name} must be a positive finite number.",
+                error_code=error_code,
+                expected_field=field_name,
+                actual_value=value,
+            )
+        try:
+            normalized = float(value)
+        except (TypeError, ValueError) as exc:
+            raise RobotSelectionDataError(
+                f"{field_name} must be a positive finite number.",
+                error_code=error_code,
+                expected_field=field_name,
+                actual_value=value,
+            ) from exc
+        if not math.isfinite(normalized) or normalized <= 0:
+            raise RobotSelectionDataError(
+                f"{field_name} must be a positive finite number.",
+                error_code=error_code,
+                expected_field=field_name,
+                actual_value=value,
+            )
+        return normalized
+
+    @classmethod
+    def evaluate_static_robot_variant(
+        cls,
+        variant_id: str,
+        variant_cfg: dict,
+        task_state: dict | None,
+    ) -> RobotVariantFeasibility:
+        """Evaluate only task facts that have an authoritative Variant mapping."""
+        state = task_state if isinstance(task_state, dict) else {}
+        hard_params = variant_cfg.get("hard_params")
+        if not isinstance(hard_params, dict):
+            raise RobotSelectionDataError(
+                f"Variant '{variant_id}' is missing hard_params dictionary.",
+                error_code="MISSING_HARD_PARAMS",
+                variant_id=variant_id,
+                expected_field="hard_params",
+                actual_value=hard_params,
+            )
+
+        reasons: list[str] = []
+        water_depth = state.get("water_depth")
+        if water_depth is not None:
+            required_depth = cls._validated_positive_number(
+                water_depth,
+                error_code="INVALID_WATER_DEPTH",
+                field_name="water_depth",
+            )
+            max_depth = cls._validated_positive_number(
+                hard_params.get("max_depth_m"),
+                error_code="INVALID_ROV_MAX_DEPTH",
+                field_name=f"model_variants.{variant_id}.hard_params.max_depth_m",
+            )
+            if required_depth > max_depth:
+                reasons.append(
+                    f"water_depth {required_depth:g} exceeds max_depth_m {max_depth:g}"
+                )
+
+        required_payloads = state.get("payload")
+        if required_payloads is not None:
+            if not isinstance(required_payloads, (list, tuple)) or any(
+                not isinstance(item, str) or not item.strip()
+                for item in required_payloads
+            ):
+                raise RobotSelectionDataError(
+                    "payload must be a list of non-empty canonical names.",
+                    error_code="INVALID_PAYLOAD_REQUIREMENTS",
+                    variant_id=variant_id,
+                    expected_field="payload",
+                    actual_value=required_payloads,
+                )
+
+            onboard_raw = hard_params.get("onboard_payloads")
+            supported_raw = hard_params.get("supported_payloads")
+            if not isinstance(onboard_raw, list) or not isinstance(supported_raw, list):
+                raise RobotSelectionDataError(
+                    f"Variant '{variant_id}' payload declarations must be lists.",
+                    error_code="INVALID_VARIANT_PAYLOAD_CONFIG",
+                    variant_id=variant_id,
+                    expected_field="onboard_payloads/supported_payloads",
+                    actual_value={
+                        "onboard_payloads": onboard_raw,
+                        "supported_payloads": supported_raw,
+                    },
+                )
+
+            onboard = {_payload_match_key(item) for item in onboard_raw}
+            supported = {_payload_match_key(item) for item in supported_raw}
+            available = onboard | supported
+            missing = [
+                item
+                for item in required_payloads
+                if _payload_match_key(item) not in available
+            ]
+            if missing:
+                reasons.append(f"unsupported payloads: {missing}")
+            installation = tuple(
+                item
+                for item in required_payloads
+                if _payload_match_key(item) in supported
+                and _payload_match_key(item) not in onboard
+            )
+        else:
+            installation = ()
+
+        return RobotVariantFeasibility(
+            eligible=not reasons,
+            reasons=tuple(reasons),
+            requires_installation=installation,
+        )
+
+    @staticmethod
+    def _task_starts_within_runtime_window(
+        task_state: dict | None,
+        *,
+        time_window_minutes: int = 10,
+    ) -> bool:
+        if not isinstance(task_state, dict):
+            return False
+        raw_start = task_state.get("start_time")
+        if not isinstance(raw_start, str) or not raw_start.strip():
+            return False
+        try:
+            clean = raw_start.strip().replace("：", ":")
+            if clean.endswith("Z"):
+                clean = clean[:-1] + "+00:00"
+            start_time = datetime.fromisoformat(clean.replace("T", " "))
+        except (TypeError, ValueError):
+            return False
+        business_tz = ZoneInfo("Asia/Shanghai")
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=business_tz)
+        else:
+            start_time = start_time.astimezone(business_tz)
+        now = get_current_datetime().astimezone(business_tz).replace(microsecond=0)
+        delta_seconds = (start_time - now).total_seconds()
+        return 0 <= delta_seconds <= time_window_minutes * 60
+
+    def validate_robot_selection_from_task_state(
+        self,
+        task_state: dict,
+        *,
+        require_unit: bool = False,
+    ) -> dict | None:
+        """Validate the deepest explicit robot selector and every parent edge.
+
+        Missing keys and ``None`` mean that collection has not reached that
+        level yet.  Any other explicit value must be a non-empty string.  A
+        deeper valid selector may derive omitted parents from the registry, but
+        it may never overwrite or ignore an explicitly supplied parent.
+        """
+        if not isinstance(task_state, dict):
+            raise RobotSelectionDataError(
+                "task_state must be a dictionary.",
+                error_code="INVALID_TASK_STATE",
+                actual_value=task_state,
+            )
+
+        selector_specs = (
+            ("equipment_class", "INVALID_ROBOT_CLASS_SELECTOR"),
+            ("equipment_family", "INVALID_FAMILY_SELECTOR"),
+            ("equipment_type", "INVALID_VARIANT_SELECTOR"),
+            ("equipment_unit_id", "INVALID_UNIT_SELECTOR"),
+        )
+        selectors: dict[str, str] = {}
+        for field_name, error_code in selector_specs:
+            if field_name not in task_state or task_state[field_name] is None:
+                continue
+            raw_selector = task_state[field_name]
+            if not isinstance(raw_selector, str) or not raw_selector.strip():
+                raise RobotSelectionDataError(
+                    f"{field_name} must be a non-empty string when explicitly provided.",
+                    error_code=error_code,
+                    expected_field=field_name,
+                    actual_value=raw_selector,
+                )
+            selectors[field_name] = raw_selector.strip()
+
+        unit_selector = selectors.get("equipment_unit_id")
+        if require_unit and unit_selector is None:
+            raise RobotSelectionDataError(
+                "A concrete equipment_unit_id is required.",
+                error_code="MISSING_UNIT_ID",
+                expected_field="equipment_unit_id",
+                actual_value=task_state.get("equipment_unit_id"),
+            )
+        if not selectors:
+            return None
+
+        task_type_key = task_state.get("task_type_key")
+        explicit_class = selectors.get("equipment_class")
+        explicit_family = selectors.get("equipment_family")
+        explicit_variant = selectors.get("equipment_type")
+
+        resolved_explicit_variant = None
+        if explicit_variant is not None:
+            resolved_explicit_variant = self._resolve_robot_variant_exact(
+                explicit_variant,
+            )
+            if not resolved_explicit_variant:
+                raise RobotSelectionDataError(
+                    f"Variant '{explicit_variant}' does not exist.",
+                    error_code="VARIANT_NOT_FOUND",
+                    expected_field="equipment_type",
+                    actual_value=explicit_variant,
+                )
+
+        if unit_selector is not None:
+            resolved_unit = self._resolve_robot_unit_exact(
+                unit_selector,
+                task_type_key,
+            )
+            if not resolved_unit:
+                raise RobotSelectionDataError(
+                    f"Fleet unit '{unit_selector}' does not exist or is not allowed for this task.",
+                    error_code="UNIT_NOT_FOUND",
+                    expected_field="equipment_unit_id",
+                    actual_value=unit_selector,
+                )
+
+            robot = resolved_unit["robot"]
+            family_id = robot.get("family_id")
+            family_cfg = self.robot_fleet.get("robot_families", {}).get(
+                family_id,
+                {},
+            )
+            return self.validate_static_robot_selection(
+                explicit_class if explicit_class is not None else robot.get("robot_class"),
+                explicit_family
+                if explicit_family is not None
+                else family_cfg.get("full_name") or family_id,
+                explicit_variant
+                if explicit_variant is not None
+                else robot.get("full_name") or robot.get("variant_id"),
+                resolved_unit["unit_id"],
+                task_type_key,
+            )
+
+        if explicit_variant is not None:
+            robot = resolved_explicit_variant
+            family_id = robot.get("family_id")
+            family_cfg = self.robot_fleet.get("robot_families", {}).get(
+                family_id,
+                {},
+            )
+            selected_class = (
+                explicit_class
+                if explicit_class is not None
+                else robot.get("robot_class")
+            )
+            selected_family = (
+                explicit_family
+                if explicit_family is not None
+                else family_cfg.get("full_name") or family_id
+            )
+            allowed_variants = self.list_robot_variants(
+                selected_class,
+                selected_family,
+                task_type_key,
+            )
+            if robot.get("variant_id") not in {
+                item.get("variant_id") for item in allowed_variants
+            }:
+                raise RobotSelectionDataError(
+                    f"Variant '{robot.get('variant_id')}' does not belong to family '{selected_family}'.",
+                    error_code="VARIANT_FAMILY_MISMATCH",
+                    robot_class=self._resolve_class_key(selected_class),
+                    family_id=self._resolve_family_key(selected_family),
+                    variant_id=robot.get("variant_id"),
+                )
+            return {
+                "robot_class": robot.get("robot_class"),
+                "family_id": family_id,
+                "family_name": family_cfg.get("full_name", family_id),
+                "variant_id": robot.get("variant_id"),
+                "equipment_type": robot.get("full_name"),
+            }
+
+        if explicit_family is not None:
+            family_id = self._resolve_family_key(explicit_family)
+            if not family_id:
+                raise RobotSelectionDataError(
+                    f"Robot family '{explicit_family}' not found.",
+                    error_code="FAMILY_NOT_FOUND",
+                    expected_field="equipment_family",
+                    actual_value=explicit_family,
+                )
+            family_cfg = self.robot_fleet.get("robot_families", {}).get(
+                family_id,
+                {},
+            )
+            canonical_class = family_cfg.get("robot_class")
+            selected_class = (
+                explicit_class if explicit_class is not None else canonical_class
+            )
+            resolved_class = self._resolve_class_key(selected_class)
+            if resolved_class != canonical_class:
+                raise RobotSelectionDataError(
+                    f"Family '{family_id}' belongs to class '{canonical_class}', not '{selected_class}'.",
+                    error_code="FAMILY_CLASS_MISMATCH",
+                    robot_class=resolved_class,
+                    family_id=family_id,
+                )
+            allowed_families = self.list_robot_families(
+                selected_class,
+                task_type_key,
+            )
+            if family_id not in {item.get("family_id") for item in allowed_families}:
+                raise RobotSelectionDataError(
+                    f"Family '{family_id}' is not allowed for task '{task_type_key}'.",
+                    error_code="FAMILY_CAPABILITY_MISMATCH",
+                    robot_class=canonical_class,
+                    family_id=family_id,
+                )
+            return {
+                "robot_class": canonical_class,
+                "family_id": family_id,
+                "family_name": family_cfg.get("full_name", family_id),
+            }
+
+        resolved_class = self._resolve_class_key(explicit_class)
+        if not resolved_class:
+            raise RobotSelectionDataError(
+                f"Robot class '{explicit_class}' not found.",
+                error_code="ROBOT_CLASS_NOT_FOUND",
+                expected_field="equipment_class",
+                actual_value=explicit_class,
+            )
+        allowed_classes = self.list_robot_classes(task_type_key)
+        if resolved_class not in {item.get("class_id") for item in allowed_classes}:
+            raise RobotSelectionDataError(
+                f"Robot class '{resolved_class}' is not allowed for task '{task_type_key}'.",
+                error_code="CLASS_NOT_ALLOWED_FOR_TASK",
+                robot_class=resolved_class,
+            )
+        class_cfg = self.robot_fleet.get("robot_classes", {}).get(
+            resolved_class,
+            {},
+        )
+        return {
+            "robot_class": resolved_class,
+            "robot_class_name": class_cfg.get("full_name", resolved_class),
+        }
+
     def get_feasible_robot_selection_domain(
         self,
         task_type_key: str | None,
         task_state: dict | None = None,
     ) -> dict:
         """
-        [Issue #40] 计算当前任务的唯一静态可行机器人子图 (Feasible Robot Selection Domain)。
+        计算当前任务的可行机器人子图 (Feasible Robot Selection Domain)。
         四级结构：class -> family -> model_variant -> fleet_unit
-        所有 class/family/variant/unit 均受 required_capabilities 前置过滤。
+        先按 class/capability 与 Variant 硬参数过滤；即时任务再按 Unit 运行状态过滤。
         """
         self._validate_model_variants_integrity()
         self._validate_fleet_units_integrity()
@@ -413,6 +850,9 @@ class KnowledgeBase:
         else:
             allowed_classes = template.get("allowed_robot_classes", [])
             required_caps = set(template.get("required_capabilities", []))
+        apply_runtime_filter = self._task_starts_within_runtime_window(task_state)
+        rejected_variants: list[dict] = []
+        rejected_units: list[dict] = []
 
         # 1. 筛选符合 capability 与 allowed_classes 的 feasible families
         feasible_families: dict[str, dict] = {}
@@ -472,17 +912,45 @@ class KnowledgeBase:
                     if variant_cfg.get("family_id") != family_id:
                         continue
 
+                    feasibility = self.evaluate_static_robot_variant(
+                        variant_id,
+                        variant_cfg,
+                        task_state,
+                    )
+                    if not feasibility.eligible:
+                        rejected_variants.append({
+                            "variant_id": variant_id,
+                            "reasons": list(feasibility.reasons),
+                        })
+                        continue
+
                     units_node: list[dict] = []
                     for unit_cfg in fleet_units:
-                        if unit_cfg.get("variant_id") == variant_id:
-                            units_node.append({
-                                "unit_id": unit_cfg.get("unit_id"),
-                                "variant_id": unit_cfg.get("variant_id"),
-                                "serial_no": unit_cfg.get("serial_no"),
-                                "display_name": unit_cfg.get("display_name"),
-                                "status_ref": unit_cfg.get("status_ref"),
-                                "aliases": list(unit_cfg.get("aliases", []) or []),
-                            })
+                        if unit_cfg.get("variant_id") != variant_id:
+                            continue
+                        unit_id = unit_cfg.get("unit_id")
+                        if apply_runtime_filter:
+                            runtime = self.state_info.check_runtime_availability(
+                                str(unit_id or "")
+                            )
+                            if not runtime.get("available"):
+                                rejected_units.append({
+                                    "unit_id": unit_id,
+                                    "reason_code": runtime.get("reason_code"),
+                                    "message": runtime.get("message"),
+                                })
+                                continue
+                        units_node.append({
+                            "unit_id": unit_id,
+                            "variant_id": unit_cfg.get("variant_id"),
+                            "serial_no": unit_cfg.get("serial_no"),
+                            "display_name": unit_cfg.get("display_name"),
+                            "status_ref": unit_cfg.get("status_ref"),
+                            "aliases": list(unit_cfg.get("aliases", []) or []),
+                        })
+
+                    if apply_runtime_filter and not units_node:
+                        continue
 
                     variants_node.append({
                         "variant_id": variant_id,
@@ -491,9 +959,12 @@ class KnowledgeBase:
                         "robot_class": class_id,
                         "aliases": list(variant_cfg.get("aliases", []) or []),
                         "hard_params": dict(variant_cfg.get("hard_params", {}) or {}),
+                        "requires_installation": list(feasibility.requires_installation),
                         "units": units_node,
                     })
 
+                if not variants_node:
+                    continue
                 families_node.append({
                     "family_id": family_id,
                     "full_name": family_cfg.get("full_name", family_id),
@@ -504,6 +975,8 @@ class KnowledgeBase:
                     "variants": variants_node,
                 })
 
+            if not families_node:
+                continue
             classes_node.append({
                 "class_id": class_id,
                 "robot_class": class_id,
@@ -514,6 +987,9 @@ class KnowledgeBase:
         return {
             "task_type_key": task_type_key,
             "required_capabilities": sorted(list(required_caps)),
+            "runtime_filter_applied": apply_runtime_filter,
+            "rejected_variants": rejected_variants,
+            "rejected_units": rejected_units,
             "classes": classes_node,
         }
 
@@ -713,6 +1189,11 @@ class KnowledgeBase:
     ) -> list[dict]:
         self._validate_task_type_key(task_type_key)
         self._validate_fleet_units_integrity()
+        # Reuse the authoritative Class -> Family -> task capability gate before
+        # resolving a Variant or Unit.  Resolving these selectors independently
+        # would allow a valid Variant -> Family pair to bypass its parent Class
+        # or the task template's admissible robot domain.
+        self.list_robot_variants(robot_class, family, task_type_key)
         class_id = self._resolve_class_key(robot_class)
         family_id = self._resolve_family_key(family)
 
@@ -771,7 +1252,6 @@ class KnowledgeBase:
     ) -> dict:
         self._validate_task_type_key(task_type_key)
         self._validate_fleet_units_integrity()
-        units = self.list_robot_units(robot_class, family, specification, task_type_key)
         class_id = self._resolve_class_key(robot_class)
         family_id = self._resolve_family_key(family)
 
@@ -779,13 +1259,27 @@ class KnowledgeBase:
         if isinstance(specification, dict):
             spec_variant_id = specification.get("variant_id")
         elif isinstance(specification, str):
-            rov = self.get_rov_for_task(specification, task_type_key, family_id)
-            if not rov:
-                rov = self.get_rov(specification)
-            if rov:
-                spec_variant_id = rov.get("variant_id")
-            else:
-                spec_variant_id = specification
+            rov = self._resolve_robot_variant_exact(specification)
+            spec_variant_id = rov.get("variant_id") if rov else None
+
+        # Static gates accept only a canonical Variant id/full name/declared
+        # alias.  Candidate-list APIs may remain fuzzy for interactive input,
+        # but substring matching must never authorize a publish/restore tuple.
+        if not spec_variant_id:
+            raise RobotSelectionDataError(
+                f"Variant '{specification}' does not exist.",
+                error_code="VARIANT_NOT_FOUND",
+                robot_class=class_id,
+                family_id=family_id,
+                actual_value=specification,
+            )
+        canonical_specification = {"variant_id": spec_variant_id}
+        units = self.list_robot_units(
+            robot_class,
+            family,
+            canonical_specification,
+            task_type_key,
+        )
 
         matching_units = [u for u in self.robot_fleet.get("fleet_units", []) if u.get("unit_id") == unit_id]
         if len(matching_units) > 1:
@@ -1288,6 +1782,83 @@ class KnowledgeBase:
         ]
         return partial[0] if len(partial) == 1 else None
 
+    def _resolve_robot_variant_exact(self, selector: str) -> dict | None:
+        """Resolve a static Variant selector without interactive substring matching."""
+        needle = _norm(selector)
+        if not needle:
+            return None
+        matches = [
+            robot
+            for robot in self.get_all_rovs()
+            if any(
+                needle == _norm(target)
+                for target in robot.get("_lookup_targets", [])
+                if target
+            )
+        ]
+        if len(matches) > 1:
+            raise RobotSelectionDataError(
+                f"Variant selector '{selector}' is ambiguous.",
+                error_code="AMBIGUOUS_VARIANT_SELECTOR",
+                expected_field="equipment_type",
+                actual_value=selector,
+            )
+        return matches[0] if matches else None
+
+    def _resolve_robot_unit_exact(
+        self,
+        unit_selector: str,
+        task_type_key: str | None = None,
+    ) -> dict | None:
+        """Resolve a static Unit selector by canonical ID/full name/declared alias only."""
+        needle = _norm(unit_selector)
+        if not needle:
+            return None
+
+        variants = {robot["variant_id"]: robot for robot in self.get_all_rovs()}
+        units = self.robot_fleet.get("fleet_units", [])
+
+        # A canonical unit_id is authoritative even if a poorly maintained
+        # alias on another Unit happens to duplicate it.
+        canonical_matches = [
+            unit for unit in units if _norm(unit.get("unit_id")) == needle
+        ]
+        if len(canonical_matches) > 1:
+            raise RobotSelectionDataError(
+                f"Unit selector '{unit_selector}' is ambiguous.",
+                error_code="AMBIGUOUS_UNIT_SELECTOR",
+                expected_field="equipment_unit_id",
+                actual_value=unit_selector,
+            )
+        candidate_units = canonical_matches
+        if not candidate_units:
+            candidate_units = [
+                unit
+                for unit in units
+                if any(
+                    needle == _norm(target)
+                    for target in (
+                        unit.get("display_name", ""),
+                        *unit.get("aliases", []),
+                    )
+                    if target
+                )
+            ]
+
+        matches = []
+        for unit in candidate_units:
+            robot = variants.get(unit.get("variant_id"))
+            if robot and self.robot_matches_task(robot, task_type_key):
+                matches.append({**unit, "robot": robot})
+        if len(matches) > 1:
+            raise RobotSelectionDataError(
+                f"Unit selector '{unit_selector}' is ambiguous.",
+                error_code="AMBIGUOUS_UNIT_SELECTOR",
+                expected_field="equipment_unit_id",
+                actual_value=unit_selector,
+            )
+        return matches[0] if matches else None
+
     def resolve_robot_unit(
         self,
         unit_selector: str,
@@ -1315,6 +1886,8 @@ class KnowledgeBase:
         if len(exact_unit_id_matches) == 1:
             u = exact_unit_id_matches[0]
             unit_variant = variants.get(u.get("variant_id"))
+            if variant and u.get("variant_id") != variant.get("variant_id"):
+                return None
             if unit_variant and self.robot_matches_task(unit_variant, task_type_key):
                 return {**u, "robot": unit_variant}
             return None
@@ -1648,6 +2221,38 @@ class KnowledgeBase:
 
         return query_type, user_message
 
+    @staticmethod
+    def _match_payload_catalog(
+        payload_catalog: dict,
+        user_message: str,
+    ) -> list[dict]:
+        """Match canonical payload names before considering their aliases.
+
+        A broad alias such as ``视觉系统`` must never override a more specific
+        catalog name such as ``三维视觉系统`` that appears in the same query.
+        Multiple explicit canonical names are preserved for comparison queries.
+        """
+        message_key = _norm(user_message)
+        canonical_matches = []
+        alias_matches = []
+
+        for payload_info in payload_catalog.values():
+            if not isinstance(payload_info, dict):
+                continue
+            name_key = _norm(payload_info.get("name"))
+            if name_key and name_key in message_key:
+                canonical_matches.append(payload_info)
+                continue
+
+            aliases = payload_info.get("aliases", [])
+            if any(
+                alias_key and alias_key in message_key
+                for alias_key in (_norm(alias) for alias in aliases)
+            ):
+                alias_matches.append(payload_info)
+
+        return canonical_matches or alias_matches
+
     def execute_typed_query(
         self,
         query_type: str,
@@ -1698,14 +2303,10 @@ class KnowledgeBase:
             payload_catalog = self.assets.get("payload_catalog", {})
 
             # 匹配特定 payload 工具的独立功能描述
-            matched_payloads = []
-            msg_norm = user_message.lower()
-            if payload_catalog:
-                for p_key, p_info in payload_catalog.items():
-                    p_name = p_info.get("name", "")
-                    p_aliases = p_info.get("aliases", [])
-                    if (p_name and p_name.lower() in msg_norm) or any(alias.lower() in msg_norm for alias in p_aliases if alias):
-                        matched_payloads.append(p_info)
+            matched_payloads = self._match_payload_catalog(
+                payload_catalog,
+                user_message,
+            )
 
             current_suggestions = (
                 task_payloads.get(task_type_key, {}) if task_type_key else {}

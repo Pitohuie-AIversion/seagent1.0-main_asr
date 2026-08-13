@@ -160,6 +160,36 @@ class TestFrontendWelcomeMessage(unittest.TestCase):
         self.assertIn("messageContainer.innerHTML = '';", reset_body)
         self.assertIn("addWelcomeMessage();", reset_body)
 
+    def test_reset_cancels_all_active_request_types(self):
+        reset_match = re.search(r'async function reset\(\)\s*\{([\s\S]*?)\n\s*\}\n\s*sendBtn\.addEventListener', self.js_content)
+        self.assertIsNotNone(reset_match, "Could not find reset function definition!")
+        reset_body = reset_match.group(1)
+
+        self.assertIn("cancelActiveRequest();", reset_body)
+        self.assertIn("await cancelVoiceActivity();", reset_body)
+        self.assertIn("applyInteractionState(RESET_ACTIONS, false);", reset_body)
+
+    def test_asr_upload_is_abortable_and_generation_guarded(self):
+        self.assertIn("let asrAbortController = null;", self.js_content)
+        self.assertRegex(
+            self.js_content,
+            r"fetch\(API_BASE \+ '/api/asr',[\s\S]*?signal:\s*signal",
+        )
+        self.assertIn("if (asrGeneration !== sessionGeneration) return;", self.js_content)
+
+    def test_voice_cancellation_releases_browser_resources(self):
+        cleanup_match = re.search(
+            r'async function cancelVoiceActivity\(\)\s*\{([\s\S]*?)\n\s*async function startVoiceRecording',
+            self.js_content,
+        )
+        self.assertIsNotNone(cleanup_match, "Could not find cancelVoiceActivity function!")
+        cleanup_body = cleanup_match.group(1)
+
+        self.assertIn("asrAbortController.abort()", cleanup_body)
+        self.assertIn("releaseVoiceRecordingResources()", cleanup_body)
+        self.assertIn("recordedChunks = [];", cleanup_body)
+        self.assertIn("audioWaveformWrapper", cleanup_body)
+
     def test_language_switch_uses_i18n_welcome_message(self):
         """Verify updateLanguage directly updates welcome message using I18N[currentLang].welcomeMsg."""
         self.assertIn('document.querySelector(\'.message[data-message-kind="welcome"]\')', self.js_content)

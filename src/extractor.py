@@ -5,6 +5,7 @@ extractor.py — 参数提取器
 """
 
 import json
+import math
 from datetime import datetime, timedelta
 
 from .llm_client import LLMClient
@@ -378,7 +379,12 @@ class ParameterExtractor:
             confidence = float(raw_confidence)
         except (TypeError, ValueError):
             return candidates, ["持续时长协议非法，未写入结束时间。"]
-        if duration_seconds <= 0 or not 0.0 <= confidence <= 1.0:
+        if (
+            not math.isfinite(duration_seconds)
+            or not math.isfinite(confidence)
+            or duration_seconds <= 0
+            or not 0.0 <= confidence <= 1.0
+        ):
             return candidates, ["持续时长必须为正数且置信度合法，未写入结束时间。"]
 
         start_value = current_state.get("start_time")

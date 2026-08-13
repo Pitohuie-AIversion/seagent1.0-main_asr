@@ -16,6 +16,10 @@ from pathlib import Path
 from typing import Any
 
 
+class ASRUnavailableError(RuntimeError):
+    """Raised when real ASR initialization failed and inference is unavailable."""
+
+
 @dataclass(frozen=True)
 class ASRConfig:
     model_path: Path
@@ -33,37 +37,51 @@ class ASRService:
         self.dtype = None
         self._lock = threading.Lock()
         self.is_degraded = False
+        self._mock_mode = False
+        self._load_error: Exception | None = None
+
+    def _enable_explicit_mock(self) -> None:
+        self.device = "mock"
+        self.model = "mock_model"
+        self.is_degraded = True
+        self._mock_mode = True
+        self._load_error = None
+
+    def _mark_unavailable(self, exc: Exception) -> None:
+        self.device = "unavailable"
+        self.model = None
+        self.is_degraded = True
+        self._mock_mode = False
+        self._load_error = exc
 
     def load(self) -> None:
         if self.model is not None:
             return
 
-        if os.environ.get("OFFLINE_MOCK") == "1":
-            self.device = "mock"
-            self.model = "mock_model"
-            self.is_degraded = True
+        if (
+            os.environ.get("OFFLINE_MOCK") == "1"
+            or os.environ.get("SEAGENT_OFFLINE_MOCK") == "1"
+        ):
+            self._enable_explicit_mock()
             return
 
         model_path = self.config.model_path.resolve()
         if str(self.config.model_path).lower() == "mock" or self.config.model_path.name.lower() == "mock":
-            self.device = "mock"
-            self.model = "mock_model"
-            self.is_degraded = True
+            self._enable_explicit_mock()
             return
 
         if not model_path.exists():
-            raise FileNotFoundError(f"ASR model path does not exist: {model_path}")
+            self._mark_unavailable(
+                FileNotFoundError(f"ASR model path does not exist: {model_path}")
+            )
+            return
 
-        import torch
         try:
+            import torch
             from qwen_asr import Qwen3ASRModel
-        except ImportError as exc:
-            raise RuntimeError(
-                "qwen-asr is required as the local Qwen3-ASR runtime. "
-                "Install it in the server virtualenv, for example: "
-                "/home/ubuntu/SEAgent1.0/.seagentone/bin/pip install qwen-asr. "
-                "The model weights are still loaded from the local model_path."
-            ) from exc
+        except (ImportError, RuntimeError) as exc:
+            self._mark_unavailable(exc)
+            return
 
         if self.config.device == "auto":
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -85,26 +103,23 @@ class ASRService:
         )
 
         try:
-            self.model = Qwen3ASRModel.from_pretrained(
-                str(model_path),
-                local_files_only=True,
-                **model_kwargs,
-            )
-        except TypeError:
-            # Some qwen-asr versions do not expose local_files_only at this wrapper level.
-            self.model = Qwen3ASRModel.from_pretrained(str(model_path), **model_kwargs)
+            try:
+                self.model = Qwen3ASRModel.from_pretrained(
+                    str(model_path),
+                    local_files_only=True,
+                    **model_kwargs,
+                )
+            except TypeError:
+                # Some qwen-asr versions do not expose local_files_only at this wrapper level.
+                self.model = Qwen3ASRModel.from_pretrained(str(model_path), **model_kwargs)
         except Exception as exc:
-            # 降级到 mock 模式，避免因为 ASR 模型显存不足导致整个服务启动失败。
-            self.device = "mock"
-            self.model = "mock_model"
-            self.is_degraded = True
-            print(f"⚠️ ASR model load failed ({exc}), falling back to mock mode")
+            # Keep the dialogue service alive, but never fabricate a transcript
+            # for real user audio after an unexpected model failure.
+            self._mark_unavailable(exc)
+            print(f"⚠️ ASR model load failed ({exc}); ASR requests will fail closed")
 
     def transcribe_file(self, audio_path: str | Path, language: str | None = None) -> dict[str, Any]:
-        if self.model is None:
-            raise RuntimeError("ASR model is not loaded")
-
-        if os.environ.get("OFFLINE_MOCK") == "1":
+        if self._mock_mode:
             transcript = "流花油田，水深300米，使用sealien_work_class进行采油树控制面板插入。"
             return {
                 "text": transcript,
@@ -113,6 +128,10 @@ class ASRService:
                 "elapsed_ms": 120,
                 "segments": [{"text": transcript}],
             }
+
+        if self.model is None:
+            detail = f": {self._load_error}" if self._load_error else ""
+            raise ASRUnavailableError(f"ASR service is unavailable{detail}")
 
         audio_path = Path(audio_path).resolve()
         if not audio_path.exists():
