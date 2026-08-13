@@ -166,6 +166,10 @@ def validate_task_intent_v2(intent: dict, task_schemas: dict | None = None) -> b
         return False
     if task_info.get("type") != top_task_type:
         return False
+    # TaskIntent 语义补全：v2 校验补上 details 语义出口检查；
+    # 为什么：防止 pipeline_burial 只通过顶层类型校验，却携带缺字段或错误形状的 task.details。
+    if not _validate_task_details(top_task_type, task_info.get("details")):
+        return False
     eq_info = intent.get("equipment")
     if not isinstance(eq_info, dict) or "robot_type" not in eq_info or "payload" not in eq_info or "support_vessel" not in eq_info:
         return False
@@ -226,6 +230,18 @@ def _task_intent_equipment_matches_task(
         )
     except Exception:
         return False
+
+
+# TaskIntent 语义补全：给 v2 TaskIntent 加薄 details 合同校验；只检查当前 schema 已定义的出口字段，
+# 不引入 burial_depth 等尚未进入收集契约的埋设专属字段，避免发布系统永远等不到数据。
+def _validate_task_details(task_type: str, details: Any) -> bool:
+    if not isinstance(details, dict):
+        return False
+    if task_type in ("pipeline_inspection", "pipeline_burial"):
+        return all(key in details for key in ("pipeline_type", "start_point", "end_point"))
+    if task_type == "valve_operation":
+        return all(key in details for key in ("wellhead_id", "target", "hole_positions"))
+    return False
 
 
 class TaskIntentBuilder:
@@ -697,13 +713,44 @@ class TaskIntentBuilder:
         task_state: Dict[str, Any],
         built_json: Dict[str, Any],
     ) -> Dict[str, Any]:
-        if task_type_key in ("pipeline_inspection", "pipeline_burial"):
+        # TaskIntent 语义补全：每个 task_type_key 分派到自己的 details builder；埋设不再复用巡检出口，
+        # 这样未来新增 burial_depth 等埋设字段时只扩展埋设映射，不影响巡检和发布机制。
+        if task_type_key == "pipeline_inspection":
             return self._build_pipeline_inspection_details(task_state, built_json)
+        if task_type_key == "pipeline_burial":
+            return self._build_pipeline_burial_details(task_state, built_json)
         if task_type_key == "tree_valve_operation":
             return self._build_tree_valve_operation_details(task_state, built_json)
         raise TaskPersistenceError(f"没有为任务类型 {task_type_key} 配置 details 构建器")
 
     def _build_pipeline_inspection_details(
+        self,
+        task_state: Dict[str, Any],
+        built_json: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        cable_type_raw = built_json.get("cable_type")
+        pipeline_type_map = {
+            "海底油气管道": "subsea_oil_gas",
+            "电力电缆": "power_cable",
+            "光纤通信缆": "fiber_optic",
+        }
+        pipeline_type = pipeline_type_map.get(cable_type_raw, "unknown")
+        start_point = built_json.get("start_point")
+        end_point = built_json.get("end_point")
+
+        return {
+            "pipeline_type": pipeline_type,
+            "start_point": {
+                "latitude": start_point.get("lat") if start_point else None,
+                "longitude": start_point.get("lon") if start_point else None,
+            } if start_point else None,
+            "end_point": {
+                "latitude": end_point.get("lat") if end_point else None,
+                "longitude": end_point.get("lon") if end_point else None,
+            } if end_point else None,
+        }
+
+    def _build_pipeline_burial_details(
         self,
         task_state: Dict[str, Any],
         built_json: Dict[str, Any],
@@ -795,6 +842,9 @@ class TaskIntentBuilder:
 
         if intent.get("task", {}).get("type") != top_task_type:
             raise TaskPersistenceError("task.type 与顶层 task_type 不一致")
+
+        if not _validate_task_details(top_task_type, intent.get("task", {}).get("details")):
+            raise TaskPersistenceError(f"任务类型 {top_task_type} 的 details 结构非法")
 
         priority = intent.get("priority")
         if isinstance(priority, bool) or not isinstance(priority, int) or priority not in range(1, 11):

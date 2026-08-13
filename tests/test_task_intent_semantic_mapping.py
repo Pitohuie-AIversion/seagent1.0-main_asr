@@ -90,6 +90,104 @@ class TestTaskIntentSemanticMapping(unittest.TestCase):
                 self.assertEqual(intent["equipment"]["robot_type"], case["expected_robot_type"])
                 self.assertTrue(validate_task_intent(intent, self.kb.task_schemas))
 
+    def test_pipeline_burial_builds_own_details(self):
+        task_state = {
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+            "task_id": "PB-20260801-002",
+            "intent_id": "TI2026073011",
+            "oilfield_name": "流花11-1油田",
+        }
+        built_json = {
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+            "task_id": "PB-20260801-002",
+            "intent_id": "TI2026073011",
+            "equipment_type": "履带式海底重载作业机器人 1600HP",
+            "cable_type": "电力电缆",
+            "start_point": {"lat": 19.8, "lon": 113.5},
+            "end_point": {"lat": 19.9, "lon": 113.6},
+            "water_depth": 300.0,
+            "start_time": "2026-08-01T08:00:00+08:00",
+            "end_time": "2026-08-01T18:00:00+08:00",
+        }
+
+        intent = self.builder.prepare(
+            task_state=task_state,
+            built_json=built_json,
+            mode="normal",
+            task_type_key="pipeline_burial",
+        )
+
+        self.assertEqual(intent["task"]["type"], "pipeline_burial")
+        details = intent["task"]["details"]
+        self.assertEqual(details["pipeline_type"], "power_cable")
+        self.assertEqual(details["start_point"], {"latitude": 19.8, "longitude": 113.5})
+        self.assertEqual(details["end_point"], {"latitude": 19.9, "longitude": 113.6})
+        self.assertTrue(validate_task_intent(intent, self.kb.task_schemas))
+
+    def test_pipeline_burial_published_json_preserves_own_details(self):
+        task_state = {
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+            "task_id": "PB-20260801-003",
+            "intent_id": "TI2026073012",
+            "oilfield_name": "流花11-1油田",
+        }
+        built_json = {
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+            "task_id": "PB-20260801-003",
+            "intent_id": "TI2026073012",
+            "equipment_type": "履带式海底重载作业机器人 1600HP",
+            "cable_type": "光纤通信缆",
+            "start_point": {"lat": 19.8, "lon": 113.5},
+            "end_point": {"lat": 19.9, "lon": 113.6},
+            "water_depth": 300.0,
+            "start_time": "2026-08-01T08:00:00+08:00",
+            "end_time": "2026-08-01T18:00:00+08:00",
+        }
+        intent = self.builder.prepare(
+            task_state=task_state,
+            built_json=built_json,
+            mode="normal",
+            task_type_key="pipeline_burial",
+        )
+
+        staging_file = self.builder.create_staging(intent)
+        published_name = self.builder.publish_staging(staging_file, intent)
+        with open(self.task_dir / published_name, "r", encoding="utf-8") as f:
+            persisted = json.load(f)
+
+        self.assertEqual(persisted["task"]["type"], "pipeline_burial")
+        self.assertEqual(persisted["task"]["details"]["pipeline_type"], "fiber_optic")
+        self.assertEqual(persisted["task"]["details"]["start_point"], {"latitude": 19.8, "longitude": 113.5})
+        self.assertEqual(persisted["task"]["details"]["end_point"], {"latitude": 19.9, "longitude": 113.6})
+
+    def test_validate_task_intent_v2_rejects_wrong_details_shape(self):
+        intent = {
+            "schema_version": 2,
+            "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+            "task_id": "PB-20260801-004",
+            "intent_id": "TI2026073013",
+            "task_type": "pipeline_burial",
+            "task_type_key": "pipeline_burial",
+            "priority": 7,
+            "time": {"start": "2026-08-01T08:00:00+08:00", "end": "2026-08-01T18:00:00+08:00"},
+            "location": {"oilfield": "流花11-1油田", "water_depth_m": 300.0},
+            "task": {
+                "type": "pipeline_burial",
+                "details": {"pipeline_type": "power_cable"},
+            },
+            "equipment": {
+                "robot_type": "cable_burial_robot",
+                "robot_family": "crawler_heavy_seabed_robot",
+                "robot_variant": "crawler_heavy_seabed_robot_1600hp",
+                "robot_unit_id": "CRAWLER-1600-001",
+                "payload": [],
+                "support_vessel": {"name": None, "latitude": None, "longitude": None},
+            },
+            "conditions": {},
+        }
+
+        self.assertFalse(validate_task_intent(intent, self.kb.task_schemas))
+
     def test_missing_equipment_fails_closed(self):
         """完全未提供设备型号或单机编号时必须 fail closed"""
         task_state = {"intent_id": "TI2026073002"}
