@@ -5,7 +5,7 @@ description = "水下多智能体任务决策大模型与 ASR 融合接口系统
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    { name = "Google DeepMind Advanced Agentic Coding Team" }
+    { name = "king050611" }
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
