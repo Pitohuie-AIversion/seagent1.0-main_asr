@@ -186,5 +186,169 @@ class TestBuildGroundedRecommendation(unittest.TestCase):
         self.assertIn("管缆巡检", result)
 
 
+class TestScopeConfirmedRecommendation(unittest.TestCase):
+    """回归测试：_scope_confirmed_recommendation 的候选保留行为。
+
+    修复 Bug：当 valid_provenance=False 时，extractor 已抽取的 robot cascade
+    candidates（equipment_unit_id、equipment_type 等）不应被清空，应由后续
+    _handle_equipment_updates_in_transaction 正常处理。
+    """
+
+    def _make_manager(self, conversation_history=None):
+        from src.dialogue_manager import DialogueManager
+
+        mgr = object.__new__(DialogueManager)
+        mgr.task_state = {}
+        mgr.conversation_history = conversation_history or []
+        mgr._last_missing = []
+
+        def _missing_field_definition(key):
+            # equipment_type 有两个候选
+            if key == "equipment_type":
+                return {
+                    "key": "equipment_type",
+                    "allowed_values": ["轻型工作级深海机器人 150HP", "观察级深海机器人 75HP"],
+                }
+            return None
+
+        mgr._missing_field_definition = _missing_field_definition
+        return mgr
+
+    def _make_write_recommend_plan(self, subject_type="device", subject_text="轻型工作级深海机器人 150HP"):
+        plan = MagicMock()
+        plan.operation = "WRITE"
+        plan.relation = "recommend"
+        plan.subject_type = subject_type
+        plan.subject_text = subject_text
+        plan.confidence = 0.9
+        return plan
+
+    # ------------------------------------------------------------------
+    # Bug 修复回归测试：valid_provenance=False 时不清空 robot cascade candidates
+    # ------------------------------------------------------------------
+    def test_invalid_provenance_preserves_extractor_robot_cascade_candidates(self):
+        """当 valid_provenance=False 时，extractor 抽取的 robot cascade candidates 必须保留。
+
+        场景：用户输入 "001"，TurnPlanner 路由为 WRITE+recommend+device，
+        但 subject_text 不在上一轮 assistant 消息中（valid_provenance=False）。
+        extractor 已从 "001" 中正确抽取出 equipment_unit_id 和 equipment_type，
+        这些 candidates 必须保留以供后续写入。
+        """
+        from src.dialogue_manager import DialogueManager
+
+        # 上一轮 assistant 消息：推荐了具体机器人
+        history = [
+            {"role": "assistant", "content": "建议使用轻型工作级深海机器人 150HP 执行本任务。"}
+        ]
+        mgr = self._make_manager(conversation_history=history)
+
+        # extractor 已从 "001" 抽出了 unit_id 和 type 候选
+        extraction_result = {
+            "slot_candidates": [
+                {
+                    "raw_key": "设备编号",
+                    "canonical_key": "equipment_unit_id",
+                    "raw_value": "001",
+                    "normalized_value": "LROV-150-001",
+                    "confidence": 0.95,
+                },
+                {
+                    "raw_key": "设备型号",
+                    "canonical_key": "equipment_type",
+                    "raw_value": "001",
+                    "normalized_value": "轻型工作级深海机器人 150HP",
+                    "confidence": 0.9,
+                },
+                {
+                    "raw_key": "其他字段",
+                    "canonical_key": "support_vessel",
+                    "raw_value": "海工01",
+                    "normalized_value": "海工01",
+                    "confidence": 0.8,
+                },
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+
+        # plan.subject_text = "LROV-150-001" 不在 allowed_values ["轻型工作级深海机器人 150HP", ...]
+        # 且 "LROV-150-001" 不在 previous_assistant → valid_provenance = False
+        plan = self._make_write_recommend_plan(
+            subject_type="device",
+            subject_text="LROV-150-001",  # 不在 allowed_values，provenance 必然 False
+        )
+
+        result = DialogueManager._scope_confirmed_recommendation(mgr, extraction_result, plan, "001")
+
+        # robot cascade candidates 必须全部保留
+        result_keys = [c["canonical_key"] for c in result["slot_candidates"]]
+        self.assertIn(
+            "equipment_unit_id", result_keys,
+            "valid_provenance=False 时，equipment_unit_id candidate 不得被清空"
+        )
+        self.assertIn(
+            "equipment_type", result_keys,
+            "valid_provenance=False 时，equipment_type candidate 不得被清空"
+        )
+        # 非 robot cascade 字段同样保留
+        self.assertIn(
+            "support_vessel", result_keys,
+            "非 robot cascade 字段 support_vessel 不得被清空"
+        )
+        # unresolved 中有提示信息，但不阻断写入
+        self.assertTrue(
+            any("无法验证" in u for u in result.get("unresolved", [])),
+            "valid_provenance=False 时应记录 unresolved 提示"
+        )
+
+    def test_valid_provenance_uses_recommendation_and_strips_other_cascade(self):
+        """valid_provenance=True 时，应用推荐协议并清除其他 robot cascade extractor 候选。"""
+        from src.dialogue_manager import DialogueManager
+
+        # 上一轮 assistant 消息明确提到了推荐值
+        history = [
+            {"role": "assistant", "content": "我明确推荐作业设备型号【轻型工作级深海机器人 150HP】。"}
+        ]
+        mgr = self._make_manager(conversation_history=history)
+
+        # extractor 也抽到了一个 equipment_type（可能不同）
+        extraction_result = {
+            "slot_candidates": [
+                {
+                    "raw_key": "设备型号",
+                    "canonical_key": "equipment_type",
+                    "raw_value": "确认",
+                    "normalized_value": "观察级深海机器人 75HP",  # 与推荐值不同
+                    "confidence": 0.6,
+                },
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+
+        # plan.subject_text = "轻型工作级深海机器人 150HP" 在 allowed_values 且在 previous_assistant
+        # → valid_provenance = True
+        plan = self._make_write_recommend_plan(
+            subject_type="device",
+            subject_text="轻型工作级深海机器人 150HP",
+        )
+
+        result = DialogueManager._scope_confirmed_recommendation(mgr, extraction_result, plan, "确认")
+
+        result_keys = [c["canonical_key"] for c in result["slot_candidates"]]
+        # extractor 抽到的与推荐值不同的 equipment_type 应被清除（已被推荐协议替换）
+        result_values = {c["canonical_key"]: c["normalized_value"] for c in result["slot_candidates"]}
+
+        # 推荐协议注入的 candidate 应该存在，且值为推荐值
+        self.assertIn("equipment_type", result_keys, "推荐协议应注入 equipment_type candidate")
+        self.assertEqual(
+            result_values.get("equipment_type"), "轻型工作级深海机器人 150HP",
+            "推荐协议注入的值应为 valid_provenance 通过的推荐值，而不是 extractor 候选值"
+        )
+        # 不应有 unresolved
+        self.assertEqual(result.get("unresolved", []), [], "valid_provenance=True 时不应有 unresolved")
+
+
 if __name__ == "__main__":
     unittest.main()
+

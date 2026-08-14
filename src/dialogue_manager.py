@@ -3271,17 +3271,22 @@ class DialogueManager:
             and selected in previous_assistant
         )
 
+        if not valid_provenance:
+            # 来源校验失败时，不清空 extractor 已抽取的 robot cascade candidates，
+            # 让后续正常的 _handle_equipment_updates_in_transaction 流程继续处理。
+            # 记录 unresolved 以便告知用户但不阻断写入。
+            result["unresolved"].append(
+                "无法验证所接受的推荐与紧邻上一轮助手建议及当前合法候选一致"
+            )
+            return result
+
+        # valid_provenance 通过：才清除 extractor 可能产生的其他 robot cascade candidates，
+        # 改用推荐协议注入唯一授权候选，防止 extractor 和推荐协议产生冲突写入。
         result["slot_candidates"] = [
             candidate
             for candidate in result["slot_candidates"]
             if candidate.get("canonical_key") not in ROBOT_CASCADE_FIELDS
         ]
-
-        if not valid_provenance:
-            result["unresolved"].append(
-                "无法验证所接受的推荐与紧邻上一轮助手建议及当前合法候选一致"
-            )
-            return result
 
         result["slot_candidates"].append(
             {
