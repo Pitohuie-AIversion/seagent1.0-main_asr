@@ -676,6 +676,25 @@ Please describe your task request or ask a question directly.`,
 
 
     /**
+     * formatCoordDisplay - 将 {lat, lon} 数值转为用户友好的中英文经纬度字符串。
+     * 例如：北纬 19.8 度，东经 113.5 度
+     */
+    function formatCoordDisplay(lat, lon) {
+      const latNum = parseFloat(lat);
+      const lonNum = parseFloat(lon);
+      if (isNaN(latNum) || isNaN(lonNum)) return `${lat}, ${lon}`;
+      if (currentLang === 'zh') {
+        const latDir = latNum >= 0 ? '北纬' : '南纬';
+        const lonDir = lonNum >= 0 ? '东经' : '西经';
+        return `${latDir} ${Math.abs(latNum)} 度，${lonDir} ${Math.abs(lonNum)} 度`;
+      } else {
+        const latDir = latNum >= 0 ? 'N' : 'S';
+        const lonDir = lonNum >= 0 ? 'E' : 'W';
+        return `${Math.abs(latNum)}°${latDir}, ${Math.abs(lonNum)}°${lonDir}`;
+      }
+    }
+
+    /**
      * updateSidebar - 渲染任务字段面板。
      * Issue #31: 优先使用 data.ui_state（新路径），降级到旧 collected/missing 字段（compat 路径）。
      */
@@ -766,7 +785,7 @@ Please describe your task request or ask a question directly.`,
         }
         if (typeof val === 'object') {
           if (val.lat !== undefined && val.lon !== undefined) {
-            return `lat: ${val.lat}, lon: ${val.lon}`;
+            return formatCoordDisplay(val.lat, val.lon);
           }
           try {
             return JSON.stringify(val);
