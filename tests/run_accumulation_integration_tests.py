@@ -818,7 +818,7 @@ def _run_tests():
                     "PPT" in res.get("reply", "") or "无法" in res.get("reply", "") or "水下" in res.get("reply", ""),
                     f"Expected PPT outline rejection. Got reply: {res.get('reply')[:80]}..."
                 ) if step == 0 else (
-                    "我是一个专业的水下多智能体任务决策大模型" in res.get("reply", "") and "Qwen" not in res.get("reply", "") and "prompt" not in res.get("reply", ""),
+                    "水下多智能体任务规划与决策助手" in res.get("reply", "") and "Qwen" not in res.get("reply", "") and "prompt" not in res.get("reply", ""),
                     f"Expected safe identity response and prompt leak prevention. Got reply: {res.get('reply')[:120]}..."
                 )
             ]

@@ -217,8 +217,8 @@ dvl_bottom_lock_failure_areas:
   - id: "dvl_failure_south_china_sea_northern_slope"
     name: "南海北部陆坡DVL底锁风险区"
     aliases: ["南海北部陆坡DVL风险区", "南海陆坡DVL底锁风险区", "南海北部深水DVL风险区", "南海北部陆坡底锁风险区"]
-    lat_range: [18.00, 22.50]
-    lon_range: [112.00, 118.00]
+    lat_range: [18.00, 19.50]
+    lon_range: [112.00, 113.00]
     provenance:
       authority: "internal_simulation"
       boundary_basis: "基于区域沉积和内潮风险的工程提示框；不是DVL确定失效边界"
@@ -234,7 +234,7 @@ dvl_bottom_lock_failure_areas:
     name: "珠江口盆地深水沉积DVL底锁风险区"
     aliases: ["珠江口盆地DVL风险区", "珠江口深水DVL底锁风险区", "珠江口盆地软沉积风险区"]
     lat_range: [20.0, 22.0]
-    lon_range: [113.0, 116.0]
+    lon_range: [113.0, 114.0]
     provenance:
       authority: "internal_simulation"
       boundary_basis: "基于区域沉积风险的工程提示框；不是DVL确定失效边界"
@@ -249,8 +249,8 @@ dvl_bottom_lock_failure_areas:
   - id: "dvl_failure_scs_internal_tide_zone"
     name: "南海东北部内潮扰动DVL风险区"
     aliases: ["南海东北部内潮区", "南海内潮DVL风险区", "南海底边界层扰动区"]
-    lat_range: [20.0, 23.0]
-    lon_range: [116.0, 121.0]
+    lat_range: [20.0, 21.0]
+    lon_range: [116.0, 117.0]
     provenance:
       authority: "internal_simulation"
       boundary_basis: "基于区域内潮扰动风险的工程提示框；不是DVL确定失效边界"
