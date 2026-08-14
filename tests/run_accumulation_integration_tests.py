@@ -414,7 +414,7 @@ def _run_tests():
     time_response.raise_for_status()
     simulated_now = datetime.fromisoformat(time_response.json()["current_time"])
     fresh_timestamp = simulated_now.isoformat(timespec="seconds")
-    stale_timestamp = (simulated_now - timedelta(hours=2)).isoformat(timespec="seconds")
+    stale_timestamp = (simulated_now - timedelta(hours=1, seconds=1)).isoformat(timespec="seconds")
 
     # Build standard normal parameters for inspection
     normal_params_inspection = build_robot_state(fresh_timestamp)
