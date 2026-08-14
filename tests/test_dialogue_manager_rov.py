@@ -12,7 +12,12 @@ from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
 from src.llm_client import LLMClient
 from src.output_builder import OutputBuilder
-from src.prompts import build_responder_messages
+from src.prompts import (
+    build_general_chat_messages,
+    build_knowledge_responder_messages,
+    build_responder_messages,
+    build_status_responder_messages,
+)
 from src.task_intent_builder import TaskIntentBuilder
 from src.simulated_time import get_current_datetime
 from tests.interaction_plan_support import (
@@ -30,6 +35,57 @@ class DialogueManagerROVTest(unittest.TestCase):
         cls.kb = KnowledgeBase()
         cls.llm = MagicMock(spec=LLMClient)
         cls.llm.generate.return_value = "null"
+
+    def test_prompt_surfaces_one_unified_assistant_identity(self):
+        task_system = build_responder_messages(
+            task_state={},
+            built_json={},
+            missing_fields=[],
+            mode="normal",
+            phase="collecting",
+            knowledge_context="",
+            constraint_context={"type": "none"},
+            conversation_history=[],
+            latest_user_message="你是谁",
+            ROV2type={},
+            support_task=["管缆巡检"],
+        )[0]["content"]
+        general_system = build_general_chat_messages([], "你是谁")[0]["content"]
+        knowledge_system = build_knowledge_responder_messages(
+            {"found": True},
+            [],
+            "介绍一下ROV",
+        )[0]["content"]
+        status_system = build_status_responder_messages(
+            {"found": True},
+            [],
+            "当前状态如何",
+        )[0]["content"]
+
+        for system in (task_system, general_system, knowledge_system, status_system):
+            self.assertIn("水下多智能体任务规划与决策助手", system)
+            self.assertIn("任务规划模式", system)
+            self.assertIn("知识查询模式", system)
+            self.assertIn("状态查询模式", system)
+            self.assertIn("工程咨询模式", system)
+            self.assertIn("不得向用户声明自己切换了角色", system)
+            self.assertNotIn("作为知识咨询助手", system)
+            self.assertNotIn("作为状态汇报助手", system)
+            self.assertNotIn("作为任务规划助手", system)
+
+    def test_identity_query_reply_summarizes_public_modes(self):
+        dm = DialogueManager(MagicMock(spec=LLMClient), self.kb)
+
+        reply = dm.process("你是谁")
+
+        self.assertIn("水下多智能体任务规划与决策助手", reply)
+        self.assertIn("任务规划模式", reply)
+        self.assertIn("知识查询模式", reply)
+        self.assertIn("状态查询模式", reply)
+        self.assertIn("工程咨询模式", reply)
+        self.assertNotIn("Qwen", reply)
+        self.assertNotIn("prompt", reply.lower())
+        self.assertNotIn("Agent", reply)
 
     def test_dialogue_manager_writes_compound_create_message_slots(self):
         start_time = get_current_datetime().replace(microsecond=0)
