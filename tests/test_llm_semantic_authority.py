@@ -16,6 +16,7 @@ from src.interaction_plan import (
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
 from src.prompts import build_responder_messages
+from src.validator import Violation
 from tests.interaction_plan_support import (
     ScriptedLLM,
     empty_extraction,
@@ -1273,3 +1274,47 @@ def test_invalid_control_protocol_demotes_to_read_only_clarification() -> None:
     assert route.dialogue_mode == "knowledge_qa"
     assert route.query_intent == "CLARIFICATION"
     assert route.emergency_action is None
+
+
+def test_ground_write_reply_deduplicates_existing_recorded_summary() -> None:
+    # 当大模型已经在回复中输出了 ✅ 已记录 和 仍需补充 时，不应重复追加
+    model_reply = (
+        "收到，已确认您计划使用观察级 ROV执行本次任务。\n"
+        "✅ 已记录：机器人类别：观察级 ROV。\n"
+        "仍需补充：作业机器人系列、作业设备型号。"
+    )
+    reply = DialogueManager._ground_write_reply(
+        model_reply,
+        accepted_updates={"equipment_class": "observation_rov"},
+        unresolved_inputs=[],
+        missing_fields=[
+            {"key": "equipment_family", "label": "作业机器人系列"},
+            {"key": "equipment_type", "label": "作业设备型号"},
+        ],
+        display_updates={"equipment_class": "观察级 ROV"},
+    )
+    # 验证没有出现两次 ✅ 已记录 或 两次 仍需补充
+    assert reply.count("✅ 已记录") == 1
+    assert reply.count("仍需补充") == 1
+
+
+def test_ensure_constraint_details_deduplicates_paraphrased_warning() -> None:
+    dm = DialogueManager(MagicMock(), KnowledgeBase())
+    violation = Violation(
+        constraint_id="C010",
+        constraint_name="DVL底锁失效高风险",
+        message="当前区域DVL底锁失效风险高，定位/导航能力可能不稳定。谨慎依赖DVL进行悬浮或精确定位。",
+        severity="soft",
+        related_fields=["start_point"],
+    )
+    constraint_context = {"type": "soft", "violations": [violation]}
+
+    # 大模型回复中包含空格和自然语言格式的软警告
+    model_reply = (
+        "系统检测到以下环境风险：\n"
+        "- DVL 底锁失效高风险：当前区域 DVL 底锁失效风险高，定位/导航能力可能不稳定。"
+    )
+    result = dm._ensure_constraint_details(model_reply, constraint_context)
+    # 不应再在末尾追加重复的 [C010] 警告块
+    assert result == model_reply
+

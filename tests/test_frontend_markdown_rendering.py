@@ -105,6 +105,11 @@ class TestFrontendMarkdownRendering(unittest.TestCase):
         for selector in (" h1", " blockquote", " pre", " code", " a", " table", " th"):
             self.assertIn(f".message.bot .bubble{selector}", self.css)
 
+    def test_html_renderer_allows_br_tags_while_escaping_other_html(self):
+        self.assertRegex(self.renderer_js, r"\/\^<br\\s\*\\\/\?>\$\/i\.test\(trimmed\)")
+        self.assertIn("return '<br>';", self.renderer_js)
+        self.assertIn("return escapeHtml(text);", self.renderer_js)
+
 
 if __name__ == "__main__":
     unittest.main()

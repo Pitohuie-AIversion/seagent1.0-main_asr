@@ -90,8 +90,8 @@ robots:
     depth: 350
   LROV-150-001:
     version: 1
-    updated_at: '2026-08-12T16:00:09+08:00'
-    update_timestamp: '2026-08-12T16:00:09+08:00'
+    updated_at: '2026-08-14T16:00:09+08:00'
+    update_timestamp: '2026-08-14T16:00:09+08:00'
     overall_status: available
     is_online: true
     is_busy: false

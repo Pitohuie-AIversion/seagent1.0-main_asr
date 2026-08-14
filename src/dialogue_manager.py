@@ -438,7 +438,17 @@ class DialogueManager:
 
         if query_intent in ("TOOL_QUERY", "DEVICE_CAPABILITY", "KNOWLEDGE_QA"):
             reply = self._handle_knowledge_query(user_message, route, request_id)
-        elif query_intent in ("TASK_STATUS", "DEVICE_STATUS", "ENVIRONMENT_QUERY"):
+        elif query_intent == "ENVIRONMENT_QUERY":
+            plan = route.interaction_plan
+            is_realtime = (
+                plan is not None
+                and (plan.source_policy == "realtime_state" or plan.relation == "status")
+            )
+            if is_realtime:
+                reply = self._handle_status_query(user_message, route)
+            else:
+                reply = self._handle_knowledge_query(user_message, route, request_id)
+        elif query_intent in ("TASK_STATUS", "DEVICE_STATUS"):
             reply = self._handle_status_query(user_message, route)
         elif query_intent == "GENERAL_CHAT":
             reply = self._handle_general_chat(user_message, route)
@@ -506,6 +516,24 @@ class DialogueManager:
             unique_names = list(dict.fromkeys(names))
             if unique_names:
                 return "当前可查询的设备包括：" + "、".join(unique_names) + "。"
+
+        if query_type == "ENVIRONMENT_QUERY":
+            results = kb_evidence.get("results", [])
+            for item in results:
+                if isinstance(item, dict):
+                    if item.get("category") == "oil_field_details":
+                        of = item.get("oil_field", {})
+                        return f"【{of.get('name')}】参考水深约 {of.get('water_depth')} 米，校验上限 {of.get('maximum_reference_water_depth')} 米，海床类型为 {of.get('seabed_type')}。说明：{of.get('notes')}"
+                    elif item.get("category") == "forbidden_area_details":
+                        fa = item.get("forbidden_area", {})
+                        return f"【{fa.get('name')}】为生态敏感禁入保护区，坐标范围纬度 {fa.get('lat_range')}，经度 {fa.get('lon_range')}。说明：{fa.get('notes')}"
+                    elif item.get("category") == "dvl_area_details":
+                        da = item.get("dvl_area", {})
+                        return f"【{da.get('name')}】为DVL底锁风险区，坐标范围纬度 {da.get('lat_range')}，经度 {da.get('lon_range')}。说明：{da.get('notes')}"
+                    elif item.get("category") == "oil_fields_summary":
+                        names = [f.get("name") for f in item.get("oil_fields", []) if f.get("name")]
+                        if names:
+                            return f"当前知识库收录的油气田包括：{'、'.join(names)}。"
 
         return "当前知识库已检索到相关信息，但暂时无法生成完整回答。"
 
@@ -599,14 +627,13 @@ class DialogueManager:
             chosen = selected
             return (
                 f"{task_prefix}我明确推荐{label}【{chosen}】。"
-                "该值来自当前任务经过项目配置约束筛选后的合法候选；"
                 "本轮仅提供建议，尚未写入任务。若接受，请确认采用该选择。"
             )
 
         if len(allowed_values) == 1:
             chosen = allowed_values[0]
             return (
-                f"{task_prefix}当前任务的{label}唯一合法选项为【{chosen}】，"
+                f"{task_prefix}当前任务的{label}推荐选项为【{chosen}】。"
                 "本轮建议采用该值，尚未写入任务。若接受，请确认采用该选择。"
             )
 
@@ -624,7 +651,6 @@ class DialogueManager:
             if chosen in allowed_values:
                 return (
                     f"{task_prefix}我明确推荐{label}【{chosen}】。"
-                    "该建议由模型结合当前合法候选及候选证据完成语义匹配；"
                     "本轮仅提供建议，尚未写入任务。若接受，请确认采用该选择。"
                 )
             # 用户没有给出足以区分候选的偏好时，允许 TurnPlanner 在合法域内
@@ -633,7 +659,6 @@ class DialogueManager:
             if selected in allowed_values:
                 return (
                     f"{task_prefix}我明确推荐{label}【{selected}】。"
-                    "该值是模型在当前任务合法候选域内给出的选择；"
                     "本轮仅提供建议，尚未写入任务。若接受，请确认采用该选择。"
                 )
             logger.info(
@@ -2770,8 +2795,43 @@ class DialogueManager:
             return reply
 
         # 2. 若有字段通过验证，以 LLM 自然语言回复为主体，末尾追加规则生成的客观校验/记录摘要。
-        if model_reply and model_reply.strip():
-            return f"{model_reply.rstrip()}\n\n{suffix}".rstrip() if suffix else model_reply.strip()
+        if model_reply and (isinstance(model_reply, str) and model_reply.strip() or not isinstance(model_reply, str)):
+            import re
+
+            model_reply_str = str(model_reply)
+
+            def _normalize(text: object) -> str:
+                if not isinstance(text, str):
+                    text = str(text)
+                return re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
+
+            norm_reply = _normalize(model_reply_str)
+            deduped_parts = []
+            for part in suffix_parts:
+                norm_part = _normalize(part)
+                # 检查整段是否已存在（严格或去空）
+                if part in model_reply_str or (norm_part and norm_part in norm_reply):
+                    continue
+                # 检查特定模式
+                if part.startswith("✅ 已记录：") and ("✅ 已记录：" in model_reply_str or "✅已记录：" in model_reply_str):
+                    labels_in_reply = all(
+                        FIELD_LABELS[k] in model_reply_str
+                        for k in user_visible_updates
+                    )
+                    if labels_in_reply:
+                        continue
+                if part.startswith("仍需补充：") and ("仍需补充：" in model_reply_str or "仍需补充" in model_reply_str):
+                    continue
+                if part.startswith("⚠️ 未写入或仍需确认：") and ("⚠️ 未写入或仍需确认：" in model_reply_str or "未写入或仍需确认" in model_reply_str):
+                    continue
+                deduped_parts.append(part)
+
+            deduped_suffix = "\n".join(deduped_parts)
+            if deduped_suffix:
+                if isinstance(model_reply, str):
+                    return f"{model_reply.rstrip()}\n\n{deduped_suffix}".rstrip()
+                return f"{model_reply}\n\n{deduped_suffix}"
+            return model_reply.strip() if isinstance(model_reply, str) else model_reply
         return suffix if suffix else "已写入本轮通过验证的字段。"
 
     def _get_committed_update_display_values(self, accepted_updates: dict) -> dict:
@@ -5755,16 +5815,43 @@ class DialogueManager:
     def _ensure_constraint_details(self, reply: str, constraint_context: dict) -> str:
         """Append canonical details for violations omitted or paraphrased by the LLM."""
         violations = constraint_context.get("violations") or []
-        missing = [
-            violation
-            for violation in violations
-            if violation.message not in reply
-        ]
+        import re
+
+        reply_str = str(reply)
+
+        def _normalize(text: object) -> str:
+            if not isinstance(text, str):
+                text = str(text)
+            return re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
+
+        norm_reply = _normalize(reply_str)
+
+        missing = []
+        for violation in violations:
+            msg = getattr(violation, "message", "") or ""
+            cid = getattr(violation, "id", "") or getattr(violation, "constraint_id", "") or ""
+            name = getattr(violation, "name", "") or getattr(violation, "constraint_name", "") or ""
+
+            # 1. 严格包含
+            if msg and str(msg) in reply_str:
+                continue
+            # 2. 规范化包含（忽略空格/标点差异）
+            if msg and _normalize(msg) in norm_reply:
+                continue
+            # 3. 如果 reply 已经包含了约束 ID 或约束名称
+            if cid and str(cid) in reply_str:
+                continue
+            if name and (_normalize(name) in norm_reply or str(name) in reply_str):
+                continue
+            missing.append(violation)
+
         if not missing:
             return reply
 
         details = self.validator.format_violations(missing)
-        return f"{reply.rstrip()}\n\n{details}" if reply.strip() else details
+        if isinstance(reply, str):
+            return f"{reply.rstrip()}\n\n{details}" if reply.strip() else details
+        return f"{reply}\n\n{details}"
 
     def _reject_hard_constraint_bypass(self, user_message: str) -> str:
         """Reject confirmation/ignore commands while hard violations remain."""

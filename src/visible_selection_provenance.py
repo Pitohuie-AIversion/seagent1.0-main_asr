@@ -134,9 +134,17 @@ def build_candidate_terms(field_definition: Mapping[str, object]) -> dict[str, s
     return terms
 
 
-def _extract_numbered_entries(assistant_text: str) -> dict[int, str]:
-    entries: dict[int, str] = {}
-    duplicates: set[int] = set()
+def _extract_numbered_candidate_entries(
+    assistant_text: str,
+    candidate_terms: Mapping[str, Iterable[str]],
+) -> dict[int, set[str]]:
+    """逐行提取与当前候选词相关的编号项。
+
+    返回编号到命中的标准候选值集合的映射（若某编号出现多个不同候选，或存在歧义冲突，则放入冲突集合并在最后剔除）。
+    """
+    entries: dict[int, set[str]] = {}
+    conflicts: set[int] = set()
+
     for raw_line in str(assistant_text or "").splitlines():
         line = raw_line.replace("**", "").replace("__", "")
         match = _NUMBERED_LINE.match(line)
@@ -145,12 +153,29 @@ def _extract_numbered_entries(assistant_text: str) -> dict[int, str]:
         number = _parse_number_token(match.group("number"))
         if number is None:
             continue
-        if number in entries:
-            duplicates.add(number)
+
+        body = match.group("body").strip().rstrip("|").strip()
+        body_key = FieldNormalizer.make_match_key(body)
+        matched_values = {
+            canonical
+            for canonical, terms in candidate_terms.items()
+            if any(_term_occurs_in_body(str(term), body_key) for term in terms)
+        }
+        # 如果该行未命中任何当前字段的候选词，说明该编号行属于无关正文（例如载荷配置建议等），直接忽略
+        if not matched_values:
             continue
-        entries[number] = match.group("body").strip().rstrip("|").strip()
-    for number in duplicates:
+
+        if number in entries:
+            # 如果同一编号再次出现且命中了不同的候选值，说明存在歧义冲突
+            if entries[number] != matched_values:
+                conflicts.add(number)
+            continue
+
+        entries[number] = matched_values
+
+    for number in conflicts:
         entries.pop(number, None)
+
     return entries
 
 
@@ -170,7 +195,7 @@ def visible_ordinal_matches_candidate(
     candidate_terms: Mapping[str, Iterable[str]],
 ) -> bool:
     """校验目标编号行只对应模型选择的同一标准候选。"""
-    entries = _extract_numbered_entries(assistant_text)
+    entries = _extract_numbered_candidate_entries(assistant_text, candidate_terms)
     if not entries:
         return False
 
@@ -184,13 +209,8 @@ def visible_ordinal_matches_candidate(
             return False
         position = ordered_numbers[offset]
 
-    body = entries.get(position)
-    if body is None:
+    matched_values = entries.get(position)
+    if matched_values is None:
         return False
-    body_key = FieldNormalizer.make_match_key(body)
-    matched_values = {
-        canonical
-        for canonical, terms in candidate_terms.items()
-        if any(_term_occurs_in_body(str(term), body_key) for term in terms)
-    }
+
     return matched_values == {selected_value}

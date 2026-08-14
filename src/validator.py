@@ -690,7 +690,11 @@ class TaskValidator:
             # 尝试确定具体单机并提取状态快照
             state_snapshot = None
             if error_dict is None:
-                state_snapshot, error_dict = self._resolve_single_unit_snapshot(task_state, is_now=is_now)
+                state_snapshot, error_dict = self._resolve_single_unit_snapshot(
+                    task_state,
+                    is_now=is_now,
+                    purpose=purpose,
+                )
 
             violations: list[Violation] = []
             is_future_pending_telemetry = (
@@ -847,6 +851,7 @@ class TaskValidator:
             snapshot, error_dict = self._resolve_single_unit_snapshot(
                 task_state,
                 is_now=self._is_task_start_now(task_state),
+                purpose="interactive",
             )
         if error_dict is not None:
             err_v = Violation(
@@ -876,7 +881,12 @@ class TaskValidator:
     # 内部实现
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _resolve_single_unit_snapshot(self, task_state: dict, is_now: bool) -> tuple[dict | None, dict | None]:
+    def _resolve_single_unit_snapshot(
+        self,
+        task_state: dict,
+        is_now: bool,
+        purpose: str = "interactive",
+    ) -> tuple[dict | None, dict | None]:
         unit_selector = task_state.get("equipment_unit_id")
         task_type = task_state.get("task_type_key")
         variant_selector = (
@@ -932,6 +942,9 @@ class TaskValidator:
 
             unique_matches = {m.get("unit_id"): m for m in matches if m.get("unit_id")}
             if len(unique_matches) > 1:
+                # 交互收集模式下，未指定单机编号属于待填槽位，不提取遥测快照且不报硬性违规
+                if purpose == "interactive":
+                    return None, None
                 return None, {
                     "code": "AMBIGUOUS_UNIT_SELECTOR",
                     "message": f"所选设备 '{clean_selector}' 对应多台在役单机 ({sorted(unique_matches.keys())})，必须指定确切单机编号 (equipment_unit_id)。",

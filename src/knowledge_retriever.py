@@ -2180,6 +2180,67 @@ class KnowledgeBase:
                 terms.add(full_name.strip())
         return terms
 
+    def get_environment_alias_index(self) -> dict[str, list[str]]:
+        """构建油气田、禁入保护区与DVL风险区的多维度别名索引。"""
+        index: dict[str, set[str]] = {}
+        display_aliases: dict[str, str] = {}
+
+        def add(alias: Any, target: str) -> None:
+            if not isinstance(alias, str):
+                return
+            display = alias.strip()
+            normalized = _norm(display)
+            if not normalized:
+                return
+            canonical = display_aliases.setdefault(normalized, display)
+            index.setdefault(canonical, set()).add(target)
+
+        for field in self.environment.get("oil_fields", []):
+            field_id = field.get("id")
+            if not field_id:
+                continue
+            target = f"oil_field:{field_id}"
+            add(field_id, target)
+            add(field.get("name"), target)
+            for alias in field.get("aliases", []):
+                add(alias, target)
+
+        for area in self.environment.get("forbidden_areas", []):
+            area_id = area.get("id")
+            if not area_id:
+                continue
+            target = f"forbidden_area:{area_id}"
+            add(area_id, target)
+            add(area.get("name"), target)
+            for alias in area.get("aliases", []):
+                add(alias, target)
+
+        for dvl in self.environment.get("dvl_bottom_lock_failure_areas", []):
+            dvl_id = dvl.get("id")
+            if not dvl_id:
+                continue
+            target = f"dvl_area:{dvl_id}"
+            add(dvl_id, target)
+            add(dvl.get("name"), target)
+            for alias in dvl.get("aliases", []):
+                add(alias, target)
+
+        return {alias: sorted(targets) for alias, targets in index.items()}
+
+    def _find_environment_entity_targets(self, user_message: str) -> tuple[str | None, list[str]]:
+        message_norm = _norm(user_message)
+        if not message_norm:
+            return None, []
+        matches = [
+            (alias, targets)
+            for alias, targets in self.get_environment_alias_index().items()
+            if _norm(alias) and _norm(alias) in message_norm
+        ]
+        if not matches:
+            return None, []
+        matches.sort(key=lambda item: len(_norm(item[0])), reverse=True)
+        return matches[0]
+
     def _resolve_typed_read_query(
         self,
         query_type: str,
@@ -2187,37 +2248,61 @@ class KnowledgeBase:
         context: dict,
     ) -> tuple[str, str]:
         """用结构化主题和权威别名选择事实域，不重新猜测自然语言意图。"""
-        if query_type != "KNOWLEDGE_QA":
-            return query_type, user_message
-
         if (
             context.get("relation") == "status"
             or context.get("source_policy") == "realtime_state"
         ):
             return query_type, user_message
 
+        if query_type == "ENVIRONMENT_QUERY":
+            return query_type, user_message
+
+        if query_type != "KNOWLEDGE_QA":
+            return query_type, user_message
+
         subject_type = context.get("subject_type")
         subject_text = context.get("subject_text")
         device_subject_types = {"device", "device_class", "device_family"}
+        env_subject_types = {"environment", "oilfield", "location"}
         neutral_subject_types = {None, "unknown", "general_concept"}
 
-        candidates: list[str] = []
+        # 优先检查设备实体
+        device_candidates: list[str] = []
         if subject_type in device_subject_types:
             if isinstance(subject_text, str) and subject_text.strip():
-                candidates.append(subject_text.strip())
-            candidates.append(user_message)
+                device_candidates.append(subject_text.strip())
+            device_candidates.append(user_message)
         elif subject_type in neutral_subject_types:
-            candidates.append(user_message)
-        else:
-            return query_type, user_message
+            device_candidates.append(user_message)
 
-        for selector in candidates:
+        for selector in device_candidates:
             _, entity_targets = self._find_query_entity_targets(selector)
             if not entity_targets:
                 continue
             if selector == user_message:
                 return "DEVICE_CAPABILITY", user_message
             return "DEVICE_CAPABILITY", f"{selector} {user_message}"
+
+        # 检查环境/油田实体
+        env_candidates: list[str] = []
+        if subject_type in env_subject_types:
+            if isinstance(subject_text, str) and subject_text.strip():
+                env_candidates.append(subject_text.strip())
+            env_candidates.append(user_message)
+        elif subject_type in neutral_subject_types:
+            env_candidates.append(user_message)
+
+        env_generic_keywords = (
+            "油田", "气田", "油气田", "海域", "禁入区", "保护区", "dvl", "底锁", "环境", "水深上限"
+        )
+        for selector in env_candidates:
+            _, entity_targets = self._find_environment_entity_targets(selector)
+            if entity_targets:
+                if selector == user_message:
+                    return "ENVIRONMENT_QUERY", user_message
+                return "ENVIRONMENT_QUERY", f"{selector} {user_message}"
+            if any(k in _norm(selector) for k in env_generic_keywords):
+                return "ENVIRONMENT_QUERY", user_message
 
         return query_type, user_message
 
@@ -2340,8 +2425,27 @@ class KnowledgeBase:
                 response,
             )
 
+        if query_type == "ENVIRONMENT_QUERY":
+            return self._execute_environment_query(
+                retrieval_message,
+                context,
+                response,
+            )
+
         if query_type == "KNOWLEDGE_QA":
             response["results"] = [
+                {
+                    "category": "oil_fields",
+                    "oil_fields": self.environment.get("oil_fields", []),
+                },
+                {
+                    "category": "forbidden_areas",
+                    "forbidden_areas": self.environment.get("forbidden_areas", []),
+                },
+                {
+                    "category": "dvl_bottom_lock_failure_areas",
+                    "dvl_areas": self.environment.get("dvl_bottom_lock_failure_areas", []),
+                },
                 {
                     "category": "task_templates",
                     "templates": self.task_schemas.get("task_templates", {}),
@@ -2390,6 +2494,70 @@ class KnowledgeBase:
             return response
 
         response["reason"] = "unsupported_query_type"
+        return response
+
+    def _execute_environment_query(
+        self,
+        user_message: str,
+        context: dict,
+        response: dict,
+    ) -> dict:
+        """执行作业海域、油气田、禁入区与DVL风险区的结构化知识检索。"""
+        matched_alias, targets = self._find_environment_entity_targets(user_message)
+        oil_fields = self.environment.get("oil_fields", [])
+        forbidden_areas = self.environment.get("forbidden_areas", [])
+        dvl_areas = self.environment.get("dvl_bottom_lock_failure_areas", [])
+
+        results = []
+        if targets:
+            for target in targets:
+                if target.startswith("oil_field:"):
+                    field_id = target.split(":", 1)[1]
+                    for of in oil_fields:
+                        if of.get("id") == field_id:
+                            results.append({
+                                "category": "oil_field_details",
+                                "oil_field": of,
+                            })
+                elif target.startswith("forbidden_area:"):
+                    area_id = target.split(":", 1)[1]
+                    for fa in forbidden_areas:
+                        if fa.get("id") == area_id:
+                            results.append({
+                                "category": "forbidden_area_details",
+                                "forbidden_area": fa,
+                            })
+                elif target.startswith("dvl_area:"):
+                    dvl_id = target.split(":", 1)[1]
+                    for da in dvl_areas:
+                        if da.get("id") == dvl_id:
+                            results.append({
+                                "category": "dvl_area_details",
+                                "dvl_area": da,
+                            })
+
+        if not results:
+            # 泛查询或未命中单一实体，返回所有海域知识条目的结构化摘要
+            results = [
+                {
+                    "category": "oil_fields_summary",
+                    "oil_fields": oil_fields,
+                },
+                {
+                    "category": "forbidden_areas_summary",
+                    "forbidden_areas": forbidden_areas,
+                },
+                {
+                    "category": "dvl_bottom_lock_failure_areas_summary",
+                    "dvl_areas": dvl_areas,
+                },
+            ]
+
+        response["results"] = results
+        response["found"] = True
+        if matched_alias:
+            response["matched_alias"] = matched_alias
+            response["matched_targets"] = targets
         return response
 
 

@@ -56,16 +56,16 @@ class TestFrontendWelcomeMessage(unittest.TestCase):
 
     def test_9_1_chinese_mode_titles(self):
         """9.1 Chinese capability titles test."""
-        self.assertIn("当前支持以下两项核心能力", self.zh_welcome)
-        self.assertIn("【知识问答】", self.zh_welcome)
-        self.assertIn("【任务创建与准入】", self.zh_welcome)
+        self.assertIn("系统提供以下两类核心交互能力", self.zh_welcome)
+        self.assertIn("## 知识与状态查询", self.zh_welcome)
+        self.assertIn("## 任务创建与准入", self.zh_welcome)
         self.assertNotIn("【任务收集】", self.zh_welcome)
 
     def test_9_2_english_mode_titles(self):
         """9.2 English capability titles test."""
-        self.assertIn("support two core capabilities", self.en_welcome)
-        self.assertIn("[Knowledge Q&A]", self.en_welcome)
-        self.assertIn("[Task Creation & Admission]", self.en_welcome)
+        self.assertIn("The system provides the following two core interaction capabilities", self.en_welcome)
+        self.assertIn("## Knowledge & Status Query", self.en_welcome)
+        self.assertIn("## Task Creation & Admission", self.en_welcome)
         self.assertNotIn("[Task Collection]", self.en_welcome)
 
     def test_9_3_chinese_examples(self):
@@ -80,19 +80,21 @@ class TestFrontendWelcomeMessage(unittest.TestCase):
 
     def test_9_5_knowledge_qa_isolation_semantics(self):
         """9.5 Knowledge Q&A data isolation semantics test."""
-        self.assertIn("不会写入或修改任务信息", self.zh_welcome)
-        self.assertIn("without creating or modifying task data", self.en_welcome)
+        self.assertIn("只读模式", self.zh_welcome)
+        self.assertIn("不会创建、修改或发布任务", self.zh_welcome)
+        self.assertIn("read-only mode", self.en_welcome)
+        self.assertIn("will not create, modify, or publish tasks", self.en_welcome)
 
     def test_9_6_task_creation_and_admission_semantics(self):
         """9.6 Task creation and admission semantics test."""
         self.assertIn("收集", self.zh_welcome)
-        self.assertIn("约束检查", self.zh_welcome)
-        self.assertIn("通过准入", self.zh_welcome)
-        self.assertIn("确认并发布任务", self.zh_welcome)
-        self.assertIn("Collects task information", self.en_welcome)
-        self.assertIn("constraint checks", self.en_welcome)
-        self.assertIn("admission is approved", self.en_welcome)
-        self.assertIn("confirm and publish the task", self.en_welcome)
+        self.assertIn("约束校验", self.zh_welcome)
+        self.assertIn("准入条件", self.zh_welcome)
+        self.assertIn("经您确认后方可发布", self.zh_welcome)
+        self.assertIn("Collects key information", self.en_welcome)
+        self.assertIn("constraint verification", self.en_welcome)
+        self.assertIn("admission conditions are met", self.en_welcome)
+        self.assertIn("published after your confirmation", self.en_welcome)
 
     def test_9_7_emergency_mode_content_is_absent(self):
         """9.7 Welcome message must not describe an emergency mode."""

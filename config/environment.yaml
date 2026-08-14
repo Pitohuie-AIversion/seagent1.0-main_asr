@@ -111,7 +111,7 @@ forbidden_areas:
   # ==========================
   - id: gd_pearl_river_dolphin_core
     name: 广东珠江口中华白海豚国家级自然保护区核心保护区（保守拦截框）
-    aliases: ["广东珠江口中华白海豚国家级自然保护区核心保护区", "广东珠江口中华白海豚国家级自然保护区", "珠江口中华白海豚国家级自然保护区", "珠江口中华白海豚保护区", "珠江口中华白海豚核心保护区", "中华白海豚保护区核心区", "Pearl River Chinese White Dolphin Reserve Core Area"]
+    aliases: ["广东珠江口中华白海豚国家级自然保护区核心保护区", "广东珠江口中华白海豚国家级自然保护区", "珠江口中华白海豚国家级自然保护区", "珠江口中华白海豚保护区", "珠江口中华白海豚核心保护区", "中华白海豚保护区核心区", "中华白海豚保护区", "白海豚保护区", "中华白海豚", "Pearl River Chinese White Dolphin Reserve Core Area"]
     lat_range: [21.95, 22.55]
     lon_range: [113.45, 114.05]
     provenance:
@@ -124,7 +124,7 @@ forbidden_areas:
 
   - id: gd_neilingding_futian_core
     name: 广东内伶仃岛—福田国家级自然保护区核心保护区（保守拦截框）
-    aliases: ["广东内伶仃岛—福田国家级自然保护区核心保护区", "广东内伶仃岛—福田国家级自然保护区", "内伶仃岛—福田国家级自然保护区", "内伶仃岛—福田核心保护区", "内伶仃福田核心区", "内伶仃岛福田保护区", "Neilingding Futian Reserve Core Area"]
+    aliases: ["广东内伶仃岛—福田国家级自然保护区核心保护区", "广东内伶仃岛—福田国家级自然保护区", "内伶仃岛—福田国家级自然保护区", "内伶仃岛—福田核心保护区", "内伶仃福田核心区", "内伶仃岛福田保护区", "内伶仃岛", "内伶仃", "福田红树林", "Neilingding Futian Reserve Core Area"]
     lat_range: [22.3, 22.6]
     lon_range: [113.7, 114.15]
     provenance:
@@ -137,7 +137,7 @@ forbidden_areas:
 
   - id: gd_nanpeng_core
     name: 广东南澎列岛国家级自然保护区核心保护区（保守拦截框）
-    aliases: ["广东南澎列岛国家级自然保护区核心保护区", "广东南澎列岛国家级自然保护区", "南澎列岛国家级自然保护区", "南澎列岛保护区", "南澎列岛核心保护区", "南澎列岛国家级自然保护区核心区", "Nanpeng Islands Reserve Core Area"]
+    aliases: ["广东南澎列岛国家级自然保护区核心保护区", "广东南澎列岛国家级自然保护区", "南澎列岛国家级自然保护区", "南澎列岛保护区", "南澎列岛核心保护区", "南澎列岛国家级自然保护区核心区", "南澎列岛", "南澎", "Nanpeng Islands Reserve Core Area"]
     lat_range: [23.12, 23.45]
     lon_range: [117.05, 117.45]
     provenance:
@@ -153,7 +153,7 @@ forbidden_areas:
   # ==========================
   - id: gd_xuwen_coral_core
     name: 广东徐闻珊瑚礁国家级自然保护区核心保护区（保守拦截框）
-    aliases: ["广东徐闻珊瑚礁国家级自然保护区核心保护区", "广东徐闻珊瑚礁国家级自然保护区", "徐闻珊瑚礁国家级自然保护区", "徐闻珊瑚礁保护区", "徐闻珊瑚礁核心保护区", "徐闻珊瑚礁保护区核心区", "Xuwen Coral Reef Reserve Core Area"]
+    aliases: ["广东徐闻珊瑚礁国家级自然保护区核心保护区", "广东徐闻珊瑚礁国家级自然保护区", "徐闻珊瑚礁国家级自然保护区", "徐闻珊瑚礁保护区", "徐闻珊瑚礁核心保护区", "徐闻珊瑚礁保护区核心区", "徐闻珊瑚礁", "Xuwen Coral Reef Reserve Core Area"]
     lat_range: [20.3, 20.55]
     lon_range: [109.75, 110.0]
     provenance:
@@ -169,7 +169,7 @@ forbidden_areas:
   # ==========================
   - id: gx_hepu_dugong_core
     name: 广西合浦营盘港—英罗港儒艮国家级自然保护区核心保护区（保守拦截框）
-    aliases: ["广西合浦营盘港—英罗港儒艮国家级自然保护区核心保护区", "广西合浦营盘港—英罗港儒艮国家级自然保护区", "合浦营盘港—英罗港儒艮国家级自然保护区", "合浦儒艮保护区", "合浦儒艮核心保护区", "营盘港—英罗港儒艮核心区", "Hepu Dugong Reserve Core Area"]
+    aliases: ["广西合浦营盘港—英罗港儒艮国家级自然保护区核心保护区", "广西合浦营盘港—英罗港儒艮国家级自然保护区", "合浦营盘港—英罗港儒艮国家级自然保护区", "合浦儒艮保护区", "合浦儒艮核心保护区", "营盘港—英罗港儒艮核心区", "合浦儒艮", "儒艮保护区", "Hepu Dugong Reserve Core Area"]
     lat_range: [21.25, 21.55]
     lon_range: [109.5, 109.8]
     provenance:
@@ -185,7 +185,7 @@ forbidden_areas:
   # ==========================
   - id: hi_dongzhaigang_core
     name: 海南东寨港国家级自然保护区核心保护区（保守拦截框）
-    aliases: ["海南东寨港国家级自然保护区核心保护区", "海南东寨港国家级自然保护区", "东寨港国家级自然保护区", "东寨港保护区", "东寨港核心保护区", "东寨港红树林核心区", "Dongzhaigang Reserve Core Area"]
+    aliases: ["海南东寨港国家级自然保护区核心保护区", "海南东寨港国家级自然保护区", "东寨港国家级自然保护区", "东寨港保护区", "东寨港核心保护区", "东寨港红树林核心区", "东寨港", "东寨港红树林", "Dongzhaigang Reserve Core Area"]
     lat_range: [19.80, 20.05]
     lon_range: [110.50, 110.65]
     provenance:
@@ -198,7 +198,7 @@ forbidden_areas:
 
   - id: hi_sanya_coral_core
     name: 海南三亚珊瑚礁国家级自然保护区核心保护区（保守拦截框）
-    aliases: ["海南三亚珊瑚礁国家级自然保护区核心保护区", "海南三亚珊瑚礁国家级自然保护区", "三亚珊瑚礁国家级自然保护区", "三亚珊瑚礁保护区", "三亚珊瑚礁核心保护区", "三亚珊瑚礁保护区核心区", "Sanya Coral Reef Reserve Core Area"]
+    aliases: ["海南三亚珊瑚礁国家级自然保护区核心保护区", "海南三亚珊瑚礁国家级自然保护区", "三亚珊瑚礁国家级自然保护区", "三亚珊瑚礁保护区", "三亚珊瑚礁核心保护区", "三亚珊瑚礁保护区核心区", "三亚珊瑚礁", "Sanya Coral Reef Reserve Core Area"]
     lat_range: [18.10, 18.32]
     lon_range: [109.28, 109.75]
     provenance:

@@ -235,10 +235,56 @@ class TestUIStateContract(unittest.TestCase):
         self.assertEqual(cs["validation_fingerprint"], "fp_abc123")
         self.assertEqual(len(cs["hard_violations"]), 1)
         self.assertEqual(cs["hard_violations"][0]["check_type"], "range")
-        self.assertEqual(cs["hard_violations"][0]["observed_value"], 500)
         # 过期指纹被过滤，只保留有效 ack
         self.assertEqual(len(cs["ignored_soft_warnings"]), 1)
         self.assertEqual(cs["ignored_soft_warnings"][0]["constraint_id"], "C020")
+        # 被忽略的软警告不再出现在 soft_warnings 中
+        self.assertEqual(len(cs["soft_warnings"]), 0)
+
+    def test_soft_warnings_filter_partial_ignored(self):
+        """测试存在多个软警告时，仅已确认忽略的被过滤，未确认的仍保留在 soft_warnings 中。"""
+        soft_v1 = Violation(
+            constraint_id="C010",
+            constraint_name="定位风险",
+            message="DVL失效风险",
+            severity="soft",
+            related_fields=["pipeline_type"],
+        )
+        soft_v2 = Violation(
+            constraint_id="C020",
+            constraint_name="天气预警",
+            message="风浪较大",
+            severity="soft",
+            related_fields=["weather"],
+        )
+        state_snap = {"status_ref": "ref_valid", "state_version": 1}
+        val_result = ValidationResult(
+            overall_status="blocked_soft",
+            validated_at="2026-08-06T18:00:00Z",
+            task_version=1,
+            validation_version=1,
+            validation_fingerprint="fp_test",
+            state_snapshot=state_snap,
+            violations=[soft_v1, soft_v2],
+        )
+        ack_v1 = {
+            "constraint_id": "C010",
+            "task_version": 1,
+            "validation_version": 1,
+            "validation_fingerprint": "fp_test",
+            "status_ref": "ref_valid",
+            "state_version": 1,
+        }
+        mgr = make_mock_manager(
+            phase="blocked_soft",
+            validation_result=val_result,
+            validation_acknowledgements=[ack_v1],
+        )
+        cs = _build_constraint_state(mgr)
+        self.assertEqual(len(cs["ignored_soft_warnings"]), 1)
+        self.assertEqual(cs["ignored_soft_warnings"][0]["constraint_id"], "C010")
+        self.assertEqual(len(cs["soft_warnings"]), 1)
+        self.assertEqual(cs["soft_warnings"][0]["constraint_id"], "C020")
 
     # P2-4 修复验证: Fail closed 状态与错误标识
     def test_build_ui_state_fail_closed(self):

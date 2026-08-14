@@ -96,18 +96,29 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         self.assertEqual(res2.overall_status, "blocked_hard")
         self.assertEqual(res2.state_snapshot["unit_id"], "LROV-150-002")
 
-    def test_ambiguous_family_returns_validation_error(self):
-        """当只提供 family/type 且对应多台单机时，无法唯一确定单机，应返回 validation_error。"""
+    def test_ambiguous_family_returns_validation_error_on_publish(self):
+        """当只提供 family/type 且对应多台单机时，在发布阶段 (publish) 无法唯一确定单机，应返回 validation_error。"""
         task_state = {
             "equipment_family": "light_work_class_rov",
             "task_type_key": "pipeline_inspection",
         }
-        res = self.validator.validate_task(task_state)
+        res = self.validator.validate_task(task_state, purpose="publish")
         self.assertEqual(res.overall_status, "validation_error")
         self.assertIsNotNone(res.error)
-        self.assertEqual(res.error["code"], "AMBIGUOUS_UNIT_SELECTOR")
         self.assertGreater(len(res.violations), 0)
         self.assertEqual(res.violations[0].constraint_id, "VAL_ERR")
+
+    def test_ambiguous_family_interactive_allowed_for_slot_collection(self):
+        """在交互阶段 (interactive)，当用户仅指定了型号/系列而未指定单机时，不应误报 VAL_ERR 违规，允许继续引导选择单机。"""
+        task_state = {
+            "equipment_family": "light_work_class_rov",
+            "task_type_key": "pipeline_inspection",
+        }
+        res = self.validator.validate_task(task_state, purpose="interactive")
+        self.assertIsNone(res.error)
+        self.assertIsNone(res.state_snapshot)
+        val_errs = [v for v in res.violations if v.constraint_id == "VAL_ERR"]
+        self.assertEqual(len(val_errs), 0)
 
     def test_future_task_pending_runtime_validation(self):
         """未来执行的任务（start_time 晚于当前）不使用当前遥测流速阻断，标记为 pending_runtime_validation。"""

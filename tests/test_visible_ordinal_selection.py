@@ -127,3 +127,58 @@ def test_nonordinal_final_confirmation_word_does_not_trigger_list_gate() -> None
     assert parse_ordinal_reference("最后一个") is not None
     assert parse_ordinal_reference("倒数第二艘") is not None
     assert parse_ordinal_reference("选3") is not None
+
+
+def test_mixed_numbered_sections_does_not_corrupt_candidate_ordinal_matching() -> None:
+    """当助手消息中同时包含候选表格(01, 02)与后续说明列表(1. 2. 3.)时，仍能正确匹配候选。"""
+    previous_assistant = (
+        "| 序号 | 机器人系列 | 规格 |\n"
+        "| :--- | :--- | :--- |\n"
+        "| 01 | 轻型工作级深海机器人 150HP | 150HP |\n"
+        "| 02 | 观察级深海机器人 75HP | 75HP |\n\n"
+        "💡 载荷配置建议：\n"
+        "1. 视觉类：高清水下摄像机\n"
+        "2. 声学类：前视声呐\n"
+        "3. 检测类：电磁检测传感器\n"
+    )
+    llm = ScriptedLLM(
+        plans=[make_plan("WRITE", subject_type="task", relation="filled_fields")],
+        extractions=[
+            extraction_result(
+                slot_candidate(
+                    "equipment_type",
+                    "轻型工作级深海机器人 150HP",
+                    raw_value="第一个",
+                )
+            )
+        ],
+        replies=["已配置设备型号。"],
+    )
+    dm = DialogueManager(llm, KnowledgeBase())
+    schema = dm.builder.get_schema("pipeline_inspection", "normal")
+    dm.slot_store.init_task_slots(schema)
+    slots, unresolved, version = dm.slot_store.snapshot()
+    slots["task_type"].value = "管缆巡检"
+    slots["task_type"].status = "valid"
+    slots["task_type_key"].value = "pipeline_inspection"
+    slots["task_type_key"].status = "valid"
+    dm.slot_store.commit_transaction(slots, unresolved, expected_version=version)
+    dm.task_state = dm.slot_store.get_task_state()
+    _, dm._last_missing = dm.builder.build(
+        dm.task_state,
+        "pipeline_inspection",
+        "normal",
+    )
+    dm.conversation_history = [
+        {"role": "user", "content": "有哪些可选的机器人型号？"},
+        {"role": "assistant", "content": previous_assistant},
+    ]
+
+    dm.process("第一个吧")
+    slot = dm.slot_store.slots["equipment_type"]
+
+    assert slot.value == "轻型工作级深海机器人 150HP"
+    assert slot.status == "valid"
+    assert slot.raw_value == "第一个"
+    assert slot.source == "assistant_option_selection"
+

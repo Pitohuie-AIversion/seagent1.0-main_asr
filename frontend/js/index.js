@@ -89,17 +89,31 @@
         taskCancelMsg: "任务已取消。如需重新规划，请重新开始。",
         taskRejectedMsg: "⚠️ 任务已被拒绝，请修改参数后重新开始。",
         taskSuccessMsg: "✅ 任务信息已补全并通过约束检查，最终任务描述如下：",
-        welcomeMsg: `您好！我是水下多智能体任务决策助手，当前支持以下两项核心能力，我会根据您的输入自动识别并进入对应流程：
+        welcomeMsg: `您好，SEAgent 水下多智能体任务决策系统已就绪。
 
-【知识问答】
-回答机器人能力、设备参数、任务流程和系统功能等问题，不会写入或修改任务信息。
-示例：“金牛座一号机的最大作业水深是多少？”
+系统提供以下两类核心交互能力，并将根据您的输入自动识别需求并进入相应处理流程：
 
-【任务创建与准入】
-收集作业目标、时间、位置、环境、机器人和载荷等任务信息，执行约束检查；通过准入后，由您确认并发布任务。
-示例：“在流花11-1油田执行管缆巡检，水深300米，使用观察级深海机器人。”
+## 知识与状态查询
 
-请直接描述您的任务需求或需要查询的问题。`,
+用于查询机器人能力与设备参数、载荷与工具信息、任务流程、系统功能及相关状态信息。查询过程为**只读模式**，不会创建、修改或发布任务。
+
+示例：  
+“金牛座一号机的最大作业水深是多少？”
+
+---
+
+## 任务创建与准入
+
+根据作业需求收集任务目标、时间、位置、环境条件、执行机器人及载荷配置等关键信息，并进行任务完整性与约束校验。
+
+满足准入条件后，系统将生成**待确认任务**，经您确认后方可发布。
+
+示例：  
+“在流花11-1油田执行管缆巡检，水深300米，使用观察级深海机器人。”
+
+---
+
+请直接描述您的作业需求，或提出需要查询的问题。`,
         timeAlert: "请选择要设置的模拟时间",
         timeSuccess: "模拟时间已更新",
         timeError: "设置模拟时间失败",
@@ -173,17 +187,31 @@
         taskCancelMsg: "Task cancelled. Click 'Restart' to plan a new one.",
         taskRejectedMsg: "⚠️ Task rejected. Please modify parameters and restart.",
         taskSuccessMsg: "✅ Task information completed and verified. Final task description:",
-        welcomeMsg: `Hello! I am the underwater multi-robot task decision assistant. I currently support two core capabilities and will automatically select the appropriate workflow based on your request:
+        welcomeMsg: `Hello, SEAgent Underwater Multi-Agent Task Decision System is ready.
 
-[Knowledge Q&A]
-Answers questions about robot capabilities, equipment parameters, task workflows, and system functions without creating or modifying task data.
-Example: “What is the maximum operating depth of Taurus Unit 1?”
+The system provides the following two core interaction capabilities and will automatically identify requirements and enter the corresponding workflow based on your input:
 
-[Task Creation & Admission]
-Collects task information such as the objective, time, location, environment, robot, and payload, then performs constraint checks. After admission is approved, you confirm and publish the task.
-Example: “Inspect the subsea pipeline at Liuhua 11-1 Oilfield at a depth of 300 m using an observation-class deep-sea robot.”
+## Knowledge & Status Query
 
-Please describe your task request or ask a question directly.`,
+Used to query robot capabilities and equipment parameters, payload and tool information, task workflows, system functions, and related status information. The query process is in **read-only mode** and will not create, modify, or publish tasks.
+
+Example:  
+“What is the maximum operating depth of Taurus Unit 1?”
+
+---
+
+## Task Creation & Admission
+
+Collects key information such as task objectives, time, location, environmental conditions, executing robots, and payload configurations according to operational requirements, and performs task integrity and constraint verification.
+
+Once admission conditions are met, the system will generate a **pending confirmation task**, which can only be published after your confirmation.
+
+Example:  
+“Inspect the subsea pipeline at Liuhua 11-1 Oilfield at a depth of 300 m using an observation-class deep-sea robot.”
+
+---
+
+Please describe your operational requirements directly, or ask the question you wish to query.`,
         timeAlert: "Please select a time to set",
         timeSuccess: "Simulated time updated",
         timeError: "Failed to set simulated time",
@@ -973,9 +1001,17 @@ Please describe your task request or ask a question directly.`,
           missingHtml += '</div>';
         }
 
-        if (cs.soft_warnings && cs.soft_warnings.length > 0) {
+        // 前端防御性过滤：排除已在 ignored_soft_warnings 中的 constraint_id，
+        // 避免后端偶尔漏过滤时前端依然持续展示已忽略的软警告。
+        const ignoredCids = new Set(
+          (cs.ignored_soft_warnings || []).map(a => a.constraint_id).filter(Boolean)
+        );
+        const visibleSoftWarnings = (cs.soft_warnings || []).filter(
+          v => !ignoredCids.has(v.constraint_id)
+        );
+        if (visibleSoftWarnings.length > 0) {
           missingHtml += `<div class="constraint-block soft" style="background: rgba(255,190,0,0.1); border: 1px solid rgba(255,190,0,0.4); border-radius:6px; padding:8px; margin-bottom:6px;"><div style="color:#ffbe00; font-weight:600; margin-bottom:4px;">⚠️ 软警告</div>`;
-          for (const v of cs.soft_warnings) {
+          for (const v of visibleSoftWarnings) {
             const nameEl = document.createElement('div');
             nameEl.style.cssText = 'font-size:0.85em; margin-bottom:2px;';
             nameEl.textContent = `[${v.code || ''}] ${v.message || ''}`;
@@ -987,6 +1023,20 @@ Please describe your task request or ask a question directly.`,
               <span style="font-size:0.8em; opacity:0.7;">输入"忽略警告"或点击：</span>
               <button type="button" class="btn-ignore-warning-action" onclick="window.sendMessage('忽略警告')" style="background: rgba(255,190,0,0.18); border: 1px solid #ffbe00; color: #ffbe00; border-radius: 4px; padding: 4px 10px; font-size: 0.8em; font-weight: 500; cursor: pointer; transition: all 0.2s ease;">${ignoreBtnText}</button>
             </div>`;
+          }
+          missingHtml += '</div>';
+        }
+        if (ignoredCids.size > 0) {
+          missingHtml += `<div class="constraint-block ignored-soft" style="background: rgba(100,100,100,0.08); border: 1px solid rgba(255,190,0,0.2); border-radius:6px; padding:6px 8px; margin-bottom:6px; opacity:0.65;">`;
+          missingHtml += `<div style="color:#b8a000; font-size:0.8em; font-weight:600; margin-bottom:2px;">✅ 已忽略软警告</div>`;
+          for (const a of (cs.ignored_soft_warnings || [])) {
+            const cid = a.constraint_id || '';
+            const matchedWarn = (cs.soft_warnings || []).find(w => w.constraint_id === cid);
+            const msgText = matchedWarn ? `[${matchedWarn.code || cid}] ${matchedWarn.message || ''}` : `[${cid}]`;
+            const el = document.createElement('div');
+            el.style.cssText = 'font-size:0.8em; margin-bottom:1px;';
+            el.textContent = msgText;
+            missingHtml += el.outerHTML;
           }
           missingHtml += '</div>';
         }

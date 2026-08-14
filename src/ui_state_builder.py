@@ -349,6 +349,12 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
                 else:
                     legacy_acknowledgements.append(ack_dict)
 
+            # 从 soft_warnings 中移除已被有效确认忽略的条目，
+            # 避免已忽略的警告仍在 soft_warnings 里出现，导致前端持续展示。
+            if ignored_soft_warnings:
+                ignored_cids = {a.get("constraint_id") for a in ignored_soft_warnings}
+                soft_warnings = [w for w in soft_warnings if w.get("constraint_id") not in ignored_cids]
+
         except Exception as exc:
             logger.warning("解析 ValidationResult 失败，退回降级逻辑: %s", exc)
             val_result = None
@@ -383,6 +389,11 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
                     })
         except AttributeError:
             pass
+
+        # 降级路径同样从 soft_warnings 剔除已白名单的条目
+        if ignored_soft_warnings:
+            ignored_cids = {a.get("constraint_id") for a in ignored_soft_warnings}
+            soft_warnings = [w for w in soft_warnings if w.get("constraint_id") not in ignored_cids]
 
         phase = getattr(manager, "phase", "collecting")
         if phase == "blocked_hard":

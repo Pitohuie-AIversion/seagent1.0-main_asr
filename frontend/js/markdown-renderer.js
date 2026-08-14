@@ -26,8 +26,15 @@
   const buildMarkdownRenderer = () => {
     const renderer = new global.marked.Renderer();
 
-    // Raw HTML is displayed literally. It is never accepted as authored markup.
-    renderer.html = ({ text }) => escapeHtml(text);
+    // Raw HTML is displayed literally, except safe line breaks (<br>, <br/>)
+    // which are standard in GFM table cells and LLM Markdown formatting.
+    renderer.html = ({ text }) => {
+      const trimmed = String(text || '').trim();
+      if (/^<br\s*\/?>$/i.test(trimmed)) {
+        return '<br>';
+      }
+      return escapeHtml(text);
+    };
     // Images are deliberately disabled; keep useful alt text without loading a URL.
     renderer.image = ({ text }) => escapeHtml(text || '');
     return renderer;
