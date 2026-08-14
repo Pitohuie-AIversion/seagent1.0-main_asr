@@ -22,6 +22,7 @@ from session import Session
 from src.dialogue_manager import DialogueManager
 from src.simulated_time import get_simulated_time
 from src.history_manager import save_conversation, list_history, load_history
+from src.result_paths import get_result_dir
 from src.asr_normalizer import normalize_terminology
 from src.asr_service import ASRUnavailableError
 from src.ui_state_builder import build_frontend_ui_state
@@ -633,7 +634,7 @@ _CJK_RE = _re_module.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
 TRANSLATION_CHUNK_SIZE = 2000
 TRANSLATION_MAX_INPUT_CHARS = 20000
 TRANSLATION_MAX_TOKENS = 4096
-TRANSLATION_CACHE_FILE = Path("/root/autodl-tmp/result/translation_cache.json")
+TRANSLATION_CACHE_FILE = get_result_dir(create=True) / "translation_cache.json"
 _translation_cache_file = TRANSLATION_CACHE_FILE
 _translation_cache_lock = threading.Lock()
 _translation_cache: dict[str, str] = {}

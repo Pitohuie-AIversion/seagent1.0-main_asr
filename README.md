@@ -104,8 +104,8 @@ TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python run.py
 # 1. Python 语法与编译检查
 python -m compileall -q src tests
 
-# 2. 全量单元测试套件
-python -m unittest discover tests
+# 2. 全量测试套件（自动使用独立临时产物目录）
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q
 ```
 
 详细测试说明请参阅 [docs/development/testing.md](file:///root/mzy/seagent1.0-main_asr/docs/development/testing.md)。

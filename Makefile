@@ -18,8 +18,8 @@ run:
 	$(PYTHON) run.py
 
 test:
-	@echo "🧪 正在执行单元测试..."
-	$(PYTHON) -m unittest discover tests
+	@echo "🧪 正在隔离目录中执行完整 pytest 套件..."
+	TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 $(PYTHON) -m pytest -q
 
 clean:
 	@echo "🧹 正在清理缓存文件..."

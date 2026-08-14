@@ -19,7 +19,7 @@
 ## 测试结果
 <!-- 附上本地测试或 CI 运行结果 -->
 - `python -m compileall -q src tests`: Pass
-- `python -m unittest discover tests`: Pass
+- `python -m pytest -q`: Pass
 
 ## 文档更新
 <!-- 说明已同步更新的文档，如 README.md, docs/architecture/overview.md 等 -->

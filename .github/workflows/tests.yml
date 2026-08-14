@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: .
-      SEAGENT_RESULT_DIR: ${{ github.workspace }}/result
+      SEAGENT_TEST_RESULT_DIR: ${{ runner.temp }}/seagent-tests-${{ github.run_id }}
 
     steps:
       - name: Checkout Code
@@ -34,7 +34,7 @@ jobs:
       - name: 2. Run Full Test Suite & Enforce Audit Gate
         run: |
           set +e
-          TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m unittest discover tests -v 2>&1 | tee full_test.log
+          TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m unittest discover -s tests -t . -v 2>&1 | tee full_test.log
           test_exit=${PIPESTATUS[0]}
           set -e
           
@@ -55,4 +55,3 @@ jobs:
             docs/regression_report.md
             full_test.log
             /tmp/test_records.json
-

@@ -43,4 +43,4 @@ class SlotStore:
 
 ## 验证
 - 单元测试：[tests/test_slot_consistency.py](file:///root/mzy/seagent1.0-main_asr/tests/test_slot_consistency.py), [tests/test_p0_final_consistency.py](file:///root/mzy/seagent1.0-main_asr/tests/test_p0_final_consistency.py)
-- CI 门控：通过 `python -m unittest discover tests` 运行全量测试防范状态回归。
+- CI 门控：通过隔离产物目录的全量 pytest/包级 unittest 审计防范状态回归。

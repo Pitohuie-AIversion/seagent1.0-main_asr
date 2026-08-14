@@ -32,16 +32,24 @@ python -m compileall -q src tests
 
 ### 2.2 核心单元测试
 
-运行项目全量单元测试与集成测试套件：
+运行项目全量单元测试与集成测试套件。pytest 会在收集测试模块前自动创建与用户
+运行目录分离的一次性 result/task/history 目录：
 
 ```bash
-python -m unittest discover tests
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q
 ```
 
 如果需要查看更加详细的每个测试用例执行日志，可以加上 `-v` 参数：
 
 ```bash
-python -m unittest discover tests -v
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -v
+```
+
+CI 审计仍需 unittest 原生计数器时，必须使用包级发现，使 `tests/__init__.py`
+在业务测试模块之前启动同一隔离器：
+
+```bash
+python -m unittest discover -s tests -t . -v
 ```
 
 ### 2.3 常用单测试模块运行
@@ -85,7 +93,7 @@ flowchart LR
 | :--- | :--- | :--- |
 | **语法编译检查** | `python -m compileall -q src tests` | `python -m compileall -q src tests` |
 | **环境与离线设置** | `export TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1` | `export TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1` |
-| **全量回归测试** | `python -m unittest discover tests -v` | `python -m unittest discover tests -v` |
+| **全量回归测试** | `python -m unittest discover -s tests -t . -v` | `python -m pytest -q` |
 | **测试报告解析** | `python scratch/parse_tests.py` | `python scratch/parse_tests.py` |
 
 ---
@@ -112,6 +120,7 @@ flowchart LR
 
 ### 5.2 运行输出与持久化路径处理
 测试运行过程中生成的中间文件与任务 Intent 输出目录通过 [src/result_paths.py](file:///root/mzy/seagent1.0-main_asr/src/result_paths.py) 统一管理：
-- 系统优先读取环境变量 `SEAGENT_RESULT_DIR` 指定的输出路径。
-- 在无环境变量指定时，默认使用系统临时安全目录，防止在 CI 或测试机环境产生写权限异常 (`PermissionError`)。
-- 在测试用例的 `tearDown` 方法中，务必显式清理测试生成的临时 staging 或 intent 文件。
+- 用户运行优先读取 `SEAGENT_RESULT_DIR`，未配置时使用 `/root/autodl-tmp/result`。
+- pytest 和包级 unittest 在导入业务模块前统一覆盖 result/task/history 为测试专用目录。
+- 子进程继承同一测试目录；未设置 `SEAGENT_TEST_RESULT_DIR` 时，测试结束自动清理。
+- 需要保留测试产物时，可显式设置 `SEAGENT_TEST_RESULT_DIR`，不得指向用户运行目录。

@@ -23,7 +23,8 @@
 
 ## 运行策略
 
-- PR 门禁：`python -m unittest discover tests -v`
+- PR 门禁：`python -m pytest -q`；CI 原生计数审计使用
+  `python -m unittest discover -s tests -t . -v`
 - 真实对话：`python tests/run_accumulation_integration_tests.py`
 - 真实 ASR：`python tests/run_real_asr_integration.py`
 - Chrome：`python tests/run_chrome_e2e.py`

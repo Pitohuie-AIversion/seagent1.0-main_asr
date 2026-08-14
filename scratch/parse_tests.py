@@ -17,6 +17,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from tests.runtime_isolation import configure_test_artifact_paths
+
+
+configure_test_artifact_paths()
+
 
 def get_git_commit():
     try:
@@ -55,7 +60,7 @@ class AuditTestResult(unittest.TextTestResult):
 
 def run_and_collect_tests(test_dir="tests"):
     loader = unittest.TestLoader()
-    suite = loader.discover(test_dir)
+    suite = loader.discover(test_dir, top_level_dir=str(PROJECT_ROOT))
     runner = unittest.TextTestRunner(resultclass=AuditTestResult, verbosity=0)
     result = runner.run(suite)
 
@@ -143,7 +148,7 @@ def run_and_collect_tests(test_dir="tests"):
         sys.exit(1)
 
     metadata = {
-        "command": f"{sys.executable} -m unittest discover {test_dir}",
+        "command": f"{sys.executable} -m unittest discover -s {test_dir} -t .",
         "python_version": sys.version,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "commit_sha": get_git_commit(),
