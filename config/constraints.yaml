@@ -116,6 +116,16 @@ constraints:
       请修改任务时间窗口后再发布任务。
     severity: "hard"
 
+  - id: "C032"
+    name: "未来任务环境与遥测延后校验提示"
+    applies_to: ["all"]
+    check_type: "future_task_runtime_notice"
+    violation_message: >
+      任务计划开始时间为 {start_time}，已识别为未来排期任务。
+      当前海流、浑浊度及机器人实时遥测已跳过即时强校验，
+      系统将在任务执行窗口期前（运行时）再行自动核验与设备状态绑定。
+    severity: "soft"
+
   # ── 环境约束 ─────────────────────────────────────────────────────────────────
 
 #  - id: "C005"

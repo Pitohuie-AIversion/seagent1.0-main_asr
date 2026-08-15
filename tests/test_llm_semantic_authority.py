@@ -351,7 +351,7 @@ def test_soft_warnings_without_robot_snapshot_can_be_acknowledged_once() -> None
             # 让 C030 是否触发依赖执行顺序。
             "start_time": "2000-01-01T19:50:42",
             "end_time": "2000-01-01T23:50:42",
-            "start_point": {"lat": 20.815, "lon": 115.735},
+            "start_point": {"lat": 20.5, "lon": 113.0},
             "end_point": {"lat": 19.8, "lon": 113.6},
         }
     )

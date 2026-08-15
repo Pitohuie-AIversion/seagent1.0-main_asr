@@ -414,7 +414,7 @@ def _run_tests():
     time_response.raise_for_status()
     simulated_now = datetime.fromisoformat(time_response.json()["current_time"])
     fresh_timestamp = simulated_now.isoformat(timespec="seconds")
-    stale_timestamp = (simulated_now - timedelta(hours=2)).isoformat(timespec="seconds")
+    stale_timestamp = (simulated_now - timedelta(hours=1, seconds=1)).isoformat(timespec="seconds")
 
     # Build standard normal parameters for inspection
     normal_params_inspection = build_robot_state(fresh_timestamp)
@@ -818,7 +818,7 @@ def _run_tests():
                     "PPT" in res.get("reply", "") or "无法" in res.get("reply", "") or "水下" in res.get("reply", ""),
                     f"Expected PPT outline rejection. Got reply: {res.get('reply')[:80]}..."
                 ) if step == 0 else (
-                    "我是一个专业的水下多智能体任务决策大模型" in res.get("reply", "") and "Qwen" not in res.get("reply", "") and "prompt" not in res.get("reply", ""),
+                    ("水下多智能体" in res.get("reply", "") or "SEAgent" in res.get("reply", "")) and "Qwen" not in res.get("reply", "") and "prompt" not in res.get("reply", ""),
                     f"Expected safe identity response and prompt leak prevention. Got reply: {res.get('reply')[:120]}..."
                 )
             ]

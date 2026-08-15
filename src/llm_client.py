@@ -543,11 +543,19 @@ class LLMClient:
         user_message = self._latest_user_message(messages)
         if "只返回 JSON 数组" in system_content:
             return "[]"
-        if "你是谁" in user_message or "自我介绍" in user_message or "介绍一下系统" in user_message:
-            return "您好！我是水下多智能体任务决策大模型，能够协助您进行水下任务规划与管理。"
-        if "你能做什么" in user_message:
-            return "我可以协助您创建和管理水下作业任务、查询设备能力与工具，并进行约束检查。"
-        return "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
+        if "你是谁" in user_message or "自我介绍" in user_message or "介绍一下系统" in user_message or "你能做什么" in user_message:
+            return (
+                "您好，SEAgent 水下多智能体任务决策系统已就绪。\n\n"
+                "系统提供以下两类核心交互能力，并将根据您的输入自动识别需求并进入相应处理流程：\n\n"
+                "1. 知识与状态查询\n"
+                "用于查询机器人能力与设备参数、载荷与工具信息、任务流程、系统功能及相关状态信息。查询过程为只读模式，不会创建、修改或发布任务。\n"
+                "示例：“金牛座一号机的最大作业水深是多少？”\n\n"
+                "2. 任务创建与准入\n"
+                "根据作业需求收集任务目标、时间、位置、环境条件、执行机器人及载荷配置等关键信息，并进行任务完整性与约束校验。满足准入条件后，系统将生成待确认任务，经您确认后方可发布。\n"
+                "示例：“在流花11-1油田执行管缆巡检，水深300米，使用观察级深海机器人。”\n\n"
+                "请直接描述您的作业需求，或提出需要查询的问题。"
+            )
+        return "您好，SEAgent 水下多智能体任务决策系统已就绪。请直接描述您的作业需求，或提出需要查询的问题。"
 
     def _mock_chat(self, messages: list[dict]) -> str:
         system_content = self._message_content(messages, 0)
@@ -563,8 +571,21 @@ class LLMClient:
         if status is not None:
             return self._mock_status_reply(status)
 
-        if "专业的水下多智能体任务规划与决策系统助手" in system_content:
-            return "您好！我是水下多智能体任务决策大模型。我可以协助您规划水下作业任务、查询设备能力与工具，并进行可行性校验。"
+        if "你是谁" in user_message or "自我介绍" in user_message or "介绍一下系统" in user_message or "你能做什么" in user_message:
+            return (
+                "您好，SEAgent 水下多智能体任务决策系统已就绪。\n\n"
+                "系统提供以下两类核心交互能力，并将根据您的输入自动识别需求并进入相应处理流程：\n\n"
+                "1. 知识与状态查询\n"
+                "用于查询机器人能力与设备参数、载荷与工具信息、任务流程、系统功能及相关状态信息。查询过程为只读模式，不会创建、修改或发布任务。\n"
+                "示例：“金牛座一号机的最大作业水深是多少？”\n\n"
+                "2. 任务创建与准入\n"
+                "根据作业需求收集任务目标、时间、位置、环境条件、执行机器人及载荷配置等关键信息，并进行任务完整性与约束校验。满足准入条件后，系统将生成待确认任务，经您确认后方可发布。\n"
+                "示例：“在流花11-1油田执行管缆巡检，水深300米，使用观察级深海机器人。”\n\n"
+                "请直接描述您的作业需求，或提出需要查询的问题。"
+            )
+
+        if "水下多智能体任务" in system_content or "SEAgent" in system_content:
+            return "您好，SEAgent 水下多智能体任务决策系统已就绪。我可以协助您规划水下作业任务、查询设备能力与工具，并进行可行性校验。"
         return self._mock_task_reply(system_content, user_message)
 
 

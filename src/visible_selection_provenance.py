@@ -65,40 +65,90 @@ def _parse_number_token(token: str) -> int | None:
     return value if value > 0 else None
 
 
+_ORDINAL_DIGITS = r"(?:[1-9]\d?|[零〇一二两三四五六七八九十]{1,3})"
+_OPTION_NOUN_EXPLICIT = r"(?:个|项|条|台|艘|种|款|组|位|套)"
+_OPTION_NOUN_OPTIONAL = r"(?:个|项|条|台|艘|种|号|款|组|位|套)?"
+_MODAL_OR_END = r"(?:[吧啦了哈呗嘛噢哦呀呢\s.。!！,，~～]|$)"
+
+
 def parse_ordinal_reference(value: object) -> OrdinalReference | None:
-    """识别“第三个/选3/3/倒数第二个/最后一个”等选择表达。"""
+    """识别“第三个/选3/3/倒数第二个/最后一个”等序号选择表达。
+
+    严格区分列表序号（如“选1”、“第2个”）与实际规格型号/编号（如“选择150HP”、“LROV-150-001”），
+    避免将带单位、字母或多位实体数值误判为序号引用。
+    """
     if not isinstance(value, str):
         return None
     text = unicodedata.normalize("NFKC", value).strip()
     if not text:
         return None
 
-    reverse = re.search(rf"倒数第\s*({_ORDINAL_TOKEN})\s*{_OPTION_NOUN}", text)
+    # 1. 倒数第 N 项 (如: 倒数第二个, 倒数第1项)
+    reverse = re.search(
+        rf"倒数第\s*({_ORDINAL_DIGITS})\s*{_OPTION_NOUN_OPTIONAL}(?!\d|[a-zA-Z])",
+        text,
+    )
     if reverse:
         number = _parse_number_token(reverse.group(1))
-        return OrdinalReference(-number, reverse.group(0)) if number else None
+        if number:
+            return OrdinalReference(-number, reverse.group(0))
 
+    # 2. 最后一项 / 倒数第一
     last = re.search(r"最后(?:一)?(?:个|项|条|台|艘|种|号|款|组|位|套|那个)", text)
     if last:
         return OrdinalReference(-1, last.group(0))
 
-    ordinal = re.search(rf"第\s*({_ORDINAL_TOKEN})\s*{_OPTION_NOUN}", text)
-    if ordinal:
-        number = _parse_number_token(ordinal.group(1))
-        return OrdinalReference(number, ordinal.group(0)) if number else None
-
-    selected_number = re.search(
-        rf"(?:选(?:择)?|采用|使用|用|要|按|定)\s*({_ORDINAL_TOKEN})\s*{_OPTION_NOUN}",
+    # 3. 带“第”的序数表达 (如: 第2个, 第1项; 若无量词如“第2”，其后不能接字母、数字或实体字)
+    ordinal_with_noun = re.search(
+        rf"第\s*({_ORDINAL_DIGITS})\s*{_OPTION_NOUN_EXPLICIT}(?!\d|[a-zA-Z])",
         text,
     )
-    if selected_number:
-        number = _parse_number_token(selected_number.group(1))
-        return OrdinalReference(number, selected_number.group(0)) if number else None
+    if ordinal_with_noun:
+        number = _parse_number_token(ordinal_with_noun.group(1))
+        if number:
+            return OrdinalReference(number, ordinal_with_noun.group(0))
 
-    bare = re.fullmatch(rf"\s*({_ORDINAL_TOKEN})\s*{_OPTION_NOUN}\s*[。.!！]?\s*", text)
+    ordinal_bare = re.search(
+        rf"(?:^|[^\w])第\s*({_ORDINAL_DIGITS})\s*{_MODAL_OR_END}",
+        text,
+    )
+    if ordinal_bare:
+        number = _parse_number_token(ordinal_bare.group(1))
+        if number:
+            raw = ordinal_bare.group(0).strip(" \t.。!！,，~～")
+            return OrdinalReference(number, raw)
+
+    # 4. 动词 + 序号表达 (如: 选1, 选择2, 选第3个, 选3吧, 定1)
+    # 必须保证数字后没有紧跟英文字母(如150HP)、非序号数字(如150截断)或其他实体后缀
+    selected_with_noun = re.search(
+        rf"(?:选(?:择)?|采用|使用|用|要|按|定)\s*(?:第\s*)?({_ORDINAL_DIGITS})\s*{_OPTION_NOUN_EXPLICIT}(?!\d|[a-zA-Z])",
+        text,
+    )
+    if selected_with_noun:
+        number = _parse_number_token(selected_with_noun.group(1))
+        if number:
+            return OrdinalReference(number, selected_with_noun.group(0))
+
+    selected_pure_num = re.search(
+        rf"(?:选(?:择)?|采用|使用|用|要|按|定)\s*(?:第\s*)?({_ORDINAL_DIGITS})\s*{_MODAL_OR_END}",
+        text,
+    )
+    if selected_pure_num:
+        number = _parse_number_token(selected_pure_num.group(1))
+        if number:
+            raw = selected_pure_num.group(0).strip(" \t.。!！,，~～")
+            return OrdinalReference(number, raw)
+
+    # 5. 整句仅为纯序号表达 (如: "1", "3", "02", "第二个")
+    bare = re.fullmatch(
+        rf"\s*({_ORDINAL_TOKEN})\s*{_OPTION_NOUN_OPTIONAL}\s*[。.!！]?\s*",
+        text,
+    )
     if bare:
+        # 如果是两位以上纯数字(如150)，_ORDINAL_TOKEN不会完全匹配，返回None
         number = _parse_number_token(bare.group(1))
-        return OrdinalReference(number, bare.group(0)) if number else None
+        if number:
+            return OrdinalReference(number, bare.group(0).strip())
     return None
 
 

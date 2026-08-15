@@ -1007,7 +1007,7 @@ class DialogueManager:
         messages = build_general_chat_messages(self.conversation_history, user_message)
         reply = self._safe_llm_chat(messages, temperature=0.7, role=ModelRole.GENERAL_REASONING)
         if not reply or not reply.strip():
-            reply = "您好！我是水下多智能体任务决策大模型。请问有什么可以帮您的？"
+            reply = "您好！我是水下多智能体任务规划与决策助手。请问有什么可以帮您的？"
         return self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
 
     def _handle_clarification(self, user_message: str, route: IntentRouteResult) -> str:
@@ -1543,14 +1543,6 @@ class DialogueManager:
 
     def _process_internal(self, user_message: str, request_id: str = "req_default") -> str:
         old_phase = self.phase
-
-        if self._is_business_identity_query(user_message):
-            self._switch_dialogue_mode("knowledge_qa", source="fast_path", reason="通用身份/常规对话问答")
-            reply = "我是一个专业的水下多智能体任务决策大模型，可以协助您进行水下任务规划、参数收集与可行性验证。请描述您的水下任务需求，我会继续帮您完善任务参数。"
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.conversation_history.append({"role": "assistant", "content": reply})
-            return reply
-
 
         if is_standalone_time_query(user_message):
             self._switch_dialogue_mode("knowledge_qa", source="fast_path", reason="系统时间/环境状态查询")

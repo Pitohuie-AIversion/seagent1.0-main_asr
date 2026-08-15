@@ -163,6 +163,7 @@ _CHECK_FIELDS: dict[str, list[str]] = {
     "robot_communication_status":  _EQUIPMENT_FIELDS,
     "start_time_not_in_past":      ["start_time"],
     "end_time_after_start_time":   ["start_time", "end_time"],
+    "future_task_runtime_notice":  ["start_time"],
 }
 
 _DYNAMIC_CHECKS = {
@@ -755,11 +756,15 @@ class TaskValidator:
 
             # 状态优先级规则：
             # validation_error > blocked_hard > blocked_soft > warning > pending_runtime_validation > valid
+            blocking_soft_violations = [
+                v for v in violations
+                if v.severity == "soft" and v.check_type != "future_task_runtime_notice"
+            ]
             if error_dict is not None:
                 overall_status = "validation_error"
             elif any(v.severity == "hard" for v in violations):
                 overall_status = "blocked_hard"
-            elif any(v.severity == "soft" for v in violations):
+            elif blocking_soft_violations:
                 overall_status = "blocked_soft"
             elif any(v.severity == "warning" for v in violations):
                 overall_status = "warning"
@@ -1202,6 +1207,20 @@ class TaskValidator:
                 c["id"], c["name"], msg.strip(), c["severity"],
                 rel_fields, check_type=check, observed_value=end_time.isoformat()
             )
+
+        elif check == "future_task_runtime_notice":
+            start_time, st_err = self._validate_time_value(task_state.get("start_time"), "start_time")
+            if st_err or start_time is None:
+                return None
+            if not self._is_task_start_now(task_state):
+                msg = (
+                    c["violation_message"]
+                    .replace("{start_time}", start_time.strftime("%Y-%m-%d %H:%M:%S"))
+                )
+                return Violation(
+                    c["id"], c["name"], msg.strip(), c["severity"],
+                    rel_fields, check_type=check, observed_value=start_time.isoformat()
+                )
 
         elif check == "vessel_availability" and vessel_id:
             vessel = self.kb.get_vessel(vessel_id)

@@ -11,7 +11,7 @@ from src.validator import TaskValidator
 NOW = datetime(2026, 7, 28, 12, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 SAFE_POINT = {"lat": 17.60, "lon": 111.00}
 FORBIDDEN_POINT = {"lat": 20.40, "lon": 109.85}
-DVL_RISK_POINT = {"lat": 20.815, "lon": 115.735}
+DVL_RISK_POINT = {"lat": 20.50, "lon": 113.00}
 SOFT_SEABED_POINT = {"lat": 17.52, "lon": 110.15}
 
 
@@ -73,6 +73,7 @@ CONSTRAINT_TRIGGER_MATRIX = {
     "C004": {"task": {"water_depth": 601}},
     "C030": {"task": {"start_time": (NOW - timedelta(minutes=6)).isoformat()}},
     "C031": {"task": {"end_time": (NOW - timedelta(seconds=1)).isoformat()}},
+    "C032": {"task": {"start_time": (NOW + timedelta(hours=1)).isoformat()}},
     "C007": {"task": {"support_vessel": "海洋石油708"}},
     "C008": {"task": {"start_point": FORBIDDEN_POINT}},
     "C009": {
@@ -153,7 +154,6 @@ class ConstraintCoverageMatrixTest(unittest.TestCase):
         with (
             patch.object(self.kb, "get_robot_state_dict", return_value=robot_state),
             patch.object(self.kb, "get_unit_state_snapshot", return_value=fake_snapshot),
-            patch.object(self.validator, "_is_task_start_now", return_value=True),
             patch("src.validator.get_current_datetime", return_value=NOW),
         ):
             res = self.validator.validate(candidate)
