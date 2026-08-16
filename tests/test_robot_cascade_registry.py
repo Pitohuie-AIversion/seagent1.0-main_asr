@@ -448,6 +448,41 @@ class TestRobotCascadeRegistry(unittest.TestCase):
         self.assertEqual(canonical["variant_id"], "observation_rov_75hp")
         self.assertEqual(canonical["unit_id"], "OBSROV-75-001")
 
+    def test_48_enriched_aliases_resolve_canonical_entities(self):
+        """48. 验证新增的口语化/阿拉伯数字/代号别名可正确解析到标准实体。"""
+        # 测试 Unit 层解析
+        unit_expectations = {
+            "奇点001": "WROV-250-001",
+            "奇点1号机": "WROV-250-001",
+            "金牛座1号机": "CRAWLER-1600-001",
+            "御夫座1号机": "TOWED-1500-001",
+            "凤凰座1号机": "SPECIAL-600-001",
+            "天鹰座2号机": "LROV-150-002",
+            "LROV-001": "LROV-150-001",
+            "OBSROV-001": "OBSROV-75-001",
+            "AUV-1号机": "AUV-324cc-001",
+        }
+        for alias, expected_unit_id in unit_expectations.items():
+            with self.subTest(unit_alias=alias):
+                resolved = self.kb.resolve_robot_unit(alias)
+                self.assertIsNotNone(resolved, f"Failed to resolve unit alias '{alias}'")
+                self.assertEqual(resolved["unit_id"], expected_unit_id)
+
+        # 测试 Variant 层解析
+        variant_expectations = {
+            "1600马力金牛座": "crawler_heavy_seabed_robot_1600hp",
+            "250马力奇点": "general_work_class_rov_250hp",
+            "150马力天鹰座": "light_work_class_rov_150hp",
+            "75马力观察级": "observation_rov_75hp",
+            "324口径AUV": "autonomous_underwater_vehicle_324cc",
+        }
+        for alias, expected_variant_id in variant_expectations.items():
+            with self.subTest(variant_alias=alias):
+                resolved = self.kb.get_rov(alias)
+                self.assertIsNotNone(resolved, f"Failed to resolve variant alias '{alias}'")
+                self.assertEqual(resolved["variant_id"], expected_variant_id)
+
 
 if __name__ == "__main__":
     unittest.main()
+

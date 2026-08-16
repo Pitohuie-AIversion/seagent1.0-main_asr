@@ -706,10 +706,10 @@ class TaskValidator:
             )
 
             if error_dict is None:
-                violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=state_snapshot)
+                violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=state_snapshot, purpose=purpose)
             elif is_future_pending_telemetry:
                 # 未来任务且已注册单机遥测缺失/过期：不阻断为 validation_error，按 pending_runtime_validation 处理
-                violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=None)
+                violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=None, purpose=purpose)
                 error_dict = None
             else:
                 # 存在 validation_error 时，不得返回空违规列表
@@ -1042,6 +1042,7 @@ class TaskValidator:
         task_state: dict,
         trigger_fields: set[str] | None,
         state_snapshot: dict | None,
+        purpose: str = "interactive",
     ) -> list[Violation]:
         violations = []
         task_type = task_state.get("task_type_key")
@@ -1089,7 +1090,10 @@ class TaskValidator:
                 if not task_type or task_type not in applies:
                     continue
 
-            v = self._check_one(c, check, task_state, rov, water_depth, vessel_id, tree_type, state_snapshot)
+            v = self._check_one(
+                c, check, task_state, rov, water_depth, vessel_id, tree_type,
+                state_snapshot, purpose=purpose
+            )
             if v:
                 violations.append(v)
 
@@ -1120,8 +1124,11 @@ class TaskValidator:
         vessel_id: str | None,
         tree_type: str | None,
         state_snapshot: dict | None,
+        purpose: str = "interactive",
     ) -> Violation | None:
-        if check in _DYNAMIC_CHECKS and not self._is_task_start_now(task_state):
+        # 发布前核验 (publish / preview / runtime_execution) 或即时任务必须执行动态状态与环境检查
+        is_pre_publish_or_execution = purpose in ("publish", "preview", "runtime_execution")
+        if check in _DYNAMIC_CHECKS and not self._is_task_start_now(task_state) and not is_pre_publish_or_execution:
             return None
 
         rel_fields = _CHECK_FIELDS.get(check, [])

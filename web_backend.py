@@ -182,6 +182,29 @@ werkzeug_logger.addFilter(EndpointFilter())
 # ==================================================================
 
 
+# ========== 业务模块热重载钩子 ==========
+@app.before_request
+def auto_hot_reload_check():
+    """在每个请求处理前，检测 src/ 和 config/ 是否有代码变更并自动热重载"""
+    # 忽略静态资源与轮询时间接口的重载检查，降低微小开销
+    if request.path.startswith("/static/") or request.path == "/api/time/current":
+        return
+    try:
+        from src.hot_reload import maybe_auto_reload
+        maybe_auto_reload()
+    except Exception as exc:
+        logger.warning("[Hot-Reload] auto check failed: %s", exc)
+
+
+@app.route("/api/dev/reload", methods=["GET", "POST"])
+def manual_dev_reload():
+    """开发者手动热重载接口"""
+    from src.hot_reload import force_reload
+    res = force_reload()
+    return jsonify(res)
+# =========================================
+
+
 @app.route("/api/robot/set-state-info", methods=["POST"])
 def set_robot_state_info():
     supplied_request_id = request.headers.get("X-Request-ID", "")

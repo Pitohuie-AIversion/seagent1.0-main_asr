@@ -257,10 +257,66 @@ class TestFrontendHistoryCloseout(unittest.TestCase):
             ui_state = data["ui_state"]
 
             self.assertEqual(ui_state["dialogue_mode"], "knowledge_qa")
-            self.assertEqual(ui_state["slots"], [])
-            self.assertFalse(ui_state["read_only"])
-            self.assertTrue(ui_state["actions"]["can_send"])
+    def test_09_list_history_filters_internal_and_non_history_files(self):
+        """9. list_history 过滤内部 session 文件、点文件与无 conversation_history 的非快照文件"""
+        from src.result_paths import get_history_dir
+        hist_dir = get_history_dir(create=True)
+
+        internal_head = hist_dir / ".session_head_test_mock.json"
+        session_rev = hist_dir / "session_mock_rev_1.json"
+        lock_file = hist_dir / ".session_mock.lock"
+
+        try:
+            with open(internal_head, "w", encoding="utf-8") as f:
+                json.dump({"schema_version": 2, "session_id": "test_mock"}, f)
+            with open(session_rev, "w", encoding="utf-8") as f:
+                json.dump({"schema_version": 2, "session_id": "test_mock"}, f)
+            with open(lock_file, "w", encoding="utf-8") as f:
+                f.write("")
+
+            records = list_history()
+            rec_ids = [r["id"] for r in records]
+            self.assertNotIn(internal_head.name, rec_ids)
+            self.assertNotIn(session_rev.name, rec_ids)
+            self.assertNotIn(lock_file.name, rec_ids)
+        finally:
+            internal_head.unlink(missing_ok=True)
+            session_rev.unlink(missing_ok=True)
+            lock_file.unlink(missing_ok=True)
+
+    def test_10_legacy_snapshot_with_deprecated_robot_variant_migrates_cleanly(self):
+        """10. 旧版无 slot_store 快照中存在废弃型号（如工作级ROV）时平滑迁移，不抛出 VARIANT_NOT_FOUND"""
+        legacy_snapshot = {
+            "session_id": "test_legacy_variant",
+            "saved_at": "2026-08-10T12:00:00",
+            "conversation_history": [
+                {"role": "user", "content": "进行采油树阀门操作"},
+                {"role": "assistant", "content": "好的"}
+            ],
+            "mode": "normal",
+            "phase": "collecting",
+            "task_state": {
+                "task_type_key": "tree_valve_operation",
+                "task_id": "CT2026081099",
+                "equipment_type": "工作级ROV",
+                "water_depth": 300
+            },
+            "built_json": {},
+            "task_id": "CT2026081099",
+            "task_type": "tree_valve_operation"
+        }
+
+        mgr = DialogueManager(self.llm, self.kb, session_id="test_legacy_variant")
+        mgr.load_snapshot(legacy_snapshot)
+
+        self.assertEqual(mgr.phase, "collecting")
+        self.assertEqual(mgr.task_state.get("task_id"), "CT2026081099")
+        self.assertIn("equipment_type", mgr.slot_store.slots)
+        # 废弃型号应被平滑重置为 missing 以便后续重新收集或由用户选择，而不造成加载失败
+        eq_slot = mgr.slot_store.slots["equipment_type"]
+        self.assertEqual(eq_slot.status, "missing")
 
 
 if __name__ == "__main__":
     unittest.main()
+

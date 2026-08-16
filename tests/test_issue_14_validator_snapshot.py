@@ -122,7 +122,12 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
 
     def test_future_task_pending_runtime_validation(self):
         """未来执行的任务（start_time 晚于当前）不使用当前遥测流速阻断，标记为 pending_runtime_validation。"""
-        self.kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 1.5})
+        self.kb.state_info.set_status("OBSROV-75-001", {
+            "overall_status": "available",
+            "is_online": True,
+            "current_velocity": 1.5,
+            "updated_at": "2026-08-14T16:00:00+08:00",
+        })
         future_time = "2099-01-01T12:00:00"
         task_state = {
             "equipment_unit_id": "OBSROV-75-001",

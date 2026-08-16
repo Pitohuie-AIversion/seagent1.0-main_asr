@@ -154,13 +154,21 @@ def list_history() -> List[Dict[str, Any]]:
 
     records = []
     for filepath in history_dir.glob("*.json"):
+        if filepath.name.startswith("."):
+            continue
         try:
             with open(filepath, "r", encoding="utf-8") as file:
                 data = json.load(file)
+            if not isinstance(data, dict):
+                continue
+            saved_at = data.get("saved_at", "")
+            # 必须包含 conversation_history 或有效 saved_at 结构，排除非历史快照文件（如 session_head/rev 等）
+            if not saved_at or "conversation_history" not in data:
+                continue
             records.append(
                 {
                     "id": filepath.name,
-                    "saved_at": data.get("saved_at", ""),
+                    "saved_at": saved_at,
                     "task_id": data.get("task_id", "unknown"),
                     "task_type": data.get("task_type", "unknown"),
                     "session_id": data.get("session_id", ""),

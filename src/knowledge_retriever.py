@@ -1542,12 +1542,17 @@ class KnowledgeBase:
         self,
         task_type_key: str | None,
         family_selector: str | None = None,
+        class_selector: str | None = None,
     ) -> list[dict]:
         robots = [
             robot
             for robot in self.get_all_rovs()
             if self.robot_matches_task(robot, task_type_key)
         ]
+        if class_selector:
+            class_key = self._resolve_class_key(class_selector)
+            if class_key:
+                robots = [r for r in robots if r.get("robot_class") == class_key]
         if not family_selector:
             return robots
         family_id = self.resolve_robot_family_id(family_selector, task_type_key)
@@ -1648,7 +1653,7 @@ class KnowledgeBase:
                     if state_lines:
                         sections.append("【当前设备实时状态】\n" + "\n".join(state_lines))
         elif task_type:
-            sections.append(self._rovs_for_task(task_type))
+            sections.append(self._rovs_for_task(task_type, task_state.get("equipment_class")))
 
         # 4. 管缆类型（管缆巡检任务）
         if task_type == "pipeline_inspection":
@@ -1712,8 +1717,8 @@ class KnowledgeBase:
             lines.append(f"- {r['full_name']} | 最大水深:{r.get('max_depth_m')}m\n  {r.get('brief', '')}")
         return "\n".join(lines)
 
-    def _rovs_for_task(self, task_type: str) -> str:
-        rovs = self.get_task_allowed_robot_variants(task_type)
+    def _rovs_for_task(self, task_type: str, class_selector: str | None = None) -> str:
+        rovs = self.get_task_allowed_robot_variants(task_type, class_selector=class_selector)
         if not rovs:
             return "【任务可用设备】当前无符合任务条件的设备。"
         lines = ["【任务可用设备】"]
@@ -1927,6 +1932,29 @@ class KnowledgeBase:
             return exact[0] if len(exact) == 1 else None
         partial = matching_units(True)
         return partial[0] if len(partial) == 1 else None
+
+    def resolve_robot_unit_from_text(
+        self,
+        text: str,
+        task_type_key: str | None = None,
+    ) -> dict | None:
+        """从自然语言文本中提取最长匹配的唯一 fleet unit。"""
+        if not text or not isinstance(text, str):
+            return None
+        text_norm = _norm(text)
+        alias_index = self.get_device_alias_index()
+        unit_matches = []
+        for alias, targets in sorted(alias_index.items(), key=lambda x: len(_norm(x[0])), reverse=True):
+            if len(_norm(alias)) >= 2 and _norm(alias) in text_norm:
+                for target in targets:
+                    if target.startswith("unit:"):
+                        uid = target.split(":", 1)[1]
+                        unit = self.resolve_robot_unit(uid, task_type_key)
+                        if unit and not any(u.get("unit_id") == unit.get("unit_id") for u in unit_matches):
+                            unit_matches.append(unit)
+        if len(unit_matches) == 1:
+            return unit_matches[0]
+        return None
 
     def find_rov_by_description(self, description: str) -> list[dict]:
         return self.get_all_rovs()
@@ -2774,27 +2802,22 @@ class KnowledgeBase:
 
     @staticmethod
     def _parse_depth_condition(user_message: str) -> dict:
-        has_depth_expression = bool(
-            re.search(r"\d+\s*(?:米|m)?", user_message, re.IGNORECASE)
-            and any(
-                keyword in user_message.lower()
-                for keyword in ("米", "m", "深度", "下潜", "水深", "能力", "支持", "可在")
-            )
-        )
         condition = {
             "operator": None,
             "depth_m": None,
-            "has_depth_expression": has_depth_expression,
-            "parse_status": "invalid" if has_depth_expression else "absent",
+            "has_depth_expression": False,
+            "parse_status": "absent",
         }
         patterns = (
             ("eq", r"(\d+)\s*米级"),
-            ("lte", r"(?:最大(?:下潜|作业)?深度(?:为|是)?|下潜极限(?:为|是)?)\s*(\d+)\s*(?:米|m)"),
-            ("lte", r"(?:不超过|至多|最大不超过|不大于|最多)\s*(\d+)\s*(?:米|m)"),
-            ("lt", r"(?:低于|小于|不到)\s*(\d+)\s*(?:米|m)"),
-            ("gte", r"(?:不少于|不低于|至少)\s*(\d+)\s*(?:米|m)"),
-            ("gt", r"(?<!不)(?:超过|大于)\s*(\d+)\s*(?:米|m)"),
-            ("gte", r"(?:支持在?|能够下潜至|能够下潜到|能够在?|能下潜到?|可在?|在)\s*(\d+)\s*(?:米|m)"),
+            ("lte", r"(?:最大(?:下潜|作业)?深度(?:为|是)?|下潜极限(?:为|是)?)\s*(\d+)\s*(?:米|m)?"),
+            ("lte", r"(?:不超过|至多|最大不超过|不大于|最多)\s*(\d+)\s*(?:米|m)?"),
+            ("lt", r"(?:低于|小于|不到)\s*(\d+)\s*(?:米|m)?"),
+            ("gte", r"(?:不少于|不低于|至少)\s*(\d+)\s*(?:米|m)?"),
+            ("gt", r"(?<!不)(?:超过|大于)\s*(\d+)\s*(?:米|m)?"),
+            ("gte", r"(?:支持在?|能够下潜至|能够下潜到|能够在?|能下潜到?|可在?|在|水深(?:为|是)?)\s*(\d+)\s*(?:米|m)?"),
+            ("eq", r"(\d+)\s*(?:米|m)\s*(?:水深|深)"),
+            ("eq", r"(?:水深|深)\s*(\d+)\s*(?:米|m)"),
         )
         for operator, pattern in patterns:
             match = re.search(pattern, user_message, re.IGNORECASE)
@@ -2802,6 +2825,7 @@ class KnowledgeBase:
                 condition.update({
                     "operator": operator,
                     "depth_m": int(match.group(1)),
+                    "has_depth_expression": True,
                     "parse_status": "valid",
                 })
                 break

@@ -8,6 +8,7 @@ import json
 import math
 from datetime import datetime, timedelta
 
+from .duration_parser import parse_duration_to_seconds
 from .llm_client import LLMClient
 from .model_profile import ModelRole, _is_unsupported_role_keyword_error
 from .normalizer import FieldNormalizer
@@ -116,13 +117,13 @@ EXTRACTION_SYSTEM = """\
 2. 每一个提取的字段，必须包含 raw_key（用户所用的词）、canonical_key（规范化字段名）、raw_value（用户说原始值）、normalized_value（转换后的标准化值，例如数字、日期等）和 confidence（置信度）。
 3. 通常以最新用户消息为候选值来源；唯一例外是用户本轮明确接受紧邻上一条助手消息中的单一推荐，或明确选定该消息中按顺序展示的编号选项。此时最新用户消息仍是写入授权来源，可以从该助手消息复制被接受的值；不能从更早历史、后台 allowed_values 顺序、并列但未编号的候选或助手未经确认的推测中取值。
 4. 如果最新用户消息中对同一字段出现多个候选或多次反悔/修正，以文本中最后出现的候选为准。
-5. 对于时间信息：将口语时间转换为 YYYY-MM-DDTHH:MM:SS 格式，无时间部分时补 T00:00:00；"现在/当前/立即"等表达必须基于【当前时间】换算。用户提供持续时长时，将其换算为正数秒写入 time_relation；不要自行计算 end_time。没有持续时长时 time_relation 必须为 null。
+5. 对于时间信息：将口语时间转换为 YYYY-MM-DDTHH:MM:SS 格式，无时间部分时补 T00:00:00；"现在/当前/立即"等表达必须基于【当前时间】换算。用户提供持续时长时，将其换算为正数秒写入 time_relation（注意换算规则：半小时=1800，一个半小时=5400，两个半小时=9000，2.5小时=9000，45分钟=2700）；不要自行计算 end_time。没有持续时长时 time_relation 必须为 null。
 6. 对于坐标：normalized_value 提取为 {{"lat": float, "lon": float}} 格式，统一十进制度。
 7. 对于水深：统一转换为米（m）为单位的数值，例如"1千米"→1000，"500m"→500。
 8. 对于任务类型：
 {task_type_rules}
 9. 对于ROV型号：如用户描述模糊（如"深水工作ROV"、"轻型观察"），提取 canonical_key: "rov_description" 字段，不要强行映射型号名。
-10. 严格区分机器人系列与型号：equipment_family 只能填写 robot_families 的系列全名；equipment_type 只能填写该系列 model_variants 的型号全名。用户只明确系列时不得猜测型号；只明确型号时可由后端根据 family_id 补齐系列。
+10. 严格区分机器人系列、型号与具体编号：equipment_family 只能填写 robot_families 的系列全名；equipment_type 只能填写该系列 model_variants 的型号全名；equipment_unit_id 填写具体机器人编号或代号（如"天鹰座001"、"金牛座001"、"LROV-150-001"、"OBSROV-75-001"）。用户提供带有系列前缀的设备代号（如"天鹰座001"、"金牛座001"、"观察级001"）时，必须完整保留系列与编号全称（如 normalized_value: "天鹰座001"），严禁截断为单纯的数字序号（如"001"），以便后端准确消歧。用户只明确系列时不得猜测型号；只明确型号或具体编号代号时可由后端自动补齐完整系列与型号。
 11. 若确定ROV型号，可自动识别出ROV类型：{ROV2type}
 12. 机器人能力、最大水深、载荷、功率、尺寸、状态、任务阈值和作业限制必须以所需字段、允许值、ROV2type和后续知识库/约束校验为准；不得凭通用知识补全或改写配置中没有的信息。
 13. 仅当用户明确提及无歧义的紧急词汇（如"紧急"、"加急"、"应急救援"、"应急抢修"等）时，才可提取 canonical_key: "emergency_mode" 且 normalized_value: true。严禁因语气词、标点符号（如感叹号）或"赶紧/优先"等泛化词语擅自判断为紧急模式。若用户明确表示"取消紧急"、"非紧急"、"正常模式"、"按普通模式"、"不紧急"等，提取 canonical_key: "emergency_mode" 且 normalized_value: false。
@@ -384,7 +385,7 @@ class ParameterExtractor:
                 "content": (
                     "你是时间关系抽取器，只判断最新输入是否明确给出任务持续时长。"
                     "必须输出 has_duration、duration_seconds、raw_text、confidence。"
-                    "存在时长时 has_duration=true，将时长换算为正数秒并保留原文；"
+                    "存在时长时 has_duration=true，将时长换算为正数秒并保留原文（换算参考：半小时=1800，一个半小时=5400，两个半小时=9000，2.5小时=9000，45分钟=2700）；"
                     "不存在时 has_duration=false，其余可空字段为 null。只输出 JSON。"
                 ),
             },
@@ -427,21 +428,29 @@ class ParameterExtractor:
             return candidates, []
         if "end_time" not in allowed_keys:
             return candidates, ["当前任务不支持结束时间，持续时长未写入。"]
-        if any(
-            isinstance(item, dict) and item.get("canonical_key") == "end_time"
-            for item in candidates
-        ):
-            return candidates, []
+
+        raw_text = str(relation.get("raw_text") or "持续时长").strip()
+        parsed_rule_seconds = parse_duration_to_seconds(raw_text)
 
         raw_seconds = relation.get("duration_seconds")
         raw_confidence = relation.get("confidence")
         if isinstance(raw_seconds, bool) or isinstance(raw_confidence, bool):
             return candidates, ["持续时长协议非法，未写入结束时间。"]
+
+        # 优先使用确定性规则解析出来的秒数（修复模型可能的数量词换算幻觉），否则使用模型秒数
+        if parsed_rule_seconds is not None and parsed_rule_seconds > 0:
+            duration_seconds = parsed_rule_seconds
+        else:
+            try:
+                duration_seconds = float(raw_seconds)
+            except (TypeError, ValueError):
+                return candidates, ["持续时长协议非法，未写入结束时间。"]
+
         try:
-            duration_seconds = float(raw_seconds)
             confidence = float(raw_confidence)
         except (TypeError, ValueError):
             return candidates, ["持续时长协议非法，未写入结束时间。"]
+
         if (
             not math.isfinite(duration_seconds)
             or not math.isfinite(confidence)
@@ -455,7 +464,7 @@ class ParameterExtractor:
             if isinstance(item, dict) and item.get("canonical_key") == "start_time":
                 start_value = item.get("normalized_value")
                 break
-        raw_text = str(relation.get("raw_text") or "持续时长").strip()
+
         if not start_value:
             return candidates, [f"{raw_text}：缺少开始时间，无法计算结束时间。"]
 
@@ -471,6 +480,13 @@ class ParameterExtractor:
             return candidates, [f"{raw_text}：开始时间格式非法，无法计算结束时间。"]
 
         end_time = start_time + timedelta(seconds=duration_seconds)
+
+        # 过滤掉 candidates 中模型可能自行心算/推导的旧 end_time，确保以确定性加法为准
+        filtered_candidates = [
+            item for item in candidates
+            if not (isinstance(item, dict) and item.get("canonical_key") == "end_time")
+        ]
+
         derived = {
             "raw_key": "持续时长",
             "canonical_key": "end_time",
@@ -479,7 +495,7 @@ class ParameterExtractor:
             "confidence": confidence,
             "resolution_method": "duration_arithmetic",
         }
-        return [*candidates, derived], []
+        return [*filtered_candidates, derived], []
 
 
     @staticmethod

@@ -44,6 +44,12 @@ class SimulatedTime:
         """兼容接口，无实际作用"""
         pass
 
+    def reset(self):
+        """重置模拟时间，恢复使用系统真实时间"""
+        with self._lock:
+            self._simulated_start = None
+            self._base_real_time = None
+
     def set_current_time(self, dt: datetime):
         """设置模拟当前时间"""
         tz = ZoneInfo("Asia/Shanghai")

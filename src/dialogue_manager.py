@@ -892,7 +892,7 @@ class DialogueManager:
         kb_evidence = self.kb.execute_typed_query(route.query_intent, user_message, context=context)
         logger.info(
             "[KNOWLEDGE_QUERY] request_id=%s requested=%s effective=%s "
-            "subject_type=%s subject_text=%r matched_entity=%s found=%s",
+            "subject_type=%s subject_text=%r matched_entity=%s found=%s reason=%s raw_ev=%s",
             request_id,
             route.query_intent,
             kb_evidence.get("query_type"),
@@ -900,6 +900,8 @@ class DialogueManager:
             context.get("subject_text"),
             kb_evidence.get("matched_entity"),
             kb_evidence.get("found"),
+            kb_evidence.get("reason"),
+            kb_evidence,
         )
         if not kb_evidence.get("found"):
             reason = kb_evidence.get("reason")
@@ -1562,6 +1564,17 @@ class DialogueManager:
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
+
+        if self.phase == "done":
+            is_new_task = any(kw in user_message for kw in ["重新", "新任务", "创建", "新建", "重置"]) or any(user_message.startswith(kw) for kw in ["安排", "派", "我想做", "开始做"])
+            if not is_new_task:
+                self._switch_dialogue_mode("task_collection", source="user_input", reason="已发布任务尝试修改")
+                intent_id = self.task_state.get("intent_id") or (self._last_built_json.get("intent_id") if isinstance(self._last_built_json, dict) else None)
+                intent_detail = f"（任务ID: {intent_id}）" if intent_id else ""
+                reply = f"当前任务已正式确认发布{intent_detail}并归档，无法就地修改参数。如需调整，请点击“重新开始”创建新任务，或提交工单变更申请。"
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
 
         # 发布确认是安全边界；软警告语义由结构化 InteractionPlan 决定。
         if self.phase == "blocked_hard" and (
@@ -2293,7 +2306,7 @@ class DialogueManager:
 
             if transition_state_active:
                 self._clear_non_inherited_transition_slots(new_slots)
-            raw_linked = self._link_oilfield_update_in_transaction({k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, new_slots)
+            raw_linked = self._link_oilfield_update_in_transaction({k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, new_slots, user_message=user_message)
             if "oilfield_name" in stage2_updates and "oilfield_name" not in raw_linked:
                 stage2_updates.pop("oilfield_name", None)
                 merged_updates.pop("oilfield_name", None)
@@ -2461,6 +2474,26 @@ class DialogueManager:
                 for u in extraction_res["unresolved"]:
                     if u not in new_unresolved:
                         new_unresolved.append(u)
+
+        # 强制保障：当油田已标准识别且用户未输入显式坐标时，强制使用油田权威基准坐标，消除大模型幻觉坐标
+        of_id_slot = new_slots.get("oilfield_entity_id")
+        if of_id_slot and of_id_slot.status == "valid" and of_id_slot.value:
+            has_explicit_coord = False
+            if user_message:
+                kw = ["北纬", "南纬", "东经", "西经", "纬度", "经度", "坐标", "lat", "lon", "coord"]
+                if any(k in user_message.lower() for k in kw) or re.search(r"[（(]\s*[-+]?\d+(?:\.\d*)?\s*[,，、/]\s*[-+]?\d+(?:\.\d*)?\s*[）)]", user_message):
+                    has_explicit_coord = True
+            if not has_explicit_coord:
+                try:
+                    ctx_res = self.oilfield_linker.evaluate_context(entity_id=str(of_id_slot.value))
+                    if ctx_res and ctx_res.default_coordinates:
+                        if "oilfield_coordinates" not in new_slots:
+                            new_slots["oilfield_coordinates"] = Slot("oilfield_coordinates")
+                        new_slots["oilfield_coordinates"].value = ctx_res.default_coordinates
+                        new_slots["oilfield_coordinates"].status = "valid"
+                        new_slots["oilfield_coordinates"].source = "oilfield_default"
+                except Exception:
+                    pass
 
         # Compute proposed mode change without mutating self.mode before commit
         proposed_mode = self.mode
@@ -2652,13 +2685,13 @@ class DialogueManager:
                       "oilfield_coordinates", "wellhead_id"}
 
         if not missing and self.phase not in ("blocked_hard", "blocked_soft"):
-            constraint_context = self._run_constraint_check(ALL_FIELDS)
+            constraint_context = self._run_constraint_check(ALL_FIELDS, purpose="preview")
         elif not missing and self.phase == "blocked_soft":
-            constraint_context = self._run_constraint_check(changed_fields)
+            constraint_context = self._run_constraint_check(changed_fields, purpose="preview")
         elif not missing and self.phase == "blocked_hard":
-            constraint_context = self._run_constraint_check(ALL_FIELDS)
+            constraint_context = self._run_constraint_check(ALL_FIELDS, purpose="preview")
         else:
-            constraint_context = self._run_constraint_check(changed_fields)
+            constraint_context = self._run_constraint_check(changed_fields, purpose="interactive")
 
         # 约束处理可能把 blocked_soft/blocked_hard 解除为 collecting。若此时
         # 必填字段已经齐全，必须继续完成本轮状态收敛，不能停在“无缺失但仍收集”。
@@ -2881,7 +2914,7 @@ class DialogueManager:
 
 
 
-    def _link_oilfield_update_in_transaction(self, updates: dict, new_slots: dict) -> dict:
+    def _link_oilfield_update_in_transaction(self, updates: dict, new_slots: dict, user_message: str = "") -> dict:
         raw_name = updates.get("oilfield_name") or updates.get("raw_oilfield_name")
         if isinstance(raw_name, dict):
             raw_name = raw_name.get("value")
@@ -2936,6 +2969,31 @@ class DialogueManager:
             new_slots["oilfield_entity_id"].value = match.entity_id
             new_slots["oilfield_entity_id"].status = "valid"
             linked["__clear_pending_oilfield"] = True
+
+            # 自动映射油田坐标（若用户未上报自定义坐标）
+            existing_coord_slot = new_slots.get("oilfield_coordinates")
+            has_user_custom_coord = (
+                "oilfield_coordinates" in updates
+                or (
+                    existing_coord_slot
+                    and existing_coord_slot.status == "valid"
+                    and existing_coord_slot.value is not None
+                    and getattr(existing_coord_slot, "source", None) != "oilfield_default"
+                )
+            )
+            if not has_user_custom_coord and match.entity_id:
+                try:
+                    ctx_res = self.oilfield_linker.evaluate_context(entity_id=match.entity_id)
+                    if ctx_res and ctx_res.default_coordinates:
+                        default_coord = ctx_res.default_coordinates
+                        linked["oilfield_coordinates"] = default_coord
+                        if "oilfield_coordinates" not in new_slots:
+                            new_slots["oilfield_coordinates"] = Slot("oilfield_coordinates")
+                        new_slots["oilfield_coordinates"].value = default_coord
+                        new_slots["oilfield_coordinates"].status = "valid"
+                        new_slots["oilfield_coordinates"].source = "oilfield_default"
+                except Exception:
+                    pass
         else:
             linked.pop("oilfield_name", None)
             for k in ("pending_oilfield_name", "pending_oilfield_candidates"):
@@ -4109,7 +4167,8 @@ class DialogueManager:
                 active_cls_slot = equipment_before.get("equipment_class")
                 if active_cls_slot and active_cls_slot.status in ("valid", "conflict") and active_cls_slot.value is not None:
                     res_cls_id = self.kb._resolve_class_key(str(cls_in))
-                    if res_cls_id and res_cls_id != active_cls_slot.value:
+                    active_cls_id = self.kb._resolve_class_key(str(active_cls_slot.value)) or str(active_cls_slot.value)
+                    if res_cls_id and active_cls_id and res_cls_id != active_cls_id:
                         highest_conflict_key = "equipment_class"
                         highest_candidate_val = cls_in
                         highest_conflict_reason = f"Robot class '{cls_in}' conflicts with active valid class '{active_cls_slot.value}'"
@@ -4123,7 +4182,7 @@ class DialogueManager:
                         res_fam = self.kb.resolve_robot_family(str(fam_in), task_type)
                         if res_fam:
                             active_fam_id = self.kb.resolve_robot_family_id(str(active_fam_slot.value), task_type)
-                            if res_fam.get("family_id") != active_fam_id:
+                            if res_fam.get("family_id") and active_fam_id and res_fam.get("family_id") != active_fam_id:
                                 highest_conflict_key = "equipment_family"
                                 highest_candidate_val = fam_in
                                 highest_conflict_reason = f"Robot family '{fam_in}' conflicts with active valid family '{active_fam_slot.value}'"
@@ -4416,6 +4475,28 @@ class DialogueManager:
                     str(unit_update),
                     None,
                 )
+
+            if not resolved_unit:
+                unit_raw = None
+                raw_item = updates.get("equipment_unit_id") or updates.get("equipment_name")
+                if isinstance(raw_item, dict):
+                    unit_raw = raw_item.get("raw_value")
+                if unit_raw and isinstance(unit_raw, str) and unit_raw != str(unit_update):
+                    resolved_unit = self.kb.resolve_robot_unit(
+                        str(unit_raw),
+                        task_type,
+                        str(variant_context) if variant_context else None,
+                    )
+                    if not resolved_unit and not task_type:
+                        resolved_unit = self.kb.resolve_robot_unit(
+                            str(unit_raw),
+                            None,
+                        )
+
+            if not resolved_unit and hasattr(self.kb, "resolve_robot_unit_from_text") and getattr(self, "conversation_history", None):
+                last_user_msg = next((m.get("content") for m in reversed(self.conversation_history) if isinstance(m, dict) and m.get("role") == "user"), "")
+                if last_user_msg:
+                    resolved_unit = self.kb.resolve_robot_unit_from_text(last_user_msg, task_type)
 
             if resolved_unit and task_type and not self.kb.robot_matches_task(resolved_unit.get("robot"), task_type):
                 resolved_unit = None
@@ -5509,12 +5590,12 @@ class DialogueManager:
 
         return new_violations
 
-    def _run_constraint_check(self, changed_fields: set[str]) -> dict:
+    def _run_constraint_check(self, changed_fields: set[str], purpose: str = "interactive") -> dict:
         """执行约束检查，返回上下文"""
         if not changed_fields and self.phase not in ("blocked_hard", "blocked_soft"):
             return {"type": "none", "violations": [], "hard_refusal_counts": {}}
 
-        val_res = self._refresh_validation(purpose="interactive", changed_fields=changed_fields)
+        val_res = self._refresh_validation(purpose=purpose, changed_fields=changed_fields)
         new_violations = self._merge_oilfield_context_violations(val_res.violations)
 
         current_hard = [
@@ -6275,12 +6356,21 @@ class DialogueManager:
                         status="valid",
                         value_type=vtype,
                     )
+            if task_type_key and ("internal_id" not in new_slots or new_slots["internal_id"].value is None):
+                new_slots["internal_id"] = Slot(
+                    slot_name="internal_id",
+                    value=str(uuid.uuid4()),
+                    status="valid",
+                    value_type="string",
+                    source="snapshot_migration",
+                )
             # Route the migrated flat state through SlotStore's authoritative
             # snapshot validator before committing it to the candidate
             # manager.  This keeps legacy restore behavior aligned with v2
             # snapshots (including exact selector rules and alias migration)
             # without mutating the live manager on failure.
             migrated_snapshot = candidate_store.export_snapshot()
+            migrated_snapshot["snapshot_schema_version"] = None
             migrated_snapshot["slots"] = {
                 key: slot.to_dict()
                 for key, slot in new_slots.items()

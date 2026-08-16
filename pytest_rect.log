@@ -1,0 +1,36 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /root/miniconda3/envs/seagent/bin/python3.12
+cachedir: .pytest_cache
+rootdir: /root/mzy/seagent1.0-main_asr
+configfile: pyproject.toml
+plugins: anyio-4.13.0
+collecting ... collected 4 items
+
+test_rectified_defects.py::test_no_negative_coordinate_hallucination PASSED [ 25%]
+test_rectified_defects.py::test_no_self_class_conflict PASSED            [ 50%]
+test_rectified_defects.py::test_post_publish_guidance PASSED             [ 75%]
+test_rectified_defects.py::test_burial_sonar_payload FAILED              [100%]
+
+=================================== FAILURES ===================================
+__________________________ test_burial_sonar_payload ___________________________
+
+    def test_burial_sonar_payload():
+        """缺陷 5: 管缆埋设包含声呐与喷冲模块时，载荷规范化包含前视声呐"""
+        fn = FieldNormalizer()
+>       res = fn.normalize_field("payload", ["高压水射流喷冲埋设模块", "前视声呐"], "pipeline_burial")
+              ^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'FieldNormalizer' object has no attribute 'normalize_field'. Did you mean: '_normalize_list'?
+
+test_rectified_defects.py:35: AttributeError
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED test_rectified_defects.py::test_burial_sonar_payload - AttributeError:...
+=================== 1 failed, 3 passed, 2 warnings in 4.90s ====================
+sys:1: DeprecationWarning: builtin type swigvarlink has no __module__ attribute

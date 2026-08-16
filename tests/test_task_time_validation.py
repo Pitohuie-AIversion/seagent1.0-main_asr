@@ -68,6 +68,9 @@ class TaskTimeValidationTest(unittest.TestCase):
         )
         self.validator = TaskValidator(FakeKnowledgeBase())
 
+    def tearDown(self):
+        get_simulated_time().reset()
+
     def test_allows_start_time_slightly_before_current_time(self):
         violations = self.validator.validate({"start_time": "2026-06-30T17:37:59"})
 

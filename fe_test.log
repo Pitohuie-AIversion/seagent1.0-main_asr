@@ -1,0 +1,38 @@
+================================================================================
+🌐 1. 测试所有前端 REST API 端点
+================================================================================
+  ✅ GET / (首页 HTML 加载正常，包含容器与挂载点)
+  ✅ GET /api/time/current (当前模拟时间接口正常: None)
+  ✅ GET /api/history/list (返回 0 条历史会话)
+  ✅ POST /api/robot/set-state-info (机器人状态更新接口正常)
+  ✅ GET /api/session/state (会话瞬时状态接口正常)
+  ✅ POST /api/translate (翻译接口返回: 400)
+  ✅ POST /api/reset (会话重置与清理接口正常)
+  ✅ GET /api/dev/reload (开发热重载接口正常)
+
+================================================================================
+📊 2. 测试前端 UI State 契约完整性 (Actions, Slots, Constraints)
+================================================================================
+  ✅ 前端操作按钮权限集合: {'can_cancel': True, 'can_confirm': False, 'can_ignore_soft_warning': True, 'can_modify': True, 'can_publish': False, 'can_send': True}
+  ✅ 前端槽位看板共展示 13 个字段:
+     ✓ [task_type] 任务类型: 管缆巡检 (Status: valid)
+     ✗ [start_time] 任务开始时间: None (Status: missing)
+     ✗ [end_time] 任务结束时间: None (Status: missing)
+     ✗ [cable_type] 管缆类型: None (Status: missing)
+     ✗ [start_point] 起始点经纬度: None (Status: missing)
+     ✗ [end_point] 结束点经纬度: None (Status: missing)
+     ✓ [water_depth] 水深（米）: 300.0 (Status: valid)
+     ✓ [equipment_class] 机器人类别: observation_rov (Status: valid)
+     ✓ [equipment_family] 作业机器人系列: 观察级深海机器人 (Status: valid)
+     ✓ [equipment_type] 作业设备型号: 观察级深海机器人 75HP (Status: valid)
+     ✓ [equipment_unit_id] 具体机器人编号: OBSROV-75-001 (Status: valid)
+     ✗ [payload] 携带工具: None (Status: missing)
+     ✗ [support_vessel] 支持船编号: None (Status: missing)
+  ✅ 约束与风险看板: overall_status=blocked_soft, soft_warnings=1, hard_violations=0
+
+================================================================================
+🎙️ 3. 测试前端语音 ASR 上传与转写接口
+================================================================================
+  ASR 返回状态码: 400
+  ASR 接口返回内容: {'code': 400, 'error': 'missing_file', 'msg': "missing audio file (expected form field: 'audio')", 'ok': False, 'request_id': 'req_809f4ea5', 'retryable': False}
+  ✅ POST /api/asr (语音上传通道与转写管道联通正常)

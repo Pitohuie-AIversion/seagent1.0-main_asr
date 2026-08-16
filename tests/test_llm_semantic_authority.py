@@ -324,7 +324,7 @@ def test_completed_update_that_resolves_soft_block_enters_confirmation() -> None
     dm.task_state = dm.slot_store.get_task_state()
     dm.phase = "blocked_soft"
     dm._run_constraint_check = MagicMock(
-        side_effect=lambda changed: (
+        side_effect=lambda changed, *args, **kwargs: (
             setattr(dm, "phase", "collecting")
             or {"type": "none", "violations": [], "hard_refusal_counts": {}}
         )
@@ -1317,4 +1317,58 @@ def test_ensure_constraint_details_deduplicates_paraphrased_warning() -> None:
     result = dm._ensure_constraint_details(model_reply, constraint_context)
     # 不应再在末尾追加重复的 [C010] 警告块
     assert result == model_reply
+
+
+def test_duration_relation_corrects_chinese_two_and_half_hours() -> None:
+    # 模拟大模型将“两个半小时”误换算为 5400 秒 (1.5小时)
+    llm = ScriptedLLM(
+        extractions=[
+            {
+                "slot_candidates": [
+                    slot_candidate(
+                        "start_time",
+                        "2026-08-14T17:30:00",
+                        raw_key="开始时间",
+                        raw_value="下午五点半",
+                    ),
+                    # 模拟模型自行心算出错生成了 19:00:00
+                    slot_candidate(
+                        "end_time",
+                        "2026-08-14T19:00:00",
+                        raw_key="结束时间",
+                        raw_value="晚上七点",
+                    ),
+                ],
+                "list_mutations": [],
+                "time_relation": {
+                    "duration_seconds": 5400,  # 模型误算
+                    "raw_text": "持续两个半小时",
+                    "confidence": 0.95,
+                },
+                "unresolved": [],
+            }
+        ]
+    )
+    extractor = ParameterExtractor(llm)
+
+    result = extractor.extract_updates(
+        "任务今天下午五点半开始 持续两个半小时",
+        current_state={"task_type_key": "pipeline_inspection"},
+        task_type_key="pipeline_inspection",
+        required=[
+            {"key": "start_time", "type": "datetime"},
+            {"key": "end_time", "type": "datetime"},
+        ],
+    )
+
+    candidates = {
+        item["canonical_key"]: item
+        for item in result["slot_candidates"]
+    }
+    assert candidates["start_time"]["normalized_value"] == "2026-08-14T17:30:00"
+    # 规则解析纠偏：两个半小时应为 2.5h (9000s)，17:30 + 2.5h = 20:00:00
+    assert candidates["end_time"]["normalized_value"] == "2026-08-14T20:00:00"
+    assert candidates["end_time"]["resolution_method"] == "duration_arithmetic"
+    assert result["unresolved"] == []
+
 

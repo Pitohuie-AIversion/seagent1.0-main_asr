@@ -30,8 +30,12 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 _ARABIC_NUM = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
 _CHINESE_NUM = r"[负零〇一二两三四五六七八九十百千万点]+"
 _VALUE = rf"(?:{_ARABIC_NUM}|{_CHINESE_NUM})"
-_SEP = r"(?:\s*[,，、/]\s*|\s*逗号\s*|\s+)"
-_PAIR_RE = re.compile(rf"[（(]?\s*({_VALUE}){_SEP}({_VALUE})\s*[）)]?")
+# 无括号时必须有明确分隔标点（逗号、顿号、斜杠），避免将日期与时间（如 2026-08-20 15:00）误匹配为 (-20, 15)
+_SEP_STRICT = r"(?:\s*[,，、/]\s*|\s*逗号\s*)"
+_PAIR_RE = re.compile(
+    rf"(?:[（(]\s*({_VALUE})\s*(?:{_SEP_STRICT}|\s+)\s*({_VALUE})\s*[）)]|"
+    rf"({_VALUE}){_SEP_STRICT}({_VALUE}))"
+)
 _LAT_LON_RE = re.compile(
     rf"(?:纬度|北纬|lat(?:itude)?)\s*[:：=为是]?\s*({_VALUE})\s*度?"
     rf".{{0,30}}?"
@@ -171,7 +175,9 @@ def _extract_first_coord(text: str) -> dict[str, float] | None:
 
     match = _PAIR_RE.search(text)
     if match:
-        return _normalize_coord(match.group(1), match.group(2))
+        lat_val = match.group(1) or match.group(3)
+        lon_val = match.group(2) or match.group(4)
+        return _normalize_coord(lat_val, lon_val)
 
     return None
 
@@ -204,7 +210,9 @@ def _extract_all_coords(text: str) -> list[dict[str, float]]:
     if not coords:
         for match in _PAIR_RE.finditer(text):
             if not _overlaps(match.start(), match.end()):
-                coord = _normalize_coord(match.group(1), match.group(2))
+                lat_val = match.group(1) or match.group(3)
+                lon_val = match.group(2) or match.group(4)
+                coord = _normalize_coord(lat_val, lon_val)
                 if coord:
                     coords.append(coord)
                     seen_spans.append((match.start(), match.end()))
