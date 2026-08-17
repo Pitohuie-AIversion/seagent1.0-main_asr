@@ -137,17 +137,13 @@ class P0FinalConsistencyDefectTest(unittest.TestCase):
                     )
                 )
 
-                self.dm.process("水深改成500米")
+                reply = self.dm.process("水深改成500米")
 
-                self.assertEqual(len(self.llm.classify_calls), 1)
-                self.assertEqual(len(self.llm.extract_calls), 1)
-                self.assertNotEqual(self.dm.phase, "done")
-                self.assertIsNone(self.dm.final_result)
-                self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 500.0)
-
-                new_intent_id = self.dm.slot_store.slots["intent_id"].value
-                self.assertIsNotNone(new_intent_id)
-                self.assertNotEqual(new_intent_id, orig_intent_id)
+                self.assertEqual(self.dm.phase, "done")
+                self.assertIn("已正式确认发布", reply)
+                self.assertIn("无法就地修改参数", reply)
+                self.assertEqual(self.dm.final_result, orig_final_result)
+                self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 300.0)
 
                 with open(final_files_1[0], "r", encoding="utf-8") as file_obj:
                     orig_file_data = json.load(file_obj)
@@ -156,16 +152,6 @@ class P0FinalConsistencyDefectTest(unittest.TestCase):
 
                 final_files_2 = list(tmp_path.glob("task_intent_*.json"))
                 self.assertEqual(len(final_files_2), 1)
-
-                self.dm.process("确认发布")
-
-                self.assertEqual(len(self.llm.classify_calls), 1)
-                self.assertEqual(len(self.llm.extract_calls), 1)
-                self.assertEqual(self.dm.phase, "done")
-                final_files_3 = list(tmp_path.glob("task_intent_*.json"))
-                self.assertEqual(len(final_files_3), 2)
-                self.assertEqual(self.dm.final_result["intent_id"], new_intent_id)
-                self.assertEqual(self.dm.final_result["water_depth"], 500.0)
 
     def test_done_repeat_confirmation_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -206,7 +192,7 @@ class P0FinalConsistencyDefectTest(unittest.TestCase):
                 )
 
     def test_p2_done_modification_commit_failure_rollback(self):
-        """done 状态修改提交失败时，完整回滚已发布状态与 SlotStore。"""
+        """done 状态就地修改被安全拦截，完整保留已发布状态与 SlotStore。"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
             tmp_path.mkdir(parents=True, exist_ok=True)
@@ -242,17 +228,11 @@ class P0FinalConsistencyDefectTest(unittest.TestCase):
                     )
                 )
 
-                with patch.object(
-                    self.dm.slot_store,
-                    "commit_transaction",
-                    side_effect=SlotVersionConflict("Version conflict simulation"),
-                ):
-                    with self.assertRaises(SlotVersionConflict):
-                        self.dm.process("水深改成500米")
+                reply = self.dm.process("水深改成500米")
 
-                self.assertEqual(len(self.llm.classify_calls), 1)
-                self.assertEqual(len(self.llm.extract_calls), 1)
                 self.assertEqual(self.dm.phase, "done")
+                self.assertIn("已正式确认发布", reply)
+                self.assertIn("无法就地修改参数", reply)
                 self.assertEqual(self.dm.final_result, orig_final_result)
                 self.assertEqual(self.dm.slot_store.export_snapshot(), orig_snapshot)
 

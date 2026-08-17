@@ -1566,8 +1566,10 @@ class DialogueManager:
             return reply
 
         if self.phase == "done":
-            is_new_task = any(kw in user_message for kw in ["重新", "新任务", "创建", "新建", "重置"]) or any(user_message.startswith(kw) for kw in ["安排", "派", "我想做", "开始做"])
-            if not is_new_task:
+            is_control_cmd = any(kw in user_message for kw in ["停止", "暂停", "终止", "取消", "stop", "pause", "abort", "cancel"])
+            is_new_task_cmd = any(kw in user_message for kw in ["重新", "新任务", "创建", "新建", "重置"]) or any(user_message.startswith(kw) for kw in ["安排", "派", "我想做", "开始做"])
+            is_query_cmd = any(user_message.startswith(kw) for kw in ["查询", "什么是", "介绍", "怎么", "如何"])
+            if not is_control_cmd and not is_new_task_cmd and not is_query_cmd:
                 self._switch_dialogue_mode("task_collection", source="user_input", reason="已发布任务尝试修改")
                 intent_id = self.task_state.get("intent_id") or (self._last_built_json.get("intent_id") if isinstance(self._last_built_json, dict) else None)
                 intent_detail = f"（任务ID: {intent_id}）" if intent_id else ""
@@ -1575,14 +1577,28 @@ class DialogueManager:
                 self.conversation_history.append({"role": "user", "content": user_message})
                 self.conversation_history.append({"role": "assistant", "content": reply})
                 return reply
-
-        # 发布确认是安全边界；软警告语义由结构化 InteractionPlan 决定。
         if self.phase == "blocked_hard" and (
             self._is_confirmation_only(user_message)
             or self._is_final_publish_confirmation(user_message)
             or self._is_ignore_warning(user_message)
         ):
-            return self._reject_hard_constraint_bypass(user_message)
+            val_res = self._refresh_validation(purpose="interactive")
+            current_hard = [v for v in val_res.violations if v.severity == "hard"]
+            if current_hard:
+                self._blocking_violations = current_hard
+                return self._reject_hard_constraint_bypass(user_message)
+            else:
+                current_soft = [v for v in val_res.violations if v.severity == "soft"]
+                if current_soft:
+                    self.phase = "blocked_soft"
+                    self._blocking_violations = current_soft
+                    if self._is_ignore_warning(user_message):
+                        return self._handle_task_confirm(user_message, request_id)
+                else:
+                    self.phase = "confirming"
+                    self._blocking_violations = []
+                    if self._is_final_publish_confirmation(user_message) or self._is_confirmation_only(user_message):
+                        return self._handle_task_confirm(user_message, request_id)
 
         if self.phase == "blocked_soft" and self._is_final_publish_confirmation(user_message):
             reply = "当前仍存在软警告。请先修改相关参数，或明确接受当前软警告后继续。"
@@ -1666,6 +1682,17 @@ class DialogueManager:
 
         if route.interaction_type == "QUERY":
             return self._handle_non_task_route(user_message, route, request_id)
+
+        if self.phase == "done":
+            is_new_task = any(kw in user_message for kw in ["重新", "新任务", "创建", "新建", "重置"]) or any(user_message.startswith(kw) for kw in ["安排", "派", "我想做", "开始做"])
+            if not is_new_task:
+                self._switch_dialogue_mode("task_collection", source="user_input", reason="已发布任务尝试修改")
+                intent_id = self.task_state.get("intent_id") or (self._last_built_json.get("intent_id") if isinstance(self._last_built_json, dict) else None)
+                intent_detail = f"（任务ID: {intent_id}）" if intent_id else ""
+                reply = f"当前任务已正式确认发布{intent_detail}并归档，无法就地修改参数。如需调整，请点击“重新开始”创建新任务，或提交工单变更申请。"
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
 
         compound_request = analyze_task_request(
             user_message,

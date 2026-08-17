@@ -567,13 +567,12 @@ def GET_SHADOW_CASE_DEFINITIONS() -> list[dict]:
                 )
             )
         )
-        dm.process("修改水深为500米", request_id="req_a15")
-        assert dm.slot_store.version > version_before
-        assert dm.slot_store.get_task_state().get("water_depth") == 500.0
+        reply = dm.process("修改水深为500米", request_id="req_a15")
+        assert "已正式确认发布" in reply and "无法就地修改参数" in reply
+        assert dm.slot_store.version == version_before
+        assert dm.slot_store.get_task_state().get("water_depth") == 300.0
         assert dm.control_state == "stop_requested"
         assert dm.last_control_request["target_intent_id"] == "TI202608090001"
-        assert len(dm.llm.classify_calls) == 1
-        assert len(dm.llm.extract_calls) == 1
 
     # A16
     def a16_action(dm, td):

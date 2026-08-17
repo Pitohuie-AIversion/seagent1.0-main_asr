@@ -308,8 +308,9 @@ def test_terminal_task_write_enters_safe_new_draft_pipeline() -> None:
 
     reply = dm.process("把水深改成三百米")
 
-    assert "已发布任务不能修改" not in reply
-    assert llm.extract_calls
+    assert "已正式确认发布" in reply
+    assert "无法就地修改参数" in reply
+    assert dm.phase == "done"
 
 
 def test_robot_class_candidates_include_authoritative_semantic_evidence() -> None:

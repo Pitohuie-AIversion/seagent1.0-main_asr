@@ -336,10 +336,13 @@ class TestConversationExecutionTransitionLegalityV2(unittest.TestCase):
                 "unresolved": [],
             }
         )
-        self.dm.process("修改水深为 500 米")
+        reply = self.dm.process("修改水深为 500 米")
 
         # Audit phase, control_state, last_control_request, target_intent_id
-        self.assertEqual(self.dm.slot_store.get_task_state()["water_depth"], 500.0)
+        self.assertEqual(self.dm.phase, "done")
+        self.assertEqual(self.dm.slot_store.get_task_state()["water_depth"], 300.0)
+        self.assertIn("已正式确认发布", reply)
+        self.assertIn("无法就地修改参数", reply)
         self.assertEqual(self.dm.control_state, "stop_requested")
         self.assertIsNotNone(self.dm.last_control_request)
         self.assertEqual(self.dm.last_control_request["action"], "stop")

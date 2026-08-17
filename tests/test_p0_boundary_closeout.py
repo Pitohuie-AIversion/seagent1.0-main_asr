@@ -115,7 +115,7 @@ class P0BoundaryCloseoutTest(unittest.TestCase):
                 self.assertTrue(orig_file.exists())
                 orig_file_data = json.loads(orig_file.read_text(encoding="utf-8"))
 
-                # Turn 1: Planner 明确判定 WRITE，Extractor 返回完整的非法候选协议。
+                # Turn 1: 已发布任务在未明确开启新任务前禁止就地篡改参数
                 self._queue_write(
                     slot_candidate(
                         "water_depth",
@@ -126,24 +126,17 @@ class P0BoundaryCloseoutTest(unittest.TestCase):
                 )
                 invalid_reply = self.dm.process("水深改为abc")
 
-                self.assertEqual(self.dm.phase, "collecting")
-                self.assertIsNone(self.dm.final_result)
-                invalid_slot = self.dm.slot_store.slots["water_depth"]
-                self.assertEqual(invalid_slot.value, 300.0)
-                self.assertEqual(invalid_slot.status, "conflict")
-                self.assertEqual(invalid_slot.candidate_value, "abc")
-                self.assertEqual(invalid_slot.raw_value, "abc")
-                self.assertIsNotNone(invalid_slot.validation_error)
-                self.assertIn("未写入任务状态", invalid_reply)
-                draft_intent_id = self.dm.slot_store.slots["intent_id"].value
-                self.assertIsNotNone(draft_intent_id)
-                self.assertNotEqual(draft_intent_id, orig_intent_id)
+                self.assertEqual(self.dm.phase, "done")
+                self.assertIsNotNone(self.dm.final_result)
+                self.assertIn("已正式确认发布", invalid_reply)
+                self.assertIn("无法就地修改参数", invalid_reply)
+                self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 300.0)
                 self.assertEqual(
                     json.loads(orig_file.read_text(encoding="utf-8")),
                     orig_file_data,
                 )
 
-                # Turn 2: 显式 WRITE 将合法水深写入，且沿用修订草稿 ID。
+                # Turn 2: 再次输入有效参数尝试修改，同样被安全拦截，原始状态与文件完全不变
                 self._queue_write(
                     slot_candidate(
                         "water_depth",
@@ -152,34 +145,18 @@ class P0BoundaryCloseoutTest(unittest.TestCase):
                         raw_value="500米",
                     )
                 )
-                self.dm.process("水深改成500米")
-
-                self.assertEqual(self.dm.phase, "confirming")
-                self.assertEqual(self.dm.slot_store.slots["intent_id"].value, draft_intent_id)
-                valid_slot = self.dm.slot_store.slots["water_depth"]
-                self.assertEqual(valid_slot.value, 500.0)
-                self.assertEqual(valid_slot.status, "valid")
-                self.assertIsNone(valid_slot.candidate_value)
-                self.assertEqual(len(self.llm.classify_calls), 2)
-                self.assertEqual(len(self.llm.extract_calls), 2)
-
-                # Turn 3: 确认发布
-                self.dm.process("确认发布")
+                second_reply = self.dm.process("水深改成500米")
                 self.assertEqual(self.dm.phase, "done")
-                new_file = tmp_path / f"task_intent_{draft_intent_id}.json"
-                self.assertTrue(new_file.exists())
-                self.assertTrue(orig_file.exists())
-                with open(new_file, "r", encoding="utf-8") as f:
-                    new_data = json.load(f)
-                self.assertEqual(new_data["intent_id"], draft_intent_id)
-                self.assertEqual(new_data["location"]["water_depth_m"], 500.0)
+                self.assertIn("已正式确认发布", second_reply)
+                self.assertIn("无法就地修改参数", second_reply)
+                self.assertEqual(self.dm.slot_store.slots["water_depth"].value, 300.0)
                 self.assertEqual(
                     json.loads(orig_file.read_text(encoding="utf-8")),
                     orig_file_data,
                 )
 
     def test_p1_done_revision_transaction_failure_rollback(self):
-        """done 状态下修改发生 SlotVersionConflict：内存完全回滚到原 done 状态"""
+        """done 状态下尝试就地修改被安全拦截，任务内存与磁盘状态完全保持不变"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
             tmp_path.mkdir(parents=True, exist_ok=True)
@@ -198,7 +175,7 @@ class P0BoundaryCloseoutTest(unittest.TestCase):
                 self.dm.process("确认发布")
                 self.assertEqual(self.dm.phase, "done")
                 orig_result = copy.deepcopy(self.dm.final_result)
-                orig_snapshot = copy.deepcopy(self.dm.export_snapshot())
+                orig_slot_snapshot = copy.deepcopy(self.dm.slot_store.export_snapshot())
                 orig_built = copy.deepcopy(self.dm._last_built_json)
                 orig_missing = copy.deepcopy(self.dm._last_missing)
 
@@ -210,21 +187,15 @@ class P0BoundaryCloseoutTest(unittest.TestCase):
                         raw_value="abc",
                     )
                 )
-                with patch.object(
-                    self.dm.slot_store,
-                    "commit_transaction",
-                    side_effect=SlotVersionConflict("Version error"),
-                ):
-                    with self.assertRaises(SlotVersionConflict):
-                        self.dm.process("水深改为abc")
+                reply = self.dm.process("水深改为abc")
 
                 self.assertEqual(self.dm.phase, "done")
+                self.assertIn("已正式确认发布", reply)
+                self.assertIn("无法就地修改参数", reply)
                 self.assertEqual(self.dm.final_result, orig_result)
-                self.assertEqual(self.dm.export_snapshot(), orig_snapshot)
+                self.assertEqual(self.dm.slot_store.export_snapshot(), orig_slot_snapshot)
                 self.assertEqual(self.dm._last_built_json, orig_built)
                 self.assertEqual(self.dm._last_missing, orig_missing)
-                self.assertEqual(len(self.llm.classify_calls), 1)
-                self.assertEqual(len(self.llm.extract_calls), 1)
 
     # ── 问题二：pending oilfield 的结构化处理与优先级 ──
 
