@@ -70,8 +70,10 @@ def seed_complete_valid_pipeline_task(dm, kb):
     equipment_type = selected_rov["full_name"]
     equipment_unit_id = selected_rov.get("unit_ids", ["OBSROV-75-001"])[0]
 
+    task_commons = kb.assets.get("payload_options", {}).get(task_type_key, {}).get("common", [])
     supported_payloads = selected_rov.get("supported_payloads", [])
-    payload = supported_payloads[:2] if supported_payloads else ["多波束测深仪", "高清水下摄像机"]
+    valid_payloads = [p for p in task_commons if p in supported_payloads]
+    payload = valid_payloads[:2] if valid_payloads else ["激光标尺"]
 
     vessels = [v["id"] for v in kb.assets.get("vessels", []) if v.get("available", True)]
     support_vessel = vessels[0] if vessels else "DSV-Oceanic"
@@ -91,7 +93,7 @@ def seed_complete_valid_pipeline_task(dm, kb):
         "equipment_family": (selected_rov.get("family_full_name") or selected_rov.get("family") or "ROV", "string"),
         "equipment_type": (equipment_type, "string"),
         "equipment_unit_id": (equipment_unit_id, "string"),
-        "payload": (["高清水下摄像机"], "list"),
+        "payload": (payload, "list"),
         "support_vessel": (support_vessel, "string"),
         "intent_id": ("TI2026063001", "string"),
     }

@@ -82,6 +82,12 @@ class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):
                     "equipment_type": robot["full_name"],
                     "equipment_unit_id": unit_id,
                 }
+                supported = robot.get("supported_payloads", [])
+                task_commons = self.kb.assets.get("payload_options", {}).get("pipeline_inspection", {}).get("common", [])
+                valid_p = [p for p in task_commons if p in supported]
+                if not valid_p:
+                    valid_p = supported[:1] if supported else ["侧扫声呐"]
+                equipment_values["payload"] = valid_p[:1]
             else:
                 # Some negative tests intentionally place a family/variant/alias
                 # in the concrete-unit slot to verify fail-closed rejection.

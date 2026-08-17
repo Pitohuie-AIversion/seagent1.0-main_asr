@@ -1,4 +1,4 @@
-store_version: 22
+store_version: 24
 robots:
   CRAWLER-1600-001:
     version: 1
@@ -67,10 +67,10 @@ robots:
     tether_connection_status: normal
     depth: 350
   WROV-250-001:
-    version: 18
-    updated_at: '2026-08-17T11:52:19.960278+08:00'
-    update_timestamp: '2026-08-17T11:52:19.960278+08:00'
-    overall_status: error
+    version: 20
+    updated_at: '2026-08-17T15:36:29.644992+08:00'
+    update_timestamp: '2026-08-17T15:36:29.644992+08:00'
+    overall_status: available
     is_online: true
     is_busy: false
     current_velocity: 0.3
@@ -88,9 +88,9 @@ robots:
     acoustic_comms_status: normal
     tether_connection_status: normal
     depth: 350
-    battery_soc: 1.0
-    hydraulic_pressure_bar: 0.0
-    system_health: critical_failure
+    battery_soc: 95.0
+    hydraulic_pressure_bar: 210.0
+    system_health: normal
     power_kw: 180.0
   LROV-150-001:
     version: 5

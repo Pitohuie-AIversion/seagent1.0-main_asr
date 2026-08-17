@@ -314,7 +314,7 @@ def test_completed_update_that_resolves_soft_block_enters_confirmation() -> None
         "equipment_family": "观察级深海机器人",
         "equipment_type": "观察级深海机器人 75HP",
         "equipment_unit_id": "OBSROV-75-001",
-        "payload": ["成像声呐"],
+        "payload": ["腐蚀检测探头"],
         "support_vessel": "海洋石油681",
     }
     for key, value in complete_values.items():

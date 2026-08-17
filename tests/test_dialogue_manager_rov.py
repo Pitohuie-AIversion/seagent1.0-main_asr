@@ -124,6 +124,25 @@ class DialogueManagerROVTest(unittest.TestCase):
         self.assertIn("严禁输出任何形式的“系统提示”", knowledge_system)
         self.assertIn("当前任务已确认事实", knowledge_system)
         self.assertIn("LROV-150-001", knowledge_system)
+        self.assertIn("根据当前已选槽位聚焦作答", knowledge_system)
+        self.assertIn("严禁跨型号罗列与发散", knowledge_system)
+        self.assertIn("基于已选槽位聚焦作答", task_system)
+
+    def test_tool_query_injects_selected_equipment_info_when_slot_confirmed(self):
+        evidence = self.kb.execute_typed_query(
+            "TOOL_QUERY",
+            "适合带哪些载荷？",
+            context={
+                "task_type_key": "pipeline_inspection",
+                "equipment_type": "轻型工作级深海机器人 150HP",
+            },
+        )
+        self.assertTrue(evidence.get("found"))
+        self.assertIn("selected_equipment_info", evidence)
+        sel_info = evidence["selected_equipment_info"]
+        self.assertEqual(sel_info.get("equipment_type"), "轻型工作级深海机器人 150HP")
+        self.assertIn("用户当前任务已选定该设备", sel_info.get("guidance", ""))
+
 
 
 

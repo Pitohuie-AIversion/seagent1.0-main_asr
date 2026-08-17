@@ -70,7 +70,7 @@ class MultiTurnConsistencyBenchmarkTest(unittest.TestCase):
                 ),
                 extraction_result(
                     list_mutations=[
-                        _payload_addition("高清水下摄像机", "成像声呐")
+                        _payload_addition("腐蚀检测探头", "厚度检测传感器")
                     ],
                 ),
                 extraction_result(
@@ -122,11 +122,11 @@ class MultiTurnConsistencyBenchmarkTest(unittest.TestCase):
         self.assertEqual(state_2["raw_oilfield_name"], "流花11-1油田")
 
         _, state_3 = self._process_write_and_assert_ssot(
-            "携带高清摄像机和成像声呐"
+            "携带腐蚀检测探头和厚度检测传感器"
         )
         self.assertEqual(
             state_3["payload"],
-            ["高清水下摄像机", "成像声呐"],
+            ["腐蚀检测探头", "厚度检测传感器"],
         )
         self.assertEqual(state_3["equipment_unit_id"], "LROV-150-001")
         self.assertEqual(state_3["raw_oilfield_name"], "流花11-1油田")
@@ -138,7 +138,7 @@ class MultiTurnConsistencyBenchmarkTest(unittest.TestCase):
             "raw_oilfield_name": "流花11-1油田",
             "equipment_type": "轻型工作级深海机器人 150HP",
             "equipment_unit_id": "LROV-150-001",
-            "payload": ["高清水下摄像机", "成像声呐"],
+            "payload": ["腐蚀检测探头", "厚度检测传感器"],
             "water_depth": 300.0,
         }
         for key, expected_value in expected_fields.items():

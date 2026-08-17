@@ -1196,7 +1196,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
         ):
             extraction = extraction_result(
                 slot_candidate(selector_key, selector_value),
-                slot_candidate("payload", ["INS惯性导航系统"]),
+                slot_candidate("payload", ["侧扫声呐"]),
             )
             for name, task_patch_flag, normalization_flag in (
                 ("legacy", False, False),
@@ -1215,7 +1215,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
                         "src.dialogue_manager.is_normalization_contract_v2_enabled",
                         return_value=normalization_flag,
                     ):
-                        dm.process("改用AUV并携带INS惯性导航系统")
+                        dm.process("改用AUV并携带侧扫声呐")
 
                     self.assertEqual(
                         dm.task_state.get("equipment_type"),
@@ -1227,7 +1227,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
                     )
                     self.assertEqual(
                         dm.task_state.get("payload"),
-                        ["INS惯性导航系统"],
+                        ["侧扫声呐"],
                     )
 
     def test_unit_only_replaces_old_complete_cascade_before_payload_validation(self):
@@ -1235,7 +1235,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
         for unit_selector in ("AUV-324cc-001", "AUV001"):
             extraction = extraction_result(
                 slot_candidate("equipment_unit_id", unit_selector),
-                slot_candidate("payload", ["INS惯性导航系统"]),
+                slot_candidate("payload", ["侧扫声呐"]),
             )
             for name, task_patch_flag, normalization_flag in (
                 ("legacy", False, False),
@@ -1259,7 +1259,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
                         "src.dialogue_manager.is_normalization_contract_v2_enabled",
                         return_value=normalization_flag,
                     ):
-                        dm.process("改用AUV一号机并携带INS惯性导航系统")
+                        dm.process("改用AUV一号机并携带侧扫声呐")
 
                     self.assertEqual(dm.task_state.get("equipment_class"), "auv")
                     self.assertEqual(
@@ -1276,13 +1276,13 @@ class TestRuntimeV2Integration(unittest.TestCase):
                     )
                     self.assertEqual(
                         dm.task_state.get("payload"),
-                        ["INS惯性导航系统"],
+                        ["侧扫声呐"],
                     )
 
     def test_same_turn_robot_payload_list_mutation_uses_post_update_variant(self):
         """Payload ListMutation 必须使用同轮目标 Variant，合法项接受、非法项拒绝。"""
         for payload_name, should_succeed in (
-            ("USBL定位设备", True),
+            ("侧扫声呐", True),
             ("电磁检测传感器", False),
         ):
             extraction = extraction_result(

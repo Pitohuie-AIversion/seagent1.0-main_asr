@@ -84,7 +84,7 @@ class P0BoundaryCloseoutTest(unittest.TestCase):
         if payload:
             slot = slots["payload"]
             slot.status = "conflict"
-            slot.candidate_value = ["高清水下摄像机", "多功能液压机械臂"]
+            slot.candidate_value = ["腐蚀检测探头", "泄漏检测传感器"]
             slot.validation_error = "候选载荷需要确认"
         self.dm.slot_store.commit_transaction(slots, [], request_id="test_setup_conflicts")
         self.dm._rebuild_cache(commit_derived=False)

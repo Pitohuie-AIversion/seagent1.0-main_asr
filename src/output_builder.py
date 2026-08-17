@@ -899,28 +899,23 @@ class OutputBuilder:
             if eq_type:
                 robot = self.kb.get_rov(eq_type)
                 if robot:
-                    # task_commons 是任务维度的通用推荐工具集；robot.all_payloads 是
-                    # 该型号实际支持的全部载荷（onboard + supported）。
-                    # 合法值 = (task_commons ∩ robot.all_payloads) ∪ robot.onboard_payloads
-                    #
-                    # 设计原则：
-                    # 1. 交集：只保留当前任务场景下有意义、且该机器人实际支持的工具；
-                    # 2. 并集 onboard_payloads：机器人自带的必选传感器（INS、DVL 等）
-                    #    不在 task_commons 中，但属于合法的设备配置，必须允许填写。
-                    robot_all_key = {p.strip().replace(" ", "") for p in robot.get("all_payloads", [])}
-                    task_intersect = [
-                        item for item in task_commons
-                        if item.strip().replace(" ", "") in robot_all_key
-                    ]
-                    onboard = list(robot.get("onboard_payloads", []))
-                    # 去重，保持 task_intersect 顺序在前，onboard 补充在后
-                    seen: set[str] = {item.strip().replace(" ", "") for item in task_intersect}
-                    for item in onboard:
+                    # 当选定机器人后，推荐与合法携带工具只包含该机器支持的扩展载荷 supported_payloads
+                    # （优先按当前任务通用建议集 task_commons 排序，再包含机器的其他 supported_payloads，排除自带设备 onboard_payloads）
+                    robot_supported = list(robot.get("raw_supported_payloads", robot.get("supported_payloads", [])))
+                    robot_supported_map = {p.strip().replace(" ", ""): p for p in robot_supported}
+                    res = []
+                    seen = set()
+                    for item in task_commons:
+                        k = item.strip().replace(" ", "")
+                        if k in robot_supported_map and k not in seen:
+                            res.append(robot_supported_map[k])
+                            seen.add(k)
+                    for item in robot_supported:
                         k = item.strip().replace(" ", "")
                         if k not in seen:
-                            task_intersect.append(item)
+                            res.append(item)
                             seen.add(k)
-                    return task_intersect
+                    return res
             return task_commons
 
         if ref in ("supported_payloads", "onboard_payloads", "all_payloads"):
