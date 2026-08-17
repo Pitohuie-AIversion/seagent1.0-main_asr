@@ -1,4 +1,4 @@
-store_version: 6
+store_version: 16
 robots:
   CRAWLER-1600-001:
     version: 1
@@ -67,9 +67,9 @@ robots:
     tether_connection_status: normal
     depth: 350
   WROV-250-001:
-    version: 3
-    updated_at: '2026-08-16T10:42:52.474005+08:00'
-    update_timestamp: '2026-08-16T10:42:52.474005+08:00'
+    version: 13
+    updated_at: '2026-08-17T09:44:41.451396+08:00'
+    update_timestamp: '2026-08-17T09:44:41.451396+08:00'
     overall_status: available
     is_online: true
     is_busy: false
