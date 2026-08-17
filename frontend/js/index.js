@@ -62,6 +62,7 @@
         setBtn: "设置",
         simtimeHint: "点击设置可自定义基准时间",
         curtask: "当前任务",
+        statusTitle: "阶段与警告",
         collected: "已收集字段",
         missing: "缺失字段",
         finaljson: "最终任务JSON",
@@ -160,6 +161,7 @@
         setBtn: "Set",
         simtimeHint: "Click Set to customize baseline time",
         curtask: "Current Task",
+        statusTitle: "Phase & Warnings",
         collected: "Collected Fields",
         missing: "Missing Fields",
         finaljson: "Final Task JSON",
@@ -386,6 +388,8 @@ Please describe your operational requirements directly, or ask the question you 
       document.getElementById('setTimeBtn').innerText = I18N[currentLang].setBtn;
       document.getElementById('hint-simtime').innerText = I18N[currentLang].simtimeHint;
       document.getElementById('title-curtask').innerText = I18N[currentLang].curtask;
+      const statusTitleEl = document.getElementById('title-status');
+      if (statusTitleEl) statusTitleEl.innerText = I18N[currentLang].statusTitle;
       document.getElementById('title-collected').innerText = I18N[currentLang].collected;
       document.getElementById('title-missing').innerText = I18N[currentLang].missing;
       document.getElementById('title-finaljson').innerText = I18N[currentLang].finaljson;
@@ -791,6 +795,7 @@ Please describe your operational requirements directly, or ask the question you 
         taskInfo.appendChild(emergencyElement);
       }
 
+      const statusDiv = document.getElementById('phaseWarnings');
       const collectedDiv = document.getElementById('collectedFields');
       const missingDiv = document.getElementById('missingFields');
 
@@ -980,25 +985,27 @@ Please describe your operational requirements directly, or ask the question you 
           }
         }
 
-        // 阶段 badge + 约束状态 + 缺失字段
+        // 阶段 badge + 约束状态（单独展示在 阶段与警告 区域）
         const phase = uiState.phase;
-        const taskPhaseLabels = currentLang === 'zh' ? { collecting: '任务收集', confirming: '待确认', blocked_soft: '软警告', blocked_hard: '硬阻断', done: '已完成', rejected: '已拒绝' } : { collecting: 'Task collection', confirming: 'Confirming', blocked_soft: 'Soft warning', blocked_hard: 'Hard blocked', done: 'Done', rejected: 'Rejected' };
-        let phaseLabel = taskPhaseLabels[phase] || phase;
+        const taskPhaseLabels = currentLang === 'zh'
+          ? { collecting: '任务收集', confirming: '待确认', blocked_soft: '软警告', blocked_hard: '硬阻断', done: '已完成', rejected: '已拒绝' }
+          : { collecting: 'Task collection', confirming: 'Confirming', blocked_soft: 'Soft warning', blocked_hard: 'Hard blocked', done: 'Done', rejected: 'Rejected' };
+        let phaseLabel = taskPhaseLabels[phase] || phase || (currentLang === 'zh' ? '暂无' : 'None');
         if (uiState.dialogue_mode === 'knowledge_qa') phaseLabel = currentLang === 'zh' ? '知识问答' : 'Knowledge Q&A';
         if (uiState.dialogue_mode === 'emergency_intervention' || uiState.mode === 'emergency') phaseLabel = currentLang === 'zh' ? '紧急模式' : 'Emergency';
         const phasePrefix = currentLang === 'zh' ? '阶段：' : 'Phase: ';
-        let missingHtml = `<div class="phase-badge" style="margin-bottom:6px; font-size:0.8em; opacity:0.7;">${phasePrefix}${phaseLabel}</div>`;
+        let statusHtml = `<div class="phase-badge" style="margin-bottom:6px; font-size:0.85em;"><span style="opacity:0.75;">${phasePrefix}</span><span style="color:var(--accent-cyan); font-weight:600;">${phaseLabel}</span></div>`;
 
         const cs = uiState.constraint_state || {};
         if (cs.hard_violations && cs.hard_violations.length > 0) {
-          missingHtml += `<div class="constraint-block hard" style="background: rgba(255,77,77,0.1); border: 1px solid rgba(255,77,77,0.4); border-radius:6px; padding:8px; margin-bottom:6px;"><div style="color:#ff4d4d; font-weight:600; margin-bottom:4px;">⛔ 硬约束</div>`;
+          statusHtml += `<div class="constraint-block hard" style="background: rgba(255,77,77,0.1); border: 1px solid rgba(255,77,77,0.4); border-radius:6px; padding:8px; margin-bottom:6px;"><div style="color:#ff4d4d; font-weight:600; margin-bottom:4px;">⛔ 硬约束</div>`;
           for (const v of cs.hard_violations) {
             const nameEl = document.createElement('div');
             nameEl.style.cssText = 'font-size:0.85em; margin-bottom:2px;';
             nameEl.textContent = `[${v.code || ''}] ${v.message || ''}`;
-            missingHtml += nameEl.outerHTML;
+            statusHtml += nameEl.outerHTML;
           }
-          missingHtml += '</div>';
+          statusHtml += '</div>';
         }
 
         // 前端防御性过滤：排除已在 ignored_soft_warnings 中的 constraint_id，
@@ -1010,25 +1017,25 @@ Please describe your operational requirements directly, or ask the question you 
           v => !ignoredCids.has(v.constraint_id)
         );
         if (visibleSoftWarnings.length > 0) {
-          missingHtml += `<div class="constraint-block soft" style="background: rgba(255,190,0,0.1); border: 1px solid rgba(255,190,0,0.4); border-radius:6px; padding:8px; margin-bottom:6px;"><div style="color:#ffbe00; font-weight:600; margin-bottom:4px;">⚠️ 软警告</div>`;
+          statusHtml += `<div class="constraint-block soft" style="background: rgba(255,190,0,0.1); border: 1px solid rgba(255,190,0,0.4); border-radius:6px; padding:8px; margin-bottom:6px;"><div style="color:#ffbe00; font-weight:600; margin-bottom:4px;">⚠️ 软警告</div>`;
           for (const v of visibleSoftWarnings) {
             const nameEl = document.createElement('div');
             nameEl.style.cssText = 'font-size:0.85em; margin-bottom:2px;';
             nameEl.textContent = `[${v.code || ''}] ${v.message || ''}`;
-            missingHtml += nameEl.outerHTML;
+            statusHtml += nameEl.outerHTML;
           }
           if (uiState.actions && uiState.actions.can_ignore_soft_warning) {
             const ignoreBtnText = currentLang === 'zh' ? '⚠️ 忽略软警告' : '⚠️ Ignore Warning';
-            missingHtml += `<div style="margin-top:8px; display:flex; align-items:center; justify-content:space-between; gap:6px;">
+            statusHtml += `<div style="margin-top:8px; display:flex; align-items:center; justify-content:space-between; gap:6px;">
               <span style="font-size:0.8em; opacity:0.7;">输入"忽略警告"或点击：</span>
               <button type="button" class="btn-ignore-warning-action" onclick="window.sendMessage('忽略警告')" style="background: rgba(255,190,0,0.18); border: 1px solid #ffbe00; color: #ffbe00; border-radius: 4px; padding: 4px 10px; font-size: 0.8em; font-weight: 500; cursor: pointer; transition: all 0.2s ease;">${ignoreBtnText}</button>
             </div>`;
           }
-          missingHtml += '</div>';
+          statusHtml += '</div>';
         }
         if (ignoredCids.size > 0) {
-          missingHtml += `<div class="constraint-block ignored-soft" style="background: rgba(100,100,100,0.08); border: 1px solid rgba(255,190,0,0.2); border-radius:6px; padding:6px 8px; margin-bottom:6px; opacity:0.65;">`;
-          missingHtml += `<div style="color:#b8a000; font-size:0.8em; font-weight:600; margin-bottom:2px;">✅ 已忽略软警告</div>`;
+          statusHtml += `<div class="constraint-block ignored-soft" style="background: rgba(100,100,100,0.08); border: 1px solid rgba(255,190,0,0.2); border-radius:6px; padding:6px 8px; margin-bottom:6px; opacity:0.65;">`;
+          statusHtml += `<div style="color:#b8a000; font-size:0.8em; font-weight:600; margin-bottom:2px;">✅ 已忽略软警告</div>`;
           for (const a of (cs.ignored_soft_warnings || [])) {
             const cid = a.constraint_id || '';
             const matchedWarn = (cs.soft_warnings || []).find(w => w.constraint_id === cid);
@@ -1036,13 +1043,20 @@ Please describe your operational requirements directly, or ask the question you 
             const el = document.createElement('div');
             el.style.cssText = 'font-size:0.8em; margin-bottom:1px;';
             el.textContent = msgText;
-            missingHtml += el.outerHTML;
+            statusHtml += el.outerHTML;
           }
-          missingHtml += '</div>';
+          statusHtml += '</div>';
+        }
+        if (statusDiv) {
+          statusDiv.innerHTML = statusHtml;
         }
 
+        // 缺失字段（仅展示缺失字段，不再混杂阶段与警告）
+        let missingHtml = '';
         if (missingSlots.length === 0 && validSlots.length > 0 && candidateSlots.length === 0 && invalidSlots.length === 0) {
-          missingHtml += I18N[currentLang].allCollected;
+          missingHtml = I18N[currentLang].allCollected;
+        } else if (missingSlots.length === 0) {
+          missingHtml = '-';
         } else {
           for (const slot of missingSlots) {
             const labelObj = slot.label || {};
@@ -1060,6 +1074,13 @@ Please describe your operational requirements directly, or ask the question you 
 
       } else {
         // ── compat 路径：旧 collected/missing 字段 ────────────────────────
+        if (statusDiv) {
+          if (data.emergency) {
+            statusDiv.innerHTML = `<div class="phase-badge" style="margin-bottom:6px; font-size:0.85em;"><span style="color:#ff4d4d; font-weight:600;">${I18N[currentLang].emergencyBadge}</span></div>`;
+          } else {
+            statusDiv.innerHTML = '-';
+          }
+        }
         const collected = data.collected || {};
         if (Object.keys(collected).length === 0) {
           collectedDiv.innerHTML = I18N[currentLang].none;
@@ -1080,6 +1101,8 @@ Please describe your operational requirements directly, or ask the question you 
         const missing = data.missing || [];
         if (missing.length === 0 && Object.keys(collected).length > 0) {
           missingDiv.innerHTML = I18N[currentLang].allCollected;
+        } else if (missing.length === 0) {
+          missingDiv.innerHTML = '-';
         } else {
           let html = '';
           for (const m of missing) {
@@ -1687,6 +1710,8 @@ Please describe your operational requirements directly, or ask the question you 
       messageContainer.innerHTML = '';
       addWelcomeMessage();
       document.getElementById('taskInfo').innerHTML = '-';
+      const phaseWarningsEl = document.getElementById('phaseWarnings');
+      if (phaseWarningsEl) phaseWarningsEl.innerHTML = '-';
       document.getElementById('collectedFields').innerHTML = I18N[currentLang].none;
       document.getElementById('missingFields').innerHTML = '-';
       document.getElementById('resultCard').style.display = 'none';

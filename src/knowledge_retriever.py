@@ -2390,6 +2390,13 @@ class KnowledgeBase:
 
         if query_type == "TOOL_QUERY":
             task_type_key = context.get("task_type_key")
+            user_reqs = context.get("user_requirements") if isinstance(context.get("user_requirements"), dict) else {}
+            selected_equipment_type = (
+                context.get("equipment_type")
+                or user_reqs.get("equipment_type")
+                or user_reqs.get("equipment_family")
+                or user_reqs.get("equipment_class")
+            )
             robots = (
                 self.get_task_allowed_robot_variants(task_type_key)
                 if task_type_key
@@ -2397,12 +2404,14 @@ class KnowledgeBase:
             )
             tool_set: set[str] = set()
             equipment_mappings: list[dict] = []
+            selected_equipment_mapping = None
+
             for robot in robots:
                 onboard = list(robot.get("onboard_payloads", []))
                 supported = list(robot.get("supported_payloads", []))
                 all_p = list(robot.get("all_payloads", []))
                 tool_set.update(all_p)
-                equipment_mappings.append({
+                mapping_item = {
                     "equipment_type": robot.get("full_name"),
                     "variant_id": robot.get("variant_id"),
                     "family_id": robot.get("family_id"),
@@ -2410,7 +2419,17 @@ class KnowledgeBase:
                     "onboard_payloads": onboard,
                     "supported_payloads": supported,
                     "all_payloads": all_p,
-                })
+                }
+                equipment_mappings.append(mapping_item)
+
+                if selected_equipment_type and not selected_equipment_mapping:
+                    if selected_equipment_type in (
+                        robot.get("full_name"),
+                        robot.get("variant_id"),
+                        robot.get("family_id"),
+                        robot.get("robot_class_name"),
+                    ):
+                        selected_equipment_mapping = mapping_item
 
             task_payloads = self.assets.get("payload_options", {})
             payload_catalog = self.assets.get("payload_catalog", {})
@@ -2441,6 +2460,17 @@ class KnowledgeBase:
                     "matched_payloads": matched_payloads,
                 },
             ]
+            if selected_equipment_mapping:
+                response["selected_equipment_info"] = {
+                    "equipment_type": selected_equipment_mapping["equipment_type"],
+                    "onboard_payloads": selected_equipment_mapping["onboard_payloads"],
+                    "supported_payloads": selected_equipment_mapping["supported_payloads"],
+                    "all_payloads": selected_equipment_mapping["all_payloads"],
+                    "guidance": (
+                        "用户当前任务已选定该设备。回答工具与载荷建议时，必须直接针对该选中设备说明其支持的载荷与配置建议，"
+                        "严禁展开发散列举其他未选择机器人的载荷与分类选型条件。"
+                    ),
+                }
             response["found"] = bool(tool_set or task_payloads or payload_catalog)
             if task_type_key:
                 response["used_task_type_key"] = task_type_key

@@ -190,6 +190,7 @@ RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
    - 用户描述模糊且当前缺失字段没有 allowed_values 时，才可基于知识库推荐合适型号并请求用户确认，不自动填入。
    - 当前缺失字段包含 allowed_values 时，以 allowed_values 为唯一候选来源，不得用专业知识额外增删、排序或降级候选。
    - **严禁无依据使用“首选推荐/最佳方案/首选/备选”等主观定论口吻**；禁止编造未经证实的设计目的或预算假设；应客观陈述候选设备各自在知识库中的客观参数与功能特性，引导用户根据实际作业需求选择。
+   - **基于已选槽位聚焦作答（极其重要）**：如果“当前已收集字段”中已经确定了机器人类别/系列/型号/编号（如已确定“轻型工作级深海机器人 150HP”），所有推荐、载荷工具建议、方案解答与介绍，**必须且只能围绕用户已选定的这一款设备**进行，直接给出该设备在当前任务下的适配工具与建议。**绝对严禁分类罗列、对比或列举其他未选择的机器人型号及其适用条件**（如“若使用观察级 75HP...”、“若使用 AUV 324CC...”）。只有当用户在本轮消息中明确提出“和其他型号对比”或“还有哪些其他型号”时，才可列举其他型号。
    - 空闲不足时提示替代机型；无替代则建议等待或修改任务。
 
 7. **事实来源边界（必须严格遵守）**：
@@ -477,6 +478,11 @@ KNOWLEDGE_RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
    - **严禁虚构选型理由**：严禁主观编造未在证据中体现的背景理由（例如虚构“专为XX任务设计”、“预算有限时选用”、“性价比最高”等）。
    - **合理回答方式**：客观列出所有符合条件的机型，并说明各自在知识库中明确记录的客观技术特征（如作业水深、额定功率、搭载传感器/机械臂载荷、支持船等）。可以基于客观功能差异提供合理的选型参考（例如：“若作业需要搭载XX检测传感器/机械臂，可考虑YY型号；若仅需基础水下摄像与近距离观测，ZZ型号亦可满足”），由用户结合实际作业需求综合决策。
    - **禁止擅自绑定单机编号**：在设备型号推荐阶段，不要无依据地把具体机器人单机编号（如 LROV-150-001）直接绑定作为推荐型号输出，除非用户已指定或正在查询特定单机。
+7. **严禁越权催促选择与伪造系统提示（极其重要）**：
+   - 知识问答为只读信息查询，只负责客观解答用户提出的设备、环境或专业问题，**解答完毕即自然结束**。
+   - **严禁输出任何形式的“系统提示”、“📝 系统提示”等系统级标识**。
+   - **严禁声称“目前您尚未指定/选择具体的机器人型号”**：如果用户当前任务已选定机器人（见上方已确认事实），绝不可无视事实声称用户未选；即使未选，也绝不能在知识问答中妄加断言。
+   - **严禁催促用户进行任务选择或预告后续流程**：绝对禁止输出“请从上述型号中选择一种”、“选定机器人后系统将引导您确认...”、“请告诉我您的选择”等任务模式下的流程推进与催促语句！
 """
 
 STATUS_RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
@@ -512,9 +518,20 @@ def build_knowledge_responder_messages(
     kb_evidence: dict,
     conversation_history: list[dict],
     latest_user_message: str,
+    task_state: dict | None = None,
 ) -> list[dict]:
     kb_json_str = json.dumps(kb_evidence, ensure_ascii=False, indent=2)
     sys_content = KNOWLEDGE_RESPONDER_SYSTEM.format(kb_evidence_json=kb_json_str)
+    if task_state:
+        clean_state = {
+            k: v for k, v in task_state.items()
+            if not k.startswith("_") and v not in (None, "", [], {})
+        }
+        if clean_state:
+            sys_content += (
+                "\n\n【当前任务已确认事实（只读参考，严禁与之矛盾）】\n"
+                + json.dumps(clean_state, ensure_ascii=False, indent=2)
+            )
     recent_history = conversation_history[-8:] if len(conversation_history) > 8 else conversation_history
     return [
         {"role": "system", "content": sys_content},

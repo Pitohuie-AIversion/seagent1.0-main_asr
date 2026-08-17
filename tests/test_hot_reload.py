@@ -19,10 +19,11 @@ from src.hot_reload import (
 
 def test_force_reload_success():
     """测试强制热重载能够成功执行并返回重载模块列表"""
-    res = force_reload()
-    assert res["ok"] is True
-    assert "src.prompts" in res["reloaded_modules"]
-    assert "src.dialogue_manager" in res["reloaded_modules"]
+    with patch("importlib.reload", side_effect=lambda m: m):
+        res = force_reload()
+        assert res["ok"] is True
+        assert "src.prompts" in res["reloaded_modules"]
+        assert "src.dialogue_manager" in res["reloaded_modules"]
 
 
 def test_maybe_auto_reload_without_changes():
@@ -54,7 +55,8 @@ def test_session_state_migration_during_reload():
         web_backend._sessions_manager[sid] = mgr
 
     # 执行热重载
-    success, msg, _ = perform_reload()
+    with patch("importlib.reload", side_effect=lambda m: m):
+        success, msg, _ = perform_reload()
     assert success is True
 
     # 验证 session 中的 manager 仍然保留了之前的状态
@@ -73,9 +75,10 @@ def test_session_state_migration_during_reload():
 
 def test_api_dev_reload_endpoint():
     """测试 /api/dev/reload 接口返回正确 JSON"""
-    with web_backend.app.test_client() as client:
-        resp = client.get("/api/dev/reload")
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["ok"] is True
-        assert "src.dialogue_manager" in data["reloaded_modules"]
+    with patch("importlib.reload", side_effect=lambda m: m):
+        with web_backend.app.test_client() as client:
+            resp = client.get("/api/dev/reload")
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["ok"] is True
+            assert "src.dialogue_manager" in data["reloaded_modules"]

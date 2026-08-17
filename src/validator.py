@@ -1373,6 +1373,8 @@ class TaskValidator:
                     )
 
         elif check == "state_timestamp":
+            if not self._is_task_start_now(task_state):
+                return None
             if state_dict and isinstance(state_dict, dict):
                 timestamp_str = (
                     state_dict.get("update_timestamp")

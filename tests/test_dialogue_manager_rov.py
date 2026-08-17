@@ -93,6 +93,11 @@ class DialogueManagerROVTest(unittest.TestCase):
             {"found": True},
             [],
             "推荐使用哪些机器人",
+            task_state={
+                "task_type": "管缆巡检",
+                "equipment_type": "轻型工作级深海机器人 150HP",
+                "equipment_unit_id": "LROV-150-001",
+            },
         )[0]["content"]
         task_system = build_responder_messages(
             task_state={"task_type": "管缆巡检"},
@@ -115,6 +120,11 @@ class DialogueManagerROVTest(unittest.TestCase):
 
         self.assertIn("禁止无客观依据的主观定论", knowledge_system)
         self.assertIn("严禁虚构选型理由", knowledge_system)
+        self.assertIn("严禁越权催促选择与伪造系统提示", knowledge_system)
+        self.assertIn("严禁输出任何形式的“系统提示”", knowledge_system)
+        self.assertIn("当前任务已确认事实", knowledge_system)
+        self.assertIn("LROV-150-001", knowledge_system)
+
 
 
     def test_dialogue_manager_writes_compound_create_message_slots(self):

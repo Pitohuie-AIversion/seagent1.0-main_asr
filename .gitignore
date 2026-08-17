@@ -9,12 +9,13 @@ qwen_model_cache.lnk/
 data/raw/
 datasets/
 
-# 运行缓存
+# 运行缓存与日志
 qwen_model_cache.lnk
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.log
 env/
 venv/
 .venv/
@@ -22,15 +23,16 @@ venv/
 .idea/
 .vscode/
 
-# 外部或本地临时目录
+# 外部或本地临时目录与测试脚本
 outside/
 record/
 docs/regression_report.md
-full_test.log
-port_forward.log
 chrome_e2e_screenshot.png
 probe_*.py
+verify_*.py
+hardcore_*.py
 .agents/README-summary.md
 config/.state.yaml.lock
 config/*.lock
+
 

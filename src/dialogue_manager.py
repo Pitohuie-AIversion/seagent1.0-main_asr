@@ -790,6 +790,7 @@ class DialogueManager:
                 },
                 self.conversation_history,
                 user_message,
+                task_state=self.task_state,
             )
             reply = self._safe_llm_chat(
                 messages,
@@ -931,7 +932,12 @@ class DialogueManager:
                 max_d = dev.get("max_depth_m")
                 return f"已识别设备【{dev_name}】，其最大作业水深为 {max_d}米，无法满足您询问的 {target_depth}米 作业要求。"
 
-        messages = build_knowledge_responder_messages(kb_evidence, self.conversation_history, user_message)
+        messages = build_knowledge_responder_messages(
+            kb_evidence,
+            self.conversation_history,
+            user_message,
+            task_state=self.task_state,
+        )
         reply = self._safe_llm_chat(messages, temperature=0.1, role=ModelRole.KNOWLEDGE_QA)
         result_items = kb_evidence.get("results", [])
         all_devices_unmet = bool(result_items) and all(
@@ -1124,7 +1130,25 @@ class DialogueManager:
         将已确认忽略的软警告录入 SlotStore.validation_acknowledgements 绑定快照版本，
         清除 _blocking_violations，然后根据缺失槽位决定进入 collecting 或 confirming。
         """
-        res = self._refresh_validation(purpose="interactive")
+        task_type_key = self.task_state.get("task_type_key")
+        missing = []
+        if task_type_key:
+            req_schema = self.builder.get_schema(task_type_key, self.mode)
+            user_req_schema = [f for f in req_schema if f.get("type") not in ("auto", "fixed")]
+            missing = self.slot_store.get_missing_slots(
+                user_req_schema,
+                allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
+                    field,
+                    task_type_key,
+                    self.task_state,
+                ),
+            )
+        if not task_type_key:
+            target_purpose = "interactive"
+        else:
+            target_purpose = "preview" if not missing else "interactive"
+
+        res = self._refresh_validation(purpose=target_purpose)
         status_ref = res.state_snapshot.get("status_ref") if res.state_snapshot else None
         state_ver = res.state_snapshot.get("state_version") if res.state_snapshot else None
 
@@ -1151,7 +1175,7 @@ class DialogueManager:
             self._blocking_violations = []
 
         # 重新检查约束（使用白名单过滤后的结果）
-        res = self._refresh_validation(purpose="interactive")
+        res = self._refresh_validation(purpose=target_purpose)
         all_violations = res.violations
         remaining_soft = [v for v in all_violations
                           if v.severity == "soft" and not self._is_whitelisted(v)]
@@ -1164,20 +1188,7 @@ class DialogueManager:
             self._transition_phase("blocked_soft", reason="soft_warning_detected")
             self._blocking_violations = remaining_soft
         else:
-            # 检查是否有缺失槽位
-            task_type_key = self.task_state.get("task_type_key")
             if task_type_key:
-                req_schema = self.builder.get_schema(task_type_key, self.mode)
-                user_req_schema = [f for f in req_schema if f.get("type") not in ("auto", "fixed")]
-                missing = self.slot_store.get_missing_slots(
-                    user_req_schema,
-                    allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
-                        field,
-                        task_type_key,
-                        self.task_state,
-                    ),
-                )
-                self._last_missing = missing
                 if not missing:
                     self._transition_phase("confirming", reason="required_slots_complete")
                 else:
@@ -1244,13 +1255,15 @@ class DialogueManager:
         cand_built = copy.deepcopy(self._last_built_json)
 
         # 运行时设备可用性重新校验 (Issue #12)
+        # 仅即时执行任务（10分钟内）才在发布瞬间核验当前单机遥测时效与实时可用性。未来任务延后至执行前动态校验。
+        is_task_now = self.is_start_time_near_now()
         unit_id = cand_state.get("equipment_unit_id") or cand_built.get("equipment_unit_id")
         if not unit_id and self.slot_store.slots.get("equipment_unit_id"):
             unit_slot = self.slot_store.slots.get("equipment_unit_id")
             if unit_slot and unit_slot.status == "valid":
                 unit_id = unit_slot.value
 
-        if unit_id:
+        if unit_id and is_task_now:
             runtime_res = self.kb.state_info.check_runtime_availability(str(unit_id))
             if not runtime_res.get("available"):
                 # 遥测过期表示发布时无法确认当前就绪性，不是任务本身触发了
@@ -1339,8 +1352,8 @@ class DialogueManager:
             cand_state = dict(self.task_state)
             cand_built = dict(self._last_built_json)
 
-            # TOCTOU 防线：在最终写盘发布前核对 state_version
-            if unit_id and val_res and getattr(val_res, "state_snapshot", None):
+            # TOCTOU 防线：在最终写盘发布前核对 state_version (仅即时任务需要防线)
+            if unit_id and is_task_now and val_res and getattr(val_res, "state_snapshot", None):
                 try:
                     current_state_snap = self.kb.get_unit_state_snapshot(str(unit_id))
                     if current_state_snap.get("state_version") != val_res.state_snapshot.get("state_version"):
@@ -1565,18 +1578,16 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
-        if self.phase == "done":
-            is_control_cmd = any(kw in user_message for kw in ["停止", "暂停", "终止", "取消", "stop", "pause", "abort", "cancel"])
-            is_new_task_cmd = any(kw in user_message for kw in ["重新", "新任务", "创建", "新建", "重置"]) or any(user_message.startswith(kw) for kw in ["安排", "派", "我想做", "开始做"])
-            is_query_cmd = any(user_message.startswith(kw) for kw in ["查询", "什么是", "介绍", "怎么", "如何"])
-            if not is_control_cmd and not is_new_task_cmd and not is_query_cmd:
-                self._switch_dialogue_mode("task_collection", source="user_input", reason="已发布任务尝试修改")
-                intent_id = self.task_state.get("intent_id") or (self._last_built_json.get("intent_id") if isinstance(self._last_built_json, dict) else None)
-                intent_detail = f"（任务ID: {intent_id}）" if intent_id else ""
-                reply = f"当前任务已正式确认发布{intent_detail}并归档，无法就地修改参数。如需调整，请点击“重新开始”创建新任务，或提交工单变更申请。"
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
+
+        if self.phase == "done" and self._user_requested_modification(user_message):
+            self._switch_dialogue_mode("task_collection", source="user_modification", reason="已发布任务原地修改拒绝")
+            intent_id = self.task_state.get("intent_id") or (self._last_built_json.get("intent_id") if isinstance(self._last_built_json, dict) else None)
+            intent_detail = f"（任务ID: {intent_id}）" if intent_id else ""
+            reply = f"当前任务已正式确认发布{intent_detail}并归档，无法就地修改参数。如需调整，请点击“重新开始”创建新任务，或提交工单变更申请。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
         if self.phase == "blocked_hard" and (
             self._is_confirmation_only(user_message)
             or self._is_final_publish_confirmation(user_message)
@@ -1586,19 +1597,10 @@ class DialogueManager:
             current_hard = [v for v in val_res.violations if v.severity == "hard"]
             if current_hard:
                 self._blocking_violations = current_hard
-                return self._reject_hard_constraint_bypass(user_message)
-            else:
-                current_soft = [v for v in val_res.violations if v.severity == "soft"]
-                if current_soft:
-                    self.phase = "blocked_soft"
-                    self._blocking_violations = current_soft
-                    if self._is_ignore_warning(user_message):
-                        return self._handle_task_confirm(user_message, request_id)
-                else:
-                    self.phase = "confirming"
-                    self._blocking_violations = []
-                    if self._is_final_publish_confirmation(user_message) or self._is_confirmation_only(user_message):
-                        return self._handle_task_confirm(user_message, request_id)
+            return self._reject_hard_constraint_bypass(user_message)
+
+        if self.phase == "blocked_soft" and self._is_ignore_warning(user_message):
+            return self._handle_soft_warning_confirmation(user_message, request_id)
 
         if self.phase == "blocked_soft" and self._is_final_publish_confirmation(user_message):
             reply = "当前仍存在软警告。请先修改相关参数，或明确接受当前软警告后继续。"
@@ -1622,6 +1624,7 @@ class DialogueManager:
                 "key": item.get("key"),
                 "label": item.get("label"),
                 "allowed_values": copy.deepcopy(item.get("allowed_values") or []),
+                "alias_mappings": copy.deepcopy(item.get("alias_mappings") or {}),
             }
             for item in self._last_missing
             if isinstance(item, dict) and item.get("key")
@@ -5777,6 +5780,8 @@ class DialogueManager:
             self._soft_whitelist -= {e for e in self._soft_whitelist if e[0] in changed_fields}
 
     def _is_whitelisted(self, v: Violation) -> bool:
+        if getattr(v, "check_type", "") == "future_task_runtime_notice" or getattr(v, "constraint_id", "") == "C032":
+            return True
         res = getattr(self.slot_store, "validation_result", None)
         if res is None:
             return False
@@ -5814,6 +5819,8 @@ class DialogueManager:
             ack_sref = getattr(ack, "status_ref", None) if not isinstance(ack, dict) else ack.get("status_ref")
             ack_sver = getattr(ack, "state_version", None) if not isinstance(ack, dict) else ack.get("state_version")
 
+            ack_val = getattr(ack, "value", None) if not isinstance(ack, dict) else ack.get("value")
+
             if (
                 ack_tv == getattr(res, "task_version", 1)
                 and ack_vv == getattr(res, "validation_version", 1)
@@ -5824,12 +5831,35 @@ class DialogueManager:
                 return True
 
             # 对于 check_type == 'state_timestamp' (如 C019)，只要环境观察值未改变，在补充槽位过程中保持白名单有效
-            ack_val = getattr(ack, "value", None) if not isinstance(ack, dict) else ack.get("value")
             if (
                 getattr(v, "check_type", None) == "state_timestamp"
                 and ack_val is not None
                 and ack_val == getattr(v, "observed_value", None)
             ):
+                return True
+
+            # 若任务版本与单机状态版本未变，且针对该约束的观察值一致，白名单保持有效
+            if (
+                ack_tv == getattr(res, "task_version", 1)
+                and ack_sref == curr_status_ref
+                and ack_sver == curr_state_ver
+                and (
+                    ack_val is None
+                    or ack_val == getattr(v, "observed_value", None)
+                )
+            ):
+                return True
+
+            # 兼容基于字段与值的 _soft_whitelist 检查
+            for f in getattr(v, "related_fields", []):
+                val = self.task_state.get(f)
+                if val is not None and (f, str(val), v.constraint_id) in self._soft_whitelist:
+                    return True
+
+        # 若 _soft_whitelist 中包含相关字段且字段值未变，同样放行
+        for f in getattr(v, "related_fields", []):
+            val = self.task_state.get(f)
+            if val is not None and (f, str(val), v.constraint_id) in self._soft_whitelist:
                 return True
 
         return False
@@ -6109,29 +6139,7 @@ class DialogueManager:
     # --------------------------------------------------------------------------
 
     def is_start_time_near_now(self, time_window_minutes: int = 10) -> bool:
-        try:
-            start_time_str = self.task_state.get("start_time")
-            if not start_time_str:
-                return False
-
-            # 使用模拟时间代替系统时间
-            now = get_current_datetime()
-            now = now.replace(microsecond=0)
-
-            start_time_str = start_time_str.replace("T", " ").replace("：", ":").strip()
-            if start_time_str.endswith("Z"):
-                start_time_str = start_time_str[:-1] + "+00:00"
-            start_time = datetime.fromisoformat(start_time_str)
-            if start_time.tzinfo is None:
-                start_time = start_time.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
-            else:
-                start_time = start_time.astimezone(ZoneInfo("Asia/Shanghai"))
-
-            delta_seconds = (start_time - now).total_seconds()
-            return 0 <= delta_seconds <= time_window_minutes * 60
-        except Exception as e:
-            print("时间判断出错:", e)
-            return False
+        return self.validator._is_task_start_now(self.task_state, time_window_minutes=time_window_minutes)
 
     # --------------------------------------------------------------------------
     # 缓存重建

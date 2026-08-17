@@ -24,7 +24,9 @@ TASK_TYPE_MAPPING = {
 
 
 class SeagentROS2MCPAdapter:
-    def __init__(self, server_script_path: Path | str):
+    def __init__(self, server_script_path: Optional[Path | str] = None):
+        if server_script_path is None:
+            server_script_path = Path(__file__).resolve().parent / "mock_ros2_mcp_server.py"
         self.server_script_path = str(server_script_path)
 
     def _get_server_params(self) -> StdioServerParameters:

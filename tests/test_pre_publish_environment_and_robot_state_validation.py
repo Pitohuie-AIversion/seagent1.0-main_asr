@@ -190,6 +190,125 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
             self.assertIn("C022", reply)
             self.assertIn("推进器状态", reply)
 
+    def test_future_task_ignore_soft_warning_and_publish_success(self):
+        """未来排期任务触发软警告后，用户忽略软警告能够成功进入 confirming 并完成确认发布。"""
+        import uuid
+        from src.intent_router import IntentRouteResult
+        task_state = {
+            "internal_id": str(uuid.uuid4()),
+            "intent_id": "TI202608140001",
+            "task_type_key": "pipeline_inspection",
+            "task_type": "管道巡检",
+            "start_time": "2026-08-18 06:00:00",
+            "end_time": "2026-08-18 08:00:00",
+            "start_point": {"lat": 19.8, "lon": 113.0},
+            "end_point": {"lat": 20.0, "lon": 113.0},
+            "water_depth": 500.0,
+            "cable_type": "海底油气管道",
+            "equipment_class": "observation_rov",
+            "equipment_family": "light_work_class_rov",
+            "equipment_type": "轻型工作级深海机器人 150HP",
+            "equipment_unit_id": "LROV-150-001",
+            "payload": ["高清水下摄像机"],
+            "support_vessel": "海洋石油 681",
+            "oilfield_name": "流花11-1油田",
+        }
+        schema = self.dm.builder.get_schema("pipeline_inspection", "normal")
+        self.dm.slot_store.init_task_slots(schema)
+        for k, v in task_state.items():
+            from src.slot_store import Slot
+            self.dm.slot_store.slots[k] = Slot(k, value=v, status="valid")
+        self.dm.task_state = self.dm.slot_store.get_task_state()
+
+        mock_snapshot = {
+            "unit_id": "LROV-150-001",
+            "status_ref": "LROV-150-001",
+            "state_version": 1,
+            "updated_at": "2026-08-14T16:00:00+08:00",
+            "state": {
+                "overall_status": "available",
+                "is_online": True,
+                "thruster_status": "abnormal",  # 推进器异常 C022 软警告
+                "updated_at": "2026-08-14T16:00:00+08:00",
+            }
+        }
+
+        with patch.object(self.kb, "get_unit_state_snapshot", return_value=mock_snapshot), \
+             patch.object(self.kb.state_info, "get_unit_state_snapshot", return_value=mock_snapshot), \
+             patch.object(self.kb.state_info, "guard_unit_state_version"):
+            # 1. 触发软警告进入 blocked_soft (包含 C022 推进器状态异常)
+            self.dm._run_constraint_check({"equipment_unit_id"}, purpose="preview")
+            self.assertEqual(self.dm.phase, "blocked_soft")
+
+            # 2. 用户执行“忽略警告”
+            ignore_reply = self.dm.process("忽略警告")
+            self.assertEqual(self.dm.phase, "confirming", f"忽略软警告后应进入 confirming，实际回复: {ignore_reply}")
+            self.assertIn("已记录您对当前软警告的确认", ignore_reply)
+
+            # 3. 用户点击“确认发布”
+            confirm_reply = self.dm.process("确认发布")
+            self.assertEqual(self.dm.phase, "done", f"确认发布后应进入 done，实际回复: {confirm_reply}")
+            self.assertIn("已加入计划池", confirm_reply)
+
+    def test_immediate_task_ignore_soft_warning_and_publish_success(self):
+        """即时任务在设备异常触发软警告后，用户忽略软警告能够成功发布。"""
+        import uuid
+        task_state = {
+            "internal_id": str(uuid.uuid4()),
+            "intent_id": "TI202608140002",
+            "task_type_key": "pipeline_inspection",
+            "task_type": "管道巡检",
+            "start_time": "2026-08-14 17:05:00",
+            "end_time": "2026-08-14 19:00:00",
+            "start_point": {"lat": 19.8, "lon": 113.0},
+            "end_point": {"lat": 20.0, "lon": 113.0},
+            "water_depth": 500.0,
+            "cable_type": "海底油气管道",
+            "equipment_class": "observation_rov",
+            "equipment_family": "light_work_class_rov",
+            "equipment_type": "轻型工作级深海机器人 150HP",
+            "equipment_unit_id": "LROV-150-001",
+            "payload": ["高清水下摄像机"],
+            "support_vessel": "海洋石油 681",
+            "oilfield_name": "流花11-1油田",
+        }
+        schema = self.dm.builder.get_schema("pipeline_inspection", "normal")
+        self.dm.slot_store.init_task_slots(schema)
+        for k, v in task_state.items():
+            from src.slot_store import Slot
+            self.dm.slot_store.slots[k] = Slot(k, value=v, status="valid")
+        self.dm.task_state = self.dm.slot_store.get_task_state()
+
+        mock_snapshot = {
+            "unit_id": "LROV-150-001",
+            "status_ref": "LROV-150-001",
+            "state_version": 1,
+            "updated_at": "2026-08-14T16:55:00+08:00",
+            "state": {
+                "overall_status": "available",
+                "is_online": True,
+                "thruster_status": "abnormal",  # C022 软警告
+                "updated_at": "2026-08-14T16:55:00+08:00",
+            }
+        }
+
+        with patch.object(self.kb, "get_unit_state_snapshot", return_value=mock_snapshot), \
+             patch.object(self.kb.state_info, "get_unit_state_snapshot", return_value=mock_snapshot), \
+             patch.object(self.kb.state_info, "check_runtime_availability", return_value={"available": True}), \
+             patch.object(self.kb.state_info, "guard_unit_state_version"):
+            # 1. 触发推进器异常 C022 软警告
+            self.dm._run_constraint_check({"equipment_unit_id"}, purpose="preview")
+            self.assertEqual(self.dm.phase, "blocked_soft")
+
+            # 2. 用户执行“忽略警告”
+            ignore_reply = self.dm.process("忽略警告")
+            self.assertEqual(self.dm.phase, "confirming")
+
+            # 3. 用户确认发布
+            confirm_reply = self.dm.process("确认发布")
+            self.assertEqual(self.dm.phase, "done", f"确认发布应成功进入 done，实际回复: {confirm_reply}")
+            self.assertIn("任务已生成并下发", confirm_reply)
+
 
 if __name__ == "__main__":
     unittest.main()
