@@ -1546,5 +1546,54 @@ def test_change_start_time_inherits_duration_after_many_turns() -> None:
         get_simulated_time().reset()
 
 
+def test_august_31_explicit_date_and_duration() -> None:
+    # 场景：用户说“任务从8月31号早上6点开始，任务持续8个小时”
+    # 模拟大模型在 start_time 误选了当前日期 (2026-08-18)，但 raw_value 保留了 "8月31号早上6点"
+    llm = ScriptedLLM(
+        extractions=[
+            {
+                "slot_candidates": [
+                    slot_candidate(
+                        "start_time",
+                        "2026-08-18T06:00:00",  # 模型误选了当天
+                        raw_key="开始时间",
+                        raw_value="8月31号早上6点",
+                    ),
+                ],
+                "list_mutations": [],
+                "time_relation": {
+                    "has_duration": True,
+                    "duration_seconds": 28800,  # 8小时
+                    "raw_text": "持续8个小时",
+                    "confidence": 0.95,
+                },
+                "unresolved": [],
+            }
+        ]
+    )
+    extractor = ParameterExtractor(llm)
+
+    result = extractor.extract_updates(
+        "任务从8月31号早上6点开始，任务持续8个小时",
+        current_state={"task_type_key": "pipeline_inspection"},
+        task_type_key="pipeline_inspection",
+        required=[
+            {"key": "start_time", "type": "datetime"},
+            {"key": "end_time", "type": "datetime"},
+        ],
+    )
+
+    candidates = {
+        item["canonical_key"]: item
+        for item in result["slot_candidates"]
+    }
+    # 1. 验证 Python 后端相对/绝对时间解析器覆盖模型误选，确定性算出 2026-08-31T06:00:00
+    assert candidates["start_time"]["normalized_value"] == "2026-08-31T06:00:00"
+    assert candidates["start_time"]["resolution_method"] == "relative_date_parsed"
+    # 2. 验证 Python 后端根据 2026-08-31T06:00:00 + 8小时得出 2026-08-31T14:00:00
+    assert candidates["end_time"]["normalized_value"] == "2026-08-31T14:00:00"
+    assert candidates["end_time"]["resolution_method"] == "duration_arithmetic"
+
+
 
 

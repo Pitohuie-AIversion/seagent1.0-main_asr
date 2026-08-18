@@ -887,9 +887,9 @@ class TestRuntimeV2Integration(unittest.TestCase):
                 {
                     "field": "payload",
                     "operation": "add",
-                    "items": ["多功能液压机械臂"],
+                    "items": ["液压剪切器"],
                     "target_items": [],
-                    "raw_text": "添加多功能液压机械臂",
+                    "raw_text": "添加液压剪切器",
                     "confidence": 1.0,
                     "source": "user_input",
                 }
@@ -931,10 +931,10 @@ class TestRuntimeV2Integration(unittest.TestCase):
                     "src.dialogue_manager.is_normalization_contract_v2_enabled",
                     return_value=normalization_flag,
                 ):
-                    dm.process("改成采油树控制面板插入并添加多功能液压机械臂")
+                    dm.process("改成采油树控制面板插入并添加液压剪切器")
 
                 self.assertEqual(dm.task_state.get("task_type_key"), "tree_valve_operation")
-                self.assertEqual(dm.task_state.get("payload"), ["多功能液压机械臂"])
+                self.assertEqual(dm.task_state.get("payload"), ["液压剪切器"])
                 self.assertNotIn("TSS管缆跟踪传感器", dm.task_state.get("payload", []))
 
     def test_all_tools_natural_language_phrases_select_all_allowed(self):
@@ -968,7 +968,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
         target_pass = extraction_result(
             slot_candidate("task_type", "采油树控制面板插入"),
             slot_candidate("task_type_key", "tree_valve_operation"),
-            slot_candidate("payload", ["多功能液压机械臂"]),
+            slot_candidate("payload", ["液压剪切器"]),
         )
 
         for name, task_patch_flag, normalization_flag in (
@@ -1004,10 +1004,10 @@ class TestRuntimeV2Integration(unittest.TestCase):
                     "src.dialogue_manager.is_normalization_contract_v2_enabled",
                     return_value=normalization_flag,
                 ):
-                    dm.process("改成采油树插入并携带多功能液压机械臂")
+                    dm.process("改成采油树插入并携带液压剪切器")
 
                 self.assertEqual(dm.task_state.get("task_type_key"), "tree_valve_operation")
-                self.assertEqual(dm.task_state.get("payload"), ["多功能液压机械臂"])
+                self.assertEqual(dm.task_state.get("payload"), ["液压剪切器"])
 
     def test_task_switch_target_robot_uses_same_turn_depth_not_stale_depth(self):
         """目标机器人候选必须按本轮新水深生成，不能被旧水深提前过滤。"""

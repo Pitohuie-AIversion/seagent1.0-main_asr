@@ -451,7 +451,10 @@ class ParameterExtractor:
         for item in reversed(candidates):
             if isinstance(item, dict):
                 if item.get("canonical_key") == "start_time" and start_cand_val is None:
-                    start_cand_val = item.get("normalized_value")
+                    raw_t = str(item.get("raw_value") or "").strip()
+                    from .simulated_time import get_current_datetime
+                    rel_iso = parse_relative_datetime(raw_t, get_current_datetime()) if raw_t else None
+                    start_cand_val = rel_iso or item.get("normalized_value")
                 elif item.get("canonical_key") == "end_time" and end_cand_val is None:
                     end_cand_val = item.get("normalized_value")
 

@@ -1135,10 +1135,12 @@ class DialogueManager:
                 continue
             if ack.state_version != state_version:
                 continue
-            if ack.constraint_id in violation_map:
-                v = violation_map[ack.constraint_id]
-                if ack.value != getattr(v, "observed_value", None) and ack.field not in getattr(v, "related_fields", []):
-                    continue
+            # 必须对应当前实际存在的软警告 Violation
+            if ack.constraint_id not in violation_map:
+                continue
+            v = violation_map[ack.constraint_id]
+            if ack.value != getattr(v, "observed_value", None) and ack.field not in getattr(v, "related_fields", []):
+                continue
             valid_acks.append(ack)
         return valid_acks
 

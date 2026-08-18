@@ -1033,15 +1033,15 @@ Please describe your operational requirements directly, or ask the question you 
           }
           statusHtml += '</div>';
         }
-        if (ignoredCids.size > 0) {
-          statusHtml += `<div class="constraint-block ignored-soft" style="background: rgba(100,100,100,0.08); border: 1px solid rgba(255,190,0,0.2); border-radius:6px; padding:6px 8px; margin-bottom:6px; opacity:0.65;">`;
-          statusHtml += `<div style="color:#b8a000; font-size:0.8em; font-weight:600; margin-bottom:2px;">✅ 已忽略软警告</div>`;
+        if (ignoredCids.size > 0 && visibleSoftWarnings.length > 0) {
+          statusHtml += `<div class="constraint-block ignored-soft" style="background: rgba(0,200,100,0.05); border: 1px solid rgba(0,200,100,0.2); border-radius:6px; padding:6px 8px; margin-bottom:6px; opacity:0.75;">`;
+          statusHtml += `<div style="color:#00cc66; font-size:0.8em; font-weight:600; margin-bottom:2px;">✅ 已忽略软警告</div>`;
           for (const a of (cs.ignored_soft_warnings || [])) {
             const cid = a.constraint_id || '';
             const matchedWarn = (cs.soft_warnings || []).find(w => w.constraint_id === cid);
             const msgText = matchedWarn ? `[${matchedWarn.code || cid}] ${matchedWarn.message || ''}` : `[${cid}]`;
             const el = document.createElement('div');
-            el.style.cssText = 'font-size:0.8em; margin-bottom:1px;';
+            el.style.cssText = 'font-size:0.8em; margin-bottom:1px; color:#a0d8b6;';
             el.textContent = msgText;
             statusHtml += el.outerHTML;
           }

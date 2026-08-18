@@ -32,8 +32,8 @@ def parse_relative_datetime(text: str | None, base_dt: datetime | None = None) -
     if not norm:
         return None
 
-    # 如果已经是完整的 ISO 绝对时间字符串（如 2026-08-20T10:00:00），不作为相对口语表达处理
-    if re.match(r"^\d{4}-\d{2}-\d{2}", norm):
+    # 如果已经是完整的 ISO 绝对时间字符串（如 2026-08-20T10:00:00 或 2026/08/20），不作为相对口语表达处理
+    if re.match(r"^\d{4}[-/]\d{2}[-/]\d{2}", norm):
         return None
 
     if base_dt is None:
@@ -42,41 +42,60 @@ def parse_relative_datetime(text: str | None, base_dt: datetime | None = None) -
 
     target_date = None
 
-    # 1. 相对日期判断
-    if re.search(r"大后天", norm):
-        target_date = base_dt.date() + timedelta(days=3)
-    elif re.search(r"后天|后晚|后早", norm):
-        target_date = base_dt.date() + timedelta(days=2)
-    elif re.search(r"明天|明晚|明早|明个", norm):
-        target_date = base_dt.date() + timedelta(days=1)
-    elif re.search(r"今天|今晚|今早|现在|当前", norm):
-        target_date = base_dt.date()
-    else:
-        # 下周X / 本周X / 这周X
-        m_week = re.search(r"(下周|本周|这周)\s*([一二三四五六日天12345670])", norm)
-        if m_week:
-            prefix = m_week.group(1)
-            day_str = m_week.group(2)
-            target_weekday = WEEKDAY_MAP.get(day_str)
-            if target_weekday is not None:
-                current_weekday = base_dt.weekday()
-                if prefix == "下周":
-                    days_ahead = (target_weekday - current_weekday) + 7
-                    target_date = base_dt.date() + timedelta(days=days_ahead)
-                else:  # 本周 / 这周
-                    days_diff = target_weekday - current_weekday
-                    target_date = base_dt.date() + timedelta(days=days_diff)
+    # 1. 显式具体日期判断 (如 8月31号 / 8月31日 / 2026年8月31日 / 8-31)
+    m_exact = re.search(
+        r"(?:(\d{4})[年/-])?\s*([0-1]?[0-9])[月/-]\s*([0-3]?[0-9])[日号]?",
+        norm,
+    )
+    if m_exact:
+        try:
+            year = int(m_exact.group(1)) if m_exact.group(1) else base_dt.year
+            month = int(m_exact.group(2))
+            day = int(m_exact.group(3))
+            if 1 <= month <= 12 and 1 <= day <= 31:
+                target_date = datetime(year, month, day).date()
+        except ValueError:
+            target_date = None
 
+    # 2. 相对日期判断
     if target_date is None:
-        has_time = bool(
-            re.search(r"([0-2]?[0-9])[:：]([0-5][0-9])", norm)
-            or re.search(r"([0-2]?[0-9])\s*(?:点|时)", norm)
-            or re.search(r"现在|当前|立即|此时", norm)
-        )
-        if has_time:
+        if re.search(r"大后天", norm):
+            target_date = base_dt.date() + timedelta(days=3)
+        elif re.search(r"后天|后晚|后早", norm):
+            target_date = base_dt.date() + timedelta(days=2)
+        elif re.search(r"明天|明晚|明早|明个", norm):
+            target_date = base_dt.date() + timedelta(days=1)
+        elif re.search(r"今天|今晚|今早|现在|当前", norm):
             target_date = base_dt.date()
         else:
-            return None
+            # 下周X / 本周X / 这周X
+            m_week = re.search(r"(下周|本周|这周)\s*([一二三四五六日天12345670])", norm)
+            if m_week:
+                prefix = m_week.group(1)
+                day_str = m_week.group(2)
+                target_weekday = WEEKDAY_MAP.get(day_str)
+                if target_weekday is not None:
+                    current_weekday = base_dt.weekday()
+                    if prefix == "下周":
+                        days_ahead = (target_weekday - current_weekday) + 7
+                        target_date = base_dt.date() + timedelta(days=days_ahead)
+                    else:  # 本周 / 这周
+                        days_diff = target_weekday - current_weekday
+                        target_date = base_dt.date() + timedelta(days=days_diff)
+
+    if target_date is None:
+        has_month_or_day = bool(re.search(r"[0-9一二三四五六七八九十]+\s*[月日号]", norm))
+        if not has_month_or_day:
+            has_time = bool(
+                re.search(r"([0-2]?[0-9])[:：]([0-5][0-9])", norm)
+                or re.search(r"([0-2]?[0-9])\s*(?:点|时)", norm)
+                or re.search(r"现在|当前|立即|此时", norm)
+            )
+            if has_time:
+                target_date = base_dt.date()
+
+    if target_date is None:
+        return None
 
     # 2. 时间点解析 (小时与分钟)
     hour = 0
