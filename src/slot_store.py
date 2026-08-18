@@ -971,12 +971,40 @@ class SlotStore:
                 "error": err_msg,
             }
 
+        onboard_payload_keys = set()
+        eq_slot = new_slots.get("equipment_type")
+        eq_type = str(eq_slot.value if eq_slot and eq_slot.status == "valid" and eq_slot.value else "")
+        if eq_type and self.kb:
+            robot = self.kb.get_rov(eq_type)
+            if robot:
+                for ob in robot.get("onboard_payloads", []):
+                    if isinstance(ob, str):
+                        onboard_payload_keys.add(normalize_payload_match_key(ob))
+
+        def _flatten_items(raw_items: Any) -> List[Any]:
+            if isinstance(raw_items, str):
+                raw_items = [raw_items]
+            elif not isinstance(raw_items, list):
+                return []
+            res = []
+            import re
+            for item in raw_items:
+                if isinstance(item, str):
+                    parts = [p.strip() for p in re.split(r'[,\+，、；;\n]+', item) if p.strip()]
+                    res.extend(parts)
+                else:
+                    res.append(item)
+            return res
+
         if op == "add":
-            items = mutation.get("items") or []
+            items = _flatten_items(mutation.get("items"))
             new_canonicals = []
             for item_raw in items:
                 cat_id, c_name = _resolve(item_raw)
                 if c_name is None:
+                    raw_norm = normalize_payload_match_key(item_raw)
+                    if raw_norm in onboard_payload_keys:
+                        continue
                     return _fail("add", f"添加的载荷 '{item_raw}' 非法或不属于当前任务允许范围")
                 new_canonicals.append(c_name)
 
@@ -986,19 +1014,22 @@ class SlotStore:
             new_value = temp_list
 
         elif op == "remove":
-            targets = mutation.get("items") or mutation.get("target_items") or []
+            targets = _flatten_items(mutation.get("items") or mutation.get("target_items"))
             for target_raw in targets:
                 _, c_name = _resolve(target_raw)
                 target_to_remove = c_name or target_raw
                 idx = _find_index(temp_list, target_to_remove)
                 if idx < 0:
+                    raw_norm = normalize_payload_match_key(target_raw)
+                    if raw_norm in onboard_payload_keys:
+                        continue
                     return _fail("remove", f"待删除载荷 '{target_raw}' 不在当前列表中")
                 temp_list.pop(idx)
             new_value = temp_list
 
         elif op == "replace":
-            targets = mutation.get("target_items") or []
-            new_items_raw = mutation.get("items") or []
+            targets = _flatten_items(mutation.get("target_items"))
+            new_items_raw = _flatten_items(mutation.get("items"))
 
             target_indices = []
             for target_raw in targets:
@@ -1006,6 +1037,9 @@ class SlotStore:
                 target_to_find = c_name or target_raw
                 idx = _find_index(temp_list, target_to_find)
                 if idx < 0:
+                    raw_norm = normalize_payload_match_key(target_raw)
+                    if raw_norm in onboard_payload_keys:
+                        continue
                     return _fail("replace", f"待替换的目标载荷 '{target_raw}' 不在当前列表中")
                 target_indices.append(idx)
 
@@ -1013,6 +1047,9 @@ class SlotStore:
             for n_raw in new_items_raw:
                 cat_id, n_cname = _resolve(n_raw)
                 if n_cname is None:
+                    raw_norm = normalize_payload_match_key(n_raw)
+                    if raw_norm in onboard_payload_keys:
+                        continue
                     return _fail("replace", f"替换的新载荷 '{n_raw}' 非法或不属于当前任务允许范围")
                 new_canonicals.append(n_cname)
 
@@ -1023,11 +1060,14 @@ class SlotStore:
                     temp_list.append(item_to_add)
             new_value = temp_list
         elif op in ("set", "override"):
-            items = mutation.get("items") or []
+            items = _flatten_items(mutation.get("items"))
             new_canonicals = []
             for item_raw in items:
                 cat_id, c_name = _resolve(item_raw)
                 if c_name is None:
+                    raw_norm = normalize_payload_match_key(item_raw)
+                    if raw_norm in onboard_payload_keys:
+                        continue
                     return _fail(str(op), f"设置的载荷 '{item_raw}' 非法或不属于当前任务允许范围")
                 if c_name not in new_canonicals:
                     new_canonicals.append(c_name)

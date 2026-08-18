@@ -2474,13 +2474,20 @@ class KnowledgeBase:
                 },
             ]
             if selected_equipment_mapping:
+                supported_set = set(selected_equipment_mapping.get("supported_payloads", []))
+                onboard_set = set(selected_equipment_mapping.get("onboard_payloads", []))
                 response["selected_equipment_info"] = {
                     "equipment_type": selected_equipment_mapping["equipment_type"],
                     "onboard_payloads": selected_equipment_mapping["onboard_payloads"],
                     "supported_payloads": selected_equipment_mapping["supported_payloads"],
                     "all_payloads": selected_equipment_mapping["all_payloads"],
+                    "recommended_extension_payloads": [
+                        p for p in current_suggestions.get("common", [])
+                        if p in supported_set
+                    ],
                     "guidance": (
-                        "用户当前任务已选定该设备。回答工具与载荷建议时，必须直接针对该选中设备说明其支持的载荷与配置建议，"
+                        "用户当前任务已选定该设备。在给出‘配置建议’或‘推荐携带工具’时，必须且只能推荐该选中设备允许的扩展加装载荷（supported_payloads）。"
+                        "严禁把出厂自带的固定设施（onboard_payloads，如高清水下摄像机、LED水下照明灯、前视声呐、USBL、DVL、INS等）作为‘推荐加装工具’推荐给用户！"
                         "严禁展开发散列举其他未选择机器人的载荷与分类选型条件。"
                     ),
                 }
