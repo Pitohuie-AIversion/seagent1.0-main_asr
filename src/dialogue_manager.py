@@ -588,8 +588,8 @@ class DialogueManager:
             return None
 
         target_key = RECOMMENDATION_FIELD_BY_SUBJECT.get(plan.subject_type or "")
-        if not target_key or target_key == "equipment_unit_id":
-            # subject_type 不在推荐字段映射中，或属于具体单机编号，不进行自动接地推荐，由用户手动选择
+        if not target_key:
+            # subject_type 不在推荐字段映射中，不拦截
             return None
 
         field_def = self._missing_field_definition(target_key)
@@ -2860,9 +2860,8 @@ class DialogueManager:
                 if isinstance(item, dict) and (item.get("label") or item.get("key"))
             ]
             if labels:
-                display_labels = labels[:3]
-                more_suffix = "等" if len(labels) > 3 else ""
-                suffix_parts.append("仍需补充：" + "、".join(display_labels) + more_suffix + "。")
+                next_labels = labels[:3]
+                suffix_parts.append("仍需补充：" + "、".join(next_labels) + "。")
             elif user_visible_updates:
                 suffix_parts.append("所有必填字段已收集完成，任务尚未发布。")
 

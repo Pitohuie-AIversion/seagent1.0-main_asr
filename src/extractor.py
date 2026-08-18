@@ -117,7 +117,7 @@ EXTRACTION_SYSTEM = """\
 【提取规则】
 1. 只提取用户明确提供或可以高置信度推断的信息，不猜测。
 2. 每一个提取的字段，必须包含 raw_key（用户所用的词）、canonical_key（规范化字段名）、raw_value（用户说原始值）、normalized_value（转换后的标准化值，例如数字、日期等）和 confidence（置信度）。
-3. 通常以最新用户消息为候选值来源；唯一例外是用户本轮明确接受紧邻上一条助手消息中的单一推荐，或明确选定该消息中按顺序展示的编号选项。此时最新用户消息仍是写入授权来源，可以从该助手消息复制被接受的值；不能从更早历史、后台 allowed_values 顺序、并列但未编号的候选或助手未经确认的推测中取值。注意：用户接受设备推荐时，仅授权将推荐的设备型号（equipment_type）、系列或大类写入槽位；严禁将助手回复中提及或举例的特定单机编号（如 LROV-150-001）自动填入 equipment_unit_id 槽位，除非最新用户消息显式包含该单机编号。
+3. 通常以最新用户消息为候选值来源；唯一例外是用户本轮明确接受紧邻上一条助手消息中的单一推荐，或明确选定该消息中按顺序展示的编号选项。此时最新用户消息仍是写入授权来源，可以从该助手消息复制被接受的值；不能从更早历史、后台 allowed_values 顺序、并列但未编号的候选或助手未经确认的推测中取值。
 4. 如果最新用户消息中对同一字段出现多个候选或多次反悔/修正，以文本中最后出现的候选为准。
 5. 对于时间信息：将口语时间转换为 YYYY-MM-DDTHH:MM:SS 格式，无时间部分时补 T00:00:00；"现在/当前/立即"等表达必须基于【当前时间】换算。用户提供持续时长时，将其换算为正数秒写入 time_relation（注意换算规则：半小时=1800，一个半小时=5400，两个半小时=9000，2.5小时=9000，45分钟=2700）；不要自行计算 end_time。没有持续时长时 time_relation 必须为 null。
 6. 对于坐标：normalized_value 提取为 {{"lat": float, "lon": float}} 格式，统一十进制度。
@@ -125,7 +125,7 @@ EXTRACTION_SYSTEM = """\
 8. 对于任务类型：
 {task_type_rules}
 9. 对于ROV型号：如用户描述模糊（如"深水工作ROV"、"轻型观察"），提取 canonical_key: "rov_description" 字段，不要强行映射型号名。
-10. 严格区分机器人系列、型号与具体编号：equipment_family 只能填写 robot_families 的系列全名；equipment_type 只能填写该系列 model_variants 的型号全名；equipment_unit_id 填写具体机器人编号或代号（如"天鹰座001"、"金牛座001"、"LROV-150-001"、"OBSROV-75-001"）。用户提供带有系列前缀的设备代号（如"天鹰座001"、"金牛座001"、"观察级001"）时，必须完整保留系列与编号全称（如 normalized_value: "天鹰座001"），严禁截断为单纯的数字序号（如"001"），以便后端准确消歧。用户只明确系列时不得猜测型号；只明确型号或具体编号代号时可由后端自动补齐完整系列与型号。在推荐选型场景下，用户未明确选择特定单机编号前，绝对不得将具体单机编号写入 equipment_unit_id 槽位。
+10. 严格区分机器人系列、型号与具体编号：equipment_family 只能填写 robot_families 的系列全名；equipment_type 只能填写该系列 model_variants 的型号全名；equipment_unit_id 填写具体机器人编号或代号（如"天鹰座001"、"金牛座001"、"LROV-150-001"、"OBSROV-75-001"）。用户提供带有系列前缀的设备代号（如"天鹰座001"、"金牛座001"、"观察级001"）时，必须完整保留系列与编号全称（如 normalized_value: "天鹰座001"），严禁截断为单纯的数字序号（如"001"），以便后端准确消歧。用户只明确系列时不得猜测型号；只明确型号或具体编号代号时可由后端自动补齐完整系列与型号。
 11. 若确定ROV型号，可自动识别出ROV类型：{ROV2type}
 12. 机器人能力、最大水深、载荷、功率、尺寸、状态、任务阈值和作业限制必须以所需字段、允许值、ROV2type和后续知识库/约束校验为准；不得凭通用知识补全或改写配置中没有的信息。
 13. 仅当用户明确提及无歧义的紧急词汇（如"紧急"、"加急"、"应急救援"、"应急抢修"等）时，才可提取 canonical_key: "emergency_mode" 且 normalized_value: true。严禁因语气词、标点符号（如感叹号）或"赶紧/优先"等泛化词语擅自判断为紧急模式。若用户明确表示"取消紧急"、"非紧急"、"正常模式"、"按普通模式"、"不紧急"等，提取 canonical_key: "emergency_mode" 且 normalized_value: false。
@@ -448,10 +448,9 @@ class ParameterExtractor:
         end_cand_val = None
         for item in reversed(candidates):
             if isinstance(item, dict):
-                ckey = item.get("canonical_key") or item.get("key")
-                if ckey == "start_time" and start_cand_val is None:
+                if item.get("canonical_key") == "start_time" and start_cand_val is None:
                     start_cand_val = item.get("normalized_value")
-                elif ckey == "end_time" and end_cand_val is None:
+                elif item.get("canonical_key") == "end_time" and end_cand_val is None:
                     end_cand_val = item.get("normalized_value")
 
         effective_start_val = start_cand_val or current_state.get("start_time")
@@ -486,7 +485,7 @@ class ParameterExtractor:
                         if adjusted_end_dt > effective_start_dt:
                             new_iso = adjusted_end_dt.isoformat(timespec="seconds")
                             for item in candidates:
-                                if isinstance(item, dict) and (item.get("canonical_key") or item.get("key")) == "end_time":
+                                if isinstance(item, dict) and item.get("canonical_key") == "end_time":
                                     item["normalized_value"] = new_iso
                                     item["resolution_method"] = "cross_day_auto_corrected"
             except Exception:
@@ -624,7 +623,7 @@ class ParameterExtractor:
             if not isinstance(candidate, dict):
                 continue
 
-            key = str(candidate.get("canonical_key") or candidate.get("key") or "").strip()
+            key = str(candidate.get("canonical_key") or "").strip()
             key = aliases.get(key, key)
             if not key or key not in allowed_keys:
                 continue
@@ -769,7 +768,7 @@ class ParameterExtractor:
         key = str(candidate.get("canonical_key") or "")
 
         # 1. 相对时间口语确定性校正
-        if key in ("start_time", "end_time") and candidate.get("resolution_method") not in ("duration_arithmetic", "cross_day_auto_corrected"):
+        if key in ("start_time", "end_time") and candidate.get("resolution_method") != "duration_arithmetic":
             raw_text = str(candidate.get("raw_value") or candidate.get("normalized_value") or "").strip()
             from .simulated_time import get_current_datetime
             rel_iso = parse_relative_datetime(raw_text, get_current_datetime())
