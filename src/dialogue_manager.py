@@ -68,6 +68,27 @@ from .normalization_contract import (
 from .task_patch import build_task_patch, task_patch_to_legacy_updates
 from .knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from .extractor import ParameterExtractor
+
+_USER_FACING_EXCLUDED_KEYS = {
+    "raw_oilfield_name",
+    "oilfield_match_status",
+    "oilfield_match_confidence",
+    "oilfield_match_evidence",
+    "oilfield_match_candidates",
+    "pending_oilfield_name",
+    "pending_oilfield_candidates",
+    "_rov_candidates",
+}
+
+
+def sanitize_user_facing_json(data: dict) -> dict:
+    if not isinstance(data, dict):
+        return data
+    return {
+        k: v for k, v in data.items()
+        if not str(k).startswith("_") and str(k) not in _USER_FACING_EXCLUDED_KEYS
+    }
+
 from .normalizer import FieldNormalizer
 from .output_builder import OutputBuilder
 from .validator import TaskValidator, Violation, ValidationResult
@@ -1450,12 +1471,14 @@ class DialogueManager:
         self._last_built_json = self.slot_store.get_built_json()
         self.final_result = self._last_built_json
         self.task_start_now = self.is_start_time_near_now()
+        
+        user_facing_built = sanitize_user_facing_json(cand_built)
         if self.task_start_now:
             reply = (f"✅ 信息收集完成，当前为【立即执行任务】，任务已生成并下发。\n"
-                     f"{json.dumps(cand_built, ensure_ascii=False, indent=2)}")
+                     f"{json.dumps(user_facing_built, ensure_ascii=False, indent=2)}")
         else:
             reply = (f"✅ 信息收集完成，当前为【未来规划任务】，已加入计划池。\n"
-                     f"{json.dumps(cand_built, ensure_ascii=False, indent=2)}")
+                     f"{json.dumps(user_facing_built, ensure_ascii=False, indent=2)}")
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": reply})
         return reply

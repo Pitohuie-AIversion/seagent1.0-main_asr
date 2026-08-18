@@ -1086,12 +1086,24 @@ class SlotStore:
         output_schema: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Return valid slots, optionally projected to official output schema fields."""
+        _INTERNAL_AUDIT_KEYS = {
+            "raw_oilfield_name",
+            "oilfield_match_status",
+            "oilfield_match_confidence",
+            "oilfield_match_evidence",
+            "oilfield_match_candidates",
+            "pending_oilfield_name",
+            "pending_oilfield_candidates",
+            "_rov_candidates",
+        }
         with self._lock:
-            keys = (
-                [field["key"] for field in output_schema]
-                if output_schema is not None
-                else list(self.slots.keys())
-            )
+            if output_schema is not None:
+                keys = [field["key"] for field in output_schema if field.get("key")]
+            else:
+                keys = [
+                    k for k in self.slots.keys()
+                    if not k.startswith("_") and k not in _INTERNAL_AUDIT_KEYS
+                ]
             return {
                 key: copy.deepcopy(self.slots[key].value)
                 for key in keys
