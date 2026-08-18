@@ -94,7 +94,7 @@ robots:
     overall_status: ready
     is_online: true
     is_busy: false
-    current_velocity: 0.3
+    current_velocity: 0.30
     turbidity: 3
     obstacle_density: low
     mothership_support: strong
