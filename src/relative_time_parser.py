@@ -47,10 +47,69 @@ def parse_cn_number_str(s: str | None) -> int | None:
     return None
 
 
-def parse_relative_datetime(text: str | None, base_dt: datetime | None = None) -> str | None:
+def extract_explicit_date_from_text(text: str | None, base_dt: datetime | None = None, is_full_message: bool = False):
+    """从句子文本中提取显式月日或相对日期。"""
+    if not text or not isinstance(text, str):
+        return None
+    norm = unicodedata.normalize("NFKC", text).strip()
+    if not norm:
+        return None
+    if base_dt is None:
+        from .simulated_time import get_current_datetime
+        base_dt = get_current_datetime()
+
+    m_exact = re.search(
+        r"(?:([0-9]{4}|[零一二三四五六七八九]{4})[年/-])?\s*([0-1]?[0-9]|[一二三四五六七八九十]+)[月/-]\s*([0-3]?[0-9]|[一二三四五六七八九十]+)[日号]?",
+        norm,
+    )
+    if m_exact:
+        try:
+            year = parse_cn_number_str(m_exact.group(1)) if m_exact.group(1) else base_dt.year
+            month = parse_cn_number_str(m_exact.group(2))
+            day = parse_cn_number_str(m_exact.group(3))
+            if month and day and 1 <= month <= 12 and 1 <= day <= 31:
+                return datetime(year or base_dt.year, month, day).date()
+        except ValueError:
+            pass
+
+    # 相对词检查 (强相对词优先)
+    if re.search(r"大后天", norm):
+        return base_dt.date() + timedelta(days=3)
+    if re.search(r"后天|后晚|后早", norm):
+        return base_dt.date() + timedelta(days=2)
+    if re.search(r"明天|明晚|明早|明个", norm):
+        return base_dt.date() + timedelta(days=1)
+    if is_full_message:
+        # 当从 full_user_message 检索时，不让弱词'今天'覆盖已有的特定 ISO 日期
+        return None
+    if re.search(r"今天|今晚|今早|现在|当前", norm):
+        return base_dt.date()
+
+    # 下周X / 本周X / 这周X
+    m_week = re.search(r"(下周|本周|这周)\s*([一二三四五六日天12345670])", norm)
+    if m_week:
+        prefix = m_week.group(1)
+        day_str = m_week.group(2)
+        target_weekday = WEEKDAY_MAP.get(day_str)
+        if target_weekday is not None:
+            current_weekday = base_dt.weekday()
+            if prefix == "下周":
+                days_ahead = (target_weekday - current_weekday) + 7
+                return base_dt.date() + timedelta(days=days_ahead)
+            else:  # 本周 / 这周
+                days_diff = target_weekday - current_weekday
+                return base_dt.date() + timedelta(days=days_diff)
+
+    return None
+
+
+def parse_relative_datetime(
+    text: str | None,
+    base_dt: datetime | None = None,
+    full_user_message: str | None = None,
+) -> str | None:
     """
-    确定性解析口语相对日期与时间点。
-    若无法识别相对日期表达，返回 None。
+    确定性解析口语相对日期与时间点。支持完整用户句法上下文兜底与 dateparser/cn2an 引入。
     """
     if not text or not isinstance(text, str):
         return None
@@ -67,48 +126,20 @@ def parse_relative_datetime(text: str | None, base_dt: datetime | None = None) -
         from .simulated_time import get_current_datetime
         base_dt = get_current_datetime()
 
-    target_date = None
+    target_date = extract_explicit_date_from_text(norm, base_dt)
 
-    # 1. 显式具体日期判断 (如 8月31号 / 八月三十一号 / 2026年8月31日)
-    m_exact = re.search(
-        r"(?:([0-9]{4}|[零一二三四五六七八九]{4})[年/-])?\s*([0-1]?[0-9]|[一二三四五六七八九十]+)[月/-]\s*([0-3]?[0-9]|[一二三四五六七八九十]+)[日号]?",
-        norm,
-    )
-    if m_exact:
-        try:
-            year = parse_cn_number_str(m_exact.group(1)) if m_exact.group(1) else base_dt.year
-            month = parse_cn_number_str(m_exact.group(2))
-            day = parse_cn_number_str(m_exact.group(3))
-            if month and day and 1 <= month <= 12 and 1 <= day <= 31:
-                target_date = datetime(year or base_dt.year, month, day).date()
-        except ValueError:
-            target_date = None
+    # 若候选短语本身不含日期，但整句 full_user_message 中含有明确月日，优先使用整句中的日期
+    if target_date is None and full_user_message:
+        target_date = extract_explicit_date_from_text(full_user_message, base_dt, is_full_message=True)
 
-    # 2. 相对日期判断
+    # 若含有明确的 ISO 日期前缀 (如 2026-08-14T17:30:00)，保留该原日期
     if target_date is None:
-        if re.search(r"大后天", norm):
-            target_date = base_dt.date() + timedelta(days=3)
-        elif re.search(r"后天|后晚|后早", norm):
-            target_date = base_dt.date() + timedelta(days=2)
-        elif re.search(r"明天|明晚|明早|明个", norm):
-            target_date = base_dt.date() + timedelta(days=1)
-        elif re.search(r"今天|今晚|今早|现在|当前", norm):
-            target_date = base_dt.date()
-        else:
-            # 下周X / 本周X / 这周X
-            m_week = re.search(r"(下周|本周|这周)\s*([一二三四五六日天12345670])", norm)
-            if m_week:
-                prefix = m_week.group(1)
-                day_str = m_week.group(2)
-                target_weekday = WEEKDAY_MAP.get(day_str)
-                if target_weekday is not None:
-                    current_weekday = base_dt.weekday()
-                    if prefix == "下周":
-                        days_ahead = (target_weekday - current_weekday) + 7
-                        target_date = base_dt.date() + timedelta(days=days_ahead)
-                    else:  # 本周 / 这周
-                        days_diff = target_weekday - current_weekday
-                        target_date = base_dt.date() + timedelta(days=days_diff)
+        m_iso = re.search(r"(\d{4}[-/]\d{2}[-/]\d{2})", norm)
+        if m_iso:
+            try:
+                target_date = datetime.fromisoformat(m_iso.group(1).replace("/", "-")).date()
+            except ValueError:
+                pass
 
     if target_date is None:
         has_month_or_day = bool(re.search(r"[0-9一二三四五六七八九十]+\s*[月日号]", norm))
@@ -120,6 +151,18 @@ def parse_relative_datetime(text: str | None, base_dt: datetime | None = None) -
             )
             if has_time:
                 target_date = base_dt.date()
+
+    # 尝试第三方 dateparser 兜底提取日期
+    if target_date is None:
+        try:
+            import dateparser
+            import cn2an
+            norm_cn = cn2an.transform(norm, "smart")
+            dp_res = dateparser.parse(norm_cn, settings={"RELATIVE_BASE": base_dt})
+            if dp_res:
+                target_date = dp_res.date()
+        except Exception:
+            pass
 
     if target_date is None:
         return None

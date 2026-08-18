@@ -315,6 +315,7 @@ class ParameterExtractor:
             extraction_required,
             current_state,
             conversation_history or [],
+            user_message=user_message,
         )
 
         raw_mutations = result.get("list_mutations", [])
@@ -453,7 +454,9 @@ class ParameterExtractor:
                 if item.get("canonical_key") == "start_time" and start_cand_val is None:
                     raw_t = str(item.get("raw_value") or "").strip()
                     from .simulated_time import get_current_datetime
-                    rel_iso = parse_relative_datetime(raw_t, get_current_datetime()) if raw_t else None
+                    rel_iso = parse_relative_datetime(raw_t, get_current_datetime(), full_user_message=user_message) if raw_t else None
+                    if not rel_iso and user_message:
+                        rel_iso = parse_relative_datetime("", get_current_datetime(), full_user_message=user_message)
                     start_cand_val = rel_iso or item.get("normalized_value")
                 elif item.get("canonical_key") == "end_time" and end_cand_val is None:
                     end_cand_val = item.get("normalized_value")
@@ -608,6 +611,7 @@ class ParameterExtractor:
         required: list[dict],
         current_state: dict,
         conversation_history: list[dict],
+        user_message: str = "",
     ) -> tuple[list[dict], list[str]]:
         """校验候选结构；同一字段多次出现时保留最后一次修正。"""
         aliases = {
@@ -660,6 +664,7 @@ class ParameterExtractor:
                 allowed_keys,
                 current_state,
                 conversation_history,
+                user_message=user_message,
             )
             if resolved_candidate is None:
                 if unresolved_reason:
@@ -768,6 +773,7 @@ class ParameterExtractor:
         allowed_keys: set[str],
         current_state: dict,
         conversation_history: list[dict],
+        user_message: str = "",
     ) -> tuple[dict | None, str | None]:
         """受约束字段解析：相对日期确定性校正 → 编号选项精确映射 → 标准值 exact → alias exact → LLM 语义兜底 → 后端校验。"""
         key = str(candidate.get("canonical_key") or "")
@@ -776,7 +782,7 @@ class ParameterExtractor:
         if key in ("start_time", "end_time") and candidate.get("resolution_method") not in ("duration_arithmetic", "cross_day_auto_corrected"):
             raw_text = str(candidate.get("raw_value") or candidate.get("normalized_value") or "").strip()
             from .simulated_time import get_current_datetime
-            rel_iso = parse_relative_datetime(raw_text, get_current_datetime())
+            rel_iso = parse_relative_datetime(raw_text, get_current_datetime(), full_user_message=user_message)
             if rel_iso:
                 resolved = dict(candidate)
                 resolved["normalized_value"] = rel_iso

@@ -1595,5 +1595,52 @@ def test_august_31_explicit_date_and_duration() -> None:
     assert candidates["end_time"]["resolution_method"] == "duration_arithmetic"
 
 
+def test_august_31_truncated_raw_value_recovers_from_full_user_message() -> None:
+    # 场景：大模型 LLM 将 raw_value 截断为 "早上6点"（丢失了 8月31号），但用户原话为 "任务从8月31号早上6点开始，任务持续12个小时"
+    llm = ScriptedLLM(
+        extractions=[
+            {
+                "slot_candidates": [
+                    slot_candidate(
+                        "start_time",
+                        "2026-08-18T06:00:00",  # 模型误算当天
+                        raw_key="开始时间",
+                        raw_value="早上6点",  # 截断的 raw_value
+                    ),
+                ],
+                "list_mutations": [],
+                "time_relation": {
+                    "has_duration": True,
+                    "duration_seconds": 43200,  # 12小时
+                    "raw_text": "持续12个小时",
+                    "confidence": 0.95,
+                },
+                "unresolved": [],
+            }
+        ]
+    )
+    extractor = ParameterExtractor(llm)
+
+    result = extractor.extract_updates(
+        "任务从8月31号早上6点开始，任务持续12个小时",
+        current_state={"task_type_key": "pipeline_inspection"},
+        task_type_key="pipeline_inspection",
+        required=[
+            {"key": "start_time", "type": "datetime"},
+            {"key": "end_time", "type": "datetime"},
+        ],
+    )
+
+    candidates = {
+        item["canonical_key"]: item
+        for item in result["slot_candidates"]
+    }
+    # 1. 验证即使 LLM 给出的 raw_value 只有 "早上6点"，后端依然从整句中救出 "8月31号"，得出 2026-08-31T06:00:00
+    assert candidates["start_time"]["normalized_value"] == "2026-08-31T06:00:00"
+    # 2. 验证 06:00 + 12h 确定性计算得 2026-08-31T18:00:00
+    assert candidates["end_time"]["normalized_value"] == "2026-08-31T18:00:00"
+
+
+
 
 
