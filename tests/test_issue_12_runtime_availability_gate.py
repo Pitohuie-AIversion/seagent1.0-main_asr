@@ -25,7 +25,7 @@ from tests.interaction_plan_support import ScriptedLLM
 from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 
 
-STATE_MAX_AGE_SECONDS = 10 * 60
+STATE_MAX_AGE_SECONDS = 30 * 60
 ONE_DAY_SECONDS = STATE_MAX_AGE_SECONDS
 
 

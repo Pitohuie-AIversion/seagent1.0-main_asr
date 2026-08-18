@@ -27,6 +27,8 @@ RELOAD_MODULE_ORDER = [
     "src.exceptions",
     "src.result_paths",
     "src.simulated_time",
+    "src.environment_info",
+    "src.state_info",
     "src.asr_normalizer",
     "src.prompts",
     "src.coord_parser",
