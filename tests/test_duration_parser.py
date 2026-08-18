@@ -52,3 +52,14 @@ def test_parse_duration_to_seconds():
     assert parse_duration_to_seconds("一天半") == 129600.0
     assert parse_duration_to_seconds("1.5天") == 129600.0
     assert parse_duration_to_seconds("半天") == 43200.0
+
+
+def test_is_keep_duration_expression():
+    from src.duration_parser import is_keep_duration_expression
+    assert is_keep_duration_expression("持续时间不变") is True
+    assert is_keep_duration_expression("时长不变") is True
+    assert is_keep_duration_expression("保持时长") is True
+    assert is_keep_duration_expression("维持原时长") is True
+    assert is_keep_duration_expression("按原时长") is True
+    assert is_keep_duration_expression("持续5小时") is False
+

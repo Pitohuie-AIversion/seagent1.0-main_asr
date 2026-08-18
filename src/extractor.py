@@ -6,12 +6,14 @@ extractor.py — 参数提取器
 
 import json
 import math
+import re
 from datetime import datetime, timedelta
 
-from .duration_parser import parse_duration_to_seconds
+from .duration_parser import parse_duration_to_seconds, is_keep_duration_expression
 from .llm_client import LLMClient
 from .model_profile import ModelRole, _is_unsupported_role_keyword_error
 from .normalizer import FieldNormalizer
+from .relative_time_parser import parse_relative_datetime
 
 MAX_EXTRACTION_USER_HISTORY = 6
 FULL_TURN_EXTRACTION_MAX_TOKENS = 1600
@@ -115,7 +117,7 @@ EXTRACTION_SYSTEM = """\
 【提取规则】
 1. 只提取用户明确提供或可以高置信度推断的信息，不猜测。
 2. 每一个提取的字段，必须包含 raw_key（用户所用的词）、canonical_key（规范化字段名）、raw_value（用户说原始值）、normalized_value（转换后的标准化值，例如数字、日期等）和 confidence（置信度）。
-3. 通常以最新用户消息为候选值来源；唯一例外是用户本轮明确接受紧邻上一条助手消息中的单一推荐，或明确选定该消息中按顺序展示的编号选项。此时最新用户消息仍是写入授权来源，可以从该助手消息复制被接受的值；不能从更早历史、后台 allowed_values 顺序、并列但未编号的候选或助手未经确认的推测中取值。
+3. 通常以最新用户消息为候选值来源；唯一例外是用户本轮明确接受紧邻上一条助手消息中的单一推荐，或明确选定该消息中按顺序展示的编号选项。此时最新用户消息仍是写入授权来源，可以从该助手消息复制被接受的值；不能从更早历史、后台 allowed_values 顺序、并列但未编号的候选或助手未经确认的推测中取值。注意：用户接受设备推荐时，仅授权将推荐的设备型号（equipment_type）、系列或大类写入槽位；严禁将助手回复中提及或举例的特定单机编号（如 LROV-150-001）自动填入 equipment_unit_id 槽位，除非最新用户消息显式包含该单机编号。
 4. 如果最新用户消息中对同一字段出现多个候选或多次反悔/修正，以文本中最后出现的候选为准。
 5. 对于时间信息：将口语时间转换为 YYYY-MM-DDTHH:MM:SS 格式，无时间部分时补 T00:00:00；"现在/当前/立即"等表达必须基于【当前时间】换算。用户提供持续时长时，将其换算为正数秒写入 time_relation（注意换算规则：半小时=1800，一个半小时=5400，两个半小时=9000，2.5小时=9000，45分钟=2700）；不要自行计算 end_time。没有持续时长时 time_relation 必须为 null。
 6. 对于坐标：normalized_value 提取为 {{"lat": float, "lon": float}} 格式，统一十进制度。
@@ -123,7 +125,7 @@ EXTRACTION_SYSTEM = """\
 8. 对于任务类型：
 {task_type_rules}
 9. 对于ROV型号：如用户描述模糊（如"深水工作ROV"、"轻型观察"），提取 canonical_key: "rov_description" 字段，不要强行映射型号名。
-10. 严格区分机器人系列、型号与具体编号：equipment_family 只能填写 robot_families 的系列全名；equipment_type 只能填写该系列 model_variants 的型号全名；equipment_unit_id 填写具体机器人编号或代号（如"天鹰座001"、"金牛座001"、"LROV-150-001"、"OBSROV-75-001"）。用户提供带有系列前缀的设备代号（如"天鹰座001"、"金牛座001"、"观察级001"）时，必须完整保留系列与编号全称（如 normalized_value: "天鹰座001"），严禁截断为单纯的数字序号（如"001"），以便后端准确消歧。用户只明确系列时不得猜测型号；只明确型号或具体编号代号时可由后端自动补齐完整系列与型号。
+10. 严格区分机器人系列、型号与具体编号：equipment_family 只能填写 robot_families 的系列全名；equipment_type 只能填写该系列 model_variants 的型号全名；equipment_unit_id 填写具体机器人编号或代号（如"天鹰座001"、"金牛座001"、"LROV-150-001"、"OBSROV-75-001"）。用户提供带有系列前缀的设备代号（如"天鹰座001"、"金牛座001"、"观察级001"）时，必须完整保留系列与编号全称（如 normalized_value: "天鹰座001"），严禁截断为单纯的数字序号（如"001"），以便后端准确消歧。用户只明确系列时不得猜测型号；只明确型号或具体编号代号时可由后端自动补齐完整系列与型号。在推荐选型场景下，用户未明确选择特定单机编号前，绝对不得将具体单机编号写入 equipment_unit_id 槽位。
 11. 若确定ROV型号，可自动识别出ROV类型：{ROV2type}
 12. 机器人能力、最大水深、载荷、功率、尺寸、状态、任务阈值和作业限制必须以所需字段、允许值、ROV2type和后续知识库/约束校验为准；不得凭通用知识补全或改写配置中没有的信息。
 13. 仅当用户明确提及无歧义的紧急词汇（如"紧急"、"加急"、"应急救援"、"应急抢修"等）时，才可提取 canonical_key: "emergency_mode" 且 normalized_value: true。严禁因语气词、标点符号（如感叹号）或"赶紧/优先"等泛化词语擅自判断为紧急模式。若用户明确表示"取消紧急"、"非紧急"、"正常模式"、"按普通模式"、"不紧急"等，提取 canonical_key: "emergency_mode" 且 normalized_value: false。
@@ -302,6 +304,7 @@ class ParameterExtractor:
             time_relation,
             current_state,
             allowed_keys,
+            user_message=user_message,
         )
 
         normalized_candidates, resolver_unresolved = self._normalize_candidates(
@@ -434,84 +437,135 @@ class ParameterExtractor:
         relation: object,
         current_state: dict,
         allowed_keys: set[str],
+        user_message: str = "",
     ) -> tuple[list, list[str]]:
-        """Validate a model-declared duration and deterministically derive end_time."""
-        if relation is None:
-            return candidates, []
-        if not isinstance(relation, dict):
-            return candidates, ["持续时长协议非法，未写入结束时间。"]
-        if relation.get("has_duration") is False:
-            return candidates, []
+        """Validate a model-declared duration and deterministically derive end_time with cross-day & keep-duration support."""
         if "end_time" not in allowed_keys:
-            return candidates, ["当前任务不支持结束时间，持续时长未写入。"]
+            return candidates, []
 
-        raw_text = str(relation.get("raw_text") or "持续时长").strip()
-        parsed_rule_seconds = parse_duration_to_seconds(raw_text)
+        # 1. 检查候选列表中已有的 start_time 和 end_time 候选
+        start_cand_val = None
+        end_cand_val = None
+        for item in reversed(candidates):
+            if isinstance(item, dict):
+                ckey = item.get("canonical_key") or item.get("key")
+                if ckey == "start_time" and start_cand_val is None:
+                    start_cand_val = item.get("normalized_value")
+                elif ckey == "end_time" and end_cand_val is None:
+                    end_cand_val = item.get("normalized_value")
 
-        raw_seconds = relation.get("duration_seconds")
-        raw_confidence = relation.get("confidence")
-        if isinstance(raw_seconds, bool) or isinstance(raw_confidence, bool):
-            return candidates, ["持续时长协议非法，未写入结束时间。"]
-
-        # 优先使用确定性规则解析出来的秒数（修复模型可能的数量词换算幻觉），否则使用模型秒数
-        if parsed_rule_seconds is not None and parsed_rule_seconds > 0:
-            duration_seconds = parsed_rule_seconds
-        else:
+        effective_start_val = start_cand_val or current_state.get("start_time")
+        effective_start_dt = None
+        if effective_start_val:
             try:
-                duration_seconds = float(raw_seconds)
+                st_str = str(effective_start_val).strip()
+                if st_str.endswith("Z"):
+                    st_str = st_str[:-1] + "+00:00"
+                effective_start_dt = datetime.fromisoformat(st_str)
+            except Exception:
+                from .simulated_time import get_current_datetime
+                rel_iso = parse_relative_datetime(str(effective_start_val).strip(), get_current_datetime())
+                if rel_iso:
+                    try:
+                        effective_start_dt = datetime.fromisoformat(rel_iso)
+                    except Exception:
+                        effective_start_dt = None
+
+        # 2. 如果模型直接输出了 end_time 候选，并且与 effective_start_dt 一起构成跨夜（如 23:00 到 02:00），进行确定性跨天纠偏！
+        if end_cand_val and effective_start_dt:
+            try:
+                et_str = str(end_cand_val).strip()
+                if et_str.endswith("Z"):
+                    et_str = et_str[:-1] + "+00:00"
+                end_dt = datetime.fromisoformat(et_str)
+
+                if end_dt <= effective_start_dt:
+                    # 如果时刻 <= start_time 的时刻，判定为同日错填导致的跨夜场景，自动给 end_time 补加 1 天！
+                    if end_dt.time() <= effective_start_dt.time() or (effective_start_dt - end_dt).total_seconds() < 86400:
+                        adjusted_end_dt = end_dt + timedelta(days=1)
+                        if adjusted_end_dt > effective_start_dt:
+                            new_iso = adjusted_end_dt.isoformat(timespec="seconds")
+                            for item in candidates:
+                                if isinstance(item, dict) and (item.get("canonical_key") or item.get("key")) == "end_time":
+                                    item["normalized_value"] = new_iso
+                                    item["resolution_method"] = "cross_day_auto_corrected"
+            except Exception:
+                pass
+
+        # 3. 解析 time_relation 与“保持持续时间不变”意图
+        raw_text = ""
+        is_keep_duration = False
+        duration_seconds = None
+        confidence = 1.0
+
+        if user_message and is_keep_duration_expression(user_message):
+            is_keep_duration = True
+            raw_text = "保持原持续时长"
+
+        if isinstance(relation, dict) and relation.get("has_duration") is not False and relation != {}:
+            raw_text = str(relation.get("raw_text") or raw_text or "持续时长").strip()
+            try:
+                confidence = float(relation.get("confidence", 1.0))
             except (TypeError, ValueError):
+                confidence = 1.0
+
+            if is_keep_duration_expression(raw_text) or relation.get("keep_existing_duration"):
+                is_keep_duration = True
+            else:
+                parsed_rule = parse_duration_to_seconds(raw_text)
+                if parsed_rule and parsed_rule > 0:
+                    duration_seconds = parsed_rule
+                else:
+                    try:
+                        duration_seconds = float(relation.get("duration_seconds"))
+                    except (TypeError, ValueError):
+                        duration_seconds = None
+
+        # 4. “保持持续时间不变”逻辑判断：
+        # (A) 用户表达了保持时长不变 (is_keep_duration=True)
+        # (B) 本轮更新了 start_time (start_cand_val 存在)，未提供新的 end_time (end_cand_val 为 None)，且没有指定新 duration
+        if (duration_seconds is None or is_keep_duration) and start_cand_val and not end_cand_val:
+            old_st_raw = current_state.get("start_time")
+            old_et_raw = current_state.get("end_time")
+            if old_st_raw and old_et_raw:
+                try:
+                    st_old_str = str(old_st_raw).strip().replace("Z", "+00:00")
+                    et_old_str = str(old_et_raw).strip().replace("Z", "+00:00")
+                    old_st_dt = datetime.fromisoformat(st_old_str)
+                    old_et_dt = datetime.fromisoformat(et_old_str)
+                    if old_et_dt > old_st_dt:
+                        duration_seconds = (old_et_dt - old_st_dt).total_seconds()
+                        raw_text = raw_text or "保持原持续时长"
+                        is_keep_duration = True
+                except Exception:
+                    pass
+
+        # C. 处理具有 relation / duration_seconds / is_keep_duration 的派生逻辑
+        if (isinstance(relation, dict) and relation.get("has_duration") is not False and relation != {}) or duration_seconds or is_keep_duration:
+            if not effective_start_dt:
+                return candidates, [f"{raw_text or '持续时长'}：缺少开始时间，无法计算结束时间。"]
+            if duration_seconds is not None:
+                if not math.isfinite(duration_seconds) or duration_seconds <= 0 or not math.isfinite(confidence) or not (0.0 <= confidence <= 1.0):
+                    return candidates, ["持续时长必须为正数且置信度合法，未写入结束时间。"]
+
+                derived_end_dt = effective_start_dt + timedelta(seconds=duration_seconds)
+                filtered_candidates = [
+                    item for item in candidates
+                    if not (isinstance(item, dict) and item.get("canonical_key") == "end_time")
+                ]
+                derived = {
+                    "raw_key": "持续时长",
+                    "canonical_key": "end_time",
+                    "raw_value": raw_text or f"{duration_seconds/3600:.1f}小时",
+                    "normalized_value": derived_end_dt.isoformat(timespec="seconds"),
+                    "confidence": confidence,
+                    "resolution_method": "duration_arithmetic",
+                }
+                return [*filtered_candidates, derived], []
+            else:
                 return candidates, ["持续时长协议非法，未写入结束时间。"]
 
-        try:
-            confidence = float(raw_confidence)
-        except (TypeError, ValueError):
-            return candidates, ["持续时长协议非法，未写入结束时间。"]
-
-        if (
-            not math.isfinite(duration_seconds)
-            or not math.isfinite(confidence)
-            or duration_seconds <= 0
-            or not 0.0 <= confidence <= 1.0
-        ):
-            return candidates, ["持续时长必须为正数且置信度合法，未写入结束时间。"]
-
-        start_value = current_state.get("start_time")
-        for item in reversed(candidates):
-            if isinstance(item, dict) and item.get("canonical_key") == "start_time":
-                start_value = item.get("normalized_value")
-                break
-
-        if not start_value:
-            return candidates, [f"{raw_text}：缺少开始时间，无法计算结束时间。"]
-
-        try:
-            if isinstance(start_value, datetime):
-                start_time = start_value
-            else:
-                start_text = str(start_value).strip()
-                if start_text.endswith("Z"):
-                    start_text = start_text[:-1] + "+00:00"
-                start_time = datetime.fromisoformat(start_text)
-        except (TypeError, ValueError):
-            return candidates, [f"{raw_text}：开始时间格式非法，无法计算结束时间。"]
-
-        end_time = start_time + timedelta(seconds=duration_seconds)
-
-        # 过滤掉 candidates 中模型可能自行心算/推导的旧 end_time，确保以确定性加法为准
-        filtered_candidates = [
-            item for item in candidates
-            if not (isinstance(item, dict) and item.get("canonical_key") == "end_time")
-        ]
-
-        derived = {
-            "raw_key": "持续时长",
-            "canonical_key": "end_time",
-            "raw_value": raw_text,
-            "normalized_value": end_time.isoformat(timespec="seconds"),
-            "confidence": confidence,
-            "resolution_method": "duration_arithmetic",
-        }
-        return [*filtered_candidates, derived], []
+        return candidates, []
 
 
     @staticmethod
@@ -570,7 +624,7 @@ class ParameterExtractor:
             if not isinstance(candidate, dict):
                 continue
 
-            key = str(candidate.get("canonical_key") or "").strip()
+            key = str(candidate.get("canonical_key") or candidate.get("key") or "").strip()
             key = aliases.get(key, key)
             if not key or key not in allowed_keys:
                 continue
@@ -655,6 +709,54 @@ class ParameterExtractor:
             *task_selector_candidates,
         ], unresolved
 
+    @staticmethod
+    def _extract_numbered_options_from_assistant_message(
+        conversation_history: list[dict],
+    ) -> list[str]:
+        """从紧邻上一条 assistant 消息中提取有序编号选项。"""
+        if not conversation_history:
+            return []
+        last_assistant_msg = None
+        for msg in reversed(conversation_history):
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                last_assistant_msg = str(msg.get("content") or "").strip()
+                break
+        if not last_assistant_msg:
+            return []
+
+        lines = last_assistant_msg.splitlines()
+        options = []
+        for line in lines:
+            line_str = line.strip()
+            # 剥离开头的编号前缀（如 "1. ", "1、", "[1] ", "(1) ", "① "）
+            cleaned = re.sub(r"^\(?\[?\d+\]?\)?|^\u2460-\u2473", "", line_str).strip()
+            cleaned = cleaned.lstrip(".:：、． ").strip()
+            if cleaned and cleaned != line_str:
+                opt_text = re.split(r"[:：(（]", cleaned)[0].strip()
+                if opt_text:
+                    options.append(opt_text)
+        return options
+
+    @staticmethod
+    def _match_numbered_option_by_user_input(
+        raw_value: object,
+        shown_options: list[str],
+    ) -> str | None:
+        """根据用户输入的数字序号（如 '2', '第2个', '选1'），直接在编号选项中查找匹配。"""
+        if not shown_options or raw_value is None:
+            return None
+
+        val_str = str(raw_value).strip()
+        m = re.search(r"(?:第|选|选择)?\s*([1-9][0-9]*)\s*(?:个|项|号)?", val_str)
+        if m:
+            try:
+                idx = int(m.group(1)) - 1
+                if 0 <= idx < len(shown_options):
+                    return shown_options[idx]
+            except ValueError:
+                pass
+        return None
+
     def _resolve_candidate_value(
         self,
         candidate: dict,
@@ -663,8 +765,20 @@ class ParameterExtractor:
         current_state: dict,
         conversation_history: list[dict],
     ) -> tuple[dict | None, str | None]:
-        """受约束字段解析：标准值 exact → alias exact → LLM 语义兜底 → 后端校验。"""
+        """受约束字段解析：相对日期确定性校正 → 编号选项精确映射 → 标准值 exact → alias exact → LLM 语义兜底 → 后端校验。"""
         key = str(candidate.get("canonical_key") or "")
+
+        # 1. 相对时间口语确定性校正
+        if key in ("start_time", "end_time") and candidate.get("resolution_method") not in ("duration_arithmetic", "cross_day_auto_corrected"):
+            raw_text = str(candidate.get("raw_value") or candidate.get("normalized_value") or "").strip()
+            from .simulated_time import get_current_datetime
+            rel_iso = parse_relative_datetime(raw_text, get_current_datetime())
+            if rel_iso:
+                resolved = dict(candidate)
+                resolved["normalized_value"] = rel_iso
+                resolved["resolution_method"] = "relative_date_parsed"
+                return resolved, None
+
         field_def = required_by_key.get(key)
         if not field_def or not field_def.get("allowed_values"):
             candidate.setdefault("resolution_method", "type_normalization")
@@ -672,6 +786,25 @@ class ParameterExtractor:
         if field_def.get("type") == "list":
             candidate.setdefault("resolution_method", "type_normalization")
             return candidate, None
+
+        # 2. 编号选项确定性映射 (例如用户回复 "2" 或 "第2个")
+        shown_options = self._extract_numbered_options_from_assistant_message(conversation_history)
+        if shown_options:
+            raw_val = candidate.get("raw_value", candidate.get("normalized_value"))
+            index_matched = self._match_numbered_option_by_user_input(raw_val, shown_options)
+            if index_matched:
+                canonical = self._match_allowed_value(index_matched, field_def.get("allowed_values") or [])
+                if canonical is None:
+                    canonical = self._match_alias_value(index_matched, field_def)
+                if canonical is not None:
+                    resolved = dict(candidate)
+                    resolved["normalized_value"] = canonical
+                    resolved["resolution_method"] = "option_index_exact"
+                    return (
+                        (resolved, None)
+                        if self._validate_resolved_candidate(key, canonical, required_by_key, allowed_keys)
+                        else (None, self._format_unresolved(candidate, "编号对应的标准值不属于当前合法候选"))
+                    )
 
         for value in self._candidate_match_inputs(candidate):
             canonical = self._match_allowed_value(value, field_def.get("allowed_values") or [])

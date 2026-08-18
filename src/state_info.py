@@ -658,9 +658,13 @@ class RobotStateInfo:
 
     def _save_state_unlocked(self, snapshot: Dict[str, Any]) -> None:
         normalized = self._normalize_snapshot(snapshot)
+        to_dump = copy.deepcopy(normalized)
+        for r_state in to_dump.get("robots", {}).values():
+            if isinstance(r_state, dict):
+                r_state.pop("update_timestamp", None)
         try:
             serialized = yaml.safe_dump(
-                normalized,
+                to_dump,
                 allow_unicode=True,
                 sort_keys=False,
             ).encode("utf-8")

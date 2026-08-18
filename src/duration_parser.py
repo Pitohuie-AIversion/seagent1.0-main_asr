@@ -190,3 +190,29 @@ def parse_duration_to_seconds(text: str | None) -> float | None:
             return total_seconds
 
     return None
+
+
+KEEP_DURATION_PATTERNS = [
+    r"持续时间不变",
+    r"时长不变",
+    r"保持持续时间",
+    r"保持时长",
+    r"维持原时长",
+    r"维持原来?的?时长",
+    r"保持原来?的?时长",
+    r"时间不变",
+    r"按原来?的?时长",
+    r"按原时长",
+    r"保持原?时长",
+]
+
+
+def is_keep_duration_expression(text: str | None) -> bool:
+    if not text or not isinstance(text, str):
+        return False
+    norm = unicodedata.normalize("NFKC", text).strip()
+    for pattern in KEEP_DURATION_PATTERNS:
+        if re.search(pattern, norm):
+            return True
+    return False
+

@@ -69,6 +69,7 @@ class DialogueManagerROVTest(unittest.TestCase):
             )
             self.assertIn("知识与状态查询", system)
             self.assertIn("任务创建与准入", system)
+            self.assertIn("严禁随意扩展或虚构", system)
             self.assertIn("不得向用户声明自己切换了角色", system)
             self.assertNotIn("作为知识咨询助手", system)
             self.assertNotIn("作为状态汇报助手", system)

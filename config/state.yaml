@@ -3,7 +3,6 @@ robots:
   CRAWLER-1600-001:
     version: 1
     updated_at: '2026-08-12T16:00:09+08:00'
-    update_timestamp: '2026-08-12T16:00:09+08:00'
     overall_status: available
     is_online: true
     is_busy: false
@@ -25,7 +24,6 @@ robots:
   TOWED-1500-001:
     version: 1
     updated_at: '2026-08-12T16:00:09+08:00'
-    update_timestamp: '2026-08-12T16:00:09+08:00'
     overall_status: available
     is_online: true
     is_busy: false
@@ -47,7 +45,6 @@ robots:
   SPECIAL-600-001:
     version: 1
     updated_at: '2026-08-12T16:00:09+08:00'
-    update_timestamp: '2026-08-12T16:00:09+08:00'
     overall_status: available
     is_online: true
     is_busy: false
@@ -69,7 +66,6 @@ robots:
   WROV-250-001:
     version: 20
     updated_at: '2026-08-17T15:36:29.644992+08:00'
-    update_timestamp: '2026-08-17T15:36:29.644992+08:00'
     overall_status: available
     is_online: true
     is_busy: false
@@ -95,7 +91,6 @@ robots:
   LROV-150-001:
     version: 5
     updated_at: '2026-08-17T11:52:55.399627+08:00'
-    update_timestamp: '2026-08-17T11:52:55.399627+08:00'
     overall_status: ready
     is_online: true
     is_busy: false
@@ -117,7 +112,6 @@ robots:
   LROV-150-002:
     version: 1
     updated_at: '2026-08-12T16:00:09+08:00'
-    update_timestamp: '2026-08-12T16:00:09+08:00'
     overall_status: available
     is_online: true
     is_busy: false
@@ -139,7 +133,6 @@ robots:
   OBSROV-75-001:
     version: 1
     updated_at: '2026-08-12T16:00:09+08:00'
-    update_timestamp: '2026-08-12T16:00:09+08:00'
     overall_status: available
     is_online: true
     is_busy: false
@@ -161,7 +154,6 @@ robots:
   AUV-324cc-001:
     version: 1
     updated_at: '2026-08-12T16:00:09+08:00'
-    update_timestamp: '2026-08-12T16:00:09+08:00'
     overall_status: available
     is_online: true
     is_busy: false

@@ -1372,3 +1372,179 @@ def test_duration_relation_corrects_chinese_two_and_half_hours() -> None:
     assert result["unresolved"] == []
 
 
+def test_cross_day_end_time_auto_correction() -> None:
+    from src.simulated_time import get_simulated_time
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+    try:
+        # 模拟模型输出了今晚23:00到凌晨02:00，但模型将 end_time 的日期写成了同日 2026-08-18 (小于 start_time)
+        llm = ScriptedLLM(
+            extractions=[
+                {
+                    "slot_candidates": [
+                        slot_candidate(
+                            "start_time",
+                            "2026-08-18T23:00:00",
+                            raw_key="开始时间",
+                            raw_value="晚上11点",
+                        ),
+                        slot_candidate(
+                            "end_time",
+                            "2026-08-18T02:00:00",  # 模型误算填成了同日
+                            raw_key="结束时间",
+                            raw_value="凌晨2点",
+                        ),
+                    ],
+                    "list_mutations": [],
+                    "time_relation": None,
+                    "unresolved": [],
+                }
+            ]
+        )
+        extractor = ParameterExtractor(llm)
+
+        result = extractor.extract_updates(
+            "今晚11点开始，凌晨2点结束",
+            current_state={"task_type_key": "pipeline_inspection"},
+            task_type_key="pipeline_inspection",
+            required=[
+                {"key": "start_time", "type": "datetime"},
+                {"key": "end_time", "type": "datetime"},
+            ],
+        )
+
+        candidates = {
+            item["canonical_key"]: item
+            for item in result["slot_candidates"]
+        }
+        assert candidates["start_time"]["normalized_value"] == "2026-08-18T23:00:00"
+        # Python 时间库自动识别跨夜并对 end_time 增加 1 天：2026-08-19T02:00:00
+        assert candidates["end_time"]["normalized_value"] == "2026-08-19T02:00:00"
+        assert candidates["end_time"]["resolution_method"] == "cross_day_auto_corrected"
+    finally:
+        get_simulated_time().reset()
+
+
+def test_change_start_time_inherits_duration() -> None:
+    from src.simulated_time import get_simulated_time
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+    try:
+        # 场景：旧状态 start_time 10:00，end_time 12:00 (隐式持续2小时)
+        # 本轮修改 start_time 为晚上 23点，且未提供 end_time (或说明持续时间不变)
+        llm = ScriptedLLM(
+            extractions=[
+                {
+                    "slot_candidates": [
+                        slot_candidate(
+                            "start_time",
+                            "2026-08-18T23:00:00",
+                            raw_key="开始时间",
+                            raw_value="晚上11点",
+                        ),
+                    ],
+                    "list_mutations": [],
+                    "time_relation": {
+                        "has_duration": True,
+                        "duration_seconds": None,
+                        "raw_text": "持续时间不变",
+                        "confidence": 0.95,
+                    },
+                    "unresolved": [],
+                }
+            ]
+        )
+        extractor = ParameterExtractor(llm)
+
+        current_state = {
+            "task_type_key": "pipeline_inspection",
+            "start_time": "2026-08-18T10:00:00",
+            "end_time": "2026-08-18T12:00:00",  # 原时长 2 小时
+        }
+
+        result = extractor.extract_updates(
+            "修改开始时间为晚上11点，持续时间不变",
+            current_state=current_state,
+            task_type_key="pipeline_inspection",
+            required=[
+                {"key": "start_time", "type": "datetime"},
+                {"key": "end_time", "type": "datetime"},
+            ],
+        )
+
+        candidates = {
+            item["canonical_key"]: item
+            for item in result["slot_candidates"]
+        }
+        assert candidates["start_time"]["normalized_value"] == "2026-08-18T23:00:00"
+        # Python 时间库自动继承 2 小时时长，并以新的 start_time 加算得出跨天的 2026-08-19T01:00:00
+        assert candidates["end_time"]["normalized_value"] == "2026-08-19T01:00:00"
+        assert candidates["end_time"]["resolution_method"] == "duration_arithmetic"
+    finally:
+        get_simulated_time().reset()
+
+
+def test_change_start_time_inherits_duration_after_many_turns() -> None:
+    from src.simulated_time import get_simulated_time
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+    try:
+        # 模拟经过了 10 轮 (20 条消息) 的无关对话后，旧的对话历史中完全没有 10:00 和 2小时 的文字
+        irrelevant_history = []
+        for i in range(10):
+            irrelevant_history.append({"role": "user", "content": f"咨询问题 {i}"})
+            irrelevant_history.append({"role": "assistant", "content": f"回答问题 {i}"})
+
+        llm = ScriptedLLM(
+            extractions=[
+                {
+                    "slot_candidates": [
+                        slot_candidate(
+                            "start_time",
+                            "2026-08-18T23:00:00",
+                            raw_key="开始时间",
+                            raw_value="晚上11点",
+                        ),
+                    ],
+                    "list_mutations": [],
+                    "time_relation": None,  # 即使模型没有返回 time_relation
+                    "unresolved": [],
+                }
+            ]
+        )
+        extractor = ParameterExtractor(llm)
+
+        current_state = {
+            "task_type_key": "pipeline_inspection",
+            "start_time": "2026-08-18T10:00:00",
+            "end_time": "2026-08-18T12:00:00",  # 旧数据库槽位里保存了 2 小时时长
+        }
+
+        result = extractor.extract_updates(
+            "把开始时间改成晚上11点",
+            current_state=current_state,
+            task_type_key="pipeline_inspection",
+            required=[
+                {"key": "start_time", "type": "datetime"},
+                {"key": "end_time", "type": "datetime"},
+            ],
+            conversation_history=irrelevant_history,  # 20 条无关对话
+        )
+
+        candidates = {
+            item["canonical_key"]: item
+            for item in result["slot_candidates"]
+        }
+        assert candidates["start_time"]["normalized_value"] == "2026-08-18T23:00:00"
+        # 后端 Python 代码从 current_state 自动继承 2 小时，算出 2026-08-19T01:00:00！
+        assert candidates["end_time"]["normalized_value"] == "2026-08-19T01:00:00"
+        assert candidates["end_time"]["resolution_method"] == "duration_arithmetic"
+    finally:
+        get_simulated_time().reset()
+
+
+
+
