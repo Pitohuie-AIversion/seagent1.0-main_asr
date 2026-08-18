@@ -68,11 +68,11 @@ robot_classes:
 
   observation_rov:
     full_name: "观察级ROV"
-    aliases: ["观察级ROV", "观察级机器人", "观察型ROV", "巡检ROV", "观察级"]
+    aliases: ["观察级ROV", "观察级机器人", "观察型ROV", "巡检ROV", "观察级", "观测级机器人", "观测级ROV"]
 
   auv:
     full_name: "AUV"
-    aliases: ["AUV", "水下无人自主航行器", "自主水下航行器", "无人潜航器"]
+    aliases: ["AUV", "水下无人自主航行器", "自主水下航行器", "自主型航行器", "无人潜航器", "自主机器人"]
 
 robot_families:
   crawler_heavy_seabed_robot:
@@ -173,12 +173,12 @@ model_variants:
         - "多波束声呐"
         - "机械式声呐"
         - "水下定位信标"
-        - "声学应答器"
+        - "水下定位信标"
         - "海床地质探测设备"
         - "管缆外观检测设备"
         - "腐蚀检测探头"
-        - "温度传感器"
-        - "压力传感器"
+        - "CTD"
+        - "CTD"
       max_payload_weight_kg: null
       structural_lifting_capacity_kg: "不适用"
       min_turning_radius_m: "不适用"
@@ -214,12 +214,12 @@ model_variants:
         - "多波束声呐"
         - "机械式声呐"
         - "水下定位信标"
-        - "声学应答器"
+        - "水下定位信标"
         - "海床地质探测设备"
         - "管缆外观检测设备"
         - "腐蚀检测探头"
-        - "温度传感器"
-        - "压力传感器"
+        - "CTD"
+        - "CTD"
       max_payload_weight_kg: null
       structural_lifting_capacity_kg: "不适用"
       min_turning_radius_m: "不适用"
@@ -249,8 +249,8 @@ model_variants:
         - "前视声呐"
         - "成像声呐"
         - "多波束声呐"
-        - "滑橇组件"
-        - "履带组件"
+        - "履带与滑橇组件"
+        - "履带与滑橇组件"
       supported_payloads:
         - "机械切割开沟模块"
         - "TSS管缆跟踪传感器"
@@ -258,14 +258,14 @@ model_variants:
         - "机械式声呐"
         - "USBL定位设备"
         - "水下定位信标"
-        - "声学应答器"
+        - "水下定位信标"
         - "海床地质探测设备"
         - "管缆外观检测设备"
         - "腐蚀检测探头"
-        - "温度传感器"
-        - "压力传感器"
-        - "多功能机械臂"
-        - "检测探头"
+        - "CTD"
+        - "CTD"
+        - "多功能液压机械臂"
+        - "腐蚀检测探头"
       max_payload_weight_kg: null
       structural_lifting_capacity_kg: null
       min_turning_radius_m: null
@@ -294,7 +294,7 @@ model_variants:
         - "INS惯性导航系统"
         - "DVL多普勒测速仪"
         - "深度传感器"
-        - "高度计"
+        - "深度传感器"
       supported_payloads:
         - "多功能液压机械臂"
         - "电液机械臂"
@@ -306,10 +306,10 @@ model_variants:
         - "夹爪"
         - "清洗刷"
         - "采样器"
-        - "切割工具"
         - "液压剪切器"
-        - "温度传感器"
-        - "压力传感器"
+        - "液压剪切器"
+        - "CTD"
+        - "CTD"
         - "泄漏检测传感器"
         - "水质传感器"
       max_payload_weight_kg: 650
@@ -341,22 +341,22 @@ model_variants:
         - "INS惯性导航系统"
         - "DVL多普勒测速仪"
         - "深度传感器"
-        - "高度计"
-        - "轻型电液机械臂"
+        - "深度传感器"
+        - "电液机械臂"
       supported_payloads:
         - "激光标尺"
         - "双目视觉模块"
         - "机械式声呐"
-        - "电磁检测传感器"
+        - "TSS管缆跟踪传感器"
         - "腐蚀检测探头"
         - "厚度检测传感器"
         - "USBL定位设备"
-        - "温度传感器"
-        - "压力传感器"
+        - "CTD"
+        - "CTD"
         - "泄漏检测传感器"
         - "水质传感器"
         - "采样器"
-        - "轻型多功能液压机械臂"
+        - "多功能液压机械臂"
       max_payload_weight_kg: 16
       structural_lifting_capacity_kg: 100
       min_turning_radius_m: null
@@ -386,17 +386,17 @@ model_variants:
         - "INS惯性导航系统"
         - "DVL多普勒测速仪"
         - "深度传感器"
-        - "高度计"
+        - "深度传感器"
       supported_payloads:
         - "激光标尺"
         - "双目视觉模块"
         - "机械式声呐"
-        - "电磁检测传感器"
+        - "TSS管缆跟踪传感器"
         - "腐蚀检测探头"
         - "厚度检测传感器"
         - "USBL定位设备"
-        - "温度传感器"
-        - "压力传感器"
+        - "CTD"
+        - "CTD"
         - "泄漏检测传感器"
         - "水质传感器"
         - "采样器"
@@ -437,8 +437,8 @@ model_variants:
         - "光学测量模块"
         - "CTD"
         - "水质传感器"
-        - "溶解氧传感器"
-        - "浊度传感器"
+        - "水质传感器"
+        - "水质传感器"
       max_payload_weight_kg: 15
       structural_lifting_capacity_kg: "不适用"
       min_turning_radius_m: 15

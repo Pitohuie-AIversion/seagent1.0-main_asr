@@ -157,7 +157,7 @@ class TestGlobalParadigmAlignment(unittest.TestCase):
         import yaml
         from pathlib import Path
 
-        env = yaml.safe_load(Path("config/environment.yaml").read_text(encoding="utf-8"))
+        env = yaml.safe_load(Path("config/oilfield.yaml").read_text(encoding="utf-8"))
         linker = OilfieldEntityLinker(env)
         match = linker.link("硫化11-1油田")
         self.assertEqual(match.status, "accepted")

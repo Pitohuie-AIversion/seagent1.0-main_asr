@@ -93,7 +93,7 @@ CONSTRAINT_TRIGGER_MATRIX = {
     "C016": {"state": {"current_velocity": 0.800001}},
     "C017": {"state": {"current_velocity": 1.200001}},
     "C018": {"state": {"confidence": 0.49}},
-    "C019": {"state": {"update_timestamp": (NOW - timedelta(seconds=601)).isoformat()}},
+    "C019": {"state": {"update_timestamp": (NOW - timedelta(seconds=1801)).isoformat()}},
     "C020": {"state": {"overall_status": "unavailable"}},
     "C021": {"state": {"survival_status": "abnormal"}},
     "C022": {"state": {"thruster_status": "abnormal"}},
@@ -248,7 +248,7 @@ class ConstraintCoverageMatrixTest(unittest.TestCase):
                 self.assertEqual(expected, actual)
 
     def test_state_timestamp_exact_boundary(self):
-        for age_seconds, expected in ((600, set()), (601, {"C019"})):
+        for age_seconds, expected in ((1800, set()), (1801, {"C019"})):
             with self.subTest(age_seconds=age_seconds):
                 actual = {
                     item.constraint_id

@@ -3460,17 +3460,52 @@ class DialogueManager:
         selected = plan.subject_text
         field_def = self._missing_field_definition(target_key or "")
         allowed_values = list((field_def or {}).get("allowed_values") or [])
+        if not allowed_values and target_key:
+            task_key = self.task_state.get("task_type_key")
+            allowed_values = list(
+                self.builder.resolve_allowed_values(
+                    field_def or {"key": target_key},
+                    task_key,
+                    self.task_state,
+                )
+                or []
+            )
+
         previous_assistant = (
             self.conversation_history[-1].get("content", "")
             if self.conversation_history
             and self.conversation_history[-1].get("role") == "assistant"
             else ""
         )
+
+        candidate_terms = {selected} if selected else set()
+        raw_mention = getattr(plan, "raw_mention", None)
+        if raw_mention:
+            candidate_terms.add(raw_mention)
+        if user_message:
+            candidate_terms.add(user_message.strip())
+
+        kb_inst = getattr(self, "kb", None) or getattr(getattr(self, "validator", None), "kb", None)
+        alias_map = getattr(kb_inst, "alias_map", {}) if kb_inst else {}
+        for k, v in alias_map.items():
+            if k in candidate_terms or v in candidate_terms:
+                candidate_terms.add(k)
+                candidate_terms.add(v)
+
+        if kb_inst and hasattr(kb_inst, "get_aliases_for_term"):
+            for term in list(candidate_terms):
+                aliases = kb_inst.get_aliases_for_term(term)
+                if aliases:
+                    candidate_terms.update(aliases)
+
+        in_allowed = not allowed_values or any(t in allowed_values for t in candidate_terms if t)
+        in_previous = any(t in previous_assistant for t in candidate_terms if t and len(t) > 1)
+
         valid_provenance = bool(
             target_key
             and selected
-            and selected in allowed_values
-            and selected in previous_assistant
+            and in_allowed
+            and in_previous
         )
 
         if not valid_provenance:

@@ -219,7 +219,7 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
             "equipment_family": "水下无人自主航行器",
             "equipment_type": "水下无人自主航行器 324CC",
             "equipment_unit_id": "AUV-324cc-001",
-            "payload": ["电磁检测传感器"],
+            "payload": ["TSS管缆跟踪传感器"],
         }
 
         for purpose in ("preview", "publish", "runtime_execution"):
@@ -241,7 +241,7 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         task_state = {
             "task_type_key": "pipeline_inspection",
             "equipment_unit_id": "AUV-324cc-001",
-            "payload": ["电磁检测传感器"],
+            "payload": ["TSS管缆跟踪传感器"],
         }
         original = self.kb.validate_robot_selection_from_task_state
         try:
@@ -264,7 +264,7 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         task_state = {
             "task_type_key": "pipeline_inspection",
             "equipment_unit_id": "AUV-324cc-001",
-            "payload": ["电磁检测传感器"],
+            "payload": ["TSS管缆跟踪传感器"],
         }
         original = self.kb.validate_robot_selection_from_task_state
         try:
@@ -286,7 +286,7 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         task_state = {
             "task_type_key": "pipeline_inspection",
             "equipment_unit_id": "AUV-324cc-001",
-            "payload": ["电磁检测传感器"],
+            "payload": ["TSS管缆跟踪传感器"],
         }
         original = self.kb.validate_robot_selection_from_task_state
         try:

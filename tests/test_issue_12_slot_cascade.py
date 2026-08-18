@@ -1099,7 +1099,7 @@ class TestIssue12SlotCascade(unittest.TestCase):
 
                 slots = store.clone_slots()
                 self.dm._apply_updates_in_transaction(
-                    {"payload": ["电磁检测传感器"]},
+                    {"payload": ["TSS管缆跟踪传感器"]},
                     slots,
                     allow_overwrite=True,
                 )
@@ -1115,7 +1115,7 @@ class TestIssue12SlotCascade(unittest.TestCase):
                 self.assertEqual(slots["payload"].status, "valid")
                 self.assertEqual(
                     slots["payload"].value,
-                    ["电磁检测传感器"],
+                    ["TSS管缆跟踪传感器"],
                 )
                 self.assertEqual(
                     slots["equipment_unit_id"].value,
@@ -1165,7 +1165,7 @@ class TestIssue12SlotCascade(unittest.TestCase):
         slots["task_id"].value = "PI-20260813-001"
         slots["task_id"].status = "valid"
         slots["task_id"].source = "auto_reserved"
-        slots["payload"].value = ["电磁检测传感器"]
+        slots["payload"].value = ["TSS管缆跟踪传感器"]
         slots["payload"].status = "valid"
         slots["water_depth"].value = 100.0
         slots["water_depth"].status = "valid"
@@ -1191,7 +1191,7 @@ class TestIssue12SlotCascade(unittest.TestCase):
         self.assertEqual(slots["task_id"].value, "PI-20260813-001")
         self.assertEqual(slots["water_depth"].value, 321.0)
         self.assertEqual(slots["water_depth"].status, "candidate")
-        self.assertEqual(slots["payload"].value, ["电磁检测传感器"])
+        self.assertEqual(slots["payload"].value, ["TSS管缆跟踪传感器"])
         self.assertEqual(slots["payload"].status, "conflict")
         self.assertEqual(
             slots["payload"].candidate_value,
@@ -1211,7 +1211,7 @@ class TestIssue12SlotCascade(unittest.TestCase):
         self.assertEqual(slots["task_id"].value, "PI-20260813-001")
         self.assertEqual(slots["water_depth"].value, 321.0)
         self.assertEqual(slots["water_depth"].status, "valid")
-        self.assertEqual(slots["payload"].value, ["电磁检测传感器"])
+        self.assertEqual(slots["payload"].value, ["TSS管缆跟踪传感器"])
         self.assertEqual(slots["payload"].status, "conflict")
 
     def test_16pa_task_type_key_display_value_uses_target_schema(self):
@@ -1359,8 +1359,8 @@ class TestIssue12SlotCascade(unittest.TestCase):
                     {
                         "field": "payload",
                         "operation": "add",
-                        "items": ["电磁检测传感器"],
-                        "raw_text": "添加电磁检测传感器",
+                        "items": ["TSS管缆跟踪传感器"],
+                        "raw_text": "添加TSS管缆跟踪传感器",
                         "confidence": 1.0,
                         "source": "user_input",
                     },
@@ -1373,7 +1373,7 @@ class TestIssue12SlotCascade(unittest.TestCase):
                 self.assertEqual(case_slots["payload"].status, "candidate")
                 self.assertEqual(
                     case_slots["payload"].value,
-                    ["电磁检测传感器"],
+                    ["TSS管缆跟踪传感器"],
                 )
                 self.assertIsNone(case_slots["payload"].validation_error)
                 self.assertEqual(

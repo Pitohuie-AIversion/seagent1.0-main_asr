@@ -369,7 +369,7 @@ Please describe your operational requirements directly, or ask the question you 
       "高度计": { zh: "高度计", en: "Altimeter" },
       "泄漏检测传感器（可选）": { zh: "泄漏检测传感器（可选）", en: "Leak Detection Sensor (Optional)" },
 
-      // 标准油田名称（来源：environment.yaml）
+      // 标准油田名称（来源：oilfield.yaml）
       "流花11-1油田": { zh: "流花11-1油田", en: "Liuhua 11-1 Oilfield" },
       "陵水17-2油田": { zh: "陵水17-2油田", en: "Lingshui 17-2 Oilfield" },
       "蓬莱19-3油田": { zh: "蓬莱19-3油田", en: "Penglai 19-3 Oilfield" },

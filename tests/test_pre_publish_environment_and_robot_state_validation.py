@@ -47,7 +47,7 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
             "equipment_family": "light_work_class_rov",
             "equipment_type": "轻型工作级深海机器人 150HP",
             "equipment_unit_id": "LROV-150-001",
-            "payload": ["高清水下摄像机", "电磁检测传感器"],
+            "payload": ["高清水下摄像机", "TSS管缆跟踪传感器"],
             "support_vessel": "海洋石油 681",
             "oilfield_name": "流花11-1油田",
         }

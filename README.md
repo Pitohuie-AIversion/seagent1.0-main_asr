@@ -118,7 +118,7 @@ TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q
 - [config/asr.yaml](file:///root/mzy/seagent1.0-main_asr/config/asr.yaml)：ASR 模型路径、语言及 `direct_to_llm` 模型直送开关。
 - [config/robot_fleet.yaml](file:///root/mzy/seagent1.0-main_asr/config/robot_fleet.yaml)：ROV/AUV 舰队定义、物理参数、设备别名及 `status_ref` 映射。
 - [config/constraints.yaml](file:///root/mzy/seagent1.0-main_asr/config/constraints.yaml)：物理约束规则限值与硬/软违规阈值。
-- [config/environment.yaml](file:///root/mzy/seagent1.0-main_asr/config/environment.yaml)：海床地理边界、油田坐标定义及电子围栏。
+- [config/oilfield.yaml](file:///root/mzy/seagent1.0-main_asr/config/oilfield.yaml)：海床地理边界、油田坐标定义及电子围栏。
 - [config/state.yaml](file:///root/mzy/seagent1.0-main_asr/config/state.yaml)：机器人实时遥测状态与传感器健康度节点。
 
 ---

@@ -918,7 +918,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
                 slots["payload"] = Slot(
                     "payload",
                     value_type="list",
-                    value=["电磁检测传感器"],
+                    value=["TSS管缆跟踪传感器"],
                     status="valid",
                 )
                 dm.slot_store.commit_transaction(slots, [])
@@ -935,7 +935,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
 
                 self.assertEqual(dm.task_state.get("task_type_key"), "tree_valve_operation")
                 self.assertEqual(dm.task_state.get("payload"), ["多功能液压机械臂"])
-                self.assertNotIn("电磁检测传感器", dm.task_state.get("payload", []))
+                self.assertNotIn("TSS管缆跟踪传感器", dm.task_state.get("payload", []))
 
     def test_task_switch_payload_candidate_ignores_old_robot_and_payload(self):
         """普通 payload candidate 也必须按清洁的目标任务状态规范化。"""
@@ -968,7 +968,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
                 slots["payload"] = Slot(
                     "payload",
                     value_type="list",
-                    value=["电磁检测传感器"],
+                    value=["TSS管缆跟踪传感器"],
                     status="valid",
                 )
                 dm.slot_store.commit_transaction(slots, [])
@@ -1159,7 +1159,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
         """同轮机器人更新后必须按最终 Variant 复验普通 payload candidate。"""
         extraction = extraction_result(
             slot_candidate("equipment_unit_id", "AUV-324cc-001"),
-            slot_candidate("payload", ["电磁检测传感器"]),
+            slot_candidate("payload", ["TSS管缆跟踪传感器"]),
         )
 
         for name, task_patch_flag, normalization_flag in (
@@ -1179,7 +1179,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
                     "src.dialogue_manager.is_normalization_contract_v2_enabled",
                     return_value=normalization_flag,
                 ):
-                    dm.process("改用AUV-324cc-001并携带电磁检测传感器")
+                    dm.process("改用AUV-324cc-001并携带TSS管缆跟踪传感器")
 
                 self.assertEqual(
                     dm.task_state.get("equipment_unit_id"),
@@ -1283,7 +1283,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
         """Payload ListMutation 必须使用同轮目标 Variant，合法项接受、非法项拒绝。"""
         for payload_name, should_succeed in (
             ("侧扫声呐", True),
-            ("电磁检测传感器", False),
+            ("TSS管缆跟踪传感器", False),
         ):
             extraction = extraction_result(
                 slot_candidate("equipment_unit_id", "AUV-324cc-001"),

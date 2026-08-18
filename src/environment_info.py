@@ -5,7 +5,7 @@ from typing import Dict, Any
 
 class EnvironmentInfo:
     def __init__(self):
-        config_path = Path(__file__).parent.parent / "config" / "environment.yaml"
+        config_path = Path(__file__).parent.parent / "config" / "oilfield.yaml"
         # 读取YAML配置文件
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = yaml.safe_load(f)

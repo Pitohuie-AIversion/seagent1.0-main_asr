@@ -3,7 +3,7 @@ tests/fixtures/governance_corpus.py
 
 SEAgent G0.1 Governance Baseline Golden Corpus (基线治理测试语料库)。
 包含 50 条覆盖 Query/Write/Control/Persistence/Concurrency 等场景的标准测试案例。
-所有实体均经由 config/ (robot_fleet.yaml, assets.yaml, environment.yaml) 权威校验。
+所有实体均经由 config/ (robot_fleet.yaml, assets.yaml, oilfield.yaml) 权威校验。
 每条案例严格标注：nature (invariant | expected_behavior | known_defect)
 """
 

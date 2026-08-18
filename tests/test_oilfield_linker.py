@@ -17,7 +17,7 @@ OilfieldEntityLinker = oilfield_linker.OilfieldEntityLinker
 class OilfieldEntityLinkerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        env = yaml.safe_load((PROJECT_ROOT / "config" / "environment.yaml").read_text(encoding="utf-8"))
+        env = yaml.safe_load((PROJECT_ROOT / "config" / "oilfield.yaml").read_text(encoding="utf-8"))
         cls.linker = OilfieldEntityLinker(env)
 
     def test_link_asr_error_liuhua_with_digits(self):

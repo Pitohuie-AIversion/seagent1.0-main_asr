@@ -9,7 +9,7 @@ from src.oilfield_linker import OilfieldEntityLinker
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ENVIRONMENT_PATH = ROOT / "config" / "environment.yaml"
+ENVIRONMENT_PATH = ROOT / "config" / "oilfield.yaml"
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):

@@ -150,7 +150,7 @@ class KnowledgeBase:
         self.robot_fleet: dict = _load("robot_fleet.yaml")
         self.assets: dict = _load("assets.yaml")
         self.constraints: list = _load("constraints.yaml")["constraints"]
-        self.environment: dict = _load("environment.yaml")
+        self.environment: dict = _load("oilfield.yaml")
 
         self.env_info = EnvironmentInfo()
         self.state_info = RobotStateInfo()
@@ -2154,6 +2154,13 @@ class KnowledgeBase:
             canonical = display_aliases.setdefault(normalized, display)
             index.setdefault(canonical, set()).add(target)
 
+        for class_id, robot_class in self.get_robot_classes().items():
+            target = f"class:{class_id}"
+            add(class_id, target)
+            add(robot_class.get("full_name"), target)
+            for alias in robot_class.get("aliases", []):
+                add(alias, target)
+
         for family_id, family in self.robot_fleet.get("robot_families", {}).items():
             target = f"family:{family_id}"
             add(family_id, target)
@@ -2702,9 +2709,10 @@ class KnowledgeBase:
             )
             response["matched_alias"] = matched_alias
             response["matched_entity"] = entity_target
+            is_check_query = any(kw in user_message for kw in ("能", "性能", "能否", "可以", "适不适合", "合适", "吗", "能力", "参数"))
             query_mode = (
                 "device_list"
-                if entity_kind == "class" or (entity_kind == "family" and is_list_query)
+                if (entity_kind == "class" and not is_check_query) or (entity_kind == "family" and is_list_query and not is_check_query)
                 else "device_check"
             )
         elif is_broad_device_list_query or is_list_query:

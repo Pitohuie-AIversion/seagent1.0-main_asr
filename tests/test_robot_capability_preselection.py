@@ -533,7 +533,7 @@ class TestRobotConstraintAndAvailabilityPreselection(unittest.TestCase):
     def test_25_selected_payload_filters_unsupported_variant(self):
         domain = self.kb.get_feasible_robot_selection_domain(
             "pipeline_inspection",
-            {"payload": ["电磁检测传感器"]},
+            {"payload": ["TSS管缆跟踪传感器"]},
         )
 
         variant_ids = {
@@ -583,7 +583,7 @@ class TestRobotConstraintAndAvailabilityPreselection(unittest.TestCase):
             "pipeline_inspection",
             {
                 "water_depth": 800,
-                "payload": ["电磁检测传感器"],
+                "payload": ["TSS管缆跟踪传感器"],
             },
         )
 

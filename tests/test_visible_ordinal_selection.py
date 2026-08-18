@@ -198,7 +198,7 @@ def test_mixed_numbered_sections_does_not_corrupt_candidate_ordinal_matching() -
         "💡 载荷配置建议：\n"
         "1. 视觉类：高清水下摄像机\n"
         "2. 声学类：前视声呐\n"
-        "3. 检测类：电磁检测传感器\n"
+        "3. 检测类：TSS管缆跟踪传感器\n"
     )
     llm = ScriptedLLM(
         plans=[make_plan("WRITE", subject_type="task", relation="filled_fields")],

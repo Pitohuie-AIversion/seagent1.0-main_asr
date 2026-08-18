@@ -46,7 +46,7 @@ def contains(area, point):
 class AccumulationFixtureConsistencyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        with (ROOT / "config/environment.yaml").open(encoding="utf-8") as stream:
+        with (ROOT / "config/oilfield.yaml").open(encoding="utf-8") as stream:
             cls.environment = yaml.safe_load(stream)
         with (ROOT / "config/robot_fleet.yaml").open(encoding="utf-8") as stream:
             cls.fleet = yaml.safe_load(stream)
