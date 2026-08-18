@@ -248,10 +248,10 @@ class FieldNormalizer:
         return None
 
     def _normalize_list(self, raw: str | list, allowed: list[str]) -> list | None:
-        if isinstance(raw, str) and self._match_key(raw) in {
-            "全选", "全部", "所有", "全部配置", "全配置"
-        }:
-            return list(allowed) if allowed else None
+        if isinstance(raw, str):
+            matched = self._match_key(raw)
+            if any(kw in matched for kw in ("全选", "全部", "所有", "全配置", "全都要")) and not any(neg in matched for neg in ("不", "取消", "清空", "除去")):
+                return list(allowed) if allowed else None
 
         # 将原始值统一为列表
         if isinstance(raw, str):
@@ -273,8 +273,10 @@ class FieldNormalizer:
 
         result = []
         for item in items:
+            matched_item = self._match_key(item)
+            if any(kw in matched_item for kw in ("全选", "全部", "所有", "全配置", "全都要")) and not any(neg in matched_item for neg in ("不", "取消", "清空", "除去")):
+                return list(allowed) if allowed else None
             mapped = self._normalize_string(item, allowed)
-            # 列表不能静默丢弃非法元素，否则会产生“只录入了一部分”的假成功。
             if mapped is None:
                 return None
             if mapped not in result:

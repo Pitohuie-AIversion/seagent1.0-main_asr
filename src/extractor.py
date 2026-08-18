@@ -144,6 +144,8 @@ EXTRACTION_SYSTEM = """\
       {{"field": "payload", "operation": "replace", "items": ["腐蚀检测探头"], "target_items": ["激光标尺"], "raw_text": "用户原表达", "confidence": 0.95}}
     - 清空/取消全部：当用户表达“清空所有携带工具”或“不需要任何额外工具”时，必须输出为 list_mutations 元素：
       {{"field": "payload", "operation": "clear", "raw_text": "用户原表达", "confidence": 0.95}}
+    - 全选/携带全部：当用户表达“携带全部工具”、“带上所有设备”、“全选”、“全都要”等全量装载意图时，必须输出为 list_mutations 元素：
+      {{"field": "payload", "operation": "add", "items": ["全选"], "raw_text": "用户原表达", "confidence": 0.95}}
 18. 【通用枚举字段语义吸附规则】：
     对于设备体系（equipment_class / equipment_family / equipment_type / equipment_unit_id）、支持船（support_vessel）、管缆类型（cable_type）、油田名称（oilfield_name）等枚举字段：
     - 结合【所需字段及其描述】中的 allowed_values 允许值列表与候选证据（candidate_evidence），当用户使用口语、简称或自然语言描述（例如“油气管”、“光缆”、“201号船”、“流花油田”、“150马力轻型”）时，必须优先对齐吸附映射为对应的规范标准名称（例如 normalized_value: "海底油气管道", "光纤通信缆", "海洋石油201", "流花11-1油田", "轻型工作级深海机器人 150HP"）。

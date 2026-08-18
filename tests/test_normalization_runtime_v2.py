@@ -937,6 +937,29 @@ class TestRuntimeV2Integration(unittest.TestCase):
                 self.assertEqual(dm.task_state.get("payload"), ["多功能液压机械臂"])
                 self.assertNotIn("TSS管缆跟踪传感器", dm.task_state.get("payload", []))
 
+    def test_all_tools_natural_language_phrases_select_all_allowed(self):
+        """测试'携带全部工具'/'带上全部工具'/'选择所有载荷'等自然口语，可精确触发全选所有候选。"""
+        from src.normalizer import FieldNormalizer
+        normalizer = FieldNormalizer()
+        allowed = ["高清水下摄像机", "LED水下照明灯", "前视声呐", "成像声呐", "TSS管缆跟踪传感器"]
+
+        test_phrases = [
+            "全选",
+            "全部",
+            "所有",
+            "携带全部工具",
+            "带上全部工具",
+            "选择所有工具",
+            "全部带上",
+            "全都要",
+            "携带所有载荷",
+            "配置全部工具",
+        ]
+        for phrase in test_phrases:
+            with self.subTest(phrase=phrase):
+                res = normalizer.normalize(phrase, allowed, field_type="list")
+                self.assertEqual(res, allowed)
+
     def test_task_switch_payload_candidate_ignores_old_robot_and_payload(self):
         """普通 payload candidate 也必须按清洁的目标任务状态规范化。"""
         selector_pass = extraction_result(
