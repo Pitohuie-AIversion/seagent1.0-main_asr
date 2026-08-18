@@ -109,7 +109,7 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         self.assertEqual(res.overall_status, "validation_error")
         self.assertIsNotNone(res.error)
         self.assertGreater(len(res.violations), 0)
-        self.assertEqual(res.violations[0].constraint_id, "VAL_ERR")
+        self.assertEqual(res.violations[0].constraint_id, res.error["code"])
 
     def test_ambiguous_family_interactive_allowed_for_slot_collection(self):
         """在交互阶段 (interactive)，当用户仅指定了型号/系列而未指定单机时，不应误报 VAL_ERR 违规，允许继续引导选择单机。"""
@@ -120,7 +120,7 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         res = self.validator.validate_task(task_state, purpose="interactive")
         self.assertIsNone(res.error)
         self.assertIsNone(res.state_snapshot)
-        val_errs = [v for v in res.violations if v.constraint_id == "VAL_ERR"]
+        val_errs = [v for v in res.violations if v.check_type == "validation_error"]
         self.assertEqual(len(val_errs), 0)
 
     def test_future_task_pending_runtime_validation(self):
@@ -157,7 +157,7 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         self.assertEqual(res.overall_status, "validation_error")
         self.assertIsNotNone(res.error)
         self.assertEqual(res.error["code"], "FAMILY_CLASS_MISMATCH")
-        self.assertEqual(res.violations[0].constraint_id, "VAL_ERR")
+        self.assertEqual(res.violations[0].constraint_id, "FAMILY_CLASS_MISMATCH")
 
     def test_partial_disallowed_class_or_family_fails_closed_interactive(self):
         """只有 Class/Family 时也必须执行任务准入，不能等不存在的 C001/C002 fact。"""
@@ -180,7 +180,7 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
                     res.error["code"],
                     "CLASS_NOT_ALLOWED_FOR_TASK",
                 )
-                self.assertEqual(res.violations[0].constraint_id, "VAL_ERR")
+                self.assertEqual(res.violations[0].constraint_id, "CLASS_NOT_ALLOWED_FOR_TASK")
                 self.assertEqual(res.violations[0].severity, "hard")
                 self.assertIsNone(res.state_snapshot)
 
@@ -195,7 +195,7 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         )
 
         self.assertEqual(len(violations), 1)
-        self.assertEqual(violations[0].constraint_id, "VAL_ERR")
+        self.assertEqual(violations[0].constraint_id, "CLASS_NOT_ALLOWED_FOR_TASK")
         self.assertEqual(violations[0].severity, "hard")
         self.assertIn("not allowed", violations[0].message)
 
@@ -232,7 +232,7 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
                     res.error["code"],
                     "ROBOT_SELECTION_NOT_FEASIBLE",
                 )
-                self.assertEqual(res.violations[0].constraint_id, "VAL_ERR")
+                self.assertEqual(res.violations[0].constraint_id, "ROBOT_SELECTION_NOT_FEASIBLE")
                 self.assertEqual(res.violations[0].severity, "hard")
                 self.assertIsNone(res.state_snapshot)
 

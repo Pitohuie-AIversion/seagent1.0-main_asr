@@ -1128,11 +1128,8 @@ class DialogueManager:
         for ack in self.slot_store.validation_acknowledgements:
             if not isinstance(ack, ValidationAcknowledgement):
                 continue
-            if ack.task_version != validation_result.task_version:
-                continue
-            if ack.validation_version != validation_result.validation_version:
-                continue
-            if ack.validation_fingerprint != validation_result.validation_fingerprint:
+            # ack 的创建版本不能晚于当前 validation_result
+            if ack.task_version > validation_result.task_version:
                 continue
             if ack.status_ref != status_ref:
                 continue
@@ -5938,9 +5935,9 @@ class DialogueManager:
             ):
                 return True
 
-            # 若任务版本与单机状态版本未变，且针对该约束的观察值一致，白名单保持有效
+            # 若单机状态版本与引用未变，且针对该约束的观察值一致，白名单保持有效
             if (
-                ack_tv == getattr(res, "task_version", 1)
+                ack_tv <= getattr(res, "task_version", 1)
                 and ack_sref == curr_status_ref
                 and ack_sver == curr_state_ver
                 and (

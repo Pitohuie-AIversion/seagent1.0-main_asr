@@ -336,8 +336,8 @@ class TestUIStateContract(unittest.TestCase):
         self.assertEqual(unres_slot["candidate_value"], "ROV")
         self.assertEqual(unres_slot["allowed_values"], ["WROV", "AUV"])
 
-    # 九-3: stale acknowledgement 因 task_version 不匹配被过滤
-    def test_stale_ack_filtered_by_task_version(self):
+    # 九-3: 历史 acknowledgement 在 task_version 增长时保留有效继承
+    def test_ack_inherited_across_task_versions(self):
         val_result = ValidationResult(
             overall_status="blocked_soft",
             validated_at="2026-08-06T20:00:00Z",
@@ -347,18 +347,18 @@ class TestUIStateContract(unittest.TestCase):
             state_snapshot={"status_ref": "ref1", "state_version": 1},
             violations=[Violation("C01", "W", "Warning", "soft")],
         )
-        stale_ack = {
+        history_ack = {
             "constraint_id": "C01",
-            "task_version": 1, # 不匹配 (当前为 2)
+            "task_version": 1, # 历史版本 1 (当前为 2)
             "validation_version": 1,
             "validation_fingerprint": "fp_100",
             "status_ref": "ref1",
             "state_version": 1,
         }
-        mgr = make_mock_manager(validation_result=val_result, validation_acknowledgements=[stale_ack])
+        mgr = make_mock_manager(validation_result=val_result, validation_acknowledgements=[history_ack])
         cs = _build_constraint_state(mgr)
-        self.assertEqual(len(cs["ignored_soft_warnings"]), 0)
-        self.assertEqual(len(cs["legacy_acknowledgements"]), 1)
+        self.assertEqual(len(cs["ignored_soft_warnings"]), 1)
+        self.assertEqual(len(cs["soft_warnings"]), 0)
 
     # 九-4: stale acknowledgement 因 fingerprint 不匹配被过滤
     def test_stale_ack_filtered_by_fingerprint(self):

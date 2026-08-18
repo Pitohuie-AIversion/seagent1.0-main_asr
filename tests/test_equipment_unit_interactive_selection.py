@@ -54,7 +54,7 @@ class TestEquipmentUnitInteractiveSelection(unittest.TestCase):
         res = self.validator.validate_task(task_state, purpose="interactive")
         self.assertIsNone(res.error)
         self.assertIsNone(res.state_snapshot)
-        val_errors = [v for v in res.violations if v.constraint_id == "VAL_ERR"]
+        val_errors = [v for v in res.violations if v.check_type == "validation_error"]
         self.assertEqual(val_errors, [])
         self.assertNotEqual(res.overall_status, "blocked_hard")
         self.assertNotEqual(res.overall_status, "validation_error")
@@ -77,18 +77,18 @@ class TestEquipmentUnitInteractiveSelection(unittest.TestCase):
         res = self.validator.validate_task(task_state, purpose="publish")
         self.assertEqual(res.overall_status, "validation_error")
         self.assertIsNotNone(res.error)
-        val_errors = [v for v in res.violations if v.constraint_id == "VAL_ERR"]
+        val_errors = [v for v in res.violations if v.check_type == "validation_error"]
         self.assertGreater(len(val_errors), 0)
 
     def test_incremental_validation_for_variant_field_does_not_fail(self):
-        """增量字段校验（用户更新 equipment_type）时不应返回 VAL_ERR 违规。"""
+        """增量字段校验（用户更新 equipment_type）时不应返回 validation_error 违规。"""
         task_state = {
             "task_type_key": "pipeline_inspection",
             "equipment_type": "轻型工作级深海机器人 150HP",
             "water_depth": 100.0,
         }
         violations = self.validator.validate_for_fields(task_state, changed_fields={"equipment_type"})
-        val_errors = [v for v in violations if v.constraint_id == "VAL_ERR"]
+        val_errors = [v for v in violations if v.check_type == "validation_error"]
         self.assertEqual(val_errors, [])
 
     def test_dialogue_manager_select_variant_keeps_collecting_phase(self):
@@ -118,7 +118,7 @@ class TestEquipmentUnitInteractiveSelection(unittest.TestCase):
 
         # 触发交互校验刷新
         val_res = dm._refresh_validation(purpose="interactive", changed_fields={"equipment_type"})
-        val_errors = [v for v in val_res.violations if v.constraint_id == "VAL_ERR"]
+        val_errors = [v for v in val_res.violations if v.check_type == "validation_error"]
         self.assertEqual(val_errors, [])
         self.assertNotEqual(val_res.overall_status, "blocked_hard")
         self.assertNotEqual(val_res.overall_status, "validation_error")

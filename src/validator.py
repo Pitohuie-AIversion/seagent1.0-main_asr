@@ -713,17 +713,18 @@ class TaskValidator:
                 error_dict = None
             else:
                 # 存在 validation_error 时，不得返回空违规列表
-                payload_feasibility_error = error_dict.get("code") in {
+                code = error_dict.get("code") if (error_dict and error_dict.get("code")) else "VAL_ERR"
+                payload_feasibility_error = code in {
                     "ROBOT_SELECTION_NOT_FEASIBLE",
                     "INVALID_PAYLOAD_REQUIREMENTS",
                     "INVALID_VARIANT_PAYLOAD_CONFIG",
                 }
-                feasibility_error = payload_feasibility_error or error_dict.get("code") in {
+                feasibility_error = payload_feasibility_error or code in {
                     "NO_FEASIBLE_ROBOT_CANDIDATE",
                     "ROBOT_FEASIBILITY_CHECK_FAILED",
                 }
                 err_violation = Violation(
-                    constraint_id="VAL_ERR",
+                    constraint_id=code,
                     constraint_name=(
                         "机器人载荷可行性校验失败"
                         if payload_feasibility_error
@@ -803,7 +804,7 @@ class TaskValidator:
         except Exception as e:
             err_dict = {"code": "VALIDATOR_EXCEPTION", "message": f"校验流程内部发生未捕获异常: {e}"}
             err_v = Violation(
-                constraint_id="VAL_ERR",
+                constraint_id="VALIDATOR_EXCEPTION",
                 constraint_name="校验服务异常",
                 message=err_dict["message"],
                 severity="hard",
@@ -859,8 +860,9 @@ class TaskValidator:
                 purpose="interactive",
             )
         if error_dict is not None:
+            code = error_dict.get("code") if (error_dict and error_dict.get("code")) else "VAL_ERR"
             err_v = Violation(
-                constraint_id="VAL_ERR",
+                constraint_id=code,
                 constraint_name="单机状态校验失败",
                 message=error_dict.get("message", "单机校验错误"),
                 severity="hard",
@@ -878,7 +880,10 @@ class TaskValidator:
             return ""
         lines = []
         for v in violations:
-            tag = "⛔ 硬性违规" if v.severity == "hard" else "⚠️ 软性警告"
+            if v.check_type == "validation_error":
+                tag = "⛔ 系统校验错误" if v.constraint_id == "VALIDATOR_EXCEPTION" else "⛔ 数据校验错误"
+            else:
+                tag = "⛔ 硬性违规" if v.severity == "hard" else "⚠️ 软性警告"
             lines.append(f"{tag} [{v.constraint_id}] {v.constraint_name}\n  {v.message}")
         return "\n\n".join(lines)
 

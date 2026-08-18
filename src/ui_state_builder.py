@@ -312,7 +312,9 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
             valid_ack_objs = []
             if hasattr(manager, "_get_valid_acknowledgements") and callable(manager._get_valid_acknowledgements):
                 try:
-                    valid_ack_objs = manager._get_valid_acknowledgements(val_result)
+                    res_acks = manager._get_valid_acknowledgements(val_result)
+                    if isinstance(res_acks, list):
+                        valid_ack_objs = res_acks
                 except Exception:
                     valid_ack_objs = []
 
@@ -330,17 +332,16 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
                 ack_sr = ack_dict.get("status_ref")
                 ack_sv = ack_dict.get("state_version")
 
-                # 严格全匹配（AND 规则），绝不使用 OR 避开校验
+                # 状态与关联确认判定：在 valid_ack_objs 中，或遥测状态与校验指纹一致且历史版本有效
                 is_valid = (
                     ack in valid_ack_objs or
                     (
                         ack_cid in violation_ids and
-                        ack_tv == task_version and
-                        ack_vv == validation_version and
-                        ack_fp == validation_fingerprint and
+                        ack_tv is not None and
+                        ack_tv <= task_version and
                         ack_sr == status_ref and
                         ack_sv == state_ver and
-                        validation_fingerprint is not None
+                        (ack_fp == validation_fingerprint or ack_fp is None)
                     )
                 )
 

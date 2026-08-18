@@ -265,7 +265,7 @@ class ConstraintCoverageMatrixTest(unittest.TestCase):
 
     def test_invalid_state_timestamp_fails_closed(self):
         violations = self.validate(state={"update_timestamp": "not-a-timestamp"})
-        self.assertEqual(["VAL_ERR"], [item.constraint_id for item in violations])
+        self.assertEqual(["INVALID_STATE_DATA"], [item.constraint_id for item in violations])
         self.assertEqual("hard", violations[0].severity)
 
     def test_current_velocity_thresholds_are_configuration_driven(self):

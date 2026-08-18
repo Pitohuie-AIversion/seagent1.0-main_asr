@@ -768,7 +768,7 @@ class ParameterExtractor:
         key = str(candidate.get("canonical_key") or "")
 
         # 1. 相对时间口语确定性校正
-        if key in ("start_time", "end_time") and candidate.get("resolution_method") != "duration_arithmetic":
+        if key in ("start_time", "end_time") and candidate.get("resolution_method") not in ("duration_arithmetic", "cross_day_auto_corrected"):
             raw_text = str(candidate.get("raw_value") or candidate.get("normalized_value") or "").strip()
             from .simulated_time import get_current_datetime
             rel_iso = parse_relative_datetime(raw_text, get_current_datetime())
