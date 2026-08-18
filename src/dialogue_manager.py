@@ -2120,6 +2120,8 @@ class DialogueManager:
                 extraction_res.setdefault("unresolved", []).append(message)
             extraction_res["slot_candidates"] = projected_candidates
 
+            self._normalize_payload_list_mutations(extraction_res, user_message, new_slots)
+
             filtered_mutations = []
             for mutation in extraction_res.get("list_mutations", []):
                 # Structural validation belongs to TaskPatch.  Preserve
@@ -2948,8 +2950,6 @@ class DialogueManager:
         raw_name = updates.get("oilfield_name") or updates.get("raw_oilfield_name")
         if isinstance(raw_name, dict):
             raw_name = raw_name.get("value")
-        if not raw_name:
-            return updates
 
         coords = (
             updates.get("oilfield_coordinates")
@@ -2970,8 +2970,35 @@ class DialogueManager:
                 None,
             )
         )
-        match = self.oilfield_linker.link(str(raw_name), coords)
         linked = dict(updates)
+
+        # 反向映射：检查坐标是否包含在知识库某油田范围内
+        matched_entity_by_coords = self.oilfield_linker.find_entity_by_coords(coords) if coords else None
+
+        if not raw_name:
+            if matched_entity_by_coords:
+                # 坐标落入已知油田，反向自动跟随推导油田名称
+                raw_name = matched_entity_by_coords.get("name")
+            else:
+                # 坐标不落入任何已知油田，且用户未提供油田名称：
+                # 若坐标被更新且原槽位绑定了知识库油田，解绑原知识库油田，让用户提供名称占位
+                existing_entity_id_slot = new_slots.get("oilfield_entity_id")
+                if (
+                    "oilfield_coordinates" in updates
+                    or "start_point" in updates
+                    or "cable_position" in updates
+                ) and existing_entity_id_slot and existing_entity_id_slot.value is not None:
+                    linked.pop("oilfield_name", None)
+                    if "oilfield_name" in new_slots:
+                        new_slots["oilfield_name"].value = None
+                        new_slots["oilfield_name"].status = "missing"
+                    if "oilfield_entity_id" in new_slots:
+                        new_slots["oilfield_entity_id"].value = None
+                        new_slots["oilfield_entity_id"].status = "missing"
+                    linked["__clear_oilfield_name"] = True
+                return linked
+
+        match = self.oilfield_linker.link(str(raw_name), coords)
 
         for k in ("raw_oilfield_name", "oilfield_match_status", "oilfield_match_confidence", "oilfield_match_evidence", "oilfield_match_candidates"):
             if k not in new_slots:
@@ -3024,6 +3051,20 @@ class DialogueManager:
                         new_slots["oilfield_coordinates"].source = "oilfield_default"
                 except Exception:
                     pass
+        elif match.raw and not matched_entity_by_coords and not match.candidates:
+            # 用户显式输入了自定义名称（如“自设A区”），且坐标不属于知识库任何油田：
+            # 允许自定义名称作为 oilfield_name 生效（自定义名称占位），entity_id 为 None
+            linked["oilfield_name"] = match.raw
+            if "oilfield_name" not in new_slots:
+                new_slots["oilfield_name"] = Slot("oilfield_name")
+            new_slots["oilfield_name"].value = match.raw
+            new_slots["oilfield_name"].status = "valid"
+            new_slots["oilfield_name"].source = "user_input"
+            if "oilfield_entity_id" not in new_slots:
+                new_slots["oilfield_entity_id"] = Slot("oilfield_entity_id")
+            new_slots["oilfield_entity_id"].value = None
+            new_slots["oilfield_entity_id"].status = "missing"
+            linked["__clear_pending_oilfield"] = True
         else:
             linked.pop("oilfield_name", None)
             for k in ("pending_oilfield_name", "pending_oilfield_candidates"):
@@ -5744,9 +5785,44 @@ class DialogueManager:
                     "type": "soft",
                     "violations": current_soft,
                     "hard_refusal_counts": {},
+                    "kb_alternatives": self._get_kb_alternatives_for_violations(current_soft),
                 }
 
-        return {"type": "none", "violations": [], "hard_refusal_counts": {}}
+        res = {"type": "none", "violations": [], "hard_refusal_counts": {}}
+        if current_blockers:
+            res["kb_alternatives"] = self._get_kb_alternatives_for_violations(current_blockers)
+        return res
+
+    def _get_kb_alternatives_for_violations(self, violations: list) -> list[dict]:
+        """从 KnowledgeBase 中检索真实的合规替代设备，严禁凭空编造非 KB 型号。"""
+        task_type_key = self.task_state.get("task_type_key")
+        water_depth = self.task_state.get("water_depth")
+        if not task_type_key:
+            return []
+
+        try:
+            wd = float(water_depth) if water_depth is not None else None
+        except (ValueError, TypeError):
+            wd = None
+
+        valid_robots = self.kb.get_task_allowed_robot_variants(task_type_key)
+        if wd is not None:
+            valid_robots = [
+                r for r in valid_robots
+                if r.get("max_depth_m") is not None and float(r.get("max_depth_m")) >= wd
+            ]
+
+        curr_eq = self.task_state.get("equipment_type")
+        alts = []
+        for r in valid_robots:
+            name = r.get("full_name") or r.get("name")
+            if name and name != curr_eq:
+                alts.append({
+                    "name": name,
+                    "max_depth_m": r.get("max_depth_m"),
+                    "capabilities": r.get("capabilities") or [],
+                })
+        return alts[:3]
 
     # --------------------------------------------------------------------------
     # 工具方法
@@ -6037,6 +6113,93 @@ class DialogueManager:
             "替换",
         )
         return any(keyword in message for keyword in keywords)
+
+    def _normalize_payload_list_mutations(
+        self,
+        extraction_res: dict,
+        user_message: str,
+        current_slots: dict,
+    ) -> None:
+        """兜底防护：当 LLM 抽取的 extraction_res 将 payload 误放入 slot_candidates 时，
+        基于用户增量/减量意图或现有槽位，自动转换为 list_mutations（op: add/remove），
+        防止列表字段被整体覆盖。
+        """
+        mutations = extraction_res.get("list_mutations")
+        if not isinstance(mutations, list):
+            mutations = []
+            extraction_res["list_mutations"] = mutations
+
+        has_payload_mutation = any(
+            isinstance(m, dict) and m.get("field") == "payload"
+            for m in mutations
+        )
+        if has_payload_mutation:
+            return
+
+        candidates = extraction_res.get("slot_candidates")
+        if not isinstance(candidates, list):
+            return
+
+        payload_cands = [
+            c for c in candidates
+            if isinstance(c, dict) and c.get("canonical_key") == "payload"
+        ]
+        if not payload_cands:
+            return
+
+        cand = payload_cands[0]
+        val = cand.get("normalized_value")
+        if val is None:
+            val = cand.get("raw_value")
+        items = val if isinstance(val, list) else ([val] if val is not None else [])
+        if not items:
+            return
+
+        msg = str(user_message or "")
+        add_kws = ("添加", "加装", "增加", "加上", "还要", "补充", "带上", "携带", "配置", "配合", "还要带", "加个")
+        remove_kws = ("删除", "去掉", "移除", "不要", "取消", "别带")
+        replace_kws = ("替换", "改成", "换成", "重置", "覆盖")
+
+        is_add = any(kw in msg for kw in add_kws)
+        is_remove = any(kw in msg for kw in remove_kws)
+        is_replace = any(kw in msg for kw in replace_kws)
+
+        payload_slot = current_slots.get("payload")
+        has_existing_payload = bool(
+            payload_slot
+            and payload_slot.status == "valid"
+            and isinstance(payload_slot.value, list)
+            and len(payload_slot.value) > 0
+        )
+
+        if is_add or (has_existing_payload and not is_replace and not is_remove):
+            extraction_res["slot_candidates"] = [
+                c for c in candidates
+                if isinstance(c, dict) and c.get("canonical_key") != "payload"
+            ]
+            mutations.append({
+                "field": "payload",
+                "operation": "add",
+                "items": items,
+                "target_items": [],
+                "raw_text": msg,
+                "confidence": cand.get("confidence", 0.95),
+                "source": "user_input",
+            })
+        elif is_remove:
+            extraction_res["slot_candidates"] = [
+                c for c in candidates
+                if isinstance(c, dict) and c.get("canonical_key") != "payload"
+            ]
+            mutations.append({
+                "field": "payload",
+                "operation": "remove",
+                "items": items,
+                "target_items": [],
+                "raw_text": msg,
+                "confidence": cand.get("confidence", 0.95),
+                "source": "user_input",
+            })
 
     # --------------------------------------------------------------------------
     # 状态查询与重置

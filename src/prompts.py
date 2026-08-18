@@ -362,6 +362,18 @@ def build_responder_messages(
             tag = "⛔" if v.severity == "hard" else "⚠️"
             lines.append(f"{tag} 作业规范：{v.constraint_name}\n   {v.message}")
         constraint_instruction += "\n\n【当前违规详情】\n" + "\n\n".join(lines)
+
+    kb_alts = constraint_context.get("kb_alternatives") or []
+    if kb_alts:
+        alt_lines = ["【知识库查找出的真实合规替代设备（事实证据，可向用户建议）】"]
+        for alt in kb_alts:
+            alt_lines.append(
+                f"  - 设备型号: {alt.get('name')} | 最大水深: {alt.get('max_depth_m')}米"
+            )
+        constraint_instruction += (
+            "\n\n" + "\n".join(alt_lines) + "\n注意：向用户提供替代建议时，必须且只能引用上面知识库提供的真实设备，严禁编造非知识库型号或伪造参数！"
+        )
+
     refusal_counts = constraint_context.get("hard_refusal_counts", {})
     if refusal_counts and ctx_type in ("hard", "hard_final_warning"):
         active_refusal_counts = [cnt for cnt in refusal_counts.values() if cnt > 0]

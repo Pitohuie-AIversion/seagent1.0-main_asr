@@ -155,6 +155,26 @@ class OilfieldEntityLinker:
             if isinstance(item, dict) and item.get("check_type")
         }
 
+    def find_entity_by_coords(self, coords: dict[str, Any] | None) -> dict[str, Any] | None:
+        """根据坐标检查是否落入知识库中某一油田的经纬度范围内。"""
+        if not isinstance(coords, dict):
+            return None
+        lat = _as_float(coords.get("lat"))
+        lon = _as_float(coords.get("lon"))
+        if lat is None or lon is None:
+            return None
+
+        for entity in self.entities:
+            try:
+                coordinate_range = _get_coordinate_range(entity)
+                lat_min, lat_max = coordinate_range["lat"]
+                lon_min, lon_max = coordinate_range["lon"]
+                if lat_min <= lat <= lat_max and lon_min <= lon <= lon_max:
+                    return entity
+            except Exception:
+                continue
+        return None
+
     def link(self, raw_name: str, coords: dict[str, Any] | None = None) -> OilfieldMatch:
         raw = str(raw_name or "").strip()
         if not raw:

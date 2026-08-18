@@ -130,6 +130,22 @@ EXTRACTION_SYSTEM = """\
 14. 最新用户消息选择编号时，只能根据紧邻上一条 assistant 消息中明确编号展示的选项映射；候选顺序未向用户展示时必须写入 unresolved。接受单一推荐时只能使用紧邻助手明确推荐的值；不得猜测。
 15. 只根据所需字段中定义的key提取，不新增其他字段。
 16. 任务维度中无法识别或无法映射的片段写入 unresolved；上游只有在 WRITE 时才调用本抽取器，因此没有可验证候选时不得返回全空，必须说明 unresolved。
+17. 【列表变更 (list_mutations) 提取与语义吸附规则】：
+    对于携带工具/选配工具（payload）等列表型字段：
+    - 语义吸附 (Snapping)：在提取 items 时，若用户使用口语、简称或自然语言描述（如“摄像机”、“探头”、“测厚度的”），必须优先对比【所需字段及其描述】中 payload 的 allowed_values 规范列表，进行语义对齐与吸附（例如将“摄像机”吸附映射为“高清水下摄像机”）。若无法对齐，保留原始表达由后端兜底解析。
+    - 增量添加/加装/携带/加上/补充：当用户表达“添加激光标尺”、“加装腐蚀检测探头”、“还要携带水质传感器”等增量加装意图时，必须输出为 list_mutations 元素：
+      {{"field": "payload", "operation": "add", "items": ["激光标尺"], "raw_text": "用户原表达", "confidence": 0.95}}
+      严禁将其提取为 slot_candidates 中的 payload 字段，防止覆盖已有工具列表！
+    - 移除/删除/去掉/不要：当用户表达“删除激光标尺”、“去掉腐蚀检测探头”等减装意图时，必须输出为 list_mutations 元素：
+      {{"field": "payload", "operation": "remove", "items": ["激光标尺"], "raw_text": "用户原表达", "confidence": 0.95}}
+    - 替换/更换：当用户表达“把激光标尺替换为腐蚀检测探头”时，必须输出为 list_mutations 元素：
+      {{"field": "payload", "operation": "replace", "items": ["腐蚀检测探头"], "target_items": ["激光标尺"], "raw_text": "用户原表达", "confidence": 0.95}}
+    - 清空/取消全部：当用户表达“清空所有携带工具”或“不需要任何额外工具”时，必须输出为 list_mutations 元素：
+      {{"field": "payload", "operation": "clear", "raw_text": "用户原表达", "confidence": 0.95}}
+18. 【通用枚举字段语义吸附规则】：
+    对于设备体系（equipment_class / equipment_family / equipment_type / equipment_unit_id）、支持船（support_vessel）、管缆类型（cable_type）、油田名称（oilfield_name）等枚举字段：
+    - 结合【所需字段及其描述】中的 allowed_values 允许值列表与候选证据（candidate_evidence），当用户使用口语、简称或自然语言描述（例如“油气管”、“光缆”、“201号船”、“流花油田”、“150马力轻型”）时，必须优先对齐吸附映射为对应的规范标准名称（例如 normalized_value: "海底油气管道", "光纤通信缆", "海洋石油201", "流花11-1油田", "轻型工作级深海机器人 150HP"）。
+    - raw_value 必须准确保留用户的原始表达，normalized_value 填写吸附对齐后的标准规范名称。
 
 【枚举字段抽取边界】
 - raw_value 必须保留用户原始表达。
