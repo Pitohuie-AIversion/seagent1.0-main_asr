@@ -890,7 +890,6 @@ class OutputBuilder:
 
         if ref == "vessel_ids":
             return [r['id'] for r in self.kb.assets.get("vessels", [])]
-            # return self.kb.assets.get("vessel_ids", [])
 
         if ref.startswith("payload_options."):
             task_key = ref.split(".", 1)[1]

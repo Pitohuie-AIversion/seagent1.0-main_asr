@@ -2175,6 +2175,12 @@ class KnowledgeBase:
             target = f"unit:{unit_id}"
             for field in ("unit_id", "display_name", "serial_no", "status_ref"):
                 add(unit.get(field), target)
+            serial_no = str(unit.get("serial_no") or "").lstrip("0")
+            if serial_no.isdigit():
+                num = int(serial_no)
+                cn_num = {1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八", 9: "九"}.get(num, str(num))
+                add(f"{num}号机", target)
+                add(f"{cn_num}号机", target)
             for alias in unit.get("aliases", []):
                 add(alias, target)
 

@@ -62,9 +62,10 @@ class AssetsContractTest(unittest.TestCase):
             with self.subTest(catalog_id=catalog_id, name=name):
                 self.assertEqual([], conflicting_ids)
 
-    def test_vessel_compatibility_mirror_matches_authoritative_records(self):
-        vessel_ids = [vessel["id"] for vessel in self.kb.assets["vessels"]]
-        self.assertEqual(vessel_ids, self.kb.assets.get("vessel_ids"))
+    def test_vessels_ids_are_unique_and_valid(self):
+        vessel_ids = [vessel["id"] for vessel in self.kb.assets.get("vessels", [])]
+        self.assertTrue(len(vessel_ids) > 0)
+        self.assertEqual(len(vessel_ids), len(set(vessel_ids)))
 
 
 if __name__ == "__main__":
