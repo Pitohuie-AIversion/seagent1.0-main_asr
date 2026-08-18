@@ -19,6 +19,33 @@ WEEKDAY_MAP = {
     "日": 6, "天": 6, "7": 6, "0": 6,
 }
 
+CN_NUM_MAP = {
+    "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+
+
+def parse_cn_number_str(s: str | None) -> int | None:
+    """将阿拉伯数字字符串或简单中文数字（如 '8', '31', '八', '十一', '二十五', '三十一'）转为 int。"""
+    if not s or not isinstance(s, str):
+        return None
+    s = s.strip()
+    if s.isdigit():
+        return int(s)
+    if s in CN_NUM_MAP:
+        return CN_NUM_MAP[s]
+    if s.startswith("十"):
+        if len(s) == 1:
+            return 10
+        if len(s) == 2 and s[1] in CN_NUM_MAP:
+            return 10 + CN_NUM_MAP[s[1]]
+    if "十" in s:
+        parts = s.split("十", 1)
+        tens = (CN_NUM_MAP.get(parts[0]) or 1) * 10
+        ones = (CN_NUM_MAP.get(parts[1]) or 0) if parts[1] else 0
+        return tens + ones
+    return None
+
 
 def parse_relative_datetime(text: str | None, base_dt: datetime | None = None) -> str | None:
     """
@@ -42,18 +69,18 @@ def parse_relative_datetime(text: str | None, base_dt: datetime | None = None) -
 
     target_date = None
 
-    # 1. 显式具体日期判断 (如 8月31号 / 8月31日 / 2026年8月31日 / 8-31)
+    # 1. 显式具体日期判断 (如 8月31号 / 八月三十一号 / 2026年8月31日)
     m_exact = re.search(
-        r"(?:(\d{4})[年/-])?\s*([0-1]?[0-9])[月/-]\s*([0-3]?[0-9])[日号]?",
+        r"(?:([0-9]{4}|[零一二三四五六七八九]{4})[年/-])?\s*([0-1]?[0-9]|[一二三四五六七八九十]+)[月/-]\s*([0-3]?[0-9]|[一二三四五六七八九十]+)[日号]?",
         norm,
     )
     if m_exact:
         try:
-            year = int(m_exact.group(1)) if m_exact.group(1) else base_dt.year
-            month = int(m_exact.group(2))
-            day = int(m_exact.group(3))
-            if 1 <= month <= 12 and 1 <= day <= 31:
-                target_date = datetime(year, month, day).date()
+            year = parse_cn_number_str(m_exact.group(1)) if m_exact.group(1) else base_dt.year
+            month = parse_cn_number_str(m_exact.group(2))
+            day = parse_cn_number_str(m_exact.group(3))
+            if month and day and 1 <= month <= 12 and 1 <= day <= 31:
+                target_date = datetime(year or base_dt.year, month, day).date()
         except ValueError:
             target_date = None
 

@@ -12,10 +12,12 @@ def test_parse_relative_datetime_today_and_tomorrow():
     assert parse_relative_datetime("今天晚上23:30", base_dt) == "2026-08-18T23:30:00"
     assert parse_relative_datetime("现在", base_dt) == "2026-08-18T10:00:00"
 
-    # 具体月份与日期 (如 8月31号早上6点)
+    # 具体月份与日期 (如 8月31号早上6点 / 八月三十一号)
     assert parse_relative_datetime("8月31号早上6点", base_dt) == "2026-08-31T06:00:00"
+    assert parse_relative_datetime("八月三十一号早上6点", base_dt) == "2026-08-31T06:00:00"
     assert parse_relative_datetime("8月31日 14:00", base_dt) == "2026-08-31T14:00:00"
     assert parse_relative_datetime("2026年10月1号上午9点", base_dt) == "2026-10-01T09:00:00"
+    assert parse_relative_datetime("十月一日下午2点", base_dt) == "2026-10-01T14:00:00"
 
     # 明天 / 明晚
     assert parse_relative_datetime("明天下午3点半", base_dt) == "2026-08-19T15:30:00"
