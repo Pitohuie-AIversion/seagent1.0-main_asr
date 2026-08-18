@@ -119,6 +119,71 @@ class TestMultiTurnSoftWarningPersistence(unittest.TestCase):
         self.assertEqual(len(cs.get("ignored_soft_warnings", [])), 1)
         self.assertEqual(cs["ignored_soft_warnings"][0]["constraint_id"], "C010")
 
+    def test_external_state_refresh_auto_unblocks_constraints(self):
+        """测试在 blocked_hard 或 blocked_soft 状态下，若管理员后台刷新了状态消除了违规，下一轮消息立刻自动解封并清空前后端警告。"""
+        dm = DialogueManager(self.mock_llm, self.mock_kb)
+        dm.task_state = {
+            "task_type_key": "pipeline_inspection",
+            "pipeline_type": "optical_fiber",
+        }
+        dm.phase = "blocked_hard"
+        hard_v = Violation(
+            constraint_id="C999",
+            constraint_name="通信中断",
+            message="设备掉线",
+            severity="hard",
+            related_fields=[],
+        )
+        dm._blocking_violations = [hard_v]
+        dm.slot_store.validation_result = ValidationResult(
+            overall_status="blocked_hard",
+            validated_at="2026-08-18T09:00:00Z",
+            task_version=1,
+            validation_version=1,
+            validation_fingerprint="fp_old",
+            state_snapshot={"status_ref": "ref_offline", "state_version": 1},
+            violations=[hard_v],
+        )
+
+        # 模拟后台管理员更新了遥测/状态文件，重新校验时违规已全部消除 (violations = [])
+        clean_res = ValidationResult(
+            overall_status="none",
+            validated_at="2026-08-18T10:00:00Z",
+            task_version=1,
+            validation_version=2,
+            validation_fingerprint="fp_clean",
+            state_snapshot={"status_ref": "ref_online", "state_version": 2},
+            violations=[],
+        )
+        def mock_clean_refresh(purpose="interactive", changed_fields=None):
+            dm.slot_store.validation_result = clean_res
+            return clean_res
+
+        with patch.object(dm.intent_router, "route") as mock_route:
+            mock_route_res = MagicMock()
+            mock_route_res.dialogue_mode = "task_collection"
+            mock_route_res.interaction_type = "QUERY"
+            mock_route_res.interaction_plan = None
+            mock_route.return_value = mock_route_res
+
+            with patch.object(dm, "_refresh_validation", side_effect=mock_clean_refresh):
+                reply = dm.process("确认")
+
+        # 1. 验证 Phase 已经从 blocked_hard 自动跟随解封恢复为 collecting 或 confirming
+        self.assertNotEqual(dm.phase, "blocked_hard")
+        self.assertIn(dm.phase, ("collecting", "confirming"))
+        self.assertEqual(len(dm._blocking_violations), 0)
+
+        # 2. 验证 reply 中没有拒绝对话
+        self.assertNotIn("重新校验发现硬约束", reply)
+
+        # 3. 验证 ui_state 中 hard_violations 与 soft_warnings 均为空列表，右侧边栏卡片清空
+        ui_state = build_frontend_ui_state(dm)
+        cs = ui_state.get("constraint_state", {})
+        self.assertEqual(len(cs.get("hard_violations", [])), 0)
+        self.assertEqual(len(cs.get("soft_warnings", [])), 0)
+        self.assertEqual(cs.get("status"), "none")
+
 
 if __name__ == "__main__":
     unittest.main()

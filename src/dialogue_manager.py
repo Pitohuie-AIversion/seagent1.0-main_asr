@@ -1619,7 +1619,11 @@ class DialogueManager:
             current_hard = [v for v in val_res.violations if v.severity == "hard"]
             if current_hard:
                 self._blocking_violations = current_hard
-            return self._reject_hard_constraint_bypass(user_message)
+                return self._reject_hard_constraint_bypass(user_message)
+            else:
+                self._blocking_violations = []
+                self._hard_refusal_counts.clear()
+                self._transition_phase("collecting", reason="external_state_constraint_resolved")
 
         if self.phase == "blocked_soft" and self._is_ignore_warning(user_message):
             return self._handle_soft_warning_confirmation(user_message, request_id)

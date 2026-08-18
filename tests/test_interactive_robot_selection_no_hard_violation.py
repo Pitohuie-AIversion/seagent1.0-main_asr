@@ -77,6 +77,38 @@ class TestInteractiveRobotSelectionNoHardViolation(unittest.TestCase):
         canonical_keys = [c.get("canonical_key") for c in res.get("slot_candidates", [])]
         self.assertIn("equipment_type", canonical_keys)
 
+    def test_class_not_allowed_stays_collecting_in_interactive_mode(self):
+        """采油树阀门插拔任务误填 AUV (CLASS_NOT_ALLOWED_FOR_TASK) 时，DialogueManager 保持在 collecting 状态进行选型引导。"""
+        mock_llm = MagicMock()
+        mock_llm.chat.return_value = "采油树阀门插拔任务需要配备机械臂与液压工具的工作级ROV，AUV不适用。请选择工作级ROV。"
+        mock_llm.filter_reply.side_effect = lambda text, *args, **kwargs: text
+
+        dm = DialogueManager(llm=mock_llm, kb=self.kb)
+        dm.task_state = {
+            "task_type": "采油树阀门插拔",
+            "task_type_key": "tree_valve_operation",
+            "equipment_class": "auv",
+        }
+        ctx = dm._run_constraint_check({"equipment_class"}, purpose="interactive")
+        self.assertEqual(dm.phase, "collecting")
+        self.assertNotEqual(dm.phase, "blocked_hard")
+
+    def test_family_mismatch_stays_collecting_in_interactive_mode(self):
+        """类别与系列冲突 (FAMILY_CLASS_MISMATCH) 时，DialogueManager 保持在 collecting 状态进行引导。"""
+        mock_llm = MagicMock()
+        mock_llm.chat.return_value = "所选系列与类别不匹配，请重新确认。"
+        mock_llm.filter_reply.side_effect = lambda text, *args, **kwargs: text
+
+        dm = DialogueManager(llm=mock_llm, kb=self.kb)
+        dm.task_state = {
+            "task_type_key": "pipeline_inspection",
+            "equipment_class": "auv",
+            "equipment_family": "light_work_class_rov",
+        }
+        ctx = dm._run_constraint_check({"equipment_class", "equipment_family"}, purpose="interactive")
+        self.assertEqual(dm.phase, "collecting")
+        self.assertNotEqual(dm.phase, "blocked_hard")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -459,7 +459,7 @@ def _validate_and_build_restored_slot(
         raw_val = copy.deepcopy(raw_slot.get("raw_value"))
         val_error = raw_slot.get("validation_error")
 
-    elif isinstance(raw_slot, Slot):
+    elif isinstance(raw_slot, Slot) or type(raw_slot).__name__ == "Slot":
         if raw_slot.slot_name is not None and raw_slot.slot_name != key:
             raise SnapshotValidationError(f"Slot key '{key}' does not match slot_name '{raw_slot.slot_name}'.")
 
