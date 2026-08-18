@@ -277,7 +277,7 @@ constraints:
     applies_to: ["all"]
     check_type: "state_timestamp"
     thresholds:
-      max_age_seconds: 3600
+      max_age_seconds: 600
     violation_message: >
       环境信息最后更新于 {update_timestamp}，已超出有效时间范围，无法反映实时海况，可能影响作业安全，请更新环境信息后再继续。
     severity: "soft"

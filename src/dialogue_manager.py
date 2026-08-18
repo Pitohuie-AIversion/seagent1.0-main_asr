@@ -1276,7 +1276,7 @@ class DialogueManager:
         cand_built = copy.deepcopy(self._last_built_json)
 
         # 运行时设备可用性重新校验 (Issue #12)
-        # 仅即时执行任务（10分钟内）才在发布瞬间核验当前单机遥测时效与实时可用性。未来任务延后至执行前动态校验。
+        # 仅即时执行任务（1小时内）才在发布瞬间核验当前单机遥测时效与实时可用性。未来任务延后至执行前动态校验。
         is_task_now = self.is_start_time_near_now()
         unit_id = cand_state.get("equipment_unit_id") or cand_built.get("equipment_unit_id")
         if not unit_id and self.slot_store.slots.get("equipment_unit_id"):
@@ -6324,7 +6324,7 @@ class DialogueManager:
     # 时间判断
     # --------------------------------------------------------------------------
 
-    def is_start_time_near_now(self, time_window_minutes: int = 10) -> bool:
+    def is_start_time_near_now(self, time_window_minutes: int = 60) -> bool:
         return self.validator._is_task_start_now(self.task_state, time_window_minutes=time_window_minutes)
 
     # --------------------------------------------------------------------------

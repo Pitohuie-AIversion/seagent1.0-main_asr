@@ -70,7 +70,7 @@ class FakeKnowledgeBaseForDefects:
                 "name": "环境信息已过期",
                 "applies_to": ["all"],
                 "check_type": "state_timestamp",
-                "thresholds": {"max_age_seconds": 3600},
+                "thresholds": {"max_age_seconds": 600},
                 "violation_message": "环境信息已过期 {update_timestamp}",
                 "severity": "soft"
             }

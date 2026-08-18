@@ -596,7 +596,7 @@ class KnowledgeBase:
     def _task_starts_within_runtime_window(
         task_state: dict | None,
         *,
-        time_window_minutes: int = 10,
+        time_window_minutes: int = 60,
     ) -> bool:
         if not isinstance(task_state, dict):
             return False
@@ -2128,7 +2128,7 @@ class KnowledgeBase:
     def get_unit_state_snapshot(self, unit_id: str) -> dict:
         return self.state_info.get_unit_state_snapshot(unit_id)
 
-    def check_runtime_availability(self, unit_id: str, *, max_age_seconds: int = 300) -> dict:
+    def check_runtime_availability(self, unit_id: str, *, max_age_seconds: int = 600) -> dict:
         return self.state_info.check_runtime_availability(unit_id, max_age_seconds=max_age_seconds)
 
     # ──────────────────────────────────────────────────────────────────────────

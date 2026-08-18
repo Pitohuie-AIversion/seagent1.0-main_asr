@@ -1657,8 +1657,8 @@ class TestRuntimeV2Integration(unittest.TestCase):
             "slot_candidates": [
                 {
                     "canonical_key": "oilfield_name",
-                    "normalized_value": "南海",
-                    "raw_value": "南海",
+                    "normalized_value": "气田",
+                    "raw_value": "气田",
                     "confidence": 0.8,
                     "resolution_method": "canonical_exact",
                 }
@@ -1692,13 +1692,13 @@ class TestRuntimeV2Integration(unittest.TestCase):
 
             with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=flag_v2), \
                  patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=flag_norm):
-                dm.process("作业在南海油田")
+                dm.process("作业在气田")
 
             snapshots[mode_name] = get_effect_snapshot(dm, oil_keys)
 
         self.assertEqual(snapshots["Legacy"], snapshots["G2.1"])
         self.assertEqual(snapshots["Legacy"], snapshots["V2"])
-        self.assertEqual(snapshots["V2"]["slots"]["pending_oilfield_name"]["value"], "南海")
+        self.assertEqual(snapshots["V2"]["slots"]["pending_oilfield_name"]["value"], "气田")
         self.assertEqual(snapshots["V2"]["slots"]["pending_oilfield_name"]["status"], "valid")
         self.assertIsNone(snapshots["V2"]["slots"]["oilfield_name"]["value"])
         self.assertEqual(snapshots["V2"]["slots"]["oilfield_name"]["status"], "missing")
@@ -1710,8 +1710,8 @@ class TestRuntimeV2Integration(unittest.TestCase):
             "slot_candidates": [
                 {
                     "canonical_key": "oilfield_name",
-                    "normalized_value": "南海",
-                    "raw_value": "南海",
+                    "normalized_value": "气田",
+                    "raw_value": "气田",
                     "confidence": 0.8,
                     "resolution_method": "canonical_exact",
                 }
@@ -1723,7 +1723,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
 
         with patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True), \
              patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=True):
-            self.dm.process("作业在南海油田")
+            self.dm.process("作业在气田")
 
         of_slot = self.dm.slot_store.slots.get("oilfield_name")
         self.assertIsNotNone(of_slot)
@@ -1746,8 +1746,8 @@ class TestRuntimeV2Integration(unittest.TestCase):
             "slot_candidates": [
                 {
                     "canonical_key": "oilfield_name",
-                    "normalized_value": "南海",
-                    "raw_value": "南海",
+                    "normalized_value": "气田",
+                    "raw_value": "气田",
                     "confidence": 0.8,
                     "resolution_method": "canonical_exact",
                 }
@@ -1760,7 +1760,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
         with patch.object(DialogueManager, "_apply_updates_in_transaction", wraps=self.dm._apply_updates_in_transaction) as spy_apply, \
              patch("src.dialogue_manager.is_task_patch_v2_enabled", return_value=True), \
              patch("src.dialogue_manager.is_normalization_contract_v2_enabled", return_value=True):
-            self.dm.process("作业在南海油田")
+            self.dm.process("作业在气田")
 
             apply_calls = spy_apply.call_args_list
             has_clear = any(

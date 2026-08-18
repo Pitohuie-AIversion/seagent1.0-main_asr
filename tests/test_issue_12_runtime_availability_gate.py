@@ -25,7 +25,8 @@ from tests.interaction_plan_support import ScriptedLLM
 from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 
 
-ONE_DAY_SECONDS = 24 * 60 * 60
+STATE_MAX_AGE_SECONDS = 10 * 60
+ONE_DAY_SECONDS = STATE_MAX_AGE_SECONDS
 
 
 class Issue12RuntimeAvailabilityGateTest(unittest.TestCase):

@@ -73,7 +73,7 @@ CONSTRAINT_TRIGGER_MATRIX = {
     "C004": {"task": {"water_depth": 601}},
     "C030": {"task": {"start_time": (NOW - timedelta(minutes=6)).isoformat()}},
     "C031": {"task": {"end_time": (NOW - timedelta(seconds=1)).isoformat()}},
-    "C032": {"task": {"start_time": (NOW + timedelta(hours=1)).isoformat()}},
+    "C032": {"task": {"start_time": (NOW + timedelta(hours=2)).isoformat()}},
     "C007": {"task": {"support_vessel": "海洋石油708"}},
     "C008": {"task": {"start_point": FORBIDDEN_POINT}},
     "C009": {
@@ -93,7 +93,7 @@ CONSTRAINT_TRIGGER_MATRIX = {
     "C016": {"state": {"current_velocity": 0.800001}},
     "C017": {"state": {"current_velocity": 1.200001}},
     "C018": {"state": {"confidence": 0.49}},
-    "C019": {"state": {"update_timestamp": (NOW - timedelta(seconds=3601)).isoformat()}},
+    "C019": {"state": {"update_timestamp": (NOW - timedelta(seconds=601)).isoformat()}},
     "C020": {"state": {"overall_status": "unavailable"}},
     "C021": {"state": {"survival_status": "abnormal"}},
     "C022": {"state": {"thruster_status": "abnormal"}},
@@ -248,7 +248,7 @@ class ConstraintCoverageMatrixTest(unittest.TestCase):
                 self.assertEqual(expected, actual)
 
     def test_state_timestamp_exact_boundary(self):
-        for age_seconds, expected in ((3600, set()), (3601, {"C019"})):
+        for age_seconds, expected in ((600, set()), (601, {"C019"})):
             with self.subTest(age_seconds=age_seconds):
                 actual = {
                     item.constraint_id

@@ -1099,7 +1099,7 @@ class TaskValidator:
 
         return violations
 
-    def _is_task_start_now(self, task_state: dict, time_window_minutes: int = 10) -> bool:
+    def _is_task_start_now(self, task_state: dict, time_window_minutes: int = 60) -> bool:
         start_time_raw = task_state.get("start_time")
         if not start_time_raw or (isinstance(start_time_raw, str) and start_time_raw.strip() == ""):
             return True

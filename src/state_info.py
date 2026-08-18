@@ -35,7 +35,7 @@ _SYSTEM_OWNED_FIELDS = {
     "update_timestamp",
 }
 
-ROBOT_STATE_MAX_AGE_SECONDS = 24 * 60 * 60
+ROBOT_STATE_MAX_AGE_SECONDS = 10 * 60
 TELEMETRY_MAX_FUTURE_SKEW_SECONDS = 5 * 60
 
 
@@ -480,7 +480,7 @@ class RobotStateInfo:
                 "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
             }
 
-        # 5. 所有状态记录均强制校验配置的 TTL（默认 1 天）
+        # 5. 所有状态记录均强制校验配置的 TTL（默认 10 分钟）
         if not state_updated_at_str:
             return {
                 "available": False,

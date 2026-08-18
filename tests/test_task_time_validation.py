@@ -96,12 +96,12 @@ class TaskTimeValidationTest(unittest.TestCase):
         self.assertEqual(violations, [])
 
     def test_future_start_time_triggers_c032_soft_notice(self):
-        violations = self.validator.validate({"start_time": "2026-06-30T18:38:00"})
+        violations = self.validator.validate({"start_time": "2026-06-30T19:38:00"})
 
         self.assertEqual(len(violations), 1)
         self.assertEqual(violations[0].constraint_id, "C032")
         self.assertEqual(violations[0].severity, "soft")
-        self.assertIn("2026-06-30 18:38:00", violations[0].message)
+        self.assertIn("2026-06-30 19:38:00", violations[0].message)
         self.assertIn("未来排期任务", violations[0].message)
 
     def test_incremental_validation_checks_soft_time_constraint_when_start_time_changes(self):
