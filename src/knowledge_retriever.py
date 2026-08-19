@@ -6,6 +6,7 @@ knowledge_retriever.py — 知识库加载与按需检索
 
 import yaml
 import math
+import networkx as nx
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -156,6 +157,106 @@ class KnowledgeBase:
         self.state_info = RobotStateInfo()
         self._robot_variants_cache: list[dict] | None = None
         self.ROV2type = self.get_ROV2type()
+        self._build_hierarchy_graph()
+
+    def _build_hierarchy_graph(self) -> None:
+        """基于 NetworkX (networkx) 建立四级层级有向无环图 (Task -> Class -> Family -> Variant -> Unit)"""
+        G = nx.DiGraph()
+        
+        # 1. 节点与 Task -> Class 边
+        task_templates = self.task_schemas.get("task_templates", {}) or {}
+        for task_key, template in task_templates.items():
+            task_node = f"task:{task_key}"
+            G.add_node(task_node, level="task", raw_id=task_key)
+            for cls_id in template.get("allowed_robot_classes", []):
+                cls_node = f"class:{cls_id}"
+                G.add_node(cls_node, level="class", raw_id=cls_id)
+                G.add_edge(task_node, cls_node)
+
+        # 2. Class -> Family 边
+        families = self.robot_fleet.get("robot_families", {}) or {}
+        for fam_id, fam_cfg in families.items():
+            fam_node = f"family:{fam_id}"
+            G.add_node(fam_node, level="family", raw_id=fam_id, full_name=fam_cfg.get("full_name", fam_id))
+            cls_id = fam_cfg.get("robot_class")
+            if cls_id:
+                cls_node = f"class:{cls_id}"
+                G.add_node(cls_node, level="class", raw_id=cls_id)
+                G.add_edge(cls_node, fam_node)
+
+        # 3. Family -> Variant 边
+        variants = self.robot_fleet.get("model_variants", {}) or {}
+        for var_id, var_cfg in variants.items():
+            var_node = f"variant:{var_id}"
+            G.add_node(var_node, level="variant", raw_id=var_id, full_name=var_cfg.get("full_name", var_id))
+            fam_id = var_cfg.get("family_id")
+            if fam_id:
+                fam_node = f"family:{fam_id}"
+                G.add_edge(fam_node, var_node)
+
+        # 4. Variant -> Unit 边
+        units = self.robot_fleet.get("fleet_units", []) or []
+        for unit_cfg in units:
+            unit_id = unit_cfg.get("unit_id")
+            var_id = unit_cfg.get("variant_id")
+            if unit_id and var_id:
+                unit_node = f"unit:{unit_id}"
+                var_node = f"variant:{var_id}"
+                G.add_node(unit_node, level="unit", raw_id=unit_id)
+                G.add_edge(var_node, unit_node)
+
+        self.hierarchy_graph = G
+
+    def _normalize_node_id(self, item: str, source_level: str | None = None) -> str:
+        """支持前缀或裸 Key 的节点名标准化。"""
+        if ":" in item:
+            return item
+        if source_level:
+            candidate = f"{source_level}:{item}"
+            if candidate in self.hierarchy_graph:
+                return candidate
+        for prefix in ("class", "family", "variant", "unit", "task"):
+            candidate = f"{prefix}:{item}"
+            if candidate in self.hierarchy_graph:
+                return candidate
+        return item
+
+    def get_ancestor_by_level(self, node_id: str, target_level: str, source_level: str | None = None) -> str | None:
+        """通过 NetworkX 图求取特定级别的唯一上级祖先节点。"""
+        if not hasattr(self, "hierarchy_graph"):
+            return None
+        norm_node = self._normalize_node_id(node_id, source_level)
+        if norm_node not in self.hierarchy_graph:
+            return None
+        ancestors = nx.ancestors(self.hierarchy_graph, norm_node)
+        for anc in ancestors:
+            if self.hierarchy_graph.nodes[anc].get("level") == target_level:
+                return self.hierarchy_graph.nodes[anc].get("raw_id", anc)
+        return None
+
+    def get_descendants_by_level(self, node_id: str, target_level: str, source_level: str | None = None) -> list[str]:
+        """通过 NetworkX 图求取特定级别的所有下级后代节点。"""
+        if not hasattr(self, "hierarchy_graph"):
+            return []
+        norm_node = self._normalize_node_id(node_id, source_level)
+        if norm_node not in self.hierarchy_graph:
+            return []
+        descendants = nx.descendants(self.hierarchy_graph, norm_node)
+        return [
+            self.hierarchy_graph.nodes[desc].get("raw_id", desc)
+            for desc in descendants
+            if self.hierarchy_graph.nodes[desc].get("level") == target_level
+        ]
+
+    def is_valid_cascade_path(self, ancestor_node: str, descendant_node: str, ancestor_level: str | None = None, descendant_level: str | None = None) -> bool:
+        """通过 NetworkX 图校验 Ancestor 到 Descendant 的连通路径合法性。"""
+        if not hasattr(self, "hierarchy_graph"):
+            return False
+        norm_anc = self._normalize_node_id(ancestor_node, ancestor_level)
+        norm_desc = self._normalize_node_id(descendant_node, descendant_level)
+        if norm_anc not in self.hierarchy_graph or norm_desc not in self.hierarchy_graph:
+            return False
+        return nx.has_path(self.hierarchy_graph, norm_anc, norm_desc)
 
     # ──────────────────────────────────────────────────────────────────────────
     # 新机器人索引：robot_classes -> robot_families -> model_variants -> fleet_units
@@ -1050,9 +1151,11 @@ class KnowledgeBase:
                 for f in target_cnode["families"]
             ]
 
+        family_ids = self.get_descendants_by_level(class_id, "family", source_level="class")
         result = []
         robot_classes = self.get_robot_classes()
-        for family_id, family in self.robot_fleet.get("robot_families", {}).items():
+        robot_families = self.robot_fleet.get("robot_families", {})
+        for family_id, family in robot_families.items():
             f_class = family.get("robot_class")
             if not f_class or f_class not in robot_classes:
                 raise RobotSelectionDataError(
@@ -1061,10 +1164,8 @@ class KnowledgeBase:
                     expected_field="robot_classes",
                     actual_value=f_class,
                 )
-
             if f_class != class_id:
                 continue
-
             caps = family.get("capabilities")
             if caps is None or not isinstance(caps, list):
                 raise RobotSelectionDataError(
@@ -1368,9 +1469,25 @@ class KnowledgeBase:
     ) -> list[tuple[str, dict]]:
         required = set(required_capabilities or [])
         allowed_classes = set(robot_class_keys or [])
+        robot_classes = self.get_robot_classes()
         result: list[tuple[str, dict]] = []
-        for family_id, family in self.robot_fleet.get("robot_families", {}).items():
-            if allowed_classes and family.get("robot_class") not in allowed_classes:
+        robot_families = self.robot_fleet.get("robot_families", {})
+        
+        target_family_ids = set()
+        for cls_id in allowed_classes:
+            target_family_ids.update(self.get_descendants_by_level(cls_id, "family", source_level="class"))
+        
+        for family_id in (target_family_ids if target_family_ids else robot_families.keys()):
+            family = robot_families.get(family_id, {})
+            f_class = family.get("robot_class")
+            if not f_class or f_class not in robot_classes:
+                raise RobotSelectionDataError(
+                    f"Family '{family_id}' references missing or invalid robot_class '{f_class}'.",
+                    error_code="INVALID_ROBOT_CLASS_REFERENCE",
+                    expected_field="robot_classes",
+                    actual_value=f_class,
+                )
+            if allowed_classes and f_class not in allowed_classes:
                 continue
             if not required.issubset(set(family.get("capabilities", []))):
                 continue

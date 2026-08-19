@@ -3847,11 +3847,7 @@ class DialogueManager:
                 else None
             )
             resolved_fam_id = self.kb._resolve_family_key(str(fam_slot.value))
-            family_cfg = self.kb.robot_fleet.get("robot_families", {}).get(
-                resolved_fam_id,
-                {},
-            )
-            canonical_cls_id = family_cfg.get("robot_class")
+            canonical_cls_id = self.kb.get_ancestor_by_level(resolved_fam_id, "class", source_level="family") if resolved_fam_id else None
             if (cur_cls is None or cur_cls.status != "valid" or not cur_cls.value) and canonical_cls_id:
                 if "equipment_class" not in new_slots:
                     new_slots["equipment_class"] = Slot("equipment_class")
@@ -3906,12 +3902,8 @@ class DialogueManager:
             resolved_variant_id = (
                 resolved_variant.get("variant_id") if resolved_variant else None
             )
-            canonical_cls_id = (
-                resolved_variant.get("robot_class") if resolved_variant else None
-            )
-            canonical_fam_id = (
-                resolved_variant.get("family_id") if resolved_variant else None
-            )
+            canonical_cls_id = self.kb.get_ancestor_by_level(resolved_variant_id, "class", source_level="variant") if resolved_variant_id else None
+            canonical_fam_id = self.kb.get_ancestor_by_level(resolved_variant_id, "family", source_level="variant") if resolved_variant_id else None
 
             if (cur_fam is None or cur_fam.status != "valid" or not cur_fam.value) and canonical_fam_id:
                 if "equipment_family" not in new_slots:
