@@ -455,8 +455,6 @@ class ParameterExtractor:
                     raw_t = str(item.get("raw_value") or "").strip()
                     from .simulated_time import get_current_datetime
                     rel_iso = parse_relative_datetime(raw_t, get_current_datetime(), full_user_message=user_message) if raw_t else None
-                    if not rel_iso and user_message:
-                        rel_iso = parse_relative_datetime("", get_current_datetime(), full_user_message=user_message)
                     start_cand_val = rel_iso or item.get("normalized_value")
                 elif item.get("canonical_key") == "end_time" and end_cand_val is None:
                     end_cand_val = item.get("normalized_value")

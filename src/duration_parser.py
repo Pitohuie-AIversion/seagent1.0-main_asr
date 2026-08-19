@@ -7,89 +7,24 @@ import math
 import re
 import unicodedata
 
-CN_DIGITS = {
-    "零": 0,
-    "一": 1,
-    "二": 2,
-    "两": 2,
-    "三": 3,
-    "四": 4,
-    "五": 5,
-    "六": 6,
-    "七": 7,
-    "八": 8,
-    "九": 9,
-}
-
-
 def parse_chinese_number(text: str) -> float | None:
-    """将阿拉伯数字或简单中文数字（如 '2', '2.5', '两', '十二', '二十五'）转为 float。"""
-    if not text:
+    """将阿拉伯数字或中文数字（如 '2', '2.5', '两', '十二', '二十五'）转化为 float。"""
+    if not text or not isinstance(text, str):
         return None
     s = text.strip()
-    # 尝试直接转 float
+    if s == "半":
+        return 0.5
     try:
         val = float(s)
         return val if math.isfinite(val) else None
     except ValueError:
         pass
-
-    if s == "半":
-        return 0.5
-
-    # 中文数字解析 (支持 1-99，以及带小数字如 '二点五')
-    if "点" in s:
-        parts = s.split("点", 1)
-        int_part = parse_chinese_number(parts[0])
-        if int_part is None:
-            return None
-        dec_str = parts[1]
-        dec_val = 0.0
-        weight = 0.1
-        for ch in dec_str:
-            if ch in CN_DIGITS:
-                dec_val += CN_DIGITS[ch] * weight
-                weight *= 0.1
-            elif ch.isdigit():
-                dec_val += int(ch) * weight
-                weight *= 0.1
-            else:
-                return None
-        return int_part + dec_val
-
-    # 纯整数解析
-    total = 0
-    curr = 0
-    has_digits = False
-    i = 0
-    while i < len(s):
-        ch = s[i]
-        if ch in CN_DIGITS:
-            curr = CN_DIGITS[ch]
-            has_digits = True
-        elif ch == "十":
-            has_digits = True
-            if curr == 0:
-                total += 10
-            else:
-                total += curr * 10
-                curr = 0
-        elif ch == "百":
-            has_digits = True
-            if curr == 0:
-                total += 100
-            else:
-                total += curr * 100
-                curr = 0
-        elif ch.isdigit():
-            # 混合数字
-            curr = int(ch)
-            has_digits = True
-        else:
-            return None
-        i += 1
-    total += curr
-    return float(total) if has_digits else None
+    try:
+        import cn2an
+        val = float(cn2an.cn2an(s, "smart"))
+        return val if math.isfinite(val) else None
+    except Exception:
+        return None
 
 
 def parse_duration_to_seconds(text: str | None) -> float | None:

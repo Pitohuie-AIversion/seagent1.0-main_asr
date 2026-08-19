@@ -2660,23 +2660,34 @@ class KnowledgeBase:
                 if entity_targets:
                     matched_alias = str(context_selector)
 
-        list_keywords = ("哪些", "列表", "所有", "有哪些", "推荐", "选择", "可用", "什么型号", "查询", "查看", "列出")
+        list_keywords = ("哪些", "列表", "所有", "有哪些", "推荐", "选择", "可用", "什么型号", "查询", "查看", "列出", "当前支持", "支持的")
         is_list_query = any(keyword in user_message for keyword in list_keywords)
 
-        generic_terms = {"设备", "机器人", "潜水器", "rov", "auv", "hov", "单机", "型号", "工具", "支持", "具备", "配备", "搭载"}
+        generic_terms = {"设备", "机器人", "潜水器", "rov", "auv", "hov", "单机", "型号", "工具", "支持", "具备", "配备", "搭载", "当前", "目前", "全部", "所有", "系统", "清单", "列表"}
         query_strip_words = (
             "查询", "查看", "列出", "检索", "显示", "获取", "了解", "我要", "我想", "帮我",
             "可以", "能否", "请", "列表", "清单", "可用", "所有", "有哪些", "什么", "哪些",
             "推荐", "选择", "的", "一下", "看看", "知道", "信息", "能力", "状态", "目前", "现在",
-            "支持", "具备", "配备", "搭载"
+            "支持", "具备", "配备", "搭载", "当前", "全部", "系统"
         )
         cleaned_msg = _norm(user_message)
         for w in query_strip_words:
             cleaned_msg = cleaned_msg.replace(_norm(w), "")
 
-        is_broad_device_list_query = bool(cleaned_msg) and all(
+        is_broad_device_list_query = (not cleaned_msg) or all(
             token in generic_terms for token in re.findall(r"[a-zA-Z0-9]+|[\u4e00-\u9fa5]+", cleaned_msg)
         )
+
+        is_system_capability_query = (
+            context.get("subject_type") == "system_rule"
+            or any(kw in user_message for kw in ("你具备", "你能干", "你会", "你的能力", "你能做", "干什么", "会什么", "自我介绍", "系统功能", "系统能力"))
+        )
+
+        if not entity_targets and is_system_capability_query:
+            response["found"] = True
+            response["reason"] = "system_identity"
+            response["query_mode"] = "system_identity"
+            return response
 
         if entity_targets and len(entity_targets) > 1:
             family_ids = set()

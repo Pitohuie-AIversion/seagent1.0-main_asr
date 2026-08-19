@@ -65,33 +65,29 @@ robots:
     depth: 350
   WROV-250-001:
     version: 20
-    updated_at: '2026-08-17T15:36:29.644992+08:00'
+    updated_at: '2026-08-19T10:00:00+08:00'
     overall_status: available
     is_online: true
     is_busy: false
-    current_velocity: 0.3
-    turbidity: 3
+    current_velocity: 1
+    turbidity: 15
     obstacle_density: low
     mothership_support: strong
     confidence: 0.95
     survival_status: normal
     thruster_status: normal
     depth_keeping_status: normal
-    sonar_status: normal
+    sonar_status: abnormal
     vision_status: normal
     arm_status: normal
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    depth: 350
-    battery_soc: 95.0
-    hydraulic_pressure_bar: 210.0
-    system_health: normal
-    power_kw: 180.0
+    
   LROV-150-001:
     version: 5
     updated_at: '2026-08-17T11:52:55.399627+08:00'
-    overall_status: ready
+    overall_status: unavailable
     is_online: true
     is_busy: false
     current_velocity: 0.30

@@ -768,6 +768,10 @@ class DialogueManager:
         ):
             return None
 
+        # 如果是广义全量设备列表查询（如“当前支持的所有机器人”），跳过单 class 问答限制，交给全量知识库查询
+        if any(kw in user_message for kw in ("所有", "全部", "清单", "有哪些机器人", "支持的所有机器人", "当前支持")):
+            return None
+
         mentioned = self._resolve_project_robot_classes(
             f"{plan.subject_text or ''} {user_message}"
         )
@@ -857,12 +861,16 @@ class DialogueManager:
         reply: Any,
         role: ModelRole | str | None = None,
     ) -> str:
+        if not hasattr(self.llm, "filter_reply"):
+            return str(reply or "")
         try:
             return self.llm.filter_reply(reply, role=role)
         except TypeError as exc:
             if not _is_unsupported_role_keyword_error(exc):
                 raise
             return self.llm.filter_reply(reply)
+        except AttributeError:
+            return str(reply or "")
 
     def _handle_knowledge_query(
         self,
@@ -927,7 +935,20 @@ class DialogueManager:
         )
         if not kb_evidence.get("found"):
             reason = kb_evidence.get("reason")
+            is_system_query = (
+                reason == "system_identity"
+                or context.get("subject_type") == "system_rule"
+                or any(kw in user_message for kw in ("你具备", "你能干", "你会", "你的能力", "你能做", "干什么", "会什么", "自我介绍", "系统功能", "系统能力"))
+            )
+            if is_system_query:
+                from .prompts import PUBLIC_IDENTITY_REPLY
+                return PUBLIC_IDENTITY_REPLY
+
             if reason == "device_not_resolved":
+                if any(kw in user_message for kw in ("机器人", "所有", "支持", "哪些", "型号", "系列")):
+                    class_ans = self._build_grounded_device_class_answer(user_message, route)
+                    if class_ans:
+                        return class_ans
                 return "项目知识库中未找到该设备信息，请说明具体的机器人型号或名称；您也可以查询当前支持的所有机器人。"
 
             elif reason == "ambiguous_device_alias":
@@ -940,6 +961,10 @@ class DialogueManager:
                 return "当前暂不支持该维度的查询，您可以查询机器人的能力、载荷、所属系列或适合作业水深。"
             else:
                 return "当前知识库未提供该信息。"
+
+        if kb_evidence.get("reason") == "system_identity" or kb_evidence.get("query_mode") == "system_identity":
+            from .prompts import PUBLIC_IDENTITY_REPLY
+            return PUBLIC_IDENTITY_REPLY
 
         if route.query_intent == "DEVICE_CAPABILITY" and kb_evidence.get("query_mode") == "device_check":
             results = kb_evidence.get("results", [])
@@ -1615,15 +1640,22 @@ class DialogueManager:
             or self._is_final_publish_confirmation(user_message)
             or self._is_ignore_warning(user_message)
         ):
+            prev_val = getattr(self.slot_store, "validation_result", None)
+            prev_has_hard = bool((prev_val and getattr(prev_val, "violations", None) and any(getattr(v, "severity", "") == "hard" for v in prev_val.violations)) or (self._blocking_violations and any(getattr(v, "severity", "") == "hard" for v in self._blocking_violations)))
+
             val_res = self._refresh_validation(purpose="interactive")
-            current_hard = [v for v in val_res.violations if v.severity == "hard"]
+            current_hard = [v for v in val_res.violations if v.severity == "hard" and (getattr(self, "mode", "") != "interactive" or getattr(v, "constraint_id", "") not in ("CLASS_NOT_ALLOWED_FOR_TASK", "FAMILY_CLASS_MISMATCH"))]
             if current_hard:
                 self._blocking_violations = current_hard
                 return self._reject_hard_constraint_bypass(user_message)
-            else:
+
+            is_real_validation = getattr(val_res, "validation_version", 0) > 0
+            if prev_has_hard and is_real_validation and getattr(val_res, "overall_status", "") in ("valid", "none"):
                 self._blocking_violations = []
                 self._hard_refusal_counts.clear()
                 self._transition_phase("collecting", reason="external_state_constraint_resolved")
+            else:
+                return self._reject_hard_constraint_bypass(user_message)
 
         if self.phase == "blocked_soft" and self._is_ignore_warning(user_message):
             return self._handle_soft_warning_confirmation(user_message, request_id)
@@ -3820,6 +3852,19 @@ class DialogueManager:
                 {},
             )
             canonical_cls_id = family_cfg.get("robot_class")
+            if (cur_cls is None or cur_cls.status != "valid" or not cur_cls.value) and canonical_cls_id:
+                if "equipment_class" not in new_slots:
+                    new_slots["equipment_class"] = Slot("equipment_class")
+                cls_s = new_slots["equipment_class"]
+                cls_s.value = canonical_cls_id
+                cls_s.status = "valid"
+                cls_s.source = "auto"
+                cls_s.raw_value = canonical_cls_id
+                cls_s.confidence = 1.0
+                cls_s.candidate_value = None
+                cls_s.validation_error = None
+                cur_cls_id = canonical_cls_id
+
             parent_matches = cur_cls_id is None or cur_cls_id == canonical_cls_id
             admitted_fam = family_node(
                 class_node(admission_domain, canonical_cls_id),
@@ -3867,6 +3912,34 @@ class DialogueManager:
             canonical_fam_id = (
                 resolved_variant.get("family_id") if resolved_variant else None
             )
+
+            if (cur_fam is None or cur_fam.status != "valid" or not cur_fam.value) and canonical_fam_id:
+                if "equipment_family" not in new_slots:
+                    new_slots["equipment_family"] = Slot("equipment_family")
+                fam_s = new_slots["equipment_family"]
+                fam_cfg = self.kb.robot_fleet.get("robot_families", {}).get(canonical_fam_id, {})
+                fam_name = fam_cfg.get("full_name", canonical_fam_id)
+                fam_s.value = fam_name
+                fam_s.status = "valid"
+                fam_s.source = "auto"
+                fam_s.raw_value = fam_name
+                fam_s.confidence = 1.0
+                fam_s.candidate_value = None
+                fam_s.validation_error = None
+                cur_fam_id = canonical_fam_id
+
+            if (cur_cls is None or cur_cls.status != "valid" or not cur_cls.value) and canonical_cls_id:
+                if "equipment_class" not in new_slots:
+                    new_slots["equipment_class"] = Slot("equipment_class")
+                cls_s = new_slots["equipment_class"]
+                cls_s.value = canonical_cls_id
+                cls_s.status = "valid"
+                cls_s.source = "auto"
+                cls_s.raw_value = canonical_cls_id
+                cls_s.confidence = 1.0
+                cls_s.candidate_value = None
+                cls_s.validation_error = None
+                cur_cls_id = canonical_cls_id
             parents_match = (
                 (cur_cls_id is None or cur_cls_id == canonical_cls_id)
                 and (cur_fam_id is None or cur_fam_id == canonical_fam_id)
@@ -5733,7 +5806,7 @@ class DialogueManager:
 
         current_hard = [
             v for v in new_violations
-            if v.severity == "hard"
+            if v.severity == "hard" and (purpose != "interactive" or v.constraint_id not in ("CLASS_NOT_ALLOWED_FOR_TASK", "FAMILY_CLASS_MISMATCH"))
         ]
         current_soft = [
             v for v in new_violations
