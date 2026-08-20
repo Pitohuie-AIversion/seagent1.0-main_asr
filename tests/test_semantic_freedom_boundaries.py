@@ -409,3 +409,31 @@ def test_device_class_comparison_uses_project_evidence_and_llm() -> None:
     assert "观察级ROV" in system_prompt
     assert "AUV" in system_prompt
     assert llm.chat.call_args.kwargs["role"] == ModelRole.KNOWLEDGE_QA
+
+
+def test_single_device_class_describe_uses_project_evidence_and_llm() -> None:
+    llm = MagicMock(spec=LLMClient)
+    llm.chat.return_value = "观察级ROV主要用于水下巡检与观测，可搭载高清摄像与DVL。"
+    llm.filter_reply.side_effect = lambda reply, **_: reply
+    dm = DialogueManager(llm, KnowledgeBase())
+    route = validate_interaction_plan(
+        make_plan(
+            "READ",
+            query_intent="DEVICE_CAPABILITY",
+            subject_type="device_class",
+            subject_text="观察级ROV",
+            relation="describe",
+            source_policy="project_kb",
+        )
+    ).to_intent_route_result()
+
+    reply = dm._build_grounded_device_class_answer(
+        "我想知道观察级ROV的信息",
+        route,
+    )
+
+    assert "观察级ROV" in reply and "高清摄像" in reply
+    system_prompt = llm.chat.call_args.args[0][0]["content"]
+    assert "observation_rov" in system_prompt or "观察级ROV" in system_prompt
+    assert llm.chat.call_args.kwargs["role"] == ModelRole.KNOWLEDGE_QA
+

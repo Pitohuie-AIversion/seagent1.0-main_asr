@@ -82,7 +82,7 @@ class TestPublishStateVersionRace(unittest.TestCase):
         dm = _setup_dm(tmp_dir, "0001")
         kb = dm.kb
 
-        kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.2, "turbidity": 3})
+        kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.2, "turbidity": 3, "obstacle_density": "low"})
 
         val_res = dm._refresh_validation(purpose="publish")
         self.assertIn(val_res.overall_status, ("valid", "warning", "pending_runtime_validation"))
@@ -118,7 +118,7 @@ class TestPublishStateVersionRace(unittest.TestCase):
         dm = _setup_dm(tmp_dir, "0002")
         kb = dm.kb
 
-        kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.2, "turbidity": 3})
+        kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.2, "turbidity": 3, "obstacle_density": "low"})
 
         original_get_snapshot = kb.state_info.get_unit_state_snapshot
         call_count = [0]
@@ -152,7 +152,7 @@ class TestPublishStateVersionRace(unittest.TestCase):
         dm = _setup_dm(tmp_dir, "0003")
         kb = dm.kb
 
-        kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.2, "turbidity": 3})
+        kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.2, "turbidity": 3, "obstacle_density": "low"})
 
         original_get_snapshot = kb.state_info.get_unit_state_snapshot
         call_count = [0]

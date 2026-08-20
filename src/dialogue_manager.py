@@ -781,54 +781,29 @@ class DialogueManager:
         templates = self.kb.task_schemas.get("task_templates", {})
         task_type_key = self.task_state.get("task_type_key")
 
-        if plan.relation == "compare" and len(mentioned) >= 2 and task_type_key:
-            required = self.builder.get_required(
+        robot_classes = self.kb.get_robot_classes()
+        robot_families = self.kb.robot_fleet.get("robot_families", {})
+
+        required = (
+            self.builder.get_required(
                 task_type_key,
                 self.mode,
                 self.task_state,
             )
-            class_field = next(
-                (field for field in required if field.get("key") == "equipment_class"),
-                {},
-            )
-            evidence_by_name = {
-                item.get("canonical_value"): item
-                for item in class_field.get("candidate_evidence", [])
-                if item.get("canonical_value")
-            }
-            results = [
-                {
-                    "class_id": class_id,
-                    "full_name": class_name,
-                    "candidate_evidence": evidence_by_name.get(class_name, {}),
-                }
-                for class_id, class_name in mentioned
-            ]
-            messages = build_knowledge_responder_messages(
-                {
-                    "found": True,
-                    "query_type": "DEVICE_CAPABILITY",
-                    "query_mode": "device_class_compare",
-                    "relation": "compare",
-                    "task_type": self.task_state.get("task_type") or task_type_key,
-                    "results": results,
-                },
-                self.conversation_history,
-                user_message,
-                task_state=self.task_state,
-            )
-            reply = self._safe_llm_chat(
-                messages,
-                temperature=0.1,
-                role=ModelRole.KNOWLEDGE_QA,
-            )
-            if reply and reply.strip():
-                return self._safe_llm_filter_reply(
-                    reply,
-                    role=ModelRole.FILTER_REPLY,
-                )
+            if task_type_key
+            else []
+        )
+        class_field = next(
+            (field for field in required if isinstance(field, dict) and field.get("key") == "equipment_class"),
+            {},
+        ) if required else {}
+        evidence_by_name = {
+            item.get("canonical_value"): item
+            for item in class_field.get("candidate_evidence", [])
+            if isinstance(item, dict) and item.get("canonical_value")
+        }
 
-        lines = ["依据项目配置："]
+        results = []
         for class_id, class_name in mentioned:
             supported_tasks: list[str] = []
             for task_key, template in templates.items():
@@ -837,6 +812,58 @@ class DialogueManager:
                 domain = self.kb.get_feasible_robot_selection_domain(task_key)
                 if any(node.get("class_id") == class_id for node in domain.get("classes", [])):
                     supported_tasks.append(template.get("display_name", task_key))
+
+            class_info = robot_classes.get(class_id, {})
+            assoc_families = [
+                {
+                    "family_id": f.get("family_id"),
+                    "full_name": f.get("full_name"),
+                    "aliases": f.get("aliases", []),
+                }
+                for f in robot_families.values()
+                if isinstance(f, dict) and f.get("robot_class") == class_id
+            ]
+
+            results.append({
+                "class_id": class_id,
+                "full_name": class_name,
+                "supported_tasks": supported_tasks,
+                "class_info": class_info,
+                "associated_families": assoc_families,
+                "candidate_evidence": evidence_by_name.get(class_name, {}),
+            })
+
+        kb_evidence = {
+            "found": True,
+            "query_type": "DEVICE_CAPABILITY",
+            "query_mode": "device_class_compare" if plan.relation == "compare" else "device_class_describe",
+            "relation": plan.relation,
+            "task_type": self.task_state.get("task_type") or task_type_key,
+            "results": results,
+            "note": "本轮未创建或修改任务，仅为只读信息展示",
+        }
+
+        messages = build_knowledge_responder_messages(
+            kb_evidence,
+            self.conversation_history,
+            user_message,
+            task_state=self.task_state,
+        )
+        reply = self._safe_llm_chat(
+            messages,
+            temperature=0.1,
+            role=ModelRole.KNOWLEDGE_QA,
+        )
+        if reply and reply.strip() and reply.strip() != "不应调用自由回答模型":
+            return self._safe_llm_filter_reply(
+                reply,
+                role=ModelRole.FILTER_REPLY,
+            )
+
+        lines = ["依据项目配置："]
+        for item in results:
+            class_name = item["full_name"]
+            supported_tasks = item["supported_tasks"]
             rendered = "、".join(supported_tasks) if supported_tasks else "暂无已配置的适用任务"
             lines.append(f"- 【{class_name}】：{rendered}。")
         lines.append("以上仅说明项目知识库中已配置的适用关系，本轮未创建或修改任务。")
@@ -919,7 +946,12 @@ class DialogueManager:
                 "relation": plan.relation,
                 "source_policy": plan.source_policy,
             })
-        kb_evidence = self.kb.execute_typed_query(route.query_intent, user_message, context=context)
+        effective_query_type = (
+            route.query_intent
+            or (route.interaction_plan.query_intent if route.interaction_plan else None)
+            or "KNOWLEDGE_QA"
+        )
+        kb_evidence = self.kb.execute_typed_query(effective_query_type, user_message, context=context)
         logger.info(
             "[KNOWLEDGE_QUERY] request_id=%s requested=%s effective=%s "
             "subject_type=%s subject_text=%r matched_entity=%s found=%s reason=%s raw_ev=%s",
@@ -3848,7 +3880,7 @@ class DialogueManager:
             )
             resolved_fam_id = self.kb._resolve_family_key(str(fam_slot.value))
             canonical_cls_id = self.kb.get_ancestor_by_level(resolved_fam_id, "class", source_level="family") if resolved_fam_id else None
-            if (cur_cls is None or cur_cls.status != "valid" or not cur_cls.value) and canonical_cls_id:
+            if (cur_cls is None or cur_cls.status not in ("valid", "conflict", "candidate") or not cur_cls.value) and canonical_cls_id:
                 if "equipment_class" not in new_slots:
                     new_slots["equipment_class"] = Slot("equipment_class")
                 cls_s = new_slots["equipment_class"]
@@ -3905,7 +3937,7 @@ class DialogueManager:
             canonical_cls_id = self.kb.get_ancestor_by_level(resolved_variant_id, "class", source_level="variant") if resolved_variant_id else None
             canonical_fam_id = self.kb.get_ancestor_by_level(resolved_variant_id, "family", source_level="variant") if resolved_variant_id else None
 
-            if (cur_fam is None or cur_fam.status != "valid" or not cur_fam.value) and canonical_fam_id:
+            if (cur_fam is None or cur_fam.status not in ("valid", "conflict", "candidate") or not cur_fam.value) and canonical_fam_id:
                 if "equipment_family" not in new_slots:
                     new_slots["equipment_family"] = Slot("equipment_family")
                 fam_s = new_slots["equipment_family"]
@@ -3920,7 +3952,7 @@ class DialogueManager:
                 fam_s.validation_error = None
                 cur_fam_id = canonical_fam_id
 
-            if (cur_cls is None or cur_cls.status != "valid" or not cur_cls.value) and canonical_cls_id:
+            if (cur_cls is None or cur_cls.status not in ("valid", "conflict", "candidate") or not cur_cls.value) and canonical_cls_id:
                 if "equipment_class" not in new_slots:
                     new_slots["equipment_class"] = Slot("equipment_class")
                 cls_s = new_slots["equipment_class"]

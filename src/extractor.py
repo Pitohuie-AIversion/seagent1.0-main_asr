@@ -789,7 +789,64 @@ class ParameterExtractor:
                 resolved["resolution_method"] = "relative_date_parsed"
                 return resolved, None
 
-        field_def = required_by_key.get(key)
+        # 1.5 数值型字段容错清洗（自动支持中文数字 "一"、"两"、"二"、"三"、"三百"、"一千五" 转纯阿拉伯数字）
+        field_def = required_by_key.get(key) or {}
+        f_type = field_def.get("type")
+        if f_type in ("number", "integer", "float") or key in ("water_depth", "distance", "speed", "duration", "duration_seconds"):
+            val = candidate.get("normalized_value")
+            raw_v = candidate.get("raw_value")
+            target_str = str(val if (isinstance(val, str) and val) else (raw_v or "")).strip()
+
+            if target_str and not target_str.lstrip("-+").replace(".", "", 1).isdigit():
+                raw_lower = target_str.lower()
+                valid_units = ("英尺", "feet", "ft", "千米", "公里", "km", "米", "m", "节", "knot", "kn", "小时", "钟头", "hour", "hr", "分钟", "分", "min", "天", "日", "day")
+                is_known_unit = any(u in raw_lower for u in valid_units) or any(cn in target_str for cn in ("一", "二", "两", "三", "四", "五", "六", "七", "八", "九", "十", "百", "千", "万", "半"))
+
+                try:
+                    import cn2an
+                    transformed = cn2an.transform(target_str, "cn2an")
+                except Exception:
+                    transformed = target_str
+
+                m_num = re.match(r"^([-+]?[0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z\u4e00-\u9fa5]*)$", transformed.strip())
+                if m_num:
+                    clean_str, unit_part = m_num.groups()
+                    unit_part_lower = unit_part.lower()
+                    # 若存在未知字母/汉字杂质 (如 "300abc")，且不属于已知合法单位，则不处理，保留原始值以触发校验冲突
+                    if unit_part and not is_known_unit and not any(u in unit_part_lower for u in valid_units):
+                        pass
+                    else:
+                        try:
+                            num_val = float(clean_str)
+
+                            # 单位换算：英尺 (ft / feet / 英尺) -> 米 (m)
+                            if any(unit in raw_lower for unit in ("英尺", "feet", "ft")) and key in ("water_depth", "distance"):
+                                num_val = round(num_val * 0.3048, 2)
+                            # 单位换算：千米/公里 (km) -> 米 (m)
+                            elif any(unit in raw_lower for unit in ("千米", "公里", "km")) and key in ("water_depth", "distance"):
+                                num_val = round(num_val * 1000.0, 2)
+                            # 单位换算：节 (knots / kn / 节速) -> m/s
+                            elif any(unit in raw_lower for unit in ("节", "knot", "kn")) and key in ("speed", "velocity"):
+                                num_val = round(num_val * 0.5144, 2)
+                            # 口语时长转换：例如 "2.5个小时" / "两个半小时" / "3天" -> 秒
+                            elif key in ("duration", "duration_seconds"):
+                                if "个半小时" in target_str or "点半小时" in target_str:
+                                    num_val = (num_val + 0.5) * 3600.0
+                                elif "半小时" in target_str:
+                                    num_val = 1800.0
+                                elif any(h in raw_lower for h in ("小时", "钟头", "hour", "hr", "h")):
+                                    num_val = num_val * 3600.0
+                                elif any(m in raw_lower for m in ("分钟", "分", "min", "m")):
+                                    num_val = num_val * 60.0
+                                elif any(d in raw_lower for d in ("天", "日", "day", "d")):
+                                    num_val = num_val * 86400.0
+
+                            clean_val = int(num_val) if (num_val.is_integer() and f_type != "float") else num_val
+                            candidate = dict(candidate)
+                            candidate["normalized_value"] = clean_val
+                        except ValueError:
+                            pass
+
         if not field_def or not field_def.get("allowed_values"):
             candidate.setdefault("resolution_method", "type_normalization")
             return candidate, None
@@ -878,27 +935,92 @@ class ParameterExtractor:
         return values
 
     @staticmethod
-    def _match_allowed_value(value: object, allowed_values: list) -> object | None:
-        needle = FieldNormalizer.make_match_key(value)
-        if not needle:
-            return None
-        matches = [
-            allowed
-            for allowed in allowed_values
-            if FieldNormalizer.make_match_key(allowed) == needle
+    def _strip_colloquial_prefixes(raw_text: str) -> str:
+        text = str(raw_text or "").strip()
+        prefixes = [
+            "我要使用", "我要选择", "我想使用", "我想选择", "请选择", "请使用",
+            "选择", "要用", "使用", "切换为", "采用", "配置", "指定", "选", "用", "换成", "更换为"
         ]
-        return matches[0] if len(matches) == 1 else None
+        for p in prefixes:
+            if text.startswith(p) and len(text) > len(p):
+                return text[len(p):].strip()
+        return text
 
-    @staticmethod
-    def _match_alias_value(value: object, field_def: dict) -> object | None:
-        needle = FieldNormalizer.make_match_key(value)
-        if not needle:
+    @classmethod
+    def _match_allowed_value(cls, value: object, allowed_values: list) -> object | None:
+        raw_str = str(value or "").strip()
+        if not raw_str:
             return None
-        matches = []
-        for alias, canonical in (field_def.get("alias_mappings") or {}).items():
-            if FieldNormalizer.make_match_key(alias) == needle:
-                matches.append(canonical)
-        return matches[0] if len(set(map(str, matches))) == 1 else None
+        candidates = [raw_str, cls._strip_colloquial_prefixes(raw_str)]
+        
+        # 阶段 1：精确全匹配
+        for cand in candidates:
+            needle = FieldNormalizer.make_match_key(cand)
+            if not needle:
+                continue
+            matches = [
+                allowed for allowed in allowed_values
+                if FieldNormalizer.make_match_key(allowed) == needle
+            ]
+            if len(matches) == 1:
+                return matches[0]
+
+        # 阶段 2：包含与子串容错匹配
+        for cand in candidates:
+            needle = FieldNormalizer.make_match_key(cand)
+            if not needle:
+                continue
+            matches = [
+                allowed for allowed in allowed_values
+                if FieldNormalizer.make_match_key(allowed) and (
+                    FieldNormalizer.make_match_key(allowed) in needle or
+                    needle in FieldNormalizer.make_match_key(allowed)
+                )
+            ]
+            if len(set(matches)) == 1:
+                return matches[0]
+
+        return None
+
+    @classmethod
+    def _match_alias_value(cls, value: object, field_def: dict) -> object | None:
+        raw_str = str(value or "").strip()
+        if not raw_str:
+            return None
+        alias_map = field_def.get("alias_mappings") or {}
+        if not alias_map:
+            return None
+
+        candidates = [raw_str, cls._strip_colloquial_prefixes(raw_str)]
+
+        # 阶段 1：精确全匹配
+        for cand in candidates:
+            needle = FieldNormalizer.make_match_key(cand)
+            if not needle:
+                continue
+            matches = [
+                canonical for alias, canonical in alias_map.items()
+                if FieldNormalizer.make_match_key(alias) == needle
+            ]
+            if len(set(map(str, matches))) == 1:
+                return matches[0]
+
+        # 阶段 2：包含与子串容错匹配（针对口语修饰如 "选择天鹰座"、"天鹰座ROV"）
+        for cand in candidates:
+            needle = FieldNormalizer.make_match_key(cand)
+            if not needle:
+                continue
+            matches = [
+                canonical for alias, canonical in alias_map.items()
+                if FieldNormalizer.make_match_key(alias) and (
+                    FieldNormalizer.make_match_key(alias) in needle or
+                    needle in FieldNormalizer.make_match_key(alias)
+                )
+            ]
+            if len(set(map(str, matches))) == 1:
+                return matches[0]
+
+        return None
 
     def _resolve_candidate_semantically(
         self,

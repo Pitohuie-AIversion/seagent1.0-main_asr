@@ -58,7 +58,7 @@ class TestPersistencePublish(unittest.TestCase):
             }
             built_json = dict(task_state)
 
-            self.dm.kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.2, "turbidity": 3})
+            self.dm.kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.2, "turbidity": 3, "obstacle_density": "low"})
             val_res = self.dm.validator.validate_task(task_state)
             self.assertEqual(val_res.overall_status, "valid")
 

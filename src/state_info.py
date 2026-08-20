@@ -169,7 +169,7 @@ class RobotStateInfo:
         if version is None or not isinstance(version, int) or isinstance(version, bool) or version < 0:
             raise StateSnapshotValidationError(f"单机 {canonical_unit_id} 状态版本非法: {version}")
             
-        updated_at = state.get("updated_at") or state.get("update_timestamp")
+        updated_at = state.get("updated_at") or state.get("update_timestamp") or state.get("update_at")
         if not updated_at or not isinstance(updated_at, str):
             raise StateSnapshotValidationError(f"单机 {canonical_unit_id} 状态更新时间戳非法: {updated_at}")
         try:

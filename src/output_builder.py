@@ -428,6 +428,8 @@ class OutputBuilder:
 
         return mappings
 
+
+
     def _resolve_candidate_catalog(
         self,
         field_def: dict,

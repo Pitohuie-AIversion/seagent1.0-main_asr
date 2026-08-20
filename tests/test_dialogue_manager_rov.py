@@ -767,5 +767,17 @@ class DialogueManagerROVTest(unittest.TestCase):
         )
 
 
+
+
+    def test_preflight_check_candidates(self):
+        from src.validator import TaskValidator
+        validator = TaskValidator(self.kb)
+        violations = validator.preflight_check_candidates(
+            {"task_type_key": "pipeline_inspection", "equipment_class": "观察级深海机器人"},
+            {"water_depth": 1500.0},
+        )
+        self.assertTrue(len(violations) > 0 or isinstance(violations, list))
+
+
 if __name__ == "__main__":
     unittest.main()

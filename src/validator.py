@@ -827,6 +827,19 @@ class TaskValidator:
         res = self.validate_task(task_state)
         return res.violations
 
+    def preflight_check_candidates(
+        self,
+        current_task_state: dict,
+        new_candidates: dict,
+    ) -> list[Violation]:
+        """准即时 Pre-flight 冲突预检：在候选提交前模拟合并，提前捕获硬性物理/环境约束违规。"""
+        if not new_candidates:
+            return []
+        draft_state = copy.deepcopy(current_task_state or {})
+        draft_state.update(new_candidates)
+        violations = self.validate(draft_state)
+        return [v for v in violations if getattr(v, "severity", "hard") == "hard"]
+
     def validate_for_fields(
         self, task_state: dict, changed_fields: set[str]
     ) -> list[Violation]:

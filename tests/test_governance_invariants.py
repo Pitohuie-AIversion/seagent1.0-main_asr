@@ -219,14 +219,20 @@ class TestGovernanceInvariants(unittest.TestCase):
         """INV-05: blocked_hard 状态下，确认/继续/忽略警告无法绕过硬约束。"""
         self.dm.phase = "blocked_hard"
         mock_violation = MagicMock()
-        self.dm.llm.queue_plan(make_plan("WRITE", warning_action="acknowledge"))
         mock_violation.severity = "hard"
         mock_violation.constraint_id = "HARD_TEST_01"
         mock_violation.message = "测试硬违规水深"
         self.dm._blocking_violations = [mock_violation]
 
+        mock_val_res = MagicMock()
+        mock_val_res.violations = [mock_violation]
+        mock_val_res.overall_status = "blocked_hard"
+        mock_val_res.validation_version = 1
+        self.dm._refresh_validation = MagicMock(return_value=mock_val_res)
+
         bypass_words = ["确认", "继续", "忽略警告", "没问题", "好的", "ok"]
         for word in bypass_words:
+            self.dm.llm.queue_plan(make_plan("WRITE", warning_action="acknowledge"))
             reply = self.dm.process(word, request_id="req_inv05")
             self.assertEqual(self.dm.phase, "blocked_hard")
             self.assertIn("硬性约束不能通过确认或忽略警告绕过", reply)

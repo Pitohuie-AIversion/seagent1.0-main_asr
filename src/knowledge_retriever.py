@@ -1476,8 +1476,10 @@ class KnowledgeBase:
         target_family_ids = set()
         for cls_id in allowed_classes:
             target_family_ids.update(self.get_descendants_by_level(cls_id, "family", source_level="class"))
-        
-        for family_id in (target_family_ids if target_family_ids else robot_families.keys()):
+
+        for family_id in robot_families:
+            if target_family_ids and family_id not in target_family_ids:
+                continue
             family = robot_families.get(family_id, {})
             f_class = family.get("robot_class")
             if not f_class or f_class not in robot_classes:

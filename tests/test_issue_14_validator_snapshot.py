@@ -85,7 +85,13 @@ class TestGetUnitStateSnapshotStrict(unittest.TestCase):
         """测试同一型号多台设备，只读取用户选择的 unit_id 的状态快照。"""
         self.kb.state_info.set_status(
             "LROV-150-001",
-            {"overall_status": "available", "current_velocity": 0.1, "depth_keeping_status": "normal"},
+            {
+                "overall_status": "available",
+                "current_velocity": 0.1,
+                "depth_keeping_status": "normal",
+                "obstacle_density": "low",
+                "turbidity": 1,
+            },
         )
         self.kb.state_info.set_status("LROV-150-002", {"overall_status": "available", "current_velocity": 1.5})
 

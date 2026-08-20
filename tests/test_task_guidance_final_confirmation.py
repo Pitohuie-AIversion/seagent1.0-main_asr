@@ -24,6 +24,7 @@ class TestTaskGuidanceFinalConfirmation(unittest.TestCase):
             ]
         )
         self.kb = KnowledgeBase()
+        self.kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.2, "turbidity": 3, "obstacle_density": "low", "overall_status": "available"})
         self.dm = DialogueManager(self.llm, self.kb, session_id="test_sess_confirm")
 
     def _fill_all_required_slots(self, dm):

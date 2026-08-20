@@ -32,11 +32,15 @@ class TestFutureTaskMissingTelemetry(unittest.TestCase):
         validator = TaskValidator(self.kb)
 
         # 提交一个未来两周的任务
+        from src.simulated_time import get_current_datetime
+        from datetime import timedelta
+        future_start = get_current_datetime() + timedelta(days=14)
+        future_end = future_start + timedelta(hours=8)
         task_state = {
             "task_type_key": "pipeline_inspection",
             "equipment_unit_id": "OBSROV-75-001",
-            "start_time": "2026-08-20T10:00:00+08:00",
-            "end_time": "2026-08-20T18:00:00+08:00",
+            "start_time": future_start.isoformat(),
+            "end_time": future_end.isoformat(),
             "water_depth": 300,
         }
 

@@ -1,4 +1,4 @@
-store_version: 24
+store_version: 30
 robots:
   CRAWLER-1600-001:
     current_velocity: 1
@@ -17,6 +17,7 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
+    version: 0
   TOWED-1500-001:
     current_velocity: 1
     turbidity: 8
@@ -34,6 +35,7 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
+    version: 0
   SPECIAL-600-001:
     current_velocity: 1
     turbidity: 8
@@ -51,6 +53,7 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
+    version: 0
   WROV-250-001:
     current_velocity: 1
     turbidity: 8
@@ -68,6 +71,7 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
+    version: 0
   LROV-150-001:
     current_velocity: 1
     turbidity: 8
@@ -85,6 +89,7 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
+    version: 0
   LROV-150-002:
     current_velocity: 1
     turbidity: 8
@@ -102,10 +107,11 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
+    version: 0
   OBSROV-75-001:
-    current_velocity: 1
-    turbidity: 8
-    obstacle_density: high
+    current_velocity: 0.2
+    turbidity: 3
+    obstacle_density: low
     mothership_support: strong
     update_at: '2026-04-19T13:55:00+08:00'
     confidence: 0.9
@@ -119,6 +125,8 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
+    version: 6
+    updated_at: '2026-06-30T17:38:01.152708+08:00'
   AUV-324cc-001:
     current_velocity: 1
     turbidity: 8
@@ -136,3 +144,4 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
+    version: 0
