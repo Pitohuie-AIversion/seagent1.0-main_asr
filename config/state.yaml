@@ -1,100 +1,81 @@
 store_version: 24
 robots:
   CRAWLER-1600-001:
-    version: 1
-    updated_at: '2026-08-12T16:00:09+08:00'
-    overall_status: available
-    is_online: true
-    is_busy: false
-    current_velocity: 0.3
-    turbidity: 3
-    obstacle_density: low
-    mothership_support: strong
-    confidence: 0.95
-    survival_status: normal
-    thruster_status: normal
-    depth_keeping_status: normal
-    sonar_status: normal
-    vision_status: normal
-    arm_status: normal
-    end_effector_status: normal
-    acoustic_comms_status: normal
-    tether_connection_status: normal
-    depth: 350
-  TOWED-1500-001:
-    version: 1
-    updated_at: '2026-08-12T16:00:09+08:00'
-    overall_status: available
-    is_online: true
-    is_busy: false
-    current_velocity: 0.3
-    turbidity: 3
-    obstacle_density: low
-    mothership_support: strong
-    confidence: 0.95
-    survival_status: normal
-    thruster_status: normal
-    depth_keeping_status: normal
-    sonar_status: normal
-    vision_status: normal
-    arm_status: normal
-    end_effector_status: normal
-    acoustic_comms_status: normal
-    tether_connection_status: normal
-    depth: 350
-  SPECIAL-600-001:
-    version: 1
-    updated_at: '2026-08-12T16:00:09+08:00'
-    overall_status: available
-    is_online: true
-    is_busy: false
-    current_velocity: 0.3
-    turbidity: 3
-    obstacle_density: low
-    mothership_support: strong
-    confidence: 0.95
-    survival_status: normal
-    thruster_status: normal
-    depth_keeping_status: normal
-    sonar_status: normal
-    vision_status: normal
-    arm_status: normal
-    end_effector_status: normal
-    acoustic_comms_status: normal
-    tether_connection_status: normal
-    depth: 350
-  WROV-250-001:
-    version: 20
-    updated_at: '2026-08-19T10:00:00+08:00'
-    overall_status: available
-    is_online: true
-    is_busy: false
     current_velocity: 1
-    turbidity: 15
-    obstacle_density: low
+    turbidity: 8
+    obstacle_density: high
     mothership_support: strong
-    confidence: 0.95
+    update_at: '2026-04-19T13:55:00+08:00'
+    confidence: 0.9
+    overall_status: available
     survival_status: normal
     thruster_status: normal
     depth_keeping_status: normal
-    sonar_status: abnormal
+    sonar_status: normal
     vision_status: normal
     arm_status: normal
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    
+  TOWED-1500-001:
+    current_velocity: 1
+    turbidity: 8
+    obstacle_density: high
+    mothership_support: strong
+    update_at: '2026-04-19T13:55:00+08:00'
+    confidence: 0.9
+    overall_status: available
+    survival_status: normal
+    thruster_status: normal
+    depth_keeping_status: normal
+    sonar_status: normal
+    vision_status: normal
+    arm_status: normal
+    end_effector_status: normal
+    acoustic_comms_status: normal
+    tether_connection_status: normal
+  SPECIAL-600-001:
+    current_velocity: 1
+    turbidity: 8
+    obstacle_density: high
+    mothership_support: strong
+    update_at: '2026-04-19T13:55:00+08:00'
+    confidence: 0.9
+    overall_status: available
+    survival_status: normal
+    thruster_status: normal
+    depth_keeping_status: normal
+    sonar_status: normal
+    vision_status: normal
+    arm_status: normal
+    end_effector_status: normal
+    acoustic_comms_status: normal
+    tether_connection_status: normal
+  WROV-250-001:
+    current_velocity: 1
+    turbidity: 8
+    obstacle_density: high
+    mothership_support: strong
+    update_at: '2026-04-19T13:55:00+08:00'
+    confidence: 0.9
+    overall_status: available
+    survival_status: normal
+    thruster_status: normal
+    depth_keeping_status: normal
+    sonar_status: normal
+    vision_status: normal
+    arm_status: normal
+    end_effector_status: normal
+    acoustic_comms_status: normal
+    tether_connection_status: normal
   LROV-150-001:
-    version: 5
-    updated_at: '2026-08-17T11:52:55.399627+08:00'
-    overall_status: unavailable
-    is_online: true
-    is_busy: false
-    current_velocity: 0.30
-    turbidity: 3
-    obstacle_density: low
+    current_velocity: 1
+    turbidity: 8
+    obstacle_density: high
     mothership_support: strong
-    confidence: 0.95
+    update_at: '2026-04-19T13:55:00+08:00'
+    confidence: 0.9
+    overall_status: available
     survival_status: normal
     thruster_status: normal
     depth_keeping_status: normal
@@ -104,18 +85,14 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    depth: 350
   LROV-150-002:
-    version: 1
-    updated_at: '2026-08-12T16:00:09+08:00'
-    overall_status: available
-    is_online: true
-    is_busy: false
-    current_velocity: 0.3
-    turbidity: 3
-    obstacle_density: low
+    current_velocity: 1
+    turbidity: 8
+    obstacle_density: high
     mothership_support: strong
-    confidence: 0.95
+    update_at: '2026-04-19T13:55:00+08:00'
+    confidence: 0.9
+    overall_status: available
     survival_status: normal
     thruster_status: normal
     depth_keeping_status: normal
@@ -125,18 +102,14 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    depth: 350
   OBSROV-75-001:
-    version: 1
-    updated_at: '2026-08-12T16:00:09+08:00'
-    overall_status: available
-    is_online: true
-    is_busy: false
-    current_velocity: 0.3
-    turbidity: 3
-    obstacle_density: low
+    current_velocity: 1
+    turbidity: 8
+    obstacle_density: high
     mothership_support: strong
-    confidence: 0.95
+    update_at: '2026-04-19T13:55:00+08:00'
+    confidence: 0.9
+    overall_status: available
     survival_status: normal
     thruster_status: normal
     depth_keeping_status: normal
@@ -146,18 +119,14 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    depth: 350
   AUV-324cc-001:
-    version: 1
-    updated_at: '2026-08-12T16:00:09+08:00'
-    overall_status: available
-    is_online: true
-    is_busy: false
-    current_velocity: 0.3
-    turbidity: 3
-    obstacle_density: low
+    current_velocity: 1
+    turbidity: 8
+    obstacle_density: high
     mothership_support: strong
-    confidence: 0.95
+    update_at: '2026-04-19T13:55:00+08:00'
+    confidence: 0.9
+    overall_status: available
     survival_status: normal
     thruster_status: normal
     depth_keeping_status: normal
@@ -167,4 +136,3 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    depth: 350
