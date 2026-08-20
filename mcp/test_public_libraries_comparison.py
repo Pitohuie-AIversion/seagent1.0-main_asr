@@ -10,7 +10,8 @@ import importlib
 from pathlib import Path
 import pytest
 
-SEAGENT_ROOT = Path(__file__).parent.parent
+SEAGENT_ROOT = Path(__file__).resolve().parent.parent
+MCP_DIR = Path(__file__).resolve().parent
 OUTSIDE_DIR = SEAGENT_ROOT / "outside"
 
 
@@ -64,7 +65,7 @@ class TestAmazingROS2MCP:
 
     def test_A2_seagent_adapter_importable(self):
         """[A2] SeagentROS2MCPAdapter 应可从项目路径导入"""
-        sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
+        sys.path.insert(0, str(MCP_DIR))
         try:
             from seagent_mcp_adapter import SeagentROS2MCPAdapter, TASK_TYPE_MAPPING
             assert callable(SeagentROS2MCPAdapter)
@@ -73,7 +74,7 @@ class TestAmazingROS2MCP:
 
     def test_A3_task_type_mapping_complete(self):
         """[A3] TASK_TYPE_MAPPING 应覆盖 SEAgent 所有标准任务类型"""
-        sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
+        sys.path.insert(0, str(MCP_DIR))
         try:
             from seagent_mcp_adapter import TASK_TYPE_MAPPING
             required_keys = {"tree_valve_operation", "pipeline_inspection", "valve_operation"}
@@ -94,7 +95,7 @@ class TestAmazingROS2MCP:
 
     def test_A5_ros2_syscmd_payload_structure(self):
         """[A5] 基于 TaskIntent 构建的 SysTaskCmd payload 结构应合法"""
-        sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
+        sys.path.insert(0, str(MCP_DIR))
         try:
             from seagent_mcp_adapter import TASK_TYPE_MAPPING
             intent = _sample_task_intent()
@@ -119,7 +120,7 @@ class TestAmazingROS2MCP:
 
     def test_A6_adapter_default_path_configured(self):
         """[A6] SeagentROS2MCPAdapter 应支持无参默认构造"""
-        sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
+        sys.path.insert(0, str(MCP_DIR))
         try:
             from seagent_mcp_adapter import SeagentROS2MCPAdapter
             adapter = SeagentROS2MCPAdapter()
@@ -261,7 +262,7 @@ class TestSEAgentIntegrationCapability:
 
     def test_D5_task_type_maps_to_int_for_ros2(self):
         """[D5] SEAgent 任务类型应能映射为 ROS 2 整数 task_type"""
-        sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
+        sys.path.insert(0, str(MCP_DIR))
         try:
             from seagent_mcp_adapter import TASK_TYPE_MAPPING
             mapped = TASK_TYPE_MAPPING.get(_sample_task_intent()["task_type"])
@@ -279,10 +280,10 @@ class TestTaskDispatchSimulation:
     """通过 Mock ROS 2 MCP Server 模拟完整任务下发链路"""
 
     def _get_adapter(self):
-        sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
+        sys.path.insert(0, str(MCP_DIR))
         from seagent_mcp_adapter import SeagentROS2MCPAdapter, TASK_TYPE_MAPPING
         sys.path.pop(0)
-        server_script = SEAGENT_ROOT / "scratch" / "ros2_mcp_test" / "mock_ros2_mcp_server.py"
+        server_script = MCP_DIR / "mock_ros2_mcp_server.py"
         return SeagentROS2MCPAdapter(server_script), TASK_TYPE_MAPPING
 
     def test_E1_tree_valve_operation_dispatch(self):
@@ -390,14 +391,14 @@ class TestTelemetryFeedbackSimulation:
     """通过 Mock ROS 2 MCP Server 模拟 /task/system_status 遥测反向回传"""
 
     def _get_adapter_and_state(self, tmp_path):
-        sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
+        sys.path.insert(0, str(MCP_DIR))
         from seagent_mcp_adapter import SeagentROS2MCPAdapter
         sys.path.pop(0)
         sys.path.insert(0, str(SEAGENT_ROOT))
         from src.state_info import RobotStateInfo
         sys.path.pop(0)
 
-        server_script = SEAGENT_ROOT / "scratch" / "ros2_mcp_test" / "mock_ros2_mcp_server.py"
+        server_script = MCP_DIR / "mock_ros2_mcp_server.py"
         adapter = SeagentROS2MCPAdapter(server_script)
 
         state_file = tmp_path / "test_state.yaml"
