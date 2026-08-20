@@ -1,4 +1,4 @@
-store_version: 30
+store_version: 42
 robots:
   CRAWLER-1600-001:
     current_velocity: 1
@@ -125,8 +125,8 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    version: 6
-    updated_at: '2026-06-30T17:38:01.152708+08:00'
+    version: 18
+    updated_at: '2026-06-30T17:38:01.223539+08:00'
   AUV-324cc-001:
     current_velocity: 1
     turbidity: 8

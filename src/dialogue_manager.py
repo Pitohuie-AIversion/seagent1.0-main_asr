@@ -4549,11 +4549,12 @@ class DialogueManager:
             if resolved_family:
                 explicit_class_in_turn = "equipment_class" in equipment_updates
                 active_class_slot = sandbox_slots.get("equipment_class")
-                active_class = (
+                active_class_val = (
                     active_class_slot.value
                     if active_class_slot and active_class_slot.status == "valid"
                     else None
                 )
+                active_class = self.kb._resolve_class_key(str(active_class_val)) if active_class_val else None
                 target_class = resolved_family.get("robot_class")
 
                 if explicit_class_in_turn and active_class and target_class != active_class:

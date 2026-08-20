@@ -24,8 +24,13 @@ from datetime import datetime, timezone
 # ============================================================================
 
 def _make_sys_status(task_list=None):
-    """构造符合 SysStatus.msg 规范的完整 mock 数据"""
+    """构造符合 SysStatus.msg 规范的完整 mock 数据。
+    
+    fleet_status 为 Topside 网关的非标准扩展字段，
+    聚合多机器人状态供云端 SEAgent 状态中心使用。
+    """
     return {
+        # === 标准 SysStatus.msg 字段 ===
         "pose": {
             "header": {"frame_id": "odom"},
             "pose": {
@@ -41,6 +46,21 @@ def _make_sys_status(task_list=None):
         "ctr_mode": 4,      # AUTODEPTH
         "health": 0,        # 无异常
         "task_list": task_list or [],
+        # === Topside 网关扩展：多机舰队状态聚合 ===
+        "fleet_status": {
+            "WROV-250-001": {
+                "online": True,
+                "current_depth":      312.4,
+                "battery_percentage":  94.5,
+                "ctr_mode": 4,
+            },
+            "LROV-150-001": {
+                "online": True,
+                "current_depth":       85.0,
+                "battery_percentage":  88.0,
+                "ctr_mode": 9,
+            },
+        },
     }
 
 

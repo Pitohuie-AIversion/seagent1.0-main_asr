@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from mcp.rosbridge_client import (
+from rosbridge_client import (
     RosbridgeClient,
     TaskStatus,
     TaskStatusItem,

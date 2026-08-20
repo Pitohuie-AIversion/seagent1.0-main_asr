@@ -337,6 +337,32 @@ class IntentRouter:
             raise IntentRoutingError("LLM 路由结果不是合法 JSON object")
 
         plan = validate_interaction_plan(candidate)
+
+        # 针对明确包含设备选择/使用意图（如“我要选择金牛座”、“选择金牛座001”）的口语修正，防止误判为 READ/CLARIFY
+        if plan.operation in ("READ", "CLARIFY"):
+            user_msg_strip = user_message.strip()
+            has_select_verb = any(v in user_msg_strip for v in ["选择", "选", "使用", "用", "配", "配备", "切换", "换成", "安排"])
+
+            all_known_aliases = set()
+            for opt in expected_slot_options:
+                all_known_aliases.update(opt.get("allowed_values") or [])
+                alias_map = opt.get("alias_mappings") or {}
+                all_known_aliases.update(alias_map.keys())
+
+            all_known_aliases.update([
+                "金牛座", "天鹰座", "御夫座", "凤凰座",
+                "金牛座001", "金牛座1号机", "金牛座一号机",
+                "天鹰座001", "天鹰座1号机", "天鹰座一号机",
+                "御夫座001", "御夫座1号机", "御夫座一号机",
+                "OBSROV-75-001", "CRAWLER-1600-001", "WROV-250-001", "LROV-150-001"
+            ])
+
+            if has_select_verb and any(alias in user_msg_strip for alias in all_known_aliases if alias):
+                logger.info("[IntentRouter] Correcting route to WRITE because user explicitly selected equipment in: %s", user_message)
+                candidate["operation"] = "WRITE"
+                candidate["dialogue_mode"] = "task_collection"
+                plan = validate_interaction_plan(candidate)
+
         if plan.reason_code == "VALIDATION_FALLBACK_CLARIFY":
             logger.warning(
                 "[IntentRouter] InteractionPlan 协议非法: %s",

@@ -172,7 +172,7 @@ class TestWebSocketRosbridgeLayer:
         data = json.loads(raw)
         assert data.get("op") == "publish"
         assert data.get("topic") == "/task/system_status"
-        robots = data.get("msg", {}).get("robots", {})
+        robots = data.get("msg", {}).get("fleet_status", {})
         assert "WROV-250-001" in robots
 
     def test_G4_request_response_roundtrip(self, ws_manager):
@@ -302,7 +302,7 @@ class TestTelemetryFeedbackFullChain:
         assert raw is not None, "未收到遥测推送"
 
         data = json.loads(raw)
-        robots = data.get("msg", {}).get("robots", {})
+        robots = data.get("msg", {}).get("fleet_status", {})
 
         for unit_id, rdata in robots.items():
             now_str = datetime.now(timezone.utc).isoformat(timespec="microseconds")
@@ -364,7 +364,7 @@ class TestFullRoundTrip:
         sub = {"op": "subscribe", "topic": "/task/system_status"}
         ws_manager.send(sub)
         raw = ws_manager.receive(timeout=3.0)
-        robots = json.loads(raw).get("msg", {}).get("robots", {})
+        robots = json.loads(raw).get("msg", {}).get("fleet_status", {})
         for unit_id, rdata in robots.items():
             now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
             try:
