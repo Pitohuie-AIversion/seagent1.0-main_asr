@@ -29,12 +29,15 @@
 
 | 文件名 | 类型 | 职责说明 |
 |:---|:---:|:---|
-| **`seagent_mcp_adapter.py`** | 核心适配器 | **生产级适配器**。负责将落盘的 `TaskIntent v2` 解析并转换为符合 `SysTaskCmd.msg` 契约的 ROS 2 指令帧（支持 stdio MCP / WebSocket 双模式），并提供遥测同步接口。 |
-| **`mock_rosbridge_server.py`** | 仿真服务端 | **Mock rosbridge WebSocket 服务端**（基于 `websockets`）。模拟支持船 Topside 的 `rosbridge_server`，提供 `/task_cmd` 指令接收与 `/task/system_status` 遥测推送。 |
-| **`mock_ros2_mcp_server.py`** | 仿真服务端 | **Mock FastMCP stdio 服务端**（基于 `fastmcp`）。用于本地无网络依赖的 stdio 接口校验与标准工具调用测试。 |
-| **`test_architecture_validation.py`** | 测试套件 | **云-边-端分层架构测试**（20 个用例）。涵盖 WebSocket 握手、公网任务下发、遥测回传及数据隔离闭环（Sections G, H, I, J）。 |
-| **`test_public_libraries_comparison.py`** | 测试套件 | **公开库对比与模拟下发测试**（36 个用例）。包含对 3 大公开 ROS 2 MCP 库的契约静态分析、任务下发与遥测模拟（Sections A, B, C, D, E, F）。 |
-| **`test_real_llm_to_ros2_pipeline.py`** | E2E 脚本 | **真实端侧大模型 E2E 闭环测试**。加载本地 `Qwen3.5-9B` 大模型，跑通多轮对话 → `TaskIntent v2` 落盘 → MCP 下发至 ROS 2 `/task_cmd`。 |
+| **`rosbridge_client.py`** | **生产客户端** | **核心生产级 WebSocket 客户端**。实现完整内部协议（`UI接口协议.md`）：TaskType 枚举、`intent_to_syscmd` 转换、任务管理（TASK_MANAGE）、设备控制（CTRL_TASK）、AUV 任务、系统配置、遥测订阅，及后台监听线程。 |
+| **`task_status_tracker.py`** | **状态追踪器** | **任务执行状态实时追踪**。订阅 `/task/system_status`，解析 `SysStatus.msg` 中的 `TaskStatus[]` 任务队列，提供 `wait_for_finish()` 阻塞等待与状态变化回调机制。 |
+| **`seagent_mcp_adapter.py`** | stdio 适配器 | 通过 FastMCP stdio 协议与 Mock MCP 服务器交互（用于本地测试验证）。 |
+| **`mock_rosbridge_server.py`** | 仿真服务端 | **Mock rosbridge WebSocket 服务端**（支持完整 `SysStatus.msg`、TASK_MANAGE 解析、任务状态生命周期自动推进）。 |
+| **`mock_ros2_mcp_server.py`** | 仿真服务端 | **Mock FastMCP stdio 服务端**，用于本地无网络的 stdio 接口校验。 |
+| **`test_rosbridge_client.py`** | 测试套件 | **完整内部协议测试**（35 个用例）。覆盖协议构造（K）、WebSocket 下发（L）、TASK_MANAGE 管理（M）、CTRL_TASK/AUV/sys_config（N）、遥测解析（O）、完整闭环（P）。 |
+| **`test_architecture_validation.py`** | 测试套件 | **云-边-端分层架构测试**（20 个用例），验证 WebSocket 握手、公网任务下发、遥测回传及数据隔离（G, H, I, J）。 |
+| **`test_public_libraries_comparison.py`** | 测试套件 | **公开库对比与模拟下发测试**（36 个用例），验证 3 大公开 ROS 2 MCP 库的契约与 SEAgent 兼容性（A~F）。 |
+| **`test_real_llm_to_ros2_pipeline.py`** | E2E 脚本 | 真实端侧大模型全流程测试（需 GPU 与本地模型文件）。 |
 | **`README.md`** | 文档 | 本模块的说明文档。 |
 
 ---

@@ -1,39 +1,78 @@
 """
-Mock rosbridge WebSocket 服务器
-模拟真实 rosbridge_suite 的行为（rosbridge_protocol v2.0）：
+mock_rosbridge_server.py
+=========================
+Mock rosbridge WebSocket 服务端（符合完整内部协议）
+
+模拟支持船 Topside 的 rosbridge_server 节点行为：
 - 接受 WebSocket 连接（默认端口 9091，避免与真实 9090 冲突）
-- 处理 publish（写入 /task_cmd）
-- 处理 subscribe + 按需推送 /task/system_status 遥测
-- 使用 asyncio + websockets 实现，可在后台线程运行
+- 处理 publish（接收 /task_cmd、/task/sys_config 指令）
+- 处理 subscribe（推送 /task/system_status 完整 SysStatus 遥测）
+- 支持 TASK_MANAGE 指令解析与模拟执行状态推进
+
+Mock 遥测数据符合 sealien_ctrlpilot_msgmanagement/SysStatus.msg 完整结构
+（参考 UI接口协议.md 第 3 节）
 """
+
 import asyncio
 import json
 import threading
 from datetime import datetime, timezone
 
 
-MOCK_TELEMETRY = {
-    "WROV-250-001": {
-        "unit_id": "WROV-250-001",
-        "online": True,
-        "battery_percentage": 94.5,
-        "current_depth": 312.4,
-        "pose": {"x": 115.3421, "y": 20.8912, "z": -312.4, "yaw": 1.57},
-    },
-    "LROV-150-001": {
-        "unit_id": "LROV-150-001",
-        "online": True,
-        "battery_percentage": 88.0,
-        "current_depth": 85.0,
-        "pose": {"x": 109.1234, "y": 18.5432, "z": -85.0, "yaw": 0.78},
-    },
-}
+# ============================================================================
+# Mock 遥测数据（符合 SysStatus.msg 完整结构）
+# ============================================================================
 
-received_publishes = []  # 记录所有 publish 消息
+def _make_sys_status(task_list=None):
+    """构造符合 SysStatus.msg 规范的完整 mock 数据"""
+    return {
+        "pose": {
+            "header": {"frame_id": "odom"},
+            "pose": {
+                "position":    {"x": 115.3421, "y": 20.8912, "z": -312.4},
+                "orientation": {"x": 0.0, "y": 0.0, "z": 0.7071, "w": 0.7071},
+            },
+        },
+        "twist": {
+            "linear":  {"x": 0.3,  "y": 0.0, "z": -0.05},
+            "angular": {"x": 0.0,  "y": 0.0, "z": 0.01},
+        },
+        "alt": 2.5,         # 距海底高度 2.5m
+        "ctr_mode": 4,      # AUTODEPTH
+        "health": 0,        # 无异常
+        "task_list": task_list or [],
+    }
+
+
+# ============================================================================
+# 服务端内部状态
+# ============================================================================
+
+received_publishes = []          # 所有收到的 publish 消息
+active_tasks = {}                # task_id -> task_status_item
+_pending_status_steps = {}       # task_id -> [status_序列]
+_STATUS_PROGRESSION = [          # 任务状态正常推进序列
+    1,   # PLAN
+    2,   # ENTER
+    3,   # ONGOING
+    3,   # ONGOING（多停留一步）
+    5,   # FINISH
+]
 
 
 async def handle_client(websocket):
     subscriptions = set()
+
+    async def push_sys_status():
+        """推送当前完整 SysStatus（含任务列表）"""
+        task_list = list(active_tasks.values())
+        msg = {
+            "op":    "publish",
+            "topic": "/task/system_status",
+            "msg":   _make_sys_status(task_list),
+        }
+        await websocket.send(json.dumps(msg))
+
     async for raw in websocket:
         try:
             msg = json.loads(raw)
@@ -42,37 +81,121 @@ async def handle_client(websocket):
 
         op = msg.get("op")
 
+        # ---- subscribe ------------------------------------------------
         if op == "subscribe":
             topic = msg.get("topic", "")
             subscriptions.add(topic)
-            # 立即推送一次数据
             if topic == "/task/system_status":
-                push = {
-                    "op": "publish",
-                    "topic": "/task/system_status",
-                    "msg": {
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "robots": MOCK_TELEMETRY,
-                    },
-                }
-                await websocket.send(json.dumps(push))
+                await push_sys_status()
 
+        # ---- publish ---------------------------------------------------
         elif op == "publish":
-            topic = msg.get("topic", "")
+            topic   = msg.get("topic", "")
             payload = msg.get("msg", {})
+
             received_publishes.append({
                 "received_at": datetime.now(timezone.utc).isoformat(),
-                "topic": topic,
-                "payload": payload,
+                "topic":       topic,
+                "payload":     payload,
             })
-            # 回复确认（rosbridge 通常不回复 publish，但我们加一条便于测试）
-            ack = {"op": "ack", "topic": topic, "status": "ok"}
-            await websocket.send(json.dumps(ack))
 
+            if topic == "/task_cmd":
+                task_type = payload.get("task_type")
+                task_id   = payload.get("task_id", 0)
+
+                if task_type == 0:
+                    # TASK_MANAGE: 解析 params[0]=action
+                    params = payload.get("params", [])
+                    action = int(params[0]) if params else -1
+                    await _handle_task_manage(action, params)
+                else:
+                    # 新任务入队，初始状态 READY
+                    active_tasks[task_id] = {
+                        "task": payload,
+                        "status": 0,  # READY
+                    }
+                    _pending_status_steps[task_id] = list(_STATUS_PROGRESSION)
+
+                # 回复 ack（便于测试断言）
+                ack = {
+                    "op":     "ack",
+                    "topic":  topic,
+                    "status": "ok",
+                    "task_id": task_id,
+                }
+                await websocket.send(json.dumps(ack))
+
+                # 推送更新后的状态
+                if "/task/system_status" in subscriptions:
+                    await push_sys_status()
+
+                # 后台推进任务状态（模拟执行进度）
+                if task_type != 0 and task_id in _pending_status_steps:
+                    asyncio.ensure_future(
+                        _advance_task_status(task_id, websocket, subscriptions)
+                    )
+
+            elif topic == "/task/sys_config":
+                # 系统模式配置
+                ack = {"op": "ack", "topic": topic, "status": "ok"}
+                await websocket.send(json.dumps(ack))
+
+        # ---- call_service ----------------------------------------------
         elif op == "call_service":
-            # 简单回复
-            await websocket.send(json.dumps({"op": "service_response", "result": True, "values": {}}))
+            await websocket.send(json.dumps({
+                "op": "service_response", "result": True, "values": {}
+            }))
 
+
+async def _handle_task_manage(action: int, params: list):
+    """处理 TASK_MANAGE 指令"""
+    target_id = int(params[1]) if len(params) > 1 else None
+    if action == 0 and target_id in active_tasks:    # SUSPEND
+        active_tasks[target_id]["status"] = 6        # PAUSE
+    elif action == 1 and target_id in active_tasks:  # RESUME
+        active_tasks[target_id]["status"] = 3        # ONGOING
+    elif action == 2:                                 # SUSPEND_ALL
+        for t in active_tasks.values():
+            t["status"] = 6
+    elif action == 3:                                 # RESUME_ALL
+        for t in active_tasks.values():
+            if t["status"] == 6:
+                t["status"] = 3
+    elif action == 4 and target_id in active_tasks:  # DELETE
+        active_tasks.pop(target_id, None)
+    elif action == 5:                                 # DELETE_ALL
+        active_tasks.clear()
+    elif action == 7:                                 # CLEAR_BLOCK
+        for t in active_tasks.values():
+            if t["status"] == 7:
+                t["status"] = 0  # 重置为 READY
+
+
+async def _advance_task_status(task_id, websocket, subscriptions):
+    """后台协程：按固定时序推进任务执行状态并推送遥测"""
+    await asyncio.sleep(0.3)  # 模拟规划延迟
+    steps = _pending_status_steps.pop(task_id, [])
+    for status in steps:
+        if task_id not in active_tasks:
+            break
+        active_tasks[task_id]["status"] = status
+        if "/task/system_status" in subscriptions:
+            try:
+                task_list = list(active_tasks.values())
+                push = {
+                    "op":    "publish",
+                    "topic": "/task/system_status",
+                    "msg":   _make_sys_status(task_list),
+                }
+                await websocket.send(json.dumps(push))
+            except Exception:
+                break
+        await asyncio.sleep(0.2)
+
+
+# ============================================================================
+# 服务端入口
+# ============================================================================
 
 async def _run_server(port: int, stop_event: asyncio.Event):
     import websockets
@@ -91,6 +214,8 @@ class MockRosbridgeServer:
 
     def start(self):
         received_publishes.clear()
+        active_tasks.clear()
+        _pending_status_steps.clear()
         ready = threading.Event()
 
         def _run():
@@ -114,6 +239,9 @@ class MockRosbridgeServer:
 
     def get_received_publishes(self):
         return list(received_publishes)
+
+    def get_active_tasks(self):
+        return dict(active_tasks)
 
 
 if __name__ == "__main__":

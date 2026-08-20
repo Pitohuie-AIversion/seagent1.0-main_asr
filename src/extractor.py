@@ -580,7 +580,19 @@ class ParameterExtractor:
     ) -> set[str]:
         """根据当前抽取阶段生成字段白名单。"""
         if task_type_key is None:
-            return {"task_type", "task_type_key", "emergency_mode"}
+            return {
+                "task_type",
+                "task_type_key",
+                "emergency_mode",
+                "equipment_class",
+                "equipment_family",
+                "equipment_type",
+                "equipment_unit_id",
+                "equipment_name",
+                "rov_description",
+                "raw_oilfield_name",
+                "oilfield_name",
+            }
 
         keys = {
             str(field.get("key"))

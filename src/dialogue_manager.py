@@ -2548,7 +2548,7 @@ class DialogueManager:
                 applied_keys = {outcome.key for outcome in apply_plan.successful_updates} | {f.key for f in apply_plan.failures}
                 extra_updates = {
                     k: v for k, v in stage2_updates.items()
-                    if k not in applied_keys
+                    if (k.startswith("equipment_") or k not in applied_keys)
                     and k not in ("task_type", "task_type_key")
                 }
                 if extra_updates:
@@ -4370,6 +4370,43 @@ class DialogueManager:
                 new_slots[target_key] = target_slot
 
         if not task_type:
+            # 仅在 task_type 为 missing 时尝试根据设备自动补全唯一关联的任务类型，不得强改 candidate 状态
+            task_type_slot = new_slots.get("task_type_key")
+            if not task_type_slot or task_type_slot.status == "missing" or task_type_slot.value is None:
+                inferred_tt_key = None
+                for key in ("equipment_unit_id", "equipment_name", "equipment_type", "equipment_family", "equipment_class"):
+                    val = equipment_updates.get(key)
+                    if val:
+                        val_str = str(val.get("value") if isinstance(val, dict) else val)
+                        resolved_unit = self.kb.resolve_robot_unit(val_str, None)
+                        resolved_family = self.kb.resolve_robot_family(val_str, None) if not resolved_unit else None
+                        cls_id = None
+                        if resolved_unit:
+                            cls_id = (resolved_unit.get("robot") or {}).get("robot_class")
+                        elif resolved_family:
+                            cls_id = resolved_family.get("robot_class")
+                        elif key == "equipment_class":
+                            cls_id = self.kb._resolve_class_key(val_str)
+
+                        if cls_id:
+                            matched = [
+                                t_k for t_k, t_c in self.kb.task_schemas.get("task_templates", {}).items()
+                                if cls_id in t_c.get("allowed_robot_classes", [])
+                            ]
+                            if len(matched) == 1:
+                                inferred_tt_key = matched[0]
+                                break
+
+                if inferred_tt_key:
+                    self._handle_task_type_update_in_transaction("task_type_key", inferred_tt_key, new_slots)
+                    task_type_slot = new_slots.get("task_type_key")
+                    task_type = (
+                        task_type_slot.value
+                        if task_type_slot and task_type_slot.status == "valid"
+                        else None
+                    )
+
+        if not task_type:
             for target_key in (
                 "equipment_unit_id",
                 "equipment_name",
@@ -4846,6 +4883,22 @@ class DialogueManager:
         for k in EQUIPMENT_KEYS:
             if k in sandbox_slots:
                 new_slots[k] = sandbox_slots[k]
+
+        # 若当前 task_type_key 为空，且设备类别已推导确定，自动推导唯一的关联任务类型
+        cur_tt_slot = new_slots.get("task_type_key")
+        if not cur_tt_slot or cur_tt_slot.status != "valid" or not cur_tt_slot.value:
+            eq_cls_slot = new_slots.get("equipment_class")
+            if eq_cls_slot and eq_cls_slot.status == "valid" and eq_cls_slot.value:
+                cls_id = self.kb._resolve_class_key(str(eq_cls_slot.value))
+                if cls_id:
+                    matched_templates = [
+                        t_key
+                        for t_key, t_cfg in self.kb.task_schemas.get("task_templates", {}).items()
+                        if cls_id in t_cfg.get("allowed_robot_classes", [])
+                    ]
+                    if len(matched_templates) == 1:
+                        inferred_key = matched_templates[0]
+                        self._handle_task_type_update_in_transaction("task_type_key", inferred_key, new_slots)
 
 
     def _resolve_task_type_target(self, key: str, value: object) -> str | None:

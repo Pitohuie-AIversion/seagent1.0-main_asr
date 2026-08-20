@@ -1050,9 +1050,7 @@ class KnowledgeBase:
                             "aliases": list(unit_cfg.get("aliases", []) or []),
                         })
 
-                    if apply_runtime_filter and not units_node:
-                        continue
-
+                    # 即使运行时具体单机由于时效/维护不可用，Variant 节点与上级 Family/Class 拓扑仍予以保留
                     variants_node.append({
                         "variant_id": variant_id,
                         "full_name": variant_cfg.get("full_name", variant_id),
@@ -1062,6 +1060,7 @@ class KnowledgeBase:
                         "hard_params": dict(variant_cfg.get("hard_params", {}) or {}),
                         "requires_installation": list(feasibility.requires_installation),
                         "units": units_node,
+                        "has_available_units": bool(units_node),
                     })
 
                 if not variants_node:

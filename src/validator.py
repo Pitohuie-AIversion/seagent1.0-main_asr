@@ -39,6 +39,8 @@ def _matches_numeric_thresholds(value: Any, thresholds: dict[str, Any]) -> bool:
         raise ValueError("telemetry value must be finite")
     if "min_exclusive" in thresholds and value <= thresholds["min_exclusive"]:
         return False
+    if "min_inclusive" in thresholds and value < thresholds["min_inclusive"]:
+        return False
     if "max_exclusive" in thresholds and value >= thresholds["max_exclusive"]:
         return False
     if "max_inclusive" in thresholds and value > thresholds["max_inclusive"]:
@@ -47,7 +49,7 @@ def _matches_numeric_thresholds(value: Any, thresholds: dict[str, Any]) -> bool:
 
 
 def _display_threshold(thresholds: dict[str, Any]) -> Any:
-    for key in ("max_inclusive", "min_exclusive", "max_exclusive"):
+    for key in ("max_inclusive", "min_exclusive", "min_inclusive", "max_exclusive"):
         if key in thresholds:
             return thresholds[key]
     return None
@@ -384,16 +386,22 @@ class TaskValidator:
                 "message": "机器人候选域返回了非法结构，无法安全继续。",
             }
 
-        class_id = canonical_selection.get("robot_class")
+        class_id = (
+            (canonical_selection.get("robot_class") if canonical_selection else None)
+            or self.kb._resolve_class_key(str(task_state.get("equipment_class") or ""))
+        )
         class_node = next(
             (
                 item
-                for item in domain["classes"]
+                for item in domain.get("classes", [])
                 if item.get("class_id") == class_id
             ),
             None,
         )
-        family_id = canonical_selection.get("family_id")
+        family_id = (
+            (canonical_selection.get("family_id") if canonical_selection else None)
+            or self.kb._resolve_family_key(str(task_state.get("equipment_family") or ""))
+        )
         family_node = None
         if class_node is not None and has_explicit_family:
             family_node = next(
@@ -405,8 +413,10 @@ class TaskValidator:
                 None,
             )
 
+        # 若选定了 class_node 且未指定 family_id 时，只要 class_node 包含可行的 families 候选，说明处于正常等待选择阶段，不触发硬约束违规
         if class_node is not None and (
-            not has_explicit_family or family_node is not None
+            (not has_explicit_family and bool(class_node.get("families")))
+            or family_node is not None
         ):
             return None
 
@@ -919,8 +929,8 @@ class TaskValidator:
         )
 
         # 显式提供了 unit_id
-        if unit_selector and isinstance(unit_selector, str) and unit_selector.strip():
-            clean_unit_id = unit_selector.strip()
+        if unit_selector is not None and str(unit_selector).strip():
+            clean_unit_id = str(unit_selector).strip()
             try:
                 snapshot = None
                 if hasattr(self.kb, "get_unit_state_snapshot"):
@@ -1019,6 +1029,7 @@ class TaskValidator:
         timestamp_values = [
             ("state.updated_at", state_dict.get("updated_at")),
             ("state.update_timestamp", state_dict.get("update_timestamp")),
+            ("state.update_at", state_dict.get("update_at")),
             ("snapshot.updated_at", snapshot.get("updated_at")),
         ]
         now_dt = get_current_datetime()
@@ -1397,6 +1408,7 @@ class TaskValidator:
                 timestamp_str = (
                     state_dict.get("update_timestamp")
                     or state_dict.get("updated_at")
+                    or state_dict.get("update_at")
                     or (state_snapshot.get("updated_at") if state_snapshot else None)
                 )
                 if timestamp_str is not None:
@@ -1459,11 +1471,13 @@ class TaskValidator:
                     msg = c["violation_message"].replace("{equipment_name}", unit_disp)
                     if is_offline:
                         msg = f"无法发布任务：机器人 {unit_disp} 当前处于离线状态。"
+                    elif overall in ("maintenance", "fault") or task_status in ("maintenance", "fault"):
+                        msg = f"无法发布任务：机器人 {unit_disp} 当前处于故障/维护状态。"
                     elif is_busy_status:
                         msg = f"无法发布任务：机器人 {unit_disp} 当前处于忙碌状态。"
                     return Violation(
                         c["id"], c["name"], msg.strip(), c["severity"],
-                        rel_fields, check_type=check, observed_value=overall or ("offline" if is_offline else "busy")
+                        rel_fields, check_type=check, observed_value=overall or ("offline" if is_offline else ("fault" if overall in ("maintenance", "fault") else "busy"))
                     )
 
         elif check == "robot_survival_status":
