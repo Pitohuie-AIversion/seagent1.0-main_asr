@@ -119,7 +119,7 @@ EXTRACTION_SYSTEM = """\
 2. 每一个提取的字段，必须包含 raw_key（用户所用的词）、canonical_key（规范化字段名）、raw_value（用户说原始值）、normalized_value（转换后的标准化值，例如数字、日期等）和 confidence（置信度）。
 3. 通常以最新用户消息为候选值来源；唯一例外是用户本轮明确接受紧邻上一条助手消息中的单一推荐，或明确选定该消息中按顺序展示的编号选项。此时最新用户消息仍是写入授权来源，可以从该助手消息复制被接受的值；不能从更早历史、后台 allowed_values 顺序、并列但未编号的候选或助手未经确认的推测中取值。
 4. 如果最新用户消息中对同一字段出现多个候选或多次反悔/修正，以文本中最后出现的候选为准。
-5. 对于时间信息：将口语时间转换为 YYYY-MM-DDTHH:MM:SS 格式，无时间部分时补 T00:00:00；"现在/当前/立即"等表达必须基于【当前时间】换算。用户提供持续时长时，将其换算为正数秒写入 time_relation（注意换算规则：半小时=1800，一个半小时=5400，两个半小时=9000，2.5小时=9000，45分钟=2700）；不要自行计算 end_time。没有持续时长时 time_relation 必须为 null。
+5. 对于时间信息：充分发挥大模型对自然语言数字与时刻的转换理解能力，将口语时刻（例如"下午一点一刻"→"13:15:00"，"下午四点一刻"→"16:15:00"，"三点半"→"15:30:00"，"晚上十一点"→"23:00:00"，"一点三刻"→"13:45:00"）准确转换为 YYYY-MM-DDTHH:MM:SS 格式，无时间部分时补 T00:00:00；"现在/当前/立即"等表达必须基于【当前时间】换算。用户提供持续时长时，将其换算为正数秒写入 time_relation（注意换算规则：半小时=1800，一个半小时=5400，两个半小时=9000，2.5小时=9000，45分钟=2700）；不要自行计算 end_time。没有持续时长时 time_relation 必须为 null。
 6. 对于坐标：normalized_value 提取为 {{"lat": float, "lon": float}} 格式，统一十进制度。
 7. 对于水深：统一转换为米（m）为单位的数值，例如"1千米"→1000，"500m"→500。
 8. 对于任务类型：
@@ -781,6 +781,8 @@ class ParameterExtractor:
             raw_text = str(candidate.get("raw_value") or candidate.get("normalized_value") or "").strip()
             from .simulated_time import get_current_datetime
             rel_iso = parse_relative_datetime(raw_text, get_current_datetime(), full_user_message=user_message)
+            if not rel_iso and user_message:
+                rel_iso = parse_relative_datetime(user_message, get_current_datetime(), full_user_message=user_message)
             if rel_iso:
                 resolved = dict(candidate)
                 resolved["normalized_value"] = rel_iso

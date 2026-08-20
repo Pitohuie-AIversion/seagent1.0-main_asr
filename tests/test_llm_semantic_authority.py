@@ -1700,6 +1700,58 @@ def test_today_am_11_and_three_hours() -> None:
         get_simulated_time().reset()
 
 
+def test_today_pm_one_quarter_and_four_quarter() -> None:
+    # 场景：用户原话为 "任务从今天下午一点一刻开始，持续 12 小时"
+    from datetime import datetime
+    from src.simulated_time import get_simulated_time
+    get_simulated_time().set_current_time(datetime(2026, 8, 19, 15, 43, 35))
+    try:
+        llm = ScriptedLLM(
+            extractions=[
+                {
+                    "slot_candidates": [
+                        slot_candidate(
+                            "start_time",
+                            "2026-08-19T00:00:00",  # 模型误归零
+                            raw_key="开始时间",
+                            raw_value="下午一点一刻",
+                        ),
+                    ],
+                    "list_mutations": [],
+                    "time_relation": {
+                        "has_duration": True,
+                        "duration_seconds": 43200,  # 12小时
+                        "raw_text": "持续12小时",
+                        "confidence": 0.95,
+                    },
+                    "unresolved": [],
+                }
+            ]
+        )
+        extractor = ParameterExtractor(llm)
+
+        result = extractor.extract_updates(
+            "任务从今天下午一点一刻开始，持续 12 小时",
+            current_state={"task_type_key": "pipeline_inspection"},
+            task_type_key="pipeline_inspection",
+            required=[
+                {"key": "start_time", "type": "datetime"},
+                {"key": "end_time", "type": "datetime"},
+            ],
+        )
+
+        candidates = {
+            item["canonical_key"]: item
+            for item in result["slot_candidates"]
+        }
+        # 1. 验证通过 "一刻" 正则推算出 13:15:00
+        assert candidates["start_time"]["normalized_value"] == "2026-08-19T13:15:00"
+        # 2. 验证 13:15 + 12小时确定性派生得 2026-08-20T01:15:00
+        assert candidates["end_time"]["normalized_value"] == "2026-08-20T01:15:00"
+    finally:
+        get_simulated_time().reset()
+
+
 
 
 

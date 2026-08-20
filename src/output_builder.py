@@ -386,6 +386,12 @@ class OutputBuilder:
                     continue
                 for alias in robot.get("aliases", []):
                     add_mapping(alias, standard)
+                # 兼容：允许 Family 级别的别名（如“天鹰座”）直接映射到对应的型号
+                fam_id = robot.get("family_id")
+                if fam_id:
+                    fam_cfg = self.kb.robot_fleet.get("robot_families", {}).get(fam_id, {})
+                    for alias in fam_cfg.get("aliases", []):
+                        add_mapping(alias, standard)
             return mappings
 
         if ref == "robot_unit_ids":
@@ -394,14 +400,17 @@ class OutputBuilder:
                 if task_state
                 else ""
             )
-            # fleet_units 必须依赖已确认的 model_variant。型号尚未确定时，
-            # 不向提取器暴露其他型号的单机 aliases。
             if not variant_selector:
                 return {}
             robots = [
                 self.kb.get_rov_for_task(variant_selector, task_type_key)
             ]
             for robot in (item for item in robots if item):
+                fam_id = robot.get("family_id")
+                fam_aliases = []
+                if fam_id:
+                    fam_cfg = self.kb.robot_fleet.get("robot_families", {}).get(fam_id, {})
+                    fam_aliases = fam_cfg.get("aliases", [])
                 for unit in robot.get("fleet_units", []):
                     unit_id = unit.get("unit_id")
                     if not unit_id:
@@ -410,6 +419,7 @@ class OutputBuilder:
                         unit_id,
                         unit.get("display_name"),
                         *unit.get("aliases", []),
+                        *fam_aliases,  # 允许 Family 裸别名（如“天鹰座”）在单机搜寻阶段连带匹配映射
                     ]
                     for alias in targets:
                         add_mapping(alias, unit_id)

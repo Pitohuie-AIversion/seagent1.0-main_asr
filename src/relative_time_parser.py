@@ -104,6 +104,12 @@ def parse_relative_datetime(
     norm_raw = unicodedata.normalize("NFKC", text).strip()
     full_raw = unicodedata.normalize("NFKC", full_user_message or "").strip()
 
+    # 提前规范化 "点一刻" 与 "点三刻"，防止 cn2an 误将 "一点一刻" 替换为 "1.1刻"
+    norm_raw = re.sub(r"点一刻|时一刻|1刻", "点15分", norm_raw)
+    norm_raw = re.sub(r"点三刻|时三刻|3刻", "点45分", norm_raw)
+    full_raw = re.sub(r"点一刻|时一刻|1刻", "点15分", full_raw)
+    full_raw = re.sub(r"点三刻|时三刻|3刻", "点45分", full_raw)
+
     try:
         import cn2an
         norm = cn2an.transform(norm_raw, "cn2an") if norm_raw else ""
@@ -212,9 +218,13 @@ def parse_relative_datetime(
             else:
                 hour = h_raw
 
-            # 匹配分钟 / 半
+            # 匹配分钟 / 半 / 一刻 / 三刻
             if re.search(r"点半|时半", search_target):
                 minute = 30
+            elif re.search(r"三刻|3刻", search_target):
+                minute = 45
+            elif re.search(r"一刻|1刻|刻", search_target):
+                minute = 15
             else:
                 m_min = re.search(r"(?:点|时)\s*([0-5]?[0-9])\s*(?:分|分钟)?", search_target)
                 if m_min and m_min.group(1):
