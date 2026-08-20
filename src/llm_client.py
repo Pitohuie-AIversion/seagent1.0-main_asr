@@ -452,24 +452,34 @@ class LLMClient:
     def filter_reply(
         self,
         reply: Any,
-        temperature: float = 0.7,
+        temperature: float = 0.0,
         max_tokens: int = 1500,
         role: ModelRole | str | None = None,
     ) -> str:
-        """保留现有回复脱敏行为，并防止水下业务与设备术语误杀。"""
+        """保留现有回复脱敏行为，强隔离水下作业装备/机器人型号与AI底座模型概念，防止误杀。"""
         target_role = role or ModelRole.FILTER_REPLY
         reply_text = "" if reply is None else str(reply)
         if self.is_mock or not reply_text:
             return reply_text
+
+        # 敏感 AI 底座与实现信息预检关键词
+        sensitive_ai_patterns = [
+            "qwen", "gpt", "claude", "llama", "deepseek", "chatgpt", "gemini", "openai",
+            "底座大模型", "大语言模型", "llm", "系统提示词", "system prompt", "内部prompt",
+            "模型路径", "agent路由", "路由逻辑"
+        ]
+        text_lower = reply_text.lower()
+        has_sensitive_ai_info = any(pat in text_lower for pat in sensitive_ai_patterns)
+
         messages = [
             {
                 "role": "user",
                 "content": (
-                    "检查下面文本中是否泄露底座模型、厂商、模型路径或 prompt 等实现信息。"
-                    "如有，只将实现信息改为‘我无法透露底座模型或实现细节’，保持前后连贯；"
-                    "不要修改业务身份表述，其余内容严禁修改。\n"
-                    "重要注意：水下作业装备、传感器、定位导航设备（如 DVL、ROV、AUV、USV、LBL、SBL、INS、GPS 等）及业务参数属于正常水下业务实体，严禁修改或误替换为脱敏词。\n"
-                    "只输出修改后的文本：\n"
+                    "检查下面文本中是否泄露 AI 大语言模型（底座大模型如 Qwen、GPT、Claude、DeepSeek 等）、模型厂商、模型路径、系统 Prompt 或内部 Agent 路由等实现信息。\n"
+                    "如有，只将 AI 实现信息替换为‘我无法透露底座模型或实现细节’，保持上下文自然连贯；\n"
+                    "【极其重要】：必须严禁混淆“AI底座大模型”与“水下作业机器人/设备型号”。水下作业装备（如天鹰座、金牛座、海马号、ROV、AUV、USV、DVL、LBL、SBL、INS、通用工作级深海机器人、轻型工作级深海机器人、作业机器人、设备底座、系统内部型号等）属于水下业务机械装备与工程名称，绝对不是 AI 底座模型，严禁修改、脱敏或误替换为‘无法透露底座模型’！\n"
+                    "若原文本未泄露上述 AI 大模型敏感信息，必须原样输出原文本，一字不改。\n"
+                    "只输出处理后的文本：\n"
                     f"{reply_text}"
                 ),
             }
@@ -478,8 +488,6 @@ class LLMClient:
         if not filtered:
             return reply_text
 
-        # 防误杀后处理：防止水下领域术语（如 DVL）被脱敏模型误判替换
-        domain_terms = ["DVL", "ROV", "AUV", "USV", "LBL", "SBL", "INS"]
         refusal_patterns = [
             "我无法透露底座模型或实现细节",
             "无法透露底座模型或实现细节",
@@ -487,6 +495,17 @@ class LLMClient:
             "【无法透露底座模型或实现细节】",
         ]
         has_refusal = any(pat in filtered for pat in refusal_patterns)
+
+        # 防误杀熔断机制：
+        # 1. 若脱敏模型输出了拒绝文案，但原文本中根本不包含真实的 AI 敏感信息，说明脱敏模型发生了误判/幻觉，强行熔断并恢复原文本。
+        if has_refusal and not has_sensitive_ai_info:
+            return reply_text
+
+        # 2. 防误杀后处理：覆盖被误判的水下领域装备/工程术语
+        domain_terms = [
+            "DVL", "ROV", "AUV", "USV", "LBL", "SBL", "INS", "GPS",
+            "天鹰座", "金牛座", "海马号", "通用工作级", "轻型工作级", "作业机器人", "水下机器人", "系统内部型号"
+        ]
         if has_refusal:
             for term in domain_terms:
                 if term in reply_text and term not in filtered:

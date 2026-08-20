@@ -29,14 +29,18 @@
 
 | 文件名 | 类型 | 职责说明 |
 |:---|:---:|:---|
-| **`rosbridge_client.py`** | **生产客户端** | **核心生产级 WebSocket 客户端**。实现完整内部协议（`UI接口协议.md`）：TaskType 枚举、`intent_to_syscmd` 转换、任务管理（TASK_MANAGE）、设备控制（CTRL_TASK）、AUV 任务、系统配置、遥测订阅，及后台监听线程。 |
+| **`dialogue_mcp_integration.py`** | **对话闭环集成** | **DialogueManager ↔ MCP 桥接器**。提供 `attach_mcp_bridge` 与 `dispatch_dialogue_result`，将自然语言对话收集、落盘与 ROS 2 下发完全连通。 |
+| **`bridge_service.py`** | **生产服务** | **SEAgent 云端 MCP 自动化桥接服务**。整合 WebSocket 客户端与 TaskStatusTracker，实现自动意图下发、遥测同步与任务生命周期追踪。 |
+| **`rosbridge_client.py`** | **生产客户端** | **核心生产级 WebSocket 客户端**。实现完整内部协议（`UI接口协议.md`）：TaskType 枚举、`intent_to_syscmd` 转换、任务管理（TASK_MANAGE）、设备控制（CTRL_TASK）、AUV 任务、系统配置、遥测订阅，及无死锁后台监听线程。 |
 | **`task_status_tracker.py`** | **状态追踪器** | **任务执行状态实时追踪**。订阅 `/task/system_status`，解析 `SysStatus.msg` 中的 `TaskStatus[]` 任务队列，提供 `wait_for_finish()` 阻塞等待与状态变化回调机制。 |
 | **`seagent_mcp_adapter.py`** | stdio 适配器 | 通过 FastMCP stdio 协议与 Mock MCP 服务器交互（用于本地测试验证）。 |
 | **`mock_rosbridge_server.py`** | 仿真服务端 | **Mock rosbridge WebSocket 服务端**（支持完整 `SysStatus.msg`、TASK_MANAGE 解析、任务状态生命周期自动推进）。 |
 | **`mock_ros2_mcp_server.py`** | 仿真服务端 | **Mock FastMCP stdio 服务端**，用于本地无网络的 stdio 接口校验。 |
-| **`test_rosbridge_client.py`** | 测试套件 | **完整内部协议测试**（35 个用例）。覆盖协议构造（K）、WebSocket 下发（L）、TASK_MANAGE 管理（M）、CTRL_TASK/AUV/sys_config（N）、遥测解析（O）、完整闭环（P）。 |
-| **`test_architecture_validation.py`** | 测试套件 | **云-边-端分层架构测试**（20 个用例），验证 WebSocket 握手、公网任务下发、遥测回传及数据隔离（G, H, I, J）。 |
-| **`test_public_libraries_comparison.py`** | 测试套件 | **公开库对比与模拟下发测试**（36 个用例），验证 3 大公开 ROS 2 MCP 库的契约与 SEAgent 兼容性（A~F）。 |
+| **`test_bidirectional_closed_loop.py`** | 测试套件 | **双向收发闭环深度测试**（6 个用例，S1~S6）。涵盖动态任务跟踪、交互式中途挂起/恢复、应急清除阻断、连续姿态回传、视觉关键点双向接收、多机并发独立收发。 |
+| **`test_dialogue_mcp_integration.py`** | 测试套件 | **对话流至 ROS 2 闭环测试**（4 个用例，R1~R4）。测试对话完成 (done 阶段) 触发 MCP 自动下发与等待机器人侧 FINISH 闭环。 |
+| **`test_rosbridge_client.py`** | 测试套件 | **完整内部协议测试**（35 个用例，K~P）。覆盖协议构造、WebSocket 下发、TASK_MANAGE 管理、CTRL_TASK/AUV/sys_config、遥测解析、完整闭环。 |
+| **`test_architecture_validation.py`** | 测试套件 | **云-边-端分层架构测试**（20 个用例，G~J），验证 WebSocket 握手、公网任务下发、遥测回传及数据隔离。 |
+| **`test_public_libraries_comparison.py`** | 测试套件 | **公开库对比与模拟下发测试**（36 个用例，A~F），验证 3 大公开 ROS 2 MCP 库的契约与 SEAgent 兼容性。 |
 | **`test_real_llm_to_ros2_pipeline.py`** | E2E 脚本 | 真实端侧大模型全流程测试（需 GPU 与本地模型文件）。 |
 | **`README.md`** | 文档 | 本模块的说明文档。 |
 
@@ -44,15 +48,15 @@
 
 ## 3. 使用方法与快速开始
 
-### 3.1 运行全套 MCP 自动化测试（56 个用例）
+### 3.1 运行全套 MCP 自动化测试（107 个用例）
 
 在 SEAgent 项目根目录下执行：
 
 ```bash
-/root/miniconda3/envs/seagent/bin/pytest mcp/test_architecture_validation.py mcp/test_public_libraries_comparison.py -v
+/root/miniconda3/envs/seagent/bin/pytest mcp/ -v
 ```
 
-预计结果：`56 passed in ~23s` (100% 通过)。
+预计结果：`107 passed in ~42s` (100% 通过)。
 
 ### 3.2 运行真实端侧大模型 E2E 测试
 

@@ -643,10 +643,29 @@ class RobotStateInfo:
             version = state.get("version", 0)
             self._validate_version(version, f"robots.{status_ref}.version")
             state["version"] = version
-            if state.get("updated_at") is None and state.get("update_timestamp"):
-                state["updated_at"] = state["update_timestamp"]
-            elif state.get("updated_at"):
-                state["update_timestamp"] = state["updated_at"]
+            
+            # 统一时间戳字段：若同时存在 update_at 与 updated_at，优先保留有效且较新的时间戳
+            up_at = state.pop("update_at", None)
+            up_timestamp = state.get("update_timestamp")
+            updated_at = state.get("updated_at")
+
+            candidates = [ts for ts in (updated_at, up_timestamp, up_at) if isinstance(ts, str) and ts.strip()]
+            if candidates:
+                # 按照 ISO 时间戳解析，选择最新有效的时间串作为 updated_at
+                latest_ts = candidates[0]
+                latest_dt = None
+                for ts in candidates:
+                    try:
+                        clean_ts = ts.replace("Z", "+00:00")
+                        dt = datetime.fromisoformat(clean_ts)
+                        if latest_dt is None or dt > latest_dt:
+                            latest_dt = dt
+                            latest_ts = ts
+                    except Exception:
+                        pass
+                state["updated_at"] = latest_ts
+                state["update_timestamp"] = latest_ts
+
         return normalized
 
     @staticmethod

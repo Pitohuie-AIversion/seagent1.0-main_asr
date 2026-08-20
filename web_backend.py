@@ -61,8 +61,43 @@ def init_asr_service(asr_service):
     global _shared_asr
     _shared_asr = asr_service
 
+import importlib
+import os
+import sys
+
+_MODULES_TO_WATCH = [
+    "src.dialogue_manager",
+    "src.extractor",
+    "src.intent_router",
+    "src.validator",
+    "src.knowledge_retriever",
+    "src.output_builder",
+    "src.normalization_contract",
+]
+_module_mtimes = {}
+
+
+def check_and_hot_reload_modules():
+    """Hot-reload business logic Python modules when files are edited on disk, without re-loading heavy GPU LLM/ASR models."""
+    global DialogueManager
+    for mod_name in _MODULES_TO_WATCH:
+        try:
+            mod = sys.modules.get(mod_name)
+            if mod and hasattr(mod, "__file__") and mod.__file__:
+                mtime = os.path.getmtime(mod.__file__)
+                if mod_name in _module_mtimes and mtime > _module_mtimes[mod_name]:
+                    logging.info("🔥 Hot-reloading business logic module: %s", mod_name)
+                    reloaded = importlib.reload(mod)
+                    if mod_name == "src.dialogue_manager":
+                        DialogueManager = reloaded.DialogueManager
+                _module_mtimes[mod_name] = mtime
+        except Exception as exc:
+            logging.warning("Hot reload check failed for %s: %s", mod_name, exc)
+
+
 def get_or_create_manager(sid: str) -> DialogueManager:
     """获取或创建会话专属的 DialogueManager 实例"""
+    check_and_hot_reload_modules()
     with _sessions_lock:
         if sid not in _sessions_manager:
             _sessions_manager[sid] = DialogueManager(_shared_llm, _shared_kb, session_id=sid)
@@ -128,6 +163,10 @@ app = Flask(
     static_folder=str(FRONTEND_DIR),
     static_url_path="/static",
 )
+
+@app.before_request
+def _hot_reload_check_before_request():
+    check_and_hot_reload_modules()
 
 def _load_asr_api_config() -> dict:
     cfg_path = CONFIG_DIR / "asr.yaml"
@@ -989,3 +1028,160 @@ def api_history_load():
             "mode": mgr.mode,
             "phase": mgr.phase,
         })
+
+
+# ============================================================================
+# SEAgent ROS 2 MCP Web API 接口
+# ============================================================================
+
+_shared_mcp_bridge = None
+
+
+def init_mcp_bridge_service(bridge_service):
+    """初始化并注入全局 MCP 桥接服务实例"""
+    global _shared_mcp_bridge
+    _shared_mcp_bridge = bridge_service
+
+
+def get_mcp_bridge():
+    """获取全局 MCP 桥接服务实例"""
+    return _shared_mcp_bridge
+
+
+@app.route("/api/mcp/status", methods=["GET"])
+def get_mcp_status():
+    """查询云端 ↔ 支持船 Topside MCP 通信状态与遥测快照"""
+    bridge = get_mcp_bridge()
+    if bridge is None or not bridge.is_healthy():
+        return jsonify({
+            "code": 200,
+            "mcp_connected": False,
+            "msg": "MCP 桥接服务未连接或未初始化",
+            "host": bridge.host if bridge else "N/A",
+            "port": bridge.port if bridge else 0,
+            "telemetry": None,
+        })
+
+    telemetry = bridge.tracker.latest_telemetry()
+    telemetry_data = None
+    if telemetry:
+        telemetry_data = {
+            "received_at": telemetry.received_at,
+            "water_depth_m": telemetry.water_depth,
+            "altitude_m": telemetry.altitude,
+            "ctr_mode": telemetry.ctr_mode,
+            "health": telemetry.health,
+            "task_count": len(telemetry.task_list),
+            "task_list": [
+                {"task_id": t.task_id, "task_type": t.task_type, "status": t.status, "status_name": t.status_name}
+                for t in telemetry.task_list
+            ],
+        }
+
+    return jsonify({
+        "code": 200,
+        "mcp_connected": True,
+        "host": bridge.host,
+        "port": bridge.port,
+        "telemetry": telemetry_data,
+    })
+
+
+@app.route("/api/mcp/dispatch", methods=["POST"])
+def dispatch_mcp_task():
+    """下发指定 TaskIntent 或当前会话完成的任务到 ROS 2 控制系统"""
+    bridge = get_mcp_bridge()
+    if bridge is None or not bridge.is_healthy():
+        return jsonify({"code": 503, "msg": "MCP 桥接服务未初始化或连接断开"}), 503
+
+    data = request.get_json(silent=True) or {}
+    sid = data.get("session_id")
+    custom_intent = data.get("task_intent")
+
+    if custom_intent and isinstance(custom_intent, dict):
+        intent_to_send = custom_intent
+    elif sid:
+        mgr = get_or_create_manager(sid)
+        if mgr.phase != "done" or not mgr.final_result:
+            return jsonify({"code": 400, "msg": f"当前会话 {sid} 尚未处于 done 阶段，无可下发的任务"}), 400
+        intent_to_send = mgr.final_result
+    else:
+        return jsonify({"code": 400, "msg": "请提供 session_id 或自定义 task_intent"}), 400
+
+    try:
+        task_id = bridge.dispatch_intent(intent_to_send)
+        return jsonify({
+            "code": 200,
+            "msg": f"任务成功通过 MCP 下发至 ROS 2 (task_id=0x{task_id:X})",
+            "task_id": task_id,
+            "task_id_hex": f"0x{task_id:X}",
+        })
+    except Exception as exc:
+        logging.error("MCP 下发任务失败: %s", exc, exc_info=True)
+        return jsonify({"code": 500, "msg": f"MCP 下发失败: {exc}"}), 500
+
+
+@app.route("/api/mcp/task-manage", methods=["POST"])
+def mcp_task_manage():
+    """发送任务管理指令 (suspend, resume, delete, clear_block)"""
+    bridge = get_mcp_bridge()
+    if bridge is None or not bridge.is_healthy():
+        return jsonify({"code": 503, "msg": "MCP 桥接服务未连接"}), 503
+
+    data = request.get_json(silent=True) or {}
+    action_str = str(data.get("action", "")).lower()
+    target_task_id = data.get("task_id")
+
+    try:
+        if action_str == "suspend":
+            if not target_task_id:
+                return jsonify({"code": 400, "msg": "挂起任务需提供 task_id"}), 400
+            tid = bridge.suspend_task(int(target_task_id))
+        elif action_str == "resume":
+            if not target_task_id:
+                return jsonify({"code": 400, "msg": "恢复任务需提供 task_id"}), 400
+            tid = bridge.resume_task(int(target_task_id))
+        elif action_str == "delete":
+            if not target_task_id:
+                return jsonify({"code": 400, "msg": "删除任务需提供 task_id"}), 400
+            tid = bridge.delete_task(int(target_task_id))
+        elif action_str in ("clear_block", "clear"):
+            tid = bridge.emergency_clear_block()
+        else:
+            return jsonify({"code": 400, "msg": f"未知的管理动作: {action_str}"}), 400
+
+        return jsonify({
+            "code": 200,
+            "msg": f"任务管理指令 {action_str} 已下发",
+            "cmd_task_id": tid,
+        })
+    except Exception as exc:
+        logging.error("MCP 任务管理指令下发失败: %s", exc, exc_info=True)
+        return jsonify({"code": 500, "msg": f"管理指令失败: {exc}"}), 500
+
+
+@app.route("/api/mcp/ctrl-task", methods=["POST"])
+def mcp_ctrl_task():
+    """设备控制指令（开关灯、继电器等）"""
+    bridge = get_mcp_bridge()
+    if bridge is None or not bridge.is_healthy():
+        return jsonify({"code": 503, "msg": "MCP 桥接服务未连接"}), 503
+
+    data = request.get_json(silent=True) or {}
+    device_id = data.get("device_id")
+    value = data.get("value", 0.0)
+
+    if device_id is None:
+        return jsonify({"code": 400, "msg": "缺少 device_id 参数"}), 400
+
+    try:
+        tid = bridge.control_device(device_id=int(device_id), value=float(value))
+        return jsonify({
+            "code": 200,
+            "msg": f"设备控制指令已发送 (device={device_id}, value={value})",
+            "cmd_task_id": tid,
+        })
+    except Exception as exc:
+        logging.error("MCP 设备控制下发失败: %s", exc, exc_info=True)
+        return jsonify({"code": 500, "msg": f"控制下发失败: {exc}"}), 500
+

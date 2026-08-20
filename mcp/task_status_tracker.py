@@ -42,6 +42,7 @@ class ROVTelemetry:
     ctr_mode: int = 0
     health: int = 0
     task_list: List[TaskStatusItem] = field(default_factory=list)
+    raw_msg: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def water_depth(self) -> float:
@@ -241,4 +242,5 @@ class TaskStatusTracker:
             ctr_mode=int(msg.get("ctr_mode", 0)),
             health=int(msg.get("health", 0)),
             task_list=task_items,
+            raw_msg=msg,
         )

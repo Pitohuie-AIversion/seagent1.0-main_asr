@@ -1125,6 +1125,89 @@ Please describe your operational requirements directly, or ask the question you 
       if (uiState && uiState.actions) {
         applyInteractionState(uiState.actions, uiState.read_only);
       }
+
+      renderOptionChips(uiState);
+    }
+
+    function renderOptionChips(uiState) {
+      const oldBar = document.getElementById('seagent-option-chips-bar');
+      if (oldBar) oldBar.remove();
+
+      if (!uiState || !uiState.slots) return;
+
+      const slots = Array.isArray(uiState.slots) ? uiState.slots : [];
+      const missingSlotsWithAllowed = slots.filter(
+        s => (s.status === 'missing' || s.status === 'candidate') &&
+             Array.isArray(s.allowed_values) &&
+             s.allowed_values.length > 0
+      );
+
+      if (missingSlotsWithAllowed.length === 0) return;
+
+      const bar = document.createElement('div');
+      bar.id = 'seagent-option-chips-bar';
+      bar.className = 'option-chips-bar';
+      bar.style.cssText = 'display: flex; flex-direction: column; gap: 8px; margin: 10px 0 14px 48px; max-width: calc(100% - 60px);';
+
+      missingSlotsWithAllowed.forEach(slot => {
+        const groupDiv = document.createElement('div');
+        groupDiv.className = 'chip-group';
+        groupDiv.style.cssText = 'display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: rgba(0, 229, 255, 0.04); border: 1px dashed rgba(0, 229, 255, 0.2); border-radius: 8px; padding: 6px 12px;';
+
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'chip-group-label';
+        labelSpan.style.cssText = 'font-size: 0.8rem; color: #80d8ff; font-weight: 600; white-space: nowrap;';
+        const labelText = typeof slot.label === 'string' ? slot.label : (slot.label?.zh || slot.key);
+        labelSpan.textContent = `💡 ${labelText}：`;
+        groupDiv.appendChild(labelSpan);
+
+        slot.allowed_values.forEach(val => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'option-chip-btn';
+          btn.style.cssText = `
+            background: rgba(0, 229, 255, 0.1);
+            border: 1px solid rgba(0, 229, 255, 0.35);
+            color: #00e5ff;
+            border-radius: 14px;
+            padding: 3px 12px;
+            font-size: 0.82rem;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            font-weight: 500;
+            outline: none;
+          `;
+          btn.textContent = val;
+
+          btn.addEventListener('mouseover', () => {
+            btn.style.background = 'rgba(0, 229, 255, 0.28)';
+            btn.style.borderColor = '#00f0ff';
+            btn.style.boxShadow = '0 0 12px rgba(0, 240, 255, 0.45)';
+            btn.style.transform = 'translateY(-1px)';
+          });
+
+          btn.addEventListener('mouseout', () => {
+            btn.style.background = 'rgba(0, 229, 255, 0.1)';
+            btn.style.borderColor = 'rgba(0, 229, 255, 0.35)';
+            btn.style.boxShadow = 'none';
+            btn.style.transform = 'translateY(0)';
+          });
+
+          btn.addEventListener('click', () => {
+            if (!isSending) {
+              messageInput.value = val;
+              handleSend('text');
+            }
+          });
+
+          groupDiv.appendChild(btn);
+        });
+
+        bar.appendChild(groupDiv);
+      });
+
+      messageContainer.appendChild(bar);
+      messageContainer.scrollTop = messageContainer.scrollHeight;
     }
 
     async function updateSimulatedTime(isInit = false) {

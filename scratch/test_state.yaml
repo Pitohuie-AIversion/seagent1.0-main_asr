@@ -1,0 +1,16 @@
+store_version: 24
+robots:
+  WROV-250-001:
+    version: 16
+    status: online
+    water_depth: 312.4
+    altitude: 2.5
+    ctr_mode: 4
+    updated_at: '2026-08-20T18:14:49.459083+08:00'
+    battery_level: 94.5
+  LROV-150-001:
+    version: 8
+    status: online
+    water_depth: 85.0
+    battery_level: 88.0
+    updated_at: '2026-08-20T18:14:49.477696+08:00'

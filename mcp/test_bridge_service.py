@@ -1,0 +1,163 @@
+"""
+test_bridge_service.py
+========================
+针对 SEAgentMCPBridgeService 的自动化测试套件
+
+测试场景：
+  Q1: 服务启动与健康状态校验
+  Q2: 自动任务下发（TaskIntent v2 → RosbridgeClient → SysTaskCmd）
+  Q3: 任务管理指令传递（suspend/resume/delete/clear_block）
+  Q4: 自动遥测同步（SysStatus 遥测数据落盘至 RobotStateInfo）
+  Q5: 任务生命周期追踪（等待任务推演至 FINISH）
+  Q6: 完整端到端：下发 → 执行中 → 成功完成闭环
+"""
+
+import time
+import pytest
+import sys
+from pathlib import Path
+
+MCP_DIR = Path(__file__).resolve().parent
+SEAGENT_ROOT = MCP_DIR.parent
+sys.path.insert(0, str(MCP_DIR))
+sys.path.insert(0, str(SEAGENT_ROOT))
+
+from bridge_service import SEAgentMCPBridgeService
+from mock_rosbridge_server import MockRosbridgeServer, received_publishes, active_tasks
+from src.state_info import RobotStateInfo
+
+PORT = 9095
+
+
+@pytest.fixture(scope="module")
+def rosbridge_server():
+    srv = MockRosbridgeServer(port=PORT)
+    srv.start()
+    time.sleep(0.3)
+    yield srv
+    srv.stop()
+
+
+@pytest.fixture(autouse=True)
+def clear_state(rosbridge_server):
+    received_publishes.clear()
+    active_tasks.clear()
+    yield
+
+
+@pytest.fixture
+def state_info(tmp_path):
+    state_file = tmp_path / "state.yaml"
+    state_file.write_text("store_version: 0\nrobots: {}\n", encoding="utf-8")
+    fleet_file = SEAGENT_ROOT / "config" / "robot_fleet.yaml"
+    return RobotStateInfo(state_file=state_file, fleet_file=fleet_file)
+
+
+@pytest.fixture
+def bridge(rosbridge_server, state_info):
+    service = SEAgentMCPBridgeService(
+        host="127.0.0.1", port=PORT, state_info=state_info, connect_timeout=3.0
+    )
+    service.start()
+    time.sleep(0.2)
+    yield service
+    service.stop()
+
+
+# ============================================================================
+# 测试用例
+# ============================================================================
+
+class TestBridgeService:
+
+    def test_Q1_service_start_and_healthy(self, bridge):
+        """[Q1] 服务应正确启动并进入 healthy 状态"""
+        assert bridge.is_healthy()
+
+    def test_Q2_dispatch_intent_success(self, bridge, rosbridge_server):
+        """[Q2] 自动下发 TaskIntent v2，Mock rosbridge 成功接收"""
+        intent = {
+            "schema_version": 2,
+            "task_type": "tree_valve_operation",
+            "priority": 15,
+            "location": {"oilfield": "流花11-1油田", "water_depth_m": 300.0},
+            "task": {"type": "tree_valve_operation", "details": {
+                "target": {"latitude": 20.815, "longitude": 115.735},
+                "speed_ms": 1.5,
+            }},
+        }
+        tid = bridge.dispatch_intent(intent)
+        time.sleep(0.2)
+
+        assert 0x80001 <= tid <= 0x8FFFF
+        pubs = rosbridge_server.get_received_publishes()
+        assert len(pubs) >= 1
+        cmd = pubs[-1]["payload"]
+        assert cmd["task_type"] == 4
+        assert cmd["pos_target"][0]["position"]["z"] == pytest.approx(-300.0)
+
+    def test_Q3_task_management_commands(self, bridge, rosbridge_server):
+        """[Q3] 任务管理指令下发（suspend, resume, delete, clear_block）"""
+        intent = {"schema_version": 2, "task_type": "underwater_move",
+                  "location": {"water_depth_m": 50.0}, "task": {"details": {"target": {"latitude": 20.0, "longitude": 115.0}}}}
+        tid = bridge.dispatch_intent(intent)
+        time.sleep(0.1)
+
+        bridge.suspend_task(tid)
+        time.sleep(0.1)
+        bridge.resume_task(tid)
+        time.sleep(0.1)
+        bridge.emergency_clear_block()
+        time.sleep(0.2)
+
+        cmds = rosbridge_server.get_received_publishes()
+        actions = [c["payload"]["params"][0] for c in cmds if c["payload"]["task_type"] == 0]
+        assert 0.0 in actions  # SUSPEND
+        assert 1.0 in actions  # RESUME
+        assert 7.0 in actions  # CLEAR_BLOCK
+
+    def test_Q4_telemetry_auto_synced_to_state_info(self, bridge, state_info):
+        """[Q4] 遥测数据应自动被推送到 SEAgent 的 RobotStateInfo"""
+        time.sleep(0.4)
+        snapshot = state_info.get_unit_state_snapshot("WROV-250-001")
+        assert snapshot is not None
+        assert snapshot["state"]["water_depth"] == pytest.approx(312.4)
+        assert snapshot["state"]["battery_level"] == pytest.approx(94.5)
+
+    def test_Q5_wait_for_task_finish(self, bridge):
+        """[Q5] 下发任务并等待任务在机器人侧推演至 FINISH"""
+        intent = {
+            "schema_version": 2, "task_type": "pipeline_inspection",
+            "location": {"water_depth_m": 80.0},
+            "task": {"details": {"target": {"latitude": 20.0, "longitude": 115.0}}}
+        }
+        tid = bridge.dispatch_intent(intent)
+
+        # 阻塞等待完成
+        final_item = bridge.wait_for_task_finish(tid, timeout=5.0)
+        assert final_item is not None
+        assert final_item.status == 5  # FINISH
+        assert final_item.status_name == "FINISH"
+
+    def test_Q6_full_e2e_dispatch_track_sync(self, bridge, state_info, rosbridge_server):
+        """[Q6] 完整闭环：下发意图 → 遥测同步 → 等待完成 → 数据隔离确证"""
+        # 1. 验证下发前 StateInfo 水深
+        time.sleep(0.2)
+        snap1 = state_info.get_unit_state_snapshot("WROV-250-001")
+        assert snap1["state"]["water_depth"] == pytest.approx(312.4)
+
+        # 2. 下发采油树阀门任务（规划水深 300m）
+        intent = {
+            "schema_version": 2, "task_type": "tree_valve_operation",
+            "location": {"water_depth_m": 300.0},
+            "task": {"details": {"target": {"latitude": 20.815, "longitude": 115.735}}}
+        }
+        tid = bridge.dispatch_intent(intent)
+
+        # 3. 等待机器人侧执行完成
+        item = bridge.wait_for_task_finish(tid, timeout=5.0)
+        assert item is not None and item.is_finished()
+
+        # 4. 验证 StateInfo 中的水深依然是遥测物理深度 (312.4m)，未被 300m 规划值篡改
+        snap2 = state_info.get_unit_state_snapshot("WROV-250-001")
+        assert snap2["state"]["water_depth"] == pytest.approx(312.4)

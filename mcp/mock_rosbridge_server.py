@@ -160,6 +160,13 @@ async def handle_client(websocket):
                 ack = {"op": "ack", "topic": topic, "status": "ok"}
                 await websocket.send(json.dumps(ack))
 
+            else:
+                # 其它话题（如 /vision/keypoints）：若被订阅，回传给客户端
+                if topic in subscriptions:
+                    await websocket.send(json.dumps({
+                        "op": "publish", "topic": topic, "msg": payload
+                    }))
+
         # ---- call_service ----------------------------------------------
         elif op == "call_service":
             await websocket.send(json.dumps({
@@ -172,23 +179,29 @@ async def _handle_task_manage(action: int, params: list):
     target_id = int(params[1]) if len(params) > 1 else None
     if action == 0 and target_id in active_tasks:    # SUSPEND
         active_tasks[target_id]["status"] = 6        # PAUSE
+        _pending_status_steps.pop(target_id, None)
     elif action == 1 and target_id in active_tasks:  # RESUME
         active_tasks[target_id]["status"] = 3        # ONGOING
+        _pending_status_steps[target_id] = [5]       # 恢复后推进至 FINISH
     elif action == 2:                                 # SUSPEND_ALL
+        _pending_status_steps.clear()
         for t in active_tasks.values():
             t["status"] = 6
     elif action == 3:                                 # RESUME_ALL
-        for t in active_tasks.values():
+        for tid, t in active_tasks.items():
             if t["status"] == 6:
                 t["status"] = 3
+                _pending_status_steps[tid] = [5]
     elif action == 4 and target_id in active_tasks:  # DELETE
         active_tasks.pop(target_id, None)
+        _pending_status_steps.pop(target_id, None)
     elif action == 5:                                 # DELETE_ALL
         active_tasks.clear()
+        _pending_status_steps.clear()
     elif action == 7:                                 # CLEAR_BLOCK
+        _pending_status_steps.clear()
         for t in active_tasks.values():
-            if t["status"] == 7:
-                t["status"] = 0  # 重置为 READY
+            t["status"] = 0  # 重置为 READY
 
 
 async def _advance_task_status(task_id, websocket, subscriptions):
