@@ -104,6 +104,15 @@ def _compute_read_only(phase: str, dialogue_mode: str = "task_collection") -> bo
     return phase in ("done", "rejected")
 
 
+def _compute_workflow_phase(phase: str) -> str:
+    """Return the user-facing workflow phase, separate from constraint status."""
+    if phase in ("blocked_soft", "blocked_hard"):
+        return "validating"
+    if phase in ("collecting", "confirming", "done", "rejected"):
+        return phase
+    return "collecting"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # slot 合并
 # ─────────────────────────────────────────────────────────────────────────────
@@ -553,6 +562,7 @@ def _build_frontend_ui_state_locked(manager: "DialogueManager") -> dict:
             "dialogue_mode": dialogue_mode,
             "mode": mode,
             "phase": phase,
+            "workflow_phase": _compute_workflow_phase(phase),
             "task_type_key": task_type_key,
             "task_id": task_id,
             "task_id_preview": task_id_preview,
@@ -571,6 +581,7 @@ def _build_frontend_ui_state_locked(manager: "DialogueManager") -> dict:
             "dialogue_mode": "task_collection",
             "mode": "normal",
             "phase": "collecting",
+            "workflow_phase": "collecting",
             "task_type_key": None,
             "task_id": None,
             "task_id_preview": None,

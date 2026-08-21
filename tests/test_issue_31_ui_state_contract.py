@@ -167,6 +167,29 @@ class TestUIStateContract(unittest.TestCase):
         self.assertTrue(ui["actions"]["can_send"])
         self.assertFalse(ui["actions"]["can_modify"])
 
+    def test_workflow_phase_separates_blocking_status_from_warnings(self):
+        """前端展示阶段不应把软警告/硬阻断当作流程阶段。"""
+        for phase in ("blocked_soft", "blocked_hard"):
+            with self.subTest(phase=phase):
+                mgr = make_mock_manager(
+                    phase=phase,
+                    validation_result=ValidationResult(
+                        overall_status=phase,
+                        validated_at="2026-08-06T20:00:00Z",
+                        task_version=1,
+                        validation_version=1,
+                        validation_fingerprint=f"fp_{phase}",
+                        state_snapshot=None,
+                        violations=[],
+                    ),
+                )
+
+                ui = build_frontend_ui_state(mgr)
+
+                self.assertEqual(ui["phase"], phase)
+                self.assertEqual(ui["workflow_phase"], "validating")
+                self.assertEqual(ui["constraint_state"]["overall_status"], phase)
+
     # P2-3 修复验证: 槽位 schema_type 和 canonical value_type 区分
     def test_slot_merge_schema_type_and_value_type(self):
         slot_snap = {

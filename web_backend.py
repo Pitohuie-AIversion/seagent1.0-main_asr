@@ -110,13 +110,13 @@ def print_status(manager: DialogueManager):
 
     phase_labels = {
         "collecting":   "收集中",
-        "blocked_hard": "⛔ Hard违规待修复",
-        "blocked_soft": "⚠️  Soft警告待确认",
+        "validating":   "约束校验中",
         "confirming":   "待用户确认",
         "done":         "✅ 已完成",
         "rejected":     "❌ 已拒绝",
     }
-    phase_str = phase_labels.get(status["phase"], status["phase"])
+    phase_value = status.get("workflow_phase") or status["phase"]
+    phase_str = phase_labels.get(phase_value, phase_value)
     mode_str  = "🚨 紧急模式" if status["mode"] == "emergency" else "普通模式"
 
     print()

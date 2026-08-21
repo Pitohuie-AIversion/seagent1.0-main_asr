@@ -62,7 +62,7 @@
         setBtn: "设置",
         simtimeHint: "点击设置可自定义基准时间",
         curtask: "当前任务",
-        statusTitle: "阶段与警告",
+        statusTitle: "阶段",
         collected: "已收集字段",
         missing: "缺失字段",
         finaljson: "最终任务JSON",
@@ -161,7 +161,7 @@
         setBtn: "Set",
         simtimeHint: "Click Set to customize baseline time",
         curtask: "Current Task",
-        statusTitle: "Phase & Warnings",
+        statusTitle: "Phase",
         collected: "Collected Fields",
         missing: "Missing Fields",
         finaljson: "Final Task JSON",
@@ -985,11 +985,11 @@ Please describe your operational requirements directly, or ask the question you 
           }
         }
 
-        // 阶段 badge + 约束状态（单独展示在 阶段与警告 区域）
-        const phase = uiState.phase;
+        // 阶段 badge + 约束状态（阶段只展示流程，警告只来自 constraint_state）
+        const phase = uiState.workflow_phase || uiState.phase;
         const taskPhaseLabels = currentLang === 'zh'
-          ? { collecting: '任务收集', confirming: '待确认', blocked_soft: '软警告', blocked_hard: '硬阻断', done: '已完成', rejected: '已拒绝' }
-          : { collecting: 'Task collection', confirming: 'Confirming', blocked_soft: 'Soft warning', blocked_hard: 'Hard blocked', done: 'Done', rejected: 'Rejected' };
+          ? { collecting: '任务收集', validating: '约束校验', confirming: '待确认', done: '已完成', rejected: '已拒绝' }
+          : { collecting: 'Task collection', validating: 'Constraint check', confirming: 'Confirming', done: 'Done', rejected: 'Rejected' };
         let phaseLabel = taskPhaseLabels[phase] || phase || (currentLang === 'zh' ? '暂无' : 'None');
         if (uiState.dialogue_mode === 'knowledge_qa') phaseLabel = currentLang === 'zh' ? '知识问答' : 'Knowledge Q&A';
         if (uiState.dialogue_mode === 'emergency_intervention' || uiState.mode === 'emergency') phaseLabel = currentLang === 'zh' ? '紧急模式' : 'Emergency';

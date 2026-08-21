@@ -1,4 +1,4 @@
-store_version: 150
+store_version: 151
 robots:
   CRAWLER-1600-001:
     water_current_velocity: 1.0
@@ -78,7 +78,7 @@ robots:
     obstacle_density: low
     mothership_support: strong
     confidence: 0.9
-    overall_status: available
+    overall_status: unavailable
     survival_status: normal
     thruster_status: normal
     depth_keeping_status: normal
@@ -88,11 +88,8 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    version: 62
-    updated_at: '2026-06-30T17:38:00.043508+08:00'
-    status: available
-    current_velocity: 0.1
-    turbidity: 1.0
+    version: 63
+    updated_at: '2026-06-30T17:38:00.043602+08:00'
   LROV-150-002:
     water_current_velocity: 1.0
     water_turbidity: 8.0
@@ -110,7 +107,7 @@ robots:
     acoustic_comms_status: normal
     tether_connection_status: normal
     version: 0
-    updated_at: '2026-04-19T13:55:00+08:00'
+    updated_at: '2026-08-21T11:55:00+08:00'
   OBSROV-75-001:
     water_current_velocity: 0.2
     water_turbidity: 3.0
@@ -129,8 +126,6 @@ robots:
     tether_connection_status: normal
     version: 48
     updated_at: '2026-06-30T17:38:03.076962+08:00'
-    current_velocity: 0.2
-    turbidity: 3
   AUV-324cc-001:
     water_current_velocity: 1.0
     water_turbidity: 8.0

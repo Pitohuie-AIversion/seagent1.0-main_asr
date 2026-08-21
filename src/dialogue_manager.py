@@ -6687,6 +6687,7 @@ class DialogueManager:
 
         return {
             "phase": self.phase,
+            "workflow_phase": "validating" if self.phase in ("blocked_soft", "blocked_hard") else self.phase,
             "mode": self.mode,
             "dialogue_mode": self.dialogue_mode,
             "last_mode_transition": copy.deepcopy(self.last_mode_transition),
