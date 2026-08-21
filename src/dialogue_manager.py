@@ -1427,9 +1427,6 @@ class DialogueManager:
         task_type_key = self.task_state.get("task_type_key")
         cand_state = copy.deepcopy(self.task_state)
         cand_built = copy.deepcopy(self._last_built_json)
-
-        # 运行时设备可用性重新校验 (Issue #12)
-        # 仅即时执行任务（1小时内）才在发布瞬间核验当前单机遥测时效与实时可用性。未来任务延后至执行前动态校验。
         is_task_now = self.is_start_time_near_now()
         unit_id = cand_state.get("equipment_unit_id") or cand_built.get("equipment_unit_id")
         if not unit_id and self.slot_store.slots.get("equipment_unit_id"):
@@ -1437,20 +1434,7 @@ class DialogueManager:
             if unit_slot and unit_slot.status == "valid":
                 unit_id = unit_slot.value
 
-        if unit_id and is_task_now:
-            runtime_res = self.kb.state_info.check_runtime_availability(str(unit_id))
-            if not runtime_res.get("available"):
-                # 遥测过期表示发布时无法确认当前就绪性，不是任务本身触发了
-                # 硬约束。保持 confirming 并拒绝本次发布，等遥测刷新后可直接重试。
-                # 离线、忙碌、状态缺失/损坏等真实不可用性仍按硬阻断处理。
-                if runtime_res.get("reason_code") != "STATE_EXPIRED":
-                    self._transition_phase("blocked_hard", reason="runtime_equipment_unavailable")
-                reply = runtime_res.get("message") or f"无法发布任务：机器人 {unit_id} 当前不可用。"
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
-
-        # 最终约束全量检查
+        # 最终约束全量检查（包含 C020 设备总体状态与 C019 遥测新鲜度核验）
         val_res = self._refresh_validation(purpose="publish")
         all_violations = val_res.violations
         has_hard = self.validator.has_hard_violations(all_violations) or val_res.overall_status == "validation_error"
@@ -6057,7 +6041,7 @@ class DialogueManager:
                 for cid in resolved_ids:
                     self._hard_refusal_counts.pop(cid, None)
 
-                if current_soft:
+                if current_soft and purpose in ("preview", "publish"):
                     self._transition_phase("blocked_soft", reason="hard_downgraded_to_soft")
                     self._blocking_violations = current_soft
                     return {
@@ -6089,14 +6073,17 @@ class DialogueManager:
                 }
 
             if current_soft:
-                self._transition_phase("blocked_soft", reason="soft_warning_detected")
-                self._blocking_violations = current_soft
-                return {
-                    "type": "soft",
-                    "violations": current_soft,
-                    "hard_refusal_counts": {},
-                    "kb_alternatives": self._get_kb_alternatives_for_violations(current_soft),
-                }
+                # 统一规则：所有的软警告都在任务字段收集完毕进行统一检查（purpose in ("preview", "publish") 或 confirming 阶段）。
+                # 在字段收集阶段（collecting 且 purpose == "interactive"），软警告不中断槽位收集，只有硬约束可以在收集过程中即时触发阻断。
+                if self.phase != "collecting" or purpose in ("preview", "publish"):
+                    self._transition_phase("blocked_soft", reason="soft_warning_detected")
+                    self._blocking_violations = current_soft
+                    return {
+                        "type": "soft",
+                        "violations": current_soft,
+                        "hard_refusal_counts": {},
+                        "kb_alternatives": self._get_kb_alternatives_for_violations(current_soft),
+                    }
 
         res = {"type": "none", "violations": [], "hard_refusal_counts": {}}
         if current_blockers:

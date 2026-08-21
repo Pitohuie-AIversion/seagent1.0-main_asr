@@ -145,9 +145,9 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
         from src.intent_router import IntentRouteResult
         task_state = {
             "task_type_key": "pipeline_inspection",
-            "task_type": "管道巡检",
-            "start_time": "2026-08-14 17:30:00",
-            "end_time": "2026-08-14 19:00:00",
+            "task_type": "管缆巡检",
+            "start_time": "2026-08-14T17:30:00",
+            "end_time": "2026-08-14T19:00:00",
             "start_point": {"lat": 19.8, "lon": 113.0},
             "end_point": {"lat": 20.0, "lon": 113.0},
             "cable_type": "海底油气管道",
@@ -155,15 +155,18 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
             "equipment_family": "light_work_class_rov",
             "equipment_type": "轻型工作级深海机器人 150HP",
             "equipment_unit_id": "LROV-150-001",
-            "payload": ["高清水下摄像机"],
+            "payload": ["激光标尺"],
             "support_vessel": "海洋石油 681",
             "oilfield_name": "流花11-1油田",
         }
         schema = self.dm.builder.get_schema("pipeline_inspection", "normal")
         self.dm.slot_store.init_task_slots(schema)
+        schema_map = {f["key"]: f for f in schema}
         for k, v in task_state.items():
             from src.slot_store import Slot
-            self.dm.slot_store.slots[k] = Slot(k, value=v, status="valid")
+            vtype = schema_map.get(k, {}).get("type", "string")
+            self.dm.slot_store.slots[k] = Slot(k, value=v, raw_value=v, status="valid", value_type=vtype)
+        self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", raw_value="pipeline_inspection", status="valid", value_type="string")
         self.dm.task_state = self.dm.slot_store.get_task_state()
 
         mock_snapshot = {
