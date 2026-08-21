@@ -105,13 +105,18 @@ class RobotStateInfo:
                 )
 
             next_state = copy.deepcopy(current_state)
-            next_state.update(
-                {
-                    key: value
-                    for key, value in params.items()
-                    if key not in _SYSTEM_OWNED_FIELDS
-                }
-            )
+            for key, value in params.items():
+                if key in _SYSTEM_OWNED_FIELDS:
+                    continue
+                next_state[key] = value
+                if key == "current_velocity":
+                    next_state["water_current_velocity"] = value
+                elif key == "water_current_velocity":
+                    next_state["current_velocity"] = value
+                elif key == "turbidity":
+                    next_state["water_turbidity"] = value
+                elif key == "water_turbidity":
+                    next_state["turbidity"] = value
             updated_at = get_current_datetime().isoformat(timespec="microseconds")
             next_state["version"] = current_version + 1
             next_state["updated_at"] = updated_at
@@ -220,26 +225,19 @@ class RobotStateInfo:
         canonical_unit_id = str(matched_unit["unit_id"])
         status_ref = str(matched_unit.get("status_ref") or canonical_unit_id)
 
-        with self._snapshot_lock(exclusive=False):
-            snapshot = self._load_state_unlocked()
-            robots = snapshot.get("robots", {})
-            state = robots.get(status_ref)
-            if not isinstance(state, dict):
-                raise StateSnapshotValidationError(
-                    f"单机 {canonical_unit_id} (status_ref: {status_ref}) 的状态记录不存在或非字典"
-                )
-            current_version = state.get("version")
-            if current_version is None or not isinstance(current_version, int) or current_version < 0:
-                raise StateSnapshotValidationError(
-                    f"单机 {canonical_unit_id} 状态版本非法: {current_version}"
-                )
-            if current_version != expected_state_version:
-                raise StateVersionConflict(
-                    status_ref=status_ref,
-                    expected_version=expected_state_version,
-                    current_version=current_version,
-                )
-            yield
+        snap = self.get_unit_state_snapshot(canonical_unit_id)
+        current_version = snap.get("state_version")
+        if current_version is None or not isinstance(current_version, int) or current_version < 0:
+            raise StateSnapshotValidationError(
+                f"单机 {canonical_unit_id} 状态版本非法: {current_version}"
+            )
+        if current_version != expected_state_version:
+            raise StateVersionConflict(
+                status_ref=status_ref,
+                expected_version=expected_state_version,
+                current_version=current_version,
+            )
+        yield
 
     def resolve_status_ref(self, equipment_selector: str) -> Optional[str]:
         if not isinstance(equipment_selector, str) or not equipment_selector.strip():

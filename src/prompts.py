@@ -226,6 +226,68 @@ RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
 """
 
 
+def _format_state_snapshot_summary(state_snapshot: dict | None) -> str:
+    """格式化机器人及环境 State 动态遥测状态校核摘要。"""
+    if not state_snapshot or not isinstance(state_snapshot, dict):
+        return ""
+    state_data = state_snapshot.get("state")
+    if not state_data or not isinstance(state_data, dict):
+        return ""
+
+    unit_id = state_snapshot.get("unit_id") or state_snapshot.get("status_ref") or "未知设备"
+    overall = state_data.get("overall_status", "unknown")
+    is_online = state_data.get("is_online")
+    is_busy = state_data.get("is_busy")
+
+    online_str = "在线" if is_online is True else ("离线" if is_online is False else "未知")
+    busy_str = "忙碌" if is_busy is True else ("空闲" if is_busy is False else "未知")
+    overall_disp = f"{overall}（{online_str} / {busy_str}）"
+
+    vel = (
+        state_data.get("water_current_velocity")
+        if state_data.get("water_current_velocity") is not None
+        else state_data.get("current_velocity")
+    )
+    turb = (
+        state_data.get("water_turbidity")
+        if state_data.get("water_turbidity") is not None
+        else state_data.get("turbidity")
+    )
+    obstacle = state_data.get("obstacle_density")
+    support = state_data.get("mothership_support")
+
+    env_parts = []
+    if vel is not None:
+        env_parts.append(f"海流速度 {vel} m/s")
+    if turb is not None:
+        env_parts.append(f"水体浑浊度 {turb}")
+    if obstacle is not None:
+        env_parts.append(f"障碍物密度 {obstacle}")
+    if support is not None:
+        env_parts.append(f"母船支援 {support}")
+    env_str = " | ".join(env_parts) if env_parts else "暂无环境指标"
+
+    thruster = state_data.get("thruster_status", "normal")
+    depth_keeping = state_data.get("depth_keeping_status", "normal")
+    vision = state_data.get("vision_status", "normal")
+    sonar = state_data.get("sonar_status", "normal")
+
+    subsys_str = f"推进器 {thruster} | 定深能力 {depth_keeping} | 视觉系统 {vision} | 声呐系统 {sonar}"
+    updated_at = (
+        state_data.get("updated_at")
+        or state_snapshot.get("updated_at")
+        or "未知"
+    )
+
+    return (
+        "【📡 所选机器人及作业环境 State 动态状态校核摘要】\n"
+        f"  - 所选机器人编号：{unit_id}（总体状态: {overall_disp}）\n"
+        f"  - 实时水文环境遥测：{env_str}\n"
+        f"  - 关键子系统健康度：{subsys_str}\n"
+        f"  - 状态快照更新时间：{updated_at}"
+    )
+
+
 def build_responder_messages(
     task_state: dict,
     built_json: dict,                  # OutputBuilder 构建的已规范化 flat JSON
@@ -396,6 +458,13 @@ def build_responder_messages(
         if active_refusal_counts:
             max_refusal_count = max(active_refusal_counts)
             constraint_instruction += f"\n\n【拒绝记录】当前硬性违规已拒绝{max_refusal_count}次（上限2次后拒绝任务）"
+
+    state_snap = constraint_context.get("state_snapshot")
+    state_summary = _format_state_snapshot_summary(state_snap)
+    if state_summary:
+        constraint_instruction += (
+            "\n\n" + state_summary + "\n注意：在向用户展示任务确认信息、核验结果或说明阻断原因时，必须向用户清晰汇报上述机器人的实时 State 动态状态校核结论。"
+        )
 
     phase_label = {
         "collecting":   "信息收集中",

@@ -58,6 +58,11 @@ def _setup_dm(tmp_dir: Path, intent_suffix: str) -> DialogueManager:
                 "datetime": now_str,
                 "object": {},
             }.get(slot.value_type, "auto_populated")
+    import uuid
+    valid_uuid = str(uuid.uuid4())
+    dm.slot_store.slots["internal_id"].value = valid_uuid
+    dm.slot_store.slots["internal_id"].status = "valid"
+    dm.task_state["internal_id"] = valid_uuid
     dm.slot_store.slots["intent_id"].value = f"TI20260806{intent_suffix}"
     dm.slot_store.slots["intent_id"].status = "valid"
     dm.slot_store.slots["task_id"].value = f"PI-20260806-{intent_suffix}"

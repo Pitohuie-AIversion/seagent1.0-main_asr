@@ -521,10 +521,11 @@ class OutputBuilder:
 
         if ref in ("robot_full_names", "robot_variant_full_names"):
             family_selector = str(task_state.get("equipment_family") or "") if task_state else ""
+            class_selector = str(task_state.get("equipment_class") or "") if task_state else ""
             robots = self.kb.get_task_allowed_robot_variants(
                 task_type_key,
                 family_selector or None,
-                None,
+                class_selector or None,
             )
             domain = self.kb.get_feasible_robot_selection_domain(
                 task_type_key,
@@ -535,9 +536,15 @@ class OutputBuilder:
                 if family_selector
                 else None
             )
+            class_id = (
+                self.kb._resolve_class_key(class_selector)
+                if class_selector
+                else None
+            )
             feasible_variant_ids = {
                 variant["variant_id"]
                 for class_node in domain["classes"]
+                if not class_id or class_node["class_id"] == class_id
                 for family in class_node["families"]
                 if not family_id or family["family_id"] == family_id
                 for variant in family["variants"]
@@ -741,16 +748,23 @@ class OutputBuilder:
 
         if ref in ("robot_full_names", "robot_variant_full_names"):
             family_selector = ""
+            class_selector = ""
             if task_state:
                 family_selector = str(task_state.get("equipment_family") or "")
+                class_selector = str(task_state.get("equipment_class") or "")
             robots = self.kb.get_task_allowed_robot_variants(
                 task_type_key,
                 family_selector or None,
-                None,
+                class_selector or None,
             )
             family_id = (
                 self.kb.resolve_robot_family_id(family_selector, task_type_key)
                 if family_selector
+                else None
+            )
+            class_id = (
+                self.kb._resolve_class_key(class_selector)
+                if class_selector
                 else None
             )
             feasible_variant_ids = {
@@ -759,6 +773,7 @@ class OutputBuilder:
                     task_type_key,
                     task_state,
                 )["classes"]
+                if not class_id or class_node["class_id"] == class_id
                 for family in class_node["families"]
                 if not family_id or family["family_id"] == family_id
                 for variant in family["variants"]

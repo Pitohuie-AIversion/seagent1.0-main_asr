@@ -164,7 +164,7 @@ class BlockerPriorityTransitionsTest(unittest.TestCase):
         dm.task_state["equipment_class"] = "observation_rov"
         dm.task_state["equipment_family"] = "light_work_class_rov"
         dm.task_state["equipment_type"] = "轻型工作级深海机器人 150HP"
-        dm.task_state["equipment_unit_id"] = "LROV-150-001"
+        dm.task_state["equipment_unit_id"] = "LROV-150-002"
         dm.task_state["oilfield_entity_id"] = "liuhua_11_1"
         dm.task_state["oilfield_name"] = "流花11-1油田"
         dm.task_state["start_point"] = {"lat": 10.0, "lon": 10.0}

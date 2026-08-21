@@ -6100,9 +6100,11 @@ class DialogueManager:
     def _run_constraint_check(self, changed_fields: set[str], purpose: str = "interactive") -> dict:
         """执行约束检查，返回上下文"""
         if not changed_fields and self.phase not in ("blocked_hard", "blocked_soft"):
-            return {"type": "none", "violations": [], "hard_refusal_counts": {}}
+            state_snap = getattr(self.slot_store.validation_result, "state_snapshot", None)
+            return {"type": "none", "violations": [], "hard_refusal_counts": {}, "state_snapshot": state_snap}
 
         val_res = self._refresh_validation(purpose=purpose, changed_fields=changed_fields)
+        state_snap = val_res.state_snapshot
         new_violations = self._merge_oilfield_context_violations(val_res.violations)
 
         current_hard = [
@@ -6128,6 +6130,7 @@ class DialogueManager:
                     "type": "hard",
                     "violations": current_blockers,
                     "hard_refusal_counts": dict(self._hard_refusal_counts),
+                    "state_snapshot": state_snap,
                 }
 
             if current_soft:
@@ -6136,6 +6139,7 @@ class DialogueManager:
                     "type": "soft",
                     "violations": current_soft,
                     "hard_refusal_counts": {},
+                    "state_snapshot": state_snap,
                 }
 
             self._blocking_violations = []
@@ -6144,6 +6148,7 @@ class DialogueManager:
                 "type": "none",
                 "violations": [],
                 "hard_refusal_counts": {},
+                "state_snapshot": state_snap,
             }
 
         # 处理 hard 阻塞维持 / 降级为 soft / 解除
@@ -6165,6 +6170,7 @@ class DialogueManager:
                         "type": "hard_rejected",
                         "violations": current_blockers,
                         "hard_refusal_counts": dict(self._hard_refusal_counts),
+                        "state_snapshot": state_snap,
                     }
 
                 warn_ids = {
@@ -6176,6 +6182,7 @@ class DialogueManager:
                     "type": ctx_type,
                     "violations": current_blockers,
                     "hard_refusal_counts": dict(self._hard_refusal_counts),
+                    "state_snapshot": state_snap,
                 }
             else:
                 # 硬约束解除，清除计数
@@ -6190,6 +6197,7 @@ class DialogueManager:
                         "type": "soft",
                         "violations": current_soft,
                         "hard_refusal_counts": {},
+                        "state_snapshot": state_snap,
                     }
 
                 self._transition_phase("collecting", reason="hard_constraint_resolved")
@@ -6198,6 +6206,7 @@ class DialogueManager:
                     "type": "none",
                     "violations": [],
                     "hard_refusal_counts": {},
+                    "state_snapshot": state_snap,
                 }
 
         # collecting / confirming 状态下的新违规
@@ -6212,6 +6221,7 @@ class DialogueManager:
                     "type": "hard",
                     "violations": current_blockers,
                     "hard_refusal_counts": dict(self._hard_refusal_counts),
+                    "state_snapshot": state_snap,
                 }
 
             if current_soft:
@@ -6225,9 +6235,10 @@ class DialogueManager:
                         "violations": current_soft,
                         "hard_refusal_counts": {},
                         "kb_alternatives": self._get_kb_alternatives_for_violations(current_soft),
+                        "state_snapshot": state_snap,
                     }
 
-        res = {"type": "none", "violations": [], "hard_refusal_counts": {}}
+        res = {"type": "none", "violations": [], "hard_refusal_counts": {}, "state_snapshot": state_snap}
         if current_blockers:
             res["kb_alternatives"] = self._get_kb_alternatives_for_violations(current_blockers)
         return res

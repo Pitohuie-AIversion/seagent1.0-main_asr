@@ -47,9 +47,57 @@ PORT = int(os.environ.get("PORT", "8890"))
 CONFIG_DIR = Path(__file__).parent / "config"
 # ======================================================================
 
+def cleanup_port(port: int) -> None:
+    """清理指定 TCP 端口的占用进程（纯 Python /proc fallback 兼容无 fuser 环境）"""
+    if os.system(f"fuser -k {port}/tcp 2>/dev/null") == 0:
+        return
+
+    hex_port = f"{port:04X}"
+    inodes = set()
+    for net_file in ["/proc/net/tcp", "/proc/net/tcp6"]:
+        if not os.path.exists(net_file):
+            continue
+        try:
+            with open(net_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) > 9:
+                        local_addr = parts[1]
+                        state = parts[3]
+                        inode = parts[9]
+                        if local_addr.endswith(":" + hex_port) and state == "0A":
+                            inodes.add(inode)
+        except Exception:
+            pass
+
+    if not inodes:
+        return
+
+    import glob
+    import signal
+    current_pid = str(os.getpid())
+    for p in glob.glob("/proc/[0-9]*/fd/*"):
+        try:
+            link = os.readlink(p)
+            for inode in inodes:
+                if f"socket:[{inode}]" in link:
+                    pid_str = p.split("/")[2]
+                    if pid_str != current_pid:
+                        pid = int(pid_str)
+                        print(f"🧹 清理端口 {port} 占用进程 (PID: {pid})...")
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except OSError:
+                            pass
+        except Exception:
+            pass
+
+
+cleanup_port(PORT)
+
 if not (os.environ.get("OFFLINE_MOCK") == "1" or os.environ.get("SEAGENT_OFFLINE_MOCK") == "1"):
     os.system("pkill -f VLLM::EngineCore 2>/dev/null")
-    os.system(f"fuser -k {PORT}/tcp 2>/dev/null")
+
 
 
 def load_asr_service() -> ASRService:
