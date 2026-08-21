@@ -41,13 +41,13 @@ class TestIssue12DialogueCascade(unittest.TestCase):
         self.dm.slot_store.commit_transaction(new_slots, [])
         self.dm.task_state = self.dm.slot_store.get_task_state()
 
-    # ── Test 1: 缺 class 时返回 class 候选且不下钻 ─────────────────────────────
-    def test_01_missing_class_returns_class_candidates(self):
-        """1. 缺 class 时调用 list_robot_classes，不下钻调用 family/spec/unit。"""
+    # ── Test 1: 缺 family 时返回 capability 过滤后的 family 候选 ───────────────
+    def test_01_missing_family_returns_family_candidates(self):
+        """1. schema 不再收集 class；缺 family 时直接返回 capability 过滤后的 family 候选。"""
         self._init_task("pipeline_inspection")
 
         with patch.object(self.kb, "list_robot_classes", wraps=self.kb.list_robot_classes) as mock_classes, \
-             patch.object(self.kb, "list_robot_families", wraps=self.kb.list_robot_families) as mock_families, \
+             patch.object(self.kb, "get_task_allowed_robot_family_names", wraps=self.kb.get_task_allowed_robot_family_names) as mock_families, \
              patch.object(self.kb, "list_robot_specifications", wraps=self.kb.list_robot_specifications) as mock_specs, \
              patch.object(self.kb, "list_robot_units", wraps=self.kb.list_robot_units) as mock_units:
 
@@ -58,18 +58,19 @@ class TestIssue12DialogueCascade(unittest.TestCase):
                 ),
             )
 
-            cls_field = next((m for m in missing if m.get("key") == "equipment_class"), None)
-            self.assertIsNotNone(cls_field)
-            self.assertIn("allowed_values", cls_field)
-            self.assertTrue(len(cls_field["allowed_values"]) > 0)
-            mock_classes.assert_called()
-            mock_families.assert_not_called()
+            self.assertIsNone(next((m for m in missing if m.get("key") == "equipment_class"), None))
+            fam_field = next((m for m in missing if m.get("key") == "equipment_family"), None)
+            self.assertIsNotNone(fam_field)
+            self.assertIn("allowed_values", fam_field)
+            self.assertTrue(len(fam_field["allowed_values"]) > 0)
+            mock_classes.assert_not_called()
+            mock_families.assert_called()
             mock_specs.assert_not_called()
             mock_units.assert_not_called()
 
-    # ── Test 2: 已有 class 时返回 family 候选 ──────────────────────────────────
+    # ── Test 2: 已有 class 时仍返回 capability 全域 family 候选 ────────────────
     def test_02_valid_class_returns_family_candidates(self):
-        """2. 已有 class 时调用 list_robot_families()，候选全部属于当前 class，不返回其他 class 候选。"""
+        """2. equipment_class 是派生元数据，不再缩窄可横向切换的 family 候选。"""
         self._init_task("pipeline_inspection")
         self._apply_updates({"equipment_class": "observation_rov"}, task_type_key="pipeline_inspection")
 
@@ -82,7 +83,10 @@ class TestIssue12DialogueCascade(unittest.TestCase):
 
         fam_field = next((m for m in missing if m.get("key") == "equipment_family"), None)
         self.assertIsNotNone(fam_field)
-        self.assertEqual(set(fam_field["allowed_values"]), {"轻型工作级深海机器人", "观察级深海机器人"})
+        self.assertEqual(
+            set(fam_field["allowed_values"]),
+            {"轻型工作级深海机器人", "观察级深海机器人", "水下无人自主航行器"},
+        )
 
     # ── Test 3: AUV 输入 '324CC' 转 4 级 canonical equipment_type ─────────────────
     def test_03_auv_returns_cc_specification(self):
@@ -220,22 +224,24 @@ class TestIssue12DialogueCascade(unittest.TestCase):
 
     # ── Test 11 (P1-1): 切换父级 class 绕过/不使用旧 family 缓存 ─────────────────
     def test_11_parent_class_change_bypasses_stale_cache(self):
-        """11 (P1-1). 切换 equipment_class 时，动态候选解析立即返回对应新类别的 family，不使用旧缓存。"""
+        """11 (P1-1). 切换 equipment_class 不再改变 capability 全域 family 候选。"""
         self._init_task("pipeline_inspection")
         self._apply_updates({"equipment_class": "auv"}, task_type_key="pipeline_inspection")
 
         fams_auv = self.dm.builder.resolve_allowed_values(
             {"allowed_values_ref": "robot_family_full_names"}, "pipeline_inspection", self.dm.task_state
         )
-        self.assertEqual(fams_auv, ["水下无人自主航行器"])
+        self.assertEqual(
+            set(fams_auv),
+            {"轻型工作级深海机器人", "观察级深海机器人", "水下无人自主航行器"},
+        )
 
         # 切换 class 到 observation_rov
         self._apply_updates({"equipment_class": "observation_rov"}, task_type_key="pipeline_inspection")
         fams_obs = self.dm.builder.resolve_allowed_values(
             {"allowed_values_ref": "robot_family_full_names"}, "pipeline_inspection", self.dm.task_state
         )
-        self.assertIn("观察级深海机器人", fams_obs)
-        self.assertNotIn("水下无人自主航行器", fams_obs)
+        self.assertEqual(set(fams_obs), set(fams_auv))
 
     # ── Test 12 (P1-5): 非领域异常不被候选解析吞掉 ─────────────────────────────
     def test_12_non_domain_exception_is_not_swallowed(self):
@@ -261,11 +267,19 @@ class TestIssue12DialogueCascade(unittest.TestCase):
 
     # ── Test 14 (P1-1): get_required -> _resolve_candidate_catalog 不吞 TypeError ──
     def test_14_candidate_catalog_resolution_does_not_swallow_type_error(self):
-        """14 (P1-1). get_required() 经过 _resolve_candidate_catalog() 时不吞掉 TypeError 等程序异常。"""
+        """14 (P1-1). allowed values 解析时不吞掉 TypeError 等程序异常。"""
         self._init_task("pipeline_inspection")
-        with patch.object(self.kb, "list_robot_classes", side_effect=TypeError("Programming bug in catalog")):
+        with patch.object(self.kb, "get_task_allowed_robot_family_names", side_effect=TypeError("Programming bug in catalog")):
             with self.assertRaises(TypeError):
-                self.dm.builder.get_required("pipeline_inspection", task_state=self.dm.task_state)
+                self.dm.builder.resolve_allowed_values(
+                    {
+                        "key": "equipment_family",
+                        "type": "string",
+                        "allowed_values_ref": "robot_family_full_names",
+                    },
+                    "pipeline_inspection",
+                    self.dm.task_state,
+                )
 
     # ── Test 15 (P1-2): Prompts 明确按 equipment_type 追问 ────────────────────────
     def test_15_prompt_instructions_for_auv_and_non_auv_specifications(self):

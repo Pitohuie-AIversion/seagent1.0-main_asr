@@ -9,8 +9,8 @@
 #   display_name     — 模板中文名（仅供描述，不作为字段值）
 #   task_type_values — 本模板下合法的 task_type 字段值列表（可扩展）
 #                      用户输入的任务类型必须匹配其中之一
-#   allowed_robot_classes   — 本模板允许使用的机器人大类，值必须来自 robot_fleet.yaml 的 robot_classes key
-#   required_capabilities   — 本模板要求机器人族具备的工作类型能力，值必须能被 robot_families.capabilities 覆盖
+#   allowed_robot_classes   — 历史兼容字段；后端不再用它做任务设备硬约束
+#   required_capabilities   — 本模板要求机器人族具备的工作类型能力，是 robot_families 锚定的唯一约束来源
 #   output_schema    — 最终 flat JSON 的字段定义（normal / emergency 两套）
 #
 # field type 说明：
@@ -64,10 +64,6 @@ task_templates:
           label: "水深（米）"
           type: number
           exclusive_minimum: 0
-        - key: equipment_class
-          label: "机器人类别"
-          type: string
-          allowed_values_ref: "robot_category_labels"
         - key: equipment_family
           label: "作业机器人系列"
           type: string
@@ -154,10 +150,6 @@ task_templates:
           label: "水深（米）"
           type: number
           exclusive_minimum: 0
-        - key: equipment_class
-          label: "机器人类别"
-          type: string
-          allowed_values_ref: "robot_category_labels"
         - key: equipment_family
           label: "作业机器人系列"
           type: string
@@ -249,10 +241,6 @@ task_templates:
 #          label: "采油树类型"
 #          type: string
 #          allowed_values: ["立式", "卧式"]
-        - key: equipment_class
-          label: "机器人类别"
-          type: string
-          allowed_values_ref: "robot_category_labels"
         - key: equipment_family
           label: "作业机器人系列"
           type: string

@@ -449,6 +449,75 @@ class TestUIStateContract(unittest.TestCase):
         self.assertIn("source", cs)
         self.assertEqual(cs["source"], "validation_result")
 
+    def test_constraint_state_drops_runtime_snapshot_without_valid_unit(self):
+        val_result = ValidationResult(
+            overall_status="blocked_hard",
+            validated_at="2026-08-06T20:00:00Z",
+            task_version=10,
+            validation_version=4,
+            validation_fingerprint="fp_old_unit",
+            state_snapshot={"unit_id": "ROV-001", "status_ref": "ref_old", "state_version": 2},
+            violations=[Violation("C019", "硬阻断", "旧机器人状态异常", "hard")],
+            error=None,
+        )
+        slot_snap = {
+            "equipment_family": {"value": "天鹰座", "status": "valid", "version": 11},
+            "equipment_type": {"value": None, "status": "missing", "version": 11},
+            "equipment_unit_id": {"value": None, "status": "missing", "version": 11},
+        }
+        mgr = make_mock_manager(validation_result=val_result, slot_snapshot=slot_snap)
+
+        cs = _build_constraint_state(mgr)
+
+        self.assertEqual(cs["source"], "stale_validation_result")
+        self.assertEqual(cs["status"], "none")
+        self.assertEqual(cs["state_snapshot"], {})
+        self.assertEqual(cs["hard_violations"], [])
+
+    def test_constraint_state_drops_runtime_snapshot_for_different_unit(self):
+        val_result = ValidationResult(
+            overall_status="blocked_hard",
+            validated_at="2026-08-06T20:00:00Z",
+            task_version=10,
+            validation_version=4,
+            validation_fingerprint="fp_old_unit",
+            state_snapshot={"unit_id": "ROV-001", "status_ref": "ref_old", "state_version": 2},
+            violations=[Violation("C019", "硬阻断", "旧机器人状态异常", "hard")],
+            error=None,
+        )
+        slot_snap = {
+            "equipment_unit_id": {"value": "ROV-002", "status": "valid", "version": 11},
+        }
+        mgr = make_mock_manager(validation_result=val_result, slot_snapshot=slot_snap)
+
+        cs = _build_constraint_state(mgr)
+
+        self.assertEqual(cs["source"], "stale_validation_result")
+        self.assertEqual(cs["state_snapshot"], {})
+        self.assertEqual(cs["violations"], [])
+
+    def test_constraint_state_keeps_runtime_snapshot_for_current_unit(self):
+        val_result = ValidationResult(
+            overall_status="blocked_soft",
+            validated_at="2026-08-06T20:00:00Z",
+            task_version=10,
+            validation_version=4,
+            validation_fingerprint="fp_current_unit",
+            state_snapshot={"unit_id": "ROV-001", "status_ref": "ref_current", "state_version": 2},
+            violations=[Violation("C020", "软提示", "当前机器人提示", "soft")],
+            error=None,
+        )
+        slot_snap = {
+            "equipment_unit_id": {"value": "ROV-001", "status": "valid", "version": 11},
+        }
+        mgr = make_mock_manager(validation_result=val_result, slot_snapshot=slot_snap)
+
+        cs = _build_constraint_state(mgr)
+
+        self.assertEqual(cs["source"], "validation_result")
+        self.assertEqual(cs["state_snapshot"]["unit_id"], "ROV-001")
+        self.assertEqual(len(cs["soft_warnings"]), 1)
+
 
 class TestFlaskAPIIntegration(unittest.TestCase):
 

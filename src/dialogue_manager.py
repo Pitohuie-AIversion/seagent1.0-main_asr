@@ -807,8 +807,6 @@ class DialogueManager:
         for class_id, class_name in mentioned:
             supported_tasks: list[str] = []
             for task_key, template in templates.items():
-                if class_id not in (template.get("allowed_robot_classes") or []):
-                    continue
                 domain = self.kb.get_feasible_robot_selection_domain(task_key)
                 if any(node.get("class_id") == class_id for node in domain.get("classes", [])):
                     supported_tasks.append(template.get("display_name", task_key))
@@ -1883,7 +1881,11 @@ class DialogueManager:
         norm_v2_active = is_normalization_contract_v2_enabled()
         validate_normalization_runtime_flags(task_patch_v2_active, norm_v2_active)
 
-        new_slots, new_unresolved, expected_version = self.slot_store.snapshot()
+        new_slots, _previous_unresolved, expected_version = self.slot_store.snapshot()
+        # unresolved is turn-scoped diagnostic state.  Old parse/normalization
+        # failures must not be carried into unrelated later turns; durable
+        # per-field problems live on Slot.status/validation_error instead.
+        new_unresolved: list = []
 
         task_type_slot = new_slots.get("task_type_key")
         task_type_key = (
@@ -2274,6 +2276,19 @@ class DialogueManager:
                 if not isinstance(candidate, dict):
                     continue
                 candidate_key = str(candidate.get("canonical_key") or "")
+                if candidate_key == "equipment_class":
+                    # equipment_class is now derived compatibility metadata,
+                    # not a task_schema collection field.  Legacy extractor
+                    # candidates may be safely promoted only when the class
+                    # maps to exactly one capability-feasible family.
+                    projected = self._project_legacy_equipment_class_candidate(
+                        candidate,
+                        effective_task_type_key,
+                        transition_state,
+                    )
+                    if projected is not None:
+                        projected_candidates.append(projected)
+                    continue
                 if (
                     candidate_key in effective_schema_keys
                     or candidate_key in control_candidate_keys
@@ -2530,6 +2545,15 @@ class DialogueManager:
                 stage2_updates[k] = c_info
                 merged_updates_meta[k] = c_info
                 merged_updates[k] = v
+
+            turn_unresolved = self._filter_robot_selection_unresolved(
+                turn_unresolved,
+                stage2_updates,
+            )
+            new_unresolved = self._filter_robot_selection_unresolved(
+                new_unresolved,
+                stage2_updates,
+            )
 
             _has_conflict = any(s.status == "conflict" for s in new_slots.values())
             has_successful_mutation = any(m.get("field") == "payload" for m in list_mutations)
@@ -3062,6 +3086,90 @@ class DialogueManager:
                 return f"{model_reply}\n\n{deduped_suffix}"
             return model_reply.strip() if isinstance(model_reply, str) else model_reply
         return suffix if suffix else "已写入本轮通过验证的字段。"
+
+    @staticmethod
+    def _filter_robot_selection_unresolved(
+        unresolved_items: list,
+        accepted_updates: dict | None,
+    ) -> list:
+        """清理机器人选择迁移后的 unresolved 噪声。
+
+        equipment_class 已经是内部派生元数据，不再是 schema 采集字段；同一个
+        raw phrase 如果已被 family/type/unit 成功写入，下游层级对同 raw 的失败
+        fan-out 也不应继续展示给用户。
+        """
+        if not unresolved_items:
+            return []
+
+        accepted_raws: set[str] = set()
+        for key, info in (accepted_updates or {}).items():
+            if key not in {
+                "equipment_family",
+                "equipment_type",
+                "equipment_unit_id",
+                "equipment_name",
+            }:
+                continue
+            raw = info.get("raw_value") if isinstance(info, dict) else None
+            value = info.get("value") if isinstance(info, dict) else info
+            for item in (raw, value):
+                if item is not None and str(item).strip():
+                    accepted_raws.add(str(item).strip())
+
+        filtered: list = []
+        for item in unresolved_items:
+            text = str(item)
+            if "equipment_class" in text:
+                continue
+            match = re.search(
+                r"(equipment_family|equipment_type|equipment_unit_id|equipment_name) 表达“([^”]+)”",
+                text,
+            )
+            if match and match.group(2).strip() in accepted_raws:
+                continue
+            if item not in filtered:
+                filtered.append(item)
+        return filtered
+
+    def _project_legacy_equipment_class_candidate(
+        self,
+        candidate: dict,
+        task_type_key: str | None,
+        task_state: dict | None,
+    ) -> dict | None:
+        """Map a legacy equipment_class candidate to family when unambiguous."""
+        raw_value = candidate.get("raw_value", candidate.get("normalized_value"))
+        normalized_value = candidate.get("normalized_value", raw_value)
+        class_id = self.kb._resolve_class_key(str(normalized_value or ""))
+        if not class_id and raw_value is not None:
+            class_id = self.kb._resolve_class_key(str(raw_value))
+        if not class_id or not task_type_key:
+            return None
+        try:
+            domain = self.kb.get_feasible_robot_selection_domain(
+                task_type_key,
+                task_state,
+            )
+        except Exception:
+            return None
+        class_node = next(
+            (
+                item
+                for item in domain.get("classes", [])
+                if item.get("class_id") == class_id
+            ),
+            None,
+        )
+        families = class_node.get("families", []) if class_node else []
+        if len(families) != 1:
+            return None
+        family = families[0]
+        projected = dict(candidate)
+        projected["canonical_key"] = "equipment_family"
+        projected["normalized_value"] = family.get("full_name") or family.get("family_id")
+        projected.setdefault("raw_value", raw_value)
+        projected["resolution_method"] = "legacy_class_to_single_family"
+        return projected
 
     def _get_committed_update_display_values(self, accepted_updates: dict) -> dict:
         """从领域配置生成写入回执的展示值，不改变 SlotStore 标准值。"""
@@ -4462,17 +4570,37 @@ class DialogueManager:
                         resolved_unit = self.kb.resolve_robot_unit(val_str, None)
                         resolved_family = self.kb.resolve_robot_family(val_str, None) if not resolved_unit else None
                         cls_id = None
+                        family_id = None
                         if resolved_unit:
-                            cls_id = (resolved_unit.get("robot") or {}).get("robot_class")
+                            robot = resolved_unit.get("robot") or {}
+                            cls_id = robot.get("robot_class")
+                            family_id = robot.get("family_id")
                         elif resolved_family:
                             cls_id = resolved_family.get("robot_class")
+                            family_id = resolved_family.get("family_id")
                         elif key == "equipment_class":
                             cls_id = self.kb._resolve_class_key(val_str)
 
-                        if cls_id:
+                        if cls_id or family_id:
+                            families_cfg = self.kb.robot_fleet.get("robot_families", {}) or {}
                             matched = [
-                                t_k for t_k, t_c in self.kb.task_schemas.get("task_templates", {}).items()
-                                if cls_id in t_c.get("allowed_robot_classes", [])
+                                t_k
+                                for t_k, t_c in self.kb.task_schemas.get("task_templates", {}).items()
+                                if any(
+                                    set(t_c.get("required_capabilities", []) or []).issubset(
+                                        set(f_cfg.get("capabilities", []) or [])
+                                    )
+                                    for f_id, f_cfg in families_cfg.items()
+                                    if isinstance(f_cfg, dict)
+                                    and (
+                                        (family_id and f_id == family_id)
+                                        or (
+                                            not family_id
+                                            and cls_id
+                                            and f_cfg.get("robot_class") == cls_id
+                                        )
+                                    )
+                                )
                             ]
                             if len(matched) == 1:
                                 inferred_tt_key = matched[0]
@@ -4960,6 +5088,13 @@ class DialogueManager:
                 changed_parents,
                 preserve_keys=equipment_updates.keys(),
             )
+            unit_slot = sandbox_slots.get("equipment_unit_id")
+            if not (
+                unit_slot
+                and unit_slot.status == "valid"
+                and unit_slot.value not in (None, "")
+            ):
+                self.slot_store.validation_result = None
 
         # 事务生效
         for k in EQUIPMENT_KEYS:
@@ -4973,10 +5108,17 @@ class DialogueManager:
             if eq_cls_slot and eq_cls_slot.status == "valid" and eq_cls_slot.value:
                 cls_id = self.kb._resolve_class_key(str(eq_cls_slot.value))
                 if cls_id:
+                    families_cfg = self.kb.robot_fleet.get("robot_families", {}) or {}
                     matched_templates = [
                         t_key
                         for t_key, t_cfg in self.kb.task_schemas.get("task_templates", {}).items()
-                        if cls_id in t_cfg.get("allowed_robot_classes", [])
+                        if any(
+                            set(t_cfg.get("required_capabilities", []) or []).issubset(
+                                set(f_cfg.get("capabilities", []) or [])
+                            )
+                            for f_cfg in families_cfg.values()
+                            if isinstance(f_cfg, dict) and f_cfg.get("robot_class") == cls_id
+                        )
                     ]
                     if len(matched_templates) == 1:
                         inferred_key = matched_templates[0]

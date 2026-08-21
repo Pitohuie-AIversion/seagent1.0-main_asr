@@ -247,6 +247,78 @@ def _serialize_violation(v: Any) -> dict[str, Any] | None:
         return None
 
 
+_ROBOT_STATE_SELECTOR_KEYS = {
+    "equipment_family",
+    "equipment_type",
+    "equipment_unit_id",
+    "equipment_name",
+}
+
+
+def _valid_slot_value(slot_snapshot: dict[str, Any], key: str) -> Any:
+    slot_data = slot_snapshot.get(key)
+    if not isinstance(slot_data, dict):
+        return None
+    if slot_data.get("status") != "valid":
+        return None
+    value = slot_data.get("value")
+    return value if value not in (None, "") else None
+
+
+def _resolve_current_status_ref(manager: "DialogueManager", unit_id: str) -> str | None:
+    try:
+        state_info = getattr(getattr(manager, "kb", None), "state_info", None)
+        resolver = getattr(state_info, "resolve_status_ref", None)
+        if callable(resolver):
+            resolved = resolver(unit_id)
+            return str(resolved) if resolved not in (None, "") else None
+    except Exception:
+        return None
+    return None
+
+
+def _state_snapshot_matches_current_unit(
+    manager: "DialogueManager",
+    state_snapshot: Any,
+) -> bool:
+    """Runtime state may only be exposed for the currently valid concrete unit."""
+    if not isinstance(state_snapshot, dict) or not state_snapshot:
+        return True
+
+    try:
+        slot_snapshot = manager.slot_store.get_slot_snapshot()
+    except Exception:
+        return True
+    if not isinstance(slot_snapshot, dict):
+        return True
+
+    # Older unit tests and callers may construct a manager without robot slots.
+    # In that case there is no current selector evidence to compare against.
+    if not any(key in slot_snapshot for key in _ROBOT_STATE_SELECTOR_KEYS):
+        return True
+
+    current_unit = _valid_slot_value(slot_snapshot, "equipment_unit_id")
+    if current_unit is None:
+        return False
+    current_unit = str(current_unit)
+
+    snapshot_unit = (
+        state_snapshot.get("unit_id")
+        or state_snapshot.get("equipment_unit_id")
+    )
+    if snapshot_unit not in (None, ""):
+        return str(snapshot_unit) == current_unit
+
+    snapshot_status_ref = state_snapshot.get("status_ref")
+    current_status_ref = _resolve_current_status_ref(manager, current_unit)
+    if snapshot_status_ref not in (None, "") and current_status_ref:
+        return str(snapshot_status_ref) == current_status_ref
+
+    # If a concrete unit exists but the snapshot lacks comparable identifiers,
+    # keep compatibility with legacy ValidationResult producers.
+    return True
+
+
 def _build_constraint_state(manager: "DialogueManager") -> dict:
     """
     构建约束状态。
@@ -405,6 +477,21 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
             overall_status = "blocked_hard"
         elif soft_warnings:
             overall_status = "warning"
+
+    if not _state_snapshot_matches_current_unit(manager, state_snapshot):
+        source = "stale_validation_result"
+        overall_status = "none"
+        validated_at = None
+        task_version = 0
+        validation_version = 0
+        validation_fingerprint = None
+        state_snapshot = {}
+        error_msg = None
+        hard_violations = []
+        soft_warnings = []
+        ignored_soft_warnings = []
+        legacy_acknowledgements = []
+        all_serialized_violations = []
 
     return {
         "source": source,

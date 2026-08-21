@@ -32,24 +32,23 @@ class TestIssue12ContractCorrection(unittest.TestCase):
         slot.value = task_type_key
         slot.status = "valid"
 
-    # Scenario 1: task_schemas.yaml contains equipment_class, family, type, unit in order and no equipment_specification
+    # Scenario 1: task_schemas.yaml starts robot collection at family and has no legacy specification/class field
     def test_task_schemas_no_equipment_specification(self):
         templates = self.kb.task_schemas.get("task_templates", {})
         for task_key in ["pipeline_inspection", "pipeline_burial", "tree_valve_operation"]:
             normal_slots = templates.get(task_key, {}).get("output_schema", {}).get("normal", [])
             slot_keys = [s.get("key") for s in normal_slots if isinstance(s, dict)]
 
-            self.assertIn("equipment_class", slot_keys, f"equipment_class missing in {task_key}")
+            self.assertNotIn("equipment_class", slot_keys, f"equipment_class unexpectedly found in {task_key}")
             self.assertIn("equipment_family", slot_keys, f"equipment_family missing in {task_key}")
             self.assertIn("equipment_type", slot_keys, f"equipment_type missing in {task_key}")
             self.assertIn("equipment_unit_id", slot_keys, f"equipment_unit_id missing in {task_key}")
             self.assertNotIn("equipment_specification", slot_keys, f"equipment_specification unexpectedly found in {task_key}")
 
-            cls_idx = slot_keys.index("equipment_class")
             fam_idx = slot_keys.index("equipment_family")
             typ_idx = slot_keys.index("equipment_type")
             unit_idx = slot_keys.index("equipment_unit_id")
-            self.assertTrue(cls_idx < fam_idx < typ_idx < unit_idx, f"Slot ordering incorrect in {task_key}")
+            self.assertTrue(fam_idx < typ_idx < unit_idx, f"Slot ordering incorrect in {task_key}")
 
     # Scenario 2: BASE_SLOT_TYPES does not contain equipment_specification
     def test_base_slot_types_no_equipment_specification(self):
@@ -295,7 +294,7 @@ class TestIssue12ContractCorrection(unittest.TestCase):
         with self.assertRaises(SnapshotValidationError):
             store.restore_snapshot(legacy_snapshot)
 
-    # Scenario 20: Flat JSON output Builder has no equipment_specification
+    # Scenario 20: Flat JSON output Builder has no equipment_specification/equipment_class
     def test_flat_task_intent_builder_output(self):
         builder = OutputBuilder(kb=self.kb)
         state = {
@@ -305,7 +304,7 @@ class TestIssue12ContractCorrection(unittest.TestCase):
             "equipment_unit_id": "WROV-250-001",
         }
         result, _ = builder.build(state, "tree_valve_operation")
-        self.assertIn("equipment_class", result)
+        self.assertNotIn("equipment_class", result)
         self.assertIn("equipment_family", result)
         self.assertIn("equipment_type", result)
         self.assertIn("equipment_unit_id", result)

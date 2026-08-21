@@ -12,6 +12,12 @@ from src.knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from src.dialogue_manager import DialogueManager
 from src.llm_client import LLMClient
 from src.simulated_time import get_current_datetime
+from tests.interaction_plan_support import (
+    ScriptedLLM,
+    extraction_result,
+    make_plan,
+    slot_candidate,
+)
 
 
 class TestRobotCapabilityPreselection(unittest.TestCase):
@@ -87,21 +93,38 @@ class TestRobotCapabilityPreselection(unittest.TestCase):
             for f in c["families"]:
                 self.assertIn("inspection", f["capabilities"])
 
-    def test_04_class_reverse_capability_filtering(self):
-        """4. 模拟 class 被反向过滤：若 allowed class 下无任何 family 满足 capability，该 class 不进入候选"""
+    def test_04_allowed_robot_classes_no_longer_filters_capability_domain(self):
+        """4. allowed_robot_classes 是旧字段，不再过滤 capability 锚定出的候选域"""
         saved_template = dict(self.kb.task_schemas["task_templates"]["pipeline_burial"])
         try:
             self.kb.task_schemas["task_templates"]["pipeline_burial"] = {
                 **saved_template,
-                "allowed_robot_classes": ["auv", "cable_burial_robot"],
+                "allowed_robot_classes": ["auv"],
                 "required_capabilities": ["cable_burial"],
             }
             domain = self.kb.get_feasible_robot_selection_domain("pipeline_burial")
             class_ids = [c["class_id"] for c in domain["classes"]]
-            self.assertNotIn("auv", class_ids)
             self.assertEqual(class_ids, ["cable_burial_robot"])
         finally:
             self.kb.task_schemas["task_templates"]["pipeline_burial"] = saved_template
+
+    def test_04b_robot_classes_registry_no_longer_required_for_capability_domain(self):
+        """4b. 候选域由 family.capabilities 锚定，robot_classes registry 缺失也不能清空结果"""
+        saved_classes = self.kb.robot_fleet.get("robot_classes")
+        try:
+            self.kb.robot_fleet["robot_classes"] = {}
+            self.kb._robot_variants_cache = None
+            domain = self.kb.get_feasible_robot_selection_domain("pipeline_burial")
+            self.assertEqual([c["class_id"] for c in domain["classes"]], ["cable_burial_robot"])
+            family_ids = [f["family_id"] for c in domain["classes"] for f in c["families"]]
+            self.assertEqual(
+                set(family_ids),
+                {"crawler_heavy_seabed_robot", "towed_heavy_seabed_robot", "special_work_class_robot"},
+            )
+            self.assertTrue(self.kb.get_all_rovs())
+        finally:
+            self.kb.robot_fleet["robot_classes"] = saved_classes
+            self.kb._robot_variants_cache = None
 
     # ──────────────────────────────────────────────────────────────────────────
     # 2. Four-Level Auto Collapse
@@ -157,8 +180,8 @@ class TestRobotCapabilityPreselection(unittest.TestCase):
         self.assertIsNone(new_slots["equipment_class"].value)
         self.assertIsNone(new_slots["equipment_family"].value)
 
-    def test_08_auto_collapse_candidate_count_zero_fail_closed(self):
-        """8. 候选数 = 0 时 Fail Closed，标记选型错误"""
+    def test_08_auto_collapse_ignores_stale_allowed_robot_classes(self):
+        """8. allowed_robot_classes 配错时，不应把 capability 可行候选清空成 invalid"""
         saved_template = dict(self.kb.task_schemas["task_templates"]["pipeline_burial"])
         try:
             self.kb.task_schemas["task_templates"]["pipeline_burial"] = {
@@ -168,8 +191,8 @@ class TestRobotCapabilityPreselection(unittest.TestCase):
             }
             self._init_task("pipeline_burial")
             new_slots = self.dm.slot_store.slots
-            self.assertEqual(new_slots["equipment_class"].status, "invalid")
-            self.assertIsNone(new_slots["equipment_class"].value)
+            self.assertEqual(new_slots["equipment_class"].status, "valid")
+            self.assertEqual(new_slots["equipment_class"].value, "管缆埋设机器人")
         finally:
             self.kb.task_schemas["task_templates"]["pipeline_burial"] = saved_template
 
@@ -342,10 +365,117 @@ class TestRobotCapabilityPreselection(unittest.TestCase):
     # ──────────────────────────────────────────────────────────────────────────
 
     def test_13_output_builder_uses_filtered_candidates(self):
-        """13. OutputBuilder 候选仅包含过滤后的 allowed_values"""
+        """13. OutputBuilder 从 family 层开始提供 capability 过滤后的 allowed_values"""
         schema = self.dm.builder.get_required("pipeline_burial", "normal", self.dm.task_state)
-        eq_class_field = next(f for f in schema if f["key"] == "equipment_class")
-        self.assertEqual(eq_class_field["allowed_values"], ["管缆埋设机器人"])
+        self.assertNotIn("equipment_class", {f["key"] for f in schema})
+        family_field = next(f for f in schema if f["key"] == "equipment_family")
+        self.assertEqual(
+            set(family_field["allowed_values"]),
+            {"履带式海底重载作业机器人", "拖曳式海底重载作业机器人", "特种工作级深海机器人"},
+        )
+
+    def test_13a_family_candidates_allow_lateral_switch_with_same_capability(self):
+        """13a. 已选某个 family 后，同能力任务内仍允许通过 alias 横向切换 family"""
+        state = {
+            "task_type_key": "pipeline_inspection",
+            "equipment_class": "auv",
+            "equipment_family": "水下无人自主航行器",
+        }
+        schema = self.dm.builder.get_required("pipeline_inspection", "normal", state)
+        family_field = next(f for f in schema if f["key"] == "equipment_family")
+
+        self.assertEqual(
+            set(family_field["allowed_values"]),
+            {"轻型工作级深海机器人", "观察级深海机器人", "水下无人自主航行器"},
+        )
+        self.assertEqual(
+            family_field["alias_mappings"]["天鹰座"],
+            "轻型工作级深海机器人",
+        )
+
+    def test_13b_robot_class_migration_unresolved_noise_is_filtered(self):
+        """13b. equipment_class 迁移后，不把已吸附 family 的同 raw 下游失败暴露给用户"""
+        unresolved = [
+            "字段 equipment_class 表达“我要使用AUV”不属于目标任务 pipeline_inspection，未写入。",
+            "无法验证所接受的推荐与紧邻上一轮助手建议及当前合法候选一致",
+            "equipment_family 表达“天鹰座”无法唯一匹配当前合法候选。",
+            "equipment_type 表达“天鹰座”无法唯一匹配当前合法候选。",
+            "equipment_unit_id 表达“天鹰座”无法唯一匹配当前合法候选。",
+        ]
+        filtered = DialogueManager._filter_robot_selection_unresolved(
+            unresolved,
+            {
+                "equipment_family": {
+                    "raw_value": "天鹰座",
+                    "value": "轻型工作级深海机器人",
+                }
+            },
+        )
+        self.assertEqual(
+            filtered,
+            ["无法验证所接受的推荐与紧邻上一轮助手建议及当前合法候选一致"],
+        )
+
+    def test_13c_legacy_class_candidate_projects_to_single_family_only(self):
+        """13c. legacy equipment_class 仅在唯一 family 时迁移，避免观察级 ROV 自动替用户选择"""
+        auv_projected = self.dm._project_legacy_equipment_class_candidate(
+            {
+                "canonical_key": "equipment_class",
+                "raw_value": "我要使用AUV",
+                "normalized_value": "AUV",
+                "confidence": 0.95,
+            },
+            "pipeline_inspection",
+            {"task_type_key": "pipeline_inspection"},
+        )
+        self.assertIsNotNone(auv_projected)
+        self.assertEqual(auv_projected["canonical_key"], "equipment_family")
+        self.assertEqual(auv_projected["normalized_value"], "水下无人自主航行器")
+
+        observation_projected = self.dm._project_legacy_equipment_class_candidate(
+            {
+                "canonical_key": "equipment_class",
+                "raw_value": "观察级ROV",
+                "normalized_value": "observation_rov",
+                "confidence": 0.95,
+            },
+            "pipeline_inspection",
+            {"task_type_key": "pipeline_inspection"},
+        )
+        self.assertIsNone(observation_projected)
+
+    def test_13d_unresolved_diagnostics_are_turn_scoped(self):
+        """13d. 历史 unresolved 不应作为下一轮成功写入事务的初始值继续累积"""
+        llm = ScriptedLLM(
+            plans=[make_plan("WRITE")],
+            extractions=[
+                extraction_result(
+                    slot_candidate(
+                        "equipment_family",
+                        "轻型工作级深海机器人",
+                        raw_key="机器人系列",
+                        raw_value="天鹰座",
+                        confidence=0.95,
+                    ),
+                ),
+            ],
+            default_reply="已记录机器人系列。",
+        )
+        dm = DialogueManager(llm, self.kb)
+        schema = dm.builder.get_schema("pipeline_inspection", "normal")
+        dm.slot_store.init_task_slots(schema)
+        slots = dm.slot_store.clone_slots()
+        slots["task_type_key"].value = "pipeline_inspection"
+        slots["task_type_key"].status = "valid"
+        slots["task_type"].value = "管缆巡检"
+        slots["task_type"].status = "valid"
+        dm.slot_store.commit_transaction(slots, ["任意上轮未解析内容"])
+        dm.task_state = dm.slot_store.get_task_state()
+
+        dm.process("使用天鹰座")
+
+        self.assertEqual(dm.slot_store.unresolved, [])
+        self.assertEqual(dm.task_state.get("equipment_family"), "轻型工作级深海机器人")
 
     def test_14_ordinary_llm_chat_no_auto_binding(self):
         """14. 普通 LLM 自由对话不触发机器人 Auto Binding"""
@@ -403,14 +533,13 @@ class TestRobotCapabilityPreselection(unittest.TestCase):
         self.assertNotEqual(slots["equipment_unit_id"].status, "valid")
 
     def test_20_zero_capability_domain_fail_closed(self):
-        """20. 合法 class/fleet 但无任何 family 满足 required_capabilities 时，Domain 为空并 fail closed 标记 invalid"""
-        # AUV 不具备 tree_operation 能力
+        """20. 无任何 family 满足 required_capabilities 时，Domain 为空并 fail closed 标记 invalid"""
         fake_task_schemas = {
             "task_templates": {
                 "zero_cap_task": {
                     "task_type_key": "zero_cap_task",
                     "allowed_robot_classes": ["auv"],
-                    "required_capabilities": ["tree_operation"],
+                    "required_capabilities": ["non_existent_capability"],
                     "required_fields": [{"key": "equipment_class", "type": "string"}],
                 }
             }

@@ -160,18 +160,26 @@ class KnowledgeBase:
         self._build_hierarchy_graph()
 
     def _build_hierarchy_graph(self) -> None:
-        """基于 NetworkX (networkx) 建立四级层级有向无环图 (Task -> Class -> Family -> Variant -> Unit)"""
+        """基于 NetworkX (networkx) 建立层级有向图。
+
+        任务与机器人系列的适配以 required_capabilities 为准；class 仅保留为
+        family 的上级分组/展示兼容节点，不再作为任务硬约束入口。
+        """
         G = nx.DiGraph()
         
-        # 1. 节点与 Task -> Class 边
+        # 1. 节点与 Task -> Family 边
         task_templates = self.task_schemas.get("task_templates", {}) or {}
         for task_key, template in task_templates.items():
             task_node = f"task:{task_key}"
             G.add_node(task_node, level="task", raw_id=task_key)
-            for cls_id in template.get("allowed_robot_classes", []):
-                cls_node = f"class:{cls_id}"
-                G.add_node(cls_node, level="class", raw_id=cls_id)
-                G.add_edge(task_node, cls_node)
+            required_caps = set(template.get("required_capabilities", []) or [])
+            for fam_id, fam_cfg in (self.robot_fleet.get("robot_families", {}) or {}).items():
+                caps = set(fam_cfg.get("capabilities", []) or [])
+                if required_caps and not required_caps.issubset(caps):
+                    continue
+                fam_node = f"family:{fam_id}"
+                G.add_node(fam_node, level="family", raw_id=fam_id, full_name=fam_cfg.get("full_name", fam_id))
+                G.add_edge(task_node, fam_node)
 
         # 2. Class -> Family 边
         families = self.robot_fleet.get("robot_families", {}) or {}
@@ -325,7 +333,20 @@ class KnowledgeBase:
         for key, cfg in self.get_robot_classes().items():
             if value_norm in {_norm(key), _norm(cfg.get("full_name"))}:
                 return key
+        family_classes = {
+            family.get("robot_class")
+            for family in (self.robot_fleet.get("robot_families", {}) or {}).values()
+            if isinstance(family, dict) and family.get("robot_class")
+        }
+        for key in family_classes:
+            if value_norm == _norm(key):
+                return key
         return None
+
+    def _robot_class_display_name(self, class_id: str | None) -> str:
+        if not class_id:
+            return ""
+        return self.get_robot_classes().get(class_id, {}).get("full_name", class_id)
 
     def _resolve_family_key(self, value: str | None) -> str | None:
         if not value or not isinstance(value, str):
@@ -940,34 +961,30 @@ class KnowledgeBase:
         self._validate_fleet_units_integrity()
 
         template = self._validate_task_type_key(task_type_key)
-        robot_classes = self.get_robot_classes()
         robot_families = self.robot_fleet.get("robot_families", {})
         all_variants = self.robot_fleet.get("model_variants", {})
         fleet_units = self.robot_fleet.get("fleet_units", [])
 
         if template is None:
-            allowed_classes = list(robot_classes.keys())
             required_caps = set()
         else:
-            allowed_classes = template.get("allowed_robot_classes", [])
             required_caps = set(template.get("required_capabilities", []))
         apply_runtime_filter = self._task_starts_within_runtime_window(task_state)
         rejected_variants: list[dict] = []
         rejected_units: list[dict] = []
 
-        # 1. 筛选符合 capability 与 allowed_classes 的 feasible families
+        # 1. 筛选符合 capability 的 feasible families。robot_classes/allowed_robot_classes
+        # 是历史分类元数据，不再作为任务适配硬约束。
         feasible_families: dict[str, dict] = {}
         for family_id, family in robot_families.items():
             f_class = family.get("robot_class")
-            if not f_class or f_class not in robot_classes:
+            if not f_class or not isinstance(f_class, str):
                 raise RobotSelectionDataError(
-                    f"Family '{family_id}' references missing or invalid robot_class '{f_class}'.",
+                    f"Family '{family_id}' is missing robot_class grouping metadata '{f_class}'.",
                     error_code="INVALID_ROBOT_CLASS_REFERENCE",
-                    expected_field="robot_classes",
+                    expected_field="robot_families.robot_class",
                     actual_value=f_class,
                 )
-            if f_class not in allowed_classes:
-                continue
 
             caps = family.get("capabilities", [])
             if caps is None or not isinstance(caps, list):
@@ -982,26 +999,14 @@ class KnowledgeBase:
 
             feasible_families[family_id] = family
 
-        # 2. 反向由 feasible_families 推导 feasible_classes
-        feasible_class_ids = {
-            f.get("robot_class") for f in feasible_families.values()
-        }
+        # 2. 反向由 feasible_families 推导 class 分组，保持旧返回结构兼容。
+        feasible_class_ids = list(dict.fromkeys(
+            f.get("robot_class") for f in feasible_families.values() if f.get("robot_class")
+        ))
 
         # 3. 逐层组装 4 层 domain 结构
         classes_node: list[dict] = []
-        for class_id in allowed_classes:
-            if class_id not in robot_classes:
-                raise RobotSelectionDataError(
-                    f"Task template '{task_type_key}' references non-existent robot_class '{class_id}'.",
-                    error_code="INVALID_ROBOT_CLASS_REFERENCE",
-                    expected_field="robot_classes",
-                    actual_value=class_id,
-                )
-            if class_id not in feasible_class_ids:
-                # Class 下任何 family 均不满足 capability，被反向过滤剔除
-                continue
-
-            class_cfg = robot_classes[class_id]
+        for class_id in feasible_class_ids:
             families_node: list[dict] = []
 
             for family_id, family_cfg in feasible_families.items():
@@ -1080,7 +1085,7 @@ class KnowledgeBase:
             classes_node.append({
                 "class_id": class_id,
                 "robot_class": class_id,
-                "full_name": class_cfg.get("full_name", class_id),
+                "full_name": self._robot_class_display_name(class_id),
                 "families": families_node,
             })
 
@@ -1105,13 +1110,19 @@ class KnowledgeBase:
                 for c in domain["classes"]
             ]
         robot_classes = self.get_robot_classes()
+        family_class_ids = [
+            family.get("robot_class")
+            for family in (self.robot_fleet.get("robot_families", {}) or {}).values()
+            if isinstance(family, dict) and family.get("robot_class")
+        ]
+        class_ids = list(robot_classes.keys()) or list(dict.fromkeys(family_class_ids))
         return [
             {
                 "class_id": class_id,
                 "robot_class": class_id,
-                "full_name": cfg.get("full_name", class_id),
+                "full_name": self._robot_class_display_name(class_id),
             }
-            for class_id, cfg in robot_classes.items()
+            for class_id in class_ids
         ]
 
     def list_robot_families(
@@ -1150,17 +1161,15 @@ class KnowledgeBase:
                 for f in target_cnode["families"]
             ]
 
-        family_ids = self.get_descendants_by_level(class_id, "family", source_level="class")
         result = []
-        robot_classes = self.get_robot_classes()
         robot_families = self.robot_fleet.get("robot_families", {})
         for family_id, family in robot_families.items():
             f_class = family.get("robot_class")
-            if not f_class or f_class not in robot_classes:
+            if not f_class or not isinstance(f_class, str):
                 raise RobotSelectionDataError(
-                    f"Family '{family_id}' references missing or invalid robot_class '{f_class}'.",
+                    f"Family '{family_id}' is missing robot_class grouping metadata '{f_class}'.",
                     error_code="INVALID_ROBOT_CLASS_REFERENCE",
-                    expected_field="robot_classes",
+                    expected_field="robot_families.robot_class",
                     actual_value=f_class,
                 )
             if f_class != class_id:
@@ -1229,14 +1238,6 @@ class KnowledgeBase:
             )
 
         if task_type_key is not None:
-            allowed_classes = self.get_task_allowed_robot_classes(task_type_key)
-            if class_id not in allowed_classes:
-                raise RobotSelectionDataError(
-                    f"Robot class '{class_id}' is not allowed for task '{task_type_key}'.",
-                    error_code="CLASS_NOT_ALLOWED_FOR_TASK",
-                    robot_class=class_id,
-                    family_id=family_id,
-                )
             domain = self.get_feasible_robot_selection_domain(task_type_key)
             target_cnode = next((c for c in domain["classes"] if c["class_id"] == class_id), None)
             target_fnode = next((f for f in target_cnode["families"] if f["family_id"] == family_id), None) if target_cnode else None
@@ -1442,9 +1443,9 @@ class KnowledgeBase:
 
     def get_task_allowed_robot_classes(self, task_type_key: str | None) -> list[str]:
         if not task_type_key:
-            return list(self.get_robot_classes().keys())
-        template = self.task_schemas.get("task_templates", {}).get(task_type_key, {})
-        return template.get("allowed_robot_classes", [])
+            return [item.get("class_id") for item in self.list_robot_classes()]
+        domain = self.get_feasible_robot_selection_domain(task_type_key)
+        return [item.get("class_id") for item in domain.get("classes", [])]
 
     def get_task_required_capabilities(self, task_type_key: str | None) -> list[str]:
         if not task_type_key:
@@ -1455,10 +1456,7 @@ class KnowledgeBase:
     def robot_matches_task(self, robot: dict | None, task_type_key: str | None) -> bool:
         if not robot or not task_type_key:
             return True
-        allowed_classes = set(self.get_task_allowed_robot_classes(task_type_key))
         required_caps = set(self.get_task_required_capabilities(task_type_key))
-        if allowed_classes and robot.get("robot_class") not in allowed_classes:
-            return False
         return required_caps.issubset(set(robot.get("capabilities", [])))
 
     def get_robot_families_for_classes(
@@ -1468,24 +1466,17 @@ class KnowledgeBase:
     ) -> list[tuple[str, dict]]:
         required = set(required_capabilities or [])
         allowed_classes = set(robot_class_keys or [])
-        robot_classes = self.get_robot_classes()
         result: list[tuple[str, dict]] = []
         robot_families = self.robot_fleet.get("robot_families", {})
-        
-        target_family_ids = set()
-        for cls_id in allowed_classes:
-            target_family_ids.update(self.get_descendants_by_level(cls_id, "family", source_level="class"))
 
         for family_id in robot_families:
-            if target_family_ids and family_id not in target_family_ids:
-                continue
             family = robot_families.get(family_id, {})
             f_class = family.get("robot_class")
-            if not f_class or f_class not in robot_classes:
+            if not f_class or not isinstance(f_class, str):
                 raise RobotSelectionDataError(
-                    f"Family '{family_id}' references missing or invalid robot_class '{f_class}'.",
+                    f"Family '{family_id}' is missing robot_class grouping metadata '{f_class}'.",
                     error_code="INVALID_ROBOT_CLASS_REFERENCE",
-                    expected_field="robot_classes",
+                    expected_field="robot_families.robot_class",
                     actual_value=f_class,
                 )
             if allowed_classes and f_class not in allowed_classes:
@@ -1497,7 +1488,7 @@ class KnowledgeBase:
 
     def get_robot_families_for_task(self, task_type_key: str | None) -> list[tuple[str, dict]]:
         return self.get_robot_families_for_classes(
-            self.get_task_allowed_robot_classes(task_type_key),
+            [],
             self.get_task_required_capabilities(task_type_key),
         )
 
@@ -1630,25 +1621,22 @@ class KnowledgeBase:
 
     def _build_robot_variant_index(self) -> list[dict]:
         robot_classes = self.get_robot_classes()
-        families = self.robot_fleet.get("robot_families", {})
         robots: list[dict] = []
 
-        # Layered traversal: class -> family -> variant -> fleet unit.
+        # Layered traversal: family -> variant -> fleet unit.
         # Do not discover variants by jumping directly into the full variant set
-        # for task matching; relationship fields are the source of truth.
-        for robot_class_key in robot_classes:
-            family_items = self.get_robot_families_for_classes([robot_class_key])
-            for family_id, family in family_items:
-                for variant_id, variant in self.get_model_variants_for_family(family_id):
-                    robots.append(
-                        self._build_robot_variant(
-                            robot_classes,
-                            family_id,
-                            family,
-                            variant_id,
-                            variant,
-                        )
+        # for task matching; family.capabilities is the source of truth.
+        for family_id, family in self.get_robot_families_for_classes([]):
+            for variant_id, variant in self.get_model_variants_for_family(family_id):
+                robots.append(
+                    self._build_robot_variant(
+                        robot_classes,
+                        family_id,
+                        family,
+                        variant_id,
+                        variant,
                     )
+                )
         return robots
 
     def get_all_rovs(self) -> list[dict]:
@@ -1809,16 +1797,12 @@ class KnowledgeBase:
 
     def _task_rov_constraint(self, task_type: str) -> str:
         schema = self.task_schemas["task_templates"].get(task_type, {})
-        class_names = [
-            self.get_robot_classes().get(key, {}).get("full_name", key)
-            for key in schema.get("allowed_robot_classes", [])
-        ]
         caps = "、".join(schema.get("required_capabilities", []))
-        if not class_names and not caps:
+        if not caps:
             return ""
         return (
-            f"【任务设备约束】{schema.get('display_name', task_type)} 任务只允许使用"
-            f"{'、'.join(class_names)}，且设备能力必须覆盖：{caps or '无特殊能力'}。"
+            f"【任务设备约束】{schema.get('display_name', task_type)} 任务要求机器人系列能力覆盖："
+            f"{caps or '无特殊能力'}。"
         )
 
     def _rovs_by_category(self, category_value: str, task_type: str | None = None) -> str:

@@ -505,45 +505,6 @@ class OutputBuilder:
                 return []
 
         if ref == "robot_family_full_names":
-            class_selector = str(task_state.get("equipment_class") or "") if task_state else ""
-            if class_selector:
-                try:
-                    families = self.kb.list_robot_families(
-                        class_selector,
-                        task_type_key,
-                    )
-                    domain = self.kb.get_feasible_robot_selection_domain(
-                        task_type_key,
-                        task_state,
-                    )
-                    class_id = self.kb._resolve_class_key(class_selector)
-                    class_node = next(
-                        (
-                            item
-                            for item in domain["classes"]
-                            if item["class_id"] == class_id
-                        ),
-                        None,
-                    )
-                    feasible_family_ids = {
-                        item["family_id"]
-                        for item in (class_node["families"] if class_node else [])
-                    }
-                    for family in families:
-                        if family.get("family_id") not in feasible_family_ids:
-                            continue
-                        standard = family.get("full_name")
-                        if standard:
-                            catalog.append({
-                                "canonical_value": standard,
-                                "aliases": list(family.get("aliases", []) or []),
-                                "display_name": family.get("display_name"),
-                                "parent": {"field": "equipment_class", "value": class_selector},
-                            })
-                    return catalog
-                except RobotSelectionDataError as exc:
-                    logger.warning("Robot candidate catalog resolution failed: ref=%s task=%s error=%s", ref, task_type_key, exc)
-                    return []
             for _, family in self.kb.get_robot_families_for_task(task_type_key):
                 standard = family.get("full_name")
                 if standard:
@@ -559,12 +520,11 @@ class OutputBuilder:
 
 
         if ref in ("robot_full_names", "robot_variant_full_names"):
-            class_selector = str(task_state.get("equipment_class") or "") if task_state else ""
             family_selector = str(task_state.get("equipment_family") or "") if task_state else ""
             robots = self.kb.get_task_allowed_robot_variants(
                 task_type_key,
                 family_selector or None,
-                class_selector or None,
+                None,
             )
             domain = self.kb.get_feasible_robot_selection_domain(
                 task_type_key,
@@ -575,15 +535,9 @@ class OutputBuilder:
                 if family_selector
                 else None
             )
-            class_id = (
-                self.kb._resolve_class_key(class_selector)
-                if class_selector
-                else None
-            )
             feasible_variant_ids = {
                 variant["variant_id"]
                 for class_node in domain["classes"]
-                if not class_id or class_node["class_id"] == class_id
                 for family in class_node["families"]
                 if not family_id or family["family_id"] == family_id
                 for variant in family["variants"]
@@ -783,61 +737,20 @@ class OutputBuilder:
                 return []
 
         if ref == "robot_family_full_names":
-            class_selector = str(task_state.get("equipment_class") or "") if task_state else ""
-            if class_selector:
-                try:
-                    families = self.kb.list_robot_families(
-                        class_selector,
-                        task_type_key,
-                    )
-                    domain = self.kb.get_feasible_robot_selection_domain(
-                        task_type_key,
-                        task_state,
-                    )
-                    class_id = self.kb._resolve_class_key(class_selector)
-                    class_node = next(
-                        (
-                            item
-                            for item in domain["classes"]
-                            if item["class_id"] == class_id
-                        ),
-                        None,
-                    )
-                    feasible_family_ids = {
-                        item["family_id"]
-                        for item in (class_node["families"] if class_node else [])
-                    }
-                    return [
-                        f.get("full_name")
-                        for f in families
-                        if f
-                        and f.get("full_name")
-                        and f.get("family_id") in feasible_family_ids
-                    ]
-                except RobotSelectionDataError as exc:
-                    logger.warning("Robot family resolution failed: ref=%s task=%s error=%s", ref, task_type_key, exc)
-                    return []
             return self.kb.get_task_allowed_robot_family_names(task_type_key)
 
         if ref in ("robot_full_names", "robot_variant_full_names"):
-            class_selector = ""
             family_selector = ""
             if task_state:
-                class_selector = str(task_state.get("equipment_class") or "")
                 family_selector = str(task_state.get("equipment_family") or "")
             robots = self.kb.get_task_allowed_robot_variants(
                 task_type_key,
                 family_selector or None,
-                class_selector or None,
+                None,
             )
             family_id = (
                 self.kb.resolve_robot_family_id(family_selector, task_type_key)
                 if family_selector
-                else None
-            )
-            class_id = (
-                self.kb._resolve_class_key(class_selector)
-                if class_selector
                 else None
             )
             feasible_variant_ids = {
@@ -846,7 +759,6 @@ class OutputBuilder:
                     task_type_key,
                     task_state,
                 )["classes"]
-                if not class_id or class_node["class_id"] == class_id
                 for family in class_node["families"]
                 if not family_id or family["family_id"] == family_id
                 for variant in family["variants"]
