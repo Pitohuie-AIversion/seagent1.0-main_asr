@@ -80,6 +80,7 @@ def main():
     task_id = bridge.dispatch_intent(task_intent_v2)
     print(f"\n✅ [指令下发成功] 对应 ROS 2 Task ID: 0x{task_id:X} ({task_id})")
 
+    time.sleep(0.2)
     # 4. 验证 Topside 实际接收到的二进制 SysTaskCmd 帧
     print("\n[Step 4] 校验 Topside 网关收到的 SysTaskCmd.msg 二进制结构帧:")
     pubs = server.get_received_publishes()
