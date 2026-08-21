@@ -306,6 +306,7 @@ class TestUIStateContract(unittest.TestCase):
         cs = _build_constraint_state(mgr)
         self.assertEqual(len(cs["ignored_soft_warnings"]), 1)
         self.assertEqual(cs["ignored_soft_warnings"][0]["constraint_id"], "C010")
+        self.assertEqual(cs["ignored_soft_warnings"][0]["message"], "DVL失效风险")
         self.assertEqual(len(cs["soft_warnings"]), 1)
         self.assertEqual(cs["soft_warnings"][0]["constraint_id"], "C020")
 

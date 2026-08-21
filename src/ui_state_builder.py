@@ -402,6 +402,11 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
             status_ref = state_snapshot.get("status_ref", "") if isinstance(state_snapshot, dict) else ""
             state_ver = state_snapshot.get("state_version", 0) if isinstance(state_snapshot, dict) else 0
             violation_ids = {v["constraint_id"] for v in soft_warnings}
+            soft_warning_by_id = {
+                v["constraint_id"]: v
+                for v in soft_warnings
+                if v.get("constraint_id")
+            }
 
             raw_acks = getattr(manager.slot_store, "validation_acknowledgements", []) or []
             for ack in raw_acks:
@@ -427,7 +432,10 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
                 )
 
                 if is_valid:
-                    ignored_soft_warnings.append(ack_dict)
+                    ignored_soft_warnings.append({
+                        **soft_warning_by_id.get(ack_cid, {}),
+                        **ack_dict,
+                    })
                 else:
                     legacy_acknowledgements.append(ack_dict)
 
