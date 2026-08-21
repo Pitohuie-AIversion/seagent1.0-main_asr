@@ -73,6 +73,15 @@ _MODULES_TO_WATCH = [
     "src.knowledge_retriever",
     "src.output_builder",
     "src.normalization_contract",
+    "src.prompts",
+    "src.ui_state_builder",
+    "src.slot_store",
+    "src.normalizer",
+    "src.visible_selection_provenance",
+    "src.task_intent_builder",
+    "src.state_info",
+    "src.simulated_time",
+    "src.history_manager",
 ]
 _module_mtimes = {}
 
@@ -167,6 +176,15 @@ app = Flask(
 @app.before_request
 def _hot_reload_check_before_request():
     check_and_hot_reload_modules()
+
+@app.after_request
+def _disable_static_cache_after_request(response):
+    """Disable browser static caching during development to ensure instant frontend JS/CSS updates."""
+    if request.path.startswith("/static/") or request.path in ("/", "/index.html"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 def _load_asr_api_config() -> dict:
     cfg_path = CONFIG_DIR / "asr.yaml"
