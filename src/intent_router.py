@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -63,6 +64,9 @@ operation 只能是：
 同一句中的问答和修改。已有任务或 expected_slots 不代表本轮一定要写入；反过来，
 自然表达没有出现字段名也不代表不能写入。
 用户可能使用 expected_slot_options 中 allowed_values 的别名、代号或简称（例如 alias_mappings 中收录的“天鹰座”、“金牛座”等系列代号，或“天鹰座001”等单机代号）。当用户明确表达使用/选择某个合法别称或代号（如“我要使用天鹰座”、“选金牛座”、“用天鹰座001”）时，属于明确指定任务参数，必须判定为 WRITE。
+当当前待填字段不包含 equipment_class，而用户输入精确命中 expected_slot_options 中某个
+allowed_values 或 alias_mappings 时，应按该待填字段候选处理为 WRITE；不要因措辞
+像“ROV 类别”就退回 device_class 澄清。
 询问推荐本身属于 READ，不得因为问题中出现任务字段或“选择”语义就修改任务；
 接受上一轮助手明确给出的单一推荐才属于 WRITE。若上一轮只是并列介绍多个候选、
 没有明确推荐，且用户本轮也未指明选择，必须 CLARIFY，不能替用户猜测。
@@ -231,6 +235,68 @@ class IntentRouter:
     def __init__(self, llm: LLMClient):
         self.llm = llm
 
+    @staticmethod
+    def _normalize_selector_text(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        text = re.sub(r"[\s，。！？!?、；;：:,.]+", "", text)
+        return text
+
+    @classmethod
+    def _expected_slot_aliases(
+        cls,
+        expected_slot_options: list[dict[str, Any]],
+    ) -> set[str]:
+        aliases: set[str] = set()
+        for opt in expected_slot_options:
+            aliases.update(opt.get("allowed_values") or [])
+            alias_map = opt.get("alias_mappings") or {}
+            aliases.update(alias_map.keys())
+            aliases.update(alias_map.values())
+
+        aliases.update([
+            "金牛座", "天鹰座", "御夫座", "凤凰座",
+            "金牛座001", "金牛座1号机", "金牛座一号机",
+            "天鹰座001", "天鹰座1号机", "天鹰座一号机",
+            "御夫座001", "御夫座1号机", "御夫座一号机",
+            "OBSROV-75-001", "CRAWLER-1600-001", "WROV-250-001", "LROV-150-001",
+        ])
+        return {alias for alias in aliases if alias}
+
+    @classmethod
+    def _matches_expected_slot_alias(
+        cls,
+        user_message: str,
+        expected_slot_options: list[dict[str, Any]],
+    ) -> bool:
+        user_norm = cls._normalize_selector_text(user_message)
+        if not user_norm:
+            return False
+        return any(
+            user_norm == cls._normalize_selector_text(alias)
+            for alias in cls._expected_slot_aliases(expected_slot_options)
+        )
+
+    @staticmethod
+    def _looks_like_read_question(user_message: str) -> bool:
+        return any(
+            token in user_message
+            for token in [
+                "?",
+                "？",
+                "哪个",
+                "哪一个",
+                "推荐",
+                "适合",
+                "区别",
+                "比较",
+                "能否",
+                "可以",
+                "是什么",
+                "怎么",
+                "为什么",
+            ]
+        )
+
     def route(
         self,
         user_message: str,
@@ -338,29 +404,48 @@ class IntentRouter:
 
         plan = validate_interaction_plan(candidate)
 
-        # 针对明确包含设备选择/使用意图（如“我要选择金牛座”、“选择金牛座001”）的口语修正，防止误判为 READ/CLARIFY
+        # 针对明确包含设备选择/使用意图（如“我要选择金牛座”、“选择金牛座001”）
+        # 或短输入精确命中当前待填候选别名的口语修正，防止误判为 READ/CLARIFY。
         if plan.operation in ("READ", "CLARIFY"):
             user_msg_strip = user_message.strip()
-            has_select_verb = any(v in user_msg_strip for v in ["选择", "选", "使用", "用", "配", "配备", "切换", "换成", "安排"])
+            has_select_verb = any(
+                v in user_msg_strip
+                for v in [
+                    "选择",
+                    "选",
+                    "使用",
+                    "用",
+                    "配",
+                    "配备",
+                    "切换",
+                    "换成",
+                    "安排",
+                ]
+            )
+            all_known_aliases = self._expected_slot_aliases(expected_slot_options)
+            explicit_selection = has_select_verb and any(
+                alias in user_msg_strip for alias in all_known_aliases
+            )
+            bare_expected_alias = (
+                not self._looks_like_read_question(user_msg_strip)
+                and self._matches_expected_slot_alias(
+                    user_msg_strip,
+                    expected_slot_options,
+                )
+            )
 
-            all_known_aliases = set()
-            for opt in expected_slot_options:
-                all_known_aliases.update(opt.get("allowed_values") or [])
-                alias_map = opt.get("alias_mappings") or {}
-                all_known_aliases.update(alias_map.keys())
-
-            all_known_aliases.update([
-                "金牛座", "天鹰座", "御夫座", "凤凰座",
-                "金牛座001", "金牛座1号机", "金牛座一号机",
-                "天鹰座001", "天鹰座1号机", "天鹰座一号机",
-                "御夫座001", "御夫座1号机", "御夫座一号机",
-                "OBSROV-75-001", "CRAWLER-1600-001", "WROV-250-001", "LROV-150-001"
-            ])
-
-            if has_select_verb and any(alias in user_msg_strip for alias in all_known_aliases if alias):
-                logger.info("[IntentRouter] Correcting route to WRITE because user explicitly selected equipment in: %s", user_message)
+            if explicit_selection or bare_expected_alias:
+                logger.info(
+                    "[IntentRouter] Correcting route to WRITE because user "
+                    "selected an expected slot alias in: %s",
+                    user_message,
+                )
                 candidate["operation"] = "WRITE"
                 candidate["dialogue_mode"] = "task_collection"
+                candidate["query_intent"] = None
+                candidate["needs_clarification"] = False
+                candidate["clarification_reason"] = None
+                candidate["reason_code"] = "EXPECTED_SLOT_ALIAS_WRITE_CORRECTION"
                 plan = validate_interaction_plan(candidate)
 
         if plan.reason_code == "VALIDATION_FALLBACK_CLARIFY":

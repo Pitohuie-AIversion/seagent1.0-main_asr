@@ -18,6 +18,7 @@ from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
 from src.simulated_time import get_simulated_time
+from src.ui_state_builder import build_frontend_ui_state
 from src.validator import TaskValidator, Violation
 
 
@@ -140,8 +141,8 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
             self.assertIn("C015", violation_ids)
             self.assertIn("C013", violation_ids)
 
-    def test_dialogue_process_reminds_warnings_before_publish(self):
-        """当用户在对话中完成所有槽位准备确认时，环境与机器人状态软警告在回复中被明确提醒。"""
+    def test_dialogue_process_keeps_soft_warnings_in_sidebar_only(self):
+        """软约束触发后保留在右侧看板，左侧回复不重复提醒。"""
         from src.intent_router import IntentRouteResult
         task_state = {
             "task_type_key": "pipeline_inspection",
@@ -187,11 +188,74 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
              patch.object(self.kb.state_info, "get_unit_state_snapshot", return_value=mock_snapshot), \
              patch.object(self.dm.intent_router, "route", return_value=route_res), \
              patch.object(self.dm.extractor, "extract_updates", return_value={"slot_candidates": [{"canonical_key": "water_depth", "normalized_value": 500.0, "raw_value": "500米", "status": "valid"}], "unresolved": []}), \
-             patch.object(self.dm.llm, "chat", return_value="所有必填字段已收集完成。请确认是否发布该任务？"):
+            patch.object(self.dm.llm, "chat", return_value="所有必填字段已收集完成。请确认是否发布该任务？"):
             reply = self.dm.process("水深500米")
             self.assertEqual(self.dm.phase, "blocked_soft")
-            self.assertIn("C022", reply)
-            self.assertIn("推进器状态", reply)
+            self.assertNotIn("C022", reply)
+            self.assertNotIn("推进器状态", reply)
+            ui_state = build_frontend_ui_state(self.dm)
+            soft_ids = {
+                warning.get("constraint_id")
+                for warning in ui_state["constraint_state"]["soft_warnings"]
+            }
+            self.assertIn("C022", soft_ids)
+
+    def test_dialogue_process_surfaces_hard_constraints_in_reply_and_sidebar(self):
+        """硬约束触发后左侧回复和右侧看板都必须显示阻塞详情。"""
+        from src.intent_router import IntentRouteResult
+        task_state = {
+            "task_type_key": "pipeline_inspection",
+            "task_type": "管缆巡检",
+            "start_time": "2026-08-14T17:30:00",
+            "end_time": "2026-08-14T19:00:00",
+            "start_point": {"lat": 19.8, "lon": 113.0},
+            "end_point": {"lat": 20.0, "lon": 113.0},
+            "cable_type": "海底油气管道",
+            "equipment_class": "observation_rov",
+            "equipment_family": "light_work_class_rov",
+            "equipment_type": "轻型工作级深海机器人 150HP",
+            "equipment_unit_id": "LROV-150-001",
+            "payload": ["激光标尺"],
+            "support_vessel": "海洋石油 681",
+            "oilfield_name": "流花11-1油田",
+        }
+        schema = self.dm.builder.get_schema("pipeline_inspection", "normal")
+        self.dm.slot_store.init_task_slots(schema)
+        schema_map = {f["key"]: f for f in schema}
+        for k, v in task_state.items():
+            from src.slot_store import Slot
+            vtype = schema_map.get(k, {}).get("type", "string")
+            self.dm.slot_store.slots[k] = Slot(k, value=v, raw_value=v, status="valid", value_type=vtype)
+        self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", raw_value="pipeline_inspection", status="valid", value_type="string")
+        self.dm.task_state = self.dm.slot_store.get_task_state()
+
+        mock_snapshot = {
+            "unit_id": "LROV-150-001",
+            "status_ref": "LROV-150-001",
+            "state_version": 1,
+            "updated_at": "2026-08-14T16:00:00+08:00",
+            "state": {
+                "overall_status": "offline",
+                "is_online": False,
+                "updated_at": "2026-08-14T16:00:00+08:00",
+            }
+        }
+        route_res = IntentRouteResult(interaction_type="WRITE", confidence=1.0, reason="write", query_intent=None)
+
+        with patch.object(self.kb, "get_unit_state_snapshot", return_value=mock_snapshot), \
+             patch.object(self.kb.state_info, "get_unit_state_snapshot", return_value=mock_snapshot), \
+             patch.object(self.dm.intent_router, "route", return_value=route_res), \
+             patch.object(self.dm.extractor, "extract_updates", return_value={"slot_candidates": [{"canonical_key": "water_depth", "normalized_value": 500.0, "raw_value": "500米", "status": "valid"}], "unresolved": []}), \
+             patch.object(self.dm.llm, "chat", return_value="所有必填字段已收集完成。请确认是否发布该任务？"):
+            reply = self.dm.process("水深500米")
+            self.assertEqual(self.dm.phase, "blocked_hard")
+            self.assertIn("C020", reply)
+            ui_state = build_frontend_ui_state(self.dm)
+            hard_ids = {
+                violation.get("constraint_id")
+                for violation in ui_state["constraint_state"]["hard_violations"]
+            }
+            self.assertIn("C020", hard_ids)
 
     def test_future_task_ignore_soft_warning_and_publish_success(self):
         """未来排期任务触发软警告后，用户忽略软警告能够成功进入 confirming 并完成确认发布。"""

@@ -87,7 +87,7 @@ class TestBuildGroundedRecommendation(unittest.TestCase):
     def test_empty_allowed_values_returns_none(self):
         from src.dialogue_manager import DialogueManager
 
-        field_def = {"key": "equipment_class", "allowed_values": []}
+        field_def = {"key": "equipment_family", "allowed_values": []}
         mgr = self._make_manager(missing_field_def=field_def)
         plan = _make_plan(relation="recommend", subject_type="device_class", subject_text="某值")
         route = _make_route(plan)
@@ -100,13 +100,13 @@ class TestBuildGroundedRecommendation(unittest.TestCase):
     def test_exact_match_uses_subject_text(self):
         from src.dialogue_manager import DialogueManager
 
-        field_def = {"key": "equipment_class", "allowed_values": ["观察级ROV", "AUV"]}
+        field_def = {"key": "equipment_family", "allowed_values": ["观察级深海机器人", "水下无人自主航行器"]}
         mgr = self._make_manager(missing_field_def=field_def)
-        plan = _make_plan(relation="recommend", subject_type="device_class", subject_text="AUV")
+        plan = _make_plan(relation="recommend", subject_type="device_class", subject_text="水下无人自主航行器")
         route = _make_route(plan)
         result = DialogueManager._build_grounded_recommendation(mgr, route)
         self.assertIsNotNone(result)
-        self.assertIn("AUV", result)
+        self.assertIn("水下无人自主航行器", result)
         self.assertNotIn("无法", result)
         self.assertNotIn("选项有", result)
 
@@ -116,7 +116,7 @@ class TestBuildGroundedRecommendation(unittest.TestCase):
     def test_mismatch_single_candidate_recommends_it(self):
         from src.dialogue_manager import DialogueManager
 
-        field_def = {"key": "equipment_class", "allowed_values": ["工作级ROV"]}
+        field_def = {"key": "equipment_family", "allowed_values": ["轻型工作级深海机器人"]}
         mgr = self._make_manager(missing_field_def=field_def)
         # LLM 生成了幻觉名称"重量级ROV"
         plan = _make_plan(relation="recommend", subject_type="device_class", subject_text="重量级ROV")
@@ -124,7 +124,7 @@ class TestBuildGroundedRecommendation(unittest.TestCase):
         result = DialogueManager._build_grounded_recommendation(mgr, route)
         self.assertIsNotNone(result)
         # 必须推荐配置中的合法值
-        self.assertIn("工作级ROV", result)
+        self.assertIn("轻型工作级深海机器人", result)
         # 绝不出现原来的错误消息
         self.assertNotIn("无法从当前任务", result)
         self.assertNotIn("重量级ROV", result)
@@ -135,7 +135,7 @@ class TestBuildGroundedRecommendation(unittest.TestCase):
     def test_mismatch_multiple_candidates_lists_all(self):
         from src.dialogue_manager import DialogueManager
 
-        field_def = {"key": "equipment_class", "allowed_values": ["观察级ROV", "AUV"]}
+        field_def = {"key": "equipment_family", "allowed_values": ["观察级深海机器人", "水下无人自主航行器"]}
         mgr = self._make_manager(missing_field_def=field_def)
         # LLM 生成了不存在的名称
         plan = _make_plan(relation="recommend", subject_type="device_class", subject_text="重量级ROV")
@@ -143,9 +143,9 @@ class TestBuildGroundedRecommendation(unittest.TestCase):
         result = DialogueManager._build_grounded_recommendation(mgr, route)
         self.assertIsNotNone(result)
         # 两个候选都应出现
-        self.assertIn("观察级ROV", result)
-        self.assertIn("AUV", result)
-        self.assertNotIn("建议选择【观察级ROV】", result)
+        self.assertIn("观察级深海机器人", result)
+        self.assertIn("水下无人自主航行器", result)
+        self.assertNotIn("建议选择【观察级深海机器人】", result)
         self.assertIn("请补充偏好", result)
         # 不出现错误消息
         self.assertNotIn("无法从当前任务", result)
@@ -157,15 +157,15 @@ class TestBuildGroundedRecommendation(unittest.TestCase):
     def test_none_subject_text_multiple_candidates_lists_all(self):
         from src.dialogue_manager import DialogueManager
 
-        field_def = {"key": "equipment_class", "allowed_values": ["观察级ROV", "AUV"]}
+        field_def = {"key": "equipment_family", "allowed_values": ["观察级深海机器人", "水下无人自主航行器"]}
         mgr = self._make_manager(missing_field_def=field_def)
         plan = _make_plan(relation="recommend", subject_type="device_class", subject_text=None)
         route = _make_route(plan)
         result = DialogueManager._build_grounded_recommendation(mgr, route)
         self.assertIsNotNone(result)
-        self.assertIn("观察级ROV", result)
-        self.assertIn("AUV", result)
-        self.assertNotIn("建议选择【观察级ROV】", result)
+        self.assertIn("观察级深海机器人", result)
+        self.assertIn("水下无人自主航行器", result)
+        self.assertNotIn("建议选择【观察级深海机器人】", result)
         self.assertNotIn("无法从当前任务", result)
 
     # ------------------------------------------------------------------
@@ -174,7 +174,7 @@ class TestBuildGroundedRecommendation(unittest.TestCase):
     def test_task_prefix_included_when_task_name_exists(self):
         from src.dialogue_manager import DialogueManager
 
-        field_def = {"key": "equipment_class", "allowed_values": ["观察级ROV"]}
+        field_def = {"key": "equipment_family", "allowed_values": ["观察级深海机器人"]}
         mgr = self._make_manager(
             missing_field_def=field_def,
             task_state={"task_type": "管缆巡检"},
@@ -351,4 +351,3 @@ class TestScopeConfirmedRecommendation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

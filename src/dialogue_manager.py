@@ -156,7 +156,7 @@ FIELD_LABELS = {
 }
 
 RECOMMENDATION_FIELD_BY_SUBJECT = {
-    "device_class": "equipment_class",
+    "device_class": "equipment_family",
     "device_family": "equipment_family",
     "device": "equipment_type",
 }
@@ -662,6 +662,21 @@ class DialogueManager:
         # 把它再次塞给消歧模型反而会制造冲突。仅在没有原句的兼容调用中使用初选。
         semantic_input = user_message or selected or ""
         if semantic_input:
+            chosen = (
+                ParameterExtractor._match_allowed_value(
+                    semantic_input,
+                    allowed_values,
+                )
+                or ParameterExtractor._match_alias_value(
+                    semantic_input,
+                    semantic_field_def,
+                )
+            )
+            if chosen in allowed_values:
+                return (
+                    f"{task_prefix}我明确推荐{label}【{chosen}】。"
+                    "本轮仅提供建议，尚未写入任务。若接受，请确认采用该选择。"
+                )
             chosen = self.extractor.resolve_allowed_candidate(
                 semantic_input,
                 target_key,
@@ -676,7 +691,33 @@ class DialogueManager:
                 )
             # 用户没有给出足以区分候选的偏好时，允许 TurnPlanner 在合法域内
             # 直接做一次语义选择。这不是按列表顺序默认；selected 必须是模型明确
-            # 输出且仍属于当前 allowed_values。包含明确偏好时，上面的证据解析优先。
+            # 输出且可通过当前字段别名归一到 allowed_values。包含明确偏好时，
+            # 上面的证据解析优先。
+            if selected:
+                selected_chosen = (
+                    ParameterExtractor._match_allowed_value(selected, allowed_values)
+                    or ParameterExtractor._match_alias_value(
+                        selected,
+                        semantic_field_def,
+                    )
+                )
+                if selected_chosen in allowed_values:
+                    return (
+                        f"{task_prefix}我明确推荐{label}【{selected_chosen}】。"
+                        "本轮仅提供建议，尚未写入任务。若接受，请确认采用该选择。"
+                    )
+                selected_chosen = self.extractor.resolve_allowed_candidate(
+                    selected,
+                    target_key,
+                    semantic_field_def,
+                    current_state=self.task_state,
+                    conversation_history=self.conversation_history,
+                )
+                if selected_chosen in allowed_values:
+                    return (
+                        f"{task_prefix}我明确推荐{label}【{selected_chosen}】。"
+                        "本轮仅提供建议，尚未写入任务。若接受，请确认采用该选择。"
+                    )
             if selected in allowed_values:
                 return (
                     f"{task_prefix}我明确推荐{label}【{selected}】。"
@@ -3729,6 +3770,31 @@ class DialogueManager:
                 )
                 or []
             )
+        semantic_field_def = dict(field_def or {})
+        task_key = self.task_state.get("task_type_key")
+        if target_key and task_key:
+            required = self.builder.get_required(
+                task_key,
+                self.mode,
+                self.task_state,
+            )
+            authoritative = next(
+                (
+                    item
+                    for item in required
+                    if isinstance(item, dict) and item.get("key") == target_key
+                ),
+                {},
+            )
+            if authoritative.get("alias_mappings"):
+                semantic_field_def["alias_mappings"] = authoritative.get("alias_mappings")
+        semantic_field_def["allowed_values"] = allowed_values
+        resolved_selected = (
+            ParameterExtractor._match_allowed_value(selected, allowed_values)
+            or ParameterExtractor._match_alias_value(selected, semantic_field_def)
+            if selected
+            else None
+        )
 
         previous_assistant = (
             self.conversation_history[-1].get("content", "")
@@ -3738,6 +3804,8 @@ class DialogueManager:
         )
 
         candidate_terms = {selected} if selected else set()
+        if resolved_selected:
+            candidate_terms.add(resolved_selected)
         raw_mention = getattr(plan, "raw_mention", None)
         if raw_mention:
             candidate_terms.add(raw_mention)
@@ -3789,7 +3857,7 @@ class DialogueManager:
                 "raw_key": "上一轮明确推荐",
                 "canonical_key": target_key,
                 "raw_value": user_message,
-                "normalized_value": selected,
+                "normalized_value": resolved_selected or selected,
                 "confidence": plan.confidence,
                 "resolution_method": "assistant_recommendation",
             }
@@ -5082,11 +5150,14 @@ class DialogueManager:
                 return
 
         # 执行层级依赖失效
+        robot_cascade_preserve_keys = set(equipment_updates.keys())
+        if "payload" in updates:
+            robot_cascade_preserve_keys.add("payload")
         if changed_parents:
             invalidate_robot_cascade_dependents(
                 sandbox_slots,
                 changed_parents,
-                preserve_keys=equipment_updates.keys(),
+                preserve_keys=robot_cascade_preserve_keys,
             )
             unit_slot = sandbox_slots.get("equipment_unit_id")
             if not (
@@ -5100,6 +5171,8 @@ class DialogueManager:
         for k in EQUIPMENT_KEYS:
             if k in sandbox_slots:
                 new_slots[k] = sandbox_slots[k]
+        if changed_parents and "payload" in sandbox_slots:
+            new_slots["payload"] = sandbox_slots["payload"]
 
         # 若当前 task_type_key 为空，且设备类别已推导确定，自动推导唯一的关联任务类型
         cur_tt_slot = new_slots.get("task_type_key")
@@ -6128,7 +6201,7 @@ class DialogueManager:
 
                 return {
                     "type": "hard",
-                    "violations": current_blockers,
+                    "violations": current_hard,
                     "hard_refusal_counts": dict(self._hard_refusal_counts),
                     "state_snapshot": state_snap,
                 }
@@ -6168,7 +6241,7 @@ class DialogueManager:
                     self._blocking_violations = []
                     return {
                         "type": "hard_rejected",
-                        "violations": current_blockers,
+                        "violations": current_hard,
                         "hard_refusal_counts": dict(self._hard_refusal_counts),
                         "state_snapshot": state_snap,
                     }
@@ -6180,7 +6253,7 @@ class DialogueManager:
                 ctx_type = "hard_final_warning" if warn_ids else "hard"
                 return {
                     "type": ctx_type,
-                    "violations": current_blockers,
+                    "violations": current_hard,
                     "hard_refusal_counts": dict(self._hard_refusal_counts),
                     "state_snapshot": state_snap,
                 }
@@ -6219,7 +6292,7 @@ class DialogueManager:
                         self._hard_refusal_counts[v.constraint_id] = 0
                 return {
                     "type": "hard",
-                    "violations": current_blockers,
+                    "violations": current_hard,
                     "hard_refusal_counts": dict(self._hard_refusal_counts),
                     "state_snapshot": state_snap,
                 }
@@ -6469,8 +6542,16 @@ class DialogueManager:
 
 
     def _ensure_constraint_details(self, reply: str, constraint_context: dict) -> str:
-        """Append canonical details for violations omitted or paraphrased by the LLM."""
-        violations = constraint_context.get("violations") or []
+        """Append canonical hard-blocking details omitted or paraphrased by the LLM."""
+        context_type = str((constraint_context or {}).get("type") or "")
+        if not context_type.startswith("hard"):
+            return reply
+
+        violations = [
+            violation
+            for violation in ((constraint_context or {}).get("violations") or [])
+            if getattr(violation, "severity", "") == "hard"
+        ]
         import re
 
         reply_str = str(reply)

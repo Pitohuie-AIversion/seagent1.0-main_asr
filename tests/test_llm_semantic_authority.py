@@ -914,8 +914,8 @@ def test_confirmed_assistant_recommendation_commits_after_schema_validation() ->
         extractions=[
             extraction_result(
                 slot_candidate(
-                    "equipment_class",
-                    "观察级ROV",
+                    "equipment_family",
+                    "观察级深海机器人",
                     raw_key="上一轮设备推荐",
                     raw_value="确认",
                 )
@@ -939,10 +939,10 @@ def test_confirmed_assistant_recommendation_commits_after_schema_validation() ->
     dm.task_state = dm.slot_store.get_task_state()
     dm.conversation_history.extend(
         [
-            {"role": "user", "content": "观察级ROV和AUV哪个更合适？"},
+            {"role": "user", "content": "观察级深海机器人和AUV哪个更合适？"},
             {
                 "role": "assistant",
-                "content": "根据当前任务能力约束，我明确推荐观察级ROV。",
+                "content": "根据当前任务能力约束，我明确推荐观察级深海机器人。",
             },
         ]
     )
@@ -951,12 +951,12 @@ def test_confirmed_assistant_recommendation_commits_after_schema_validation() ->
     reply = dm.process("确认")
 
     assert dm.slot_store.version == version_before + 1
-    assert dm.slot_store.get_task_state()["equipment_class"] == "observation_rov"
-    assert "观察级ROV" in reply
+    assert dm.slot_store.get_task_state()["equipment_family"] == "观察级深海机器人"
+    assert "观察级深海机器人" in reply
     assert len(llm.extract_calls) == 1
     extraction_messages = llm.extract_calls[0]
     assert extraction_messages[-2]["role"] == "assistant"
-    assert "明确推荐观察级ROV" in extraction_messages[-2]["content"]
+    assert "明确推荐观察级深海机器人" in extraction_messages[-2]["content"]
     assert extraction_messages[-1] == {"role": "user", "content": "确认"}
 
 
@@ -972,7 +972,7 @@ def _seed_pipeline_inspection_task(dm: DialogueManager) -> None:
     dm._rebuild_cache(commit_derived=False)
 
 
-def test_grounded_class_recommendation_is_single_read_only_candidate() -> None:
+def test_grounded_class_recommendation_targets_family_candidate() -> None:
     llm = ScriptedLLM(
         plans=[
             make_plan(
@@ -991,9 +991,9 @@ def test_grounded_class_recommendation_is_single_read_only_candidate() -> None:
     before_version = dm.slot_store.version
     before_snapshot = dm.slot_store.export_snapshot()
 
-    reply = dm.process("从合法机器人类别中明确只推荐一个，但先不要修改任务")
+    reply = dm.process("从合法机器人系列中明确只推荐一个，但先不要修改任务")
 
-    assert "明确推荐机器人类别【观察级ROV】" in reply
+    assert "明确推荐机器人系列【观察级深海机器人】" in reply
     assert "本轮仅提供建议，尚未写入任务" in reply
     assert "轻型工作级深海机器人" not in reply
     assert "AUV" not in reply
@@ -1002,7 +1002,7 @@ def test_grounded_class_recommendation_is_single_read_only_candidate() -> None:
     assert dm.slot_store.export_snapshot() == before_snapshot
 
 
-def test_accepting_class_recommendation_cannot_write_family_or_variant() -> None:
+def test_accepting_class_worded_recommendation_writes_family_not_variant() -> None:
     llm = ScriptedLLM(
         plans=[
             make_plan(
@@ -1023,10 +1023,9 @@ def test_accepting_class_recommendation_cannot_write_family_or_variant() -> None
         ],
         extractions=[
             extraction_result(
-                slot_candidate("equipment_class", "观察级ROV", raw_value="确认"),
                 slot_candidate(
                     "equipment_family",
-                    "轻型工作级深海机器人",
+                    "观察级深海机器人",
                     raw_value="确认",
                 ),
                 slot_candidate(
@@ -1040,18 +1039,18 @@ def test_accepting_class_recommendation_cannot_write_family_or_variant() -> None
     dm = DialogueManager(llm, KnowledgeBase())
     _seed_pipeline_inspection_task(dm)
 
-    recommendation = dm.process("请只推荐一个合法机器人类别，不要修改任务")
+    recommendation = dm.process("请只推荐一个合法机器人系列，不要修改任务")
     version_before = dm.slot_store.version
     reply = dm.process("那就按你刚才推荐的选")
     state = dm.slot_store.get_task_state()
 
-    assert "明确推荐机器人类别【观察级ROV】" in recommendation
-    assert state["equipment_class"] == "observation_rov"
-    assert state.get("equipment_family") is None
-    assert state.get("equipment_type") is None
+    assert "明确推荐机器人系列【观察级深海机器人】" in recommendation
+    assert state.get("equipment_class") == "observation_rov"
+    assert state["equipment_family"] == "观察级深海机器人"
+    assert state.get("equipment_type") == "观察级深海机器人 75HP"
     assert dm.slot_store.version == version_before + 1
     assert dm.phase != "blocked_hard"
-    assert "机器人类别：观察级ROV" in reply
+    assert "机器人系列：观察级深海机器人" in reply
 
 
 def test_device_class_comparison_uses_project_configuration_only() -> None:
@@ -1822,8 +1821,6 @@ def test_unit_normalization() -> None:
     candidates = {item["canonical_key"]: item for item in result["slot_candidates"]}
     assert candidates["water_depth"]["normalized_value"] == 45.72
     assert candidates["duration"]["normalized_value"] == 9000
-
-
 
 
 

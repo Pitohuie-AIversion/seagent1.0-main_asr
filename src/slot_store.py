@@ -153,6 +153,7 @@ ROBOT_CASCADE_DEPENDENCIES = {
     "equipment_type": (
         "equipment_unit_id",
         "equipment_name",
+        "payload",
     ),
 }
 
@@ -178,13 +179,20 @@ def invalidate_robot_cascade_dependents(
 ) -> None:
     """Reset downstream dependent slots when a parent cascade slot changes."""
     preserve_set = set(preserve_keys) if preserve_keys else set()
-    for parent_key in changed_parent_keys:
+    queue = list(changed_parent_keys or [])
+    visited: set[str] = set()
+    while queue:
+        parent_key = queue.pop(0)
+        if parent_key in visited:
+            continue
+        visited.add(parent_key)
         dependents = ROBOT_CASCADE_DEPENDENCIES.get(parent_key, ())
         for dep_key in dependents:
             if dep_key in preserve_set:
                 continue
             if dep_key in target_slots:
                 reset_slot_to_missing(target_slots[dep_key], source="system_dependency_invalidation")
+            queue.append(dep_key)
 
 
 def validate_specification_selector_input(

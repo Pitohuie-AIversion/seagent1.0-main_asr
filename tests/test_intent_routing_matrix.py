@@ -98,6 +98,77 @@ class TestInteractionPlanRoutingContract(unittest.TestCase):
         self.assertEqual(result.dialogue_mode, "task_collection")
         self.assertTrue(result.should_update_slots)
 
+    def test_bare_expected_slot_alias_corrects_clarify_to_write(self):
+        mistaken_plan = make_plan(
+            "CLARIFY",
+            subject_type="device_class",
+            subject_text="观察级ROV",
+            clarification_reason=(
+                "用户输入'观察级ROV'属于设备类别，但当前任务待填字段为"
+                "equipment_family 和 equipment_type。"
+            ),
+        )
+        llm = ScriptedLLM(plans=[mistaken_plan])
+        router = IntentRouter(llm)
+
+        result = router.route(
+            "观察级ROV",
+            [],
+            {"task_type_key": "pipeline_inspection"},
+            phase="collecting",
+            expected_slots=["equipment_family", "equipment_type"],
+            expected_slot_options=[
+                {
+                    "key": "equipment_family",
+                    "allowed_values": ["观察级深海机器人"],
+                    "alias_mappings": {"观察级ROV": "观察级深海机器人"},
+                },
+                {
+                    "key": "equipment_type",
+                    "allowed_values": ["观察级深海机器人 75HP"],
+                    "alias_mappings": {},
+                },
+            ],
+        )
+
+        self.assertEqual(result.interaction_plan.operation, "WRITE")
+        self.assertEqual(result.dialogue_mode, "task_collection")
+        self.assertTrue(result.should_update_slots)
+
+    def test_expected_slot_alias_question_is_not_corrected_to_write(self):
+        read_plan = make_plan(
+            "READ",
+            query_intent="DEVICE_CAPABILITY",
+            subject_type="device_class",
+            subject_text="观察级ROV",
+            relation="compare",
+            source_policy="project_kb",
+        )
+        llm = ScriptedLLM(plans=[read_plan])
+        router = IntentRouter(llm)
+
+        result = router.route(
+            "观察级ROV和AUV哪个更合适？",
+            [],
+            {"task_type_key": "pipeline_inspection"},
+            phase="collecting",
+            expected_slots=["equipment_family", "equipment_type"],
+            expected_slot_options=[
+                {
+                    "key": "equipment_family",
+                    "allowed_values": ["观察级深海机器人", "水下无人自主航行器"],
+                    "alias_mappings": {
+                        "观察级ROV": "观察级深海机器人",
+                        "AUV": "水下无人自主航行器",
+                    },
+                },
+            ],
+        )
+
+        self.assertEqual(result.interaction_plan.operation, "READ")
+        self.assertEqual(result.dialogue_mode, "knowledge_qa")
+        self.assertFalse(result.should_update_slots)
+
 
 class TestReadAndClarifyStateInvariance(unittest.TestCase):
     def setUp(self):

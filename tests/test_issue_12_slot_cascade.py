@@ -1568,6 +1568,112 @@ class TestIssue12SlotCascade(unittest.TestCase):
         slots = self.dm.slot_store.slots
         self.assertEqual(slots["equipment_type"].value, "通用工作级深海机器人 250HP")
 
+    def test_19b_equipment_type_change_clears_payload(self):
+        """19b. payload 依赖 equipment_type；型号变化后必须重新选择工具。"""
+        new_slots = {
+            "equipment_type": Slot(
+                "equipment_type",
+                value="轻型工作级深海机器人 150HP",
+                status="valid",
+            ),
+            "payload": Slot(
+                "payload",
+                value=["激光标尺"],
+                value_type="list",
+                status="valid",
+            ),
+            "equipment_unit_id": Slot(
+                "equipment_unit_id",
+                value="LROV-150-001",
+                status="valid",
+            ),
+            "equipment_name": Slot(
+                "equipment_name",
+                value="LROV-150-001",
+                status="valid",
+            ),
+        }
+
+        invalidate_robot_cascade_dependents(new_slots, ["equipment_type"])
+
+        self.assertEqual(new_slots["payload"].status, "missing")
+        self.assertEqual(new_slots["payload"].value, [])
+        self.assertEqual(
+            new_slots["payload"].source,
+            "system_dependency_invalidation",
+        )
+
+    def test_19b2_equipment_family_change_clears_payload_transitively(self):
+        """19b2. 系列变化会使型号变化；payload 必须随型号传递失效。"""
+        new_slots = {
+            "equipment_family": Slot(
+                "equipment_family",
+                value="轻型工作级深海机器人",
+                status="valid",
+            ),
+            "equipment_type": Slot(
+                "equipment_type",
+                value="轻型工作级深海机器人 150HP",
+                status="valid",
+            ),
+            "payload": Slot(
+                "payload",
+                value=["TSS管缆跟踪传感器"],
+                value_type="list",
+                status="valid",
+            ),
+        }
+
+        invalidate_robot_cascade_dependents(new_slots, ["equipment_family"])
+
+        self.assertEqual(new_slots["equipment_type"].status, "missing")
+        self.assertEqual(new_slots["payload"].status, "missing")
+        self.assertEqual(new_slots["payload"].value, [])
+
+    def test_19c_equipment_type_switch_clears_committed_payload(self):
+        """19c. 已选工具后切换不同 equipment_type，payload 回到待填。"""
+        self._apply_updates(
+            {
+                "equipment_type": "轻型工作级深海机器人 150HP",
+                "payload": ["激光标尺"],
+            },
+            task_type_key="pipeline_inspection",
+        )
+        self.assertEqual(self.dm.slot_store.slots["payload"].status, "valid")
+        self.assertEqual(self.dm.slot_store.slots["payload"].value, ["激光标尺"])
+
+        self._apply_updates(
+            {"equipment_type": "观察级深海机器人 75HP"},
+            task_type_key="pipeline_inspection",
+        )
+
+        slots = self.dm.slot_store.slots
+        self.assertEqual(slots["equipment_type"].value, "观察级深海机器人 75HP")
+        self.assertEqual(slots["payload"].status, "missing")
+        self.assertEqual(slots["payload"].value, [])
+
+    def test_19d_same_turn_equipment_type_and_payload_keeps_new_payload(self):
+        """19d. 同轮选择新型号和新工具时，不清掉本轮显式 payload。"""
+        self._apply_updates(
+            {
+                "equipment_type": "轻型工作级深海机器人 150HP",
+                "payload": ["激光标尺"],
+            },
+            task_type_key="pipeline_inspection",
+        )
+        self._apply_updates(
+            {
+                "equipment_type": "观察级深海机器人 75HP",
+                "payload": ["腐蚀检测探头"],
+            },
+            task_type_key="pipeline_inspection",
+        )
+
+        slots = self.dm.slot_store.slots
+        self.assertEqual(slots["equipment_type"].value, "观察级深海机器人 75HP")
+        self.assertEqual(slots["payload"].status, "valid")
+        self.assertEqual(slots["payload"].value, ["腐蚀检测探头"])
+
     def test_20_same_parent_value_recommitted_does_not_clear_downstream(self):
         """20. 相同 parent 值重复提交不清空下级有效槽位。"""
         self._apply_updates(

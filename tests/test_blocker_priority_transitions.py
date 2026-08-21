@@ -70,6 +70,28 @@ class BlockerPriorityTransitionsTest(unittest.TestCase):
         self.assertEqual(self.dm.phase, "blocked_hard")
         self.assertEqual(res["type"], "hard")
 
+    def test_02b_soft_constraint_details_are_not_added_to_left_reply(self):
+        v_soft = self._create_violation("C001", "soft")
+
+        reply = self.dm._ensure_constraint_details(
+            "所有必填字段已收集完成。请查看右侧约束看板。",
+            {"type": "soft", "violations": [v_soft]},
+        )
+
+        self.assertNotIn("C001", reply)
+        self.assertNotIn("Test violation C001", reply)
+
+    def test_02c_hard_constraint_details_are_added_to_left_reply(self):
+        v_hard = self._create_violation("C002", "hard")
+
+        reply = self.dm._ensure_constraint_details(
+            "当前任务存在硬约束阻塞，无法发布。",
+            {"type": "hard", "violations": [v_hard]},
+        )
+
+        self.assertIn("C002", reply)
+        self.assertIn("Test violation C002", reply)
+
     # 3. collecting + hard + soft -> blocked_hard
     def test_03_collecting_plus_hard_and_soft_transitions_to_blocked_hard(self):
         self.dm.phase = "collecting"
@@ -80,6 +102,10 @@ class BlockerPriorityTransitionsTest(unittest.TestCase):
         res = self.dm._run_constraint_check({"water_depth"})
         self.assertEqual(self.dm.phase, "blocked_hard")
         self.assertEqual(res["type"], "hard")
+        self.assertEqual(
+            [v.constraint_id for v in res["violations"]],
+            ["C002"],
+        )
 
     # 4. blocked_soft + soft -> blocked_soft
     def test_04_blocked_soft_plus_soft_remains_blocked_soft(self):
@@ -100,6 +126,10 @@ class BlockerPriorityTransitionsTest(unittest.TestCase):
         res = self.dm._run_constraint_check({"water_depth"})
         self.assertEqual(self.dm.phase, "blocked_hard")
         self.assertEqual(res["type"], "hard")
+        self.assertEqual(
+            [v.constraint_id for v in res["violations"]],
+            ["C002"],
+        )
 
     # 6. blocked_soft + hard + soft -> blocked_hard
     def test_06_blocked_soft_plus_hard_and_soft_transitions_to_blocked_hard(self):
@@ -111,6 +141,10 @@ class BlockerPriorityTransitionsTest(unittest.TestCase):
         res = self.dm._run_constraint_check({"water_depth"})
         self.assertEqual(self.dm.phase, "blocked_hard")
         self.assertEqual(res["type"], "hard")
+        self.assertEqual(
+            [v.constraint_id for v in res["violations"]],
+            ["C002"],
+        )
 
     # 7. blocked_hard + hard -> blocked_hard
     def test_07_blocked_hard_plus_hard_remains_blocked_hard(self):
