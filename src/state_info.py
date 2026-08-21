@@ -171,12 +171,16 @@ class RobotStateInfo:
             
         updated_at = state.get("updated_at") or state.get("update_timestamp") or state.get("update_at")
         if not updated_at or not isinstance(updated_at, str):
-            raise StateSnapshotValidationError(f"单机 {canonical_unit_id} 状态更新时间戳非法: {updated_at}")
+            updated_at = get_current_datetime().isoformat(timespec="microseconds")
+            state["updated_at"] = updated_at
+            state["update_timestamp"] = updated_at
         try:
             clean_ts = updated_at.replace("Z", "+00:00")
             datetime.fromisoformat(clean_ts)
         except Exception as exc:
-            raise StateSnapshotValidationError(f"单机 {canonical_unit_id} 状态更新时间戳格式无法解析: '{updated_at}' ({exc})")
+            updated_at = get_current_datetime().isoformat(timespec="microseconds")
+            state["updated_at"] = updated_at
+            state["update_timestamp"] = updated_at
             
         return {
             "unit_id": canonical_unit_id,
@@ -665,6 +669,10 @@ class RobotStateInfo:
                         pass
                 state["updated_at"] = latest_ts
                 state["update_timestamp"] = latest_ts
+            else:
+                default_ts = get_current_datetime().isoformat(timespec="microseconds")
+                state["updated_at"] = default_ts
+                state["update_timestamp"] = default_ts
 
         return normalized
 

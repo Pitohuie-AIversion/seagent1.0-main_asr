@@ -239,4 +239,9 @@ def parse_relative_datetime(
     minute = min(59, max(0, minute))
     second = min(59, max(0, second))
 
+    # 跨天确定性纠偏：若基准时间 base_dt 为夜间(>=18点)且表达式包含"凌晨"或"次日"，自动将日期向后推导 1 天(D+1)
+    if base_dt and base_dt.hour >= 18 and re.search(r"凌晨|次日|明早|次晨", search_target):
+        if target_date == base_dt.date():
+            target_date = target_date + timedelta(days=1)
+
     return f"{target_date.strftime('%Y-%m-%d')}T{hour:02d}:{minute:02d}:{second:02d}"

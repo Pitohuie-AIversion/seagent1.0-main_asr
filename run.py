@@ -19,6 +19,7 @@ _ensure_positive_int_env("OMP_NUM_THREADS", "1")
 _ensure_positive_int_env("MKL_NUM_THREADS", "1")
 
 import sys
+import time
 import yaml
 from pathlib import Path
 from flask import request, jsonify
@@ -91,6 +92,9 @@ def startup():
         asr_service = ASRService(ASRConfig(model_path=Path("mock")))
         asr_service.load()
         web_backend.init_asr_service(asr_service)
+
+        # 启动 MCP 桥接服务 (OFFLINE_MOCK 模式自动连通 Mock 9091)
+        _init_mcp_service_if_requested(kb, is_mock=True)
         print("✅ Mock models loaded successfully (Dry Run Mode)")
         return
 
@@ -134,7 +138,47 @@ def startup():
         print(f"⚠️ ASR initialization failed ({exc}); ASR requests will return unavailable")
         web_backend.init_asr_service(None)
 
+    _init_mcp_service_if_requested(kb, is_mock=False)
     print("✅ Model loaded successfully")
+
+
+_mock_rosbridge_srv = None
+
+
+def _init_mcp_service_if_requested(kb, is_mock: bool = False):
+    """初始化 SEAgent MCP 桥接服务"""
+    global _mock_rosbridge_srv
+    enable_mcp = os.environ.get("ENABLE_MCP") == "1" or "--mcp" in sys.argv or is_mock
+    if not enable_mcp:
+        return
+
+    try:
+        mcp_dir = str(Path(__file__).parent / "mcp")
+        if mcp_dir not in sys.path:
+            sys.path.insert(0, mcp_dir)
+
+        mcp_host = os.environ.get("MCP_HOST", "127.0.0.1")
+        mcp_port = int(os.environ.get("MCP_PORT", "9091" if is_mock else "9090"))
+
+        if is_mock and _mock_rosbridge_srv is None:
+            from mock_rosbridge_server import MockRosbridgeServer
+            _mock_rosbridge_srv = MockRosbridgeServer(port=mcp_port)
+            _mock_rosbridge_srv.start()
+            time.sleep(0.3)
+            print(f"🛠️ 本地 Mock rosbridge 仿真服务器已启动 (ws://127.0.0.1:{mcp_port})")
+
+        from bridge_service import SEAgentMCPBridgeService
+        mcp_bridge = SEAgentMCPBridgeService(
+            host=mcp_host,
+            port=mcp_port,
+            state_info=getattr(kb, "state_info", None),
+            connect_timeout=3.0,
+        )
+        mcp_bridge.start()
+        web_backend.init_mcp_bridge_service(mcp_bridge)
+        print(f"📡 MCP 桥接服务启动成功 (ws://{mcp_host}:{mcp_port})")
+    except Exception as exc:
+        print(f"⚠️ MCP 桥接服务初始化跳过: {exc}")
 
 
 if __name__ == "__main__":

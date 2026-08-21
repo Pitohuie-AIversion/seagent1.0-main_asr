@@ -402,6 +402,18 @@ class TaskValidator:
             (canonical_selection.get("family_id") if canonical_selection else None)
             or self.kb._resolve_family_key(str(task_state.get("equipment_family") or ""))
         )
+
+        # 优先防线：若仅显式指定了 equipment_family 而未指定 equipment_class，依据 Capabilities 筛选出的 domain 自动查找对应的父级 class_node
+        if class_node is None and has_explicit_family and family_id:
+            for c_node in domain.get("classes", []):
+                if any(
+                    f_node.get("family_id") == family_id
+                    for f_node in c_node.get("families", [])
+                ):
+                    class_node = c_node
+                    class_id = c_node.get("class_id")
+                    break
+
         family_node = None
         if class_node is not None and has_explicit_family:
             family_node = next(
@@ -426,7 +438,7 @@ class TaskValidator:
             "code": "NO_FEASIBLE_ROBOT_CANDIDATE",
             "message": (
                 f"当前任务条件下，已选机器人 {selected_level} "
-                f"'{selected_value}' 没有可行的下级机器人候选。"
+                f"'{selected_value}' 不符合作业能力要求 (Capabilities) 或没有可行的下级机器人候选。"
                 "请修改任务条件或更换机器人选择。"
             ),
             "details": {

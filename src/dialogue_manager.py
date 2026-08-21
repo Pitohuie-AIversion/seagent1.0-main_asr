@@ -969,29 +969,33 @@ class DialogueManager:
             reason = kb_evidence.get("reason")
             is_system_query = (
                 reason == "system_identity"
-                or context.get("subject_type") == "system_rule"
-                or any(kw in user_message for kw in ("你具备", "你能干", "你会", "你的能力", "你能做", "干什么", "会什么", "自我介绍", "系统功能", "系统能力"))
+                or context.get("subject_type") in {"system_rule", "device_family"}
+                or any(kw in user_message for kw in ("你具备", "你能干", "你会", "你的能力", "你能做", "干什么", "会什么", "自我介绍", "系统功能", "系统能力", "哪些能力", "能做什么"))
             )
             if is_system_query:
                 from .prompts import PUBLIC_IDENTITY_REPLY
                 return PUBLIC_IDENTITY_REPLY
 
-            if reason == "device_not_resolved":
-                if any(kw in user_message for kw in ("机器人", "所有", "支持", "哪些", "型号", "系列")):
-                    class_ans = self._build_grounded_device_class_answer(user_message, route)
-                    if class_ans:
-                        return class_ans
-                return "项目知识库中未找到该设备信息，请说明具体的机器人型号或名称；您也可以查询当前支持的所有机器人。"
+            if any(kw in user_message for kw in ("机器人", "所有", "支持", "哪些", "型号", "系列")):
+                class_ans = self._build_grounded_device_class_answer(user_message, route)
+                if class_ans:
+                    return class_ans
 
+            if reason == "device_not_resolved":
+                return "项目知识库中未找到该设备信息，请说明具体的机器人型号或名称；您也可以查询当前支持的所有机器人。"
             elif reason == "ambiguous_device_alias":
                 alias = kb_evidence.get("matched_alias", "该设备")
                 cands = kb_evidence.get("candidate_entities", [])
                 return f"设备别名【{alias}】对应多个候选设备，请明确说明具体型号系列。"
-            elif reason == "no_matching_device":
-                return "当前知识库中未检索到符合您询问条件的机器人设备。"
-            elif reason == "unsupported_relation":
+            elif reason in ("no_matching_device", "unsupported_relation"):
+                if any(kw in user_message for kw in ("能力", "系统", "功能", "机器人", "支持", "你能")):
+                    from .prompts import PUBLIC_IDENTITY_REPLY
+                    return PUBLIC_IDENTITY_REPLY
                 return "当前暂不支持该维度的查询，您可以查询机器人的能力、载荷、所属系列或适合作业水深。"
             else:
+                if any(kw in user_message for kw in ("能力", "系统", "功能", "机器人", "支持", "你能")):
+                    from .prompts import PUBLIC_IDENTITY_REPLY
+                    return PUBLIC_IDENTITY_REPLY
                 return "当前知识库未提供该信息。"
 
         if kb_evidence.get("reason") == "system_identity" or kb_evidence.get("query_mode") == "system_identity":

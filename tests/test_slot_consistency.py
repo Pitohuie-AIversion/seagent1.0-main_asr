@@ -67,8 +67,23 @@ def seed_complete_valid_pipeline_task(dm, kb):
 
     allowed_rovs = kb.get_task_allowed_robot_variants(task_type_key)
     selected_rov = allowed_rovs[0] if allowed_rovs else kb.get_all_rovs()[0]
+    for rov in allowed_rovs:
+        unit_ids = rov.get("unit_ids", [])
+        if unit_ids:
+            for u_id in unit_ids:
+                status_info = kb.state_info.get_robot_state(u_id) or {}
+                if status_info.get("overall_status") in (None, "available"):
+                    selected_rov = rov
+                    equipment_unit_id = u_id
+                    kb.state_info.set_status(u_id, {"status": "available", "overall_status": "available", "current_velocity": 0.1, "water_turbidity": 1.0, "turbidity": 1.0, "obstacle_density": "low"})
+                    break
+            else:
+                continue
+            break
+    else:
+        equipment_unit_id = selected_rov.get("unit_ids", ["LROV-150-001"])[0]
+        kb.state_info.set_status(equipment_unit_id, {"status": "available", "overall_status": "available", "current_velocity": 0.1, "water_turbidity": 1.0, "turbidity": 1.0, "obstacle_density": "low"})
     equipment_type = selected_rov["full_name"]
-    equipment_unit_id = selected_rov.get("unit_ids", ["OBSROV-75-001"])[0]
 
     task_commons = kb.assets.get("payload_options", {}).get(task_type_key, {}).get("common", [])
     supported_payloads = selected_rov.get("supported_payloads", [])
@@ -78,19 +93,31 @@ def seed_complete_valid_pipeline_task(dm, kb):
     vessels = [v["id"] for v in kb.assets.get("vessels", []) if v.get("available", True)]
     support_vessel = vessels[0] if vessels else "DSV-Oceanic"
 
+    equipment_class = selected_rov.get("robot_class") or "work_class_rov"
+    equipment_family = selected_rov.get("family_full_name") or selected_rov.get("family") or "通用工作级ROV"
+    equipment_type = selected_rov.get("full_name") or "通用工作级ROV-150HP"
+
+    if hasattr(kb, "environment_info") and hasattr(kb.environment_info, "environmental_states"):
+        kb.environment_info.environmental_states["陵水17-2油田"] = {
+            "water_turbidity": 1.0,
+            "obstacle_density": "low",
+            "current_velocity": 0.1
+        }
+
     slots_to_seed = {
         "internal_id": ("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "string"),
         "task_id": ("PI-20260718-001", "string"),
         "task_type_key": (task_type_key, "string"),
         "task_type": (task_type, "string"),
         "cable_type": (cable_type, "string"),
+        "oilfield_name": ("陵水17-2油田", "string"),
         "water_depth": (water_depth, "number"),
         "start_time": (start_time, "datetime"),
         "end_time": (end_time, "datetime"),
         "start_point": (start_point, "coord"),
         "end_point": (end_point, "coord"),
-        "equipment_class": (selected_rov.get("robot_class") or "observation_rov", "string"),
-        "equipment_family": (selected_rov.get("family_full_name") or selected_rov.get("family") or "ROV", "string"),
+        "equipment_class": (equipment_class, "string"),
+        "equipment_family": (equipment_family, "string"),
         "equipment_type": (equipment_type, "string"),
         "equipment_unit_id": (equipment_unit_id, "string"),
         "payload": (payload, "list"),
