@@ -116,13 +116,13 @@ class TestBridgeService:
         assert 1.0 in actions  # RESUME
         assert 7.0 in actions  # CLEAR_BLOCK
 
-    def test_Q4_telemetry_auto_synced_to_state_info(self, bridge, state_info):
-        """[Q4] 遥测数据应自动被推送到 SEAgent 的 RobotStateInfo"""
+    def test_Q4_telemetry_tracker_memory(self, bridge):
+        """[Q4] 遥测数据在内存 TaskStatusTracker 中保持，不污染 state.yaml 静态配置"""
         time.sleep(0.4)
-        snapshot = state_info.get_unit_state_snapshot("WROV-250-001")
-        assert snapshot is not None
-        assert snapshot["state"]["water_depth"] == pytest.approx(312.4)
-        assert snapshot["state"]["battery_level"] == pytest.approx(94.5)
+        t = bridge.tracker.latest_telemetry()
+        assert t is not None
+        assert t.water_depth == pytest.approx(312.4)
+        assert t.altitude == pytest.approx(2.5)
 
     def test_Q5_wait_for_task_finish(self, bridge):
         """[Q5] 下发任务并等待任务在机器人侧推演至 FINISH"""
@@ -139,12 +139,12 @@ class TestBridgeService:
         assert final_item.status == 5  # FINISH
         assert final_item.status_name == "FINISH"
 
-    def test_Q6_full_e2e_dispatch_track_sync(self, bridge, state_info, rosbridge_server):
-        """[Q6] 完整闭环：下发意图 → 遥测同步 → 等待完成 → 数据隔离确证"""
-        # 1. 验证下发前 StateInfo 水深
+    def test_Q6_full_e2e_dispatch_track_sync(self, bridge, rosbridge_server):
+        """[Q6] 完整闭环：下发意图 → 遥测追踪 → 等待完成"""
+        # 1. 验证下发前遥测
         time.sleep(0.2)
-        snap1 = state_info.get_unit_state_snapshot("WROV-250-001")
-        assert snap1["state"]["water_depth"] == pytest.approx(312.4)
+        t1 = bridge.tracker.latest_telemetry()
+        assert t1 is not None and t1.water_depth == pytest.approx(312.4)
 
         # 2. 下发采油树阀门任务（规划水深 300m）
         intent = {
@@ -157,7 +157,3 @@ class TestBridgeService:
         # 3. 等待机器人侧执行完成
         item = bridge.wait_for_task_finish(tid, timeout=5.0)
         assert item is not None and item.is_finished()
-
-        # 4. 验证 StateInfo 中的水深依然是遥测物理深度 (312.4m)，未被 300m 规划值篡改
-        snap2 = state_info.get_unit_state_snapshot("WROV-250-001")
-        assert snap2["state"]["water_depth"] == pytest.approx(312.4)

@@ -408,7 +408,7 @@ class TestTelemetryFeedbackSimulation:
         return adapter, state_info
 
     def test_F1_telemetry_depth_synced(self, tmp_path):
-        """[F1] 水深遥测：Mock /task/system_status -> SEAgent StateInfo 水深字段"""
+        """[F1] 水深遥测：Mock /task/system_status -> 返回水深数据字典，不污染 state.yaml"""
         import asyncio
         adapter, state_info = self._get_adapter_and_state(tmp_path)
 
@@ -417,42 +417,36 @@ class TestTelemetryFeedbackSimulation:
             # Mock Server 返回 WROV-250-001 水深 312.4m
             assert "WROV-250-001" in telemetry
             assert telemetry["WROV-250-001"]["current_depth"] == pytest.approx(312.4)
-            # 验证写入 SEAgent StateInfo
-            snapshot = state_info.get_unit_state_snapshot("WROV-250-001")
-            assert snapshot["state"]["water_depth"] == pytest.approx(312.4)
 
         asyncio.run(_run())
         print("\n[F1] WROV-250-001 水深回传: 312.4m ✅")
 
     def test_F2_telemetry_battery_synced(self, tmp_path):
-        """[F2] 电量遥测：Mock /task/system_status -> SEAgent StateInfo 电量字段"""
+        """[F2] 电量遥测：Mock /task/system_status -> 返回电量数据字典"""
         import asyncio
         adapter, state_info = self._get_adapter_and_state(tmp_path)
 
         async def _run():
             telemetry = await adapter.fetch_and_sync_telemetry(state_info)
             assert telemetry["WROV-250-001"]["battery_percentage"] == pytest.approx(94.5)
-            snapshot = state_info.get_unit_state_snapshot("WROV-250-001")
-            assert snapshot["state"]["battery_level"] == pytest.approx(94.5)
 
         asyncio.run(_run())
         print("\n[F2] WROV-250-001 电量回传: 94.5% ✅")
 
     def test_F3_telemetry_online_status_synced(self, tmp_path):
-        """[F3] 在线状态遥测：online=true -> SEAgent status='online'"""
+        """[F3] 在线状态遥测：Mock /task/system_status -> 返回 online 数据"""
         import asyncio
         adapter, state_info = self._get_adapter_and_state(tmp_path)
 
         async def _run():
-            await adapter.fetch_and_sync_telemetry(state_info)
-            snapshot = state_info.get_unit_state_snapshot("WROV-250-001")
-            assert snapshot["state"]["status"] == "online"
+            telemetry = await adapter.fetch_and_sync_telemetry(state_info)
+            assert telemetry["WROV-250-001"]["online"] is True
 
         asyncio.run(_run())
         print("\n[F3] WROV-250-001 在线状态回传: online ✅")
 
     def test_F4_multi_robot_telemetry_synced(self, tmp_path):
-        """[F4] 多机器人遥测：多台设备状态应同时写入 SEAgent StateInfo"""
+        """[F4] 多机器人遥测：多台设备状态字典在返回中包含"""
         import asyncio
         adapter, state_info = self._get_adapter_and_state(tmp_path)
 
@@ -469,7 +463,7 @@ class TestTelemetryFeedbackSimulation:
         print("\n[F4] 多机回传: WROV-250-001(312.4m,94.5%), LROV-150-001(85.0m,88.0%) ✅")
 
     def test_F5_telemetry_and_dispatch_full_roundtrip(self, tmp_path):
-        """[F5] 完整往返验证：先回传遥测更新状态，再下发任务，两步数据独立不相互污染"""
+        """[F5] 完整往返验证：先回传遥测，再下发任务，数据独立不相互污染"""
         import asyncio
         adapter, state_info = self._get_adapter_and_state(tmp_path)
 
@@ -486,9 +480,6 @@ class TestTelemetryFeedbackSimulation:
             cmds = await adapter.get_received_commands()
             assert cmds["total"] >= 1
             last_cmd = cmds["commands"][-1]["payload"]
-            # 下发后遥测数据不应被污染
-            snapshot = state_info.get_unit_state_snapshot("WROV-250-001")
-            assert snapshot["state"]["water_depth"] == pytest.approx(312.4)
             # 下发的 SysTaskCmd 坐标应来自 TaskIntent（非遥测数据）
             assert last_cmd["pos_target"][0]["position"]["z"] == pytest.approx(-300.0)
 

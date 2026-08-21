@@ -54,23 +54,6 @@ class SeagentROS2MCPAdapter:
                     raise RuntimeError(f"Failed to read topic: {result.get('message')}")
 
                 telemetry_data = result.get("data", {})
-
-                # 遍历并将真实遥测写入 SEAgent 状态中心
-                for unit_id, rdata in telemetry_data.items():
-                    now_str = datetime.now(timezone.utc).isoformat(timespec="microseconds")
-                    params = {
-                        "status": "online" if rdata.get("online") else "offline",
-                        "battery_level": rdata.get("battery_percentage"),
-                        "water_depth": rdata.get("current_depth"),
-                        "update_timestamp": now_str,
-                        "updated_at": now_str
-                    }
-                    try:
-                        state_info.set_status(equipment_name=unit_id, params=params)
-                    except Exception:
-                        # 如果是未在 fleet 中登记的设备，跳过
-                        pass
-
                 return telemetry_data
 
     async def dispatch_task_intent(self, task_intent: Dict[str, Any]) -> Dict[str, Any]:

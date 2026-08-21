@@ -127,8 +127,8 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
             "state": {
                 "overall_status": "available",
                 "is_online": True,
-                "current_velocity": 0.65,  # 触发 C015
-                "turbidity": 6.5,           # 触发 C013
+                "water_current_velocity": 0.65,  # 触发 C015
+                "water_turbidity": 6.5,           # 触发 C013
                 "updated_at": "2026-08-14T16:00:00+08:00",
             }
         }

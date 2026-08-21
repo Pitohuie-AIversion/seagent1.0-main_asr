@@ -1377,7 +1377,7 @@ class TaskValidator:
 
         elif check == "turbidity":
             if state_dict and isinstance(state_dict, dict):
-                turb = state_dict.get("turbidity")
+                turb = state_dict.get("water_turbidity")
                 if turb is not None:
                     thresholds = c["thresholds"]
                     if _matches_numeric_thresholds(turb, thresholds):
@@ -1390,7 +1390,7 @@ class TaskValidator:
 
         elif check == "current_velocity":
             if state_dict and isinstance(state_dict, dict):
-                vel = state_dict.get("current_velocity")
+                vel = state_dict.get("water_current_velocity")
                 if vel is not None:
                     thresholds = c["thresholds"]
                     if _matches_numeric_thresholds(vel, thresholds):

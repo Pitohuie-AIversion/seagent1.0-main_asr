@@ -1732,8 +1732,8 @@ class KnowledgeBase:
                 if state_dict and isinstance(state_dict, dict):
                     state_lines = []
                     label_map = {
-                        "current_velocity": "当前流速",
-                        "turbidity": "浑浊度",
+                        "water_current_velocity": "环境水流速度",
+                        "water_turbidity": "水体浑浊度",
                         "obstacle_density": "障碍物密度",
                         "mothership_support": "母船支援",
                         "update_timestamp": "更新时间",
@@ -1749,10 +1749,22 @@ class KnowledgeBase:
                         "acoustic_comms_status": "水声无线通信状态",
                         "tether_connection_status": "脐带缆连接状态"
                     }
+                    robot_class = (selected_robot.get("robot_class") or "").lower()
+                    is_auv = robot_class == "auv" or "auv" in (selected_robot.get("full_name") or "").lower() or "auv" in str(state_selector).lower()
+                    
                     for k, v in state_dict.items():
                         if v is not None and not k.startswith("_"):
+                            # 过滤不适用于当前设备类别的字段，消除 LLM 产生“无缆设备有脐带缆”的输出歧义
+                            if is_auv and k == "tether_connection_status":
+                                continue
+
                             label = label_map.get(k, k)
-                            if isinstance(v, float):
+                            if k == "water_current_velocity":
+                                if isinstance(v, (int, float)):
+                                    state_lines.append(f"  - {label} ({k}): {v:.2f} m/s")
+                                else:
+                                    state_lines.append(f"  - {label} ({k}): {v} m/s")
+                            elif isinstance(v, float):
                                 state_lines.append(f"  - {label} ({k}): {v:.2f}")
                             else:
                                 state_lines.append(f"  - {label} ({k}): {v}")
@@ -2197,8 +2209,8 @@ class KnowledgeBase:
 
     def get_robot_state_dict(self, equipment_selector: str) -> dict:
         empty_state = {
-            "current_velocity": None,
-            "turbidity": None,
+            "water_current_velocity": None,
+            "water_turbidity": None,
             "battery_percent": None,
             "current_mode": None,
             "communication_status": None,

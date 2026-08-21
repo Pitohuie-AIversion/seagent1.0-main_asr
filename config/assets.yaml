@@ -149,233 +149,311 @@ payload_catalog:
     aliases: ["多功能机械臂", "液压机械臂", "7功能机械臂", "5功能机械臂", "主从机械臂", "液压机械手", "轻型多功能液压机械臂"]
     description: "多自由度高负载液压抓取与干预工具，用于水下采油树控制面板阀门操作、插拔面板、清理障碍物及重型水下工装抓握。"
     capabilities: ["插拔", "抓取", "阀门拧转", "水下干预"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   side_scan_sonar:
     name: "侧扫声呐"
     aliases: ["侧扫声呐", "侧扫声纳"]
     description: "利用水声发射和接收原理对海底两侧进行高分辨率声学成像的设备，主要用于大面积海底地质扫描、管缆悬空/埋设巡检及水下目标物搜寻。"
     capabilities: ["声学成像", "海底扫测", "管缆路由巡检", "目标物搜寻"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   forward_looking_sonar:
     name: "前视声呐"
     aliases: ["前视声呐", "前视声纳", "避障声呐"]
     description: "用于机器人前方水域远距离障碍物探测、地形识别与水下碰撞预警的声学感知设备。"
     capabilities: ["水下避障", "前方地形探测", "导航辅助"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   imaging_sonar:
     name: "成像声呐"
     aliases: ["成像声呐", "二维成像声呐", "三维成像声呐"]
     description: "在高浑浊度或低能见度水下环境中提供近距离高清晰度二维/三维声学图像，辅助机械臂对准与结构件精确定位。"
     capabilities: ["高浑浊度成像", "精确定位辅助", "水下近景观测"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   hd_camera:
     name: "高清水下摄像机"
     aliases: ["摄像机", "高清摄像机", "水下摄像机"]
     description: "提供水下高分辨率光学彩色画面，用于管缆外观腐蚀检测、油田水下结构件近距离外观巡检与作业过程实时监控。"
     capabilities: ["光学巡检", "外观检测", "实时作业监控"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   pan_tilt_camera:
     name: "云台摄像机"
     aliases: ["云台摄像机", "云台相机", "PTZ摄像机", "可控云台镜头"]
     description: "搭载俯仰和旋转云台机构的水下高清晰度相机，用于全方位灵活观察水下作业死角与精细结构。"
     capabilities: ["多角度视觉观测", "死角巡检", "姿态可控监控"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   led_lighting:
     name: "LED水下照明灯"
     aliases: ["LED水下照明灯", "LED照明系统", "水下灯", "照明灯"]
     description: "为深海无光或微光环境提供强光补光，确保摄像机和光学视觉系统获得清晰画面。"
     capabilities: ["水下补光", "夜间/深海照明"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   laser_scaling:
     name: "激光标尺"
     aliases: ["激光标尺", "激光测量仪"]
     description: "通过在被测物体表面投影已知间距的激光光点，辅助水下摄像机进行测量与尺寸评估。"
     capabilities: ["尺寸测量", "裂纹测量", "距离标定"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   ins_nav:
     name: "INS惯性导航系统"
     aliases: ["INS", "惯导", "INS惯性导航系统", "惯性导航"]
     description: "高精度自主定位与姿态测量设备，提供水下机器人的三维位置、姿态角和角速度推算。"
     capabilities: ["高精度定位", "姿态测量", "无缝导航推算"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   dvl:
     name: "DVL多普勒测速仪"
     aliases: ["DVL", "多普勒测速仪", "DVL底锁"]
     description: "通过声学多普勒效应测量水下机器人相对于海床（底锁）或水体（水锁）的载体三维运动速度，有效抑制惯导漂移。"
     capabilities: ["底锁测速", "悬停定点", "速度推算"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   usbl:
     name: "USBL定位设备"
     aliases: ["USBL", "超短基线", "USBL超短基线定位系统", "USBL定位"]
     description: "利用母船声学换能器与机器人水下应答器进行相位差与时延测量，提供机器人相对于母船的绝对三维坐标。"
     capabilities: ["母船相对定位", "绝对三维定位", "目标追踪"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   acoustic_beacon:
     name: "水下定位信标"
     aliases: ["水下定位信标", "声学应答器", "定位信标", "应答器"]
     description: "用于在水下目标物或机器人上安装声学应答装置，向水面母船或 USBL 定位系统发送高精度定位声学脉冲。"
     capabilities: ["声学定位应答", "目标标定", "水下追踪"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   depth_sensor:
     name: "深度传感器"
     aliases: ["深度计", "深度传感器", "高度计"]
     description: "通过高精度压力感应测量机器人当前所在的水深与离底高度，支持自动定深与定高悬浮作业。"
     capabilities: ["水深测量", "定深控制", "离底高度测量"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   tss_cable_tracker:
     name: "TSS管缆跟踪传感器"
     aliases: ["TSS", "TSS管缆跟踪传感器", "管缆探测仪", "TSS 350", "TSS 440", "管缆追踪仪", "TSS追踪仪", "电磁管缆仪", "电磁检测传感器", "电磁检测仪", "电磁传感器"]
     description: "利用电磁感应原理探测埋入海床底质下方的金属管缆或通电电缆，实时测量管缆的平面偏航与埋深。"
     capabilities: ["埋深测量", "电磁管缆跟踪", "路由定位"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   high_pressure_water_jet:
     name: "高压水射流喷冲埋设模块"
     aliases: ["水射流", "喷冲埋设", "高压水射流喷冲埋设模块", "高压水枪", "高压冲水", "水射流开沟器", "水冲开沟模块"]
     description: "通过高压水流冲刷松散海床土壤开辟沟槽，将海底管缆顺畅埋入泥面以下指定深度。"
     capabilities: ["开沟埋设", "土壤冲刷", "海缆埋设"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   multibeam_sonar:
     name: "多波束声呐"
     aliases: ["多波束声纳", "多波束测深声呐"]
     description: "通过多个声学波束对海床和水下目标进行条带式测量与成像，用于地形测绘、目标轮廓获取和管缆路由调查。"
     capabilities: ["海床测绘", "地形测量", "目标轮廓成像"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   mechanical_scanning_sonar:
     name: "机械式声呐"
     aliases: ["机械式声呐", "机械扫描声呐", "旋转扫描声呐"]
     description: "利用机械换能器旋转扫描水下环境的声学成像设备，用于机器人周侧 360 度远距离目标识别与地形扫描。"
     capabilities: ["环视声学成像", "周侧障碍物扫描", "水下目标搜寻"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   corrosion_probe:
     name: "腐蚀检测探头"
     aliases: ["腐蚀探头", "腐蚀检测传感器", "CP", "CP探头", "阴极保护探头", "阴极电位探头", "CP电位计", "阴极保护电位测定仪", "检测探头"]
     description: "用于采集水下金属结构或管缆表面的腐蚀相关信号，测量阴极保护电位以评估腐蚀位置和程度。"
     capabilities: ["腐蚀检测", "阴极电位测量", "表面状态评估"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   thickness_sensor:
     name: "厚度检测传感器"
     aliases: ["厚度传感器", "壁厚检测传感器", "UT", "UT测厚", "UT测厚仪", "超声波测厚仪", "超声波壁厚仪", "壁厚测量仪"]
     description: "利用超声波测量管道或水下结构件的材料厚度，辅助识别减薄、磨损和腐蚀缺陷。"
     capabilities: ["壁厚测量", "减薄检测", "缺陷评估", "超声波无损检测"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   leak_detector:
     name: "泄漏检测传感器"
     aliases: ["泄漏传感器", "泄漏检测仪"]
     description: "用于感知管缆或水下设施周边的泄漏迹象，为异常定位和风险确认提供检测信息。"
     capabilities: ["泄漏检测", "异常定位", "风险监测"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   visual_inspection_skid:
     name: "管缆外观检测设备"
     aliases: ["管缆外观检测设备", "外观检测滑橇", "管缆外观检测仪"]
     description: "集成高清多视角相机、激光标尺和水下灯光的专用管缆巡检滑橇组件，用于高效率评估海底管缆表面防腐层与结构缺陷。"
     capabilities: ["外观缺陷巡检", "防腐层评估", "连续图像采集"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   cable_burial_device:
     name: "海缆压埋装置"
     aliases: ["压埋装置", "海缆压埋设备"]
     description: "用于在开沟或喷冲后引导海缆进入沟槽并完成压埋，支持管缆埋设作业。"
     capabilities: ["海缆压埋", "入沟引导"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   burial_depth_controller:
     name: "埋深控制装置"
     aliases: ["埋深控制器", "埋深闭环控制装置"]
     description: "根据埋深测量结果调节埋设作业参数，使管缆埋深保持在任务要求范围内。"
     capabilities: ["埋深测量反馈", "闭环控制"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   mechanical_trenching_module:
     name: "机械切割开沟模块"
     aliases: ["机械开沟模块", "切割开沟模块"]
     description: "通过机械切割方式破开较硬海床并形成沟槽，用于不适合单纯水射流喷冲的埋设工况。"
     capabilities: ["机械开沟", "硬质海床切割"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   seabed_geology_detector:
     name: "海床地质探测设备"
     aliases: ["海床地质探测仪", "海床地质传感器"]
     description: "用于获取海床底质和浅层地质信息，为开沟方式选择及埋设参数设置提供依据。"
     capabilities: ["海床底质探测", "浅层地质调查", "施工辅助"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   stereo_vision_module:
     name: "双目视觉模块"
     aliases: ["双目相机", "双目视觉"]
     description: "通过双摄像头获取目标的深度与空间信息，用于目标识别、距离估计和机械臂对准。"
     capabilities: ["立体视觉", "距离估计", "目标定位"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   three_dimensional_vision:
     name: "三维视觉系统"
     aliases: ["3D视觉系统", "三维视觉"]
     description: "融合视觉或深度信息构建目标区域的三维表示，用于结构识别、姿态估计和精细操作定位。"
     capabilities: ["三维重建", "姿态估计", "精细定位"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   electro_hydraulic_arm:
     name: "电液机械臂"
     aliases: ["电液作业机械臂", "电液操作臂", "轻型电液机械臂"]
     description: "采用电液驱动执行水下抓取、插拔和阀门操作，为精细干预任务提供稳定的操作能力。"
     capabilities: ["抓取", "插拔", "阀门操作", "水下干预"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   gripper:
     name: "夹爪"
     aliases: ["机械夹爪", "抓手"]
     description: "安装在机械臂末端，用于夹持、抓取和固定水下目标或作业工具。"
     capabilities: ["夹持", "抓取", "目标固定"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   hydraulic_cutter:
     name: "液压剪切器"
     aliases: ["切割工具", "液压剪切器", "液压切割刀", "水下剪切工具"]
     description: "由高压液压驱动的重型水下切割与剪切刀具，用于切断水下钢丝绳、缆绳、钢缆或清理缠绕障碍物。"
     capabilities: ["水下切割", "钢丝绳剪切", "障碍物清除"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   subsea_sampler:
     name: "采样器"
     aliases: ["采样器", "水下采样器", "海床底质采样器", "水样采集器"]
     description: "安装于 ROV 上的物理/化学采样抓取装置，支持采集海底沉积物泥样、水体样品或水下附着物。"
     capabilities: ["底质采样", "水体采样", "样品抓取"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   cleaning_brush:
     name: "清洗刷"
     aliases: ["清洗刷", "水下清洗刷", "液压旋转刷", "海生物清理刷"]
     description: "由液压或电力驱动的旋转清理刷头，用于刷除管道表面、井口面板和结构件上的海生物附着层及泥沙。"
     capabilities: ["海生物清理", "表面清洗", "检测前处理"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   synthetic_aperture_sonar:
     name: "合成孔径声呐"
     aliases: ["合成孔径声呐", "SAS", "SAS声呐"]
     description: "利用合成孔径技术提供超高分辨率海底声学成像的远距离扫描声呐，常用于 AUV 高精度管缆路由与海底大面积细微地貌扫测。"
     capabilities: ["超高分辨率成像", "大范围扫测", "细微目标识别"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   sub_bottom_profiler:
     name: "浅地层剖面仪"
     aliases: ["浅地层剖面仪", "SBP", "浅剖仪", "地层剖面声呐"]
     description: "发射低频声波穿透海底沉积物，获取海床下方数十米地层构造与埋藏物剖面的声学调查设备。"
     capabilities: ["浅地层剖面探测", "海底地质调查", "埋藏管缆探测"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   ctd_sensor:
     name: "CTD"
     aliases: ["CTD", "温盐深仪", "温度传感器", "压力传感器"]
     description: "高精度测量水体电导率（盐度）、温度和深度（压力）的水文测量传感器，为声学设备声速校正提供环境背景参数。"
     capabilities: ["水温测量", "水压深度测量", "盐度计算", "声速校正"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   optical_measurement_module:
     name: "光学测量模块"
     aliases: ["光学测量模块", "光学测量系统", "视觉测量模块"]
     description: "集成高分辨率光学相机与激光测距标尺的综合测量套件，用于精确评估水下结构件几何尺寸与缺陷。"
     capabilities: ["尺寸测量", "光学巡检", "缺陷评估"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   water_quality_sensor_suite:
     name: "水质传感器"
     aliases: ["水质传感器", "浊度传感器", "溶解氧传感器", "水质监测系统"]
     description: "用于测量水体浊度、溶解氧、pH值及悬浮颗粒物深度的多参数海洋环境监测传感器组。"
     capabilities: ["水质监测", "浊度测量", "溶解氧检测"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   cable_protection_tool:
     name: "海缆保护施工工具"
     aliases: ["海缆保护施工工具", "海缆保护工装", "套管安装工具"]
     description: "用于在海底管道或电缆交汇处安装防护套管、预制混凝土软体压块的水下施工专用工装。"
     capabilities: ["海缆防护", "软体压块敷设", "防护套管安装"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
   chassis_skid_module:
     name: "履带与滑橇组件"
     aliases: ["履带组件", "滑橇组件", "海床行走履带", "水下挂载滑橇"]
     description: "提供海底底质作业行走履带机构或模块化挂载工具滑橇，增强机器人在软泥海床的沉陷抵抗力与工具挂载能力。"
     capabilities: ["海床行走", "工具挂载", "底质承载"]
+    weight_in_air_kg: null # 空气中质量(kg)，静态预留字段（暂不启用逻辑校验）
+    weight_in_water_kg: null # 水下质量(kg)，静态预留字段（暂不启用逻辑校验）
 
 

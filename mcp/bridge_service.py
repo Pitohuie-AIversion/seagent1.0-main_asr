@@ -182,36 +182,5 @@ class SEAgentMCPBridgeService:
     # ------------------------------------------------------------------
 
     def _sync_telemetry_to_state_info(self, telemetry: ROVTelemetry) -> None:
-        """将 ROVTelemetry 同步到 SEAgent 的 RobotStateInfo"""
-        if self.state_info is None:
-            return
-
-        # 1. 支持标准单机 Pose / Alt
-        unit_id = "WROV-250-001"  # 默认工作级 ROV
-        params = {
-            "status": "online" if telemetry.health == 0 else "degraded",
-            "water_depth": telemetry.water_depth,
-            "altitude": telemetry.altitude,
-            "ctr_mode": telemetry.ctr_mode,
-            "update_timestamp": telemetry.received_at,
-            "updated_at": telemetry.received_at,
-        }
-        try:
-            self.state_info.set_status(equipment_name=unit_id, params=params)
-        except Exception as e:
-            logger.debug(f"[MCPBridgeService] 同步 {unit_id} 状态跳过: {e}")
-
-        # 2. 如果包含 Topside 扩展的多机 fleet_status 字典，逐一同步
-        raw_msg = getattr(telemetry, "raw_msg", {}) or {}
-        fleet = raw_msg.get("fleet_status", {})
-        for robot_id, rdata in fleet.items():
-            try:
-                self.state_info.set_status(equipment_name=robot_id, params={
-                    "status": "online" if rdata.get("online") else "offline",
-                    "water_depth": rdata.get("current_depth", 0.0),
-                    "battery_level": rdata.get("battery_percentage", 100.0),
-                    "update_timestamp": telemetry.received_at,
-                    "updated_at": telemetry.received_at,
-                })
-            except Exception:
-                pass
+        """遥测更新回调（保持内存快照，不污染 state.yaml 静态配置）"""
+        pass
