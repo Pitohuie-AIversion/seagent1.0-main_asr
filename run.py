@@ -163,7 +163,8 @@ def startup():
         model=LOCAL_MODEL_PATH,
         trust_remote_code=True,
         dtype="bfloat16" if torch.cuda.is_bf16_supported() else "float16",
-        max_num_seqs=1,
+        max_num_seqs=4,
+        enable_prefix_caching=True,
     )
 
     print("Loading knowledge base...")
@@ -172,6 +173,9 @@ def startup():
     llm_client = LLMClient(llm_engine, tok)
     manager = DialogueManager(llm_client, kb)
     web_backend.init_manager(manager)
+
+    # 预热后端核心 JSON Schema 与基本推理
+    _warmup_llm_client(llm_client)
 
     #增加asr模块260611
     print("Loading ASR model...")
@@ -188,6 +192,23 @@ def startup():
 
     _init_mcp_service_if_requested(kb, is_mock=False)
     print("✅ Model loaded successfully")
+
+
+def _warmup_llm_client(llm_client: LLMClient) -> None:
+    """在对外提供 HTTP 服务之前，预热 JSON Schema FSM 编译与核心 Token 缓存"""
+    if llm_client.is_mock:
+        return
+    print("🔥 预热 LLM 引擎与 JSON Schema FSM 编译...")
+    start_t = time.time()
+    try:
+        warmup_msgs = [{"role": "user", "content": "你好"}]
+        llm_client.classify_interaction(warmup_msgs, max_tokens=64)
+        llm_client.extract_slots(warmup_msgs, max_tokens=64)
+        llm_client.generate_text(warmup_msgs, max_tokens=32)
+        elapsed = time.time() - start_t
+        print(f"⚡ LLM 预热完成，耗时 {elapsed:.2f} 秒 (后续请求将享受零延迟启动与 KV 缓存)")
+    except Exception as exc:
+        print(f"⚠️ LLM 预热跳过或遇到警告: {exc}")
 
 
 _mock_rosbridge_srv = None
