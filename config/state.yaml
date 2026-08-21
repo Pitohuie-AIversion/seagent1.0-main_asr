@@ -1,4 +1,4 @@
-store_version: 675
+store_version: 794
 robots:
   CRAWLER-1600-001:
     water_current_velocity: 1.0
@@ -17,7 +17,7 @@ robots:
     acoustic_comms_status: normal
     tether_connection_status: normal
     version: 2
-    updated_at: '2026-08-21T17:20:45.986569+08:00'
+    updated_at: '2026-08-21T18:03:20.554033+08:00'
     depth: 350
   SPECIAL-600-001:
     water_current_velocity: 1.0
@@ -36,7 +36,7 @@ robots:
     acoustic_comms_status: normal
     tether_connection_status: normal
     version: 0
-    updated_at: '2026-04-19T13:55:00+08:00'
+    updated_at: '2026-08-21T18:03:20.554033+08:00'
   WROV-250-001:
     water_current_velocity: 1.0
     water_turbidity: 8.0
@@ -54,7 +54,7 @@ robots:
     acoustic_comms_status: normal
     tether_connection_status: normal
     version: 16
-    updated_at: '2026-08-21T10:47:54.934473+08:00'
+    updated_at: '2026-08-21T18:03:20.554033+08:00'
   LROV-150-001:
     water_current_velocity: 0.1
     water_turbidity: 1.0
@@ -72,7 +72,7 @@ robots:
     acoustic_comms_status: normal
     tether_connection_status: normal
     version: 63
-    updated_at: '2026-06-30T17:38:00.043602+08:00'
+    updated_at: '2026-08-21T18:03:20.554033+08:00'
   LROV-150-002:
     water_current_velocity: 0.1
     water_turbidity: 1.0
@@ -89,8 +89,8 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    version: 488
-    updated_at: '2026-08-21T17:23:01.763193+08:00'
+    version: 595
+    updated_at: '2026-08-21T18:03:20.554033+08:00'
     status: available
     current_velocity: 0.1
     turbidity: 1.0
@@ -110,8 +110,8 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    version: 82
-    updated_at: '2026-06-30T17:38:09.556567+08:00'
+    version: 94
+    updated_at: '2026-08-21T18:03:20.554033+08:00'
     current_velocity: 0.2
     turbidity: 3
   AUV-324cc-001:
@@ -131,4 +131,4 @@ robots:
     acoustic_comms_status: normal
     tether_connection_status: normal
     version: 0
-    updated_at: '2026-04-19T13:55:00+08:00'
+    updated_at: '2026-08-21T18:03:20.554033+08:00'
