@@ -1152,6 +1152,99 @@ class DialogueManager:
         self.slot_store.validation_result = res
         return res
 
+    def _task_uses_status_ref(self, status_ref: str | None) -> bool:
+        """Return whether the current task is tied to a specific robot state ref."""
+        if not status_ref:
+            return True
+
+        selectors = [
+            self.task_state.get("equipment_unit_id"),
+            self._last_built_json.get("equipment_unit_id"),
+        ]
+        unit_slot = self.slot_store.slots.get("equipment_unit_id")
+        if unit_slot and unit_slot.status == "valid" and unit_slot.value is not None:
+            selectors.append(unit_slot.value)
+
+        for selector in selectors:
+            if selector is None or selector == "":
+                continue
+            try:
+                resolved_ref = self.kb.state_info.resolve_status_ref(str(selector))
+            except Exception:
+                resolved_ref = None
+            if resolved_ref == status_ref or str(selector) == status_ref:
+                return True
+        return False
+
+    def refresh_external_state_constraints(self, status_ref: str | None = None) -> dict:
+        """Refresh validation after external robot telemetry/state changes.
+
+        This does not publish or edit task slots; it only synchronizes phase,
+        blockers, validation_result, and missing fields with current evidence.
+        """
+        if self.phase in ("done", "rejected"):
+            return {"refreshed": False, "reason": "terminal_phase"}
+        if not self._task_uses_status_ref(status_ref):
+            return {"refreshed": False, "reason": "unrelated_status_ref"}
+
+        task_type_key = self.task_state.get("task_type_key")
+        missing: list[dict] = []
+        if task_type_key:
+            schema = self.builder.get_schema(task_type_key, self.mode)
+            user_req_schema = [
+                field for field in schema
+                if field.get("type") not in ("auto", "fixed")
+            ]
+            missing = self.slot_store.get_missing_slots(
+                user_req_schema,
+                allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
+                    field,
+                    task_type_key,
+                    self.task_state,
+                ),
+            )
+            self._last_missing = missing
+        else:
+            self._last_missing = [{
+                "key": "task_type",
+                "label": "任务类型",
+                "type": "string",
+                "allowed_values": self.kb.get_all_task_type_values(),
+            }]
+            missing = self._last_missing
+
+        purpose = "preview" if task_type_key and not missing else "interactive"
+        val_res = self._refresh_validation(purpose=purpose)
+        violations = self._merge_oilfield_context_violations(val_res.violations)
+        hard = [v for v in violations if v.severity == "hard"]
+        soft = [
+            v for v in violations
+            if v.severity == "soft" and not self._is_whitelisted(v)
+        ]
+
+        if hard or val_res.overall_status == "validation_error":
+            self._transition_phase("blocked_hard", reason="external_state_hard_detected")
+            self._blocking_violations = hard
+        elif soft:
+            self._transition_phase("blocked_soft", reason="external_state_soft_detected")
+            self._blocking_violations = soft
+        else:
+            self._blocking_violations = []
+            self._hard_refusal_counts.clear()
+            if task_type_key and not missing:
+                self._transition_phase("confirming", reason="external_state_constraints_resolved")
+            else:
+                self._transition_phase("collecting", reason="external_state_constraints_resolved")
+
+        return {
+            "refreshed": True,
+            "phase": self.phase,
+            "overall_status": val_res.overall_status,
+            "hard_violations": len(hard),
+            "soft_violations": len(soft),
+            "missing": [m.get("key") for m in missing if isinstance(m, dict)],
+        }
+
     def _get_valid_acknowledgements(
         self,
         validation_result: ValidationResult | None,
@@ -6432,7 +6525,31 @@ class DialogueManager:
             label = FIELD_LABELS.get(k, k)
             filled[k] = {"label": label, "value": v}
 
-        for m in self._last_missing:
+        missing_source = self._last_missing
+        task_type_key = self.task_state.get("task_type_key")
+        if task_type_key:
+            try:
+                schema = self.builder.get_schema(task_type_key, self.mode)
+                user_req_schema = [
+                    field for field in schema
+                    if field.get("type") not in ("auto", "fixed")
+                ]
+                missing_source = self.slot_store.get_missing_slots(
+                    user_req_schema,
+                    allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
+                        field,
+                        task_type_key,
+                        self.task_state,
+                    ),
+                )
+                self._last_missing = missing_source
+            except Exception as exc:
+                logger.warning(
+                    "[DialogueManager] Failed to derive status missing fields from SlotStore: %s",
+                    exc,
+                )
+
+        for m in missing_source:
             missing_display.append({
                 "key": m["key"],
                 "label": m["label"],

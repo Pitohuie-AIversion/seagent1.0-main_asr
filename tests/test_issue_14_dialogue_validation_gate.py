@@ -162,6 +162,33 @@ class TestDialogueValidationGate(unittest.TestCase):
         dm._handle_task_confirm("忽略警告")
         self.assertEqual(dm.phase, "blocked_hard")
 
+    def test_external_state_refresh_resolves_blocked_hard_after_robot_recovers(self):
+        """外部机器人状态修复后，受影响会话应主动解除 hard 阻断。"""
+        dm = self.dm
+        now_str = get_current_datetime().strftime("%Y-%m-%d %H:%M:%S")
+        dm.task_state.update({
+            "task_type_key": "pipeline_inspection",
+            "equipment_unit_id": "OBSROV-75-001",
+            "water_depth": 300,
+            "support_vessel": "海洋石油681",
+            "oilfield_name": "东方1-1油田",
+            "start_time": now_str,
+        })
+
+        dm.kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 1.5})
+        res = dm._refresh_validation(purpose="preview")
+        self.assertEqual(res.overall_status, "blocked_hard")
+        dm.phase = "blocked_hard"
+        dm._blocking_violations = res.violations
+
+        dm.kb.state_info.set_status("OBSROV-75-001", {"current_velocity": 0.2})
+        refresh = dm.refresh_external_state_constraints("OBSROV-75-001")
+
+        self.assertTrue(refresh["refreshed"])
+        self.assertEqual(refresh["hard_violations"], 0)
+        self.assertNotEqual(dm.phase, "blocked_hard")
+        self.assertEqual(dm._blocking_violations, [])
+
 
 if __name__ == "__main__":
     unittest.main()

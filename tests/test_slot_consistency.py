@@ -789,6 +789,24 @@ class SlotConsistencyTest(unittest.TestCase):
         )
         self.assertEqual(self.dm._last_missing, expected_missing)
 
+    def test_get_status_missing_slots_are_derived_from_current_slot_store(self):
+        """Terminal status must not print stale _last_missing entries."""
+        seed_complete_valid_pipeline_task(self.dm, self.kb)
+        self.dm._last_missing = [
+            {
+                "key": "equipment_class",
+                "label": "机器人类别",
+                "type": "string",
+            }
+        ]
+
+        status = self.dm.get_status()
+
+        self.assertNotIn(
+            "equipment_class",
+            {field["key"] for field in status["missing"]},
+        )
+
     # 21. 模拟主 commit 失败时全部状态零修改
     def test_21_main_commit_failure_leaves_state_untouched(self):
         self._set_plan("WRITE")

@@ -289,6 +289,30 @@ def set_robot_state_info():
             params,
             expected_version=expected_version,
         )
+        refreshed_sessions = []
+        with _sessions_lock:
+            active_sessions = list(_sessions_manager.items())
+        for sid, mgr in active_sessions:
+            try:
+                with mgr._session_lock:
+                    refresh = mgr.refresh_external_state_constraints(
+                        result["status_ref"],
+                    )
+                if refresh.get("refreshed"):
+                    refreshed_sessions.append({
+                        "session_id": sid,
+                        "phase": refresh.get("phase"),
+                        "hard_violations": refresh.get("hard_violations", 0),
+                        "soft_violations": refresh.get("soft_violations", 0),
+                    })
+            except Exception as refresh_exc:
+                logger.warning(
+                    "Robot state session refresh failed: request_id=%s session_id=%s status_ref=%s err=%s",
+                    request_id,
+                    sid,
+                    result["status_ref"],
+                    refresh_exc,
+                )
         logger.info(
             "Robot state updated: request_id=%s status_ref=%s "
             "expected_version=%s current_version=%s",
@@ -307,6 +331,7 @@ def set_robot_state_info():
             "store_version": result["store_version"],
             "updated_at": result["updated_at"],
             "state": result["state"],
+            "refreshed_sessions": refreshed_sessions,
             "request_id": request_id,
         })
     except StateVersionConflict as exc:
@@ -1184,4 +1209,3 @@ def mcp_ctrl_task():
     except Exception as exc:
         logging.error("MCP 设备控制下发失败: %s", exc, exc_info=True)
         return jsonify({"code": 500, "msg": f"控制下发失败: {exc}"}), 500
-
