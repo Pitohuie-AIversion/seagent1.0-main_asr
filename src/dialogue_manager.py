@@ -68,6 +68,8 @@ from .normalization_contract import (
 from .task_patch import build_task_patch, task_patch_to_legacy_updates
 from .knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from .extractor import ParameterExtractor
+from .task_slot_filter import TaskSlotFilter
+from .task_capability_adapter import TaskCapabilityAdapter
 
 _USER_FACING_EXCLUDED_KEYS = {
     "raw_oilfield_name",
@@ -211,6 +213,8 @@ class DialogueManager:
         self.validator = TaskValidator(kb)
         self.oilfield_linker = OilfieldEntityLinker(kb.environment, getattr(kb, "constraints", None))
         self.intent_router = IntentRouter(llm)
+        self.slot_filter = TaskSlotFilter(kb.task_schemas)
+        self.capability_adapter = TaskCapabilityAdapter(kb.task_schemas)
 
         # 对话核心状态
         self.conversation_history: list[dict] = []
@@ -2296,56 +2300,42 @@ class DialogueManager:
                 for field in field_defs
                 if field.get("key")
             }
-            control_candidate_keys = {
-                "task_type",
-                "task_type_key",
-                "emergency_mode",
-                "rov_description",
-                "equipment_name",
-            }
-            # ``oilfield_name`` is a legacy cross-task collection field, but
-            # it must not become a side channel for target-only facts when a
-            # task-id lock has rejected the requested category switch.
-            if not (
-                task_type_change_locked
-                and pending_task_type_key
-                and pending_task_type_key != task_type_key
-            ):
-                control_candidate_keys.add("oilfield_name")
-            projected_candidates = []
-            for candidate in extraction_res.get("slot_candidates", []):
-                if not isinstance(candidate, dict):
-                    continue
-                candidate_key = str(candidate.get("canonical_key") or "")
-                if candidate_key == "equipment_class":
-                    # equipment_class is now derived compatibility metadata,
-                    # not a task_schema collection field.  Legacy extractor
-                    # candidates may be safely promoted only when the class
-                    # maps to exactly one capability-feasible family.
+            # Pre-filter equipment_class candidates compatibility promotion
+            raw_candidates = extraction_res.get("slot_candidates", [])
+            filtered_candidates = []
+            for candidate in raw_candidates:
+                if isinstance(candidate, dict) and candidate.get("canonical_key") == "equipment_class":
                     projected = self._project_legacy_equipment_class_candidate(
                         candidate,
                         effective_task_type_key,
                         transition_state,
                     )
                     if projected is not None:
-                        projected_candidates.append(projected)
-                    continue
-                if (
-                    candidate_key in effective_schema_keys
-                    or candidate_key in control_candidate_keys
-                ):
-                    projected_candidates.append(candidate)
-                    continue
-                raw_value = candidate.get(
-                    "raw_value",
-                    candidate.get("normalized_value", ""),
-                )
-                message = (
-                    f"字段 {candidate_key or '未知字段'} 表达“{raw_value}”"
-                    f"不属于目标任务 {effective_task_type_key}，未写入。"
-                )
-                extraction_res.setdefault("unresolved", []).append(message)
+                        filtered_candidates.append(projected)
+                else:
+                    filtered_candidates.append(candidate)
+
+            projected_candidates, filter_unresolved = self.slot_filter.filter_candidates(
+                task_type_key=effective_task_type_key,
+                effective_schema_keys=effective_schema_keys,
+                candidates=filtered_candidates,
+                task_type_change_locked=task_type_change_locked,
+                pending_task_type_key=pending_task_type_key,
+                active_task_type_key=task_type_key,
+            )
             extraction_res["slot_candidates"] = projected_candidates
+            if filter_unresolved:
+                extraction_res.setdefault("unresolved", []).extend(filter_unresolved)
+
+            mention_guidance = self.slot_filter.check_non_template_oilfield_mention(
+                task_type_key=effective_task_type_key,
+                effective_schema_keys=effective_schema_keys,
+                user_message=user_message,
+                unresolved_list=extraction_res.get("unresolved", []),
+                oilfield_linker=self.oilfield_linker,
+            )
+            if mention_guidance:
+                extraction_res.setdefault("unresolved", []).append(mention_guidance)
 
             self._normalize_payload_list_mutations(extraction_res, user_message, new_slots)
 
@@ -3268,6 +3258,21 @@ class DialogueManager:
 
 
     def _link_oilfield_update_in_transaction(self, updates: dict, new_slots: dict, user_message: str = "") -> dict:
+        task_type_key = updates.get("task_type_key") or (
+            new_slots["task_type_key"].value
+            if new_slots.get("task_type_key")
+            and new_slots["task_type_key"].status == "valid"
+            else None
+        )
+        if task_type_key:
+            field_defs = self.builder.get_schema(task_type_key, self.mode)
+            schema_keys = {str(field.get("key")) for field in field_defs if field.get("key")}
+            if not self.slot_filter.supports_oilfield_slots(schema_keys):
+                linked = dict(updates)
+                linked.pop("oilfield_name", None)
+                linked.pop("raw_oilfield_name", None)
+                return linked
+
         raw_name = updates.get("oilfield_name") or updates.get("raw_oilfield_name")
         if isinstance(raw_name, dict):
             raw_name = raw_name.get("value")
@@ -5978,6 +5983,14 @@ class DialogueManager:
         pending_action: str | None = None,
         subject_text: str | None = None,
     ) -> str | None:
+        task_type_slot = self.slot_store.slots.get("task_type_key")
+        task_type_key = task_type_slot.value if task_type_slot and task_type_slot.status == "valid" else None
+        if task_type_key:
+            field_defs = self.builder.get_schema(task_type_key, self.mode)
+            schema_keys = {str(field.get("key")) for field in field_defs if field.get("key")}
+            if not self.slot_filter.supports_oilfield_slots(schema_keys):
+                return None
+
         pending_slot = self.slot_store.slots.get("pending_oilfield_name")
         if not pending_slot or not pending_slot.value or pending_slot.status != "valid":
             return None
@@ -6026,6 +6039,14 @@ class DialogueManager:
         return f"已确认油田名称为“{confirmed_name}”，我会按这个标准名称继续收集任务信息。"
 
     def _build_pending_oilfield_reply(self) -> str | None:
+        task_type_slot = self.slot_store.slots.get("task_type_key")
+        task_type_key = task_type_slot.value if task_type_slot and task_type_slot.status == "valid" else None
+        if task_type_key:
+            field_defs = self.builder.get_schema(task_type_key, self.mode)
+            schema_keys = {str(field.get("key")) for field in field_defs if field.get("key")}
+            if not self.slot_filter.supports_oilfield_slots(schema_keys):
+                return None
+
         pending_slot = self.slot_store.slots.get("pending_oilfield_name")
         raw_name = pending_slot.value if (pending_slot and pending_slot.status == "valid") else None
         oil_slot = self.slot_store.slots.get("oilfield_name")

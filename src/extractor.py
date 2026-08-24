@@ -790,6 +790,10 @@ class ParameterExtractor:
 
         # 1. 相对时间口语确定性校正
         if key in ("start_time", "end_time") and candidate.get("resolution_method") not in ("duration_arithmetic", "cross_day_auto_corrected"):
+            existing_norm = candidate.get("normalized_value")
+            if isinstance(existing_norm, str) and re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", existing_norm.strip()):
+                return candidate, None
+
             raw_text = str(candidate.get("raw_value") or candidate.get("normalized_value") or "").strip()
             from .simulated_time import get_current_datetime
             rel_iso = parse_relative_datetime(raw_text, get_current_datetime(), full_user_message=user_message)

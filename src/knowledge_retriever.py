@@ -951,6 +951,7 @@ class KnowledgeBase:
         self,
         task_type_key: str | None,
         task_state: dict | None = None,
+        purpose: str = "interactive",
     ) -> dict:
         """
         计算当前任务的可行机器人子图 (Feasible Robot Selection Domain)。
@@ -969,7 +970,7 @@ class KnowledgeBase:
             required_caps = set()
         else:
             required_caps = set(template.get("required_capabilities", []))
-        apply_runtime_filter = self._task_starts_within_runtime_window(task_state)
+        apply_runtime_filter = (purpose != "interactive") and self._task_starts_within_runtime_window(task_state)
         rejected_variants: list[dict] = []
         rejected_units: list[dict] = []
 

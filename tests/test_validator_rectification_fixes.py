@@ -61,7 +61,7 @@ class TestValidatorRectificationFixes(unittest.TestCase):
             "equipment_unit_id": "OBSROV-75-001",
             "task_type_key": "pipeline_inspection",
         }
-        res = self.validator.validate_task(task_state)
+        res = self.validator.validate_task(task_state, purpose="publish")
         self.assertEqual(res.overall_status, "blocked_hard")
         self.assertGreater(len(res.violations), 0)
         v_msg = res.violations[0].message

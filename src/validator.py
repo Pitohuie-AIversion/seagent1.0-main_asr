@@ -846,7 +846,7 @@ class TaskValidator:
 
     def validate(self, task_state: dict) -> list[Violation]:
         """全量约束检查，返回所有当前违规（兼容旧接口）"""
-        res = self.validate_task(task_state)
+        res = self.validate_task(task_state, purpose="preview")
         return res.violations
 
     def preflight_check_candidates(
@@ -1169,7 +1169,7 @@ class TaskValidator:
     ) -> Violation | None:
         # 发布前核验 (publish / preview / runtime_execution) 或即时任务必须执行动态状态与环境检查
         is_pre_publish_or_execution = purpose in ("publish", "preview", "runtime_execution")
-        if check in _DYNAMIC_CHECKS and not self._is_task_start_now(task_state) and not is_pre_publish_or_execution:
+        if check in _DYNAMIC_CHECKS and (purpose == "interactive" or (not self._is_task_start_now(task_state) and not is_pre_publish_or_execution)):
             return None
 
         rel_fields = _CHECK_FIELDS.get(check, [])
@@ -1232,8 +1232,12 @@ class TaskValidator:
                 )
 
         elif check == "end_time_after_start_time":
-            start_time, st_err = self._validate_time_value(task_state.get("start_time"), "start_time")
-            end_time, et_err = self._validate_time_value(task_state.get("end_time"), "end_time")
+            raw_st = task_state.get("start_time")
+            raw_et = task_state.get("end_time")
+            if not raw_st or not raw_et:
+                return None
+            start_time, st_err = self._validate_time_value(raw_st, "start_time")
+            end_time, et_err = self._validate_time_value(raw_et, "end_time")
             if st_err:
                 return Violation(
                     c["id"], c["name"], st_err["message"], "hard",
