@@ -124,6 +124,29 @@ class FakeKnowledgeBaseForDefects:
             "state": self.robot_state,
         }
 
+    def validate_robot_selection_from_task_state(self, task_state: dict, require_unit: bool = False) -> dict:
+        unit_id = task_state.get("equipment_unit_id") or task_state.get("robot_unit_id") or "sealien_inspection"
+        return {
+            "robot_class": "ROV",
+            "family_id": "observation",
+            "variant_id": "sealien_inspection",
+            "unit_id": unit_id,
+            "equipment_class": "ROV",
+            "equipment_family": "observation",
+            "equipment_type": task_state.get("equipment_name") or task_state.get("equipment_type") or "sealien_inspection",
+            "equipment_unit_id": unit_id,
+        }
+
+    def resolve_robot_unit(self, unit_selector, task_type=None, variant_selector=None):
+        return {
+            "unit_id": unit_selector or "sealien_inspection",
+            "variant_id": "sealien_inspection",
+            "max_depth_m": 600,
+            "forbidden_seabed": ["soft"],
+            "onboard_payloads": [],
+            "supported_payloads": [],
+        }
+
 
 class TaskValidatorDefectsTest(unittest.TestCase):
     def setUp(self):
@@ -139,7 +162,8 @@ class TaskValidatorDefectsTest(unittest.TestCase):
         self.kb.robot_state["current_velocity"] = 0.6
         task_state = {
             "start_time": "2026-06-30T17:36:00",
-            "equipment_name": "sealien_inspection"
+            "equipment_name": "sealien_inspection",
+            "equipment_unit_id": "sealien_inspection",
         }
         violations = self.validator.validate(task_state)
         # Should NOT bypass dynamic checks, so we should receive C015 warning
@@ -157,7 +181,8 @@ class TaskValidatorDefectsTest(unittest.TestCase):
         task_state = {
             "start_point": safe_coord,
             "end_point": forbidden_coord,
-            "equipment_name": "sealien_inspection"
+            "equipment_name": "sealien_inspection",
+            "equipment_unit_id": "sealien_inspection",
         }
         violations = self.validator.validate(task_state)
         v_ids = [v.constraint_id for v in violations]
@@ -182,16 +207,18 @@ class TaskValidatorDefectsTest(unittest.TestCase):
         self.kb.robot_state["current_velocity"] = 0.6
         task_state = {
             "start_time": "2026-06-30T17:38:00",
-            "equipment_name": "sealien_inspection"
+            "equipment_name": "sealien_inspection",
+            "equipment_unit_id": "sealien_inspection",
         }
-        violations = self.validator.validate_for_fields(task_state, changed_fields={"start_time"})
+        violations = self.validator.validate_for_fields(task_state, changed_fields={"start_time"}, purpose="publish")
         v_ids = [v.constraint_id for v in violations]
         self.assertIn("C015", v_ids, "Changing start_time did not trigger dynamic checks during incremental validation!")
 
     def test_mutually_exclusive_velocity_ranges(self):
         task_state = {
             "start_time": "2026-06-30T17:38:00",
-            "equipment_name": "sealien_inspection"
+            "equipment_name": "sealien_inspection",
+            "equipment_unit_id": "sealien_inspection",
         }
         
         # Velocity = 0.6 -> C015 only

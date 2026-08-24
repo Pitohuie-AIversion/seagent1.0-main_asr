@@ -795,14 +795,20 @@ class SlotStore:
         confidence = mutation.get("confidence", 0.95)
         source = mutation.get("source", "user_input")
 
-        schema_field = next(
-            (
-                field
-                for field in required_schema or []
-                if isinstance(field, dict) and field.get("key") == field_name
-            ),
-            None,
-        )
+        schema_field = None
+        if isinstance(required_schema, dict):
+            if required_schema.get("key") == field_name:
+                schema_field = required_schema
+            elif "fields" in required_schema and isinstance(required_schema["fields"], list):
+                schema_field = next(
+                    (f for f in required_schema["fields"] if isinstance(f, dict) and f.get("key") == field_name),
+                    None,
+                )
+        elif isinstance(required_schema, list):
+            schema_field = next(
+                (f for f in required_schema if isinstance(f, dict) and f.get("key") == field_name),
+                None,
+            )
         if required_schema is not None and schema_field is None:
             return {
                 "success": False,
@@ -980,6 +986,8 @@ class SlotStore:
             }
 
         onboard_payload_keys = set()
+        onboard_catalog_ids = set()
+        onboard_alias_keys = set()
         eq_slot = new_slots.get("equipment_type")
         eq_type = str(eq_slot.value if eq_slot and eq_slot.status == "valid" and eq_slot.value else "")
         if eq_type and self.kb:
@@ -987,7 +995,49 @@ class SlotStore:
             if robot:
                 for ob in robot.get("onboard_payloads", []):
                     if isinstance(ob, str):
-                        onboard_payload_keys.add(normalize_payload_match_key(ob))
+                        ob_norm = normalize_payload_match_key(ob)
+                        onboard_payload_keys.add(ob_norm)
+                        for c_id, info in payload_catalog.items():
+                            name = info.get("name", "")
+                            aliases = info.get("aliases") or []
+                            cand_keys = {normalize_payload_match_key(c) for c in [name, *aliases] if c}
+                            if ob_norm in cand_keys:
+                                onboard_catalog_ids.add(c_id)
+                                onboard_alias_keys.update(cand_keys)
+
+        DOMAIN_SYNONYMS = [
+            ({"水下成像系统", "云台摄像机"}, ["云台摄像", "水下成像"]),
+            ({"fls声呐系统", "前视声呐"}, ["fls声呐", "前视声呐"]),
+            ({"ins惯性导航系统"}, ["ins", "惯导", "惯性导航"]),
+            ({"dvl测速系统"}, ["dvl", "多普勒"]),
+            ({"usbl定位系统"}, ["usbl", "超短基线"]),
+            ({"深度计"}, ["深度计"]),
+            ({"高度计"}, ["高度计"]),
+            ({"履带模块"}, ["履带模块"]),
+        ]
+
+        def _is_onboard(item_raw: str, cat_id: Optional[str]) -> bool:
+            if not onboard_payload_keys and not onboard_catalog_ids:
+                return False
+            raw_norm = normalize_payload_match_key(item_raw)
+            if raw_norm in onboard_payload_keys:
+                return True
+            if cat_id and cat_id in onboard_catalog_ids:
+                return True
+            if raw_norm in onboard_alias_keys:
+                return True
+            item_cand_keys = {raw_norm}
+            if cat_id and payload_catalog.get(cat_id):
+                info = payload_catalog[cat_id]
+                cands = [info.get("name", ""), *(info.get("aliases") or [])]
+                item_cand_keys.update({normalize_payload_match_key(c) for c in cands if c})
+            if bool(item_cand_keys & onboard_alias_keys):
+                return True
+            for targets, keywords in DOMAIN_SYNONYMS:
+                if any(normalize_payload_match_key(t) in onboard_payload_keys for t in targets):
+                    if any(kw.lower() in item_raw.lower() for kw in keywords):
+                        return True
+            return False
 
         def _flatten_items(raw_items: Any) -> List[Any]:
             if isinstance(raw_items, str):
@@ -1010,10 +1060,11 @@ class SlotStore:
             for item_raw in items:
                 cat_id, c_name = _resolve(item_raw)
                 if c_name is None:
-                    raw_norm = normalize_payload_match_key(item_raw)
-                    if raw_norm in onboard_payload_keys:
+                    if _is_onboard(item_raw, cat_id):
                         continue
                     return _fail("add", f"添加的载荷 '{item_raw}' 非法或不属于当前任务允许范围")
+                if _is_onboard(c_name, cat_id) or _is_onboard(item_raw, cat_id):
+                    continue
                 new_canonicals.append(c_name)
 
             for item_to_add in new_canonicals:

@@ -149,20 +149,20 @@ _CHECK_FIELDS: dict[str, list[str]] = {
     "forbidden_area":              ["start_point", "end_point", "oilfield_coordinates", "cable_position"],
     "dvl_high_risk":               ["start_point", "oilfield_coordinates", "cable_position"],
     "seabed_compatibility":        [*_EQUIPMENT_FIELDS, "start_point", "oilfield_coordinates"],
-    "obstacle_dense":              _EQUIPMENT_FIELDS,
-    "mothership_support":          _EQUIPMENT_FIELDS,
-    "turbidity":                   _EQUIPMENT_FIELDS,
-    "current_velocity":            _EQUIPMENT_FIELDS,
-    "state_confidence":            _EQUIPMENT_FIELDS,
-    "state_timestamp":             _EQUIPMENT_FIELDS,
-    "robot_overall_status":        _EQUIPMENT_FIELDS,
-    "robot_survival_status":       _EQUIPMENT_FIELDS,
-    "robot_thruster_status":       _EQUIPMENT_FIELDS,
-    "robot_depth_keeping_status":  _EQUIPMENT_FIELDS,
-    "robot_sonar_status":          _EQUIPMENT_FIELDS,
-    "robot_vision_status":         _EQUIPMENT_FIELDS,
-    "robot_manipulator_status":    _EQUIPMENT_FIELDS,
-    "robot_communication_status":  _EQUIPMENT_FIELDS,
+    "obstacle_dense":              [*_EQUIPMENT_FIELDS, "start_time"],
+    "mothership_support":          [*_EQUIPMENT_FIELDS, "start_time"],
+    "turbidity":                   [*_EQUIPMENT_FIELDS, "start_time"],
+    "current_velocity":            [*_EQUIPMENT_FIELDS, "start_time"],
+    "state_confidence":            [*_EQUIPMENT_FIELDS, "start_time"],
+    "state_timestamp":             [*_EQUIPMENT_FIELDS, "start_time"],
+    "robot_overall_status":        [*_EQUIPMENT_FIELDS, "start_time"],
+    "robot_survival_status":       [*_EQUIPMENT_FIELDS, "start_time"],
+    "robot_thruster_status":       [*_EQUIPMENT_FIELDS, "start_time"],
+    "robot_depth_keeping_status":  [*_EQUIPMENT_FIELDS, "start_time"],
+    "robot_sonar_status":          [*_EQUIPMENT_FIELDS, "start_time"],
+    "robot_vision_status":         [*_EQUIPMENT_FIELDS, "start_time"],
+    "robot_manipulator_status":    [*_EQUIPMENT_FIELDS, "start_time"],
+    "robot_communication_status":  [*_EQUIPMENT_FIELDS, "start_time"],
     "start_time_not_in_past":      ["start_time"],
     "end_time_after_start_time":   ["start_time", "end_time"],
     "future_task_runtime_notice":  ["start_time"],
@@ -292,9 +292,15 @@ class TaskValidator:
         require_unit: bool = False,
     ) -> tuple[dict | None, dict | None]:
         """Validate a complete robot tuple without reading runtime telemetry."""
+        if self.kb is None:
+            return None, None
         validator = getattr(self.kb, "validate_robot_selection_from_task_state", None)
         if not callable(validator):
-            if require_unit or task_state.get("equipment_unit_id") is not None:
+            has_robot_fields = any(
+                task_state.get(k) is not None
+                for k in ("equipment_type", "equipment_name", "equipment_unit_id", "equipment_class", "robot_class")
+            )
+            if (require_unit or task_state.get("equipment_unit_id") is not None) and has_robot_fields:
                 return None, {
                     "code": "STATIC_ROBOT_VALIDATOR_UNAVAILABLE",
                     "message": "机器人四级静态校验器不可用，无法安全继续。",
@@ -863,7 +869,10 @@ class TaskValidator:
         return [v for v in violations if getattr(v, "severity", "hard") == "hard"]
 
     def validate_for_fields(
-        self, task_state: dict, changed_fields: set[str]
+        self,
+        task_state: dict,
+        changed_fields: set[str],
+        purpose: str = "publish",
     ) -> list[Violation]:
         """增量模式检查"""
         canonical_selection, error_dict = self.validate_robot_selection_tuple(
@@ -892,7 +901,7 @@ class TaskValidator:
             snapshot, error_dict = self._resolve_single_unit_snapshot(
                 task_state,
                 is_now=self._is_task_start_now(task_state),
-                purpose="interactive",
+                purpose=purpose,
             )
         if error_dict is not None:
             code = error_dict.get("code") if (error_dict and error_dict.get("code")) else "VAL_ERR"
@@ -905,7 +914,7 @@ class TaskValidator:
                 check_type="validation_error",
             )
             return [err_v]
-        return self._run_checks(task_state, trigger_fields=changed_fields, state_snapshot=snapshot)
+        return self._run_checks(task_state, trigger_fields=changed_fields, state_snapshot=snapshot, purpose=purpose)
 
     def has_hard_violations(self, violations: list[Violation]) -> bool:
         return any(v.severity == "hard" for v in violations)

@@ -228,6 +228,8 @@ class DialogueManager:
 
         # 约束管理状态
         self._blocking_violations: list[Violation] = []
+        self.ignored_soft_warning_ids: set[str] = set()
+        self.pending_warning_violations: list[Violation] = []
         self._soft_whitelist: set[tuple[str, str, str]] = set()
         self._hard_refusal_counts: dict[str, int] = {}
 
@@ -249,6 +251,9 @@ class DialogueManager:
         self.dialogue_mode: str = "task_collection"
         self.last_mode_transition: dict | None = None
         self.mode_transition_history: list[dict] = []
+
+    def _ensure_payload_guidance(self, text: str, missing_fields: list) -> str:
+        return self.capability_adapter.format_payload_guidance(text, missing_fields)
 
     @property
     def task_id_preview(self) -> str | None:
@@ -3014,8 +3019,8 @@ class DialogueManager:
     # --------------------------------------------------------------------------
     # 参数更新与规范化
     # --------------------------------------------------------------------------
-    @staticmethod
     def _ground_write_reply(
+        self,
         model_reply: str,
         *,
         accepted_updates: dict,
@@ -3065,6 +3070,28 @@ class DialogueManager:
             if labels:
                 next_labels = labels[:3]
                 suffix_parts.append("仍需补充：" + "、".join(next_labels) + "。")
+                if any(isinstance(item, dict) and item.get("key") == "payload" for item in missing_fields):
+                    eq_type = str(
+                        (accepted_updates or {}).get("equipment_type")
+                        or ((display_updates or {}).get("equipment_type"))
+                        or ""
+                    )
+                    if not eq_type and hasattr(self, "slot_store") and self.slot_store:
+                        eq_slot = self.slot_store.slots.get("equipment_type")
+                        if eq_slot and eq_slot.status == "valid" and eq_slot.value:
+                            eq_type = str(eq_slot.value)
+                    if eq_type and hasattr(self, "kb") and self.kb:
+                        robot = self.kb.get_rov(eq_type)
+                        if robot:
+                            ob_list = robot.get("onboard_payloads", [])
+                            sp_list = robot.get("supported_payloads", [])
+                            if ob_list and sp_list:
+                                ob_str = "、".join(ob_list)
+                                sp_str = "、".join(sp_list)
+                                suffix_parts.append(
+                                    f"💡 提示：选定设备【{eq_type}】出厂已自带标配（无需重复选择）：{ob_str}。"
+                                    f"\n您可以从以下可选扩展载荷列表中做【替换】或【增减配】：{sp_str}。"
+                                )
             elif user_visible_updates:
                 suffix_parts.append("所有必填字段已收集完成，任务尚未发布。")
 

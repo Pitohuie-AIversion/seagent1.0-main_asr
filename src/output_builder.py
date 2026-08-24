@@ -353,11 +353,16 @@ class OutputBuilder:
 
     def resolve_allowed_values(
         self,
-        field_def: dict,
+        field_def: dict | str,
         task_type_key: str = "",
         task_state: dict | None = None,
     ) -> list[str]:
         """解析字段在当前任务状态下的合法候选值。"""
+        if isinstance(field_def, str):
+            field_name = field_def
+            field_def = self.kb.task_schemas.get("fields", {}).get(field_name, {})
+            if not field_def:
+                field_def = {"allowed_values_ref": f"payload_options.{task_type_key}"}
         return self._resolve_allowed(field_def, task_type_key, task_state)
 
     def _resolve_alias_mappings(
