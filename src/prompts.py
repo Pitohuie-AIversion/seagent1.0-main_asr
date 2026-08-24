@@ -8,6 +8,7 @@ from .time_context import get_time_context
 from datetime import date
 from .validator import Violation
 from .simulated_time import get_current_datetime
+from . import coord_parser
 
 # ── 统一对外身份 ────────────────────────────────────────────────────────────
 
@@ -190,6 +191,7 @@ RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
      * equipment_type 尚未确认时不得询问或展示机器人编号；确认后只询问当前型号对应的 equipment_unit_id。
      * 在设备依赖满足的前提下，设备字段与同轮其他平行的任务字段合并提问（按单轮 1~3 个规则组包）。
    - **【严禁】当待收集字段不为空时**，禁止输出"任务信息已完整"、"所有字段已填写"、"开始确认"等表示任务准备就绪的语句；必须继续向用户询问缺失字段。当且仅当待收集字段为空（"无，所有必填字段已收集 ✓"）时，才能进入确认流程。
+   - **【动态状态与环境核验展示原则】**：当且仅当所有任务必填字段完全收集完毕（待收集字段列表为空 `"无，所有必填字段已收集 ✓"`）或者发生约束阻断（`blocked_soft` / `blocked_hard`）时，才允许在回复中输出机器人动态状态核验（如“状态核验”、“设备总体状态”、“最大水深与任务水深对比”）、实时环境（海流/浑浊度/障碍物/母船支援）及各子系统健康度的核验段落。在任务必填字段尚在收集期间（待收集字段不为空），必须专注于汇报本轮已写入字段和向用户询问接下来的缺失字段；**严禁**提前在回复中输出任何“状态核验”、“实时环境”、“子系统运行正常”等核验结论段落。
 
 5. **约束阻塞优先**：如果上方存在约束相关指令，优先执行，不要跳过进入正常收集流程。
 
@@ -323,21 +325,8 @@ def build_responder_messages(
     }
 
     def _fmt_coord(val: object) -> str | None:
-        """将 {'lat': x, 'lon': y} 转为用户友好的经纬度描述，非坐标对象返回 None。"""
-        if not isinstance(val, dict):
-            return None
-        lat = val.get("lat")
-        lon = val.get("lon")
-        if lat is None or lon is None:
-            return None
-        try:
-            lat = float(lat)
-            lon = float(lon)
-        except (TypeError, ValueError):
-            return None
-        lat_dir = "北纬" if lat >= 0 else "南纬"
-        lon_dir = "东经" if lon >= 0 else "西经"
-        return f"{lat_dir} {abs(lat)} 度，{lon_dir} {abs(lon)} 度"
+        """将 {'lat': x, 'lon': y} 或坐标对象/JSON字符串转为用户友好的经纬度描述，非坐标对象返回 None。"""
+        return coord_parser.format_coord_display(val)
 
     # 坐标字段格式化：start_point / end_point / oilfield_coordinates 等包含 {lat, lon} 的字段
     for _coord_key in list(display_built.keys()):
@@ -476,12 +465,14 @@ def build_responder_messages(
             max_refusal_count = max(active_refusal_counts)
             constraint_instruction += f"\n\n【拒绝记录】当前硬性违规已拒绝{max_refusal_count}次（上限2次后拒绝任务）"
 
-    state_snap = constraint_context.get("state_snapshot")
-    state_summary = _format_state_snapshot_summary(state_snap)
-    if state_summary:
-        constraint_instruction += (
-            "\n\n" + state_summary + "\n注意：在向用户展示任务确认信息、核验结果或说明阻断原因时，必须向用户清晰汇报上述机器人的实时 State 动态状态校核结论。"
-        )
+    # 仅当所有任务必填字段完全收集完毕（missing_fields 为空）或处于确认/阻断阶段时，才注入动态状态校核摘要
+    if not missing_fields or phase in ("confirming", "blocked_soft", "blocked_hard"):
+        state_snap = constraint_context.get("state_snapshot")
+        state_summary = _format_state_snapshot_summary(state_snap)
+        if state_summary:
+            constraint_instruction += (
+                "\n\n" + state_summary + "\n注意：在向用户展示任务确认信息、核验结果或说明阻断原因时，必须向用户清晰汇报上述机器人的实时 State 动态状态校核结论。"
+            )
 
     phase_label = {
         "collecting":   "信息收集中",

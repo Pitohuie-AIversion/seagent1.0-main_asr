@@ -305,3 +305,105 @@ def _parse_chinese_integer(text: str) -> int | None:
         else:
             return None
     return total + section + number
+
+
+def format_coord_display(val: Any) -> str | None:
+    """Format a coordinate value into natural language: '北纬 19.8 度，东经 113.2 度'"""
+    if val is None:
+        return None
+
+    if isinstance(val, str):
+        val_str = val.strip()
+        if not val_str:
+            return None
+        if ("北纬" in val_str or "南纬" in val_str) and ("东经" in val_str or "西经" in val_str):
+            return val_str
+        if val_str.startswith("{") and val_str.endswith("}"):
+            try:
+                import json
+                val = json.loads(val_str)
+            except Exception:
+                pass
+
+    if isinstance(val, dict):
+        lat = val.get("lat") if "lat" in val else val.get("latitude")
+        lon = val.get("lon") if "lon" in val else val.get("longitude")
+        if lat is not None and lon is not None:
+            try:
+                lat_f = float(lat)
+                lon_f = float(lon)
+                lat_dir = "北纬" if lat_f >= 0 else "南纬"
+                lon_dir = "东经" if lon_f >= 0 else "西经"
+                lat_val = int(abs(lat_f)) if abs(lat_f).is_integer() else abs(lat_f)
+                lon_val = int(abs(lon_f)) if abs(lon_f).is_integer() else abs(lon_f)
+                return f"{lat_dir} {lat_val} 度，{lon_dir} {lon_val} 度"
+            except (ValueError, TypeError):
+                pass
+    elif isinstance(val, (list, tuple)) and len(val) == 2:
+        try:
+            lat_f = float(val[0])
+            lon_f = float(val[1])
+            lat_dir = "北纬" if lat_f >= 0 else "南纬"
+            lon_dir = "东经" if lon_f >= 0 else "西经"
+            lat_val = int(abs(lat_f)) if abs(lat_f).is_integer() else abs(lat_f)
+            lon_val = int(abs(lon_f)) if abs(lon_f).is_integer() else abs(lon_f)
+            return f"{lat_dir} {lat_val} 度，{lon_dir} {lon_val} 度"
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def format_slot_display_value(key: str, val: Any) -> str:
+    """Format any slot value into user-facing natural language."""
+    if val is None or val == "":
+        return "暂无"
+
+    # 1. Coordinates
+    coord_fmt = format_coord_display(val)
+    if coord_fmt is not None:
+        return coord_fmt
+
+    # 2. Water depth / numeric fields with unit
+    if key == "water_depth" or "depth" in key:
+        if isinstance(val, (int, float)):
+            num_val = int(val) if isinstance(val, float) and val.is_integer() else val
+            return f"{num_val} 米"
+        elif isinstance(val, str):
+            val_str = val.strip()
+            if val_str.endswith("米"):
+                return val_str
+            try:
+                f_val = float(val_str)
+                num_val = int(f_val) if f_val.is_integer() else f_val
+                return f"{num_val} 米"
+            except ValueError:
+                return val_str
+
+    # 3. Specification dict
+    if isinstance(val, dict):
+        if "display_value" in val and val["display_value"]:
+            return str(val["display_value"])
+        if "value" in val and "unit" in val:
+            return f"{val['value']} {val['unit']}"
+        import json
+        return json.dumps(val, ensure_ascii=False)
+
+    # 4. List values
+    if isinstance(val, list):
+        formatted_items = []
+        for item in val:
+            if isinstance(item, dict):
+                item_fmt = format_coord_display(item)
+                if item_fmt:
+                    formatted_items.append(item_fmt)
+                elif "display_value" in item:
+                    formatted_items.append(str(item["display_value"]))
+                else:
+                    import json
+                    formatted_items.append(json.dumps(item, ensure_ascii=False))
+            else:
+                formatted_items.append(str(item))
+        return "、".join(formatted_items)
+
+    return str(val)
+

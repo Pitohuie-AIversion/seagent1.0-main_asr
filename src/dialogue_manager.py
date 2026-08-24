@@ -104,6 +104,7 @@ from .task_intent_builder import TaskIntentBuilder
 from .simulated_time import get_current_datetime
 from .time_context import get_time_context, is_standalone_time_query
 from .coord_parser import parse_coordinate_updates
+from . import coord_parser
 from .oilfield_linker import OilfieldEntityLinker, _UNSET
 from . import task_intent_builder as _ti_builder_module
 from .id_sequence import validate_intent_id, validate_task_id, validate_task_id_for_task_type, next_daily_id
@@ -3051,10 +3052,7 @@ class DialogueManager:
             for key, value in user_visible_updates.items():
                 label = FIELD_LABELS[key]
                 display_value = (display_updates or {}).get(key, value)
-                if isinstance(display_value, (dict, list)):
-                    rendered = json.dumps(display_value, ensure_ascii=False, separators=(",", ":"))
-                else:
-                    rendered = str(display_value)
+                rendered = coord_parser.format_slot_display_value(key, display_value)
                 committed.append(f"{label}：{rendered}")
             suffix_parts.append("✅ 已记录：" + "；".join(committed) + "。")
 
@@ -3085,13 +3083,12 @@ class DialogueManager:
                         if robot:
                             ob_list = robot.get("onboard_payloads", [])
                             sp_list = robot.get("supported_payloads", [])
-                            if ob_list and sp_list:
-                                ob_str = "、".join(ob_list)
-                                sp_str = "、".join(sp_list)
-                                suffix_parts.append(
-                                    f"💡 提示：选定设备【{eq_type}】出厂已自带标配（无需重复选择）：{ob_str}。"
-                                    f"\n您可以从以下可选扩展载荷列表中做【替换】或【增减配】：{sp_str}。"
+                            if ob_list:
+                                guidance_msg = self.capability_adapter.format_payload_guidance(
+                                    "",
+                                    [{"key": "payload", "equipment_type": eq_type, "onboard_payloads": ob_list}]
                                 )
+                                suffix_parts.append(guidance_msg)
             elif user_visible_updates:
                 suffix_parts.append("所有必填字段已收集完成，任务尚未发布。")
 
@@ -3231,14 +3228,16 @@ class DialogueManager:
 
     def _get_committed_update_display_values(self, accepted_updates: dict) -> dict:
         """从领域配置生成写入回执的展示值，不改变 SlotStore 标准值。"""
-        display = dict(accepted_updates)
-        equipment_class = accepted_updates.get("equipment_class")
-        if equipment_class is not None:
-            class_config = self.kb.get_robot_classes().get(str(equipment_class), {})
-            display["equipment_class"] = class_config.get(
-                "full_name",
-                equipment_class,
-            )
+        display = {}
+        for k, v in (accepted_updates or {}).items():
+            if k == "equipment_class" and v is not None:
+                class_config = self.kb.get_robot_classes().get(str(v), {})
+                display["equipment_class"] = class_config.get(
+                    "full_name",
+                    v,
+                )
+            else:
+                display[k] = coord_parser.format_slot_display_value(k, v)
         return display
 
     def _get_committed_turn_updates(

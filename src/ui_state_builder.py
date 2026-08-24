@@ -12,6 +12,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 import logging
 from typing import TYPE_CHECKING, Any
+from .coord_parser import format_slot_display_value
 
 if TYPE_CHECKING:
     from .dialogue_manager import DialogueManager
@@ -192,6 +193,11 @@ def _build_slots(
         # P2-3 修复：区分 schema_type 与 SlotStore 的 canonical value_type
         canonical_value_type = slot_data.get("value_type", "string")
 
+        slot_val = slot_data.get("value")
+        display_val = slot_data.get("display_value")
+        if display_val is None and slot_val is not None:
+            display_val = format_slot_display_value(key, slot_val)
+
         slot_entry = {
             "key": key,
             "label": label,
@@ -199,7 +205,8 @@ def _build_slots(
             "value_type": canonical_value_type,
             "required": True,
             "allowed_values": allowed_values,
-            "value": slot_data.get("value"),
+            "value": slot_val,
+            "display_value": display_val,
             "raw_value": slot_data.get("raw_value"),
             "status": slot_data.get("status", "missing"),
             "source": slot_data.get("source"),

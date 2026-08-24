@@ -605,15 +605,8 @@ Please describe your operational requirements directly, or ask the question you 
       }
 
       if (typeof val === 'object') {
-        if (val.lat !== undefined && val.lon !== undefined) {
-          if (currentLang === 'zh') {
-            return `(${val.lat}, ${val.lon})`;
-          } else {
-            const latStr = val.lat >= 0 ? `${val.lat}°N` : `${Math.abs(val.lat)}°S`;
-            const lonStr = val.lon >= 0 ? `${val.lon}°E` : `${Math.abs(val.lon)}°W`;
-            return `${latStr}, ${lonStr}`;
-          }
-        }
+        const coordFmt = parseAndFormatCoord(val);
+        if (coordFmt) return coordFmt;
         return JSON.stringify(val);
       }
 
@@ -730,6 +723,27 @@ Please describe your operational requirements directly, or ask the question you 
       }
     }
 
+    function parseAndFormatCoord(val) {
+      if (val === null || val === undefined) return null;
+      if (typeof val === 'string') {
+        const str = val.trim();
+        if ((str.includes('北纬') || str.includes('南纬')) && (str.includes('东经') || str.includes('西经'))) {
+          return str;
+        }
+        if (str.startsWith('{') && str.endsWith('}')) {
+          try { val = JSON.parse(str); } catch (e) {}
+        }
+      }
+      if (typeof val === 'object' && val !== null) {
+        const lat = val.lat !== undefined ? val.lat : val.latitude;
+        const lon = val.lon !== undefined ? val.lon : val.longitude;
+        if (lat !== undefined && lon !== undefined) {
+          return formatCoordDisplay(lat, lon);
+        }
+      }
+      return null;
+    }
+
     /**
      * updateSidebar - 渲染任务字段面板。
      * Issue #31: 优先使用 data.ui_state（新路径），降级到旧 collected/missing 字段（compat 路径）。
@@ -805,26 +819,48 @@ Please describe your operational requirements directly, or ask the question you 
       const missingDiv = document.getElementById('missingFields');
 
       function formatUiStateValue(slot, customVal = undefined) {
-        if (slot.display_value !== undefined && slot.display_value !== null && customVal === undefined) {
-          return String(slot.display_value);
-        }
         const val = customVal !== undefined ? customVal : slot.value;
+        const key = slot ? (slot.key || '') : '';
+
+        const coordFmt = parseAndFormatCoord(val);
+        if (coordFmt) return coordFmt;
+
+        if (slot && slot.display_value !== undefined && slot.display_value !== null && customVal === undefined) {
+          const dispStr = String(slot.display_value);
+          const dispCoordFmt = parseAndFormatCoord(dispStr);
+          if (dispCoordFmt) return dispCoordFmt;
+          return dispStr;
+        }
+
         if (val === null || val === undefined) {
           return currentLang === 'zh' ? '暂无' : 'None';
         }
         if (typeof val === 'boolean') {
           return val ? (currentLang === 'zh' ? '是' : 'True') : (currentLang === 'zh' ? '否' : 'False');
         }
-        if (typeof val === 'number' || typeof val === 'string') {
+        if (typeof val === 'number') {
+          if (key === 'water_depth' || key.includes('depth')) {
+            return `${val} ${currentLang === 'zh' ? '米' : 'm'}`;
+          }
           return String(val);
         }
+        if (typeof val === 'string') {
+          const str = val.trim();
+          const strCoord = parseAndFormatCoord(str);
+          if (strCoord) return strCoord;
+          if ((key === 'water_depth' || key.includes('depth')) && !isNaN(parseFloat(str)) && !str.includes('米') && !str.includes('m')) {
+            return `${parseFloat(str)} ${currentLang === 'zh' ? '米' : 'm'}`;
+          }
+          return str;
+        }
         if (Array.isArray(val)) {
-          return val.map(v => (v !== null && typeof v === 'object') ? JSON.stringify(v) : String(v)).join(' / ');
+          return val.map(v => {
+            const c = parseAndFormatCoord(v);
+            if (c) return c;
+            return (v !== null && typeof v === 'object') ? JSON.stringify(v) : String(v);
+          }).join(currentLang === 'zh' ? '、' : ' / ');
         }
         if (typeof val === 'object') {
-          if (val.lat !== undefined && val.lon !== undefined) {
-            return formatCoordDisplay(val.lat, val.lon);
-          }
           try {
             return JSON.stringify(val);
           } catch (e) {
