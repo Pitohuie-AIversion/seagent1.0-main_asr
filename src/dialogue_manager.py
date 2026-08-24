@@ -6400,8 +6400,6 @@ class DialogueManager:
             self._soft_whitelist -= {e for e in self._soft_whitelist if e[0] in changed_fields}
 
     def _is_whitelisted(self, v: Violation) -> bool:
-        if getattr(v, "check_type", "") == "future_task_runtime_notice" or getattr(v, "constraint_id", "") == "C032":
-            return True
         res = getattr(self.slot_store, "validation_result", None)
         if res is None:
             return False

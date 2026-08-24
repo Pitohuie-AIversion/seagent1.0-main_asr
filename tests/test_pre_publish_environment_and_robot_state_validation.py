@@ -48,7 +48,7 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
             "equipment_family": "light_work_class_rov",
             "equipment_type": "轻型工作级深海机器人 150HP",
             "equipment_unit_id": "LROV-150-001",
-            "payload": ["高清水下摄像机", "TSS管缆跟踪传感器"],
+            "payload": ["激光标尺"],
             "support_vessel": "海洋石油 681",
             "oilfield_name": "流花11-1油田",
         }
@@ -86,7 +86,7 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
             "equipment_family": "light_work_class_rov",
             "equipment_type": "轻型工作级深海机器人 150HP",
             "equipment_unit_id": "LROV-150-001",
-            "payload": ["高清水下摄像机"],
+            "payload": ["激光标尺"],
             "support_vessel": "海洋石油 681",
         }
         mock_snapshot = {
@@ -107,6 +107,43 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
             self.assertEqual(res.overall_status, "blocked_hard")
             violation_ids = [v.constraint_id for v in res.violations]
             self.assertIn("C020", violation_ids)
+
+    def test_future_task_does_not_block_on_current_robot_overall_status(self):
+        """未来排期任务不应被 state.yaml 中当前单机忙碌/离线状态触发 C020 阻断。"""
+        task_state = {
+            "task_type_key": "pipeline_inspection",
+            "task_type": "管道巡检",
+            "start_time": "2026-08-18 06:00:00",
+            "end_time": "2026-08-18 08:00:00",
+            "water_depth": 500.0,
+            "cable_type": "海底油气管道",
+            "equipment_class": "observation_rov",
+            "equipment_family": "light_work_class_rov",
+            "equipment_type": "轻型工作级深海机器人 150HP",
+            "equipment_unit_id": "LROV-150-001",
+            "payload": ["激光标尺"],
+            "support_vessel": "海洋石油 681",
+        }
+        mock_snapshot = {
+            "unit_id": "LROV-150-001",
+            "status_ref": "LROV-150-001",
+            "state_version": 1,
+            "updated_at": "2026-08-14T16:50:00+08:00",
+            "state": {
+                "overall_status": "unavailable",
+                "is_busy": True,
+                "updated_at": "2026-08-14T16:50:00+08:00",
+            }
+        }
+
+        with patch.object(self.kb, "get_unit_state_snapshot", return_value=mock_snapshot), \
+             patch.object(self.kb.state_info, "get_unit_state_snapshot", return_value=mock_snapshot):
+            res = self.dm.validator.validate_task(task_state, purpose="publish")
+
+        self.assertEqual(res.overall_status, "pending_runtime_validation")
+        violation_ids = [v.constraint_id for v in res.violations]
+        self.assertIn("C032", violation_ids)
+        self.assertNotIn("C020", violation_ids)
 
     def test_pre_publish_checks_environmental_turbidity_and_velocity(self):
         """发布前核验必须过一遍海况环境（流速 C015、浑浊度 C013）。"""
@@ -257,8 +294,8 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
             }
             self.assertIn("C020", hard_ids)
 
-    def test_future_task_ignore_soft_warning_and_publish_success(self):
-        """未来排期任务触发软警告后，用户忽略软警告能够成功进入 confirming 并完成确认发布。"""
+    def test_future_task_requires_runtime_notice_ack_before_publish(self):
+        """未来排期任务跳过 state.yaml 运行态检查，但 C032 仍需用户确认忽略。"""
         import uuid
         from src.intent_router import IntentRouteResult
         task_state = {
@@ -276,7 +313,7 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
             "equipment_family": "light_work_class_rov",
             "equipment_type": "轻型工作级深海机器人 150HP",
             "equipment_unit_id": "LROV-150-001",
-            "payload": ["高清水下摄像机"],
+            "payload": ["激光标尺"],
             "support_vessel": "海洋石油 681",
             "oilfield_name": "流花11-1油田",
         }
@@ -303,16 +340,16 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
         with patch.object(self.kb, "get_unit_state_snapshot", return_value=mock_snapshot), \
              patch.object(self.kb.state_info, "get_unit_state_snapshot", return_value=mock_snapshot), \
              patch.object(self.kb.state_info, "guard_unit_state_version"):
-            # 1. 触发软警告进入 blocked_soft (包含 C022 推进器状态异常)
-            self.dm._run_constraint_check({"equipment_unit_id"}, purpose="preview")
+            self.dm._run_constraint_check({"start_time"}, purpose="preview")
             self.assertEqual(self.dm.phase, "blocked_soft")
+            blocking_ids = {v.constraint_id for v in self.dm._blocking_violations}
+            self.assertIn("C032", blocking_ids)
+            self.assertNotIn("C022", blocking_ids)
 
-            # 2. 用户执行“忽略警告”
             ignore_reply = self.dm.process("忽略警告")
-            self.assertEqual(self.dm.phase, "confirming", f"忽略软警告后应进入 confirming，实际回复: {ignore_reply}")
+            self.assertEqual(self.dm.phase, "confirming", f"忽略 C032 后应进入 confirming，实际回复: {ignore_reply}")
             self.assertIn("已记录您对当前软警告的确认", ignore_reply)
 
-            # 3. 用户点击“确认发布”
             confirm_reply = self.dm.process("确认发布")
             self.assertEqual(self.dm.phase, "done", f"确认发布后应进入 done，实际回复: {confirm_reply}")
             self.assertIn("已加入计划池", confirm_reply)
@@ -335,7 +372,7 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
             "equipment_family": "light_work_class_rov",
             "equipment_type": "轻型工作级深海机器人 150HP",
             "equipment_unit_id": "LROV-150-001",
-            "payload": ["高清水下摄像机"],
+            "payload": ["激光标尺"],
             "support_vessel": "海洋石油 681",
             "oilfield_name": "流花11-1油田",
         }

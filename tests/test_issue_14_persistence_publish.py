@@ -165,6 +165,13 @@ class TestPersistencePublish(unittest.TestCase):
             patch("src.task_intent_builder.get_task_dir", return_value=self.task_dir),
             patch("src.result_paths.get_task_dir", return_value=self.task_dir),
         ):
+            soft_reply = self.dm.process("确认发布")
+            self.assertEqual(self.dm.phase, "blocked_soft")
+            self.assertIn("未来排期任务", soft_reply)
+
+            ignore_reply = self.dm.process("忽略警告")
+            self.assertEqual(self.dm.phase, "confirming", f"忽略未来任务软提示后应进入 confirming，实际回复: {ignore_reply}")
+
             reply = self.dm.process("确认发布")
 
         self.assertEqual(self.dm.phase, "done")

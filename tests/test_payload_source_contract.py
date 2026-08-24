@@ -62,6 +62,49 @@ class PayloadSourceContractTest(unittest.TestCase):
         for item in pure_onboard:
             self.assertNotIn(item, res_with_robot, f"自带硬件 {item!r} 不应出现在 payload 扩展选配推荐列表中")
 
+    def test_missing_payload_field_carries_selected_robot_onboard_payloads(self):
+        """选择机器人型号后，payload 缺失字段应携带该型号已搭载载荷上下文。"""
+        built_json, missing = self.builder.build(
+            {
+                "task_type_key": "pipeline_inspection",
+                "task_type": "管缆巡检",
+                "start_time": "2026-08-14 17:30:00",
+                "end_time": "2026-08-14 19:00:00",
+                "water_depth": 300,
+                "cable_type": "海底油气管道",
+                "equipment_family": "observation_rov",
+                "equipment_type": "观察级深海机器人 75HP",
+                "equipment_unit_id": "OBSROV-75-001",
+            },
+            "pipeline_inspection",
+        )
+
+        self.assertNotIn("payload", built_json)
+        payload_missing = next(item for item in missing if item["key"] == "payload")
+        self.assertEqual(payload_missing["equipment_type"], "观察级深海机器人 75HP")
+        self.assertIn("水下成像系统", payload_missing["onboard_payloads"])
+        self.assertIn("FLS声呐系统", payload_missing["onboard_payloads"])
+
+    def test_missing_payload_field_resolves_onboard_payloads_from_unit_id(self):
+        """即使缺少 equipment_type，只要已有单机编号，也应从编号反查型号和 onboard。"""
+        _, missing = self.builder.build(
+            {
+                "task_type_key": "pipeline_inspection",
+                "task_type": "管缆巡检",
+                "start_time": "2026-08-14 17:30:00",
+                "end_time": "2026-08-14 19:00:00",
+                "water_depth": 300,
+                "cable_type": "海底油气管道",
+                "equipment_unit_id": "LROV-150-001",
+            },
+            "pipeline_inspection",
+        )
+
+        payload_missing = next(item for item in missing if item["key"] == "payload")
+        self.assertEqual(payload_missing["equipment_type"], "轻型工作级深海机器人 150HP")
+        self.assertIn("水下成像系统", payload_missing["onboard_payloads"])
+        self.assertIn("轻型多功能液压机械臂", payload_missing["onboard_payloads"])
+
     def test_mutation_validation_rejects_payload_not_in_intersection(self):
         """测试 SlotStore apply_list_mutation 在限制模式下拒绝不在交集内的载荷。"""
         store = SlotStore()

@@ -117,5 +117,34 @@ class TestFrontendIntegrity(unittest.TestCase):
         self.assertIn("Estimated", self.js_content)
         self.assertIn("const taskIdStr = officialTaskId || previewTaskId;", self.js_content)
 
+    def test_option_chips_are_payload_only(self):
+        """Option chips are reserved for payload after the robot model is confirmed."""
+        self.assertIn("function renderOptionChips(uiState)", self.js_content)
+        render_block_match = re.search(
+            r"function renderOptionChips\(uiState\) \{(.*?)\n    async function updateSimulatedTime",
+            self.js_content,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(render_block_match)
+        render_block = render_block_match.group(1)
+        self.assertIn("equipmentTypeSlot", self.js_content)
+        self.assertIn("equipmentTypeConfirmed", self.js_content)
+        self.assertIn("s.key === 'equipment_type'", self.js_content)
+        self.assertIn("equipmentTypeSlot.status === 'valid'", self.js_content)
+        self.assertIn("s.key === 'payload'", self.js_content)
+        self.assertIn("payloadSlotsWithAllowed", render_block)
+        self.assertIn("payloadSelectionCompleted", render_block)
+        self.assertIn("s.status === 'valid'", render_block)
+        self.assertIn("Array.isArray(s.value)", render_block)
+        self.assertIn("s.value.length > 0", render_block)
+        self.assertIn("!payloadSelectionCompleted", render_block)
+        self.assertNotIn("missingSlotsWithAllowed", render_block)
+        self.assertNotIn("s.status === 'missing'", render_block)
+        self.assertNotIn("s.status === 'candidate'", render_block)
+        self.assertIn("sendMessage(messageInput.value)", render_block)
+        self.assertNotIn("handleSend(", render_block)
+        self.assertIn("selectedValues", self.js_content)
+        self.assertIn("option-chip-confirm-btn", self.js_content)
+
 if __name__ == "__main__":
     unittest.main()

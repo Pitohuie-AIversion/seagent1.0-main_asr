@@ -129,6 +129,98 @@ class DialogueManagerROVTest(unittest.TestCase):
         self.assertIn("严禁跨型号罗列与发散", knowledge_system)
         self.assertIn("基于已选槽位聚焦作答", task_system)
 
+    def test_payload_missing_prompt_mentions_onboard_payloads_and_ui_selection(self):
+        task_system = build_responder_messages(
+            task_state={
+                "task_type_key": "pipeline_inspection",
+                "task_type": "管缆巡检",
+                "equipment_type": "观察级深海机器人 75HP",
+            },
+            built_json={
+                "task_type_key": "pipeline_inspection",
+                "task_type": "管缆巡检",
+                "equipment_type": "观察级深海机器人 75HP",
+            },
+            missing_fields=[
+                {
+                    "key": "payload",
+                    "label": "携带工具",
+                    "type": "list",
+                    "allowed_values": ["激光标尺", "腐蚀检测探头"],
+                    "equipment_type": "观察级深海机器人 75HP",
+                    "onboard_payloads": ["高清水下摄像机", "前视声呐"],
+                }
+            ],
+            mode="normal",
+            phase="collecting",
+            knowledge_context="",
+            constraint_context={"type": "none"},
+            conversation_history=[],
+            latest_user_message="继续",
+            ROV2type={},
+            support_task=["管缆巡检"],
+        )[0]["content"]
+
+        self.assertIn("观察级深海机器人 75HP 已搭载", task_system)
+        self.assertIn("高清水下摄像机 / 前视声呐", task_system)
+        self.assertIn("下方载荷按钮列表", task_system)
+        self.assertIn("替换、增加或减少", task_system)
+        self.assertIn("激光标尺 / 腐蚀检测探头", task_system)
+
+    def test_payload_missing_prompt_without_metadata_does_not_raise(self):
+        task_system = build_responder_messages(
+            task_state={
+                "task_type_key": "pipeline_inspection",
+                "task_type": "管缆巡检",
+                "equipment_type": "观察级深海机器人 75HP",
+            },
+            built_json={
+                "task_type_key": "pipeline_inspection",
+                "task_type": "管缆巡检",
+                "equipment_type": "观察级深海机器人 75HP",
+            },
+            missing_fields=[
+                {
+                    "key": "payload",
+                    "label": "携带工具",
+                    "type": "list",
+                    "allowed_values": ["激光标尺"],
+                }
+            ],
+            mode="normal",
+            phase="collecting",
+            knowledge_context="",
+            constraint_context={"type": "none"},
+            conversation_history=[],
+            latest_user_message="继续",
+            ROV2type={},
+            support_task=["管缆巡检"],
+        )[0]["content"]
+
+        self.assertIn("观察级深海机器人 75HP 已搭载", task_system)
+        self.assertIn("当前知识库未提供已搭载载荷信息", task_system)
+
+    def test_payload_guidance_is_enforced_without_expanding_allowed_payloads(self):
+        dm = DialogueManager(LLMClient(), self.kb)
+
+        reply = dm._ensure_payload_guidance(
+            "请确认携带工具：激光标尺、腐蚀检测探头。",
+            missing_fields=[
+                {
+                    "key": "payload",
+                    "label": "携带工具",
+                    "allowed_values": ["激光标尺", "腐蚀检测探头"],
+                    "equipment_type": "轻型工作级深海机器人 150HP",
+                    "onboard_payloads": ["水下成像系统", "轻型多功能液压机械臂"],
+                }
+            ],
+        )
+
+        self.assertIn("轻型工作级深海机器人 150HP 已搭载：水下成像系统 / 轻型多功能液压机械臂", reply)
+        self.assertIn("下方载荷按钮列表", reply)
+        self.assertIn("替换、增加或减少", reply)
+        self.assertNotIn("可选有效载荷：", reply)
+
     def test_tool_query_injects_selected_equipment_info_when_slot_confirmed(self):
         evidence = self.kb.execute_typed_query(
             "TOOL_QUERY",

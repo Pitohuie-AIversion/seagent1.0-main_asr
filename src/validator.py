@@ -1167,10 +1167,13 @@ class TaskValidator:
         state_snapshot: dict | None,
         purpose: str = "interactive",
     ) -> Violation | None:
-        # 发布前核验 (publish / preview / runtime_execution) 或即时任务必须执行动态状态与环境检查
-        is_pre_publish_or_execution = purpose in ("publish", "preview", "runtime_execution")
-        if check in _DYNAMIC_CHECKS and (purpose == "interactive" or (not self._is_task_start_now(task_state) and not is_pre_publish_or_execution)):
-            return None
+        # state.yaml 中的机器人/环境状态只代表近实时运行态。
+        # 未来排期任务保留 C032 延后校验提示，真正执行窗口再做动态强校验。
+        if check in _DYNAMIC_CHECKS:
+            if purpose == "interactive":
+                return None
+            if purpose != "runtime_execution" and not self._is_task_start_now(task_state):
+                return None
 
         rel_fields = _CHECK_FIELDS.get(check, [])
         state_dict = state_snapshot.get("state") if state_snapshot else None

@@ -109,14 +109,61 @@ class OutputBuilder:
             if value is not None:
                 result[key] = value
             elif ftype not in ("auto", "fixed"):
-                missing.append({
+                missing_item = {
                     "key":            key,
                     "label":          label,
                     "type":           ftype,
                     "allowed_values": allowed,
-                })
+                }
+                if key == "payload":
+                    missing_item.update(
+                        self._selected_robot_payload_context(
+                            task_type_key,
+                            task_state,
+                        )
+                    )
+                missing.append(missing_item)
 
         return result, missing
+
+    def _selected_robot_payload_context(
+        self,
+        task_type_key: str,
+        task_state: dict | None,
+    ) -> dict:
+        if not isinstance(task_state, dict):
+            return {}
+        eq_type = str(task_state.get("equipment_type") or "").strip()
+        unit_selector = str(task_state.get("equipment_unit_id") or "").strip()
+        equipment_name = str(task_state.get("equipment_name") or "").strip()
+        robot = None
+        if eq_type:
+            robot = self.kb.get_rov_for_task(eq_type, task_type_key)
+            if not robot:
+                robot = self.kb.get_rov(eq_type)
+        if not robot and unit_selector and hasattr(self.kb, "resolve_robot_unit"):
+            resolved_unit = self.kb.resolve_robot_unit(unit_selector, task_type_key)
+            if resolved_unit:
+                robot = resolved_unit.get("robot")
+        if not robot and equipment_name and hasattr(self.kb, "resolve_robot_unit"):
+            resolved_unit = self.kb.resolve_robot_unit(equipment_name, task_type_key)
+            if resolved_unit:
+                robot = resolved_unit.get("robot")
+        if not robot and equipment_name:
+            robot = self.kb.get_rov_for_task(equipment_name, task_type_key)
+        if not robot:
+            robot = self.kb.get_rov(equipment_name)
+        if not robot:
+            return {"equipment_type": eq_type or equipment_name or unit_selector}
+        onboard = [
+            str(item)
+            for item in robot.get("onboard_payloads", [])
+            if item is not None and str(item).strip()
+        ]
+        return {
+            "equipment_type": robot.get("full_name") or eq_type,
+            "onboard_payloads": onboard,
+        }
 
     def get_allowed_values(self, task_type_key: str, field_key: str, mode: str = "normal") -> list[str]:
         """查询某个字段的合法值列表（供 normalizer 调用）"""

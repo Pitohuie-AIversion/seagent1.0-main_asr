@@ -1144,21 +1144,34 @@ Please describe your operational requirements directly, or ask the question you 
       if (!uiState || !uiState.slots) return;
 
       const slots = Array.isArray(uiState.slots) ? uiState.slots : [];
-      const missingSlotsWithAllowed = slots.filter(
-        s => (s.status === 'missing' || s.status === 'candidate') &&
-             Array.isArray(s.allowed_values) &&
-             s.allowed_values.length > 0
+      const equipmentTypeSlot = slots.find(s => s.key === 'equipment_type');
+      const equipmentTypeConfirmed = !!(
+        equipmentTypeSlot &&
+        equipmentTypeSlot.status === 'valid' &&
+        equipmentTypeSlot.value
       );
+      if (!equipmentTypeConfirmed) return;
 
-      if (missingSlotsWithAllowed.length === 0) return;
+      const payloadSlotsWithAllowed = slots.filter(s => {
+        const payloadSelectionCompleted = (
+          s.status === 'valid' &&
+          Array.isArray(s.value) &&
+          s.value.length > 0
+        );
+        return s.key === 'payload' &&
+               !payloadSelectionCompleted &&
+               Array.isArray(s.allowed_values) &&
+               s.allowed_values.length > 0;
+      });
+
+      if (payloadSlotsWithAllowed.length === 0) return;
 
       const bar = document.createElement('div');
       bar.id = 'seagent-option-chips-bar';
       bar.className = 'option-chips-bar';
       bar.style.cssText = 'display: flex; flex-direction: column; gap: 8px; margin: 10px 0 14px 48px; max-width: calc(100% - 60px);';
 
-      missingSlotsWithAllowed.forEach(slot => {
-        const isMultiSelect = slot.key === 'payload' || slot.schema_type === 'list' || slot.value_type === 'list';
+      payloadSlotsWithAllowed.forEach(slot => {
         const groupDiv = document.createElement('div');
         groupDiv.className = 'chip-group';
         groupDiv.style.cssText = 'display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: rgba(0, 229, 255, 0.04); border: 1px dashed rgba(0, 229, 255, 0.2); border-radius: 8px; padding: 6px 12px;';
@@ -1167,147 +1180,102 @@ Please describe your operational requirements directly, or ask the question you 
         labelSpan.className = 'chip-group-label';
         labelSpan.style.cssText = 'font-size: 0.8rem; color: #80d8ff; font-weight: 600; white-space: nowrap;';
         const labelText = typeof slot.label === 'string' ? slot.label : (slot.label?.zh || slot.key);
-        labelSpan.textContent = isMultiSelect ? `💡 ${labelText} (可多选)：` : `💡 ${labelText}：`;
+        labelSpan.textContent = `💡 ${labelText} (可多选)：`;
         groupDiv.appendChild(labelSpan);
 
-        if (isMultiSelect) {
-          const selectedValues = new Set();
-          const chipBtns = new Map();
+        const selectedValues = new Set();
+        const chipBtns = new Map();
 
-          const updateChipStyles = () => {
-            chipBtns.forEach((btn, val) => {
-              const isSelected = selectedValues.has(val);
-              if (isSelected) {
-                btn.style.background = 'rgba(0, 229, 255, 0.32)';
-                btn.style.borderColor = '#00ffff';
-                btn.style.color = '#ffffff';
-                btn.style.boxShadow = '0 0 10px rgba(0, 255, 255, 0.5)';
-                btn.style.fontWeight = '600';
-                btn.textContent = `✓ ${val}`;
-              } else {
-                btn.style.background = 'rgba(0, 229, 255, 0.08)';
-                btn.style.borderColor = 'rgba(0, 229, 255, 0.35)';
-                btn.style.color = '#00e5ff';
-                btn.style.boxShadow = 'none';
-                btn.style.fontWeight = '500';
-                btn.textContent = val;
-              }
-            });
-
-            if (confirmBtn) {
-              const count = selectedValues.size;
-              if (count > 0) {
-                confirmBtn.style.display = 'inline-flex';
-                confirmBtn.textContent = currentLang === 'zh' ? `✓ 确认选择 (${count}项)` : `✓ Confirm (${count})`;
-              } else {
-                confirmBtn.style.display = 'none';
-              }
+        const updateChipStyles = () => {
+          chipBtns.forEach((btn, val) => {
+            const isSelected = selectedValues.has(val);
+            if (isSelected) {
+              btn.style.background = 'rgba(0, 229, 255, 0.32)';
+              btn.style.borderColor = '#00ffff';
+              btn.style.color = '#ffffff';
+              btn.style.boxShadow = '0 0 10px rgba(0, 255, 255, 0.5)';
+              btn.style.fontWeight = '600';
+              btn.textContent = `✓ ${val}`;
+            } else {
+              btn.style.background = 'rgba(0, 229, 255, 0.08)';
+              btn.style.borderColor = 'rgba(0, 229, 255, 0.35)';
+              btn.style.color = '#00e5ff';
+              btn.style.boxShadow = 'none';
+              btn.style.fontWeight = '500';
+              btn.textContent = val;
             }
-          };
-
-          slot.allowed_values.forEach(val => {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'option-chip-btn';
-            btn.style.cssText = `
-              background: rgba(0, 229, 255, 0.08);
-              border: 1px solid rgba(0, 229, 255, 0.35);
-              color: #00e5ff;
-              border-radius: 14px;
-              padding: 3px 12px;
-              font-size: 0.82rem;
-              cursor: pointer;
-              transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-              font-weight: 500;
-              outline: none;
-            `;
-            btn.textContent = val;
-            chipBtns.set(val, btn);
-
-            btn.addEventListener('click', () => {
-              if (selectedValues.has(val)) {
-                selectedValues.delete(val);
-              } else {
-                selectedValues.add(val);
-              }
-              updateChipStyles();
-            });
-
-            groupDiv.appendChild(btn);
           });
 
-          var confirmBtn = document.createElement('button');
-          confirmBtn.type = 'button';
-          confirmBtn.className = 'option-chip-confirm-btn';
-          confirmBtn.style.cssText = `
-            display: none;
-            background: linear-gradient(135deg, rgba(0, 229, 255, 0.4), rgba(0, 150, 255, 0.5));
-            border: 1px solid #00f0ff;
-            color: #ffffff;
+          if (confirmBtn) {
+            const count = selectedValues.size;
+            if (count > 0) {
+              confirmBtn.style.display = 'inline-flex';
+              confirmBtn.textContent = currentLang === 'zh' ? `✓ 确认选择 (${count}项)` : `✓ Confirm (${count})`;
+            } else {
+              confirmBtn.style.display = 'none';
+            }
+          }
+        };
+
+        slot.allowed_values.forEach(val => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'option-chip-btn';
+          btn.style.cssText = `
+            background: rgba(0, 229, 255, 0.08);
+            border: 1px solid rgba(0, 229, 255, 0.35);
+            color: #00e5ff;
             border-radius: 14px;
-            padding: 3px 14px;
+            padding: 3px 12px;
             font-size: 0.82rem;
             cursor: pointer;
-            transition: all 0.2s ease;
-            font-weight: 600;
-            margin-left: 4px;
-            box-shadow: 0 0 12px rgba(0, 240, 255, 0.4);
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            font-weight: 500;
             outline: none;
           `;
+          btn.textContent = val;
+          chipBtns.set(val, btn);
 
-          confirmBtn.addEventListener('click', () => {
-            if (!isSending && selectedValues.size > 0) {
-              const selectedList = Array.from(selectedValues);
-              messageInput.value = selectedList.join('、');
-              handleSend('text');
+          btn.addEventListener('click', () => {
+            if (selectedValues.has(val)) {
+              selectedValues.delete(val);
+            } else {
+              selectedValues.add(val);
             }
+            updateChipStyles();
           });
 
-          groupDiv.appendChild(confirmBtn);
+          groupDiv.appendChild(btn);
+        });
 
-        } else {
-          slot.allowed_values.forEach(val => {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'option-chip-btn';
-            btn.style.cssText = `
-              background: rgba(0, 229, 255, 0.1);
-              border: 1px solid rgba(0, 229, 255, 0.35);
-              color: #00e5ff;
-              border-radius: 14px;
-              padding: 3px 12px;
-              font-size: 0.82rem;
-              cursor: pointer;
-              transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-              font-weight: 500;
-              outline: none;
-            `;
-            btn.textContent = val;
+        var confirmBtn = document.createElement('button');
+        confirmBtn.type = 'button';
+        confirmBtn.className = 'option-chip-confirm-btn';
+        confirmBtn.style.cssText = `
+          display: none;
+          background: linear-gradient(135deg, rgba(0, 229, 255, 0.4), rgba(0, 150, 255, 0.5));
+          border: 1px solid #00f0ff;
+          color: #ffffff;
+          border-radius: 14px;
+          padding: 3px 14px;
+          font-size: 0.82rem;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          font-weight: 600;
+          margin-left: 4px;
+          box-shadow: 0 0 12px rgba(0, 240, 255, 0.4);
+          outline: none;
+        `;
 
-            btn.addEventListener('mouseover', () => {
-              btn.style.background = 'rgba(0, 229, 255, 0.28)';
-              btn.style.borderColor = '#00f0ff';
-              btn.style.boxShadow = '0 0 12px rgba(0, 240, 255, 0.45)';
-              btn.style.transform = 'translateY(-1px)';
-            });
+        confirmBtn.addEventListener('click', () => {
+          if (!isSending && selectedValues.size > 0) {
+            const selectedList = Array.from(selectedValues);
+            messageInput.value = selectedList.join('、');
+            sendMessage(messageInput.value);
+          }
+        });
 
-            btn.addEventListener('mouseout', () => {
-              btn.style.background = 'rgba(0, 229, 255, 0.1)';
-              btn.style.borderColor = 'rgba(0, 229, 255, 0.35)';
-              btn.style.boxShadow = 'none';
-              btn.style.transform = 'translateY(0)';
-            });
-
-            btn.addEventListener('click', () => {
-              if (!isSending) {
-                messageInput.value = val;
-                handleSend('text');
-              }
-            });
-
-            groupDiv.appendChild(btn);
-          });
-        }
+        groupDiv.appendChild(confirmBtn);
 
         bar.appendChild(groupDiv);
       });

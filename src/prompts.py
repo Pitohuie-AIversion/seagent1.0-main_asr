@@ -347,6 +347,11 @@ def build_responder_messages(
 
     filled_json = json.dumps(display_built, ensure_ascii=False, indent=2) if display_built else "（暂无）"
 
+    equipment_class = built_json.get("equipment_class") or task_state.get("equipment_class")
+    equipment_family = built_json.get("equipment_family") or task_state.get("equipment_family")
+    equipment_type = built_json.get("equipment_type") or task_state.get("equipment_type")
+    equipment_unit = built_json.get("equipment_unit_id") or task_state.get("equipment_unit_id")
+
     # ── 缺失字段描述（含允许值提示）─────────────────────────────────────────
     if missing_fields:
         count = len(missing_fields)
@@ -366,17 +371,29 @@ def build_responder_messages(
                 line += (
                     f"  ← 必须从以下选项中选择，并在回复中以清晰样式原样展示候选词、不得改写：{allowed_fmt}"
                 )
+                if m.get("key") == "payload":
+                    onboard_payloads = [
+                        str(item)
+                        for item in (m.get("onboard_payloads") or [])
+                        if item is not None and str(item).strip()
+                    ]
+                    equipment_name = (
+                        m.get("equipment_type")
+                        or equipment_type
+                        or "当前已选机器人"
+                    )
+                    onboard_fmt = " / ".join(onboard_payloads) if onboard_payloads else "当前知识库未提供已搭载载荷信息"
+                    line += (
+                        f"  ← 载荷询问统一话术：{equipment_name} 已搭载：{onboard_fmt}。"
+                        "请告知用户：这台机器人已具备上述自带载荷；如本次作业需要调整，请在下方载荷按钮列表中的有效载荷里选择要替换、增加或减少的项目。"
+                        f"有效载荷候选仅为：{allowed_fmt}"
+                    )
             missing_lines.append(line)
         missing_desc = "\n".join(missing_lines)
     else:
         missing_desc = "  （无，所有必填字段已收集 ✓）"
 
     missing_keys = {m.get("key") for m in missing_fields}
-    equipment_class = built_json.get("equipment_class") or task_state.get("equipment_class")
-    equipment_family = built_json.get("equipment_family") or task_state.get("equipment_family")
-    equipment_type = built_json.get("equipment_type") or task_state.get("equipment_type")
-    equipment_unit = built_json.get("equipment_unit_id") or task_state.get("equipment_unit_id")
-
     field_dependency_instruction = ""
     if "equipment_class" in missing_keys and not equipment_class:
         field_dependency_instruction = (
