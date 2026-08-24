@@ -123,6 +123,12 @@ def perform_reload() -> Tuple[bool, str, List[str]]:
                     mod = sys.modules[mod_name]
                     importlib.reload(mod)
                     reloaded_mods.append(mod_name)
+                else:
+                    try:
+                        mod = importlib.import_module(mod_name)
+                        reloaded_mods.append(mod_name)
+                    except Exception:
+                        pass
 
             # 2. 刷新 web_backend 模块内的引用
             if "web_backend" in sys.modules:

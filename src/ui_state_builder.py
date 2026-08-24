@@ -12,7 +12,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 import logging
 from typing import TYPE_CHECKING, Any
-from .coord_parser import format_slot_display_value
+from . import coord_parser
 
 if TYPE_CHECKING:
     from .dialogue_manager import DialogueManager
@@ -196,7 +196,7 @@ def _build_slots(
         slot_val = slot_data.get("value")
         display_val = slot_data.get("display_value")
         if display_val is None and slot_val is not None:
-            display_val = format_slot_display_value(key, slot_val)
+            display_val = coord_parser.format_slot_display_value(key, slot_val)
 
         slot_entry = {
             "key": key,

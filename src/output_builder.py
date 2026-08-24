@@ -133,12 +133,34 @@ class OutputBuilder:
     ) -> dict:
         if not isinstance(task_state, dict):
             return {}
-        eq_type = str(task_state.get("equipment_type") or "").strip()
-        if not eq_type:
-            return {}
-        robot = self.kb.get_rov_for_task(eq_type, task_type_key)
-        if not robot:
-            robot = self.kb.get_rov(eq_type)
+        eq_selectors = [
+            task_state.get("equipment_type"),
+            task_state.get("equipment_name"),
+            task_state.get("equipment_family"),
+            task_state.get("equipment_class"),
+            task_state.get("equipment_unit_id"),
+        ]
+        robot = None
+        for sel in eq_selectors:
+            if not sel or not str(sel).strip():
+                continue
+            sel_str = str(sel).strip()
+            robot = self.kb.get_rov_for_task(sel_str, task_type_key) or self.kb.get_rov(sel_str)
+            if not robot and hasattr(self.kb, "resolve_robot_unit"):
+                unit_res = self.kb.resolve_robot_unit(sel_str, task_type_key)
+                if unit_res and unit_res.get("robot"):
+                    robot = unit_res.get("robot")
+            if robot:
+                break
+
+        if not robot and hasattr(self.kb, "resolve_robot_selection_from_task_state"):
+            try:
+                selection = self.kb.resolve_robot_selection_from_task_state(task_state, task_type=task_type_key)
+                if selection and selection.get("variant"):
+                    robot = selection.get("variant")
+            except Exception:
+                pass
+
         if not robot:
             return {}
         onboard = [
@@ -147,7 +169,7 @@ class OutputBuilder:
             if item is not None and str(item).strip()
         ]
         return {
-            "equipment_type": robot.get("full_name") or eq_type,
+            "equipment_type": robot.get("full_name") or task_state.get("equipment_type") or "选定机器人",
             "onboard_payloads": onboard,
         }
 
