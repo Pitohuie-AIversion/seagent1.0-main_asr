@@ -134,27 +134,13 @@ class OutputBuilder:
         if not isinstance(task_state, dict):
             return {}
         eq_type = str(task_state.get("equipment_type") or "").strip()
-        unit_selector = str(task_state.get("equipment_unit_id") or "").strip()
-        equipment_name = str(task_state.get("equipment_name") or "").strip()
-        robot = None
-        if eq_type:
-            robot = self.kb.get_rov_for_task(eq_type, task_type_key)
-            if not robot:
-                robot = self.kb.get_rov(eq_type)
-        if not robot and unit_selector and hasattr(self.kb, "resolve_robot_unit"):
-            resolved_unit = self.kb.resolve_robot_unit(unit_selector, task_type_key)
-            if resolved_unit:
-                robot = resolved_unit.get("robot")
-        if not robot and equipment_name and hasattr(self.kb, "resolve_robot_unit"):
-            resolved_unit = self.kb.resolve_robot_unit(equipment_name, task_type_key)
-            if resolved_unit:
-                robot = resolved_unit.get("robot")
-        if not robot and equipment_name:
-            robot = self.kb.get_rov_for_task(equipment_name, task_type_key)
+        if not eq_type:
+            return {}
+        robot = self.kb.get_rov_for_task(eq_type, task_type_key)
         if not robot:
-            robot = self.kb.get_rov(equipment_name)
+            robot = self.kb.get_rov(eq_type)
         if not robot:
-            return {"equipment_type": eq_type or equipment_name or unit_selector}
+            return {}
         onboard = [
             str(item)
             for item in robot.get("onboard_payloads", [])

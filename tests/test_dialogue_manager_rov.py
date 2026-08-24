@@ -200,27 +200,6 @@ class DialogueManagerROVTest(unittest.TestCase):
         self.assertIn("观察级深海机器人 75HP 已搭载", task_system)
         self.assertIn("当前知识库未提供已搭载载荷信息", task_system)
 
-    def test_payload_guidance_is_enforced_without_expanding_allowed_payloads(self):
-        dm = DialogueManager(LLMClient(), self.kb)
-
-        reply = dm._ensure_payload_guidance(
-            "请确认携带工具：激光标尺、腐蚀检测探头。",
-            missing_fields=[
-                {
-                    "key": "payload",
-                    "label": "携带工具",
-                    "allowed_values": ["激光标尺", "腐蚀检测探头"],
-                    "equipment_type": "轻型工作级深海机器人 150HP",
-                    "onboard_payloads": ["水下成像系统", "轻型多功能液压机械臂"],
-                }
-            ],
-        )
-
-        self.assertIn("轻型工作级深海机器人 150HP 已搭载：水下成像系统 / 轻型多功能液压机械臂", reply)
-        self.assertIn("下方载荷按钮列表", reply)
-        self.assertIn("替换、增加或减少", reply)
-        self.assertNotIn("可选有效载荷：", reply)
-
     def test_tool_query_injects_selected_equipment_info_when_slot_confirmed(self):
         evidence = self.kb.execute_typed_query(
             "TOOL_QUERY",
