@@ -1178,6 +1178,7 @@ Please describe your operational requirements directly, or ask the question you 
       if (oldBar) oldBar.remove();
 
       if (!uiState || !uiState.slots) return;
+      if (uiState.read_only || uiState.phase === 'confirming' || uiState.phase === 'done' || uiState.phase === 'rejected') return;
 
       const slots = Array.isArray(uiState.slots) ? uiState.slots : [];
       const equipmentTypeSlot = slots.find(s => s.key === 'equipment_type');
@@ -1187,6 +1188,13 @@ Please describe your operational requirements directly, or ask the question you 
         equipmentTypeSlot.value
       );
       if (!equipmentTypeConfirmed) return;
+
+      // 只有在当前轮次真正需要用户填写/追问 payload 字段时才触发加载胶囊卡片
+      // 判定逻辑：payload 必须位于当前未收集完成的前 3 个待收集字段中（与后端的 ask_count=3 对齐）
+      const missingSlots = slots.filter(s => s.status !== 'valid');
+      const currentlyAskedSlots = missingSlots.slice(0, 3);
+      const isPayloadCurrentlyAsked = currentlyAskedSlots.some(s => s.key === 'payload');
+      if (!isPayloadCurrentlyAsked) return;
 
       const payloadSlotsWithAllowed = slots.filter(s => {
         const payloadSelectionCompleted = (

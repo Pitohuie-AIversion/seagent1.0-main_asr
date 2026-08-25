@@ -3068,7 +3068,7 @@ class DialogueManager:
             if labels:
                 next_labels = labels[:3]
                 suffix_parts.append("仍需补充：" + "、".join(next_labels) + "。")
-                if any(isinstance(item, dict) and item.get("key") == "payload" for item in missing_fields):
+                if any(isinstance(item, dict) and item.get("key") == "payload" for item in missing_fields[:3]):
                     eq_type = str(
                         (accepted_updates or {}).get("equipment_type")
                         or ((display_updates or {}).get("equipment_type"))
@@ -3132,6 +3132,9 @@ class DialogueManager:
                     continue
                 if part.startswith("⚠️ 未写入或仍需确认：") and ("⚠️ 未写入或仍需确认：" in model_reply_str or "未写入或仍需确认" in model_reply_str):
                     continue
+                if part.startswith("【提示】") or "已搭载" in part:
+                    if any(kw in model_reply_str for kw in ("已搭载", "自带载荷", "已具备", "【提示】", "替换、增加或减少")):
+                        continue
                 deduped_parts.append(part)
 
             deduped_suffix = "\n".join(deduped_parts)

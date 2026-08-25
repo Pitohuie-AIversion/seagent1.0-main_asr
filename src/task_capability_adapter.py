@@ -65,5 +65,7 @@ class TaskCapabilityAdapter:
             prefix = f"【提示】{eq_type} 的基础配置可在下方载荷按钮列表中进行替换、增加或减少配置。"
 
         if text:
+            if any(kw in text for kw in ("已搭载", "自带载荷", "已具备", "【提示】", "替换、增加或减少")):
+                return text
             return f"{prefix}\n{text}"
         return prefix

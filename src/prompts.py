@@ -360,7 +360,7 @@ def build_responder_messages(
                 line += (
                     f"  ← 必须从以下选项中选择，并在回复中以清晰样式原样展示候选词、不得改写：{allowed_fmt}"
                 )
-                if m.get("key") == "payload":
+                if m.get("key") == "payload" and idx <= ask_count:
                     onboard_payloads = [
                         str(item)
                         for item in (m.get("onboard_payloads") or [])
