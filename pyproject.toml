@@ -55,3 +55,42 @@ norecursedirs = ["scratch", ".agents", "fixtures"]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+package-dir = {"" = "src"}
+zip-safe = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["*"]
+exclude = [
+    "scratch*",
+    ".agents*",
+    "*.tests*",
+]
+
+[tool.setuptools.exclude-package-data]
+"*" = [
+    "*.pyc",
+    "__pycache__/*",
+    ".DS_Store",
+]
+
+[project.optional-dependencies]
+cn2an = [
+    "cn2an>=0.5.22",
+]
+chinese-numbers = [
+    "cn2an>=0.5.22",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio",
+    "black>=24.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/example/seagent-asr"
+Issues = "https://github.com/example/seagent-asr/issues"
+

@@ -9,7 +9,11 @@ import math
 import re
 from datetime import datetime, timedelta
 
-from .duration_parser import parse_duration_to_seconds, is_keep_duration_expression
+from .duration_parser import (
+    parse_duration_to_seconds,
+    is_keep_duration_expression,
+    parse_chinese_number,
+)
 from .llm_client import LLMClient
 from .model_profile import ModelRole, _is_unsupported_role_keyword_error
 from .normalizer import FieldNormalizer
@@ -818,20 +822,31 @@ class ParameterExtractor:
                 valid_units = ("英尺", "feet", "ft", "千米", "公里", "km", "米", "m", "节", "knot", "kn", "小时", "钟头", "hour", "hr", "分钟", "分", "min", "天", "日", "day")
                 is_known_unit = any(u in raw_lower for u in valid_units) or any(cn in target_str for cn in ("一", "二", "两", "三", "四", "五", "六", "七", "八", "九", "十", "百", "千", "万", "半"))
 
-                try:
-                    import cn2an
-                    transformed = cn2an.transform(target_str, "cn2an")
-                except Exception:
-                    transformed = target_str
-
-                m_num = re.match(r"^([-+]?[0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z\u4e00-\u9fa5]*)$", transformed.strip())
+                # 安全解析策略：仅对匹配到的数字+单位 token 进行中文数字转换，
+                # 严禁全量 cn2an.transform（会破坏"下周三15:00"这类混合表达）。
+                # 路径 1：纯阿拉伯数字 + 单位（快速路径，无需中文转换）
+                m_num = re.match(r"^([-+]?[0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z\u4e00-\u9fa5]*)$", target_str.strip())
+                clean_str = None
+                unit_part = ""
                 if m_num:
                     clean_str, unit_part = m_num.groups()
+                else:
+                    # 路径 2：中文数字（含"两"、"一百五"等）+ 可选单位
+                    # 用贪心正则拆分出 [数字部分] [单位部分]，仅对数字 token 调 parse_chinese_number
+                    m_cn = re.match(
+                        r"^([-+]?[零〇○Oo幺壹贰两俩叁仨肆伍陆柒捌玖勾一二三四五六七八九十拾佰仟万萬亿点半\d]+(?:点半|[零〇○Oo幺壹贰两俩叁仨肆伍陆柒捌玖勾一二三四五六七八九十百千万萬亿\d半]*半?)?)\s*([a-zA-Z\u4e00-\u9fa5]*)$",
+                        target_str.strip(),
+                    )
+                    if m_cn:
+                        cn_num_part, unit_part = m_cn.groups()
+                        parsed_num = parse_chinese_number(cn_num_part)
+                        if parsed_num is not None:
+                            clean_str = str(parsed_num)
+
+                if clean_str is not None:
                     unit_part_lower = unit_part.lower()
-                    # 若存在未知字母/汉字杂质 (如 "300abc")，且不属于已知合法单位，则不处理，保留原始值以触发校验冲突
-                    if unit_part and not is_known_unit and not any(u in unit_part_lower for u in valid_units):
-                        pass
-                    else:
+                    has_valid_unit = not unit_part or is_known_unit or any(u in unit_part_lower for u in valid_units)
+                    if has_valid_unit:
                         try:
                             num_val = float(clean_str)
 

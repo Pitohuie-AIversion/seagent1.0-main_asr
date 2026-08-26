@@ -11,6 +11,13 @@ import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from .types import (
+    VALID_DIALOGUE_MODES,  # noqa: F401  (re-export for backwards compat)
+    VALID_EMERGENCY_ACTIONS,  # noqa: F401  (re-export for backwards compat)
+    VALID_QUERY_INTENTS,  # noqa: F401  (re-export for backwards compat)
+    IntentRouteResult,
+)
+
 logger = logging.getLogger(__name__)
 
 OperationType = Literal["READ", "WRITE", "CONTROL", "CLARIFY"]
@@ -34,9 +41,6 @@ SourcePolicyType = Literal[
 ]
 
 VALID_OPERATIONS = {"READ", "WRITE", "CONTROL", "CLARIFY"}
-VALID_DIALOGUE_MODES = {
-    "task_collection", "knowledge_qa", "emergency_intervention",
-}
 VALID_SUBJECT_TYPES = {
     "general_concept", "system_rule", "task", "device", "device_class",
     "device_family", "payload", "environment", "realtime_state", "unknown",
@@ -50,21 +54,9 @@ VALID_SOURCE_POLICIES = {
     "project_kb", "session_state", "realtime_state", "general_domain",
     "hybrid", "none",
 }
-VALID_EMERGENCY_ACTIONS = {"stop", "pause", "abort", "cancel"}
 VALID_PENDING_ACTIONS = {"confirm", "reject"}
 VALID_WARNING_ACTIONS = {"acknowledge"}
 MIN_PLAN_CONFIDENCE = 0.6
-VALID_QUERY_INTENTS = {
-    "TASK_STATUS",
-    "TOOL_QUERY",
-    "DEVICE_CAPABILITY",
-    "DEVICE_STATUS",
-    "ENVIRONMENT_QUERY",
-    "KNOWLEDGE_QA",
-    "GENERAL_CHAT",
-    "CLARIFICATION",
-    "UNKNOWN",
-}
 
 
 @dataclass(frozen=True)
@@ -106,8 +98,6 @@ class InteractionPlan:
 
     def to_intent_route_result(self) -> Any:
         """转换为 DialogueManager 仍在使用的兼容路由结果。"""
-        from .intent_router import IntentRouteResult
-
         interaction_type = "WRITE" if self.operation == "WRITE" else "QUERY"
         return IntentRouteResult(
             interaction_type=interaction_type,

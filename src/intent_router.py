@@ -8,46 +8,27 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import re
-from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from .interaction_plan import (
-    InteractionPlan,
     build_clarify_fallback_plan,
     validate_interaction_plan,
 )
 from .llm_client import LLMClient
 from .model_profile import ModelRole, _is_unsupported_role_keyword_error
+from .types import (  # noqa: F401  (re-export backwards compat)
+    InteractionType,
+    DialogueMode,
+    VALID_INTERACTION_TYPES,
+    VALID_DIALOGUE_MODES,
+    VALID_QUERY_INTENTS,
+    VALID_EMERGENCY_ACTIONS,
+    IntentRoutingError,
+    IntentRouteResult,
+)
 
 logger = logging.getLogger(__name__)
-
-InteractionType = Literal["WRITE", "QUERY"]
-DialogueMode = Literal[
-    "task_collection",
-    "knowledge_qa",
-    "emergency_intervention",
-]
-
-VALID_INTERACTION_TYPES = {"WRITE", "QUERY"}
-VALID_DIALOGUE_MODES = {
-    "task_collection",
-    "knowledge_qa",
-    "emergency_intervention",
-}
-VALID_QUERY_INTENTS = {
-    "TASK_STATUS",
-    "TOOL_QUERY",
-    "DEVICE_CAPABILITY",
-    "DEVICE_STATUS",
-    "ENVIRONMENT_QUERY",
-    "KNOWLEDGE_QA",
-    "GENERAL_CHAT",
-    "CLARIFICATION",
-    "UNKNOWN",
-}
-VALID_EMERGENCY_ACTIONS = {"stop", "pause", "abort", "cancel"}
 
 
 INTENT_ROUTER_SYSTEM = """\
@@ -121,112 +102,6 @@ warning_action=acknowledge。
 不处于 blocked_soft 或未明确接受风险时 warning_action 必须为 null。
 只能输出 JSON。
 """
-
-
-class IntentRoutingError(Exception):
-    """模型调用或 InteractionPlan 协议识别失败。"""
-
-
-@dataclass(frozen=True)
-class IntentRouteResult:
-    """DialogueManager 兼容路由结果。
-
-    READ、CLARIFY 和 CONTROL 仍映射为旧接口的 QUERY；真正的 operation 保留在
-    ``interaction_plan``，CONTROL 通过 emergency_intervention 单独执行。
-    """
-
-    interaction_type: InteractionType
-    confidence: float
-    reason: str
-    query_intent: str | None = None
-    dialogue_mode: DialogueMode = "task_collection"
-    source: str = "interaction_plan"
-    emergency_action: str | None = None
-    interaction_plan: InteractionPlan | None = None
-
-    def __post_init__(self) -> None:
-        interaction_type = str(self.interaction_type).strip().upper()
-        dialogue_mode = str(self.dialogue_mode).strip().lower()
-        query_intent = (
-            str(self.query_intent).strip().upper() if self.query_intent else None
-        )
-
-        if interaction_type not in VALID_INTERACTION_TYPES:
-            raise ValueError(f"非法 interaction_type: {self.interaction_type}")
-        if dialogue_mode not in VALID_DIALOGUE_MODES:
-            raise ValueError(f"非法 dialogue_mode: {self.dialogue_mode}")
-        if (
-            isinstance(self.confidence, bool)
-            or not isinstance(self.confidence, (int, float))
-            or not math.isfinite(float(self.confidence))
-            or not 0.0 <= float(self.confidence) <= 1.0
-        ):
-            raise ValueError(f"非法 confidence: {self.confidence!r}")
-
-        action = self.emergency_action
-        invalid_action = action is not None and action not in VALID_EMERGENCY_ACTIONS
-        contradictory_action = (
-            action in VALID_EMERGENCY_ACTIONS
-            and dialogue_mode != "emergency_intervention"
-        )
-        missing_action = (
-            dialogue_mode == "emergency_intervention"
-            and action not in VALID_EMERGENCY_ACTIONS
-        )
-        if invalid_action or contradictory_action or missing_action:
-            # 兼容调用方可能直接构造旧路由结果；协议矛盾只允许安全降级，不能
-            # 因异常绕过 DialogueManager 的只读路径。
-            dialogue_mode = "knowledge_qa"
-            interaction_type = "QUERY"
-            query_intent = "CLARIFICATION"
-            action = None
-            object.__setattr__(self, "emergency_action", None)
-
-        if dialogue_mode == "emergency_intervention":
-            interaction_type = "QUERY"
-            query_intent = None
-        elif dialogue_mode == "task_collection":
-            interaction_type = "WRITE"
-            query_intent = None
-        else:
-            interaction_type = "QUERY"
-            if query_intent not in VALID_QUERY_INTENTS:
-                query_intent = "KNOWLEDGE_QA"
-
-        object.__setattr__(self, "interaction_type", interaction_type)
-        object.__setattr__(self, "dialogue_mode", dialogue_mode)
-        object.__setattr__(self, "query_intent", query_intent)
-        object.__setattr__(self, "confidence", float(self.confidence))
-
-    def to_dict(self) -> dict[str, Any]:
-        result = {
-            "interaction_type": self.interaction_type,
-            "confidence": self.confidence,
-            "reason": self.reason,
-            "query_intent": self.query_intent,
-            "dialogue_mode": self.dialogue_mode,
-            "source": self.source,
-            "emergency_action": self.emergency_action,
-        }
-        if self.interaction_plan is not None:
-            result["interaction_plan"] = self.interaction_plan.to_dict()
-        return result
-
-    @property
-    def intent(self) -> str | None:
-        if self.dialogue_mode == "task_collection":
-            return "TASK_UPDATE"
-        if self.dialogue_mode == "emergency_intervention":
-            return "EMERGENCY_INTERVENTION"
-        return self.query_intent or self.interaction_type
-
-    @property
-    def is_query(self) -> bool:
-        return self.dialogue_mode != "task_collection"
-
-    @property
-    def should_update_slots(self) -> bool:
-        return self.dialogue_mode == "task_collection"
 
 
 class IntentRouter:

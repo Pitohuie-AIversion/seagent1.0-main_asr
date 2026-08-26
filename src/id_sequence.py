@@ -8,29 +8,18 @@ import logging
 import os
 import re
 import threading
-import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .exceptions import IdReservationError
 from .result_paths import get_result_dir
+from .utils import validate_uuid4  # noqa: F401  (re-export for backwards compat)
 
 
 logger = logging.getLogger("backend.id_sequence")
 
 _LOCK = threading.Lock()
 _COUNTERS: dict[str, int] = {}
-
-
-def validate_uuid4(val: Any) -> bool:
-    """验证值是否为符合规范的 UUIDv4 字符串 (必须为规范小写)。"""
-    if type(val) is not str or not val:
-        return False
-    try:
-        parsed = uuid.UUID(val)
-        return parsed.version == 4 and str(parsed) == val
-    except Exception:
-        return False
 
 
 def validate_intent_id(intent_id: Any) -> bool:

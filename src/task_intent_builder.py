@@ -3,7 +3,6 @@ task_intent_builder.py — 生成符合 TaskIntent 规范的 JSON 文件
 """
 import fcntl
 import json
-import math
 import os
 import re
 import stat
@@ -18,6 +17,11 @@ from .id_sequence import next_daily_id, validate_intent_id, validate_task_id, va
 from .knowledge_retriever import KnowledgeBase
 from .result_paths import get_task_dir
 from .simulated_time import get_current_datetime
+from .utils import (
+    validate_uuid4,  # noqa: F401  (re-exported for backwards compat)
+    is_finite_number,
+    is_exact_int,
+)
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 TASK_ALLOWED_ROBOT_TYPES = {
@@ -75,20 +79,9 @@ def _atomic_commit_noreplace(temp_file: Path, final_file: Path) -> None:
         raise TaskPersistenceError(f"Atomic commit failed: {e}") from e
 
 
-def validate_uuid4(val: Any) -> bool:
-    """验证值是否为符合规范的 UUIDv4 字符串 (必须为规范小写)。"""
-    if type(val) is not str or not val:
-        return False
-    try:
-        parsed = uuid.UUID(val)
-        return parsed.version == 4 and str(parsed) == val
-    except (ValueError, TypeError, AttributeError):
-        return False
-
-
 def _is_exact_schema_version(val: Any, expected: int) -> bool:
     """严格判断值是否为精确整数类型且数值等于 expected (排除 bool、float 及 None)。"""
-    return type(val) is int and val == expected
+    return is_exact_int(val, expected)
 
 
 def _parse_optional_task_time(value: Any, field_name: str) -> tuple[datetime | None, str | None]:
@@ -102,12 +95,7 @@ def _parse_optional_task_time(value: Any, field_name: str) -> tuple[datetime | N
         return None, f"time.{field_name} is not a valid ISO-8601 timestamp"
 
 
-def _is_finite_number(value: Any) -> bool:
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, (int, float))
-        and math.isfinite(float(value))
-    )
+_is_finite_number = is_finite_number  # backwards compat alias
 
 
 def _coordinate_error(value: Any, field_name: str) -> str | None:

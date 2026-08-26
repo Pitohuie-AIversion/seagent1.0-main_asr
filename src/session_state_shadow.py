@@ -28,7 +28,6 @@ import yaml
 from .id_sequence import validate_intent_id, validate_task_id, validate_uuid4
 from .model_profile import CONFIG_DIR, is_shadow_compare_enabled
 from .session_state import (
-    StateContractError,
     session_state_from_legacy_snapshot,
     session_state_to_legacy_fields,
 )

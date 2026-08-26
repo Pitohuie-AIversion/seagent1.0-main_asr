@@ -9,14 +9,12 @@ validator.py — 结构化约束验证服务 (Issue #14 增强版)
 import copy
 import hashlib
 import math
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from .exceptions import (
-    StatePersistenceError,
     StateSelectorError,
     StateSnapshotValidationError,
 )
@@ -25,7 +23,7 @@ from .knowledge_retriever import (
     RobotSelectionDataError,
     robot_selection_result_contract_error,
 )
-from .simulated_time import get_current_datetime, get_current_timestamp
+from .simulated_time import get_current_datetime
 from .state_info import TELEMETRY_MAX_FUTURE_SKEW_SECONDS
 
 

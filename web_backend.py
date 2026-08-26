@@ -13,7 +13,7 @@ import yaml
 import logging
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import tempfile
 from werkzeug.utils import secure_filename
@@ -466,7 +466,22 @@ def api_asr():
             "retryable": False
         }), 400
 
-    filename = secure_filename(audio.filename)
+    original_filename = audio.filename
+    filename = secure_filename(original_filename)
+    content_length = request.content_length
+    audit_ip = request.remote_addr or "UNKNOWN"
+    audit_ua = (request.headers.get('User-Agent') or '')[:200]
+    audit_ts = datetime.now(timezone.utc).isoformat()
+    audit_size = content_length if content_length is not None else -1
+    logger.info(
+        "[SECURITY_ASR_AUDIT] sanitization orig_filename=%r safe_filename=%r size_bytes=%s remote_ip=%s user_agent=%r utc_time=%s request_id=%s",
+        original_filename, filename, audit_size, audit_ip, audit_ua, audit_ts, req_id,
+    )
+    if filename != original_filename:
+        logger.warning(
+            "[SECURITY_ASR_SANITIZED] Filename was changed by secure_filename(). orig=%r safe=%r ip=%s ua=%r time=%s request_id=%s",
+            original_filename, filename, audit_ip, audit_ua[:100], audit_ts, req_id,
+        )
     if not _is_allowed_audio(filename):
         return jsonify({
             "ok": False,

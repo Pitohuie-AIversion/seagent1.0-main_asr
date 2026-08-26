@@ -23,7 +23,6 @@ from .model_profile import (
     GenerationOptions,
     is_model_profiles_v2_enabled,
     ModelProfileConfigError,
-    ModelProfileNotFoundError,
 )
 
 logger = logging.getLogger(__name__)
