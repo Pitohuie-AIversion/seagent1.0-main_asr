@@ -681,14 +681,13 @@ def build_status_responder_messages(
     latest_user_message: str,
 ) -> list[dict]:
     status_json_str = json.dumps(status_evidence, ensure_ascii=False, indent=2)
-    sys_content = STATUS_RESPONDER_SYSTEM.format(status_evidence_json=status_json_str)
-    recent_history = conversation_history[-8:] if len(conversation_history) > 8 else conversation_history
-    override_note = (
-        "【⚠️ 强指令提醒】：请完全以最新【权威状态证据】中的数据为准。上方历史回复中可能存在过期的旧遥测数据，必须彻底忽略历史回复中的旧数值！"
+    sys_content = (
+        STATUS_RESPONDER_SYSTEM.format(status_evidence_json=status_json_str)
+        + "\n\n【⚠️ 必须严格遵守】：对话历史中可能包含旧的遥测数据与旧回答，必须完全忽略历史数据，100% 以当前【权威状态证据】中的最新数据与版本号为准！"
     )
+    recent_history = conversation_history[-8:] if len(conversation_history) > 8 else conversation_history
     return [
         {"role": "system", "content": sys_content},
         *recent_history,
-        {"role": "system", "content": override_note},
         {"role": "user", "content": latest_user_message},
     ]

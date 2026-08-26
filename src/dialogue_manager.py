@@ -460,6 +460,12 @@ class DialogueManager:
 
     def process(self, user_message: str, request_id: str = "req_default") -> str:
         with self._session_lock:
+            if getattr(self.slot_store, "validation_result", None) is not None or self.task_state.get("task_type_key"):
+                if self._is_state_snapshot_stale():
+                    try:
+                        self.refresh_external_state_constraints()
+                    except Exception as exc:
+                        logger.warning("[DialogueManager] 自动刷新外部状态失败: %s", exc)
             reply = self._process_internal(user_message, request_id)
             self._run_session_state_shadow_check(checkpoint="process", request_id=request_id)
             return reply
