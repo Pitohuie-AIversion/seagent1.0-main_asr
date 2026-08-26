@@ -292,13 +292,19 @@ def _format_state_snapshot_summary(state_snapshot: dict | None) -> str:
         or state_snapshot.get("updated_at")
         or "未知"
     )
+    version_val = (
+        state_data.get("version")
+        if state_data.get("version") is not None
+        else state_snapshot.get("state_version")
+    )
+    version_str = f"（状态版本号: {version_val}）" if version_val is not None else ""
 
     return (
         "【📡 所选机器人及作业环境 State 动态状态校核摘要】\n"
         f"  - 所选机器人编号：{unit_id}（总体状态: {overall_disp}）\n"
         f"  - 实时水文环境遥测：{env_str}\n"
         f"  - 关键子系统健康度：{subsys_str}\n"
-        f"  - 状态快照更新时间：{updated_at}"
+        f"  - 状态快照更新时间：{updated_at} {version_str}".strip()
     )
 
 
@@ -620,9 +626,10 @@ STATUS_RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
 
 【行为准则】
 1. 只能依据上述【权威状态证据】如实汇报。
-2. 如果状态证据中 `found` 为 `false` 或表明“未建立/不可用”，必须如实回答：“当前实时状态源尚未建立或暂时不可用，无法确认设备/环境的最新状态。”
-3. 严禁猜测数值单位或含义，严禁自行添加修饰词（如“中等”、“危急”）。
-4. 严禁修改任何任务槽位。
+2. 汇报设备实时状态时，必须在回复中明确写出【状态版本号】（version）与【最后更新时间】（updated_at / update_timestamp），以便于用户校验状态数据版本。
+3. 如果状态证据中 `found` 为 `false` 或表明“未建立/不可用”，必须如实回答：“当前实时状态源尚未建立或暂时不可用，无法确认设备/环境的最新状态。”
+4. 严禁猜测数值单位或含义，严禁自行添加修饰词（如“中等”、“危急”）。
+5. 严禁修改任何任务槽位。
 """
 
 

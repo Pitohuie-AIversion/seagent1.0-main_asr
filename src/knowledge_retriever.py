@@ -1733,6 +1733,7 @@ class KnowledgeBase:
                 if state_dict and isinstance(state_dict, dict):
                     state_lines = []
                     label_map = {
+                        "version": "状态版本号",
                         "water_current_velocity": "环境水流速度",
                         "water_turbidity": "水体浑浊度",
                         "obstacle_density": "障碍物密度",
@@ -2210,6 +2211,7 @@ class KnowledgeBase:
 
     def get_robot_state_dict(self, equipment_selector: str) -> dict:
         empty_state = {
+            "version": None,
             "water_current_velocity": None,
             "water_turbidity": None,
             "battery_percent": None,

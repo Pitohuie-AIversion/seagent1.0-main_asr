@@ -164,6 +164,11 @@ def perform_reload() -> Tuple[bool, str, List[str]]:
                                 new_mgr.load_snapshot(snap)
                                 if new_kb_cls and hasattr(new_mgr, "kb"):
                                     new_mgr.kb.__class__ = new_kb_cls
+                                if hasattr(new_mgr, "refresh_external_state_constraints"):
+                                    try:
+                                        new_mgr.refresh_external_state_constraints()
+                                    except Exception as exc:
+                                        logger.warning("[Hot-Reload] 会话 %s 强刷新外部约束失败: %s", sid, exc)
                                 web_mod._sessions_manager[sid] = new_mgr
                             except Exception as err:
                                 logger.warning(

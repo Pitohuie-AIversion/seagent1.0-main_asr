@@ -277,6 +277,11 @@ class RobotStateInfo:
             snapshot = self._load_state_unlocked()
             return copy.deepcopy(snapshot["robots"])
 
+    def get_store_version(self) -> int:
+        with self._snapshot_lock(exclusive=False):
+            snapshot = self._load_state_unlocked()
+            return int(snapshot.get("store_version", 0))
+
     def check_runtime_availability(
         self,
         unit_id: str,

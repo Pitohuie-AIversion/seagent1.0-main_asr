@@ -6344,9 +6344,37 @@ class DialogueManager:
 
         return new_violations
 
+    def _is_state_snapshot_stale(self) -> bool:
+        """检查当前 validation_result 中绑定的 state_snapshot 是否已过时或与 state.yaml 不一致。"""
+        val_res = getattr(self.slot_store, "validation_result", None)
+        if not val_res:
+            return True
+        state_snap = getattr(val_res, "state_snapshot", None)
+        if not state_snap or not isinstance(state_snap, dict):
+            return False
+        unit_id = state_snap.get("unit_id") or self.task_state.get("equipment_unit_id")
+        if unit_id and isinstance(unit_id, str):
+            try:
+                curr_snap = self.kb.get_unit_state_snapshot(unit_id)
+                if not curr_snap or not isinstance(curr_snap, dict):
+                    return True
+                if curr_snap.get("state_version") != state_snap.get("state_version"):
+                    return True
+                if curr_snap.get("updated_at") != state_snap.get("updated_at"):
+                    return True
+            except Exception:
+                return True
+        else:
+            try:
+                if hasattr(self.kb, "state_info") and self.kb.state_info.get_store_version() != state_snap.get("store_version", 0):
+                    return True
+            except Exception:
+                return True
+        return False
+
     def _run_constraint_check(self, changed_fields: set[str], purpose: str = "interactive") -> dict:
         """执行约束检查，返回上下文"""
-        if not changed_fields and self.phase not in ("blocked_hard", "blocked_soft"):
+        if not changed_fields and self.phase not in ("blocked_hard", "blocked_soft") and not self._is_state_snapshot_stale():
             state_snap = getattr(self.slot_store.validation_result, "state_snapshot", None)
             return {"type": "none", "violations": [], "hard_refusal_counts": {}, "state_snapshot": state_snap}
 
