@@ -109,19 +109,27 @@ EXTRACTION_SYSTEM = """\
   ],
   "list_mutations": [],
   "time_relation": {{
-    "duration_seconds": 18000,
-    "raw_text": "持续五小时",
+    "duration_seconds": 1800,
+    "target": "duration",
+    "action": "ADD",
+    "raw_text": "持续时间再加半小时",
     "confidence": 0.95
   }},
   "unresolved": []
 }}
+
+【time_relation 示例示范】
+- 绝对时长 (如"持续5小时"、"做3个小时") -> target: "duration", action: "SET", duration_seconds: 18000
+- 持续时间增量 (如"持续时间再加半小时"、"多干1小时") -> target: "duration", action: "ADD", duration_seconds: 1800
+- 开始时间推迟 (如"推迟半小时开始"、"晚半小时开始") -> target: "start_time", action: "ADD", duration_seconds: 1800
+- 结束时间提前 (如"提前半小时结束"、"早半小时收工") -> target: "end_time", action: "SUB", duration_seconds: 1800
 
 【提取规则】
 1. 只提取用户明确提供或可以高置信度推断的信息，不猜测。
 2. 每一个提取的字段，必须包含 raw_key（用户所用的词）、canonical_key（规范化字段名）、raw_value（用户说原始值）、normalized_value（转换后的标准化值，例如数字、日期等）和 confidence（置信度）。
 3. 通常以最新用户消息为候选值来源；唯一例外是用户本轮明确接受紧邻上一条助手消息中的单一推荐，或明确选定该消息中按顺序展示的编号选项。此时最新用户消息仍是写入授权来源，可以从该助手消息复制被接受的值；不能从更早历史、后台 allowed_values 顺序、并列但未编号的候选或助手未经确认的推测中取值。
 4. 如果最新用户消息中对同一字段出现多个候选或多次反悔/修正，以文本中最后出现的候选为准。
-5. 对于时间信息：充分发挥大模型对自然语言数字与时刻的转换理解能力，将口语时刻（例如"下午一点一刻"→"13:15:00"，"下午四点一刻"→"16:15:00"，"三点半"→"15:30:00"，"晚上十一点"→"23:00:00"，"一点三刻"→"13:45:00"）准确转换为 YYYY-MM-DDTHH:MM:SS 格式，无时间部分时补 T00:00:00；"现在/当前/立即"等表达必须基于【当前时间】换算。用户提供持续时长时，将其换算为正数秒写入 time_relation（注意换算规则：半小时=1800，一个半小时=5400，两个半小时=9000，2.5小时=9000，45分钟=2700）；用户表达"持续时间/时长增加或减少X"时只能写入 time_relation.raw_text，不得提取为 end_time，也不要自行计算 end_time。没有持续时长时 time_relation 必须为 null。
+5. 对于时间信息：充分发挥大模型对自然语言数字与时刻的转换理解能力，将口语时刻（例如"下午一点一刻"→"13:15:00"，"下午四点一刻"→"16:15:00"，"三点半"→"15:30:00"，"晚上十一点"→"23:00:00"，"一点三刻"→"13:45:00"）准确转换为 YYYY-MM-DDTHH:MM:SS 格式，无时间部分时补 T00:00:00；"现在/当前/立即"等表达必须基于【当前时间】换算。用户提供持续时长或时长增量变动时，将其换算为正数秒写入 time_relation，并正确标记 action 操作动作（"ADD" 表示增加/延长/多干，"SUB" 表示减少/提前/缩短，"SET" 表示设定为/持续；注意换算规则：半小时=1800，一个半小时=5400，两个半小时=9000，2.5小时=9000，45分钟=2700）；不要自行计算 end_time。没有持续时长时 time_relation 必须为 null。
 6. 对于坐标：normalized_value 提取为 {{"lat": float, "lon": float}} 格式，统一十进制度。
 7. 对于水深：统一转换为米（m）为单位的数值，例如"1千米"→1000，"500m"→500。
 8. 对于任务类型：
@@ -407,11 +415,12 @@ class ParameterExtractor:
             {
                 "role": "system",
                 "content": (
-                    "你是时间关系抽取器，只判断最新输入是否明确给出任务持续时长。"
-                    "必须输出 has_duration、duration_seconds、raw_text、confidence。"
-                    "存在时长时 has_duration=true，将时长换算为正数秒并保留原文（换算参考：半小时=1800，一个半小时=5400，两个半小时=9000，2.5小时=9000，45分钟=2700）；"
-                    "若用户说持续时间或时长增加/减少X，has_duration=true，raw_text 保留完整增减原文，duration_seconds 可为 null，不得计算新的结束时间；"
-                    "不存在时 has_duration=false，其余可空字段为 null。只输出 JSON。"
+                    "你是时间关系抽取器，判断最新输入是否给出任务持续时长或时长增量变动。"
+                    "必须输出 has_duration、target、action、duration_seconds、raw_text、confidence。"
+                    "存在时长时 has_duration=true，将时长换算为正数秒（换算参考：半小时=1800，一个半小时=5400，2.5小时=9000，45分钟=2700）。"
+                    "正确判断修饰目标对象 target：修饰开始时间输出 'start_time'；修饰持续时间输出 'duration'；修饰结束时间输出 'end_time'。"
+                    "正确识别动作标记 action：表达增加、延长、再加、多干、推迟、比原来加时输出 'ADD'；表达提前、缩短、减少时输出 'SUB'；表达持续、设定为、总共时输出 'SET'。"
+                    "不存在时长时 has_duration=false，其余可空字段为 null。只输出 JSON。"
                 ),
             },
             {
@@ -468,12 +477,20 @@ class ParameterExtractor:
                 confidence = float(relation.get("confidence", 1.0))
             except (TypeError, ValueError):
                 confidence = 1.0
-            if raw_text:
+            import math
+            dur_sec = relation.get("duration_seconds")
+            from .duration_parser import parse_duration_with_detail
+            raw_dur_detail = parse_duration_with_detail(raw_text) if raw_text else None
+            if raw_dur_detail and raw_dur_detail.success and raw_dur_detail.total_seconds:
+                duration_text = raw_text
+            elif dur_sec is not None and isinstance(dur_sec, (int, float)) and math.isfinite(dur_sec) and dur_sec > 0:
+                duration_text = f"{dur_sec}秒"
+            elif dur_sec is not None and isinstance(dur_sec, (int, float)) and not math.isfinite(dur_sec):
+                return candidates, ["持续时长必须为有限数值，未写入结束时间。"]
+            elif raw_text and raw_text not in ("持续时长", "持续时间", "时长"):
                 duration_text = raw_text
             elif relation.get("keep_existing_duration"):
                 duration_text = "持续时间不变"
-            elif relation.get("duration_seconds") is not None:
-                duration_text = f"{relation.get('duration_seconds')}秒"
 
         user_duration_delta = ParameterExtractor._extract_duration_delta_text(user_message)
         if user_duration_delta:
@@ -565,6 +582,34 @@ class ParameterExtractor:
                     }
                 )
             else:
+                target = str(relation.get("target") or "duration").lower() if isinstance(relation, dict) else "duration"
+                action = str(relation.get("action") or "SET").upper() if isinstance(relation, dict) else "SET"
+
+                final_end_iso = range_result.end_time.iso_string
+                res_method = "duration_arithmetic"
+
+                dur_sec = relation.get("duration_seconds") if isinstance(relation, dict) else None
+                if dur_sec is None and range_result.duration:
+                    dur_sec = range_result.duration.total_seconds
+
+                if action in ("ADD", "SUB") and dur_sec:
+                    from datetime import timedelta
+                    delta_sec = float(dur_sec) if action == "ADD" else -float(dur_sec)
+                    if target in ("duration", "end_time") and previous_end:
+                        derived_dt = previous_end + timedelta(seconds=delta_sec)
+                        final_end_iso = derived_dt.strftime("%Y-%m-%dT%H:%M:%S")
+                        res_method = "duration_incremental_arithmetic"
+                    elif target == "start_time" and previous_start:
+                        derived_start = previous_start + timedelta(seconds=delta_sec)
+                        for item in updated_candidates:
+                            if isinstance(item, dict) and item.get("canonical_key") == "start_time":
+                                item["normalized_value"] = derived_start.strftime("%Y-%m-%dT%H:%M:%S")
+                                item["resolution_method"] = "start_time_shifted"
+                        if previous_end:
+                            derived_dt = previous_end + timedelta(seconds=delta_sec)
+                            final_end_iso = derived_dt.strftime("%Y-%m-%dT%H:%M:%S")
+                            res_method = "start_and_end_shifted"
+
                 updated_candidates = [
                     item for item in updated_candidates
                     if not (isinstance(item, dict) and item.get("canonical_key") == "end_time")
@@ -574,9 +619,9 @@ class ParameterExtractor:
                         "raw_key": "持续时长",
                         "canonical_key": "end_time",
                         "raw_value": raw_text or duration_text or "持续时长",
-                        "normalized_value": range_result.end_time.iso_string,
+                        "normalized_value": final_end_iso,
                         "confidence": confidence,
-                        "resolution_method": "duration_arithmetic",
+                        "resolution_method": res_method,
                     }
                 )
         return updated_candidates, []
@@ -586,8 +631,17 @@ class ParameterExtractor:
     def _parse_state_datetime(value: object) -> datetime | None:
         if value is None:
             return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, dict):
+            value = value.get("value") or value.get("normalized_value")
+            if value is None:
+                return None
+        elif hasattr(value, "value") and not isinstance(value, (str, bytes)):
+            value = getattr(value, "value")
+
         text = str(value).strip()
-        if not text:
+        if not text or text.lower() in ("none", "null"):
             return None
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"

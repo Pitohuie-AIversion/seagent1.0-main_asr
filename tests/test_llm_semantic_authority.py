@@ -284,7 +284,7 @@ def test_warning_action_cannot_preempt_valid_task_update() -> None:
     assert dm.slot_store.version == version_before + 1
     assert dm.slot_store.get_task_state()["water_depth"] == 500.0
     dm._handle_soft_warning_confirmation.assert_not_called()
-    assert "水深（米）：500.0" in reply
+    assert "水深（米）：500" in reply
     assert "警告都已经处理完成" not in reply
 
 
@@ -1924,6 +1924,182 @@ def test_unit_normalization() -> None:
     candidates = {item["canonical_key"]: item for item in result["slot_candidates"]}
     assert candidates["water_depth"]["normalized_value"] == 45.72
     assert candidates["duration"]["normalized_value"] == 9000
+
+
+def test_incremental_duration_add_sub() -> None:
+    # 场景：测试图片中的案例 "任务开始时间为明天早上8点开始，任务持续时间增加半个小时"
+    # 原任务起始时间为 2026-08-27T08:00:00，结束时间为 2026-08-27T16:00:00 (8小时)
+    from datetime import datetime
+    from src.simulated_time import get_simulated_time
+    get_simulated_time().set_current_time(datetime(2026, 8, 26, 10, 0, 0))
+    try:
+        llm = ScriptedLLM(
+            extractions=[
+                {
+                    "slot_candidates": [
+                        slot_candidate(
+                            "start_time",
+                            "2026-08-27T08:00:00",
+                            raw_key="开始时间",
+                            raw_value="明天早上8点",
+                        ),
+                    ],
+                    "list_mutations": [],
+                    "time_relation": {
+                        "has_duration": True,
+                        "duration_seconds": 1800,  # 30分钟
+                        "action": "ADD",
+                        "raw_text": "任务持续时间增加半个小时",
+                        "confidence": 0.95,
+                    },
+                    "unresolved": [],
+                }
+            ]
+        )
+        extractor = ParameterExtractor(llm)
+
+        current_state = {
+            "task_type_key": "pipeline_inspection",
+            "start_time": "2026-08-27T08:00:00",
+            "end_time": "2026-08-27T16:00:00",  # 原结束时间 16:00
+        }
+
+        result = extractor.extract_updates(
+            "任务开始时间为明天早上8点开始，任务持续时间增加半个小时",
+            current_state=current_state,
+            task_type_key="pipeline_inspection",
+            required=[
+                {"key": "start_time", "type": "datetime"},
+                {"key": "end_time", "type": "datetime"},
+            ],
+        )
+
+        candidates = {
+            item["canonical_key"]: item
+            for item in result["slot_candidates"]
+        }
+        # 1. 开始时间正确解析为明天 08:00
+        assert candidates["start_time"]["normalized_value"] == "2026-08-27T08:00:00"
+        # 2. 结束时间不再误算为 08:30，而是根据原 16:00 + 30分钟增量推演派生出 16:30:00
+        assert candidates["end_time"]["normalized_value"] == "2026-08-27T16:30:00"
+        assert candidates["end_time"]["resolution_method"] == "duration_incremental_arithmetic"
+
+        # 3. 额外测试图片中的具体口语："持续时间比原来加半小时" (纯 LLM 输出 action: "ADD")
+        llm_b = ScriptedLLM(
+            extractions=[
+                {
+                    "slot_candidates": [],
+                    "list_mutations": [],
+                    "time_relation": {
+                        "has_duration": True,
+                        "duration_seconds": 1800,
+                        "action": "ADD",
+                        "raw_text": "持续时间比原来加半小时",
+                        "confidence": 0.95,
+                    },
+                    "unresolved": [],
+                }
+            ]
+        )
+        extractor_b = ParameterExtractor(llm_b)
+        result_b = extractor_b.extract_updates(
+            "持续时间比原来加半小时",
+            current_state=current_state,
+            task_type_key="pipeline_inspection",
+            required=[
+                {"key": "start_time", "type": "datetime"},
+                {"key": "end_time", "type": "datetime"},
+            ],
+        )
+        cands_b = {item["canonical_key"]: item for item in result_b["slot_candidates"]}
+        assert cands_b["end_time"]["normalized_value"] == "2026-08-27T16:30:00"
+        assert cands_b["end_time"]["resolution_method"] == "duration_incremental_arithmetic"
+
+        # 4. 测试“持续时长再增加半小时”（包含副词“再”）
+        llm_c = ScriptedLLM(
+            extractions=[
+                {
+                    "slot_candidates": [],
+                    "list_mutations": [],
+                    "time_relation": {
+                        "has_duration": True,
+                        "duration_seconds": 1800,
+                        "action": "ADD",
+                        "raw_text": "持续时长再增加半小时",
+                        "confidence": 0.95,
+                    },
+                    "unresolved": [],
+                }
+            ]
+        )
+        extractor_c = ParameterExtractor(llm_c)
+        result_c = extractor_c.extract_updates(
+            "持续时长再增加半小时",
+            current_state={"start_time": "2026-08-26T15:13:17", "end_time": "2026-08-26T15:43:17"},
+            task_type_key="pipeline_inspection",
+            required=[
+                {"key": "start_time", "type": "datetime"},
+                {"key": "end_time", "type": "datetime"},
+            ],
+        )
+        cands_c = {item["canonical_key"]: item for item in result_c["slot_candidates"]}
+        # 初始 15:43:17 + 30分钟增量 -> 16:13:17
+        assert cands_c["end_time"]["normalized_value"] == "2026-08-26T16:13:17"
+        assert cands_c["end_time"]["resolution_method"] == "duration_incremental_arithmetic"
+
+        # 5. 测试字典/Slot对象格式的 current_state (模拟真实 SlotStore 运行状态)
+        llm_d = ScriptedLLM(
+            extractions=[
+                {
+                    "slot_candidates": [],
+                    "list_mutations": [],
+                    "time_relation": {
+                        "has_duration": True,
+                        "target": "duration",
+                        "action": "ADD",
+                        "duration_seconds": 1800,
+                        "raw_text": "持续时间增加半小时",
+                        "confidence": 0.95,
+                    },
+                    "unresolved": [],
+                }
+            ]
+        )
+        extractor_d = ParameterExtractor(llm_d)
+        dict_state = {
+            "start_time": {"value": "2026-08-27T10:00:00"},
+            "end_time": {"value": "2026-08-27T13:00:00"},
+        }
+        result_d = extractor_d.extract_updates(
+            "持续时间增加半小时",
+            current_state=dict_state,
+            task_type_key="pipeline_inspection",
+            required=[
+                {"key": "start_time", "type": "datetime"},
+                {"key": "end_time", "type": "datetime"},
+            ],
+        )
+        cands_d = {item["canonical_key"]: item for item in result_d["slot_candidates"]}
+        # 原 13:00 + 30分钟增量 -> 13:30 (而不是被错重置为 10:30)
+        assert cands_d["end_time"]["normalized_value"] == "2026-08-27T13:30:00"
+        assert cands_d["end_time"]["resolution_method"] == "duration_incremental_arithmetic"
+    finally:
+        get_simulated_time().reset()
+
+
+def test_no_candidates_invokes_llm_model_for_natural_response() -> None:
+    """无有效任务候选时，系统应通过 LLM 模型生成自然语言回复告诉用户，而不是直接输出硬编码静态字符串。"""
+    llm = ScriptedLLM(
+        plans=[make_plan("WRITE")],
+        extractions=[empty_extraction()],
+        replies=["抱歉，我没有识别到具体的任务类型候选。请问您需要执行管缆巡检还是采油树控制面板插入？"],
+    )
+    dm = DialogueManager(llm, KnowledgeBase())
+    reply = dm.process("随便看看")
+
+    assert "抱歉，我没有识别到具体的任务类型候选" in reply
+    assert not reply.startswith("本轮没有任务字段通过验证，因此未写入任务状态。")
+
 
 
 

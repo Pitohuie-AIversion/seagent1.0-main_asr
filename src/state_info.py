@@ -672,6 +672,35 @@ class RobotStateInfo:
                 state["updated_at"] = default_ts
                 state["update_timestamp"] = default_ts
 
+            # 规范化水流速度与水体浑浊度双向别名（优先保留规范字段水流速度与水体浑浊度）
+            w_vel = state.get("water_current_velocity")
+            c_vel = state.get("current_velocity")
+            if w_vel is None and c_vel is not None:
+                state["water_current_velocity"] = c_vel
+                state["current_velocity"] = c_vel
+            elif w_vel is not None:
+                state["current_velocity"] = w_vel
+                state["water_current_velocity"] = w_vel
+
+            w_turb = state.get("water_turbidity")
+            c_turb = state.get("turbidity")
+            if w_turb is None and c_turb is not None:
+                state["water_turbidity"] = c_turb
+                state["turbidity"] = c_turb
+            elif w_turb is not None:
+                state["turbidity"] = w_turb
+                state["water_turbidity"] = w_turb
+
+            # 规范化整体状态双向别名 (overall_status <-> status)
+            ov_status = state.get("overall_status")
+            st_status = state.get("status")
+            if ov_status is None and st_status is not None:
+                state["overall_status"] = st_status
+                state["status"] = st_status
+            elif ov_status is not None:
+                state["status"] = ov_status
+                state["overall_status"] = ov_status
+
         return normalized
 
     @staticmethod
@@ -687,6 +716,9 @@ class RobotStateInfo:
         for r_state in to_dump.get("robots", {}).values():
             if isinstance(r_state, dict):
                 r_state.pop("update_timestamp", None)
+                r_state.pop("current_velocity", None)
+                r_state.pop("turbidity", None)
+                r_state.pop("status", None)
         try:
             serialized = yaml.safe_dump(
                 to_dump,

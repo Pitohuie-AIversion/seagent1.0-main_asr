@@ -2052,7 +2052,7 @@ class DialogueManager:
                     new_unresolved.append(item)
 
         def reply_write_without_candidates() -> str:
-            """依据事务结果回复，禁止模型在零提交时声称写入成功。"""
+            """依据事务结果回复，优先通过 LLM 依据处理事实向用户解释原因并引导。"""
             if has_acknowledge_action:
                 self._switch_dialogue_mode(
                     "task_collection",
@@ -2075,14 +2075,56 @@ class DialogueManager:
             unresolved = list(turn_unresolved)
             if not unresolved:
                 unresolved.append("模型没有返回可验证的任务字段候选")
-            reply = self._ground_write_reply(
-                "",
+
+            missing = (
+                self.builder.get_missing_fields(
+                    task_type_key,
+                    self.mode,
+                    self.slot_store.get_task_state(),
+                )
+                if task_type_key
+                else []
+            )
+            knowledge_context = self.kb.get_context_for_state(self.task_state)
+            constraint_context = self._run_constraint_check(set(), purpose="interactive")
+
+            messages = build_responder_messages(
+                task_state=self.task_state,
+                built_json=self._last_built_json,
+                missing_fields=missing,
+                mode=self.mode,
+                phase=self.phase,
+                knowledge_context=knowledge_context,
+                constraint_context=constraint_context,
+                conversation_history=self.conversation_history,
+                latest_user_message=user_message,
+                ROV2type=self.kb.ROV2type,
+                support_task=self.kb.get_supported_task(),
+                slot_snapshot=self.slot_store.get_slot_snapshot(),
                 accepted_updates={},
                 unresolved_inputs=unresolved,
             )
+            model_reply = self._safe_llm_chat(
+                messages,
+                temperature=0.7,
+                max_tokens=1500,
+                role=ModelRole.TASK_RESPONDER,
+            )
+            model_reply = self._safe_llm_filter_reply(model_reply, role=ModelRole.FILTER_REPLY)
+
+            reply = self._ground_write_reply(
+                model_reply,
+                accepted_updates={},
+                unresolved_inputs=unresolved,
+                missing_fields=missing if missing else None,
+            )
             if task_type_key is None:
                 supported = self.kb.get_all_task_type_values()
-                if supported:
+                if (
+                    supported
+                    and "当前支持的任务类型" not in reply
+                    and not any(st in reply for st in supported)
+                ):
                     reply += " 当前支持的任务类型：" + "、".join(supported) + "。"
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
@@ -3098,8 +3140,8 @@ class DialogueManager:
     # 参数更新与规范化
     # --------------------------------------------------------------------------
     def _ground_write_reply(
-        self,
-        model_reply: str,
+        self_or_reply: object,
+        model_reply: str = "",
         *,
         accepted_updates: dict,
         unresolved_inputs: list,
@@ -3114,6 +3156,13 @@ class DialogueManager:
         - 当 ``accepted_updates`` 非空时，在回复末尾追加一行简明的字段确认摘要。
         - 当 LLM 回复为空时，退化为纯摘要模式（兜底）。
         """
+        if isinstance(self_or_reply, str):
+            self_obj = None
+            actual_model_reply = self_or_reply
+        else:
+            self_obj = self_or_reply
+            actual_model_reply = model_reply
+
         unresolved = [str(item) for item in unresolved_inputs if str(item).strip()]
 
         # 只展示 FIELD_LABELS 中有中文标签的用户可见字段
@@ -3151,17 +3200,17 @@ class DialogueManager:
                         or ((display_updates or {}).get("equipment_type"))
                         or ""
                     )
-                    if not eq_type and hasattr(self, "slot_store") and self.slot_store:
-                        eq_slot = self.slot_store.slots.get("equipment_type")
+                    if not eq_type and self_obj and hasattr(self_obj, "slot_store") and self_obj.slot_store:
+                        eq_slot = self_obj.slot_store.slots.get("equipment_type")
                         if eq_slot and eq_slot.status == "valid" and eq_slot.value:
                             eq_type = str(eq_slot.value)
-                    if eq_type and hasattr(self, "kb") and self.kb:
-                        robot = self.kb.get_rov(eq_type)
+                    if eq_type and self_obj and hasattr(self_obj, "kb") and self_obj.kb:
+                        robot = self_obj.kb.get_rov(eq_type)
                         if robot:
                             ob_list = robot.get("onboard_payloads", [])
                             sp_list = robot.get("supported_payloads", [])
                             if ob_list:
-                                guidance_msg = self.capability_adapter.format_payload_guidance(
+                                guidance_msg = self_obj.capability_adapter.format_payload_guidance(
                                     "",
                                     [{"key": "payload", "equipment_type": eq_type, "onboard_payloads": ob_list}]
                                 )
@@ -3172,55 +3221,61 @@ class DialogueManager:
         suffix = "\n".join(suffix_parts)
 
         # 区分有提交和无提交的响应安全规则：
-        # 1. 若本轮没有任何字段写入 (accepted_updates 为空)，忽略 LLM 可能的虚假写入声明，输出客观验证事实。
+        # 1. 若 LLM 回复为空，退化为纯摘要模式（兜底）。
+        if not actual_model_reply or not str(actual_model_reply).strip():
+            if not accepted_updates:
+                reply = "本轮没有任务字段通过验证，因此未写入任务状态。"
+                if suffix:
+                    reply = f"{reply}\n{suffix}"
+                return reply
+            return suffix if suffix else "已写入本轮通过验证的字段。"
+
+        # 2. 若有 LLM 回复，以 LLM 自然语言回复为主体，末尾追加规则生成的客观校验/记录摘要。
+        import re
+
+        model_reply_str = str(actual_model_reply)
         if not accepted_updates:
-            reply = "本轮没有任务字段通过验证，因此未写入任务状态。"
-            if suffix:
-                reply = f"{reply}\n{suffix}"
-            return reply
+            for false_claim in ("已创建", "指令已下发", "已经设置"):
+                if false_claim in model_reply_str:
+                    model_reply_str = model_reply_str.replace(false_claim, "未写入任务状态")
+            if "未写入" not in model_reply_str and not any("未写入" in p for p in suffix_parts):
+                suffix_parts.insert(0, "⚠️ 本轮未写入任务状态。")
 
-        # 2. 若有字段通过验证，以 LLM 自然语言回复为主体，末尾追加规则生成的客观校验/记录摘要。
-        if model_reply and (isinstance(model_reply, str) and model_reply.strip() or not isinstance(model_reply, str)):
-            import re
+        def _normalize(text: object) -> str:
+            if not isinstance(text, str):
+                text = str(text)
+            return re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
 
-            model_reply_str = str(model_reply)
-
-            def _normalize(text: object) -> str:
-                if not isinstance(text, str):
-                    text = str(text)
-                return re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
-
-            norm_reply = _normalize(model_reply_str)
-            deduped_parts = []
-            for part in suffix_parts:
-                norm_part = _normalize(part)
-                # 检查整段是否已存在（严格或去空）
-                if part in model_reply_str or (norm_part and norm_part in norm_reply):
+        norm_reply = _normalize(model_reply_str)
+        deduped_parts = []
+        for part in suffix_parts:
+            norm_part = _normalize(part)
+            # 检查整段是否已存在（严格或去空）
+            if part in model_reply_str or (norm_part and norm_part in norm_reply):
+                continue
+            # 检查特定模式
+            if part.startswith("✅ 已记录：") and ("✅ 已记录：" in model_reply_str or "✅已记录：" in model_reply_str):
+                labels_in_reply = all(
+                    FIELD_LABELS[k] in model_reply_str
+                    for k in user_visible_updates
+                )
+                if labels_in_reply:
                     continue
-                # 检查特定模式
-                if part.startswith("✅ 已记录：") and ("✅ 已记录：" in model_reply_str or "✅已记录：" in model_reply_str):
-                    labels_in_reply = all(
-                        FIELD_LABELS[k] in model_reply_str
-                        for k in user_visible_updates
-                    )
-                    if labels_in_reply:
-                        continue
-                if part.startswith("仍需补充：") and ("仍需补充：" in model_reply_str or "仍需补充" in model_reply_str):
+            if part.startswith("仍需补充：") and ("仍需补充：" in model_reply_str or "仍需补充" in model_reply_str):
+                continue
+            if part.startswith("⚠️ 未写入或仍需确认：") and ("⚠️ 未写入或仍需确认：" in model_reply_str or "未写入或仍需确认" in model_reply_str):
+                continue
+            if part.startswith("【提示】") or "已搭载" in part:
+                if any(kw in model_reply_str for kw in ("已搭载", "自带载荷", "已具备", "【提示】", "替换、增加或减少")):
                     continue
-                if part.startswith("⚠️ 未写入或仍需确认：") and ("⚠️ 未写入或仍需确认：" in model_reply_str or "未写入或仍需确认" in model_reply_str):
-                    continue
-                if part.startswith("【提示】") or "已搭载" in part:
-                    if any(kw in model_reply_str for kw in ("已搭载", "自带载荷", "已具备", "【提示】", "替换、增加或减少")):
-                        continue
-                deduped_parts.append(part)
+            deduped_parts.append(part)
 
-            deduped_suffix = "\n".join(deduped_parts)
-            if deduped_suffix:
-                if isinstance(model_reply, str):
-                    return f"{model_reply.rstrip()}\n\n{deduped_suffix}".rstrip()
-                return f"{model_reply}\n\n{deduped_suffix}"
-            return model_reply.strip() if isinstance(model_reply, str) else model_reply
-        return suffix if suffix else "已写入本轮通过验证的字段。"
+        deduped_suffix = "\n".join(deduped_parts)
+        if deduped_suffix:
+            if isinstance(actual_model_reply, str):
+                return f"{model_reply_str.rstrip()}\n\n{deduped_suffix}".rstrip()
+            return f"{model_reply_str}\n\n{deduped_suffix}"
+        return model_reply_str.strip() if isinstance(actual_model_reply, str) else model_reply_str
 
     @staticmethod
     def _filter_robot_selection_unresolved(
@@ -6089,14 +6144,6 @@ class DialogueManager:
         pending_action: str | None = None,
         subject_text: str | None = None,
     ) -> str | None:
-        task_type_slot = self.slot_store.slots.get("task_type_key")
-        task_type_key = task_type_slot.value if task_type_slot and task_type_slot.status == "valid" else None
-        if task_type_key:
-            field_defs = self.builder.get_schema(task_type_key, self.mode)
-            schema_keys = {str(field.get("key")) for field in field_defs if field.get("key")}
-            if not self.slot_filter.supports_oilfield_slots(schema_keys):
-                return None
-
         pending_slot = self.slot_store.slots.get("pending_oilfield_name")
         if not pending_slot or not pending_slot.value or pending_slot.status != "valid":
             return None

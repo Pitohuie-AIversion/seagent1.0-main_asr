@@ -111,7 +111,7 @@
 满足准入条件后，系统将生成**待确认任务**，经您确认后方可发布。
 
 示例：  
-“在流花11-1油田执行管缆巡检，水深300米，使用观察级深海机器人。”
+“执行海底油气管道巡检，起点115.2°E 20.1°N，水深300米，使用观察级深海机器人。”
 
 ---
 
@@ -211,7 +211,7 @@ Collects key information such as task objectives, time, location, environmental 
 Once admission conditions are met, the system will generate a **pending confirmation task**, which can only be published after your confirmation.
 
 Example:  
-“Inspect the subsea pipeline at Liuhua 11-1 Oilfield at a depth of 300 m using an observation-class deep-sea robot.”
+“Inspect the subsea oil & gas pipeline, starting point 115.2°E 20.1°N, depth 300 m, using an observation-class deep-sea robot.”
 
 ---
 

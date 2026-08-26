@@ -71,12 +71,12 @@ class TestFrontendWelcomeMessage(unittest.TestCase):
     def test_9_3_chinese_examples(self):
         """9.3 Chinese capability examples test."""
         self.assertIn("金牛座一号机的最大作业水深是多少", self.zh_welcome)
-        self.assertIn("在流花11-1油田执行管缆巡检", self.zh_welcome)
+        self.assertIn("执行海底油气管道巡检", self.zh_welcome)
 
     def test_9_4_english_examples(self):
         """9.4 English capability examples test."""
         self.assertIn("What is the maximum operating depth of Taurus Unit 1", self.en_welcome)
-        self.assertIn("Inspect the subsea pipeline at Liuhua 11-1 Oilfield", self.en_welcome)
+        self.assertIn("Inspect the subsea oil & gas pipeline", self.en_welcome)
 
     def test_9_5_knowledge_qa_isolation_semantics(self):
         """9.5 Knowledge Q&A data isolation semantics test."""

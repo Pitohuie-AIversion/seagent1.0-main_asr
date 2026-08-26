@@ -197,6 +197,7 @@ def parse_duration_with_detail(text: Optional[str]) -> DurationParseResult:
         return result
 
     cleaned = _clean_duration_text(text)
+    cleaned = re.sub(r"^(?:任务|作业|持续|时长|时间|开始时间|结束时间|开始|结束|比原来|比原本|原来|原本|增加|缩短|延长|减少|提前|推迟|延后|多干|少干|正向|负向|修改|调整|追加|加|多|减|少)+", "", cleaned).strip()
     result.normalized_text = cleaned
     if not cleaned:
         return result
@@ -404,6 +405,7 @@ class DurationSpec:
     raw_text: str = ""
     normalized_text: str = ""
     total_seconds: Optional[float] = None
+    delta_seconds: Optional[float] = None
     days: float = 0.0
     hours: float = 0.0
     minutes: float = 0.0
@@ -430,30 +432,22 @@ def parse_duration_spec(text: Optional[str]) -> DurationSpec:
             parse_method="keep_duration",
         )
 
-    delta_seconds = _parse_duration_delta_seconds(raw)
-    if delta_seconds is not None:
-        detail_text = _strip_duration_delta_words(raw)
-        detail = parse_duration_with_detail(detail_text)
+    is_delta = bool(re.search(r"增加|延长|减少|缩短|提前|推迟|延后|多干|少干|比原来|比原本|加|多|减|少", raw))
+    cleaned_text = re.sub(r"^(?:任务|作业|持续|时长|时间|开始时间|结束时间|开始|结束|比原来|比原本|原来|原本|增加|缩短|延长|减少|提前|推迟|延后|多干|少干|正向|负向|修改|调整|追加|加|多|减|少)+", "", raw).strip()
+
+    detail = parse_duration_with_detail(cleaned_text or raw)
+    if detail.success:
+        state = DurationState.DELTA if is_delta else DurationState.EXPLICIT
+        delta_val = None
+        if is_delta and detail.total_seconds is not None:
+            is_sub = bool(re.search(r"减少|提前|缩短|少干|比原来少|比原本少|减|少", raw))
+            delta_val = -detail.total_seconds if is_sub else detail.total_seconds
         return DurationSpec(
-            state=DurationState.DELTA,
+            state=state,
             raw_text=raw,
             normalized_text=detail.normalized_text,
-            total_seconds=abs(delta_seconds),
-            days=detail.days,
-            hours=detail.hours,
-            minutes=detail.minutes,
-            seconds=detail.seconds,
-            delta_seconds=delta_seconds,
-            parse_method="duration_delta",
-        )
-
-    detail = parse_duration_with_detail(raw)
-    if detail.success:
-        return DurationSpec(
-            state=DurationState.EXPLICIT,
-            raw_text=detail.raw_text,
-            normalized_text=detail.normalized_text,
             total_seconds=detail.total_seconds,
+            delta_seconds=delta_val,
             days=detail.days,
             hours=detail.hours,
             minutes=detail.minutes,
@@ -498,7 +492,7 @@ def _strip_duration_delta_words(text: str) -> str:
         cleaned,
     )
     cleaned = re.sub(
-        r"(?:增加|减少|加长|缩短|延长|加上|减去|延后|推迟|推后|提前|后移|前移|往后|往前|加|减)",
+        r"(?:增加|减少|加长|缩短|延长|加上|减去|延后|推迟|推后|提前|后移|前移|往后|往前|加|减|再|又|还|继续)",
         "",
         cleaned,
     )

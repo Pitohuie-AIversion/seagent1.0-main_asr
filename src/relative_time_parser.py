@@ -1130,6 +1130,13 @@ def parse_time_range(
             parse_method=duration.parse_method or "keep_duration",
         )
         result.duration.raw_text = duration.raw_text
+    elif duration.state == DurationState.MISSING and previous_start and previous_end:
+        duration_seconds = (previous_end - previous_start).total_seconds()
+        result.duration = _duration_from_seconds(
+            duration_seconds,
+            state=DurationState.EXPLICIT,
+            parse_method="inherit_previous_duration",
+        )
 
     start_dt = start.value
     end_dt = end.value
