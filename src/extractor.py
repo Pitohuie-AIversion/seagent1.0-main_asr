@@ -5,19 +5,16 @@ extractor.py — 参数提取器
 """
 
 import json
-import math
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from .duration_parser import (
-    parse_duration_to_seconds,
-    is_keep_duration_expression,
     parse_chinese_number,
 )
 from .llm_client import LLMClient
 from .model_profile import ModelRole, _is_unsupported_role_keyword_error
 from .normalizer import FieldNormalizer
-from .relative_time_parser import parse_relative_datetime
+from .relative_time_parser import parse_relative_datetime, parse_time_range
 
 MAX_EXTRACTION_USER_HISTORY = 6
 FULL_TURN_EXTRACTION_MAX_TOKENS = 1600
@@ -446,135 +443,216 @@ class ParameterExtractor:
         allowed_keys: set[str],
         user_message: str = "",
     ) -> tuple[list, list[str]]:
-        """Validate a model-declared duration and deterministically derive end_time with cross-day & keep-duration support."""
+        """Use the time module's unified range parser to derive or validate end_time."""
         if "end_time" not in allowed_keys:
             return candidates, []
 
-        # 1. 检查候选列表中已有的 start_time 和 end_time 候选
-        start_cand_val = None
-        end_cand_val = None
+        start_cand = None
+        end_cand = None
         for item in reversed(candidates):
             if isinstance(item, dict):
-                if item.get("canonical_key") == "start_time" and start_cand_val is None:
-                    raw_t = str(item.get("raw_value") or "").strip()
-                    from .simulated_time import get_current_datetime
-                    rel_iso = parse_relative_datetime(raw_t, get_current_datetime(), full_user_message=user_message) if raw_t else None
-                    start_cand_val = rel_iso or item.get("normalized_value")
-                elif item.get("canonical_key") == "end_time" and end_cand_val is None:
-                    end_cand_val = item.get("normalized_value")
+                if item.get("canonical_key") == "start_time" and start_cand is None:
+                    start_cand = item
+                elif item.get("canonical_key") == "end_time" and end_cand is None:
+                    end_cand = item
 
-        effective_start_val = start_cand_val or current_state.get("start_time")
-        effective_start_dt = None
-        if effective_start_val:
-            try:
-                st_str = str(effective_start_val).strip()
-                if st_str.endswith("Z"):
-                    st_str = st_str[:-1] + "+00:00"
-                effective_start_dt = datetime.fromisoformat(st_str)
-            except Exception:
-                from .simulated_time import get_current_datetime
-                rel_iso = parse_relative_datetime(str(effective_start_val).strip(), get_current_datetime())
-                if rel_iso:
-                    try:
-                        effective_start_dt = datetime.fromisoformat(rel_iso)
-                    except Exception:
-                        effective_start_dt = None
-
-        # 2. 如果模型直接输出了 end_time 候选，并且与 effective_start_dt 一起构成跨夜（如 23:00 到 02:00），进行确定性跨天纠偏！
-        if end_cand_val and effective_start_dt:
-            try:
-                et_str = str(end_cand_val).strip()
-                if et_str.endswith("Z"):
-                    et_str = et_str[:-1] + "+00:00"
-                end_dt = datetime.fromisoformat(et_str)
-
-                if end_dt <= effective_start_dt:
-                    # 如果时刻 <= start_time 的时刻，判定为同日错填导致的跨夜场景，自动给 end_time 补加 1 天！
-                    if end_dt.time() <= effective_start_dt.time() or (effective_start_dt - end_dt).total_seconds() < 86400:
-                        adjusted_end_dt = end_dt + timedelta(days=1)
-                        if adjusted_end_dt > effective_start_dt:
-                            new_iso = adjusted_end_dt.isoformat(timespec="seconds")
-                            for item in candidates:
-                                if isinstance(item, dict) and item.get("canonical_key") == "end_time":
-                                    item["normalized_value"] = new_iso
-                                    item["resolution_method"] = "cross_day_auto_corrected"
-            except Exception:
-                pass
-
-        # 3. 解析 time_relation 与“保持持续时间不变”意图
-        raw_text = ""
-        is_keep_duration = False
-        duration_seconds = None
+        raw_text = None
         confidence = 1.0
-
-        if user_message and is_keep_duration_expression(user_message):
-            is_keep_duration = True
-            raw_text = "保持原持续时长"
+        duration_text = None
 
         if isinstance(relation, dict) and relation.get("has_duration") is not False and relation != {}:
-            raw_text = str(relation.get("raw_text") or raw_text or "持续时长").strip()
+            raw_text = str(relation.get("raw_text") or "").strip()
             try:
                 confidence = float(relation.get("confidence", 1.0))
             except (TypeError, ValueError):
                 confidence = 1.0
+            if raw_text:
+                duration_text = raw_text
+            elif relation.get("keep_existing_duration"):
+                duration_text = "持续时间不变"
+            elif relation.get("duration_seconds") is not None:
+                duration_text = f"{relation.get('duration_seconds')}秒"
 
-            if is_keep_duration_expression(raw_text) or relation.get("keep_existing_duration"):
-                is_keep_duration = True
+        end_unchanged = (
+            end_cand is None
+            and ParameterExtractor._mentions_end_time_keep(user_message)
+            and current_state.get("end_time")
+        )
+
+        if duration_text is None and start_cand is not None and end_cand is None and not end_unchanged:
+            if current_state.get("start_time") and current_state.get("end_time"):
+                duration_text = "持续时间不变"
+                raw_text = raw_text or "保持原持续时长"
+
+        has_relation = bool(duration_text)
+        has_end_candidate = end_cand is not None
+        has_start_candidate = start_cand is not None
+        if not has_relation and not end_unchanged and not (has_start_candidate and has_end_candidate):
+            return candidates, []
+
+        from .simulated_time import get_current_datetime
+        base_dt = get_current_datetime()
+
+        start_text = ParameterExtractor._select_time_range_start_text(
+            start_cand,
+            current_state,
+            user_message,
+            base_dt,
+        )
+        end_text = ParameterExtractor._select_time_range_end_text(
+            end_cand,
+            user_message,
+            has_relation,
+        )
+        if end_unchanged:
+            end_text = current_state.get("end_time")
+        previous_start = ParameterExtractor._parse_state_datetime(current_state.get("start_time"))
+        previous_end = ParameterExtractor._parse_state_datetime(current_state.get("end_time"))
+
+        range_result = parse_time_range(
+            start_text,
+            duration_text,
+            end_text,
+            base_dt=base_dt,
+            previous_start=previous_start,
+            previous_end=previous_end,
+        )
+
+        if not range_result.success:
+            if range_result.error_code == "START_TIME_REQUIRED":
+                label = raw_text or duration_text or "持续时长"
+                return candidates, [f"{label}：缺少开始时间，无法计算结束时间。"]
+            if range_result.error_code == "INVALID_DURATION":
+                return candidates, ["持续时长必须为正数且置信度合法，未写入结束时间。"]
+            if range_result.error_message:
+                return candidates, [range_result.error_message]
+            return candidates, []
+
+        updated_candidates = list(candidates)
+        if start_cand is not None and range_result.start_time.iso_string:
+            original_start_norm = str(start_cand.get("normalized_value") or "").strip()
+            start_cand["normalized_value"] = range_result.start_time.iso_string
+            if (
+                range_result.start_time.parse_method != "absolute_iso"
+                or original_start_norm != range_result.start_time.iso_string
+            ):
+                start_cand["resolution_method"] = "relative_date_parsed"
+
+        if range_result.end_time.iso_string:
+            if end_cand is not None and not has_relation:
+                end_cand["normalized_value"] = range_result.end_time.iso_string
+                if range_result.end_time.parse_method == "range_cross_midnight":
+                    end_cand["resolution_method"] = "cross_day_auto_corrected"
+                elif range_result.end_time.parse_method != "absolute_iso":
+                    end_cand["resolution_method"] = "relative_date_parsed"
+            elif end_unchanged:
+                updated_candidates.append(
+                    {
+                        "raw_key": "结束时间",
+                        "canonical_key": "end_time",
+                        "raw_value": "结束时间不变",
+                        "normalized_value": range_result.end_time.iso_string,
+                        "confidence": confidence,
+                        "resolution_method": "end_time_unchanged",
+                    }
+                )
             else:
-                parsed_rule = parse_duration_to_seconds(raw_text)
-                if parsed_rule and parsed_rule > 0:
-                    duration_seconds = parsed_rule
-                else:
-                    try:
-                        duration_seconds = float(relation.get("duration_seconds"))
-                    except (TypeError, ValueError):
-                        duration_seconds = None
-
-        # 4. “保持持续时间不变”逻辑判断：
-        # (A) 用户表达了保持时长不变 (is_keep_duration=True)
-        # (B) 本轮更新了 start_time (start_cand_val 存在)，未提供新的 end_time (end_cand_val 为 None)，且没有指定新 duration
-        if (duration_seconds is None or is_keep_duration) and start_cand_val and not end_cand_val:
-            old_st_raw = current_state.get("start_time")
-            old_et_raw = current_state.get("end_time")
-            if old_st_raw and old_et_raw:
-                try:
-                    st_old_str = str(old_st_raw).strip().replace("Z", "+00:00")
-                    et_old_str = str(old_et_raw).strip().replace("Z", "+00:00")
-                    old_st_dt = datetime.fromisoformat(st_old_str)
-                    old_et_dt = datetime.fromisoformat(et_old_str)
-                    if old_et_dt > old_st_dt:
-                        duration_seconds = (old_et_dt - old_st_dt).total_seconds()
-                        raw_text = raw_text or "保持原持续时长"
-                        is_keep_duration = True
-                except Exception:
-                    pass
-
-        # C. 处理具有 relation / duration_seconds / is_keep_duration 的派生逻辑
-        if (isinstance(relation, dict) and relation.get("has_duration") is not False and relation != {}) or duration_seconds or is_keep_duration:
-            if not effective_start_dt:
-                return candidates, [f"{raw_text or '持续时长'}：缺少开始时间，无法计算结束时间。"]
-            if duration_seconds is not None:
-                if not math.isfinite(duration_seconds) or duration_seconds <= 0 or not math.isfinite(confidence) or not (0.0 <= confidence <= 1.0):
-                    return candidates, ["持续时长必须为正数且置信度合法，未写入结束时间。"]
-
-                derived_end_dt = effective_start_dt + timedelta(seconds=duration_seconds)
-                filtered_candidates = [
-                    item for item in candidates
+                updated_candidates = [
+                    item for item in updated_candidates
                     if not (isinstance(item, dict) and item.get("canonical_key") == "end_time")
                 ]
-                derived = {
-                    "raw_key": "持续时长",
-                    "canonical_key": "end_time",
-                    "raw_value": raw_text or f"{duration_seconds/3600:.1f}小时",
-                    "normalized_value": derived_end_dt.isoformat(timespec="seconds"),
-                    "confidence": confidence,
-                    "resolution_method": "duration_arithmetic",
-                }
-                return [*filtered_candidates, derived], []
-            else:
-                return candidates, ["持续时长协议非法，未写入结束时间。"]
+                updated_candidates.append(
+                    {
+                        "raw_key": "持续时长",
+                        "canonical_key": "end_time",
+                        "raw_value": raw_text or duration_text or "持续时长",
+                        "normalized_value": range_result.end_time.iso_string,
+                        "confidence": confidence,
+                        "resolution_method": "duration_arithmetic",
+                    }
+                )
+        return updated_candidates, []
 
-        return candidates, []
+
+    @staticmethod
+    def _parse_state_datetime(value: object) -> datetime | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _looks_like_iso_datetime(value: object) -> bool:
+        if not isinstance(value, str):
+            return False
+        return bool(re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", value.strip()))
+
+    @staticmethod
+    def _has_date_semantics(text: str) -> bool:
+        if not text:
+            return False
+        return bool(
+            re.search(
+                r"今天|今晚|今早|明天|明晚|明早|后天|大后天|昨天|前天|次日|"
+                r"\d{4}[年/-]|\d{1,2}[月/-]\d{1,2}|[一二三四五六七八九十]{1,3}月|"
+                r"周[一二三四五六日天12345670]|星期[一二三四五六日天12345670]|"
+                r"[一二两三四五六七八九十0-9]+天[后前]|[一二两三四五六七八九十0-9]+周[后前]|"
+                r"月底|月末|月初|年底|年末|年初",
+                text,
+            )
+        )
+
+    @staticmethod
+    def _mentions_end_time_keep(text: str) -> bool:
+        if not text:
+            return False
+        return bool(re.search(r"(?:结束|终止|截止|完工|收工)\s*时间\s*(?:保持)?不变", text))
+
+    @staticmethod
+    def _select_time_range_start_text(
+        start_cand: dict | None,
+        current_state: dict,
+        user_message: str,
+        base_dt: datetime,
+    ) -> object:
+        if start_cand is None:
+            return current_state.get("start_time")
+
+        raw = str(start_cand.get("raw_value") or "").strip()
+        normalized = start_cand.get("normalized_value")
+        if raw and (
+            ParameterExtractor._has_date_semantics(raw)
+            or ParameterExtractor._has_date_semantics(user_message)
+        ):
+            rel_iso = parse_relative_datetime(raw, base_dt, full_user_message=user_message)
+            if rel_iso:
+                return rel_iso
+
+        if ParameterExtractor._looks_like_iso_datetime(normalized):
+            return normalized
+        return raw or normalized
+
+    @staticmethod
+    def _select_time_range_end_text(
+        end_cand: dict | None,
+        user_message: str,
+        has_relation: bool,
+    ) -> object:
+        if end_cand is None:
+            return None
+
+        raw = str(end_cand.get("raw_value") or "").strip()
+        normalized = end_cand.get("normalized_value")
+        if has_relation and raw and raw not in user_message:
+            return None
+        return raw or normalized
 
 
     @staticmethod

@@ -1,5 +1,10 @@
 import pytest
-from src.duration_parser import parse_duration_to_seconds, parse_chinese_number
+from src.duration_parser import (
+    DurationState,
+    parse_duration_spec,
+    parse_duration_to_seconds,
+    parse_chinese_number,
+)
 
 
 def test_parse_chinese_number():
@@ -62,4 +67,30 @@ def test_is_keep_duration_expression():
     assert is_keep_duration_expression("维持原时长") is True
     assert is_keep_duration_expression("按原时长") is True
     assert is_keep_duration_expression("持续5小时") is False
+    assert is_keep_duration_expression("任务结束时间不变") is False
 
+
+def test_parse_duration_spec_classifies_missing_keep_explicit_and_invalid():
+    missing = parse_duration_spec("未提供")
+    assert missing.state == DurationState.MISSING
+
+    keep = parse_duration_spec("持续时间不变")
+    assert keep.state == DurationState.KEEP
+    assert keep.parse_method == "keep_duration"
+
+    explicit = parse_duration_spec("两个半小时")
+    assert explicit.state == DurationState.EXPLICIT
+    assert explicit.total_seconds == 9000.0
+    assert explicit.hours == 2.5
+
+    increased = parse_duration_spec("增加半小时")
+    assert increased.state == DurationState.DELTA
+    assert increased.delta_seconds == 1800.0
+
+    decreased = parse_duration_spec("减少30分钟")
+    assert decreased.state == DurationState.DELTA
+    assert decreased.delta_seconds == -1800.0
+
+    invalid = parse_duration_spec("一会儿")
+    assert invalid.state == DurationState.INVALID
+    assert invalid.error_code == "INVALID_DURATION"

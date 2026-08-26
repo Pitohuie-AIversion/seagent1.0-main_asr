@@ -14,6 +14,7 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Optional
 
 
@@ -377,7 +378,85 @@ def is_keep_duration_expression(text: Optional[str]) -> bool:
     if not text or not isinstance(text, str):
         return False
     norm = unicodedata.normalize("NFKC", text).strip()
+    if re.search(r"(?:开始|起始|结束|终止|截止|完工|收工)\s*时间\s*不变", norm):
+        return False
     for pattern in KEEP_DURATION_PATTERNS:
         if re.search(pattern, norm):
             return True
     return False
+
+
+# ============================================================================
+# 持续时间语义状态：供时间区间层统一消费
+# ============================================================================
+
+class DurationState(str, Enum):
+    MISSING = "missing"
+    EXPLICIT = "explicit"
+    KEEP = "keep"
+    INVALID = "invalid"
+
+
+@dataclass
+class DurationSpec:
+    state: DurationState = DurationState.MISSING
+    raw_text: str = ""
+    normalized_text: str = ""
+    total_seconds: Optional[float] = None
+    days: float = 0.0
+    hours: float = 0.0
+    minutes: float = 0.0
+    seconds: float = 0.0
+    parse_method: str = ""
+    error_message: Optional[str] = None
+
+
+def parse_duration_spec(text: Optional[str]) -> DurationSpec:
+    """持续时间统一入口：区分未提供、显式时长、保持不变和非法输入。"""
+    if text is None:
+        return DurationSpec(state=DurationState.MISSING)
+
+    raw = text.strip() if isinstance(text, str) else ""
+    if not raw or raw.lower() in {"未提供", "无", "null", "none"}:
+        return DurationSpec(state=DurationState.MISSING, raw_text=raw)
+
+    if is_keep_duration_expression(raw) or raw == "不变":
+        return DurationSpec(
+            state=DurationState.KEEP,
+            raw_text=raw,
+            parse_method="keep_duration",
+        )
+
+    detail = parse_duration_with_detail(raw)
+    if detail.success:
+        return DurationSpec(
+            state=DurationState.EXPLICIT,
+            raw_text=detail.raw_text,
+            normalized_text=detail.normalized_text,
+            total_seconds=detail.total_seconds,
+            days=detail.days,
+            hours=detail.hours,
+            minutes=detail.minutes,
+            seconds=detail.seconds,
+            parse_method=detail.parse_method,
+        )
+
+    return DurationSpec(
+        state=DurationState.INVALID,
+        raw_text=raw,
+        error_code="INVALID_DURATION",
+        error_message="无法解析持续时间",
+    )
+
+
+def format_duration_template(total_seconds: float) -> str:
+    """按协议模板输出规范化持续时间，如 0日2时30分。"""
+    if not math.isfinite(total_seconds) or total_seconds < 0:
+        raise ValueError("total_seconds must be a non-negative finite number")
+    whole_seconds = int(round(total_seconds))
+    days, rem = divmod(whole_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if seconds:
+        return f"{days}日{hours}时{minutes}分{seconds}秒"
+    return f"{days}日{hours}时{minutes}分"
