@@ -128,7 +128,7 @@ def test_parse_time_range_increases_previous_duration_and_recomputes_end():
     assert result.resolution_method == "duration_delta_from_history"
 
 
-def test_parse_time_range_shifts_previous_start_and_preserves_duration():
+def test_parse_time_range_rejects_start_time_delta():
     base_dt = datetime(2026, 8, 26, 10, 0, 0)
 
     result = parse_time_range(
@@ -140,14 +140,11 @@ def test_parse_time_range_shifts_previous_start_and_preserves_duration():
         previous_end=datetime(2026, 8, 27, 10, 15, 0),
     )
 
-    assert result.success is True
-    assert result.start_time.iso_string == "2026-08-27T07:30:00"
-    assert result.duration.total_seconds == 11700.0
-    assert result.end_time.iso_string == "2026-08-27T10:45:00"
-    assert result.start_time.parse_method == "time_point_delta"
+    assert result.success is False
+    assert result.error_code == "INVALID_START_TIME"
 
 
-def test_parse_time_range_shifts_previous_end_and_recomputes_duration():
+def test_parse_time_range_rejects_end_time_delta():
     base_dt = datetime(2026, 8, 26, 10, 0, 0)
 
     result = parse_time_range(
@@ -159,11 +156,8 @@ def test_parse_time_range_shifts_previous_end_and_recomputes_duration():
         previous_end=datetime(2026, 8, 27, 10, 15, 0),
     )
 
-    assert result.success is True
-    assert result.start_time.iso_string == "2026-08-27T07:00:00"
-    assert result.duration.total_seconds == 10800.0
-    assert result.end_time.iso_string == "2026-08-27T10:00:00"
-    assert result.end_time.parse_method == "time_point_delta"
+    assert result.success is False
+    assert result.error_code == "INVALID_END_TIME"
 
 
 def test_parse_time_range_can_preserve_previous_end_as_explicit_end():
