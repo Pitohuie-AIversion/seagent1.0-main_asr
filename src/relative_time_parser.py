@@ -983,6 +983,18 @@ def _derived_time_point(dt: datetime, parse_method: str) -> TimePointSpec:
     )
 
 
+def _history_time_point(dt: datetime, parse_method: str = "history_time") -> TimePointSpec:
+    return TimePointSpec(
+        state=TimeFieldState.EXPLICIT,
+        raw_text="",
+        value=dt,
+        iso_string=_isoformat_seconds(dt),
+        parse_method=parse_method,
+        has_explicit_date=True,
+        has_explicit_time=True,
+    )
+
+
 def _fail_time_range(
     result: TimeRangeParseResult,
     code: str,
@@ -994,6 +1006,15 @@ def _fail_time_range(
     result.error_message = message
     result.error_detail = dict(detail)
     return result
+
+
+def _parse_time_point_delta_seconds(text: Optional[str]) -> Optional[float]:
+    if not text or not isinstance(text, str):
+        return None
+    spec = parse_duration_spec(text)
+    if spec.state == DurationState.DELTA:
+        return spec.delta_seconds
+    return None
 
 
 def _resolve_previous_duration(
@@ -1037,7 +1058,27 @@ def parse_time_range(
     base_naive = base_dt.replace(tzinfo=None) if base_dt.tzinfo else base_dt
 
     result = TimeRangeParseResult()
-    start = _parse_time_point_spec(start_text, base_naive, timezone_id)
+    start_delta_seconds = _parse_time_point_delta_seconds(start_text)
+    end_delta_seconds = _parse_time_point_delta_seconds(end_text)
+
+    if start_delta_seconds is not None:
+        if previous_start is None:
+            result.duration = parse_duration_spec(duration_text)
+            return _fail_time_range(
+                result,
+                "START_DELTA_WITHOUT_HISTORY",
+                "用户要求调整开始时间，但没有可继承的历史开始时间",
+            )
+        start = _history_time_point(
+            previous_start + timedelta(seconds=start_delta_seconds),
+            "time_point_delta",
+        )
+        start.raw_text = _normalize_missing_text(start_text)
+    elif not _normalize_missing_text(start_text) and previous_start is not None:
+        start = _history_time_point(previous_start)
+    else:
+        start = _parse_time_point_spec(start_text, base_naive, timezone_id)
+
     duration = parse_duration_spec(duration_text)
     result.start_time = start
     result.duration = duration
@@ -1046,18 +1087,37 @@ def parse_time_range(
         return _fail_time_range(result, "INVALID_START_TIME", "开始时间无法解析")
     if duration.state == DurationState.INVALID:
         return _fail_time_range(result, "INVALID_DURATION", "持续时间无法解析")
+    if duration.state == DurationState.DELTA and previous_start is None and start.state == TimeFieldState.MISSING:
+        return _fail_time_range(
+            result,
+            "DURATION_DELTA_WITHOUT_START",
+            "用户要求调整持续时间，但没有可用于计算结束时间的开始时间",
+        )
     if start.state == TimeFieldState.MISSING:
         end = _parse_time_point_spec(end_text, base_naive, timezone_id)
         result.end_time = end
         return _fail_time_range(result, "START_TIME_REQUIRED", "必须提供开始时间")
 
     assert start.value is not None
-    end = _parse_time_point_spec(
-        end_text,
-        base_naive,
-        timezone_id,
-        date_context=start.value.date(),
-    )
+    if end_delta_seconds is not None:
+        if previous_end is None:
+            return _fail_time_range(
+                result,
+                "END_DELTA_WITHOUT_HISTORY",
+                "用户要求调整结束时间，但没有可继承的历史结束时间",
+            )
+        end = _history_time_point(
+            previous_end + timedelta(seconds=end_delta_seconds),
+            "time_point_delta",
+        )
+        end.raw_text = _normalize_missing_text(end_text)
+    else:
+        end = _parse_time_point_spec(
+            end_text,
+            base_naive,
+            timezone_id,
+            date_context=start.value.date(),
+        )
     result.end_time = end
     if end.state == TimeFieldState.INVALID:
         return _fail_time_range(result, "INVALID_END_TIME", "结束时间无法解析")
@@ -1065,6 +1125,31 @@ def parse_time_range(
     duration_seconds: Optional[float] = None
     if duration.state == DurationState.EXPLICIT:
         duration_seconds = duration.total_seconds
+    elif duration.state == DurationState.DELTA:
+        previous_duration = _resolve_previous_duration(
+            previous_start,
+            previous_end,
+            previous_duration_seconds,
+        )
+        if previous_duration is None or duration.delta_seconds is None:
+            return _fail_time_range(
+                result,
+                "DURATION_DELTA_WITHOUT_HISTORY",
+                "用户要求调整持续时间，但没有可继承的历史持续时间",
+            )
+        duration_seconds = previous_duration + duration.delta_seconds
+        if duration_seconds <= 0:
+            return _fail_time_range(
+                result,
+                "NON_POSITIVE_DURATION",
+                "调整后的持续时间必须为正数",
+            )
+        result.duration = _duration_from_seconds(
+            duration_seconds,
+            state=DurationState.EXPLICIT,
+            parse_method="duration_delta",
+        )
+        result.duration.raw_text = duration.raw_text
     elif duration.state == DurationState.KEEP:
         duration_seconds = _resolve_previous_duration(
             previous_start,
@@ -1105,10 +1190,29 @@ def parse_time_range(
             has_explicit_time=end.has_explicit_time,
         )
 
+    if result.end_time.state == TimeFieldState.MISSING and duration_seconds is None:
+        previous_duration = _resolve_previous_duration(
+            previous_start,
+            previous_end,
+            previous_duration_seconds,
+        )
+        if previous_duration is not None and start_delta_seconds is not None:
+            duration_seconds = previous_duration
+            result.duration = _duration_from_seconds(
+                duration_seconds,
+                state=DurationState.KEEP,
+                parse_method="keep_duration",
+            )
+            result.duration.raw_text = "持续时间不变"
+
     if result.end_time.state == TimeFieldState.MISSING and duration_seconds is not None:
         derived_end = start_dt + timedelta(seconds=duration_seconds)
         result.end_time = _derived_time_point(derived_end, "duration_arithmetic")
-        result.resolution_method = "start_plus_duration"
+        result.resolution_method = (
+            "duration_delta_from_history"
+            if result.duration.parse_method == "duration_delta"
+            else "start_plus_duration"
+        )
     elif result.end_time.state == TimeFieldState.EXPLICIT and duration.state == DurationState.MISSING:
         assert result.end_time.value is not None
         duration_seconds = (result.end_time.value - start_dt).total_seconds()

@@ -394,6 +394,7 @@ class DurationState(str, Enum):
     MISSING = "missing"
     EXPLICIT = "explicit"
     KEEP = "keep"
+    DELTA = "delta"
     INVALID = "invalid"
 
 
@@ -407,7 +408,9 @@ class DurationSpec:
     hours: float = 0.0
     minutes: float = 0.0
     seconds: float = 0.0
+    delta_seconds: Optional[float] = None
     parse_method: str = ""
+    error_code: Optional[str] = None
     error_message: Optional[str] = None
 
 
@@ -425,6 +428,23 @@ def parse_duration_spec(text: Optional[str]) -> DurationSpec:
             state=DurationState.KEEP,
             raw_text=raw,
             parse_method="keep_duration",
+        )
+
+    delta_seconds = _parse_duration_delta_seconds(raw)
+    if delta_seconds is not None:
+        detail_text = _strip_duration_delta_words(raw)
+        detail = parse_duration_with_detail(detail_text)
+        return DurationSpec(
+            state=DurationState.DELTA,
+            raw_text=raw,
+            normalized_text=detail.normalized_text,
+            total_seconds=abs(delta_seconds),
+            days=detail.days,
+            hours=detail.hours,
+            minutes=detail.minutes,
+            seconds=detail.seconds,
+            delta_seconds=delta_seconds,
+            parse_method="duration_delta",
         )
 
     detail = parse_duration_with_detail(raw)
@@ -460,3 +480,39 @@ def format_duration_template(total_seconds: float) -> str:
     if seconds:
         return f"{days}日{hours}时{minutes}分{seconds}秒"
     return f"{days}日{hours}时{minutes}分"
+
+
+_DURATION_DELTA_POSITIVE = (
+    "增加", "加长", "延长", "加上", "加", "延后", "推迟", "推后", "后移", "往后",
+)
+_DURATION_DELTA_NEGATIVE = (
+    "减少", "缩短", "减去", "减", "提前", "前移", "往前",
+)
+
+
+def _strip_duration_delta_words(text: str) -> str:
+    cleaned = unicodedata.normalize("NFKC", text).strip()
+    cleaned = re.sub(
+        r"(?:任务)?(?:持续时间|持续时长|时长|开始时间|起始时间|结束时间|终止时间|截止时间)",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?:增加|减少|加长|缩短|延长|加上|减去|延后|推迟|推后|提前|后移|前移|往后|往前|加|减)",
+        "",
+        cleaned,
+    )
+    return cleaned.strip()
+
+
+def _parse_duration_delta_seconds(text: str) -> Optional[float]:
+    has_positive = any(word in text for word in _DURATION_DELTA_POSITIVE)
+    has_negative = any(word in text for word in _DURATION_DELTA_NEGATIVE)
+    if has_positive == has_negative:
+        return None
+
+    detail = parse_duration_with_detail(_strip_duration_delta_words(text))
+    if not detail.success or detail.total_seconds is None:
+        return None
+    sign = 1.0 if has_positive else -1.0
+    return sign * detail.total_seconds
