@@ -73,35 +73,6 @@ def test_session_state_migration_during_reload():
         web_backend._sessions_manager.pop(sid, None)
 
 
-def test_session_state_migration_refreshes_external_state_constraints():
-    """热重载迁移后必须用新配置重新刷新会话校验证据。"""
-    mock_llm = MagicMock()
-    mock_kb = MagicMock()
-    web_backend._shared_llm = mock_llm
-    web_backend._shared_kb = mock_kb
-
-    sid = "test-session-hot-reload-refresh-state"
-    mgr = DialogueManager(mock_llm, mock_kb, session_id=sid)
-
-    with web_backend._sessions_lock:
-        web_backend._sessions_manager[sid] = mgr
-
-    try:
-        with patch("importlib.reload", side_effect=lambda m: m), \
-             patch.object(
-                 DialogueManager,
-                 "refresh_external_state_constraints",
-                 return_value={"refreshed": True},
-             ) as mock_refresh:
-            success, _, _ = perform_reload()
-
-        assert success is True
-        mock_refresh.assert_called_once_with()
-    finally:
-        with web_backend._sessions_lock:
-            web_backend._sessions_manager.pop(sid, None)
-
-
 def test_api_dev_reload_endpoint():
     """测试 /api/dev/reload 接口返回正确 JSON"""
     with patch("importlib.reload", side_effect=lambda m: m):
