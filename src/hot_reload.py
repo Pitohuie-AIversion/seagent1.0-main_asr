@@ -162,6 +162,13 @@ def perform_reload() -> Tuple[bool, str, List[str]]:
                                     session_id=sid,
                                 )
                                 new_mgr.load_snapshot(snap)
+                                refresh_external = getattr(
+                                    new_mgr,
+                                    "refresh_external_state_constraints",
+                                    None,
+                                )
+                                if callable(refresh_external):
+                                    refresh_external()
                                 if new_kb_cls and hasattr(new_mgr, "kb"):
                                     new_mgr.kb.__class__ = new_kb_cls
                                 web_mod._sessions_manager[sid] = new_mgr

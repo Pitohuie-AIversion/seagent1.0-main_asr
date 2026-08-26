@@ -17,6 +17,7 @@ from src.session_state import (
     validate_task_phase_transition,
 )
 from src.slot_store import Slot
+from src.validator import ValidationResult, Violation
 
 
 class TestTaskPhaseTransitionMatrixV2(unittest.TestCase):
@@ -176,6 +177,33 @@ class TestTaskPhaseTransitionMatrixV2(unittest.TestCase):
         self.dm.phase = "blocked_hard"
         self.dm._transition_phase("rejected", reason="hard_refusal_limit_reached")
         self.assertEqual(self.dm.phase, "rejected")
+
+    # 13b. resolved hard constraint records are pruned while other hard blockers remain
+    def test_13b_resolved_hard_refusal_counts_are_pruned(self) -> None:
+        self.dm.phase = "blocked_hard"
+        self.dm._hard_refusal_counts = {"C_RESOLVED": 3, "C_ACTIVE": 1}
+        active = Violation(
+            constraint_id="C_ACTIVE",
+            constraint_name="仍存在的硬约束",
+            message="当前硬约束仍未解除",
+            severity="hard",
+        )
+        val_res = ValidationResult(
+            overall_status="blocked_hard",
+            validated_at="2026-08-26T00:00:00",
+            task_version=1,
+            validation_version=2,
+            validation_fingerprint="fp_active",
+            state_snapshot={"status_ref": "OBSROV-75-001", "state_version": 2},
+            violations=[active],
+        )
+
+        with patch.object(self.dm, "_refresh_validation", return_value=val_res):
+            ctx = self.dm._run_constraint_check({"equipment_unit_id"})
+
+        self.assertEqual(ctx["type"], "hard")
+        self.assertNotIn("C_RESOLVED", self.dm._hard_refusal_counts)
+        self.assertEqual(self.dm._hard_refusal_counts["C_ACTIVE"], 2)
 
     # 14. confirming to done publish path preserved
     def test_14_confirming_to_done_publish_path_preserved(self) -> None:

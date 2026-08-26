@@ -1602,6 +1602,57 @@ def test_change_start_time_with_end_time_unchanged_preserves_previous_end() -> N
         get_simulated_time().reset()
 
 
+def test_duration_delta_from_user_text_overrides_misclassified_end_time_candidate() -> None:
+    from src.simulated_time import get_simulated_time
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    get_simulated_time().set_current_time(datetime(2026, 8, 26, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+    try:
+        llm = MagicMock(spec=LLMClient)
+        llm.extract_json.return_value = {
+            "slot_candidates": [
+                slot_candidate(
+                    "end_time",
+                    "2026-08-27T07:30:00",
+                    raw_key="结束时间",
+                    raw_value="半小时后",
+                ),
+            ],
+            "list_mutations": [],
+            "time_relation": None,
+            "unresolved": [],
+        }
+        llm.extract_temporal_relation.return_value = {
+            "has_duration": False,
+            "duration_seconds": None,
+            "raw_text": None,
+            "confidence": 1.0,
+        }
+        extractor = ParameterExtractor(llm)
+
+        result = extractor.extract_updates(
+            "持续时间增加半小时",
+            current_state={
+                "task_type_key": "pipeline_inspection",
+                "start_time": "2026-08-27T07:00:00",
+                "end_time": "2026-08-27T10:15:00",
+            },
+            task_type_key="pipeline_inspection",
+            required=[
+                {"key": "start_time", "type": "datetime"},
+                {"key": "end_time", "type": "datetime"},
+            ],
+        )
+
+        candidates = {item["canonical_key"]: item for item in result["slot_candidates"]}
+        assert candidates["end_time"]["normalized_value"] == "2026-08-27T10:45:00"
+        assert candidates["end_time"]["resolution_method"] == "duration_arithmetic"
+        assert result["unresolved"] == []
+    finally:
+        get_simulated_time().reset()
+
+
 def test_august_31_explicit_date_and_duration() -> None:
     # 场景：用户说“任务从8月31号早上6点开始，任务持续8个小时”
     # 模拟大模型在 start_time 误选了当前日期 (2026-08-18)，但 raw_value 保留了 "8月31号早上6点"
@@ -1873,7 +1924,6 @@ def test_unit_normalization() -> None:
     candidates = {item["canonical_key"]: item for item in result["slot_candidates"]}
     assert candidates["water_depth"]["normalized_value"] == 45.72
     assert candidates["duration"]["normalized_value"] == 9000
-
 
 
 

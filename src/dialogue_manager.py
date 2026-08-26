@@ -6355,6 +6355,12 @@ class DialogueManager:
         if self.phase == "blocked_hard":
             if current_hard:
                 self._blocking_violations = current_blockers
+                current_hard_ids = {v.constraint_id for v in current_hard}
+                self._hard_refusal_counts = {
+                    cid: cnt
+                    for cid, cnt in self._hard_refusal_counts.items()
+                    if cid in current_hard_ids
+                }
                 for v in current_hard:
                     self._hard_refusal_counts[v.constraint_id] = \
                         self._hard_refusal_counts.get(v.constraint_id, 0) + 1

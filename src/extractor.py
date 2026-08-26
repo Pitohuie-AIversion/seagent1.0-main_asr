@@ -10,6 +10,7 @@ from datetime import datetime
 
 from .duration_parser import (
     parse_chinese_number,
+    parse_duration_spec,
 )
 from .llm_client import LLMClient
 from .model_profile import ModelRole, _is_unsupported_role_keyword_error
@@ -120,7 +121,7 @@ EXTRACTION_SYSTEM = """\
 2. 每一个提取的字段，必须包含 raw_key（用户所用的词）、canonical_key（规范化字段名）、raw_value（用户说原始值）、normalized_value（转换后的标准化值，例如数字、日期等）和 confidence（置信度）。
 3. 通常以最新用户消息为候选值来源；唯一例外是用户本轮明确接受紧邻上一条助手消息中的单一推荐，或明确选定该消息中按顺序展示的编号选项。此时最新用户消息仍是写入授权来源，可以从该助手消息复制被接受的值；不能从更早历史、后台 allowed_values 顺序、并列但未编号的候选或助手未经确认的推测中取值。
 4. 如果最新用户消息中对同一字段出现多个候选或多次反悔/修正，以文本中最后出现的候选为准。
-5. 对于时间信息：充分发挥大模型对自然语言数字与时刻的转换理解能力，将口语时刻（例如"下午一点一刻"→"13:15:00"，"下午四点一刻"→"16:15:00"，"三点半"→"15:30:00"，"晚上十一点"→"23:00:00"，"一点三刻"→"13:45:00"）准确转换为 YYYY-MM-DDTHH:MM:SS 格式，无时间部分时补 T00:00:00；"现在/当前/立即"等表达必须基于【当前时间】换算。用户提供持续时长时，将其换算为正数秒写入 time_relation（注意换算规则：半小时=1800，一个半小时=5400，两个半小时=9000，2.5小时=9000，45分钟=2700）；不要自行计算 end_time。没有持续时长时 time_relation 必须为 null。
+5. 对于时间信息：充分发挥大模型对自然语言数字与时刻的转换理解能力，将口语时刻（例如"下午一点一刻"→"13:15:00"，"下午四点一刻"→"16:15:00"，"三点半"→"15:30:00"，"晚上十一点"→"23:00:00"，"一点三刻"→"13:45:00"）准确转换为 YYYY-MM-DDTHH:MM:SS 格式，无时间部分时补 T00:00:00；"现在/当前/立即"等表达必须基于【当前时间】换算。用户提供持续时长时，将其换算为正数秒写入 time_relation（注意换算规则：半小时=1800，一个半小时=5400，两个半小时=9000，2.5小时=9000，45分钟=2700）；用户表达"持续时间/时长增加或减少X"时只能写入 time_relation.raw_text，不得提取为 end_time，也不要自行计算 end_time。没有持续时长时 time_relation 必须为 null。
 6. 对于坐标：normalized_value 提取为 {{"lat": float, "lon": float}} 格式，统一十进制度。
 7. 对于水深：统一转换为米（m）为单位的数值，例如"1千米"→1000，"500m"→500。
 8. 对于任务类型：
@@ -409,6 +410,7 @@ class ParameterExtractor:
                     "你是时间关系抽取器，只判断最新输入是否明确给出任务持续时长。"
                     "必须输出 has_duration、duration_seconds、raw_text、confidence。"
                     "存在时长时 has_duration=true，将时长换算为正数秒并保留原文（换算参考：半小时=1800，一个半小时=5400，两个半小时=9000，2.5小时=9000，45分钟=2700）；"
+                    "若用户说持续时间或时长增加/减少X，has_duration=true，raw_text 保留完整增减原文，duration_seconds 可为 null，不得计算新的结束时间；"
                     "不存在时 has_duration=false，其余可空字段为 null。只输出 JSON。"
                 ),
             },
@@ -472,6 +474,12 @@ class ParameterExtractor:
                 duration_text = "持续时间不变"
             elif relation.get("duration_seconds") is not None:
                 duration_text = f"{relation.get('duration_seconds')}秒"
+
+        user_duration_delta = ParameterExtractor._extract_duration_delta_text(user_message)
+        if user_duration_delta:
+            duration_text = user_duration_delta
+            raw_text = user_duration_delta
+            end_cand = None
 
         end_unchanged = (
             end_cand is None
@@ -614,6 +622,24 @@ class ParameterExtractor:
         if not text:
             return False
         return bool(re.search(r"(?:结束|终止|截止|完工|收工)\s*时间\s*(?:保持)?不变", text))
+
+    @staticmethod
+    def _extract_duration_delta_text(text: str) -> str | None:
+        if not text:
+            return None
+        matches = re.finditer(
+            r"(?:任务)?(?:持续时间|持续时长|时长)\s*(?:再)?(?:增加|减少|加长|缩短|延长|加上|减去|加|减)(?:了)?\s*"
+            r"(?:[0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点半]+)\s*"
+            r"(?:个)?\s*(?:天|日|小时|钟头|h|hr|hours?|hrs?|分钟|分|min|mins?|minutes?|秒钟|秒|secs?|seconds?)",
+            text,
+            re.IGNORECASE,
+        )
+        found = [m.group(0).strip() for m in matches]
+        if not found:
+            return None
+        candidate = found[-1]
+        spec = parse_duration_spec(candidate)
+        return candidate if spec.state.value == "delta" else None
 
     @staticmethod
     def _select_time_range_start_text(
