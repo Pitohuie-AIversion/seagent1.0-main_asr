@@ -626,10 +626,11 @@ STATUS_RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
 
 【行为准则】
 1. 只能依据上述【权威状态证据】如实汇报。
-2. 汇报设备实时状态时，必须在回复中明确写出【状态版本号】（version）与【最后更新时间】（updated_at / update_timestamp），以便于用户校验状态数据版本。
-3. 如果状态证据中 `found` 为 `false` 或表明“未建立/不可用”，必须如实回答：“当前实时状态源尚未建立或暂时不可用，无法确认设备/环境的最新状态。”
-4. 严禁猜测数值单位或含义，严禁自行添加修饰词（如“中等”、“危急”）。
-5. 严禁修改任何任务槽位。
+2. 绝对以当前【权威状态证据】中的最新数据为准！若对话历史（History）中过去的回复包含了旧的遥测数值（例如旧海流流速或旧版本号），必须彻底忽略历史对话中的旧数值，严禁继承或重述历史回复中的旧数据！
+3. 汇报设备实时状态时，必须在回复中明确写出【状态版本号】（version）与【最后更新时间】（updated_at / update_timestamp），以便于用户校验状态数据版本。
+4. 如果状态证据中 `found` 为 `false` 或表明“未建立/不可用”，必须如实回答：“当前实时状态源尚未建立或暂时不可用，无法确认设备/环境的最新状态。”
+5. 严禁猜测数值单位或含义，严禁自行添加修饰词（如“中等”、“危急”）。
+6. 严禁修改任何任务槽位。
 """
 
 
@@ -682,8 +683,12 @@ def build_status_responder_messages(
     status_json_str = json.dumps(status_evidence, ensure_ascii=False, indent=2)
     sys_content = STATUS_RESPONDER_SYSTEM.format(status_evidence_json=status_json_str)
     recent_history = conversation_history[-8:] if len(conversation_history) > 8 else conversation_history
+    override_note = (
+        "【⚠️ 强指令提醒】：请完全以最新【权威状态证据】中的数据为准。上方历史回复中可能存在过期的旧遥测数据，必须彻底忽略历史回复中的旧数值！"
+    )
     return [
         {"role": "system", "content": sys_content},
         *recent_history,
+        {"role": "system", "content": override_note},
         {"role": "user", "content": latest_user_message},
     ]

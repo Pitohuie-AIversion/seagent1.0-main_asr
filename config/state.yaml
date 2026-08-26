@@ -91,7 +91,7 @@ robots:
     version: 1219
     updated_at: '2026-06-30T17:38:00.065603+08:00'
   OBSROV-75-001:
-    water_current_velocity: 101
+    water_current_velocity: 1
     water_turbidity: 6.0
     obstacle_density: low
     mothership_support: strong
@@ -106,7 +106,7 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    version: 175
+    version: 176
     updated_at: '2026-08-26T17:21:21.969175+08:00'
   AUV-324cc-001:
     water_current_velocity: 1.0
