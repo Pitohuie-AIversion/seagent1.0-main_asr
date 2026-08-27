@@ -81,6 +81,32 @@ _USER_FACING_EXCLUDED_KEYS = {
     "_rov_candidates",
 }
 
+_ENVIRONMENT_STATUS_SUBJECT_TERMS = (
+    "环境",
+    "海况",
+    "水文",
+    "海流",
+    "水流",
+    "流速",
+    "浑浊",
+    "浊度",
+    "能见度",
+    "障碍物",
+    "母船支援",
+)
+
+_REALTIME_STATUS_TERMS = (
+    "现在",
+    "当前",
+    "实时",
+    "最新",
+    "状态",
+    "情况",
+    "如何",
+    "怎么样",
+    "怎样",
+)
+
 
 def sanitize_user_facing_json(data: dict) -> dict:
     if not isinstance(data, dict):
@@ -528,7 +554,9 @@ class DialogueManager:
 
         query_intent = route.query_intent
 
-        if query_intent in ("TOOL_QUERY", "DEVICE_CAPABILITY", "KNOWLEDGE_QA"):
+        if self._is_environment_status_query(user_message, route):
+            reply = self._handle_status_query(user_message, route, as_environment_status=True)
+        elif query_intent in ("TOOL_QUERY", "DEVICE_CAPABILITY", "KNOWLEDGE_QA"):
             reply = self._handle_knowledge_query(user_message, route, request_id)
         elif query_intent == "ENVIRONMENT_QUERY":
             plan = route.interaction_plan
@@ -537,7 +565,7 @@ class DialogueManager:
                 and (plan.source_policy == "realtime_state" or plan.relation == "status")
             )
             if is_realtime:
-                reply = self._handle_status_query(user_message, route)
+                reply = self._handle_status_query(user_message, route, as_environment_status=True)
             else:
                 reply = self._handle_knowledge_query(user_message, route, request_id)
         elif query_intent in ("TASK_STATUS", "DEVICE_STATUS"):
@@ -1158,7 +1186,26 @@ class DialogueManager:
         return filtered_reply
 
 
-    def _handle_status_query(self, user_message: str, route: IntentRouteResult) -> str:
+    def _is_environment_status_query(self, user_message: str, route: IntentRouteResult) -> bool:
+        plan = route.interaction_plan
+        if route.query_intent == "ENVIRONMENT_QUERY" and plan is not None:
+            if plan.source_policy == "realtime_state" or plan.relation == "status":
+                return True
+
+        text = (user_message or "").strip()
+        if not text:
+            return False
+        has_environment_subject = any(term in text for term in _ENVIRONMENT_STATUS_SUBJECT_TERMS)
+        has_realtime_status_relation = any(term in text for term in _REALTIME_STATUS_TERMS)
+        return has_environment_subject and has_realtime_status_relation
+
+    def _handle_status_query(
+        self,
+        user_message: str,
+        route: IntentRouteResult,
+        *,
+        as_environment_status: bool = False,
+    ) -> str:
         state_dict = None
         if route.query_intent == "TASK_STATUS":
             status_evidence = {
@@ -1171,7 +1218,11 @@ class DialogueManager:
                 "found": True,
             }
         else:
-            equipment = self.task_state.get("equipment_name") or self.task_state.get("equipment_type")
+            equipment = (
+                self.task_state.get("equipment_unit_id")
+                or self.task_state.get("equipment_name")
+                or self.task_state.get("equipment_type")
+            )
             if not equipment:
                 alias_index = self.kb.get_device_alias_index()
                 matched_alias = None
@@ -1190,12 +1241,17 @@ class DialogueManager:
                         if unit_match:
                             equipment = unit_match.get("robot", {}).get("full_name") or unit_match.get("unit_id")
             has_realtime = False
-            if equipment and route.query_intent in ("DEVICE_STATUS", "DEVICE_CAPABILITY", "ENVIRONMENT_QUERY"):
+            if equipment and (
+                as_environment_status
+                or route.query_intent in ("DEVICE_STATUS", "DEVICE_CAPABILITY", "ENVIRONMENT_QUERY")
+            ):
                 state_dict = self.kb.get_robot_state_dict(equipment)
                 if state_dict and any(v is not None for v in state_dict.values()):
                     has_realtime = True
 
             if has_realtime:
+                if as_environment_status:
+                    return self._build_environment_status_reply(equipment, state_dict)
                 status_evidence = {
                     "query_type": route.query_intent,
                     "target": equipment,
@@ -1203,6 +1259,8 @@ class DialogueManager:
                     "found": True,
                 }
             else:
+                if as_environment_status:
+                    return "环境状态由当前机器人实时遥测提供；当前会话未绑定可读取的机器人状态源，请先指定或选择具体机器人。"
                 return "当前实时状态源尚未建立或暂时不可用，无法确认设备/环境的最新状态。"
 
         messages = build_status_responder_messages(status_evidence, self.conversation_history, user_message)
@@ -1211,6 +1269,39 @@ class DialogueManager:
             return f"当前任务处于【{self.phase}】阶段，已收集 {len(self._last_built_json)} 个字段。"
         reply = self._align_status_reply_with_backend_facts(reply, state_dict)
         return self._safe_llm_filter_reply(reply, role=ModelRole.FILTER_REPLY)
+
+    def _build_environment_status_reply(self, equipment: str, state_dict: dict) -> str:
+        fields = [
+            ("current_velocity", "海流流速", " m/s"),
+            ("water_current_velocity", "海流流速", " m/s"),
+            ("water_turbidity", "水体浑浊度", ""),
+            ("turbidity", "水体浑浊度", ""),
+            ("visibility_m", "能见度", " m"),
+            ("obstacle_density", "障碍物密度", ""),
+            ("mothership_support", "母船支援", ""),
+            ("overall_status", "机器人状态", ""),
+        ]
+        lines = [
+            "已读取当前机器人采集的实时环境状态：",
+            f"- 数据来源机器人：{equipment}",
+        ]
+        emitted_labels: set[str] = set()
+        for key, label, unit in fields:
+            value = state_dict.get(key)
+            if value is None or label in emitted_labels:
+                continue
+            lines.append(f"- {label}：{value}{unit}")
+            emitted_labels.add(label)
+
+        timestamp = state_dict.get("update_timestamp")
+        if timestamp:
+            lines.append(f"- 更新时间：{timestamp}")
+        version = state_dict.get("version")
+        if version is not None:
+            lines.append(f"- 状态版本：{version}")
+        if len(lines) == 2:
+            lines.append("- 环境遥测：当前状态源未提供可展示的环境字段。")
+        return "\n".join(lines)
 
     def _align_status_reply_with_backend_facts(self, reply: str, state_dict: dict | None) -> str:
         """后端数据硬对齐护栏：强制校对并替换 LLM 回复中与后端真理源不一致的所有遥测数值、文本与单位。"""

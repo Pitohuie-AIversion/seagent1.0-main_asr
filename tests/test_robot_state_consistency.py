@@ -92,6 +92,38 @@ class RobotStateConsistencyTest(unittest.TestCase):
 
         self.assertEqual(state_dict.get("depth"), 350)
 
+    def test_environment_status_query_uses_current_robot_state_even_when_routed_as_knowledge(self):
+        """环境实时状态归属于当前机器人状态源，不应落到系统能力模板。"""
+        self.kb.state_info.set_status(
+            "LROV-150-002",
+            {
+                "overall_status": "available",
+                "current_velocity": 0.62,
+                "water_turbidity": 8.0,
+                "obstacle_density": "low",
+                "update_timestamp": None,
+            },
+        )
+        self.dm.task_state["equipment_unit_id"] = "LROV-150-002"
+        self.dm.task_state["equipment_type"] = "轻型工作级深海机器人 150HP"
+        self.llm.queue_plan(
+            make_plan(
+                "READ",
+                query_intent="KNOWLEDGE_QA",
+                subject_type="system_rule",
+                subject_text="环境状态",
+                relation="describe",
+                source_policy="project_kb",
+            )
+        )
+
+        reply = self.dm.process("现在环境状态如何？", request_id="req_env_status")
+
+        self.assertIn("LROV-150-002", reply)
+        self.assertIn("0.62", reply)
+        self.assertIn("8.0", reply)
+        self.assertNotIn("系统提供以下两类核心交互能力", reply)
+
 
 if __name__ == "__main__":
     unittest.main()
