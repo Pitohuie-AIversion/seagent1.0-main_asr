@@ -141,13 +141,6 @@
         restoreNetError: "还原失败，请检查网络",
         networkError: "网络错误，请重试。",
         resetFailed: "重新开始失败，当前会话已保留，请重试。",
-        reloadSuccess: "检测到文件更新，热重载成功。",
-        reloadFailed: "检测到文件更新，但热重载失败。",
-        reloadChangedPrefix: "更新内容：",
-        reloadChangedFallback: "手动重载",
-        reloadSessionRefresh: "已刷新当前会话状态。",
-        reloadSessionCountPrefix: "已刷新 ",
-        reloadSessionCountSuffix: " 个会话。",
         emergencyBadge: "紧急",
 
         // Telemetry labels
@@ -248,13 +241,6 @@ Please describe your operational requirements directly, or ask the question you 
         restoreNetError: "Restore failed, please check network",
         networkError: "Network error, please try again.",
         resetFailed: "Restart failed. The current session was preserved; please try again.",
-        reloadSuccess: "File update detected; hot reload succeeded.",
-        reloadFailed: "File update detected, but hot reload failed.",
-        reloadChangedPrefix: "Updated: ",
-        reloadChangedFallback: "Manual reload",
-        reloadSessionRefresh: "Current session state refreshed.",
-        reloadSessionCountPrefix: "Refreshed ",
-        reloadSessionCountSuffix: " sessions.",
         emergencyBadge: "Emergency",
 
         // Telemetry labels
@@ -682,25 +668,25 @@ Please describe your operational requirements directly, or ask the question you 
       addMessage('bot', I18N[currentLang].welcomeMsg, { kind: 'welcome' });
     }
 
-    function formatReloadEventMessage(event) {
-      const text = I18N[currentLang];
-      const changed = Array.isArray(event.changed_files) && event.changed_files.length > 0
-        ? event.changed_files.join('、')
-        : text.reloadChangedFallback;
-      const parts = [
-        event.ok ? text.reloadSuccess : text.reloadFailed,
-        `${text.reloadChangedPrefix}${changed}`,
-      ];
+    function isReloadNotificationText(text) {
+      const content = String(text || '');
+      return content.includes('检测到文件更新') ||
+             content.includes('热重载成功') ||
+             content.includes('热重载失败') ||
+             content.includes('File update detected') ||
+             content.includes('hot reload succeeded') ||
+             content.includes('hot reload failed');
+    }
 
-      if (event.ok && sessionId) {
-        parts.push(text.reloadSessionRefresh);
-      } else if (event.ok && Array.isArray(event.refreshed_sessions) && event.refreshed_sessions.length > 0) {
-        parts.push(`${text.reloadSessionCountPrefix}${event.refreshed_sessions.length}${text.reloadSessionCountSuffix}`);
-      }
-      if (!event.ok && event.message) {
-        parts.push(String(event.message));
-      }
-      return parts.join('\n');
+    function removeReloadNotificationBubbles() {
+      if (!messageContainer) return;
+      const messages = Array.from(messageContainer.querySelectorAll('.message'));
+      messages.forEach(msgDiv => {
+        const original = msgDiv.getAttribute('data-original') || msgDiv.textContent || '';
+        if (isReloadNotificationText(original)) {
+          msgDiv.remove();
+        }
+      });
     }
 
     async function refreshSessionStateAfterReload() {
@@ -720,6 +706,7 @@ Please describe your operational requirements directly, or ask the question you 
       if (isReloadPollInFlight) return;
       isReloadPollInFlight = true;
       try {
+        removeReloadNotificationBubbles();
         const res = await fetch(API_BASE + '/api/dev/reload-events?after=' + encodeURIComponent(lastReloadEventId));
         const data = await res.json();
         if (!res.ok || !data.ok || !Array.isArray(data.events)) return;
@@ -731,11 +718,11 @@ Please describe your operational requirements directly, or ask the question you 
           const eventId = Number(event.event_id || 0);
           if (eventId <= lastReloadEventId) continue;
           lastReloadEventId = eventId;
-          addMessage('bot', formatReloadEventMessage(event), { kind: 'system' });
           if (event.ok) {
             await refreshSessionStateAfterReload();
           }
         }
+        removeReloadNotificationBubbles();
       } catch (err) {
         console.warn('Reload event polling failed', err);
       } finally {
@@ -1933,6 +1920,7 @@ Please describe your operational requirements directly, or ask the question you 
             for (const m of data.history) {
               addMessage(m.role, m.content);
             }
+            removeReloadNotificationBubbles();
           } else {
             addWelcomeMessage();
           }
@@ -2043,6 +2031,7 @@ Please describe your operational requirements directly, or ask the question you 
 
     restoreSessionFromStorage().then(restored => {
       if (!restored) reset();
+      removeReloadNotificationBubbles();
     });
 
     updateSimulatedTime(true);

@@ -144,16 +144,20 @@ class TestFrontendIntegrity(unittest.TestCase):
         self.assertIn("option-chip-confirm-btn", self.js_content)
 
     def test_hot_reload_events_are_polled_and_refresh_session_state(self):
-        """Frontend should surface backend hot reload events and refresh current UI state."""
+        """Frontend should silently refresh UI state when backend hot reload events arrive."""
         self.assertIn("/api/dev/reload-events?after=", self.js_content)
-        self.assertIn("function formatReloadEventMessage(event)", self.js_content)
         self.assertIn("async function refreshSessionStateAfterReload()", self.js_content)
+        self.assertIn("function removeReloadNotificationBubbles()", self.js_content)
         self.assertIn("function startReloadEventPolling()", self.js_content)
         self.assertIn("setInterval(pollReloadEvents, 2000)", self.js_content)
-        self.assertIn("addMessage('bot', formatReloadEventMessage(event), { kind: 'system' })", self.js_content)
-        self.assertIn("options.kind !== 'system'", self.js_content)
         self.assertIn("/api/session/state?session_id=", self.js_content)
         self.assertIn("refresh_constraints=1", self.js_content)
+        self.assertIn("await refreshSessionStateAfterReload()", self.js_content)
+        self.assertIn("removeReloadNotificationBubbles()", self.js_content)
+        self.assertIn("检测到文件更新", self.js_content)
+        self.assertIn("File update detected", self.js_content)
+        self.assertNotIn("function formatReloadEventMessage", self.js_content)
+        self.assertNotIn("formatReloadEventMessage(event)", self.js_content)
 
     def test_option_chip_confirmation_names_the_selected_field(self):
         """Option chip submissions should carry field intent, not a bare value list."""
