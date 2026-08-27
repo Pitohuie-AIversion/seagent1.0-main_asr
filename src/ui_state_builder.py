@@ -215,6 +215,15 @@ def _build_slots(
             "candidate_value": slot_data.get("candidate_value"),
             "version": slot_data.get("version", 0),
         }
+        if key == "payload":
+            try:
+                eq_type = str(manager.task_state.get("equipment_type") or "")
+                robot = manager.kb.get_rov(eq_type) if eq_type else None
+                payload_groups = robot.get("payload_groups") if robot else None
+                if isinstance(payload_groups, dict):
+                    slot_entry["payload_groups"] = payload_groups
+            except Exception as exc:
+                logger.debug("build_frontend_ui_state: payload_groups unavailable: %s", exc)
         result.append(slot_entry)
 
     return result

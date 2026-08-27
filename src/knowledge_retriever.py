@@ -37,6 +37,44 @@ def _payload_match_key(value: object) -> str:
     return text
 
 
+PAYLOAD_GROUP_KEYS = ("Mechanical_arm", "End_effector", "Multiple_load")
+
+
+def normalize_supported_payloads(raw: object) -> tuple[list[str], dict[str, list[str]]]:
+    """Return a flat supported payload list and UI groups from old or new YAML."""
+    if isinstance(raw, list):
+        flat = [item for item in raw if isinstance(item, str) and item.strip()]
+        return flat, {"Multiple_load": flat}
+
+    if not isinstance(raw, dict):
+        return [], {}
+
+    groups: dict[str, list[str]] = {}
+    flat: list[str] = []
+    seen: set[str] = set()
+
+    for key in PAYLOAD_GROUP_KEYS:
+        value = raw.get(key)
+        if value is None:
+            items: list[str] = []
+        elif isinstance(value, str):
+            items = [value] if value.strip() else []
+        elif isinstance(value, list):
+            items = [item for item in value if isinstance(item, str) and item.strip()]
+        else:
+            items = []
+
+        groups[key] = items
+        for item in items:
+            normalized = _payload_match_key(item)
+            if normalized in seen:
+                continue
+            flat.append(item)
+            seen.add(normalized)
+
+    return flat, groups
+
+
 def robot_selection_result_contract_error(
     task_state: dict,
     selection: object,
@@ -677,9 +715,10 @@ class KnowledgeBase:
 
             onboard_raw = hard_params.get("onboard_payloads")
             supported_raw = hard_params.get("supported_payloads")
-            if not isinstance(onboard_raw, list) or not isinstance(supported_raw, list):
+            supported_list, _ = normalize_supported_payloads(supported_raw)
+            if not isinstance(onboard_raw, list) or not isinstance(supported_raw, (list, dict)):
                 raise RobotSelectionDataError(
-                    f"Variant '{variant_id}' payload declarations must be lists.",
+                    f"Variant '{variant_id}' payload declarations must be list/dict compatible.",
                     error_code="INVALID_VARIANT_PAYLOAD_CONFIG",
                     variant_id=variant_id,
                     expected_field="onboard_payloads/supported_payloads",
@@ -690,7 +729,7 @@ class KnowledgeBase:
                 )
 
             onboard = {_payload_match_key(item) for item in onboard_raw}
-            supported = {_payload_match_key(item) for item in supported_raw}
+            supported = {_payload_match_key(item) for item in supported_list}
             available = onboard | supported
             missing = [
                 item
@@ -1604,9 +1643,11 @@ class KnowledgeBase:
         onboard = hard_params.get("onboard_payloads")
         supported = hard_params.get("supported_payloads")
         onboard_list = list(onboard) if isinstance(onboard, list) else []
-        supported_list = list(supported) if isinstance(supported, list) else []
+        supported_list, payload_groups = normalize_supported_payloads(supported)
         robot["onboard_payloads"] = onboard_list
+        robot["raw_supported_payloads"] = supported_list
         robot["supported_payloads"] = supported_list
+        robot["payload_groups"] = payload_groups
         robot["all_payloads"] = list(dict.fromkeys(onboard_list + supported_list))
         return robot
 

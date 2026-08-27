@@ -1244,6 +1244,213 @@ Please describe your operational requirements directly, or ask the question you 
       renderOptionChips(uiState);
     }
 
+    function getSlotUiLabel(slot) {
+      if (typeof slot.label === 'string') return slot.label;
+      return slot.label?.[currentLang] || slot.label?.zh || slot.key;
+    }
+
+    function buildPayloadSections(slot) {
+      const groups = slot.payload_groups || {};
+      const allowedSet = new Set(Array.isArray(slot.allowed_values) ? slot.allowed_values : []);
+      const sectionDefs = [
+        {
+          key: 'Mechanical_arm',
+          title: currentLang === 'zh' ? '机械臂' : 'Mechanical Arm',
+          mode: 'single',
+        },
+        {
+          key: 'End_effector',
+          title: currentLang === 'zh' ? '末端执行器' : 'End Effector',
+          mode: 'single',
+        },
+        {
+          key: 'Multiple_load',
+          title: currentLang === 'zh' ? '扩展载荷' : 'Additional Payloads',
+          mode: 'multiple',
+        },
+      ];
+
+      return sectionDefs.map(def => {
+        const rawOptions = Array.isArray(groups[def.key]) ? groups[def.key] : [];
+        const options = rawOptions.filter(item => allowedSet.size === 0 || allowedSet.has(item));
+        return { ...def, options };
+      }).filter(section => section.options.length > 0);
+    }
+
+    function renderPayloadSelector(slot, bar) {
+      const sections = buildPayloadSections(slot);
+      if (sections.length === 0) return false;
+
+      const labelText = getSlotUiLabel(slot);
+      const selected = {
+        Mechanical_arm: null,
+        End_effector: null,
+        Multiple_load: new Set(),
+      };
+      const buttonsBySection = new Map();
+
+      const panel = document.createElement('div');
+      panel.className = 'payload-selector-panel';
+
+      const header = document.createElement('div');
+      header.className = 'payload-selector-header';
+      const title = document.createElement('div');
+      title.className = 'payload-selector-title';
+      title.textContent = labelText;
+      const summary = document.createElement('div');
+      summary.className = 'payload-selector-summary';
+      header.appendChild(title);
+      header.appendChild(summary);
+      panel.appendChild(header);
+
+      const grid = document.createElement('div');
+      grid.className = 'payload-selector-grid';
+      panel.appendChild(grid);
+
+      const confirmBtn = document.createElement('button');
+      confirmBtn.type = 'button';
+      confirmBtn.className = 'payload-selector-confirm';
+
+      const getSelectedList = () => {
+        const result = [];
+        if (selected.Mechanical_arm) result.push(selected.Mechanical_arm);
+        if (selected.End_effector) result.push(selected.End_effector);
+        result.push(...Array.from(selected.Multiple_load));
+        return result;
+      };
+
+      const updateStyles = () => {
+        buttonsBySection.forEach((buttons, sectionKey) => {
+          buttons.forEach((btn, val) => {
+            const isSelected = sectionKey === 'Multiple_load'
+              ? selected.Multiple_load.has(val)
+              : selected[sectionKey] === val;
+            btn.classList.toggle('selected', isSelected);
+            btn.textContent = isSelected ? `✓ ${val}` : val;
+          });
+        });
+        const selectedList = getSelectedList();
+        summary.textContent = selectedList.length > 0
+          ? (currentLang === 'zh' ? `已选 ${selectedList.length} 项` : `${selectedList.length} selected`)
+          : (currentLang === 'zh' ? '未选择' : 'No selection');
+        confirmBtn.style.display = selectedList.length > 0 ? 'inline-flex' : 'none';
+        confirmBtn.textContent = currentLang === 'zh' ? `确认配置 (${selectedList.length})` : `Confirm Payloads (${selectedList.length})`;
+      };
+
+      sections.forEach(section => {
+        const card = document.createElement('div');
+        card.className = `payload-section-card ${section.mode}`;
+
+        const cardHeader = document.createElement('div');
+        cardHeader.className = 'payload-section-header';
+        const cardTitle = document.createElement('div');
+        cardTitle.className = 'payload-section-title';
+        cardTitle.textContent = section.title;
+        const cardMode = document.createElement('div');
+        cardMode.className = 'payload-section-mode';
+        cardMode.textContent = section.mode === 'single'
+          ? (currentLang === 'zh' ? '单选' : 'Single')
+          : (currentLang === 'zh' ? '多选' : 'Multiple');
+        cardHeader.appendChild(cardTitle);
+        cardHeader.appendChild(cardMode);
+        card.appendChild(cardHeader);
+
+        const optionsWrap = document.createElement('div');
+        optionsWrap.className = 'payload-option-list';
+        const sectionButtons = new Map();
+
+        section.options.forEach(val => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'payload-option-btn';
+          btn.textContent = val;
+          btn.addEventListener('click', () => {
+            if (section.key === 'Multiple_load') {
+              if (selected.Multiple_load.has(val)) selected.Multiple_load.delete(val);
+              else selected.Multiple_load.add(val);
+            } else {
+              selected[section.key] = selected[section.key] === val ? null : val;
+            }
+            updateStyles();
+          });
+          sectionButtons.set(val, btn);
+          optionsWrap.appendChild(btn);
+        });
+
+        buttonsBySection.set(section.key, sectionButtons);
+        card.appendChild(optionsWrap);
+        grid.appendChild(card);
+      });
+
+      confirmBtn.addEventListener('click', () => {
+        const selectedList = getSelectedList();
+        if (!isSending && selectedList.length > 0) {
+          const fieldSelectionText = `确认选择${labelText}：${selectedList.join('、')}`;
+          messageInput.value = fieldSelectionText;
+          sendMessage(fieldSelectionText);
+        }
+      });
+      panel.appendChild(confirmBtn);
+      updateStyles();
+      bar.appendChild(panel);
+      return true;
+    }
+
+    function renderGenericListSelector(slot, bar) {
+      const groupDiv = document.createElement('div');
+      groupDiv.className = 'chip-group';
+
+      const labelSpan = document.createElement('span');
+      labelSpan.className = 'chip-group-label';
+      const labelText = getSlotUiLabel(slot);
+      labelSpan.textContent = `${labelText} ${currentLang === 'zh' ? '(可多选)' : '(multiple)'}:`;
+      groupDiv.appendChild(labelSpan);
+
+      const selectedValues = new Set();
+      const chipBtns = new Map();
+      const confirmBtn = document.createElement('button');
+
+      const updateChipStyles = () => {
+        chipBtns.forEach((btn, val) => {
+          const isSelected = selectedValues.has(val);
+          btn.classList.toggle('selected', isSelected);
+          btn.textContent = isSelected ? `✓ ${val}` : val;
+        });
+        const count = selectedValues.size;
+        confirmBtn.style.display = count > 0 ? 'inline-flex' : 'none';
+        confirmBtn.textContent = currentLang === 'zh' ? `确认选择 (${count}项)` : `Confirm (${count})`;
+      };
+
+      slot.allowed_values.forEach(val => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'option-chip-btn';
+        btn.textContent = val;
+        chipBtns.set(val, btn);
+        btn.addEventListener('click', () => {
+          if (selectedValues.has(val)) selectedValues.delete(val);
+          else selectedValues.add(val);
+          updateChipStyles();
+        });
+        groupDiv.appendChild(btn);
+      });
+
+      confirmBtn.type = 'button';
+      confirmBtn.className = 'option-chip-confirm-btn';
+      confirmBtn.addEventListener('click', () => {
+        if (!isSending && selectedValues.size > 0) {
+          const selectedList = Array.from(selectedValues);
+          const fieldSelectionText = `确认选择${labelText}：${selectedList.join('、')}`;
+          messageInput.value = fieldSelectionText;
+          sendMessage(fieldSelectionText);
+        }
+      });
+
+      groupDiv.appendChild(confirmBtn);
+      updateChipStyles();
+      bar.appendChild(groupDiv);
+    }
+
     function renderOptionChips(uiState) {
       const oldBar = document.getElementById('seagent-option-chips-bar');
       if (oldBar) oldBar.remove();
@@ -1252,9 +1459,6 @@ Please describe your operational requirements directly, or ask the question you 
       if (uiState.read_only || uiState.phase === 'confirming' || uiState.phase === 'done' || uiState.phase === 'rejected') return;
 
       const slots = Array.isArray(uiState.slots) ? uiState.slots : [];
-
-      // 只有在当前轮次真正需要用户填写/追问 list 字段时才触发加载胶囊卡片
-      // 判定逻辑：list 字段必须位于当前未收集完成的前 3 个待收集字段中（与后端的 ask_count=3 对齐）
       const missingSlots = slots.filter(s => s.status !== 'valid');
       const currentlyAskedSlots = missingSlots.slice(0, 3);
 
@@ -1276,118 +1480,15 @@ Please describe your operational requirements directly, or ask the question you 
       const bar = document.createElement('div');
       bar.id = 'seagent-option-chips-bar';
       bar.className = 'option-chips-bar';
-      bar.style.cssText = 'display: flex; flex-direction: column; gap: 8px; margin: 10px 0 14px 48px; max-width: calc(100% - 60px);';
 
       listSlotsWithAllowed.forEach(slot => {
-        const groupDiv = document.createElement('div');
-        groupDiv.className = 'chip-group';
-        groupDiv.style.cssText = 'display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: rgba(0, 229, 255, 0.04); border: 1px dashed rgba(0, 229, 255, 0.2); border-radius: 8px; padding: 6px 12px;';
-
-        const labelSpan = document.createElement('span');
-        labelSpan.className = 'chip-group-label';
-        labelSpan.style.cssText = 'font-size: 0.8rem; color: #80d8ff; font-weight: 600; white-space: nowrap;';
-        const labelText = typeof slot.label === 'string' ? slot.label : (slot.label?.zh || slot.key);
-        labelSpan.textContent = `💡 ${labelText} (可多选)：`;
-        groupDiv.appendChild(labelSpan);
-
-        const selectedValues = new Set();
-        const chipBtns = new Map();
-
-        const updateChipStyles = () => {
-          chipBtns.forEach((btn, val) => {
-            const isSelected = selectedValues.has(val);
-            if (isSelected) {
-              btn.style.background = 'rgba(0, 229, 255, 0.32)';
-              btn.style.borderColor = '#00ffff';
-              btn.style.color = '#ffffff';
-              btn.style.boxShadow = '0 0 10px rgba(0, 255, 255, 0.5)';
-              btn.style.fontWeight = '600';
-              btn.textContent = `✓ ${val}`;
-            } else {
-              btn.style.background = 'rgba(0, 229, 255, 0.08)';
-              btn.style.borderColor = 'rgba(0, 229, 255, 0.35)';
-              btn.style.color = '#00e5ff';
-              btn.style.boxShadow = 'none';
-              btn.style.fontWeight = '500';
-              btn.textContent = val;
-            }
-          });
-
-          if (confirmBtn) {
-            const count = selectedValues.size;
-            if (count > 0) {
-              confirmBtn.style.display = 'inline-flex';
-              confirmBtn.textContent = currentLang === 'zh' ? `✓ 确认选择 (${count}项)` : `✓ Confirm (${count})`;
-            } else {
-              confirmBtn.style.display = 'none';
-            }
-          }
-        };
-
-        slot.allowed_values.forEach(val => {
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'option-chip-btn';
-          btn.style.cssText = `
-            background: rgba(0, 229, 255, 0.08);
-            border: 1px solid rgba(0, 229, 255, 0.35);
-            color: #00e5ff;
-            border-radius: 14px;
-            padding: 3px 12px;
-            font-size: 0.82rem;
-            cursor: pointer;
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-            font-weight: 500;
-            outline: none;
-          `;
-          btn.textContent = val;
-          chipBtns.set(val, btn);
-
-          btn.addEventListener('click', () => {
-            if (selectedValues.has(val)) {
-              selectedValues.delete(val);
-            } else {
-              selectedValues.add(val);
-            }
-            updateChipStyles();
-          });
-
-          groupDiv.appendChild(btn);
-        });
-
-        var confirmBtn = document.createElement('button');
-        confirmBtn.type = 'button';
-        confirmBtn.className = 'option-chip-confirm-btn';
-        confirmBtn.style.cssText = `
-          display: none;
-          background: linear-gradient(135deg, rgba(0, 229, 255, 0.4), rgba(0, 150, 255, 0.5));
-          border: 1px solid #00f0ff;
-          color: #ffffff;
-          border-radius: 14px;
-          padding: 3px 14px;
-          font-size: 0.82rem;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          font-weight: 600;
-          margin-left: 4px;
-          box-shadow: 0 0 12px rgba(0, 240, 255, 0.4);
-          outline: none;
-        `;
-
-        confirmBtn.addEventListener('click', () => {
-          if (!isSending && selectedValues.size > 0) {
-            const selectedList = Array.from(selectedValues);
-            const fieldSelectionText = `确认选择${labelText}：${selectedList.join('、')}`;
-            messageInput.value = fieldSelectionText;
-            sendMessage(fieldSelectionText);
-          }
-        });
-
-        groupDiv.appendChild(confirmBtn);
-
-        bar.appendChild(groupDiv);
+        if (slot.key === 'payload' && renderPayloadSelector(slot, bar)) {
+          return;
+        }
+        renderGenericListSelector(slot, bar);
       });
 
+      if (bar.childElementCount === 0) return;
       messageContainer.appendChild(bar);
       messageContainer.scrollTop = messageContainer.scrollHeight;
     }
