@@ -91,7 +91,7 @@ robots:
     version: 1219
     updated_at: '2026-06-30T17:38:00.065603+08:00'
   OBSROV-75-001:
-    water_current_velocity: 10
+    water_current_velocity: 100
     water_turbidity: 6.0
     obstacle_density: low
     mothership_support: strong

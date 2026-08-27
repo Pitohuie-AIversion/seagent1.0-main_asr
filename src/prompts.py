@@ -556,11 +556,31 @@ def build_responder_messages(
             "只有上面非空的已提交字段才可描述为本轮已设置或已修改；"
             "若为空，必须明确说明本轮未写入任何字段。"
         )
+    clean_history = _sanitize_history_for_task_responder(conversation_history)
+    recent_history = clean_history[-8:] if len(clean_history) > 8 else clean_history
     return [
         {"role": "system", "content": system_content},
         *recent_history,
         {"role": "user", "content": turn_message},
     ]
+
+
+def _sanitize_history_for_task_responder(conversation_history: list[dict]) -> list[dict]:
+    """清洗任务模式下发送给 LLM 的历史对话，替换旧的槽位总结，防止 LLM 抄写旧槽位数值。"""
+    sanitized = []
+    for msg in conversation_history:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content", "")
+        if role == "assistant" and isinstance(content, str):
+            if any(kw in content for kw in ("已记录：", "已确认：", "已提取字段", "已完成收集")):
+                msg_copy = dict(msg)
+                msg_copy["content"] = "[系统提示：此处为历史轮次的任务槽位总结，最新槽位事实请统一参照系统提示【已确认任务事实】与【当前已提取任务字段】]"
+                sanitized.append(msg_copy)
+                continue
+        sanitized.append(msg)
+    return sanitized
 
 
 GENERAL_CHAT_RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
@@ -628,9 +648,10 @@ STATUS_RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
 1. 只能依据上述【权威状态证据】如实汇报。
 2. 绝对以当前【权威状态证据】中的最新数据为准！若对话历史（History）中过去的回复包含了旧的遥测数值（例如旧海流流速或旧版本号），必须彻底忽略历史对话中的旧数值，严禁继承或重述历史回复中的旧数据！
 3. 汇报设备实时状态时，必须在回复中明确写出【状态版本号】（version）与【最后更新时间】（updated_at / update_timestamp），以便于用户校验状态数据版本。
-4. 如果状态证据中 `found` 为 `false` 或表明“未建立/不可用”，必须如实回答：“当前实时状态源尚未建立或暂时不可用，无法确认设备/环境的最新状态。”
-5. 严禁猜测数值单位或含义，严禁自行添加修饰词（如“中等”、“危急”）。
-6. 严禁修改任何任务槽位。
+4. 海洋环境水流速度（water_current_velocity / current_velocity）的物理标准单位必须固定为 m/s（米/秒），绝对禁止错写成 cm/s、节或任何其他单位！
+5. 如果状态证据中 `found` 为 `false` 或表明“未建立/不可用”，必须如实回答：“当前实时状态源尚未建立或暂时不可用，无法确认设备/环境的最新状态。”
+6. 严禁猜测数值单位或含义，严禁自行添加修饰词（如“中等”、“危急”）。
+7. 严禁修改任何任务槽位。
 """
 
 
@@ -675,6 +696,24 @@ def build_knowledge_responder_messages(
 
 
 
+def _sanitize_history_for_status_qa(conversation_history: list[dict]) -> list[dict]:
+    """清洗发送给状态问答 LLM 的历史对话，防止旧的状态汇报文本干扰 LLM 对最新证据的感知。"""
+    sanitized = []
+    for msg in conversation_history:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content", "")
+        if role == "assistant" and isinstance(content, str):
+            if any(kw in content for kw in ("【设备实时状态汇报】", "设备实时状态汇报", "📡 设备实时状态汇报", "【实时状态汇报】", "当前权威状态汇报", "实时状态汇报")):
+                msg_copy = dict(msg)
+                msg_copy["content"] = "[系统提示：此处为历史轮次的设备状态汇报，最新设备遥测请参见【权威状态证据】]"
+                sanitized.append(msg_copy)
+                continue
+        sanitized.append(msg)
+    return sanitized
+
+
 def build_status_responder_messages(
     status_evidence: dict,
     conversation_history: list[dict],
@@ -685,7 +724,8 @@ def build_status_responder_messages(
         STATUS_RESPONDER_SYSTEM.format(status_evidence_json=status_json_str)
         + "\n\n【⚠️ 必须严格遵守】：对话历史中可能包含旧的遥测数据与旧回答，必须完全忽略历史数据，100% 以当前【权威状态证据】中的最新数据与版本号为准！"
     )
-    recent_history = conversation_history[-8:] if len(conversation_history) > 8 else conversation_history
+    clean_history = _sanitize_history_for_status_qa(conversation_history)
+    recent_history = clean_history[-8:] if len(clean_history) > 8 else clean_history
     return [
         {"role": "system", "content": sys_content},
         *recent_history,
