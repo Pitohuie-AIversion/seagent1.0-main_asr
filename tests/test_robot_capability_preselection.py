@@ -640,26 +640,18 @@ class TestRobotConstraintAndAvailabilityPreselection(unittest.TestCase):
         self.dm.slot_store.commit_transaction(slots, [])
         self.dm.task_state = self.dm.slot_store.get_task_state()
 
-    def test_24_water_depth_filters_variants_and_auto_locks_auv(self):
+    def test_24_water_depth_does_not_filter_robot_selection_domain(self):
         self._init_task("pipeline_inspection")
 
-        self._apply_updates({"water_depth": 800}, "pipeline_inspection")
+        self._apply_updates({"water_depth": 1200}, "pipeline_inspection")
 
         slots = self.dm.slot_store.slots
-        self.assertEqual(slots["equipment_class"].value, "AUV")
-        self.assertEqual(slots["equipment_family"].value, "水下无人自主航行器")
-        self.assertEqual(slots["equipment_type"].value, "水下无人自主航行器 324CC")
-        self.assertEqual(slots["equipment_unit_id"].value, "AUV-324cc-001")
-        for key in (
-            "equipment_class",
-            "equipment_family",
-            "equipment_type",
-            "equipment_unit_id",
-        ):
-            self.assertEqual(slots[key].status, "valid")
-            self.assertEqual(slots[key].source, "auto")
+        self.assertIsNone(slots["equipment_class"].value)
+        self.assertIsNone(slots["equipment_family"].value)
+        self.assertIsNone(slots["equipment_type"].value)
+        self.assertIsNone(slots["equipment_unit_id"].value)
 
-    def test_25_selected_payload_filters_unsupported_variant(self):
+    def test_25_selected_payload_does_not_filter_robot_selection_domain(self):
         domain = self.kb.get_feasible_robot_selection_domain(
             "pipeline_inspection",
             {"payload": ["TSS管缆跟踪传感器"]},
@@ -671,12 +663,10 @@ class TestRobotConstraintAndAvailabilityPreselection(unittest.TestCase):
             for family in class_node["families"]
             for variant in family["variants"]
         }
-        self.assertEqual(
-            variant_ids,
-            {"light_work_class_rov_150hp", "observation_rov_75hp"},
-        )
+        self.assertIn("autonomous_underwater_vehicle_324cc", variant_ids)
+        self.assertIn("observation_rov_75hp", variant_ids)
 
-    def test_25b_depth_boundaries_are_inclusive_and_fail_closed(self):
+    def test_25b_depth_is_not_a_robot_selection_domain_filter(self):
         at_limit = self.kb.get_feasible_robot_selection_domain(
             "pipeline_inspection",
             {"water_depth": 600},
@@ -695,19 +685,10 @@ class TestRobotConstraintAndAvailabilityPreselection(unittest.TestCase):
             }
 
         self.assertIn("observation_rov_75hp", variant_ids(at_limit))
-        self.assertNotIn("observation_rov_75hp", variant_ids(above_limit))
+        self.assertIn("observation_rov_75hp", variant_ids(above_limit))
+        self.assertEqual(variant_ids(at_limit), variant_ids(above_limit))
 
-        for invalid_depth in (True, 0, -1, float("nan"), float("inf")):
-            with self.subTest(invalid_depth=invalid_depth), self.assertRaises(
-                RobotSelectionDataError
-            ) as raised:
-                self.kb.get_feasible_robot_selection_domain(
-                    "pipeline_inspection",
-                    {"water_depth": invalid_depth},
-                )
-            self.assertEqual(raised.exception.error_code, "INVALID_WATER_DEPTH")
-
-    def test_25c_incompatible_depth_and_payload_fail_closed_with_reasons(self):
+    def test_25c_incompatible_depth_and_payload_stay_out_of_selection_domain(self):
         domain = self.kb.get_feasible_robot_selection_domain(
             "pipeline_inspection",
             {
@@ -716,27 +697,8 @@ class TestRobotConstraintAndAvailabilityPreselection(unittest.TestCase):
             },
         )
 
-        self.assertEqual(domain["classes"], [])
-        rejected = {
-            item["variant_id"]: item["reasons"]
-            for item in domain["rejected_variants"]
-        }
-        self.assertTrue(
-            any(
-                "max_depth_m" in reason
-                for variant_id in (
-                    "light_work_class_rov_150hp",
-                    "observation_rov_75hp",
-                )
-                for reason in rejected[variant_id]
-            )
-        )
-        self.assertTrue(
-            any(
-                "unsupported payloads" in reason
-                for reason in rejected["autonomous_underwater_vehicle_324cc"]
-            )
-        )
+        self.assertTrue(domain["classes"])
+        self.assertEqual(domain["rejected_variants"], [])
 
     def test_26_immediate_task_filters_busy_unit_and_auto_locks_available_sibling(self):
         self._seed_unit("LROV-150-001", available=False)
@@ -805,10 +767,10 @@ class TestRobotConstraintAndAvailabilityPreselection(unittest.TestCase):
         self.assertIsNone(unit_slot.value)
         self.assertEqual(unit_slot.status, "missing")
 
-    def test_29_auto_selection_is_recomputed_when_depth_changes(self):
+    def test_29_depth_changes_do_not_recompute_robot_selection(self):
         self._init_task("pipeline_inspection")
         self._apply_updates({"water_depth": 800}, "pipeline_inspection")
-        self.assertEqual(self.dm.slot_store.slots["equipment_class"].value, "AUV")
+        self.assertIsNone(self.dm.slot_store.slots["equipment_class"].value)
 
         self._apply_updates({"water_depth": 500}, "pipeline_inspection")
 
@@ -819,22 +781,22 @@ class TestRobotConstraintAndAvailabilityPreselection(unittest.TestCase):
         self.assertIsNone(slots["equipment_type"].value)
         self.assertIsNone(slots["equipment_unit_id"].value)
 
-    def test_30_zero_candidate_error_recovers_after_constraint_is_relaxed(self):
-        """系统产生的 0 候选错误不能永久阻塞后续有效条件。"""
+    def test_30_out_of_range_depth_does_not_create_zero_candidate_error(self):
+        """水深超限不应在机器人选择阶段产生 0 候选错误。"""
         self._init_task("pipeline_inspection")
         self._apply_updates({"water_depth": 1200}, "pipeline_inspection")
 
         class_slot = self.dm.slot_store.slots["equipment_class"]
-        self.assertEqual(class_slot.status, "invalid")
-        self.assertIn("No feasible robot class", class_slot.validation_error)
+        self.assertEqual(class_slot.status, "missing")
+        self.assertFalse(class_slot.validation_error)
 
         self._apply_updates({"water_depth": 800}, "pipeline_inspection")
 
         slots = self.dm.slot_store.slots
-        self.assertEqual(slots["equipment_class"].value, "AUV")
-        self.assertEqual(slots["equipment_family"].value, "水下无人自主航行器")
-        self.assertEqual(slots["equipment_type"].value, "水下无人自主航行器 324CC")
-        self.assertEqual(slots["equipment_unit_id"].value, "AUV-324cc-001")
+        self.assertIsNone(slots["equipment_class"].value)
+        self.assertIsNone(slots["equipment_family"].value)
+        self.assertIsNone(slots["equipment_type"].value)
+        self.assertIsNone(slots["equipment_unit_id"].value)
 
     def test_31_explicit_unit_keeps_auto_ancestors_when_depth_is_infeasible(self):
         """动态条件不得连同自动反推的父层擦除用户明确 Unit。"""
@@ -864,8 +826,8 @@ class TestRobotConstraintAndAvailabilityPreselection(unittest.TestCase):
         self.assertEqual(slots["equipment_unit_id"].value, "WROV-250-001")
         self.assertEqual(slots["equipment_unit_id"].source, "user_input")
 
-    def test_32_explicit_class_with_no_feasible_children_is_hard_blocked(self):
-        """显式 Class 不能被动态条件擦除，但局部 0 候选必须明确阻断。"""
+    def test_32_explicit_class_with_depth_out_of_range_is_not_candidate_blocked(self):
+        """水深不能把 Class 选择提前截成 0 候选；水深违规留给 C004。"""
         self._init_task("pipeline_inspection")
         self._apply_updates(
             {
@@ -887,28 +849,22 @@ class TestRobotConstraintAndAvailabilityPreselection(unittest.TestCase):
         self.assertIsNone(self.dm.slot_store.slots["equipment_family"].value)
 
         result = self.dm.validator.validate_task(self.dm.task_state)
-        self.assertEqual(result.overall_status, "validation_error")
-        self.assertEqual(
-            result.error["code"],
-            "NO_FEASIBLE_ROBOT_CANDIDATE",
-        )
-        self.assertEqual(result.violations[0].severity, "hard")
+        self.assertNotEqual((result.error or {}).get("code"), "NO_FEASIBLE_ROBOT_CANDIDATE")
 
         context = self.dm._run_constraint_check(
             {"water_depth", "equipment_class"}
         )
-        self.assertEqual(context["type"], "hard")
-        self.assertEqual(self.dm.phase, "blocked_hard")
+        self.assertNotEqual(context.get("type"), "hard")
 
-    def test_33_explicit_family_local_zero_candidate_recovers(self):
-        """显式 Family 的局部 0 候选在条件放宽后应自动恢复。"""
+    def test_33_explicit_family_depth_out_of_range_reports_c004_after_variant_resolution(self):
+        """显式 Family 可继续折叠；具体水深超限由 C004 负责。"""
         self._init_task("pipeline_inspection")
         self._apply_updates(
             {
-                "water_depth": 800,
+                "water_depth": 1200,
                 "equipment_family": {
-                    "value": "light_work_class_rov",
-                    "raw_value": "light_work_class_rov",
+                    "value": "autonomous_underwater_vehicle",
+                    "raw_value": "autonomous_underwater_vehicle",
                     "source": "user_input",
                     "confidence": 1.0,
                 },
@@ -917,28 +873,14 @@ class TestRobotConstraintAndAvailabilityPreselection(unittest.TestCase):
         )
 
         family_slot = self.dm.slot_store.slots["equipment_family"]
-        self.assertEqual(family_slot.value, "轻型工作级深海机器人")
+        self.assertEqual(family_slot.value, "水下无人自主航行器")
         self.assertEqual(family_slot.status, "valid")
         self.assertEqual(family_slot.source, "user_input")
         blocked = self.dm.validator.validate_task(self.dm.task_state)
-        self.assertEqual(
-            blocked.error["code"],
-            "NO_FEASIBLE_ROBOT_CANDIDATE",
-        )
-
-        self._apply_updates({"water_depth": 500}, "pipeline_inspection")
-
-        slots = self.dm.slot_store.slots
-        self.assertEqual(slots["equipment_family"].value, "轻型工作级深海机器人")
-        self.assertEqual(
-            slots["equipment_type"].value,
-            "轻型工作级深海机器人 150HP",
-        )
-        recovered = self.dm.validator.validate_task(self.dm.task_state)
-        self.assertNotEqual(
-            (recovered.error or {}).get("code"),
-            "NO_FEASIBLE_ROBOT_CANDIDATE",
-        )
+        self.assertIsNone(blocked.error)
+        self.assertEqual(blocked.overall_status, "blocked_hard")
+        self.assertEqual(blocked.violations[0].constraint_id, "C004")
+        self.assertEqual(blocked.violations[0].check_type, "depth_vs_rov_limit")
 
 
 if __name__ == "__main__":

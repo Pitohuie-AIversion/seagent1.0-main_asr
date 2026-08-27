@@ -112,6 +112,10 @@ task_templates:
           label: "作业设备型号"
           type: string
           allowed_values_ref: "robot_variant_full_names"
+        - key: equipment_unit_id
+          label: "具体机器人编号"
+          type: string
+          allowed_values_ref: "robot_unit_ids"
 
   # ── 管缆埋设 ─────────────────────────────────────────────────────────────
   pipeline_burial:
@@ -198,6 +202,10 @@ task_templates:
           label: "作业设备型号"
           type: string
           allowed_values_ref: "robot_variant_full_names"
+        - key: equipment_unit_id
+          label: "具体机器人编号"
+          type: string
+          allowed_values_ref: "robot_unit_ids"
 
   # ── 采油树控制面板阀门插拔 ───────────────────────────────────────────────
   tree_valve_operation:
@@ -286,3 +294,7 @@ task_templates:
           label: "作业设备型号"
           type: string
           allowed_values_ref: "robot_variant_full_names"
+        - key: equipment_unit_id
+          label: "具体机器人编号"
+          type: string
+          allowed_values_ref: "robot_unit_ids"

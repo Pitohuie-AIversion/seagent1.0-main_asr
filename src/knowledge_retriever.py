@@ -954,9 +954,11 @@ class KnowledgeBase:
         purpose: str = "interactive",
     ) -> dict:
         """
-        计算当前任务的可行机器人子图 (Feasible Robot Selection Domain)。
-        四级结构：class -> family -> model_variant -> fleet_unit
-        先按 class/capability 与 Variant 硬参数过滤；即时任务再按 Unit 运行状态过滤。
+        计算当前任务的机器人选择子图。
+
+        四级结构：class -> family -> model_variant -> fleet_unit。
+        这里仅按任务类型所需 capability 收窄选择域；水深、载荷、实时状态等
+        作业条件属于准入约束，由 TaskValidator 的 C004/载荷/遥测规则报告。
         """
         self._validate_model_variants_integrity()
         self._validate_fleet_units_integrity()
@@ -1019,18 +1021,6 @@ class KnowledgeBase:
                     if variant_cfg.get("family_id") != family_id:
                         continue
 
-                    feasibility = self.evaluate_static_robot_variant(
-                        variant_id,
-                        variant_cfg,
-                        task_state,
-                    )
-                    if not feasibility.eligible:
-                        rejected_variants.append({
-                            "variant_id": variant_id,
-                            "reasons": list(feasibility.reasons),
-                        })
-                        continue
-
                     units_node: list[dict] = []
                     for unit_cfg in fleet_units:
                         if unit_cfg.get("variant_id") != variant_id:
@@ -1064,7 +1054,7 @@ class KnowledgeBase:
                         "robot_class": class_id,
                         "aliases": list(variant_cfg.get("aliases", []) or []),
                         "hard_params": dict(variant_cfg.get("hard_params", {}) or {}),
-                        "requires_installation": list(feasibility.requires_installation),
+                        "requires_installation": [],
                         "units": units_node,
                         "has_available_units": bool(units_node),
                     })
