@@ -91,7 +91,7 @@ def _compute_actions(phase: str, dialogue_mode: str) -> dict:
     终态发布物仍保持只读，但不关闭对话输入；后端允许 READ/CLARIFY，
     后续 WRITE 则沿安全事务创建新草稿，不覆盖原发布物。
     """
-    if phase in ("done", "rejected"):
+    if phase in ("confirming", "blocked_soft", "blocked_hard", "done", "rejected"):
         return dict(_PHASE_ACTIONS[phase])
     if dialogue_mode != "task_collection":
         return dict(_NORMAL_CHAT_ACTIONS)

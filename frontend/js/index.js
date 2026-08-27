@@ -24,6 +24,9 @@
     let currentReadOnly = false;
     let timeUpdateInterval = null;
     let isTimePickerEditing = false;
+    let lastReloadEventId = 0;
+    let reloadPollTimer = null;
+    let isReloadPollInFlight = false;
 
 
     const messageContainer = document.getElementById('messages');
@@ -138,6 +141,13 @@
         restoreNetError: "还原失败，请检查网络",
         networkError: "网络错误，请重试。",
         resetFailed: "重新开始失败，当前会话已保留，请重试。",
+        reloadSuccess: "检测到文件更新，热重载成功。",
+        reloadFailed: "检测到文件更新，但热重载失败。",
+        reloadChangedPrefix: "更新内容：",
+        reloadChangedFallback: "手动重载",
+        reloadSessionRefresh: "已刷新当前会话状态。",
+        reloadSessionCountPrefix: "已刷新 ",
+        reloadSessionCountSuffix: " 个会话。",
         emergencyBadge: "紧急",
 
         // Telemetry labels
@@ -238,6 +248,13 @@ Please describe your operational requirements directly, or ask the question you 
         restoreNetError: "Restore failed, please check network",
         networkError: "Network error, please try again.",
         resetFailed: "Restart failed. The current session was preserved; please try again.",
+        reloadSuccess: "File update detected; hot reload succeeded.",
+        reloadFailed: "File update detected, but hot reload failed.",
+        reloadChangedPrefix: "Updated: ",
+        reloadChangedFallback: "Manual reload",
+        reloadSessionRefresh: "Current session state refreshed.",
+        reloadSessionCountPrefix: "Refreshed ",
+        reloadSessionCountSuffix: " sessions.",
         emergencyBadge: "Emergency",
 
         // Telemetry labels
@@ -646,7 +663,7 @@ Please describe your operational requirements directly, or ask the question you 
       const renderedContent = renderMessageContent(content, role);
 
       let translateBtn = '';
-      if (content.trim() && options.kind !== 'welcome') {
+      if (content.trim() && options.kind !== 'welcome' && options.kind !== 'system') {
         translateBtn = `<div class="msg-translate-bar" data-action="translate-message">${I18N[currentLang].transTranslate}</div>`;
       }
 
@@ -654,7 +671,7 @@ Please describe your operational requirements directly, or ask the question you 
       messageContainer.appendChild(div);
       messageContainer.scrollTop = messageContainer.scrollHeight;
 
-      if (options.kind !== 'welcome' && currentLang === 'en' && hasChinese(content)) {
+      if (options.kind !== 'welcome' && options.kind !== 'system' && currentLang === 'en' && hasChinese(content)) {
         autoTranslateMessage(div);
       }
 
@@ -663,6 +680,73 @@ Please describe your operational requirements directly, or ask the question you 
 
     function addWelcomeMessage() {
       addMessage('bot', I18N[currentLang].welcomeMsg, { kind: 'welcome' });
+    }
+
+    function formatReloadEventMessage(event) {
+      const text = I18N[currentLang];
+      const changed = Array.isArray(event.changed_files) && event.changed_files.length > 0
+        ? event.changed_files.join('、')
+        : text.reloadChangedFallback;
+      const parts = [
+        event.ok ? text.reloadSuccess : text.reloadFailed,
+        `${text.reloadChangedPrefix}${changed}`,
+      ];
+
+      if (event.ok && sessionId) {
+        parts.push(text.reloadSessionRefresh);
+      } else if (event.ok && Array.isArray(event.refreshed_sessions) && event.refreshed_sessions.length > 0) {
+        parts.push(`${text.reloadSessionCountPrefix}${event.refreshed_sessions.length}${text.reloadSessionCountSuffix}`);
+      }
+      if (!event.ok && event.message) {
+        parts.push(String(event.message));
+      }
+      return parts.join('\n');
+    }
+
+    async function refreshSessionStateAfterReload() {
+      if (!sessionId) return;
+      try {
+        const res = await fetch(API_BASE + '/api/session/state?session_id=' + encodeURIComponent(sessionId) + '&refresh_constraints=1');
+        const data = await res.json();
+        if (data.ok && data.exists && data.ui_state) {
+          updateSidebar(data);
+        }
+      } catch (err) {
+        console.warn('Reload session state refresh failed', err);
+      }
+    }
+
+    async function pollReloadEvents() {
+      if (isReloadPollInFlight) return;
+      isReloadPollInFlight = true;
+      try {
+        const res = await fetch(API_BASE + '/api/dev/reload-events?after=' + encodeURIComponent(lastReloadEventId));
+        const data = await res.json();
+        if (!res.ok || !data.ok || !Array.isArray(data.events)) return;
+
+        const events = data.events
+          .slice()
+          .sort((a, b) => Number(a.event_id || 0) - Number(b.event_id || 0));
+        for (const event of events) {
+          const eventId = Number(event.event_id || 0);
+          if (eventId <= lastReloadEventId) continue;
+          lastReloadEventId = eventId;
+          addMessage('bot', formatReloadEventMessage(event), { kind: 'system' });
+          if (event.ok) {
+            await refreshSessionStateAfterReload();
+          }
+        }
+      } catch (err) {
+        console.warn('Reload event polling failed', err);
+      } finally {
+        isReloadPollInFlight = false;
+      }
+    }
+
+    function startReloadEventPolling() {
+      if (reloadPollTimer) clearInterval(reloadPollTimer);
+      pollReloadEvents();
+      reloadPollTimer = setInterval(pollReloadEvents, 2000);
     }
 
 
@@ -1181,41 +1265,33 @@ Please describe your operational requirements directly, or ask the question you 
       if (uiState.read_only || uiState.phase === 'confirming' || uiState.phase === 'done' || uiState.phase === 'rejected') return;
 
       const slots = Array.isArray(uiState.slots) ? uiState.slots : [];
-      const equipmentTypeSlot = slots.find(s => s.key === 'equipment_type');
-      const equipmentTypeConfirmed = !!(
-        equipmentTypeSlot &&
-        equipmentTypeSlot.status === 'valid' &&
-        equipmentTypeSlot.value
-      );
-      if (!equipmentTypeConfirmed) return;
 
-      // 只有在当前轮次真正需要用户填写/追问 payload 字段时才触发加载胶囊卡片
-      // 判定逻辑：payload 必须位于当前未收集完成的前 3 个待收集字段中（与后端的 ask_count=3 对齐）
+      // 只有在当前轮次真正需要用户填写/追问 list 字段时才触发加载胶囊卡片
+      // 判定逻辑：list 字段必须位于当前未收集完成的前 3 个待收集字段中（与后端的 ask_count=3 对齐）
       const missingSlots = slots.filter(s => s.status !== 'valid');
       const currentlyAskedSlots = missingSlots.slice(0, 3);
-      const isPayloadCurrentlyAsked = currentlyAskedSlots.some(s => s.key === 'payload');
-      if (!isPayloadCurrentlyAsked) return;
 
-      const payloadSlotsWithAllowed = slots.filter(s => {
-        const payloadSelectionCompleted = (
+      const listSlotsWithAllowed = currentlyAskedSlots.filter(s => {
+        const schemaType = s.schema_type || s.type;
+        const listSelectionCompleted = (
           s.status === 'valid' &&
           Array.isArray(s.value) &&
           s.value.length > 0
         );
-        return s.key === 'payload' &&
-               !payloadSelectionCompleted &&
+        return schemaType === 'list' &&
+               !listSelectionCompleted &&
                Array.isArray(s.allowed_values) &&
                s.allowed_values.length > 0;
       });
 
-      if (payloadSlotsWithAllowed.length === 0) return;
+      if (listSlotsWithAllowed.length === 0) return;
 
       const bar = document.createElement('div');
       bar.id = 'seagent-option-chips-bar';
       bar.className = 'option-chips-bar';
       bar.style.cssText = 'display: flex; flex-direction: column; gap: 8px; margin: 10px 0 14px 48px; max-width: calc(100% - 60px);';
 
-      payloadSlotsWithAllowed.forEach(slot => {
+      listSlotsWithAllowed.forEach(slot => {
         const groupDiv = document.createElement('div');
         groupDiv.className = 'chip-group';
         groupDiv.style.cssText = 'display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: rgba(0, 229, 255, 0.04); border: 1px dashed rgba(0, 229, 255, 0.2); border-radius: 8px; padding: 6px 12px;';
@@ -1314,8 +1390,9 @@ Please describe your operational requirements directly, or ask the question you 
         confirmBtn.addEventListener('click', () => {
           if (!isSending && selectedValues.size > 0) {
             const selectedList = Array.from(selectedValues);
-            messageInput.value = selectedList.join('、');
-            sendMessage(messageInput.value);
+            const fieldSelectionText = `确认选择${labelText}：${selectedList.join('、')}`;
+            messageInput.value = fieldSelectionText;
+            sendMessage(fieldSelectionText);
           }
         });
 
@@ -1971,6 +2048,7 @@ Please describe your operational requirements directly, or ask the question you 
     updateSimulatedTime(true);
     if (timeUpdateInterval) clearInterval(timeUpdateInterval);
     timeUpdateInterval = setInterval(() => updateSimulatedTime(false), 1000);
+    startReloadEventPolling();
   }
 
   if (document.readyState === 'loading') {

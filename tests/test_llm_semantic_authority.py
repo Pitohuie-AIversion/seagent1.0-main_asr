@@ -750,6 +750,18 @@ def test_partial_commit_reply_is_derived_from_committed_fields_only() -> None:
     assert "仍需补充：水深（米）" in reply
 
 
+def test_ground_write_reply_suppresses_resolved_end_time_parse_noise() -> None:
+    reply = DialogueManager._ground_write_reply(
+        "已根据开始时间和持续时间计算任务结束时间。",
+        accepted_updates={"end_time": "2026-08-27T10:30:00"},
+        unresolved_inputs=["结束时间无法解析", "设备型号需要确认"],
+    )
+
+    assert "结束时间无法解析" not in reply
+    assert "结束时间：2026-08-27T10:30:00" in reply
+    assert "设备型号需要确认" in reply
+
+
 def test_write_with_no_candidates_cannot_return_model_success_claim() -> None:
     llm = ScriptedLLM(
         plans=[make_plan("WRITE")],
@@ -1272,6 +1284,25 @@ def test_invalid_control_protocol_demotes_to_read_only_clarification() -> None:
     assert route.dialogue_mode == "knowledge_qa"
     assert route.query_intent == "CLARIFICATION"
     assert route.emergency_action is None
+
+
+def test_task_status_query_without_realtime_state_does_not_crash() -> None:
+    dm = DialogueManager(
+        ScriptedLLM(replies=["当前任务处于【collecting】阶段。"]),
+        KnowledgeBase(),
+    )
+    dm.phase = "collecting"
+    route = IntentRouteResult(
+        interaction_type="QUERY",
+        confidence=0.9,
+        reason="task status query",
+        dialogue_mode="knowledge_qa",
+        query_intent="TASK_STATUS",
+    )
+
+    reply = dm._handle_status_query("当前任务状态是什么？", route)
+
+    assert "当前任务处于" in reply
 
 
 def test_ground_write_reply_deduplicates_existing_recorded_summary() -> None:
@@ -2099,7 +2130,4 @@ def test_no_candidates_invokes_llm_model_for_natural_response() -> None:
 
     assert "抱歉，我没有识别到具体的任务类型候选" in reply
     assert not reply.startswith("本轮没有任务字段通过验证，因此未写入任务状态。")
-
-
-
 

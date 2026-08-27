@@ -1159,6 +1159,7 @@ class DialogueManager:
 
 
     def _handle_status_query(self, user_message: str, route: IntentRouteResult) -> str:
+        state_dict = None
         if route.query_intent == "TASK_STATUS":
             status_evidence = {
                 "query_type": "TASK_STATUS",
@@ -1189,7 +1190,6 @@ class DialogueManager:
                         if unit_match:
                             equipment = unit_match.get("robot", {}).get("full_name") or unit_match.get("unit_id")
             has_realtime = False
-            state_dict = None
             if equipment and route.query_intent in ("DEVICE_STATUS", "DEVICE_CAPABILITY", "ENVIRONMENT_QUERY"):
                 state_dict = self.kb.get_robot_state_dict(equipment)
                 if state_dict and any(v is not None for v in state_dict.values()):
@@ -2017,6 +2017,7 @@ class DialogueManager:
             {
                 "key": item.get("key"),
                 "label": item.get("label"),
+                "type": item.get("type"),
                 "allowed_values": copy.deepcopy(item.get("allowed_values") or []),
                 "alias_mappings": copy.deepcopy(item.get("alias_mappings") or {}),
             }
@@ -3260,14 +3261,27 @@ class DialogueManager:
             self_obj = self_or_reply
             actual_model_reply = model_reply
 
-        unresolved = [str(item) for item in unresolved_inputs if str(item).strip()]
-
         # 只展示 FIELD_LABELS 中有中文标签的用户可见字段
         user_visible_updates = {
             key: value
             for key, value in accepted_updates.items()
             if key in FIELD_LABELS
         }
+        resolved_labels = {
+            FIELD_LABELS[key]
+            for key in user_visible_updates
+        }
+        unresolved = []
+        for item in unresolved_inputs:
+            text = str(item).strip()
+            if not text:
+                continue
+            if (
+                any(label in text for label in resolved_labels)
+                and ("无法解析" in text or "Invalid datetime format" in text)
+            ):
+                continue
+            unresolved.append(text)
 
         suffix_parts: list[str] = []
         if user_visible_updates:

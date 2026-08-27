@@ -151,6 +151,42 @@ class IntentRouter:
             for alias in cls._expected_slot_aliases(expected_slot_options)
         )
 
+    @classmethod
+    def _matches_expected_list_selection(
+        cls,
+        user_message: str,
+        expected_slot_options: list[dict[str, Any]],
+    ) -> bool:
+        if cls._looks_like_read_question(user_message):
+            return False
+        user_norm = cls._normalize_selector_text(user_message)
+        if not user_norm:
+            return False
+
+        for opt in expected_slot_options:
+            if opt.get("type") != "list":
+                continue
+            allowed_values = [v for v in opt.get("allowed_values") or [] if v]
+            if not allowed_values:
+                continue
+
+            matched_values = {
+                value
+                for value in allowed_values
+                if cls._normalize_selector_text(value) in user_norm
+            }
+            alias_map = opt.get("alias_mappings") or {}
+            for alias, canonical in alias_map.items():
+                if (
+                    canonical in allowed_values
+                    and cls._normalize_selector_text(alias) in user_norm
+                ):
+                    matched_values.add(canonical)
+
+            if len(matched_values) >= 2:
+                return True
+        return False
+
     @staticmethod
     def _looks_like_read_question(user_message: str) -> bool:
         return any(
@@ -308,8 +344,12 @@ class IntentRouter:
                     expected_slot_options,
                 )
             )
+            expected_list_selection = self._matches_expected_list_selection(
+                user_msg_strip,
+                expected_slot_options,
+            )
 
-            if explicit_selection or bare_expected_alias:
+            if explicit_selection or bare_expected_alias or expected_list_selection:
                 logger.info(
                     "[IntentRouter] Correcting route to WRITE because user "
                     "selected an expected slot alias in: %s",
@@ -320,7 +360,11 @@ class IntentRouter:
                 candidate["query_intent"] = None
                 candidate["needs_clarification"] = False
                 candidate["clarification_reason"] = None
-                candidate["reason_code"] = "EXPECTED_SLOT_ALIAS_WRITE_CORRECTION"
+                candidate["reason_code"] = (
+                    "EXPECTED_LIST_SELECTION_WRITE_CORRECTION"
+                    if expected_list_selection
+                    else "EXPECTED_SLOT_ALIAS_WRITE_CORRECTION"
+                )
                 plan = validate_interaction_plan(candidate)
 
         if plan.reason_code == "VALIDATION_FALLBACK_CLARIFY":

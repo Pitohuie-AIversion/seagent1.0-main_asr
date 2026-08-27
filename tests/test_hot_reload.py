@@ -12,6 +12,7 @@ from src.dialogue_manager import DialogueManager
 from src.hot_reload import (
     check_changed_files,
     force_reload,
+    get_reload_events,
     maybe_auto_reload,
     perform_reload,
 )
@@ -82,3 +83,36 @@ def test_api_dev_reload_endpoint():
             data = resp.get_json()
             assert data["ok"] is True
             assert "src.dialogue_manager" in data["reloaded_modules"]
+
+
+def test_perform_reload_records_frontend_event():
+    before_events = get_reload_events()
+    before_id = before_events[-1]["event_id"] if before_events else 0
+
+    with patch("importlib.reload", side_effect=lambda m: m):
+        success, msg, reloaded = perform_reload(changed_files=["/tmp/state.yaml"])
+
+    assert success is True
+    events = get_reload_events(after_event_id=before_id)
+    assert len(events) == 1
+    event = events[0]
+    assert event["ok"] is True
+    assert event["message"] == msg
+    assert event["changed_files"] == ["state.yaml"]
+    assert event["reloaded_modules_count"] == len(reloaded)
+
+
+def test_api_dev_reload_events_endpoint_returns_new_events():
+    before_events = get_reload_events()
+    before_id = before_events[-1]["event_id"] if before_events else 0
+
+    with patch("importlib.reload", side_effect=lambda m: m):
+        perform_reload(changed_files=["/tmp/config/state.yaml"])
+
+    with web_backend.app.test_client() as client:
+        resp = client.get(f"/api/dev/reload-events?after={before_id}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["events"]
+        assert data["events"][-1]["changed_files"] == ["state.yaml"]

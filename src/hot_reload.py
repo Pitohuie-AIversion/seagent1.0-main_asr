@@ -11,6 +11,7 @@ import os
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -51,6 +52,54 @@ RELOAD_MODULE_ORDER = [
 _reload_lock = threading.Lock()
 _file_mtimes: Dict[str, float] = {}
 _initialized = False
+_reload_events = deque(maxlen=50)
+_reload_event_seq = 0
+
+
+def _public_changed_file_names(changed_files: Optional[List[str]]) -> List[str]:
+    names = []
+    for item in changed_files or []:
+        try:
+            names.append(Path(str(item)).name)
+        except Exception:
+            names.append(str(item))
+    return names
+
+
+def _record_reload_event(
+    *,
+    ok: bool,
+    message: str,
+    changed_files: Optional[List[str]],
+    reloaded_modules: List[str],
+    refreshed_sessions: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    global _reload_event_seq
+    _reload_event_seq += 1
+    event = {
+        "event_id": _reload_event_seq,
+        "ok": bool(ok),
+        "message": message,
+        "changed_files": _public_changed_file_names(changed_files),
+        "reloaded_modules": list(reloaded_modules),
+        "reloaded_modules_count": len(reloaded_modules),
+        "refreshed_sessions": list(refreshed_sessions),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    _reload_events.append(event)
+    return event
+
+
+def get_reload_events(after_event_id: int = 0) -> List[Dict[str, Any]]:
+    try:
+        cursor = int(after_event_id)
+    except (TypeError, ValueError):
+        cursor = 0
+    return [
+        dict(event)
+        for event in list(_reload_events)
+        if int(event.get("event_id", 0)) > cursor
+    ]
 
 
 def _scan_monitored_files() -> Dict[str, float]:
@@ -105,7 +154,7 @@ def check_changed_files() -> List[str]:
     return changed
 
 
-def perform_reload() -> Tuple[bool, str, List[str]]:
+def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str, List[str]]:
     """
     执行业务模块热重载与会话状态平滑迁移。
     返回: (是否成功, 提示信息, 重载模块列表)
@@ -113,6 +162,7 @@ def perform_reload() -> Tuple[bool, str, List[str]]:
     global _file_mtimes
     start_time = time.perf_counter()
     reloaded_mods = []
+    refreshed_sessions: List[Dict[str, Any]] = []
 
     with _reload_lock:
         try:
@@ -166,7 +216,14 @@ def perform_reload() -> Tuple[bool, str, List[str]]:
                                     new_mgr.kb.__class__ = new_kb_cls
                                 if hasattr(new_mgr, "refresh_external_state_constraints"):
                                     try:
-                                        new_mgr.refresh_external_state_constraints()
+                                        refresh = new_mgr.refresh_external_state_constraints()
+                                        if isinstance(refresh, dict) and refresh.get("refreshed"):
+                                            refreshed_sessions.append({
+                                                "session_id": sid,
+                                                "phase": refresh.get("phase"),
+                                                "hard_violations": refresh.get("hard_violations", 0),
+                                                "soft_violations": refresh.get("soft_violations", 0),
+                                            })
                                     except Exception as exc:
                                         logger.warning("[Hot-Reload] 会话 %s 强刷新外部约束失败: %s", sid, exc)
                                 web_mod._sessions_manager[sid] = new_mgr
@@ -189,6 +246,13 @@ def perform_reload() -> Tuple[bool, str, List[str]]:
             _file_mtimes = _scan_monitored_files()
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             msg = f"热重载成功，耗时 {elapsed_ms:.1f}ms，重载模块: {len(reloaded_mods)} 个"
+            _record_reload_event(
+                ok=True,
+                message=msg,
+                changed_files=changed_files,
+                reloaded_modules=reloaded_mods,
+                refreshed_sessions=refreshed_sessions,
+            )
             print(f"\n🔄 [Hot-Reload] ✅ {msg}")
             return True, msg, reloaded_mods
 
@@ -196,6 +260,13 @@ def perform_reload() -> Tuple[bool, str, List[str]]:
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
             err_msg = f"热重载失败 (保留上一稳定版本): {exc}"
             logger.error("[Hot-Reload] %s", err_msg, exc_info=True)
+            _record_reload_event(
+                ok=False,
+                message=err_msg,
+                changed_files=changed_files,
+                reloaded_modules=reloaded_mods,
+                refreshed_sessions=refreshed_sessions,
+            )
             print(f"\n❌ [Hot-Reload] {err_msg}")
             return False, err_msg, reloaded_mods
 
@@ -218,7 +289,7 @@ def maybe_auto_reload() -> Optional[Tuple[bool, str]]:
         changed_names.append(f"...共{len(changed)}个文件")
     print(f"\n🔄 [Hot-Reload] 检测到文件更新: {', '.join(changed_names)}")
 
-    success, msg, _ = perform_reload()
+    success, msg, _ = perform_reload(changed_files=changed)
     return success, msg
 
 

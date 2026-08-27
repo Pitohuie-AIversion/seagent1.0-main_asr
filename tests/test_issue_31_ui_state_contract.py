@@ -115,6 +115,13 @@ class TestUIStateContract(unittest.TestCase):
         self.assertFalse(actions["can_publish"])
         self.assertFalse(actions["can_confirm"])
 
+    def test_blocked_soft_actions_survive_status_query_mode(self):
+        """热重载刷新出的软阻断仍应显示任务动作，不被问答模式覆盖。"""
+        actions = _compute_actions("blocked_soft", "knowledge_qa")
+        self.assertTrue(actions["can_ignore_soft_warning"])
+        self.assertTrue(actions["can_modify"])
+        self.assertFalse(actions["can_publish"])
+
     # 4. actions 计算 - blocked_hard
     def test_actions_blocked_hard_phase(self):
         actions = _compute_actions("blocked_hard", "task_collection")
@@ -590,6 +597,37 @@ class TestFlaskAPIIntegration(unittest.TestCase):
         self.assertEqual(ui["state_status"], "ok")
         self.assertIn("actions", ui)
         self.assertIn("slots", ui)
+
+    def test_api_session_state_can_refresh_external_constraints(self):
+        import web_backend
+
+        sid = "test-s31-refresh-constraints"
+        manager = web_backend.DialogueManager(
+            web_backend._shared_llm,
+            web_backend._shared_kb,
+            session_id=sid,
+        )
+        with web_backend._sessions_lock:
+            web_backend._sessions_manager[sid] = manager
+
+        refresh_result = {
+            "refreshed": True,
+            "phase": "blocked_soft",
+            "soft_violations": 1,
+            "hard_violations": 0,
+        }
+        with patch.object(manager, "refresh_external_state_constraints", return_value=refresh_result) as refresh_mock:
+            resp = self.client.get(f"/api/session/state?session_id={sid}&refresh_constraints=1")
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["exists"])
+        self.assertEqual(data["constraint_refresh"], refresh_result)
+        refresh_mock.assert_called_once_with()
+
+        with web_backend._sessions_lock:
+            web_backend._sessions_manager.pop(sid, None)
 
     def test_compat_fields_still_present(self):
         resp = self.client.post(

@@ -265,6 +265,19 @@ def manual_dev_reload():
     from src.hot_reload import force_reload
     res = force_reload()
     return jsonify(res)
+
+
+@app.route("/api/dev/reload-events", methods=["GET"])
+def dev_reload_events():
+    """返回热重载事件，供前端轮询并刷新当前会话状态。"""
+    from src.hot_reload import get_reload_events
+
+    after = request.args.get("after", 0)
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "events": get_reload_events(after_event_id=after),
+    })
 # =========================================
 
 
@@ -723,6 +736,7 @@ def get_session_state():
     sid = request.args.get("session_id")
     if not sid:
         return jsonify({"ok": False, "code": 400, "error": "MissingSessionId", "msg": "session_id 不能为空", "retryable": False}), 400
+    refresh_constraints = str(request.args.get("refresh_constraints", "")).strip().lower() in {"1", "true", "yes", "on"}
 
     with _sessions_lock:
         mgr = _sessions_manager.get(sid)
@@ -730,7 +744,18 @@ def get_session_state():
     if not mgr:
         return jsonify({"ok": True, "code": 200, "exists": False}), 200
 
+    constraint_refresh = None
     with mgr._session_lock:
+        if refresh_constraints:
+            try:
+                constraint_refresh = mgr.refresh_external_state_constraints()
+            except Exception as exc:
+                logger.warning("session state constraint refresh failed: session_id=%s error=%s", sid, exc, exc_info=True)
+                constraint_refresh = {
+                    "refreshed": False,
+                    "reason": "refresh_error",
+                    "message": str(exc),
+                }
         ui_state = build_frontend_ui_state(mgr)
         return jsonify({
             "ok": True,
@@ -739,6 +764,7 @@ def get_session_state():
             "session_id": sid,
             # ui_state: 统一前端状态契约（Issue #31）
             "ui_state": ui_state,
+            "constraint_refresh": constraint_refresh,
             # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
             "done": mgr.phase == "done",
             "rejected": mgr.phase == "rejected",
