@@ -129,7 +129,7 @@ class DialogueManagerROVTest(unittest.TestCase):
         self.assertIn("严禁跨型号罗列与发散", knowledge_system)
         self.assertIn("基于已选槽位聚焦作答", task_system)
 
-    def test_payload_missing_prompt_mentions_onboard_payloads_and_ui_selection(self):
+    def test_payload_missing_prompt_defers_candidate_details_to_frontend_cards(self):
         task_system = build_responder_messages(
             task_state={
                 "task_type_key": "pipeline_inspection",
@@ -161,11 +161,12 @@ class DialogueManagerROVTest(unittest.TestCase):
             support_task=["管缆巡检"],
         )[0]["content"]
 
-        self.assertIn("观察级深海机器人 75HP 已搭载", task_system)
-        self.assertIn("高清水下摄像机 / 前视声呐", task_system)
-        self.assertIn("下方载荷按钮列表", task_system)
-        self.assertIn("替换、增加或减少", task_system)
-        self.assertIn("激光标尺 / 腐蚀检测探头", task_system)
+        self.assertIn("载荷", task_system)
+        self.assertIn("前端载荷卡片", task_system)
+        self.assertIn("根据卡片进行筛选", task_system)
+        self.assertNotIn("观察级深海机器人 75HP 已搭载", task_system)
+        self.assertNotIn("高清水下摄像机 / 前视声呐", task_system)
+        self.assertNotIn("激光标尺 / 腐蚀检测探头", task_system)
 
     def test_payload_missing_prompt_without_metadata_does_not_raise(self):
         task_system = build_responder_messages(
@@ -197,8 +198,12 @@ class DialogueManagerROVTest(unittest.TestCase):
             support_task=["管缆巡检"],
         )[0]["content"]
 
-        self.assertIn("观察级深海机器人 75HP 已搭载", task_system)
-        self.assertIn("当前知识库未提供已搭载载荷信息", task_system)
+        self.assertIn("载荷", task_system)
+        self.assertIn("前端载荷卡片", task_system)
+        self.assertIn("根据卡片进行筛选", task_system)
+        self.assertNotIn("观察级深海机器人 75HP 已搭载", task_system)
+        self.assertNotIn("当前知识库未提供已搭载载荷信息", task_system)
+        self.assertNotIn("激光标尺", task_system)
 
     def test_tool_query_injects_selected_equipment_info_when_slot_confirmed(self):
         evidence = self.kb.execute_typed_query(

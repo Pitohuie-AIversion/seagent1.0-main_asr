@@ -172,6 +172,7 @@ RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
 3. **字段值约束**：
    - 待收集字段列表中标注了"必须从以下选项中选择"的字段，必须引导用户在给定选项中确认，不接受选项以外的值。
    - 凡是待收集字段包含 allowed_values，回复中展示候选时必须逐字原样展示 allowed_values 中的原始字符串；不得省略、改写、翻译、简称化、同义替换、合并、扩写或自行补充候选。
+   - 例外：当缺失字段是 payload/载荷 且前端已提供载荷卡片时，不要在自然语言回复中展开载荷候选清单；只需提醒当前缺失字段是“载荷”，请用户根据卡片进行筛选。
    - 用户看到的候选项必须能与 allowed_values 中某一项完全字符串匹配；如果不能完全匹配，就不要输出该候选。
    - 系统向用户展示候选时必须使用 allowed_values 中的标准名称；用户回答时不要求逐字复制标准名称，可以使用配置中的别名、简称、展示名称、自然语言描述或上下文指代。
    - 后端会优先执行确定性标准值/alias匹配；无法确定时，再结合 aliases、allowed_values 和上下文进行语义解析。不得因为用户没有逐字重复标准名称，就直接判定用户输入无效。
@@ -369,32 +370,23 @@ def build_responder_messages(
             f"（若只剩 {ask_count} 个，则只询问这 {ask_count} 点，严禁为了凑数编造多余的伪选项！）："
         ]
         for idx, m in enumerate(missing_fields, start=1):
-            line = f"  {idx}. {m['label']}"
+            is_payload_field = m.get("key") == "payload"
+            display_label = "载荷" if is_payload_field else m["label"]
+            line = f"  {idx}. {display_label}"
             if m.get("type") == "coord":
                 line += "  ← 示例：北纬19.8度，东经113.5度；纬度范围 -90 至 90，经度范围 -180 至 180，东经为 0 至 180。"
             allowed = m.get("allowed_values", [])
-            if allowed:
+            if is_payload_field and idx <= ask_count:
+                line += (
+                    "  ← 当前缺失字段是“载荷”。"
+                    "请不要在回复中展开载荷候选清单，也不要详细说明可选择哪些载荷；"
+                    "只需提醒用户：请根据前端载荷卡片进行筛选；对外可简写为“根据卡片进行筛选”。"
+                )
+            elif allowed:
                 allowed_fmt = " / ".join(str(x) for x in allowed)
                 line += (
                     f"  ← 必须从以下选项中选择，并在回复中以清晰样式原样展示候选词、不得改写：{allowed_fmt}"
                 )
-                if m.get("key") == "payload" and idx <= ask_count:
-                    onboard_payloads = [
-                        str(item)
-                        for item in (m.get("onboard_payloads") or [])
-                        if item is not None and str(item).strip()
-                    ]
-                    equipment_name = (
-                        m.get("equipment_type")
-                        or equipment_type
-                        or "当前已选机器人"
-                    )
-                    onboard_fmt = " / ".join(onboard_payloads) if onboard_payloads else "当前知识库未提供已搭载载荷信息"
-                    line += (
-                        f"  ← 载荷询问统一话术：{equipment_name} 已搭载：{onboard_fmt}。"
-                        "请告知用户：这台机器人已具备上述自带载荷；如本次作业需要调整，请在下方载荷按钮列表中的有效载荷里选择要替换、增加或减少的项目。"
-                        f"有效载荷候选仅为：{allowed_fmt}"
-                    )
             missing_lines.append(line)
         missing_desc = "\n".join(missing_lines)
     else:

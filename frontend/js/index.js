@@ -274,7 +274,7 @@ Please describe your operational requirements directly, or ask the question you 
       equipment_type: { zh: "作业设备型号", en: "Equipment Model" },
       equipment_unit_id: { zh: "具体机器人编号", en: "Robot Unit ID" },
       equipment_name: { zh: "设备全称", en: "ROV Name" },
-      payload: { zh: "携带工具", en: "Payload" },
+      payload: { zh: "载荷", en: "Payload" },
       support_vessel: { zh: "支持船编号", en: "Support Vessel ID" },
       oilfield_name: { zh: "油田名称", en: "Oilfield Name" },
       oilfield_coordinates: { zh: "油田经纬度坐标", en: "Oilfield Coordinates" },
@@ -1175,7 +1175,9 @@ Please describe your operational requirements directly, or ask the question you 
         } else {
           for (const slot of missingSlots) {
             const labelObj = slot.label || {};
-            const label = (typeof labelObj === 'string') ? labelObj : (labelObj[currentLang] || labelObj.zh || slot.key);
+            const label = slot.key === 'payload'
+              ? (currentLang === 'zh' ? '载荷' : 'Payload')
+              : ((typeof labelObj === 'string') ? labelObj : (labelObj[currentLang] || labelObj.zh || slot.key));
             const row = document.createElement('div');
             row.className = 'field-row missing';
             row.innerHTML = svgWarning;
@@ -1221,7 +1223,7 @@ Please describe your operational requirements directly, or ask the question you 
         } else {
           let html = '';
           for (const m of missing) {
-            const label = getFieldLabel(m);
+            const label = m === 'payload' ? (currentLang === 'zh' ? '载荷' : 'Payload') : getFieldLabel(m);
             html += `<div class="field-row missing">${svgWarning}${label}</div>`;
           }
           missingDiv.innerHTML = html;
@@ -1245,6 +1247,9 @@ Please describe your operational requirements directly, or ask the question you 
     }
 
     function getSlotUiLabel(slot) {
+      if (slot && slot.key === 'payload') {
+        return currentLang === 'zh' ? '载荷' : 'Payload';
+      }
       if (typeof slot.label === 'string') return slot.label;
       return slot.label?.[currentLang] || slot.label?.zh || slot.key;
     }
