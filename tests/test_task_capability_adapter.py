@@ -58,6 +58,24 @@ class TestTaskCapabilityAdapter(unittest.TestCase):
             )
         )
 
+    def test_format_payload_guidance_does_not_inject_onboard_hint(self):
+        text = "仍需补充：载荷。"
+        result = self.adapter.format_payload_guidance(
+            text,
+            [
+                {
+                    "key": "payload",
+                    "equipment_type": "轻型工作级深海机器人 150HP",
+                    "onboard_payloads": ["轻型多功能液压机械臂", "FLS声呐系统"],
+                }
+            ],
+        )
+
+        self.assertEqual(text, result)
+        self.assertNotIn("【提示】", result)
+        self.assertNotIn("已搭载", result)
+        self.assertNotIn("替换、增加或减少配置", result)
+
 
 if __name__ == "__main__":
     unittest.main()

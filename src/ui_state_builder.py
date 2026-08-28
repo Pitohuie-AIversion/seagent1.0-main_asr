@@ -222,6 +222,9 @@ def _build_slots(
                 payload_groups = robot.get("payload_groups") if robot else None
                 if isinstance(payload_groups, dict):
                     slot_entry["payload_groups"] = payload_groups
+                onboard_payload_groups = robot.get("onboard_payload_groups") if robot else None
+                if isinstance(onboard_payload_groups, dict):
+                    slot_entry["onboard_payload_groups"] = onboard_payload_groups
             except Exception as exc:
                 logger.debug("build_frontend_ui_state: payload_groups unavailable: %s", exc)
         result.append(slot_entry)

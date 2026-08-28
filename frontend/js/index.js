@@ -1255,31 +1255,53 @@ Please describe your operational requirements directly, or ask the question you 
     }
 
     function buildPayloadSections(slot) {
-      const groups = slot.payload_groups || {};
+      const supportedGroups = slot.payload_groups || {};
+      const onboardGroups = slot.onboard_payload_groups || {};
       const allowedSet = new Set(Array.isArray(slot.allowed_values) ? slot.allowed_values : []);
       const sectionDefs = [
         {
           key: 'Mechanical_arm',
-          title: currentLang === 'zh' ? '机械臂' : 'Mechanical Arm',
+          title: currentLang === 'zh' ? '机械臂（替换）' : 'Mechanical Arm (Replacement)',
           mode: 'single',
         },
         {
           key: 'End_effector',
-          title: currentLang === 'zh' ? '末端执行器' : 'End Effector',
+          title: currentLang === 'zh' ? '末端执行器（替换）' : 'End Effector (Replacement)',
           mode: 'single',
         },
         {
-          key: 'Multiple_load',
-          title: currentLang === 'zh' ? '扩展载荷' : 'Additional Payloads',
+          key: 'Visual_sensor',
+          title: currentLang === 'zh' ? '视觉传感器' : 'Visual Sensors',
+          mode: 'multiple',
+        },
+        {
+          key: 'Acoustic_sensor',
+          title: currentLang === 'zh' ? '声学传感器' : 'Acoustic Sensors',
+          mode: 'multiple',
+        },
+        {
+          key: 'Navigation_sensor',
+          title: currentLang === 'zh' ? '导航传感器' : 'Navigation Sensors',
+          mode: 'multiple',
+        },
+        {
+          key: 'Other_sensor',
+          title: currentLang === 'zh' ? '其他传感器' : 'Other Sensors',
+          mode: 'multiple',
+        },
+        {
+          key: 'Operation_tool',
+          title: currentLang === 'zh' ? '作业工具' : 'Operation Tools',
           mode: 'multiple',
         },
       ];
 
       return sectionDefs.map(def => {
-        const rawOptions = Array.isArray(groups[def.key]) ? groups[def.key] : [];
+        const onboard = Array.isArray(onboardGroups[def.key]) ? onboardGroups[def.key] : [];
+        const rawOptions = Array.isArray(supportedGroups[def.key]) ? supportedGroups[def.key] : [];
         const options = rawOptions.filter(item => allowedSet.size === 0 || allowedSet.has(item));
-        return { ...def, options };
-      }).filter(section => section.options.length > 0);
+        return { ...def, onboard, options };
+      }).filter(section => section.onboard.length > 0 || section.options.length > 0);
     }
 
     function renderPayloadSelector(slot, bar) {
@@ -1290,7 +1312,11 @@ Please describe your operational requirements directly, or ask the question you 
       const selected = {
         Mechanical_arm: null,
         End_effector: null,
-        Multiple_load: new Set(),
+        Visual_sensor: new Set(),
+        Acoustic_sensor: new Set(),
+        Navigation_sensor: new Set(),
+        Other_sensor: new Set(),
+        Operation_tool: new Set(),
       };
       const buttonsBySection = new Map();
 
@@ -1320,15 +1346,19 @@ Please describe your operational requirements directly, or ask the question you 
         const result = [];
         if (selected.Mechanical_arm) result.push(selected.Mechanical_arm);
         if (selected.End_effector) result.push(selected.End_effector);
-        result.push(...Array.from(selected.Multiple_load));
+        result.push(...Array.from(selected.Visual_sensor));
+        result.push(...Array.from(selected.Acoustic_sensor));
+        result.push(...Array.from(selected.Navigation_sensor));
+        result.push(...Array.from(selected.Other_sensor));
+        result.push(...Array.from(selected.Operation_tool));
         return result;
       };
 
       const updateStyles = () => {
         buttonsBySection.forEach((buttons, sectionKey) => {
           buttons.forEach((btn, val) => {
-            const isSelected = sectionKey === 'Multiple_load'
-              ? selected.Multiple_load.has(val)
+            const isSelected = selected[sectionKey] instanceof Set
+              ? selected[sectionKey].has(val)
               : selected[sectionKey] === val;
             btn.classList.toggle('selected', isSelected);
             btn.textContent = isSelected ? `✓ ${val}` : val;
@@ -1360,8 +1390,33 @@ Please describe your operational requirements directly, or ask the question you 
         cardHeader.appendChild(cardMode);
         card.appendChild(cardHeader);
 
+        if (section.onboard.length > 0) {
+          const onboardBlock = document.createElement('div');
+          onboardBlock.className = 'payload-readonly-block';
+          const onboardLabel = document.createElement('div');
+          onboardLabel.className = 'payload-block-label';
+          onboardLabel.textContent = currentLang === 'zh' ? '已搭载载荷' : 'Onboard Payloads';
+          const onboardList = document.createElement('div');
+          onboardList.className = 'payload-option-list readonly';
+          section.onboard.forEach(val => {
+            const chip = document.createElement('span');
+            chip.className = 'payload-readonly-chip';
+            chip.textContent = val;
+            onboardList.appendChild(chip);
+          });
+          onboardBlock.appendChild(onboardLabel);
+          onboardBlock.appendChild(onboardList);
+          card.appendChild(onboardBlock);
+        }
+
         const optionsWrap = document.createElement('div');
         optionsWrap.className = 'payload-option-list';
+        if (section.options.length > 0) {
+          const supportedLabel = document.createElement('div');
+          supportedLabel.className = 'payload-block-label';
+          supportedLabel.textContent = currentLang === 'zh' ? '可扩展载荷' : 'Supported Payloads';
+          card.appendChild(supportedLabel);
+        }
         const sectionButtons = new Map();
 
         section.options.forEach(val => {
@@ -1370,9 +1425,9 @@ Please describe your operational requirements directly, or ask the question you 
           btn.className = 'payload-option-btn';
           btn.textContent = val;
           btn.addEventListener('click', () => {
-            if (section.key === 'Multiple_load') {
-              if (selected.Multiple_load.has(val)) selected.Multiple_load.delete(val);
-              else selected.Multiple_load.add(val);
+            if (selected[section.key] instanceof Set) {
+              if (selected[section.key].has(val)) selected[section.key].delete(val);
+              else selected[section.key].add(val);
             } else {
               selected[section.key] = selected[section.key] === val ? null : val;
             }
@@ -1383,7 +1438,9 @@ Please describe your operational requirements directly, or ask the question you 
         });
 
         buttonsBySection.set(section.key, sectionButtons);
-        card.appendChild(optionsWrap);
+        if (section.options.length > 0) {
+          card.appendChild(optionsWrap);
+        }
         grid.appendChild(card);
       });
 

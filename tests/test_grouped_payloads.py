@@ -6,6 +6,17 @@ from src.output_builder import OutputBuilder
 from src.ui_state_builder import build_frontend_ui_state
 
 
+EXPECTED_PAYLOAD_GROUPS = [
+    "Mechanical_arm",
+    "End_effector",
+    "Visual_sensor",
+    "Acoustic_sensor",
+    "Navigation_sensor",
+    "Other_sensor",
+    "Operation_tool",
+]
+
+
 class GroupedPayloadsTest(unittest.TestCase):
     def setUp(self):
         self.kb = KnowledgeBase()
@@ -16,10 +27,14 @@ class GroupedPayloadsTest(unittest.TestCase):
         self.assertIn("payload_groups", robot)
         self.assertIn("Mechanical_arm", robot["payload_groups"])
         self.assertIn("End_effector", robot["payload_groups"])
-        self.assertIn("Multiple_load", robot["payload_groups"])
+        self.assertIn("Visual_sensor", robot["payload_groups"])
+        self.assertIn("Acoustic_sensor", robot["payload_groups"])
         self.assertIn("电液机械臂", robot["supported_payloads"])
         self.assertIn("腐蚀检测探头", robot["supported_payloads"])
         self.assertIn("三维视觉系统", robot["supported_payloads"])
+        self.assertIn("多功能液压机械臂", robot["onboard_payloads"])
+        self.assertIn("机械臂末端夹爪 / 夹具", robot["onboard_payloads"])
+        self.assertEqual(["多功能液压机械臂"], robot["onboard_payload_groups"]["Mechanical_arm"])
 
     def test_payload_options_follow_flattened_group_order_for_selected_robot(self):
         builder = OutputBuilder(self.kb)
@@ -67,10 +82,31 @@ class GroupedPayloadsTest(unittest.TestCase):
         payload_slot = next(slot for slot in ui_state["slots"] if slot["key"] == "payload")
 
         self.assertEqual(
-            ["Mechanical_arm", "End_effector", "Multiple_load"],
+            EXPECTED_PAYLOAD_GROUPS,
             list(payload_slot["payload_groups"]),
         )
         self.assertEqual(["电液机械臂"], payload_slot["payload_groups"]["Mechanical_arm"])
+        self.assertIn("双目视觉模块", payload_slot["payload_groups"]["Visual_sensor"])
+        self.assertIn("电磁检测传感器", payload_slot["payload_groups"]["Other_sensor"])
+
+    def test_payload_ui_state_pairs_onboard_and_supported_groups(self):
+        manager = DialogueManager(kb=self.kb)
+        manager.task_state.update(
+            {
+                "task_type_key": "tree_valve_operation",
+                "equipment_type": "轻型工作级深海机器人 150HP",
+            }
+        )
+
+        ui_state = build_frontend_ui_state(manager)
+        payload_slot = next(slot for slot in ui_state["slots"] if slot["key"] == "payload")
+
+        self.assertEqual(EXPECTED_PAYLOAD_GROUPS, list(payload_slot["onboard_payload_groups"]))
+        self.assertEqual(EXPECTED_PAYLOAD_GROUPS, list(payload_slot["payload_groups"]))
+        self.assertIn("轻型多功能液压机械臂", payload_slot["onboard_payload_groups"]["Mechanical_arm"])
+        self.assertIn("机械臂末端夹爪 / 夹具", payload_slot["onboard_payload_groups"]["End_effector"])
+        self.assertIn("水下成像系统", payload_slot["onboard_payload_groups"]["Visual_sensor"])
+        self.assertIn("FLS声呐系统", payload_slot["onboard_payload_groups"]["Acoustic_sensor"])
 
 
 if __name__ == "__main__":

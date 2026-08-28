@@ -24,8 +24,11 @@
 #   - power_hp：最大/标称功率；未知时置为 null。AUV 的“节”是速度单位，不写入 power_hp。
 #   环境/载荷边界：
 #   - supported_seabed：可支持作业的海床底质类型，例如 hard / soft；未知时置为空列表。
-#   - onboard_payloads：自带/必选载荷、传感器或工具；未知或待补充时置为空列表。
-#   - supported_payloads：可选支持/可额外搭载的设备或工具；未知或待补充时置为空列表。
+#   - onboard_payloads：自带/必选载荷、传感器或工具；按 Mechanical_arm / End_effector /
+#     Visual_sensor / Acoustic_sensor / Navigation_sensor / Other_sensor / Operation_tool 分组；
+#     某组不具备时置为 null。
+#   - supported_payloads：可选支持/可额外搭载的设备或工具；采用与 onboard_payloads 相同的分组结构；
+#     某组不具备时置为 null。
 #   - max_payload_weight_kg：最大载荷重量，单位 kg；未知时置为 null。
 #   - structural_lifting_capacity_kg：结构/底盘/框架提升能力，单位 kg；适用但未知时置为 null；不适用时置为 "不适用"。
 #   运动边界：
@@ -156,29 +159,40 @@ model_variants:
       power_hp: 1600
       supported_seabed: ["hard"]
       onboard_payloads:
-        - "高压水射流喷冲埋设模块"
-        - "压缆器"
-        - "埋深感应装置"
-        - "水下成像系统"
-        - "云台摄像机"
-        - "FLS声呐系统"
-        - "INS惯性导航系统"
-        - "DVL测速系统"
-        - "USBL定位系统"
-        - "深度计"
-        - "高度计"
+        Mechanical_arm: null
+        End_effector: null
+        Visual_sensor:
+          - "水下成像系统"
+          - "云台摄像机"
+        Acoustic_sensor:
+          - "FLS声呐系统"
+        Navigation_sensor:
+          - "INS惯性导航系统"
+          - "DVL测速系统"
+          - "USBL定位系统"
+          - "深度计"
+          - "高度计"
+        Other_sensor:
+          - "埋深感应装置"
+        Operation_tool:
+          - "高压水射流喷冲埋设模块"
+          - "压缆器"
       supported_payloads:
         Mechanical_arm: null
         End_effector: null
-        Multiple_load:
-          - "机械切割开沟模块"
-          - "TSS管缆跟踪系统"
+        Visual_sensor:
           - "激光标尺"
+          - "管缆外观检测设备"
+        Acoustic_sensor:
           - "机械扫描声呐"
           - "声学应答器"
+        Navigation_sensor: null
+        Other_sensor:
+          - "TSS管缆跟踪系统"
           - "海床地质探测设备"
-          - "管缆外观检测设备"
           - "腐蚀检测探头"
+        Operation_tool:
+          - "机械切割开沟模块"
           - "海缆保护施工工具"
       max_payload_weight_kg: null
       structural_lifting_capacity_kg: "不适用"
@@ -254,31 +268,42 @@ model_variants:
       power_hp: 600
       supported_seabed: ["hard"]                      #工作场景限制，座底作业
       onboard_payloads:
-        - "高压水射流喷冲埋设模块"
-        - "压缆器"
-        - "埋深感应装置"
-        - "水下成像系统"
-        - "云台摄像机"
-        - "履带模块"
-        - "FLS声呐系统"
-        - "INS惯性导航系统"
-        - "DVL测速系统"
-        - "USBL定位系统"
-        - "深度计"
-        - "高度计"
+        Mechanical_arm: null
+        End_effector: null
+        Visual_sensor:
+          - "水下成像系统"
+          - "云台摄像机"
+        Acoustic_sensor:
+          - "FLS声呐系统"
+        Navigation_sensor:
+          - "INS惯性导航系统"
+          - "DVL测速系统"
+          - "USBL定位系统"
+          - "深度计"
+          - "高度计"
+        Other_sensor:
+          - "埋深感应装置"
+        Operation_tool:
+          - "高压水射流喷冲埋设模块"
+          - "压缆器"
+          - "履带模块"
       supported_payloads:
         Mechanical_arm: null
         End_effector: null
-        Multiple_load:
-          - "机械切割开沟模块"
-          - "TSS管缆跟踪系统"
+        Visual_sensor:
           - "激光标尺"
+          - "管缆外观检测设备"
+        Acoustic_sensor:
           - "机械扫描声呐"
           - "水下定位信标"
           - "声学应答器"
+        Navigation_sensor: null
+        Other_sensor:
+          - "TSS管缆跟踪系统"
           - "海床地质探测设备"
-          - "管缆外观检测设备"
           - "腐蚀检测探头"
+        Operation_tool:
+          - "机械切割开沟模块"
       max_payload_weight_kg: null
       structural_lifting_capacity_kg: null
       min_turning_radius_m: null
@@ -299,17 +324,24 @@ model_variants:
       power_hp: 250
       supported_seabed: ["hard", "soft"]
       onboard_payloads:
-        - "水下成像系统"
-        - "云台摄像机"
-        - "履带模块"
-        - "FLS声呐系统"
-        - "INS惯性导航系统"
-        - "DVL测速系统"
-        - "深度计"
-        - "高度计"
-        - "USBL定位系统"
-        - "多功能液压机械臂"
-        - "机械臂末端夹爪 / 夹具"
+        Mechanical_arm:
+          - "多功能液压机械臂"
+        End_effector:
+          - "机械臂末端夹爪 / 夹具"
+        Visual_sensor:
+          - "水下成像系统"
+          - "云台摄像机"
+        Acoustic_sensor:
+          - "FLS声呐系统"
+        Navigation_sensor:
+          - "INS惯性导航系统"
+          - "DVL测速系统"
+          - "深度计"
+          - "高度计"
+          - "USBL定位系统"
+        Other_sensor: null
+        Operation_tool:
+          - "履带模块"
       supported_payloads:
         Mechanical_arm: 
           - "电液机械臂"
@@ -324,18 +356,22 @@ model_variants:
           - "液压飞线插拔工具"
           - "电气飞线插拔工具"
           - "机械臂腕部摄像机"
-        Multiple_load:       
+        Visual_sensor:
           - "双目视觉模块"
           - "三维视觉系统"
           - "激光标尺"
+          - "浑水摄像机"
+        Acoustic_sensor:
           - "机械扫描声呐"
+        Navigation_sensor: null
+        Other_sensor:
           - "电磁检测传感器"
           - "厚度检测传感器"
           - "水质传感器"
           - "TSS管缆跟踪系统"
-          - "浑水摄像机"
-          - "独立采样器"
           - "六维力 / 力矩传感器"
+        Operation_tool:
+          - "独立采样器"
       max_payload_weight_kg: 650
       structural_lifting_capacity_kg: 4000
       min_turning_radius_m: null
@@ -356,17 +392,24 @@ model_variants:
       power_hp: 150
       supported_seabed: ["hard", "soft"]
       onboard_payloads:
-        - "水下成像系统"
-        - "云台摄像机"
-        - "履带模块"
-        - "FLS声呐系统"
-        - "INS惯性导航系统"
-        - "DVL测速系统"
-        - "深度计"
-        - "高度计"
-        - "USBL定位系统"
-        - "轻型多功能液压机械臂"
-        - "机械臂末端夹爪 / 夹具"
+        Mechanical_arm:
+          - "轻型多功能液压机械臂"
+        End_effector:
+          - "机械臂末端夹爪 / 夹具"
+        Visual_sensor:
+          - "水下成像系统"
+          - "云台摄像机"
+        Acoustic_sensor:
+          - "FLS声呐系统"
+        Navigation_sensor:
+          - "INS惯性导航系统"
+          - "DVL测速系统"
+          - "深度计"
+          - "高度计"
+          - "USBL定位系统"
+        Other_sensor: null
+        Operation_tool:
+          - "履带模块"
       supported_payloads:
         Mechanical_arm: 
           - "轻型电液机械臂"
@@ -383,18 +426,22 @@ model_variants:
           - "机械臂腕部摄像机"
           - "机械臂工具快换装置"
           - "旋转清洗刷"
-        Multiple_load:
+        Visual_sensor:
           - "双目视觉模块"
           - "三维视觉系统"
           - "激光标尺"
+          - "浑水摄像机"
+        Acoustic_sensor:
           - "机械扫描声呐"
+        Navigation_sensor: null
+        Other_sensor:
           - "电磁检测传感器"
           - "厚度检测传感器"
           - "水质传感器"
           - "TSS管缆跟踪系统"
-          - "浑水摄像机"
-          - "独立采样器"       
           - "六维力 / 力矩传感器"
+        Operation_tool:
+          - "独立采样器"
       max_payload_weight_kg: 16
       structural_lifting_capacity_kg: 100
       min_turning_radius_m: null
@@ -415,30 +462,41 @@ model_variants:
       power_hp: 75
       supported_seabed: ["hard", "soft"]
       onboard_payloads:
-        - "水下成像系统"
-        - "云台摄像机"
-        - "履带模块"
-        - "FLS声呐系统"
-        - "INS惯性导航系统"
-        - "DVL测速系统"
-        - "深度计"
-        - "高度计"
-        - "USBL定位系统"
+        Mechanical_arm: null
+        End_effector: null
+        Visual_sensor:
+          - "水下成像系统"
+          - "云台摄像机"
+        Acoustic_sensor:
+          - "FLS声呐系统"
+        Navigation_sensor:
+          - "INS惯性导航系统"
+          - "DVL测速系统"
+          - "深度计"
+          - "高度计"
+          - "USBL定位系统"
+        Other_sensor: null
+        Operation_tool:
+          - "履带模块"
       supported_payloads:
         Mechanical_arm: null
         End_effector: null
-        Multiple_load:
+        Visual_sensor:
           - "双目视觉模块"
           - "三维视觉系统"
           - "激光标尺"
+          - "浑水摄像机"
+        Acoustic_sensor:
           - "机械扫描声呐"
+        Navigation_sensor: null
+        Other_sensor:
           - "电磁检测传感器"
           - "腐蚀检测探头"
           - "厚度检测传感器"
           - "水质传感器"
           - "TSS管缆跟踪系统"
+        Operation_tool:
           - "独立采样器"
-          - "浑水摄像机"
       max_payload_weight_kg: 16
       structural_lifting_capacity_kg: 100
       min_turning_radius_m: null
@@ -459,24 +517,38 @@ model_variants:
       power_hp: null
       supported_seabed: ["hard", "soft"]
       onboard_payloads:
-        - "INS惯性导航系统"
-        - "DVL测速系统"
-        - "FLS声呐系统"
-        - "深度计"
+        Mechanical_arm: null
+        End_effector: null
+        Visual_sensor: null
+        Acoustic_sensor:
+          - "FLS声呐系统"
+        Navigation_sensor:
+          - "INS惯性导航系统"
+          - "DVL测速系统"
+          - "深度计"
+        Other_sensor: null
+        Operation_tool: null
       supported_payloads:
-        - "双目视觉模块"
-        - "水下成像系统"
-        - "激光标尺"
-        - "USBL辅助定位模块"
-        - "侧扫声呐"
-        - "合成孔径声呐"
-        - "三维视觉系统"
-        - "浅地层剖面仪"
-        - "多波束测深声呐"
-        - "CTD"
-        - "水质传感器"
-        - "溶解氧传感器"
-        - "浊度传感器"
+        Mechanical_arm: null
+        End_effector: null
+        Visual_sensor:
+          - "双目视觉模块"
+          - "水下成像系统"
+          - "激光标尺"
+          - "三维视觉系统"
+        Acoustic_sensor:
+          - "侧扫声呐"
+          - "合成孔径声呐"
+          - "多波束测深声呐"
+        Navigation_sensor:
+          - "USBL辅助定位模块"
+        Other_sensor:
+          - "浅地层剖面仪"
+          - "CTD"
+          - "水质传感器"
+          - "溶解氧传感器"
+          - "浊度传感器"
+        Operation_tool: null
       max_payload_weight_kg: 15
       structural_lifting_capacity_kg: "不适用"
       min_turning_radius_m: 15

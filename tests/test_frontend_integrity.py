@@ -138,7 +138,7 @@ class TestFrontendIntegrity(unittest.TestCase):
         self.assertNotIn("missingSlotsWithAllowed", render_block)
         self.assertNotIn("s.status === 'missing'", render_block)
         self.assertNotIn("s.status === 'candidate'", render_block)
-        self.assertIn("sendMessage(fieldSelectionText)", render_block)
+        self.assertIn("sendMessage(fieldSelectionText)", self.js_content)
         self.assertNotIn("handleSend(", render_block)
         self.assertIn("selectedValues", self.js_content)
         self.assertIn("option-chip-confirm-btn", self.js_content)
@@ -164,6 +164,11 @@ class TestFrontendIntegrity(unittest.TestCase):
         self.assertIn("const fieldSelectionText", self.js_content)
         self.assertIn("`确认选择${labelText}：${selectedList.join('、')}`", self.js_content)
         self.assertIn("sendMessage(fieldSelectionText)", self.js_content)
+
+    def test_payload_replacement_sections_are_labeled(self):
+        """Mechanical arm and end effector payload sections represent replacement choices."""
+        self.assertIn("机械臂（替换）", self.js_content)
+        self.assertIn("末端执行器（替换）", self.js_content)
 
 if __name__ == "__main__":
     unittest.main()

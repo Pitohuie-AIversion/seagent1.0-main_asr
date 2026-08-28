@@ -49,23 +49,5 @@ class TaskCapabilityAdapter:
         return True
 
     def format_payload_guidance(self, text: str, missing_fields: list) -> str:
-        """格式化 payload 引导话术，告知用户机器人的 on_board 已搭载项，并提示在下面列表中做替换或增减配。"""
-        if not missing_fields:
-            return text
-        payload_field = next((f for f in missing_fields if isinstance(f, dict) and f.get("key") == "payload"), None)
-        if not payload_field:
-            return text
-
-        eq_type = payload_field.get("equipment_type") or "所选机器人"
-        onboard = payload_field.get("onboard_payloads") or []
-        if onboard:
-            onboard_str = " / ".join(onboard)
-            prefix = f"【提示】{eq_type} 已搭载：{onboard_str}。\n请在下方载荷按钮列表中进行替换、增加或减少配置。"
-        else:
-            prefix = f"【提示】{eq_type} 的基础配置可在下方载荷按钮列表中进行替换、增加或减少配置。"
-
-        if text:
-            if any(kw in text for kw in ("已搭载", "自带载荷", "已具备", "【提示】", "替换、增加或减少")):
-                return text
-            return f"{prefix}\n{text}"
-        return prefix
+        """Keep payload guidance in the frontend cards instead of chat bubbles."""
+        return text
