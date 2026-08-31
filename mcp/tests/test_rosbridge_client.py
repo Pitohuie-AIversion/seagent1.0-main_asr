@@ -28,13 +28,13 @@ for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, SEAGENT_ROOT]:
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-from rosbridge_client import (
+from mcp.shim.rosbridge_client import (
     TaskType, TaskManageAction, PilotMode, TaskStatus,
     SysTaskCmd, Pose,
     intent_to_syscmd, build_task_manage_cmd,
     generate_task_id, SEAGENT_TO_ROS2_TASK_TYPE,
 )
-from mock_rosbridge_server import MockRosbridgeServer, received_publishes, active_tasks
+from mcp.shim.mock_rosbridge_server import MockRosbridgeServer, received_publishes, active_tasks
 
 ROSBRIDGE_PORT = 9092  # 与 test_architecture_validation.py (9091) 隔离
 
@@ -63,7 +63,7 @@ def clear_state(rosbridge_server):
 @pytest.fixture
 def ws_client(rosbridge_server):
     """已连接的 RosbridgeClient 实例"""
-    from rosbridge_client import RosbridgeClient
+    from mcp.shim.rosbridge_client import RosbridgeClient
     client = RosbridgeClient("127.0.0.1", ROSBRIDGE_PORT, connect_timeout=3.0)
     client.connect()
     yield client
@@ -440,7 +440,7 @@ class TestTaskStatusTracker:
 
     def test_O1_parse_sys_status_fields(self):
         """[O1] _parse_sys_status 正确提取位姿、速度、高度、控制模式与健康状态"""
-        from task_status_tracker import TaskStatusTracker
+        from mcp.shim.task_status_tracker import TaskStatusTracker
         msg = {
             "pose": {
                 "pose": {
@@ -464,7 +464,7 @@ class TestTaskStatusTracker:
 
     def test_O2_parse_task_list_ongoing(self):
         """[O2] 解析 task_list 中 ONGOING 状态的任务"""
-        from task_status_tracker import TaskStatusTracker
+        from mcp.shim.task_status_tracker import TaskStatusTracker
         msg = {
             "pose": {}, "twist": {}, "alt": 0.0, "ctr_mode": 0, "health": 0,
             "task_list": [
@@ -482,7 +482,7 @@ class TestTaskStatusTracker:
 
     def test_O3_parse_task_status_names(self):
         """[O3] 每个 TaskStatus 状态值都应有正确的名称映射"""
-        from task_status_tracker import TaskStatusTracker
+        from mcp.shim.task_status_tracker import TaskStatusTracker
         for status_val, expected_name in [
             (0, "READY"), (1, "PLAN"), (3, "ONGOING"), (5, "FINISH"), (7, "FAIL")
         ]:
@@ -495,7 +495,7 @@ class TestTaskStatusTracker:
 
     def test_O4_water_depth_is_absolute(self):
         """[O4] water_depth 属性应始终返回正值（取 z 的绝对值）"""
-        from task_status_tracker import TaskStatusTracker
+        from mcp.shim.task_status_tracker import TaskStatusTracker
         msg = {
             "pose": {"pose": {"position": {"x": 0.0, "y": 0.0, "z": -312.4}}},
             "twist": {}, "alt": 0.0, "ctr_mode": 0, "health": 0, "task_list": [],
@@ -514,7 +514,7 @@ class TestFullProtocolRoundTrip:
 
     def test_P1_dispatch_and_telemetry_isolation(self, ws_client, rosbridge_server, tmp_path):
         """[P1] 任务下发水深 (300m规划) 与遥测水深 (312.4m实测) 完全隔离"""
-        from task_status_tracker import TaskStatusTracker
+        from mcp.shim.task_status_tracker import TaskStatusTracker
         telemetry_received = []
 
         ws_client.subscribe_system_status(lambda msg: telemetry_received.append(msg))

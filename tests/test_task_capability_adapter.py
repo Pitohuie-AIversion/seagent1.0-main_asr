@@ -66,7 +66,7 @@ class TestTaskCapabilityAdapter(unittest.TestCase):
                 {
                     "key": "payload",
                     "equipment_type": "轻型工作级深海机器人 150HP",
-                    "onboard_payloads": ["轻型多功能液压机械臂", "FLS声呐系统"],
+                    "onboard_payloads": ["轻型多功能液压机械臂", "前视声呐系统"],
                 }
             ],
         )

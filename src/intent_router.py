@@ -44,7 +44,7 @@ operation 只能是：
 不要依赖固定句式。需要理解省略、指代、对上一轮建议的接受、任务中途闲聊，以及
 同一句中的问答和修改。已有任务或 expected_slots 不代表本轮一定要写入；反过来，
 自然表达没有出现字段名也不代表不能写入。
-用户可能使用 expected_slot_options 中 allowed_values 的别名、代号或简称（例如 alias_mappings 中收录的“天鹰座”、“金牛座”等系列代号，或“天鹰座001”等单机代号）。当用户明确表达使用/选择某个合法别称或代号（如“我要使用天鹰座”、“选金牛座”、“用天鹰座001”）时，属于明确指定任务参数，必须判定为 WRITE。
+用户可能使用 expected_slot_options 中 allowed_values 的别名、代号或简称（例如 alias_mappings 中收录的“天鹰座”、“金牛座”等系列代号，或“天鹰座001”等单机代号），或使用口语化分配指定句式（如“机器人给我来个天鹰座”、“给我整个金牛座”、“给我也安排个天鹰座001”、“弄个观察级ROV”、“配个工作级”）。当用户表达使用/选择/配备某个合法别称或代号时，属于明确指定任务参数，必须判定为 WRITE，严禁退回 CLARIFY。
 当当前待填字段不包含 equipment_class，而用户输入精确命中 expected_slot_options 中某个
 allowed_values 或 alias_mappings 时，应按该待填字段候选处理为 WRITE；不要因措辞
 像“ROV 类别”就退回 device_class 澄清。

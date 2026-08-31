@@ -28,13 +28,13 @@ for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, SEAGENT_ROOT]:
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-from rosbridge_client import (
+from mcp.shim.rosbridge_client import (
     RosbridgeClient, TaskType, TaskManageAction, PilotMode,
     TaskStatus, SysTaskCmd, Pose, intent_to_syscmd
 )
-from task_status_tracker import TaskStatusTracker, ROVTelemetry, TaskStatusItem
-from bridge_service import SEAgentMCPBridgeService
-from mock_rosbridge_server import MockRosbridgeServer, received_publishes, active_tasks
+from mcp.shim.task_status_tracker import TaskStatusTracker, ROVTelemetry, TaskStatusItem
+from mcp.shim.bridge_service import SEAgentMCPBridgeService
+from mcp.shim.mock_rosbridge_server import MockRosbridgeServer, received_publishes, active_tasks
 from src.state_info import RobotStateInfo
 
 PORT = 9097

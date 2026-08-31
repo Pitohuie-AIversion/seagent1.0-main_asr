@@ -1,0 +1,203 @@
+version: '1.0'
+description: SEAgent 云端与水下支持船 rosbridge WebSocket 通信格式规范
+protocol_source: outside/sealien_ctrlpilot_llmbridge-ros-mcp-server/sealien_ctrlpilot_llmbridge/UI接口协议.md
+primary_message_package: sealien_ctrlpilot_llmbridge
+websocket_gateway:
+  default_host: 127.0.0.1
+  default_port: 9090
+  protocol: rosbridge_v2.0
+  topics:
+    task_cmd:
+      name: /task_cmd
+      type: sealien_ctrlpilot_llmbridge/msg/SysTaskCmd
+      direction: publish
+      description: SEAgent 云端发往支持船/机器人的底层任务控制指令
+    sys_config:
+      name: /task/sys_config
+      type: sealien_ctrlpilot_llmbridge/msg/SysConfig
+      direction: publish
+      description: SEAgent 云端发往支持船/机器人的控制模式配置
+    system_status:
+      name: /task/system_status
+      type: sealien_ctrlpilot_llmbridge/msg/SysStatus
+      direction: subscribe
+      description: 支持船/机器人向 SEAgent 云端广播的实时姿态与任务生命周期遥测
+    compressed_image:
+      name: /vision/compressd_image
+      type: sensor_msgs/msg/CompressedImage
+      direction: subscribe
+      description: ROS 组协议保留既有 topic 拼写的压缩图像
+    image:
+      name: /vision/image
+      type: sensor_msgs/msg/Image
+      direction: subscribe
+      description: 视觉原始图像
+    keypoints:
+      name: /vision/keypoints
+      type: sealien_ctrlpilot_msgmanagement/msg/Keypoints
+      direction: subscribe
+      description: 电缆视觉关键点与姿态
+    plug_hole:
+      name: /vision/plug_hole
+      type: sealien_ctrlpilot_msgmanagement/msg/ConnectChristmasTreePlug
+      direction: subscribe
+      description: 采油树插头和插孔位姿
+  active_host: 127.0.0.1
+  active_port: 9090
+  active_mode: real
+task_type_mappings:
+  pipeline_inspection:
+    display_name: 管道/电缆巡检
+    ros2_task_type: 2
+    ros2_task_name: SEARCH_CABLE
+    allowed_robots:
+    - observation_rov
+    - auv
+    pos_target_structure: multi_waypoints
+    default_priority: 15
+    default_work_speed_m_s: 1.5
+  pipeline_burial:
+    display_name: 管道/电缆埋设
+    ros2_task_type: 1
+    ros2_task_name: CLAMP_CABLE
+    allowed_robots:
+    - work_class_rov
+    pos_target_structure: single_target
+    default_priority: 15
+    default_work_speed_m_s: 1.5
+  tree_valve_operation:
+    display_name: 采油树阀门操作
+    ros2_task_type: 4
+    ros2_task_name: INSERT_PLUG
+    allowed_robots:
+    - work_class_rov
+    pos_target_structure: single_target
+    default_priority: 15
+    default_work_speed_m_s: 1.5
+  valve_operation:
+    display_name: 常规阀门操作
+    ros2_task_type: 4
+    ros2_task_name: INSERT_PLUG
+    allowed_robots:
+    - work_class_rov
+    pos_target_structure: single_target
+    default_priority: 15
+    default_work_speed_m_s: 1.5
+  underwater_move:
+    display_name: 水下移动任务
+    ros2_task_type: 5
+    ros2_task_name: MOVE_TASK
+    allowed_robots:
+    - observation_rov
+    - work_class_rov
+    - auv
+    pos_target_structure: single_target
+    default_priority: 15
+    default_work_speed_m_s: 1.5
+sys_task_cmd_schema:
+  message_type: sealien_ctrlpilot_llmbridge/msg/SysTaskCmd
+  fields:
+    task_type: uint16 - 任务类型枚举值
+    task_id: uint32 - 任务唯一 ID (AI 范围 0x80000..0x8FFFF)
+    priority: uint16 - 优先级 (0=最高, 15=默认, 31=最低)
+    frame_id: string - 参考坐标系，默认 odom
+    pos_target:
+      type: array of geometry_msgs/Pose
+      item_fields:
+        position: '{x: float64, y: float64, z: float64}'
+        orientation: '{x: float64, y: float64, z: float64, w: float64}'
+    params: array of float32 - 控制参数
+    fail_stop: boolean - 任务失败后停止后续任务
+  task_type_enum:
+    0: TASK_MANAGE
+    1: CLAMP_CABLE
+    2: SEARCH_CABLE
+    3: CLAMP_PIN
+    4: INSERT_PLUG
+    5: MOVE_TASK
+    6: CTRL_TASK
+    10: AUV_TASK
+  task_layouts:
+    TASK_MANAGE:
+      frame_id: unused
+      priority: 0
+      pos_target_count: 0
+      params: action_code_and_optional_target_task_id
+    CLAMP_CABLE:
+      frame_id: unused
+      pos_target_count: 1
+      params_count: 0
+    SEARCH_CABLE:
+      frame_id: odom_or_base_link
+      pos_target_count: 2
+      pos_target_order: [start, end]
+      params_count: 0
+    CLAMP_PIN:
+      frame_id: unused
+      pos_target_count: 1
+      params_count: 0
+    INSERT_PLUG:
+      frame_id: unused
+      pos_target_count: 1
+      params_count: 0
+    MOVE_TASK:
+      frame_id: odom_or_base_link
+      pos_target_count: 1
+      params_count: 0
+    CTRL_TASK:
+      frame_id: unused
+      pos_target_count: 0
+      params: [device_id, set_value]
+    AUV_TASK:
+      frame_id: odom_or_base_link
+      pos_target_count: one_or_more
+      params: [speed_mps, dive_angle_rad, ascent_angle_rad, auto_return, return_depth_m, return_speed_mps]
+sys_config_schema:
+  message_type: sealien_ctrlpilot_llmbridge/msg/SysConfig
+  field: ctr_mode
+  pilot_mode_enum:
+    0: PILOT_MODE_NONE
+    1: PILOT_MODE_MANUAL
+    2: PILOT_MODE_STABILIZE1
+    3: PILOT_MODE_STABILIZE2
+    4: PILOT_MODE_AUTODEPTH
+    5: PILOT_MODE_AUTODHIGHT
+    6: PILOT_MODE_AUTODIRCETION
+    7: PILOT_MODE_AUTOHOLD1
+    8: PILOT_MODE_AUTOHOLD2
+    9: PILOT_MODE_MISSION1
+    10: PILOT_MODE_MISSION2
+sys_status_schema:
+  message_type: sealien_ctrlpilot_llmbridge/msg/SysStatus
+  fields:
+    pose: geometry_msgs/PoseStamped
+    twist: geometry_msgs/Twist
+    alt: float32 - 机器人离底高度，单位米
+    ctr_mode: uint8 - 控制模式
+    health: uint16 - 0 表示系统健康无异常
+    task_list: array of sealien_ctrlpilot_llmbridge/msg/TaskStatus
+  status_enum:
+    0:
+      name: READY
+      description: 任务就绪
+    1:
+      name: PLAN
+      description: 任务规划中
+    2:
+      name: ENTER
+      description: 任务进入条件判断
+    3:
+      name: ONGOING
+      description: 任务执行中
+    4:
+      name: EXIT
+      description: 任务执行完成，正在退出
+    5:
+      name: FINISH
+      description: 任务完成并退出
+    6:
+      name: PAUSE
+      description: 任务挂起
+    7:
+      name: FAIL
+      description: 任务失败

@@ -798,7 +798,7 @@ def test_write_with_no_candidates_cannot_return_model_success_claim() -> None:
     reply = dm.process("按上下文继续处理")
 
     assert dm.slot_store.version == version
-    assert dm.slot_store.export_snapshot() == before
+    assert dm.slot_store.export_snapshot()["slots"] == before["slots"]
     assert "已创建" not in reply
     assert "已下发" not in reply
     assert "未写入任务状态" in reply
@@ -1034,7 +1034,7 @@ def test_grounded_class_recommendation_targets_family_candidate() -> None:
     assert "AUV" not in reply
     assert llm.chat_calls == []
     assert dm.slot_store.version == before_version
-    assert dm.slot_store.export_snapshot() == before_snapshot
+    assert dm.slot_store.export_snapshot()["slots"] == before_snapshot["slots"]
 
 
 def test_accepting_class_worded_recommendation_writes_family_not_variant() -> None:

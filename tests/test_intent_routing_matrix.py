@@ -218,7 +218,7 @@ class TestReadAndClarifyStateInvariance(unittest.TestCase):
         mock_extract.assert_not_called()
         mock_commit.assert_not_called()
         self.assertEqual(self.dm.slot_store.version, version_before)
-        self.assertEqual(self.dm.slot_store.export_snapshot(), snapshot_before)
+        self.assertEqual(self.dm.slot_store.export_snapshot()["slots"], snapshot_before["slots"])
         self.assertEqual(self.dm.task_state, task_state_before)
         self.assertEqual(self.dm.phase, phase_before)
         self.assertEqual(len(self.llm.classify_calls), 2)

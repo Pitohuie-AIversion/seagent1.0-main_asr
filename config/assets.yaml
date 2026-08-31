@@ -84,18 +84,19 @@ payload_options:
   # ============================================================================
   pipeline_inspection:
     common:
-      - 水下成像系统
-      - 浑水摄像机
+      - 单目水下成像系统
+      - 浑水水下成像系统
       - 云台摄像机
       - 履带模块
-      - FLS声呐系统
+      - 前视声呐系统
+      - 侧扫声呐系统
+      - 多波束声呐系统
       - INS惯性导航系统
       - DVL测速系统
       - USBL定位系统
       - 深度计
       - 高度计
-      - 双目视觉模块
-      - 三维视觉系统
+      - 双目水下成像系统
       - 激光标尺
       - 机械扫描声呐
       - 电磁检测传感器
@@ -128,7 +129,7 @@ payload_options:
       - 水下成像系统
       - 云台摄像机
       - 履带模块
-      - FLS声呐系统
+      - 前视声呐系统
       - INS惯性导航系统
       - DVL测速系统
       - USBL定位系统
@@ -174,7 +175,7 @@ payload_options:
       - 水下成像系统
       - 三维视觉系统
       - 激光标尺
-      - FLS声呐系统
+      - 前视声呐系统
       - ROV液压热插拔接头
     description: 采油树操作面板插拔任务载荷，限定为通用工作级深海机器人中声明的机械臂、视觉、声学、导航定位和状态感知硬件。
 payload_catalog:
@@ -393,10 +394,11 @@ payload_catalog:
     weight_in_air_kg: null
     weight_in_water_kg: null
   multibeam_sonar:
-    name: 多波束声呐
+    name: 多波束声呐系统
     aliases:
-      - 多波束声纳
       - 多波束声呐
+      - 多波束声纳
+      - 多波束测深声呐
     description: 通过多个声学波束对海床和水下目标进行条带式测量与成像，用于地形测绘、目标轮廓获取和管缆路由调查。
     capabilities:
       - 海床测绘
@@ -525,8 +527,9 @@ payload_catalog:
     weight_in_air_kg: null
     weight_in_water_kg: null
   stereo_vision_module:
-    name: 双目视觉模块
+    name: 双目水下成像系统
     aliases:
+      - 双目视觉模块
       - 双目相机
       - 双目视觉
     description: 通过双摄像头获取目标的深度与空间信息，用于目标识别、距离估计和机械臂对准。
@@ -534,18 +537,6 @@ payload_catalog:
       - 立体视觉
       - 距离估计
       - 目标定位
-    weight_in_air_kg: null
-    weight_in_water_kg: null
-  three_dimensional_vision:
-    name: 三维视觉系统
-    aliases:
-      - 3D视觉系统
-      - 三维视觉
-    description: 融合视觉或深度信息构建目标区域的三维表示，用于结构识别、姿态估计和精细操作定位。
-    capabilities:
-      - 三维重建
-      - 姿态估计
-      - 精细定位
     weight_in_air_kg: null
     weight_in_water_kg: null
   electro_hydraulic_arm:
@@ -714,8 +705,9 @@ payload_catalog:
     weight_in_air_kg: null
     weight_in_water_kg: null
   turbid_water_camera:
-    name: 浑水摄像机
+    name: 浑水水下成像系统
     aliases:
+      - 浑水摄像机
       - 浑水相机
       - OrphieCam
       - 浊度透视摄像机
@@ -817,8 +809,9 @@ payload_catalog:
     weight_in_air_kg: 0.7
     weight_in_water_kg: null
   underwater_imaging_system:
-    name: 水下成像系统
+    name: 单目水下成像系统
     aliases:
+      - 水下成像系统
       - 成像系统
       - 光学成像系统
     description: 综合水下成像系统，集成高分辨率摄像机、补光灯与画面实时处理模块，用于全过程视觉观察与作业记录。
@@ -924,11 +917,13 @@ payload_catalog:
       - 悬浮物浓度测量
     weight_in_air_kg: null
     weight_in_water_kg: null
-  fls_sonar_system:
-    name: FLS声呐系统
+  forward_looking_sonar_system:
+    name: 前视声呐系统
     aliases:
+      - FLS声呐系统
       - FLS声呐
       - FLS
+      - 前视声呐
     description: 用于机器人前方水域远距离障碍物探测、地形识别与水下碰撞预警的前视声学感知系统。
     capabilities:
       - 水下避障
@@ -1053,8 +1048,9 @@ payload_catalog:
       - 抓取
       - 阀门干预
   multibeam_depth_sonar:
-    name: 多波束测深声呐
+    name: 多波束声呐系统
     aliases:
+      - 多波束测深声呐
       - 多波束测深声纳
     description: 通过多个声学波束对海床和水下目标进行高精度条带式测深与三维地形测绘的多波束声呐系统。
     capabilities:

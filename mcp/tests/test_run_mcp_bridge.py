@@ -25,9 +25,9 @@ for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, SEAGENT_ROOT]:
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-from run_mcp_bridge import parse_args, main
-from bridge_service import SEAgentMCPBridgeService
-from mock_rosbridge_server import MockRosbridgeServer
+from mcp.shim.run_mcp_bridge import parse_args, main
+from mcp.shim.bridge_service import SEAgentMCPBridgeService
+from mcp.shim.mock_rosbridge_server import MockRosbridgeServer
 
 
 class TestRunMCPBridgeCLI:

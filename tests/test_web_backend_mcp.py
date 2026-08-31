@@ -29,8 +29,8 @@ for p in [CORE_DIR, MOCK_DIR, MCP_DIR, PROJECT_ROOT]:
         sys.path.insert(0, str(p))
 
 import web_backend
-from mock_rosbridge_server import MockRosbridgeServer, received_publishes, active_tasks
-from bridge_service import SEAgentMCPBridgeService
+from mcp.shim.mock_rosbridge_server import MockRosbridgeServer, received_publishes, active_tasks
+from mcp.shim.bridge_service import SEAgentMCPBridgeService
 from src.state_info import RobotStateInfo
 
 PORT = 9098
@@ -120,12 +120,20 @@ class WebBackendMCPTestCase(unittest.TestCase):
         self.assertEqual(res.status_code, 400)
 
     def test_04b_auto_dispatch_only_on_first_transition_to_done(self):
+        published_intent = {
+            "schema_version": 2,
+            "intent_id": "TI2026083101",
+            "task_type": "pipeline_inspection",
+            "location": {"water_depth_m": 80.0},
+            "task": {"type": "pipeline_inspection", "details": {}},
+        }
         manager = SimpleNamespace(
             phase="done",
             _last_built_json={
                 "intent_id": "PI-20260828-099",
                 "task_type": "pipeline_inspection",
             },
+            final_result=published_intent,
         )
         bridge = Mock()
         bridge.is_healthy.return_value = True
@@ -139,7 +147,7 @@ class WebBackendMCPTestCase(unittest.TestCase):
 
         self.assertEqual(first["state"], "SENT")
         self.assertIsNone(repeated)
-        bridge.dispatch_intent.assert_called_once()
+        bridge.dispatch_intent.assert_called_once_with(published_intent)
 
     # ------------------------------------------------------------------
     # 3. POST /api/mcp/task-manage

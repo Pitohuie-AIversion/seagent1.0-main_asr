@@ -248,9 +248,13 @@ def _init_mcp_service_if_requested(kb, is_mock: bool = False):
             "SEAGENT_ROS2_ID_DIR", str(get_result_dir(create=True))
         )
 
-        if is_mock and _mock_rosbridge_srv is None:
+        start_embedded_mock = (
+            is_mock
+            and os.environ.get("MCP_EMBEDDED_MOCK", "1") != "0"
+        )
+        if start_embedded_mock and _mock_rosbridge_srv is None:
             try:
-                from mock_rosbridge_server import MockRosbridgeServer
+                from mcp.shim.mock_rosbridge_server import MockRosbridgeServer
             except ImportError:
                 from mcp.mock.mock_rosbridge_server import MockRosbridgeServer
             _mock_rosbridge_srv = MockRosbridgeServer(port=mcp_port)
@@ -259,7 +263,7 @@ def _init_mcp_service_if_requested(kb, is_mock: bool = False):
             print(f"🛠️ 本地 Mock rosbridge 仿真服务器已启动 (ws://127.0.0.1:{mcp_port})")
 
         try:
-            from bridge_service import SEAgentMCPBridgeService
+            from mcp.shim.bridge_service import SEAgentMCPBridgeService
         except ImportError:
             from mcp.core.bridge_service import SEAgentMCPBridgeService
         mcp_bridge = SEAgentMCPBridgeService(

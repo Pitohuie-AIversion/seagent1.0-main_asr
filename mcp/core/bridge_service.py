@@ -1,4 +1,9 @@
-"""Runtime bridge between finalized SEAgent tasks and a rosbridge gateway."""
+"""Runtime bridge between finalized SEAgent tasks and a rosbridge gateway.
+
+本服务的任务闭环严格使用 `sealien_ctrlpilot_llmbridge` 的主协议：
+`/task_cmd`（SysTaskCmd）/`/task/sys_config`（SysConfig）/`/task/system_status`（SysStatus）。
+`msgmanagement` 消息（如 Keypoints、Heartbeat、ThrusterStatus、机械臂等）属于可选辅助通道，不参与主流程判定。
+"""
 
 from __future__ import annotations
 
@@ -9,22 +14,13 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-try:
-    from .rosbridge_client import (
-        PilotMode,
-        RosbridgeClient,
-        SEAGENT_TO_ROS2_TASK_TYPE,
-        generate_task_id,
-    )
-    from .task_status_tracker import ROVTelemetry, TaskStatusItem, TaskStatusTracker
-except ImportError:
-    from rosbridge_client import (
-        PilotMode,
-        RosbridgeClient,
-        SEAGENT_TO_ROS2_TASK_TYPE,
-        generate_task_id,
-    )
-    from task_status_tracker import ROVTelemetry, TaskStatusItem, TaskStatusTracker
+from .rosbridge_client import (
+    PilotMode,
+    RosbridgeClient,
+    SEAGENT_TO_ROS2_TASK_TYPE,
+    generate_task_id,
+)
+from .task_status_tracker import ROVTelemetry, TaskStatusItem, TaskStatusTracker
 
 
 logger = logging.getLogger(__name__)

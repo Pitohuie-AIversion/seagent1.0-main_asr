@@ -39,7 +39,7 @@
 | **`mock_rosbridge_server.py`** | 仿真服务端 | **Mock rosbridge WebSocket 服务端**（支持完整 `SysStatus.msg`、TASK_MANAGE 解析、任务状态生命周期自动推进）。 |
 | **`mock_ros2_mcp_server.py`** | 仿真服务端 | **Mock FastMCP stdio 服务端**，用于本地无网络的 stdio 接口校验。 |
 | **`test_run_mcp_bridge.py`** | 测试套件 | **CLI 脚本测试**（3 个用例，T1~T3）。测试 CLI 参数解析、环境变量覆盖与 Mock 模式自拉起。 |
-| **`test_sealien_protocol_integration.py`** | 测试套件 | **协议集成与算法测试**（8 个用例，T1~T8）。测试 WGS-84 高精度 ENU 投影、四元数航向计算、TaskMessageGuard 拦截与向后兼容性。 |
+| **`test_sealien_protocol_integration.py`** | 测试套件 | **协议集成与算法测试**（8 个用例，T1~T8）。测试 WGS-84 高精度 ENU 投影、四元数航向计算、TaskMessageGuard 拦截与 SysTaskCmd 坐标转换。 |
 | **`test_bidirectional_closed_loop.py`** | 测试套件 | **双向收发闭环深度测试**（6 个用例，S1~S6）。涵盖动态任务跟踪、交互式中途挂起/恢复、应急清除阻断、连续姿态回传、视觉关键点双向接收、多机并发独立收发。 |
 | **`test_dialogue_mcp_integration.py`** | 测试套件 | **对话流至 ROS 2 闭环测试**（4 个用例，R1~R4）。测试对话完成 (done 阶段) 触发 MCP 自动下发与等待机器人侧 FINISH 闭环。 |
 | **`test_rosbridge_client.py`** | 测试套件 | **完整内部协议测试**（35 个用例，K~P）。覆盖协议构造、WebSocket 下发、TASK_MANAGE 管理、CTRL_TASK/AUV/sys_config、遥测解析、完整闭环。 |
@@ -47,6 +47,45 @@
 | **`test_public_libraries_comparison.py`** | 测试套件 | **公开库对比与模拟下发测试**（36 个用例，A~F），验证 3 大公开 ROS 2 MCP 库的契约与 SEAgent 兼容性。 |
 | **`test_real_llm_to_ros2_pipeline.py`** | E2E 脚本 | 真实端侧大模型全流程测试（需 GPU 与本地模型文件）。 |
 | **`README.md`** | 文档 | 本模块的说明文档。 |
+
+---
+
+## 2.1 实际运行调用映射（整理版本）
+
+当前结构改为“显式 shim 驱动 + 真实实现”：
+
+- `mcp/shim/*` 作为唯一入口（例如 `mcp/shim/bridge_service.py`）
+- `mcp/core/*` 为生产链路实现
+- `mcp/mock/*` 为仿真链路实现
+
+建议统一使用的导入方式：
+
+- `from mcp.shim.bridge_service import SEAgentMCPBridgeService`
+- `from mcp.shim.dialogue_mcp_integration import attach_mcp_bridge, dispatch_dialogue_result`
+- `from mcp.shim.rosbridge_client import RosbridgeClient, TaskType, intent_to_syscmd`
+- `from mcp.shim.sealien_protocol import LocalOrigin, geodetic_to_odom_position`
+- `from mcp.shim.task_status_tracker import TaskStatusTracker`
+- `from mcp.shim.run_mcp_bridge import parse_args, main`
+- `from mcp.shim.mock_rosbridge_server import MockRosbridgeServer, active_tasks, received_publishes`
+- `from mcp.shim.mock_ros2_mcp_server import mcp`
+- `from mcp.shim.seagent_mcp_adapter import SeagentROS2MCPAdapter`
+
+为了与“无兼容”要求一致，已去掉根目录平铺入口文件；平铺导入需要改为 shim 入口。
+
+## 2.2 协议边界（防止两个版本并行）
+
+本模块的**主通信协议**固定为：
+
+- 任务发布与管理：`/task_cmd`，`sealien_ctrlpilot_llmbridge/msg/SysTaskCmd`
+- 系统配置：`/task/sys_config`，`sealien_ctrlpilot_llmbridge/msg/SysConfig`
+- 状态回传：`/task/system_status`，`sealien_ctrlpilot_llmbridge/msg/SysStatus`
+- 以上字段定义与行为以 `outside/sealien_ctrlpilot_llmbridge-ros-mcp-server/sealien_ctrlpilot_llmbridge/UI接口协议.md` 为准。
+
+`outside/sealien_ctrlpilot_msgmanagement-dev_rov-msg` 目录中的消息文件不作为以上主链路判据，  
+仅保留给可选的辅助功能（如底层遥测、视觉/插拔工具链等）使用。  
+主闭环任务链路只允许按上述 3 个主题 + 3 个消息进行判断与回放。
+
+测试契约同步该约束（示例：`mcp/tests/test_ros_group_protocol_contract.py`）。
 
 ---
 
@@ -75,7 +114,7 @@ python mcp/test_real_llm_to_ros2_pipeline.py
 在 SEAgent 业务代码中使用适配器发送任务：
 
 ```python
-from mcp.seagent_mcp_adapter import SeagentROS2MCPAdapter
+from mcp.shim.seagent_mcp_adapter import SeagentROS2MCPAdapter
 from src.state_info import RobotStateInfo
 
 # 初始化适配器

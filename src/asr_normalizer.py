@@ -94,7 +94,7 @@ TERM_RULES: tuple[TermRule, ...] = (
     # ),
     TermRule(
         target="采油树",
-        aliases=["采油数", "采油书", "采油术","柴油数","柴油树"],
+        aliases=["采油数", "采油书", "采油术", "柴油数", "柴油树", "彩油树"],
         context_words=[
             "控制面板",
             "液压面板",
@@ -152,6 +152,96 @@ TERM_RULES: tuple[TermRule, ...] = (
         context_words=COORDINATE_CONTEXT_WORDS,
         category="coordinate_direction",
         threshold=7,
+    ),
+    TermRule(
+        target="管汇",
+        aliases=["管会", "馆汇", "官汇"],
+        context_words=["采油树", "井口", "水下生产系统", "SPS", "阀门", "ROV", "管线"],
+        category="equipment",
+    ),
+    TermRule(
+        target="防沉板",
+        aliases=["防沉半", "防沉办", "防尘板"],
+        context_words=["采油树", "基底", "海床", "水下结构", "ROV", "基础"],
+        category="structure",
+    ),
+    TermRule(
+        target="脐带缆",
+        aliases=["期待缆", "奇带缆", "齐带缆"],
+        context_words=["控制面板", "水下", "供电", "通信", "缆线", "ROV", "管缆"],
+        category="cable",
+    ),
+    TermRule(
+        target="USBL",
+        aliases=["优SBL", "有SBL", "U S B L"],
+        context_words=["定位", "超短基线", "声学", "导航", "水下", "ROV", "位置"],
+        category="sensor",
+    ),
+    TermRule(
+        target="导管架",
+        aliases=["导管加", "导管夹", "道管架"],
+        context_words=["水下", "检测", "海床", "平台", "结构", "ROV", "探伤"],
+        category="structure",
+    ),
+    TermRule(
+        target="阴极电位",
+        aliases=["阴极点位", "阴极奠位"],
+        context_words=["测量", "电位计", "腐蚀", "检测", "阴极", "ROV", "保护"],
+        category="sensor",
+    ),
+    TermRule(
+        target="高压水射流",
+        aliases=["高压水舌流", "高压水设计流"],
+        context_words=["清洗", "冲刷", "埋设", "水射流", "喷冲", "ROV", "工具"],
+        category="tool",
+    ),
+    TermRule(
+        target="压缆器",
+        aliases=["压缆气", "押缆器"],
+        context_words=["埋设", "管缆", "压缆", "压紧", "ROV", "工具"],
+        category="tool",
+    ),
+    TermRule(
+        target="推进模块",
+        aliases=["推进摸块", "推进魔块"],
+        context_words=["动力", "推进器", "载荷", "水下", "ROV", "模块"],
+        category="payload",
+    ),
+    TermRule(
+        target="金牛座",
+        aliases=["金牛做", "今牛座"],
+        context_words=["机器人", "ROV", "重载", "1600HP", "1600马力", "履带式"],
+        category="robot_family",
+    ),
+    TermRule(
+        target="天鹰座",
+        aliases=["天应座", "天硬座"],
+        context_words=["机器人", "ROV", "工作级", "250HP", "250马力", "通用型"],
+        category="robot_family",
+    ),
+    TermRule(
+        target="前视声呐系统",
+        aliases=["前视声纳系统", "FLS声呐系统", "前失声呐", "前视声纳"],
+        context_words=["避障", "水下", "声呐", "探测", "导航", "ROV", "前视"],
+        category="sensor",
+    ),
+    TermRule(
+        target="履带模块",
+        aliases=["履带摸块", "海床履带", "履带魔块"],
+        context_words=["动力", "底盘", "行走", "海床", "座底", "ROV", "开沟"],
+        category="payload",
+    ),
+    TermRule(
+        target="机械臂腕部摄像机",
+        aliases=["机械臂万部摄像机", "腕部摄像机", "腕部相机"],
+        context_words=["机械臂", "摄像机", "腕部", "微距", "视场", "抓取", "ROV"],
+        category="sensor",
+    ),
+    TermRule(
+        target="多波束声呐系统",
+        aliases=["多波束声纳系统", "多波束测深声呐", "多波束声纳"],
+        context_words=["测绘", "地形", "扫测", "海床", "声呐", "条带", "水下"],
+        category="sensor",
     ),
 )
 

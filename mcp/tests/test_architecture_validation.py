@@ -31,7 +31,7 @@ for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, SEAGENT_ROOT]:
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-from mock_rosbridge_server import MockRosbridgeServer
+from mcp.shim.mock_rosbridge_server import MockRosbridgeServer
 
 
 # ============================================================================
@@ -111,7 +111,7 @@ def rosbridge_server():
 @pytest.fixture(autouse=True)
 def clear_publishes(rosbridge_server):
     """每个测试前清空接收记录"""
-    from mock_rosbridge_server import received_publishes
+    from mcp.shim.mock_rosbridge_server import received_publishes
     received_publishes.clear()
     yield
 

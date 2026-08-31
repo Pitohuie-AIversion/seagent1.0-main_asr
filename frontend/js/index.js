@@ -1271,7 +1271,12 @@ Please describe your operational requirements directly, or ask the question you 
         },
         {
           key: 'Visual_sensor',
-          title: currentLang === 'zh' ? '视觉传感器' : 'Visual Sensors',
+          title: currentLang === 'zh' ? '视觉传感器（替换）' : 'Visual Sensors (Replacement)',
+          mode: 'single',
+        },
+        {
+          key: 'Propulsion_module',
+          title: currentLang === 'zh' ? '动力模块' : 'Propulsion Modules',
           mode: 'multiple',
         },
         {
@@ -1309,16 +1314,41 @@ Please describe your operational requirements directly, or ask the question you 
       if (sections.length === 0) return false;
 
       const labelText = getSlotUiLabel(slot);
+      // 状态反显 (State Hydration)
+      const existingValues = new Set();
+      const rawSlotVal = slot.candidate_value ?? slot.value;
+      if (Array.isArray(rawSlotVal)) {
+        rawSlotVal.forEach(v => { if (typeof v === 'string') existingValues.add(v); });
+      } else if (typeof rawSlotVal === 'string' && rawSlotVal) {
+        existingValues.add(rawSlotVal);
+      }
+
       const selected = {
         Mechanical_arm: null,
         End_effector: null,
-        Visual_sensor: new Set(),
+        Visual_sensor: null,
+        Propulsion_module: new Set(),
         Acoustic_sensor: new Set(),
         Navigation_sensor: new Set(),
         Other_sensor: new Set(),
         Operation_tool: new Set(),
       };
+
+      // 预塞入已有选定状态
+      sections.forEach(sec => {
+        sec.options.forEach(opt => {
+          if (existingValues.has(opt)) {
+            if (sec.mode === 'single') {
+              selected[sec.key] = opt;
+            } else {
+              selected[sec.key].add(opt);
+            }
+          }
+        });
+      });
+
       const buttonsBySection = new Map();
+      const exchangeRefsBySection = new Map();
 
       const panel = document.createElement('div');
       panel.className = 'payload-selector-panel';
@@ -1346,7 +1376,8 @@ Please describe your operational requirements directly, or ask the question you 
         const result = [];
         if (selected.Mechanical_arm) result.push(selected.Mechanical_arm);
         if (selected.End_effector) result.push(selected.End_effector);
-        result.push(...Array.from(selected.Visual_sensor));
+        if (selected.Visual_sensor) result.push(selected.Visual_sensor);
+        result.push(...Array.from(selected.Propulsion_module));
         result.push(...Array.from(selected.Acoustic_sensor));
         result.push(...Array.from(selected.Navigation_sensor));
         result.push(...Array.from(selected.Other_sensor));
@@ -1364,6 +1395,46 @@ Please describe your operational requirements directly, or ask the question you 
             btn.textContent = isSelected ? `✓ ${val}` : val;
           });
         });
+
+        // 更新方案 A 对调槽位 UI 状态
+        exchangeRefsBySection.forEach((refs, sectionKey) => {
+          const activeVal = selected[sectionKey];
+          const hasActive = Boolean(activeVal);
+
+          if (sectionKey === 'End_effector' && hasActive) {
+            // 智能识别末端设备物理模式：探头/采样类为夹爪持握，剪切/扭矩/工具类为接口替换
+            const isHolding = activeVal.includes('探头') || activeVal.includes('采样');
+            const isReplaced = !isHolding;
+
+            refs.onboardSlot.classList.toggle('is-replaced', isReplaced);
+            if (refs.onboardBadge) {
+              refs.onboardBadge.className = isHolding ? 'badge-holding' : 'badge-replaced';
+              refs.onboardBadge.textContent = isHolding
+                ? (currentLang === 'zh' ? '[夹爪持握]' : '[Jaw Clamping]')
+                : (currentLang === 'zh' ? '[将被覆盖]' : '[Will Cover]');
+            }
+            refs.arrow.classList.add('active');
+            refs.targetSlot.classList.add('active');
+            refs.targetValEl.textContent = isHolding
+              ? (currentLang === 'zh' ? `持握: ${activeVal}` : `Clamped: ${activeVal}`)
+              : activeVal;
+          } else {
+            const isReplaced = hasActive;
+            refs.onboardSlot.classList.toggle('is-replaced', isReplaced);
+            if (refs.onboardBadge) {
+              refs.onboardBadge.className = 'badge-replaced';
+              refs.onboardBadge.textContent = isReplaced
+                ? (currentLang === 'zh' ? '[将被覆盖]' : '[Will Cover]')
+                : '';
+            }
+            refs.arrow.classList.toggle('active', isReplaced);
+            refs.targetSlot.classList.toggle('active', isReplaced);
+            refs.targetValEl.textContent = isReplaced
+              ? activeVal
+              : (currentLang === 'zh' ? '未替换 (维持默认)' : 'Default (No Swap)');
+          }
+        });
+
         const selectedList = getSelectedList();
         summary.textContent = selectedList.length > 0
           ? (currentLang === 'zh' ? `已选 ${selectedList.length} 项` : `${selectedList.length} selected`)
@@ -1384,13 +1455,117 @@ Please describe your operational requirements directly, or ask the question you 
         const cardMode = document.createElement('div');
         cardMode.className = 'payload-section-mode';
         cardMode.textContent = section.mode === 'single'
-          ? (currentLang === 'zh' ? '单选' : 'Single')
+          ? (currentLang === 'zh' ? '单选替换' : 'Single Swap')
           : (currentLang === 'zh' ? '多选' : 'Multiple');
         cardHeader.appendChild(cardTitle);
         cardHeader.appendChild(cardMode);
         card.appendChild(cardHeader);
 
-        if (section.onboard.length > 0) {
+        // 方案 A：单选替换类卡片 - 显式通道插槽体系 (Explicit Channel Slot System)
+        if (section.mode === 'single') {
+          const channelListContainer = document.createElement('div');
+          channelListContainer.className = 'payload-channel-list';
+
+          // 识别并拆分主替换通道与常驻辅助通道 (如 云台摄像机)
+          const primaryOnboard = [];
+          const permanentOnboard = [];
+
+          section.onboard.forEach(item => {
+            // 云台摄像机等辅助观察设备作为常驻硬件
+            if (item.includes('云台') || item.includes('摄像机') && !item.includes('成像系统')) {
+              permanentOnboard.push(item);
+            } else {
+              primaryOnboard.push(item);
+            }
+          });
+
+          // 1. 渲染主替换通道
+          const exchangeContainer = document.createElement('div');
+          exchangeContainer.className = 'payload-exchange-container';
+
+          // 左槽：原装主硬件
+          const onboardSlot = document.createElement('div');
+          onboardSlot.className = 'payload-exchange-slot onboard';
+          const onboardTag = document.createElement('div');
+          onboardTag.className = 'payload-slot-tag';
+          const tagText = document.createElement('span');
+          tagText.textContent = currentLang === 'zh' ? '原装主硬件' : 'Onboard Base';
+          const onboardBadge = document.createElement('span');
+          onboardBadge.className = 'badge-replaced';
+          onboardTag.appendChild(tagText);
+          onboardTag.appendChild(onboardBadge);
+          onboardSlot.appendChild(onboardTag);
+
+          const onboardValEl = document.createElement('div');
+          onboardValEl.className = 'payload-slot-value';
+          if (primaryOnboard.length > 0) {
+            onboardValEl.textContent = primaryOnboard.join('、');
+          } else {
+            onboardValEl.textContent = currentLang === 'zh' ? '【未搭载原装 / 空槽】' : '[Empty Slot]';
+            onboardValEl.style.opacity = '0.6';
+          }
+          onboardSlot.appendChild(onboardValEl);
+
+          // 中轴：对调箭头
+          const arrow = document.createElement('div');
+          arrow.className = 'payload-exchange-arrow';
+          arrow.textContent = '➔';
+
+          // 右槽：目标替换
+          const targetSlot = document.createElement('div');
+          targetSlot.className = 'payload-exchange-slot target';
+          const targetTag = document.createElement('div');
+          targetTag.className = 'payload-slot-tag';
+          targetTag.textContent = currentLang === 'zh' ? '替换目标' : 'Swap Target';
+          targetSlot.appendChild(targetTag);
+
+          const targetValEl = document.createElement('div');
+          targetValEl.className = 'payload-slot-value';
+          targetValEl.textContent = currentLang === 'zh' ? '未替换 (维持默认)' : 'Default (No Swap)';
+          targetSlot.appendChild(targetValEl);
+
+          exchangeContainer.appendChild(onboardSlot);
+          exchangeContainer.appendChild(arrow);
+          exchangeContainer.appendChild(targetSlot);
+          channelListContainer.appendChild(exchangeContainer);
+
+          // 2. 渲染常驻保留通道 (如 云台摄像机，不受替换划线影响)
+          if (permanentOnboard.length > 0) {
+            const permContainer = document.createElement('div');
+            permContainer.className = 'payload-exchange-container readonly-channel';
+            const permSlot = document.createElement('div');
+            permSlot.className = 'payload-exchange-slot onboard';
+            const permTag = document.createElement('div');
+            permTag.className = 'payload-slot-tag';
+            const permTagText = document.createElement('span');
+            permTagText.textContent = currentLang === 'zh' ? '常驻搭载硬件' : 'Permanent Onboard';
+            const permBadge = document.createElement('span');
+            permBadge.className = 'badge-permanent';
+            permBadge.textContent = currentLang === 'zh' ? '[常驻保留]' : '[Permanent]';
+            permTag.appendChild(permTagText);
+            permTag.appendChild(permBadge);
+            permSlot.appendChild(permTag);
+
+            const permValEl = document.createElement('div');
+            permValEl.className = 'payload-slot-value';
+            permValEl.textContent = permanentOnboard.join('、');
+            permSlot.appendChild(permValEl);
+
+            permContainer.appendChild(permSlot);
+            channelListContainer.appendChild(permContainer);
+          }
+
+          card.appendChild(channelListContainer);
+
+          exchangeRefsBySection.set(section.key, {
+            onboardSlot,
+            onboardBadge,
+            arrow,
+            targetSlot,
+            targetValEl,
+          });
+        } else if (section.onboard.length > 0) {
+          // 多选加装类：原有的只读已搭载区块
           const onboardBlock = document.createElement('div');
           onboardBlock.className = 'payload-readonly-block';
           const onboardLabel = document.createElement('div');
@@ -1414,7 +1589,9 @@ Please describe your operational requirements directly, or ask the question you 
         if (section.options.length > 0) {
           const supportedLabel = document.createElement('div');
           supportedLabel.className = 'payload-block-label';
-          supportedLabel.textContent = currentLang === 'zh' ? '可扩展载荷' : 'Supported Payloads';
+          supportedLabel.textContent = section.mode === 'single'
+            ? (currentLang === 'zh' ? '可替换设备' : 'Replaceable Hardware')
+            : (currentLang === 'zh' ? '可扩展载荷' : 'Supported Payloads');
           card.appendChild(supportedLabel);
         }
         const sectionButtons = new Map();

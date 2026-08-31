@@ -66,7 +66,7 @@ class TestAmazingROS2MCP:
         """[A2] SeagentROS2MCPAdapter 应可从项目路径导入"""
         sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
         try:
-            from seagent_mcp_adapter import SeagentROS2MCPAdapter, TASK_TYPE_MAPPING
+            from mcp.shim.seagent_mcp_adapter import SeagentROS2MCPAdapter, TASK_TYPE_MAPPING
             assert callable(SeagentROS2MCPAdapter)
         finally:
             sys.path.pop(0)
@@ -75,7 +75,7 @@ class TestAmazingROS2MCP:
         """[A3] TASK_TYPE_MAPPING 应覆盖 SEAgent 所有标准任务类型"""
         sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
         try:
-            from seagent_mcp_adapter import TASK_TYPE_MAPPING
+            from mcp.shim.seagent_mcp_adapter import TASK_TYPE_MAPPING
             required_keys = {"tree_valve_operation", "pipeline_inspection", "valve_operation"}
             missing = required_keys - set(TASK_TYPE_MAPPING.keys())
             assert not missing, f"TASK_TYPE_MAPPING 缺少任务类型: {missing}"
@@ -96,7 +96,7 @@ class TestAmazingROS2MCP:
         """[A5] 基于 TaskIntent 构建的 SysTaskCmd payload 结构应合法"""
         sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
         try:
-            from seagent_mcp_adapter import TASK_TYPE_MAPPING
+            from mcp.shim.seagent_mcp_adapter import TASK_TYPE_MAPPING
             intent = _sample_task_intent()
             task_cmd_type = TASK_TYPE_MAPPING.get(intent["task_type"], 5)
             coords = intent["task"]["details"]["target"]
@@ -121,7 +121,7 @@ class TestAmazingROS2MCP:
         """[A6] SeagentROS2MCPAdapter 应支持无参默认构造"""
         sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
         try:
-            from seagent_mcp_adapter import SeagentROS2MCPAdapter
+            from mcp.shim.seagent_mcp_adapter import SeagentROS2MCPAdapter
             adapter = SeagentROS2MCPAdapter()
             assert adapter is not None
         finally:
@@ -263,7 +263,7 @@ class TestSEAgentIntegrationCapability:
         """[D5] SEAgent 任务类型应能映射为 ROS 2 整数 task_type"""
         sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
         try:
-            from seagent_mcp_adapter import TASK_TYPE_MAPPING
+            from mcp.shim.seagent_mcp_adapter import TASK_TYPE_MAPPING
             mapped = TASK_TYPE_MAPPING.get(_sample_task_intent()["task_type"])
             assert mapped is not None, f"任务类型 '{_sample_task_intent()['task_type']}' 在 TASK_TYPE_MAPPING 中无映射"
             assert isinstance(mapped, int), f"映射结果应为整数，实际为: {type(mapped)}"
@@ -280,7 +280,7 @@ class TestTaskDispatchSimulation:
 
     def _get_adapter(self):
         sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
-        from seagent_mcp_adapter import SeagentROS2MCPAdapter, TASK_TYPE_MAPPING
+        from mcp.shim.seagent_mcp_adapter import SeagentROS2MCPAdapter, TASK_TYPE_MAPPING
         sys.path.pop(0)
         server_script = SEAGENT_ROOT / "scratch" / "ros2_mcp_test" / "mock_ros2_mcp_server.py"
         return SeagentROS2MCPAdapter(server_script), TASK_TYPE_MAPPING
@@ -391,7 +391,7 @@ class TestTelemetryFeedbackSimulation:
 
     def _get_adapter_and_state(self, tmp_path):
         sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
-        from seagent_mcp_adapter import SeagentROS2MCPAdapter
+        from mcp.shim.seagent_mcp_adapter import SeagentROS2MCPAdapter
         sys.path.pop(0)
         sys.path.insert(0, str(SEAGENT_ROOT))
         from src.state_info import RobotStateInfo

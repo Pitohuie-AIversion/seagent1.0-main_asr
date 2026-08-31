@@ -25,7 +25,7 @@ class PayloadSourceContractTest(unittest.TestCase):
             # onboard_payloads 与 supported_payloads 互不包含/互不覆盖
             # 如果包含 onboard，supported_payloads 不等于 all_payloads (当 onboard 非空且有差异时)
             if onboard:
-                self.assertNotIn("raw_supported_payloads", r)
+                self.assertEqual(onboard & supported, set())
 
     def test_payload_options_intersection_matrix(self):
         """
@@ -82,8 +82,8 @@ class PayloadSourceContractTest(unittest.TestCase):
         self.assertNotIn("payload", built_json)
         payload_missing = next(item for item in missing if item["key"] == "payload")
         self.assertEqual(payload_missing["equipment_type"], "观察级深海机器人 75HP")
-        self.assertIn("水下成像系统", payload_missing["onboard_payloads"])
-        self.assertIn("FLS声呐系统", payload_missing["onboard_payloads"])
+        self.assertIn("单目水下成像系统", payload_missing["onboard_payloads"])
+        self.assertIn("前视声呐系统", payload_missing["onboard_payloads"])
 
     def test_mutation_validation_rejects_payload_not_in_intersection(self):
         """测试 SlotStore apply_list_mutation 在限制模式下拒绝不在交集内的载荷。"""

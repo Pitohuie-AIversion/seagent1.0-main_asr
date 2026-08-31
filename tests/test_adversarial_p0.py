@@ -180,6 +180,11 @@ class AdversarialP0SecurityTest(unittest.TestCase):
             self.assertEqual(file_intent_id, self.dm.task_state.get("intent_id"))
             self.assertEqual(file_intent_id, self.dm._last_built_json.get("intent_id"))
             self.assertEqual(file_intent_id, self.dm.final_result.get("intent_id"))
+            self.assertEqual(
+                self.dm.final_result,
+                file_data,
+                "final_result 必须保存已发布的 TaskIntent v2，而不是 UI 扁平字段",
+            )
 
     # 9. 确认发布失败：phase恢复confirming, slot_store快照不变, 无staging, 无正式文件
     def test_adv_09_confirm_publish_failure_rollback(self):

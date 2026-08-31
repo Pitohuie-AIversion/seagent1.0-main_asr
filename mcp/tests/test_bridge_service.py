@@ -27,8 +27,8 @@ for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, SEAGENT_ROOT]:
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-from bridge_service import SEAgentMCPBridgeService
-from mock_rosbridge_server import MockRosbridgeServer, received_publishes, active_tasks
+from mcp.shim.bridge_service import SEAgentMCPBridgeService
+from mcp.shim.mock_rosbridge_server import MockRosbridgeServer, received_publishes, active_tasks
 from src.state_info import RobotStateInfo
 
 PORT = 9095

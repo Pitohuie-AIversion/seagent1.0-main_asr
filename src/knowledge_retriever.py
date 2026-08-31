@@ -30,10 +30,11 @@ def _norm(value: object) -> str:
 
 
 def _payload_match_key(value: object) -> str:
-    text = str(value or "").strip().lower().replace(" ", "")
-    for suffix in ("（可选）", "(可选)"):
+    text = str(value or "").strip().lower().replace(" ", "").replace("-", "").replace("_", "")
+    for suffix in ("（可选）", "(可选)", "可选"):
         if text.endswith(suffix):
-            return text[: -len(suffix)]
+            text = text[: -len(suffix)]
+            break
     return text
 
 
@@ -41,6 +42,7 @@ PAYLOAD_GROUP_KEYS = (
     "Mechanical_arm",
     "End_effector",
     "Visual_sensor",
+    "Propulsion_module",
     "Acoustic_sensor",
     "Navigation_sensor",
     "Other_sensor",

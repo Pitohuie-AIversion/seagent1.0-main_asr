@@ -6,6 +6,10 @@ SEAgent 生产级 rosbridge WebSocket 客户端
 基于 ROS 组 `sealien_ctrlpilot_llmbridge` 消息协议，通过 rosbridge v2.0
 WebSocket 协议直连支持船 Topside 网关，实现：
 
+关键边界：本文件承接的主链路消息仅为 `sealien_ctrlpilot_llmbridge` 套件（UI 接口协议），
+不再与 `outside/sealien_ctrlpilot_msgmanagement-dev_rov-msg` 的同名主任务消息并行对齐。
+该目录下的 msg 文件仅用于可选扩展链路（视觉/辅助控制/底层状态），不会覆盖任务主闭环判据。
+
 1. 任务下发   publish_task_cmd(intent)         -> /task_cmd
 2. 系统配置   publish_sys_config(mode)          -> /task/sys_config
 3. 任务管理   task_manage(action, task_id)      -> /task_cmd (TASK_MANAGE)
@@ -27,35 +31,20 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from enum import IntEnum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import websocket
 
-try:
-    from .sealien_protocol import (
-        LocalOrigin,
-        ProtocolValidationError,
-        TaskMessageGuard,
-        geodetic_to_odom_position,
-        validate_priority,
-        validate_task_id,
-        validate_uint32,
-        yaw_between,
-    )
-except ImportError:
-    from sealien_protocol import (
-        LocalOrigin,
-        ProtocolValidationError,
-        TaskMessageGuard,
-        geodetic_to_odom_position,
-        validate_priority,
-        validate_task_id,
-        validate_uint32,
-        yaw_between,
-    )
+from .sealien_protocol import (
+    LocalOrigin,
+    ProtocolValidationError,
+    geodetic_to_odom_position,
+    validate_priority,
+    validate_task_id,
+    validate_uint32,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +52,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # ROS 组协议常量
 # ============================================================================
-
+# 任务闭环主链路（唯一来源）
 TASK_TOPIC = "/task_cmd"
 CONFIG_TOPIC = "/task/sys_config"
 STATUS_TOPIC = "/task/system_status"
@@ -72,6 +61,7 @@ TASK_MESSAGE_TYPE = "sealien_ctrlpilot_llmbridge/msg/SysTaskCmd"
 CONFIG_MESSAGE_TYPE = "sealien_ctrlpilot_llmbridge/msg/SysConfig"
 STATUS_MESSAGE_TYPE = "sealien_ctrlpilot_llmbridge/msg/SysStatus"
 
+# 非核心辅助通道（不作为主协议判据）
 COMPRESSED_IMAGE_TOPIC = "/vision/compressd_image"
 IMAGE_TOPIC = "/vision/image"
 KEYPOINTS_TOPIC = "/vision/keypoints"
@@ -287,7 +277,6 @@ _MANIPULATOR_TASK_TYPES = {
     TaskType.CLAMP_PIN,
     TaskType.INSERT_PLUG,
 }
-_FRAME_TASK_TYPES = {TaskType.SEARCH_CABLE, TaskType.MOVE_TASK, TaskType.AUV_TASK}
 _TARGET_REQUIRED_MANAGEMENT_ACTIONS = {
     TaskManageAction.SUSPEND,
     TaskManageAction.RESUME,
@@ -309,11 +298,6 @@ def _intent_coordinate(
     intent: Dict[str, Any], details: Dict[str, Any], field_name: str
 ) -> Optional[Dict[str, Any]]:
     value = details.get(field_name)
-    if value is None:
-        value = intent.get(field_name)
-    if value is None and isinstance(intent.get("slots"), dict):
-        slot = intent["slots"].get(field_name)
-        value = slot.get("value") if isinstance(slot, dict) else slot
     return value if isinstance(value, dict) else None
 
 
@@ -323,12 +307,7 @@ def _water_depth(intent: Dict[str, Any]) -> float:
         raise ProtocolValidationError("TaskIntent.location 必须是对象")
     depth_value = location.get("water_depth_m")
     if depth_value is None:
-        depth_value = intent.get("water_depth")
-    if depth_value is None and isinstance(intent.get("slots"), dict):
-        slot = intent["slots"].get("water_depth")
-        depth_value = slot.get("value") if isinstance(slot, dict) else slot
-    if depth_value is None and isinstance(intent.get("target"), dict):
-        depth_value = intent["target"].get("depth")
+        raise ProtocolValidationError("TaskIntent 缺少有效 water_depth_m")
     try:
         depth = float(depth_value)
     except (TypeError, ValueError) as exc:
@@ -345,8 +324,8 @@ def _coordinate_pose(
     origin: Optional[LocalOrigin],
     field_name: str,
 ) -> Pose:
-    latitude = coordinate.get("latitude", coordinate.get("lat"))
-    longitude = coordinate.get("longitude", coordinate.get("lon"))
+    latitude = coordinate.get("latitude")
+    longitude = coordinate.get("longitude")
     if latitude is None or longitude is None:
         raise ProtocolValidationError(f"{field_name} 必须包含 latitude/longitude")
     try:
@@ -387,6 +366,31 @@ def validate_sys_task_cmd(cmd: SysTaskCmd) -> SysTaskCmd:
             )
         if not 1 <= len(cmd.params) <= 2:
             raise ProtocolValidationError("TASK_MANAGE params 必须包含动作及可选目标 ID")
+        try:
+            action_value = float(cmd.params[0])
+            action = TaskManageAction(int(action_value))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ProtocolValidationError(
+                f"不支持的 TASK_MANAGE action: {cmd.params[0]}"
+            ) from exc
+        if action_value != float(action):
+            raise ProtocolValidationError(
+                f"TASK_MANAGE action 必须是整数枚举值: {cmd.params[0]}"
+            )
+        target_required = action in _TARGET_REQUIRED_MANAGEMENT_ACTIONS
+        if target_required and len(cmd.params) != 2:
+            raise ProtocolValidationError(
+                f"TASK_MANAGE {action.name} 必须包含目标任务 ID"
+            )
+        if not target_required and len(cmd.params) != 1:
+            raise ProtocolValidationError(
+                f"TASK_MANAGE {action.name} 不得包含目标任务 ID"
+            )
+        if target_required:
+            target_value = float(cmd.params[1])
+            target_id = validate_uint32(target_value, "target_task_id")
+            if target_value != float(target_id):
+                raise ProtocolValidationError("target_task_id 必须是整数")
     elif task_type in _MANIPULATOR_TASK_TYPES:
         if cmd.frame_id or len(cmd.pos_target) != 1 or cmd.params:
             raise ProtocolValidationError(
@@ -454,8 +458,6 @@ def intent_to_syscmd(
         (intent.get("location") or {}).get("use_geodetic", False)
     )
     target = details.get("target")
-    if target is None and isinstance(intent.get("target"), dict):
-        target = intent["target"].get("coordinates")
 
     pos_targets: List[Pose] = []
     params: List[float] = []
@@ -515,9 +517,7 @@ def intent_to_syscmd(
         frame_id = ""
         params = [float(control["device_id"]), float(control["value"])]
     else:
-        if target is None and ros2_type_enum == TaskType.CLAMP_CABLE:
-            target = _intent_coordinate(intent, details, "start_point")
-        if not isinstance(target, dict):
+        if target is None:
             raise ProtocolValidationError(
                 f"{ros2_type_enum.name} 必须提供 target 位姿坐标"
             )

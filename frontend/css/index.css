@@ -1227,6 +1227,135 @@
       border-bottom: 1px solid rgba(156, 201, 214, 0.13);
     }
 
+    /* 方案 A：替换类载荷双槽位对调组件 (Exchange Slot UI) */
+    .payload-channel-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+
+    .payload-exchange-container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px;
+      background: rgba(0, 10, 25, 0.55);
+      border: 1px solid rgba(0, 255, 196, 0.18);
+      border-radius: 6px;
+    }
+
+    .payload-exchange-container.readonly-channel {
+      border-color: rgba(156, 201, 214, 0.14);
+      background: rgba(4, 15, 30, 0.4);
+    }
+
+    .payload-slot-tag .badge-permanent {
+      color: #00ffc4;
+      font-size: 0.58rem;
+    }
+
+    .payload-slot-tag .badge-holding {
+      color: #00e5ff;
+      font-size: 0.58rem;
+    }
+
+    .payload-exchange-slot {
+      flex: 1;
+      min-width: 0;
+      padding: 6px 8px;
+      border-radius: 5px;
+      transition: all 0.2s ease;
+    }
+
+    .payload-exchange-slot.onboard {
+      background: rgba(156, 201, 214, 0.08);
+      border: 1px solid rgba(156, 201, 214, 0.22);
+    }
+
+    .payload-exchange-slot.onboard.is-replaced {
+      opacity: 0.6;
+      background: rgba(40, 50, 60, 0.3);
+      border-color: rgba(156, 201, 214, 0.12);
+    }
+
+    .payload-exchange-slot.onboard.is-replaced .payload-slot-value {
+      text-decoration: line-through;
+      color: #7a97a3;
+    }
+
+    .payload-exchange-slot.target {
+      background: rgba(0, 229, 255, 0.04);
+      border: 1px dashed rgba(156, 201, 214, 0.3);
+    }
+
+    .payload-exchange-slot.target.active {
+      background: rgba(0, 255, 196, 0.12);
+      border: 1px solid rgba(0, 255, 196, 0.6);
+      box-shadow: 0 0 8px rgba(0, 255, 196, 0.18);
+    }
+
+    .payload-slot-tag {
+      font-size: 0.6rem;
+      font-weight: 700;
+      color: #8fb7c8;
+      margin-bottom: 3px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .payload-slot-tag .badge-replaced {
+      color: #ff9d00;
+      font-size: 0.58rem;
+    }
+
+    .payload-slot-value {
+      font-size: 0.74rem;
+      font-weight: 600;
+      color: #d4e8ee;
+      overflow-wrap: anywhere;
+    }
+
+    .payload-exchange-slot.target.active .payload-slot-value {
+      color: #00ffc4;
+    }
+
+    .payload-exchange-arrow {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: rgba(156, 201, 214, 0.1);
+      color: #7a97a3;
+      font-size: 0.75rem;
+      transition: all 0.2s ease;
+    }
+
+    .payload-exchange-arrow.active {
+      background: rgba(0, 255, 196, 0.2);
+      color: #00ffc4;
+      transform: scale(1.1);
+    }
+
+    @media (max-width: 480px) {
+      .payload-exchange-container {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .payload-exchange-arrow {
+        align-self: center;
+        transform: rotate(90deg);
+      }
+      .payload-exchange-arrow.active {
+        transform: rotate(90deg) scale(1.1);
+      }
+    }
+
     .payload-block-label {
       width: 100%;
       margin: 0 0 6px;

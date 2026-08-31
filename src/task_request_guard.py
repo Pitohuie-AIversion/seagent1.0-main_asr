@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from typing import Iterable
 
 
-_REPLACEMENT_RE = re.compile(r"(?:改成|改为|换成|更换为|调整为|替换为)")
+_REPLACEMENT_RE = re.compile(
+    r"(?:改成|改为|换成|换为|更换为|调整为|替换为|替换成|切到|切换到|切换为|改用|改选|换用|重新选择|重新指定|改选为|来个|整个|整一个|安排个|安排一个|弄个|搞个|配个|更换成|更换为|帮我改成|改作|换成做|换做|重新配|重新装|重新挂)"
+)
 
 
 @dataclass(frozen=True)

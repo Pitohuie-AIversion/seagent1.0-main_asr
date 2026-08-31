@@ -25,7 +25,7 @@ SEAGENT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(SEAGENT_ROOT / "scratch"))
 sys.path.insert(0, str(SEAGENT_ROOT / "scratch" / "ros2_mcp_test"))
 
-from mock_rosbridge_server import MockRosbridgeServer
+from mcp.shim.mock_rosbridge_server import MockRosbridgeServer
 
 
 # ============================================================================
@@ -105,7 +105,7 @@ def rosbridge_server():
 @pytest.fixture(autouse=True)
 def clear_publishes(rosbridge_server):
     """每个测试前清空接收记录"""
-    from mock_rosbridge_server import received_publishes
+    from mcp.shim.mock_rosbridge_server import received_publishes
     received_publishes.clear()
     yield
 

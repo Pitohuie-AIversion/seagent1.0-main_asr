@@ -22,10 +22,10 @@ MCP_DIR = PROJECT_ROOT / "mcp"
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(MCP_DIR))
 
-from mock_rosbridge_server import MockRosbridgeServer, received_publishes
-from bridge_service import SEAgentMCPBridgeService
+from mcp.shim.mock_rosbridge_server import MockRosbridgeServer, received_publishes
+from mcp.shim.bridge_service import SEAgentMCPBridgeService
 from src.state_info import RobotStateInfo
-from task_status_tracker import TaskStatusItem
+from mcp.shim.task_status_tracker import TaskStatusItem
 
 PORT = 9099
 

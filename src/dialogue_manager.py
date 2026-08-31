@@ -169,11 +169,32 @@ _OFF_TOPIC_BLACKLIST_RE = re.compile(
     re.IGNORECASE,
 )
 
+_STRONG_DOMAIN_WHITELIST_RE = re.compile(
+    r"水下|油田|ROV|机器人|AUV|管缆|管线|电缆|巡检|检测|维修|阀门|采油树|井口|海底|海床|深海|浅海|"
+    r"海流|水流|浑浊|清澈|浑浊度|能见度|障碍物|礁石|沉积物|"
+    r"载荷|工具|传感器|声呐|机械臂|摄像机|相机|采样器|切割器|扳手|FLS|DVL|USBL|MBES|SBL|LBL|CTD|ADCP|"
+    r"阴极电位|电位计|厚度测定|探伤仪|液压扳手|切断刀|空化水射流|水射流|刷洗工具|"
+    r"导管架|水下生产系统|SPS|脐带缆|PLET|PLEM|Manifold|管汇|飞线|Jumper|防沉板|浮体|夹持器|软管|"
+    r"支持船|母船|作业船|支援船|热带风暴|波浪|快换接头|飞线插拔|海管|海缆|"
+    r"任务|准入|准入条件|任务状态|设备状态|运行状态|"
+    r"设备|装备|型号能力|参数|性能|功率|"
+    r"水深|作业深度|最大作业水深|经纬度|坐标|经度|纬度|起始点|结束点|定位|导航|"
+    r"水下作业|海上作业|船舶|作业现场|海洋工程|深水油田|浅水油田|海工|水下工程|油气田|平台|钻井|"
+    r"流花|陆丰|西江|番禺|惠州|崖城|东方|陵水|渤中|锦州|绥中|"
+    r"管缆类型|管道类型|电缆类型|油气管道|电力电缆|光纤通信缆|通信缆|光缆|配载|携带|带上|"
+    r"观察级|工作级|轻型|重型|履带式|作业级|通用型|专用|"
+    r"天鹰座|金牛座|御夫座|奇点|双子座|凤凰座|"
+    r"一号机|二号机|三号机|001号|002号|003号|"
+    r"起始点坐标|结束点坐标|起点|终点|"
+    r"管缆|巡检任务|作业任务|管缆巡检|阀门操作|采油树|CT任务|PI任务",
+    re.IGNORECASE,
+)
+
 _OFF_TOPIC_WHITELIST_RE = re.compile(
     r"水下|油田|ROV|机器人|AUV|管缆|管线|电缆|巡检|检测|维修|阀门|采油树|井口|海底|海床|深海|浅海|"
     r"海流|水流|浑浊|清澈|浑浊度|能见度|障碍物|礁石|沉积物|"
     r"载荷|工具|传感器|声呐|机械臂|摄像机|相机|采样器|切割器|扳手|FLS|DVL|USBL|"
-    r"支持船|母船|作业船|支援船|"
+    r"支持船|母船|作业船|支援船|热带风暴|波浪|快换接头|飞线插拔|海管|海缆|"
     r"任务|状态|阶段|槽位|发布|准入|确认|发布管理|任务状态|设备状态|运行状态|"
     r"设备|装备|型号|编号|系列|类别|型号能力|参数|性能|功率|尺寸|"
     r"水深|作业深度|最大作业水深|经纬度|坐标|经度|纬度|起始点|结束点|位置|定位|导航|"
@@ -207,11 +228,13 @@ def _check_off_topic_gate(user_message: str) -> Optional[str]:
     if not msg:
         return None
     black_hit = _OFF_TOPIC_BLACKLIST_RE.search(msg) is not None
-    white_hit = _OFF_TOPIC_WHITELIST_RE.search(msg) is not None
-    if black_hit and not white_hit:
-        logger.info("[OFF_TOPIC_GATE_L1] blocked blacklist_hit=%s whitelist_hit=%s msg=%r",
-                    black_hit, white_hit, msg[:120])
-        return OFF_TOPIC_REJECT_TEMPLATE
+    if black_hit:
+        # 当触发黑名单词汇时，只有命中强领域词汇（如 ROV、巡检、水深等）才允许放行
+        strong_white_hit = _STRONG_DOMAIN_WHITELIST_RE.search(msg) is not None
+        if not strong_white_hit:
+            logger.info("[OFF_TOPIC_GATE_L1] blocked blacklist_hit=%s strong_white_hit=%s msg=%r",
+                        black_hit, strong_white_hit, msg[:120])
+            return OFF_TOPIC_REJECT_TEMPLATE
     return None
 
 
@@ -1914,7 +1937,10 @@ class DialogueManager:
         self._transition_phase("done", reason="publish_success")
         self.task_state = self.slot_store.get_task_state()
         self._last_built_json = self.slot_store.get_built_json()
-        self.final_result = self._last_built_json
+        # Keep the published TaskIntent v2 artifact as the execution contract.
+        # ``_last_built_json`` is the flat UI/slot representation and must not
+        # be sent directly to the ROS adapter.
+        self.final_result = ti_json_artifact
         self.task_start_now = self.is_start_time_near_now()
         
         user_facing_built = sanitize_user_facing_json(cand_built)
@@ -7027,7 +7053,7 @@ class DialogueManager:
 
         if any(mod_kw in message for mod_kw in ["修改", "参数", "设置", "载荷", "水深", "支持船", "管缆", "油田", "设备", "工具"]) and "任务" not in message:
             return False
-        keywords = ["取消任务", "放弃任务", "终止任务", "取消", "放弃", "不要了", "终止", "退出"]
+        keywords = ["取消任务", "放弃任务", "终止任务", "取消", "放弃", "不要了", "终止", "退出", "算了一会儿再做", "先不搞了", "不要创建了", "撤销", "作废", "重新来", "清空", "不做了", "算了不用了", "先退出来", "终止创建", "不搞了", "不用了"]
         return any(kw in message for kw in keywords)
 
 

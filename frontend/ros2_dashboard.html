@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SEAgent ROS 2 Bridge Monitor</title>
+  <style>
+    :root {
+      --page: #eef2f3;
+      --surface: #ffffff;
+      --surface-muted: #f6f8f9;
+      --ink: #172126;
+      --muted: #607078;
+      --line: #d8e0e3;
+      --cyan: #087f8c;
+      --green: #24845b;
+      --amber: #a66a00;
+      --red: #b43838;
+      --focus: #0b7189;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background: var(--page);
+      font-family: Inter, "Noto Sans SC", "Microsoft YaHei", Arial, sans-serif;
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+
+    .topbar {
+      height: 66px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 28px;
+      color: #fff;
+      background: #172126;
+      border-bottom: 3px solid var(--cyan);
+    }
+    .brand { min-width: 0; }
+    .brand h1 { margin: 0; font-size: 19px; font-weight: 700; }
+    .brand p { margin: 3px 0 0; color: #b9c7cc; font-size: 12px; }
+    .top-actions { display: flex; align-items: center; gap: 8px; }
+    .btn {
+      min-height: 36px;
+      border: 1px solid #526269;
+      border-radius: 5px;
+      padding: 7px 12px;
+      color: #fff;
+      background: #26343a;
+    }
+    .btn:hover { background: #34464d; }
+    .btn.primary { border-color: var(--cyan); background: var(--cyan); }
+    .btn.primary:hover { background: #076d78; }
+
+    main { width: min(1480px, 100%); margin: 0 auto; padding: 20px 24px 32px; }
+    .connection-strip {
+      display: grid;
+      grid-template-columns: minmax(220px, 1.4fr) repeat(3, minmax(130px, .6fr));
+      border: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .connection-main, .strip-cell { min-height: 76px; padding: 15px 18px; }
+    .strip-cell { border-left: 1px solid var(--line); }
+    .label { color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .value { margin-top: 7px; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .value.small { font-size: 14px; overflow-wrap: anywhere; }
+    .state-line { display: flex; align-items: center; gap: 9px; margin-top: 7px; }
+    .state-dot { width: 9px; height: 9px; border-radius: 50%; background: #8d989d; flex: 0 0 auto; }
+    .state-dot.good { background: var(--green); }
+    .state-dot.warn { background: var(--amber); }
+    .state-dot.bad { background: var(--red); }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .metric { padding: 18px; min-height: 100px; }
+    .metric + .metric { border-left: 1px solid var(--line); }
+    .metric-number { margin-top: 8px; font-size: 28px; font-weight: 750; font-variant-numeric: tabular-nums; }
+    .metric-unit { margin-left: 4px; color: var(--muted); font-size: 13px; font-weight: 500; }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 330px;
+      gap: 16px;
+      margin-top: 16px;
+    }
+    .panel { border: 1px solid var(--line); background: var(--surface); min-width: 0; }
+    .panel-head {
+      min-height: 50px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .panel-head h2 { margin: 0; font-size: 14px; }
+    .counter { color: var(--muted); font-size: 12px; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th {
+      height: 38px;
+      padding: 0 14px;
+      color: var(--muted);
+      background: var(--surface-muted);
+      border-bottom: 1px solid var(--line);
+      font-size: 11px;
+      text-align: left;
+    }
+    td { height: 58px; padding: 8px 14px; border-bottom: 1px solid #e8edef; overflow-wrap: anywhere; }
+    tr:last-child td { border-bottom: 0; }
+    .mono { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      color: #47565d;
+      background: #e8edef;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .status.active { color: #076472; background: #d9f0f2; }
+    .status.success { color: #1e6949; background: #dff1e7; }
+    .status.warn { color: #7d5100; background: #fff0cf; }
+    .status.fail { color: #8f2d2d; background: #f8dede; }
+    .progress { width: 100%; height: 6px; overflow: hidden; background: #e5eaec; }
+    .progress span { display: block; height: 100%; background: var(--cyan); transition: width .25s ease; }
+    .empty { padding: 50px 20px; color: var(--muted); text-align: center; }
+
+    .detail-list { margin: 0; }
+    .detail-row {
+      display: grid;
+      grid-template-columns: 105px minmax(0, 1fr);
+      gap: 12px;
+      padding: 13px 16px;
+      border-bottom: 1px solid #e8edef;
+    }
+    .detail-row dt { color: var(--muted); }
+    .detail-row dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .error-box { display: none; margin: 14px; padding: 12px; color: #842c2c; background: #fae8e8; border-left: 3px solid var(--red); }
+
+    dialog { width: min(440px, calc(100vw - 28px)); border: 1px solid var(--line); border-radius: 6px; padding: 0; }
+    dialog::backdrop { background: rgba(13, 24, 29, .48); }
+    .dialog-head { display: flex; justify-content: space-between; align-items: center; padding: 15px 18px; border-bottom: 1px solid var(--line); }
+    .dialog-head h2 { margin: 0; font-size: 15px; }
+    .close-btn { width: 32px; height: 32px; border: 0; background: transparent; font-size: 22px; }
+    .dialog-body { display: grid; gap: 14px; padding: 18px; }
+    .field { display: grid; gap: 6px; }
+    .field label { color: var(--muted); font-size: 12px; font-weight: 700; }
+    .field input, .field select { width: 100%; min-height: 38px; border: 1px solid #bfcacf; border-radius: 4px; padding: 7px 9px; background: #fff; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--line); }
+    .dialog-actions .btn { color: var(--ink); background: #fff; border-color: #aab7bc; }
+    .dialog-actions .btn.primary { color: #fff; background: var(--cyan); border-color: var(--cyan); }
+
+    @media (max-width: 900px) {
+      .connection-strip { grid-template-columns: 1fr 1fr; }
+      .connection-main { grid-column: 1 / -1; }
+      .strip-cell { border-left: 0; border-top: 1px solid var(--line); }
+      .strip-cell:nth-child(3) { border-left: 1px solid var(--line); }
+      .metrics { grid-template-columns: 1fr 1fr; }
+      .metric:nth-child(3) { border-left: 0; border-top: 1px solid var(--line); }
+      .metric:nth-child(4) { border-top: 1px solid var(--line); }
+      .workspace { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 600px) {
+      .topbar { height: auto; display: grid; grid-template-columns: minmax(0, 1fr) 84px; align-items: flex-start; padding: 14px 16px; }
+      .brand p { display: none; }
+      .brand h1 { font-size: 18px; }
+      .top-actions { width: 84px; flex-direction: column; align-items: stretch; }
+      .top-actions .btn { width: 84px; padding-left: 6px; padding-right: 6px; white-space: nowrap; }
+      main { padding: 12px; }
+      .connection-strip, .metrics { grid-template-columns: 1fr; }
+      .connection-main { grid-column: auto; }
+      .strip-cell, .strip-cell:nth-child(3), .metric + .metric, .metric:nth-child(3) { border-left: 0; border-top: 1px solid var(--line); }
+      table { min-width: 0; }
+      th, td { padding-left: 8px; padding-right: 8px; }
+      th:nth-child(1) { width: 25% !important; }
+      th:nth-child(2) { width: 33% !important; }
+      th:nth-child(3) { width: 22% !important; }
+      th:nth-child(4) { width: 20% !important; }
+      th:nth-child(5), td:nth-child(5) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>SEAgent ROS 2 Bridge Monitor</h1>
+      <p>Task transport and robot execution telemetry</p>
+    </div>
+    <div class="top-actions">
+      <button class="btn" id="refreshButton" type="button">刷新</button>
+      <button class="btn primary" id="gatewayButton" type="button">网关设置</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="connection-strip" aria-label="连接状态">
+      <div class="connection-main">
+        <div class="label">Bridge state</div>
+        <div class="state-line"><span class="state-dot" id="bridgeDot"></span><strong id="bridgeState">检查中</strong></div>
+      </div>
+      <div class="strip-cell"><div class="label">Gateway</div><div class="value small" id="gatewayValue">--</div></div>
+      <div class="strip-cell"><div class="label">Telemetry</div><div class="value small" id="telemetryState">--</div></div>
+      <div class="strip-cell"><div class="label">Last update</div><div class="value small" id="lastUpdate">--</div></div>
+    </section>
+
+    <section class="metrics" aria-label="机器人遥测指标">
+      <div class="metric"><div class="label">Water depth</div><div class="metric-number"><span id="depthValue">--</span><span class="metric-unit">m</span></div></div>
+      <div class="metric"><div class="label">Altitude</div><div class="metric-number"><span id="altitudeValue">--</span><span class="metric-unit">m</span></div></div>
+      <div class="metric"><div class="label">Control mode</div><div class="metric-number" id="controlMode">--</div></div>
+      <div class="metric"><div class="label">Tracked tasks</div><div class="metric-number" id="taskCount">0</div></div>
+    </section>
+
+    <section class="workspace">
+      <div class="panel">
+        <div class="panel-head"><h2>任务执行状态</h2><span class="counter" id="taskCounter">0 records</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th style="width:18%">ROS task ID</th><th style="width:24%">Intent ID</th><th style="width:18%">Type</th><th style="width:16%">Status</th><th style="width:24%">Progress</th></tr></thead>
+            <tbody id="taskRows"></tbody>
+          </table>
+          <div class="empty" id="emptyTasks">暂无 ROS 任务回传</div>
+        </div>
+      </div>
+
+      <aside class="panel">
+        <div class="panel-head"><h2>实时姿态</h2></div>
+        <dl class="detail-list">
+          <div class="detail-row"><dt>X</dt><dd id="poseX">--</dd></div>
+          <div class="detail-row"><dt>Y</dt><dd id="poseY">--</dd></div>
+          <div class="detail-row"><dt>Z</dt><dd id="poseZ">--</dd></div>
+          <div class="detail-row"><dt>System health</dt><dd id="systemHealth">--</dd></div>
+          <div class="detail-row"><dt>Data owner</dt><dd>SEAgent :6006</dd></div>
+        </dl>
+        <div class="error-box" id="errorBox"></div>
+      </aside>
+    </section>
+  </main>
+
+  <dialog id="gatewayDialog">
+    <form id="gatewayForm">
+      <div class="dialog-head"><h2>ROS 2 网关设置</h2><button class="close-btn" id="closeDialog" type="button" aria-label="关闭">×</button></div>
+      <div class="dialog-body">
+        <div class="field"><label for="gatewayHost">Host</label><input id="gatewayHost" name="host" autocomplete="off" required></div>
+        <div class="field"><label for="gatewayPort">Port</label><input id="gatewayPort" name="port" type="number" min="1" max="65535" required></div>
+        <div class="field"><label for="gatewayMode">Mode</label><select id="gatewayMode" name="mode"><option value="real">Real</option><option value="mock">Mock</option></select></div>
+      </div>
+      <div class="dialog-actions"><button class="btn" id="cancelDialog" type="button">取消</button><button class="btn primary" type="submit">连接并保存</button></div>
+    </form>
+  </dialog>
+
+  <script>
+    const taskTypeNames = {0: 'TASK_MANAGE', 1: 'CLAMP_CABLE', 2: 'SEARCH_CABLE', 3: 'CLAMP_PIN', 4: 'INSERT_PLUG', 5: 'MOVE_TASK', 6: 'CTRL_TASK', 10: 'AUV_TASK'};
+    const statusClasses = {READY: '', PLAN: 'active', ENTER: 'active', ONGOING: 'active', EXIT: 'active', FINISH: 'success', PAUSE: 'warn', FAIL: 'fail', FAILED: 'fail', SENT: ''};
+    let pollTimer = null;
+
+    const text = (id, value) => { document.getElementById(id).textContent = value ?? '--'; };
+    const number = value => value === null || value === undefined || Number.isNaN(Number(value)) ? '--' : Number(value).toFixed(1);
+    const formatTime = value => value ? new Date(value).toLocaleString('zh-CN', {hour12: false}) : '--';
+
+    function renderTasks(tasks) {
+      const rows = document.getElementById('taskRows');
+      rows.replaceChildren();
+      document.getElementById('emptyTasks').style.display = tasks.length ? 'none' : 'block';
+      text('taskCount', tasks.length);
+      text('taskCounter', `${tasks.length} records`);
+      tasks.forEach(task => {
+        const row = document.createElement('tr');
+        const values = [task.task_id, task.intent_id || '--', taskTypeNames[task.task_type] || String(task.task_type), task.status];
+        values.forEach((value, index) => {
+          const cell = document.createElement('td');
+          if (index < 2) cell.className = 'mono';
+          if (index === 3) {
+            const badge = document.createElement('span');
+            badge.className = `status ${statusClasses[String(value).toUpperCase()] || ''}`;
+            badge.textContent = value;
+            cell.appendChild(badge);
+          } else {
+            cell.textContent = value;
+          }
+          row.appendChild(cell);
+        });
+        const progressCell = document.createElement('td');
+        const progress = document.createElement('div');
+        progress.className = 'progress';
+        const fill = document.createElement('span');
+        fill.style.width = `${Math.max(0, Math.min(100, Number(task.progress) || 0))}%`;
+        progress.appendChild(fill);
+        progressCell.appendChild(progress);
+        row.appendChild(progressCell);
+        rows.appendChild(row);
+      });
+    }
+
+    function renderStatus(data) {
+      const snapshot = data.snapshot || {};
+      const connected = Boolean(data.mcp_connected);
+      const fresh = Boolean(data.telemetry_fresh);
+      const dot = document.getElementById('bridgeDot');
+      dot.className = `state-dot ${connected && fresh ? 'good' : connected ? 'warn' : 'bad'}`;
+      text('bridgeState', connected && fresh ? 'CONNECTED / LIVE' : connected ? 'CONNECTED / WAITING TELEMETRY' : 'DISCONNECTED');
+      text('gatewayValue', data.host && data.port ? `ws://${data.host}:${data.port}` : '--');
+      text('telemetryState', fresh ? 'LIVE' : 'STALE / NONE');
+      text('lastUpdate', formatTime(snapshot.last_update));
+      text('depthValue', number(snapshot.water_depth_m));
+      text('altitudeValue', number(snapshot.altitude_m));
+      text('controlMode', snapshot.ctr_mode || '--');
+      const pose = snapshot.current_pose || {};
+      text('poseX', `${number(pose.x_m)} m`);
+      text('poseY', `${number(pose.y_m)} m`);
+      text('poseZ', `${number(pose.z_m)} m`);
+      text('systemHealth', snapshot.health === 0 ? 'HEALTHY' : snapshot.health ?? '--');
+      renderTasks(Array.isArray(snapshot.active_tasks) ? snapshot.active_tasks : []);
+      const errorBox = document.getElementById('errorBox');
+      const error = data.last_error || (!connected ? data.msg : '');
+      errorBox.textContent = error || '';
+      errorBox.style.display = error ? 'block' : 'none';
+    }
+
+    async function refreshStatus() {
+      try {
+        const response = await fetch('/api/bridge/status', {cache: 'no-store'});
+        const data = await response.json();
+        renderStatus(data);
+      } catch (error) {
+        renderStatus({mcp_connected: false, telemetry_fresh: false, msg: String(error), snapshot: {}});
+      }
+    }
+
+    async function loadGateway() {
+      const response = await fetch('/api/config/gateway', {cache: 'no-store'});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.msg || '读取网关失败');
+      const gateway = data.gateway || {};
+      document.getElementById('gatewayHost').value = gateway.host || '127.0.0.1';
+      document.getElementById('gatewayPort').value = gateway.port || 9090;
+      document.getElementById('gatewayMode').value = gateway.mode || 'real';
+    }
+
+    document.getElementById('refreshButton').addEventListener('click', refreshStatus);
+    document.getElementById('gatewayButton').addEventListener('click', async () => {
+      try { await loadGateway(); document.getElementById('gatewayDialog').showModal(); }
+      catch (error) { renderStatus({mcp_connected: false, telemetry_fresh: false, msg: String(error), snapshot: {}}); }
+    });
+    document.getElementById('closeDialog').addEventListener('click', () => document.getElementById('gatewayDialog').close());
+    document.getElementById('cancelDialog').addEventListener('click', () => document.getElementById('gatewayDialog').close());
+    document.getElementById('gatewayForm').addEventListener('submit', async event => {
+      event.preventDefault();
+      const payload = {
+        host: document.getElementById('gatewayHost').value.trim(),
+        port: Number(document.getElementById('gatewayPort').value),
+        mode: document.getElementById('gatewayMode').value
+      };
+      const response = await fetch('/api/config/gateway', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+      const data = await response.json();
+      if (!response.ok) { window.alert(data.msg || '网关切换失败'); return; }
+      document.getElementById('gatewayDialog').close();
+      await refreshStatus();
+    });
+
+    refreshStatus();
+    pollTimer = window.setInterval(refreshStatus, 1000);
+  </script>
+</body>
+</html>

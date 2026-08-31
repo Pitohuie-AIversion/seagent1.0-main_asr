@@ -582,13 +582,14 @@ from src.exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConf
 
 def _dispatch_ros2_on_done_transition(mgr, phase_before):
     """Dispatch only the state-machine edge into done, never a later done request."""
-    if phase_before == "done" or mgr.phase != "done" or not mgr._last_built_json:
+    task_intent = getattr(mgr, "final_result", None)
+    if phase_before == "done" or mgr.phase != "done" or not task_intent:
         return None
     bridge = get_mcp_bridge()
     if bridge is None or not bridge.is_healthy():
         return {"state": "FAILED", "error": "ROS 2 MCP 桥接服务未连接"}
     try:
-        sent_id = bridge.dispatch_intent(mgr._last_built_json)
+        sent_id = bridge.dispatch_intent(task_intent)
         logging.info("TaskIntent 已写入 ROS 2 传输 (task_id=0x%X)", sent_id)
         return {
             "state": "SENT",

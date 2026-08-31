@@ -162,10 +162,10 @@ model_variants:
         Mechanical_arm: null
         End_effector: null
         Visual_sensor:
-          - "水下成像系统"
+          - "单目水下成像系统"
           - "云台摄像机"
         Acoustic_sensor:
-          - "FLS声呐系统"
+          - "前视声呐系统"
         Navigation_sensor:
           - "INS惯性导航系统"
           - "DVL测速系统"
@@ -174,6 +174,8 @@ model_variants:
           - "高度计"
         Other_sensor:
           - "埋深感应装置"
+        Propulsion_module:
+          - "履带模块"
         Operation_tool:
           - "高压水射流喷冲埋设模块"
           - "压缆器"
@@ -181,16 +183,19 @@ model_variants:
         Mechanical_arm: null
         End_effector: null
         Visual_sensor:
-          - "激光标尺"
           - "管缆外观检测设备"
+        Propulsion_module: null
         Acoustic_sensor:
           - "机械扫描声呐"
+          - "侧扫声呐系统"
+          - "多波束声呐系统"
           - "声学应答器"
         Navigation_sensor: null
         Other_sensor:
           - "TSS管缆跟踪系统"
           - "海床地质探测设备"
           - "腐蚀检测探头"
+          - "激光标尺"
         Operation_tool:
           - "机械切割开沟模块"
           - "海缆保护施工工具"
@@ -271,10 +276,10 @@ model_variants:
         Mechanical_arm: null
         End_effector: null
         Visual_sensor:
-          - "水下成像系统"
+          - "单目水下成像系统"
           - "云台摄像机"
         Acoustic_sensor:
-          - "FLS声呐系统"
+          - "前视声呐系统"
         Navigation_sensor:
           - "INS惯性导航系统"
           - "DVL测速系统"
@@ -283,18 +288,21 @@ model_variants:
           - "高度计"
         Other_sensor:
           - "埋深感应装置"
+        Propulsion_module:
+          - "履带模块"
         Operation_tool:
           - "高压水射流喷冲埋设模块"
           - "压缆器"
-          - "履带模块"
       supported_payloads:
         Mechanical_arm: null
         End_effector: null
         Visual_sensor:
-          - "激光标尺"
           - "管缆外观检测设备"
+        Propulsion_module: null
         Acoustic_sensor:
           - "机械扫描声呐"
+          - "侧扫声呐系统"
+          - "多波束声呐系统"
           - "水下定位信标"
           - "声学应答器"
         Navigation_sensor: null
@@ -302,6 +310,7 @@ model_variants:
           - "TSS管缆跟踪系统"
           - "海床地质探测设备"
           - "腐蚀检测探头"
+          - "激光标尺"
         Operation_tool:
           - "机械切割开沟模块"
       max_payload_weight_kg: null
@@ -329,10 +338,10 @@ model_variants:
         End_effector:
           - "机械臂末端夹爪 / 夹具"
         Visual_sensor:
-          - "水下成像系统"
+          - "单目水下成像系统"
           - "云台摄像机"
         Acoustic_sensor:
-          - "FLS声呐系统"
+          - "前视声呐系统"
         Navigation_sensor:
           - "INS惯性导航系统"
           - "DVL测速系统"
@@ -340,8 +349,9 @@ model_variants:
           - "高度计"
           - "USBL定位系统"
         Other_sensor: null
-        Operation_tool:
+        Propulsion_module:
           - "履带模块"
+        Operation_tool: null
       supported_payloads:
         Mechanical_arm: 
           - "电液机械臂"
@@ -355,14 +365,15 @@ model_variants:
           - "阀门扭矩工具"
           - "液压飞线插拔工具"
           - "电气飞线插拔工具"
-          - "机械臂腕部摄像机"
         Visual_sensor:
-          - "双目视觉模块"
-          - "三维视觉系统"
-          - "激光标尺"
-          - "浑水摄像机"
+          - "双目水下成像系统"
+          - "浑水水下成像系统"
+          - "机械臂腕部摄像机"
+        Propulsion_module: null
         Acoustic_sensor:
           - "机械扫描声呐"
+          - "侧扫声呐系统"
+          - "多波束声呐系统"
         Navigation_sensor: null
         Other_sensor:
           - "电磁检测传感器"
@@ -370,6 +381,7 @@ model_variants:
           - "水质传感器"
           - "TSS管缆跟踪系统"
           - "六维力 / 力矩传感器"
+          - "激光标尺"
         Operation_tool:
           - "独立采样器"
       max_payload_weight_kg: 650
@@ -397,10 +409,10 @@ model_variants:
         End_effector:
           - "机械臂末端夹爪 / 夹具"
         Visual_sensor:
-          - "水下成像系统"
+          - "单目水下成像系统"
           - "云台摄像机"
         Acoustic_sensor:
-          - "FLS声呐系统"
+          - "前视声呐系统"
         Navigation_sensor:
           - "INS惯性导航系统"
           - "DVL测速系统"
@@ -408,8 +420,8 @@ model_variants:
           - "高度计"
           - "USBL定位系统"
         Other_sensor: null
-        Operation_tool:
-          - "履带模块"
+        Propulsion_module: null
+        Operation_tool: null
       supported_payloads:
         Mechanical_arm: 
           - "轻型电液机械臂"
@@ -417,22 +429,17 @@ model_variants:
         End_effector: 
           - "腐蚀检测探头"
           - "机械臂相关采样工具"
-          - "液压剪切 / 水下锯切工具"
-          - "液压电缆剪切器"
-          - "阀门扭矩工具"
-          - "ROV液压热插拔接头"
-          - "液压飞线插拔工具"
-          - "电气飞线插拔工具"
-          - "机械臂腕部摄像机"
           - "机械臂工具快换装置"
           - "旋转清洗刷"
         Visual_sensor:
-          - "双目视觉模块"
-          - "三维视觉系统"
-          - "激光标尺"
-          - "浑水摄像机"
+          - "双目水下成像系统"
+          - "浑水水下成像系统"
+          - "机械臂腕部摄像机"
+        Propulsion_module: null
         Acoustic_sensor:
           - "机械扫描声呐"
+          - "侧扫声呐系统"
+          - "多波束声呐系统"
         Navigation_sensor: null
         Other_sensor:
           - "电磁检测传感器"
@@ -440,6 +447,7 @@ model_variants:
           - "水质传感器"
           - "TSS管缆跟踪系统"
           - "六维力 / 力矩传感器"
+          - "激光标尺"
         Operation_tool:
           - "独立采样器"
       max_payload_weight_kg: 16
@@ -465,10 +473,10 @@ model_variants:
         Mechanical_arm: null
         End_effector: null
         Visual_sensor:
-          - "水下成像系统"
+          - "单目水下成像系统"
           - "云台摄像机"
         Acoustic_sensor:
-          - "FLS声呐系统"
+          - "前视声呐系统"
         Navigation_sensor:
           - "INS惯性导航系统"
           - "DVL测速系统"
@@ -476,18 +484,19 @@ model_variants:
           - "高度计"
           - "USBL定位系统"
         Other_sensor: null
-        Operation_tool:
-          - "履带模块"
+        Propulsion_module: null
+        Operation_tool: null
       supported_payloads:
         Mechanical_arm: null
         End_effector: null
         Visual_sensor:
-          - "双目视觉模块"
-          - "三维视觉系统"
-          - "激光标尺"
-          - "浑水摄像机"
+          - "双目水下成像系统"
+          - "浑水水下成像系统"
+        Propulsion_module: null
         Acoustic_sensor:
           - "机械扫描声呐"
+          - "侧扫声呐系统"
+          - "多波束声呐系统"
         Navigation_sensor: null
         Other_sensor:
           - "电磁检测传感器"
@@ -495,6 +504,7 @@ model_variants:
           - "厚度检测传感器"
           - "水质传感器"
           - "TSS管缆跟踪系统"
+          - "激光标尺"
         Operation_tool:
           - "独立采样器"
       max_payload_weight_kg: 16
@@ -521,25 +531,25 @@ model_variants:
         End_effector: null
         Visual_sensor: null
         Acoustic_sensor:
-          - "FLS声呐系统"
+          - "前视声呐系统"
         Navigation_sensor:
           - "INS惯性导航系统"
           - "DVL测速系统"
           - "深度计"
         Other_sensor: null
+        Propulsion_module: null
         Operation_tool: null
       supported_payloads:
         Mechanical_arm: null
         End_effector: null
         Visual_sensor:
-          - "双目视觉模块"
-          - "水下成像系统"
-          - "激光标尺"
-          - "三维视觉系统"
+          - "双目水下成像系统"
+          - "单目水下成像系统"
+        Propulsion_module: null
         Acoustic_sensor:
-          - "侧扫声呐"
+          - "侧扫声呐系统"
           - "合成孔径声呐"
-          - "多波束测深声呐"
+          - "多波束声呐系统"
         Navigation_sensor:
           - "USBL辅助定位模块"
         Other_sensor:
@@ -548,6 +558,7 @@ model_variants:
           - "水质传感器"
           - "溶解氧传感器"
           - "浊度传感器"
+          - "激光标尺"
         Operation_tool: null
       max_payload_weight_kg: 15
       structural_lifting_capacity_kg: "不适用"

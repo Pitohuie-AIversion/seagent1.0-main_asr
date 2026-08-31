@@ -6,6 +6,9 @@ SEAgent 任务执行状态追踪器
 订阅 /task/system_status 话题，解析 TaskStatus[] task_list，
 实时追踪任务生命周期：READY → PLAN → ONGOING → FINISH/FAIL
 
+SysStatus 解析严格按 `sealien_ctrlpilot_llmbridge/msg/SysStatus` 约定进行，
+`outside/sealien_ctrlpilot_msgmanagement-dev_rov-msg` 下的同名/同主题候选文件不作为主链路依据。
+
 提供：
   - 同步等待任务完成（wait_for_finish）
   - 异步状态回调（on_status_change）
@@ -19,18 +22,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-try:
-    from .rosbridge_client import (
-        RosbridgeClient,
-        TaskStatus,
-        TaskStatusItem,
-    )
-except ImportError:
-    from rosbridge_client import (
-        RosbridgeClient,
-        TaskStatus,
-        TaskStatusItem,
-    )
+from .rosbridge_client import (
+    RosbridgeClient,
+    TaskStatus,
+    TaskStatusItem,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +59,7 @@ class TaskStatusTracker:
 
     通过 RosbridgeClient 订阅 /task/system_status，
     解析 SysStatus.msg 中的 task_list 字段，
+    仅按 `sealien_ctrlpilot_llmbridge` 主协议消息处理任务状态，
     提供任务生命周期查询与等待接口。
 
     用法：

@@ -15,12 +15,8 @@ SEAgent 对话管理器与 MCP ROS 2 通信闭环桥接集成器
 
 import logging
 from typing import Any, Dict, Optional
-try:
-    from .bridge_service import SEAgentMCPBridgeService
-    from .task_status_tracker import TaskStatusItem
-except ImportError:
-    from bridge_service import SEAgentMCPBridgeService
-    from task_status_tracker import TaskStatusItem
+from .bridge_service import SEAgentMCPBridgeService
+from .task_status_tracker import TaskStatusItem
 
 logger = logging.getLogger(__name__)
 
