@@ -9,7 +9,7 @@ Mock rosbridge WebSocket 服务端（符合完整内部协议）
 - 处理 subscribe（推送 /task/system_status 完整 SysStatus 遥测）
 - 支持 TASK_MANAGE 指令解析与模拟执行状态推进
 
-Mock 遥测数据符合 sealien_ctrlpilot_msgmanagement/SysStatus.msg 完整结构
+Mock 遥测数据符合 sealien_ctrlpilot_llmbridge/msg/SysStatus 完整结构
 （参考 UI接口协议.md 第 3 节）
 """
 
@@ -71,6 +71,7 @@ def _make_sys_status(task_list=None):
 received_publishes = []          # 所有收到的 publish 消息
 active_tasks = {}                # task_id -> task_status_item
 _pending_status_steps = {}       # task_id -> [status_序列]
+_background_tasks = set()
 _STATUS_PROGRESSION = [          # 任务状态正常推进序列
     1,   # PLAN
     2,   # ENTER
@@ -82,6 +83,7 @@ _STATUS_PROGRESSION = [          # 任务状态正常推进序列
 
 async def handle_client(websocket):
     subscriptions = set()
+    advertised_topics = {}
 
     async def push_sys_status():
         """推送当前完整 SysStatus（含任务列表）"""
@@ -101,8 +103,12 @@ async def handle_client(websocket):
 
         op = msg.get("op")
 
+        # ---- advertise ------------------------------------------------
+        if op == "advertise":
+            advertised_topics[msg.get("topic", "")] = msg.get("type", "")
+
         # ---- subscribe ------------------------------------------------
-        if op == "subscribe":
+        elif op == "subscribe":
             topic = msg.get("topic", "")
             subscriptions.add(topic)
             if topic == "/task/system_status":
@@ -139,6 +145,7 @@ async def handle_client(websocket):
                 # 回复 ack（便于测试断言）
                 ack = {
                     "op":     "ack",
+                    "id":     msg.get("id"),
                     "topic":  topic,
                     "status": "ok",
                     "task_id": task_id,
@@ -151,9 +158,11 @@ async def handle_client(websocket):
 
                 # 后台推进任务状态（模拟执行进度）
                 if task_type != 0 and task_id in _pending_status_steps:
-                    asyncio.ensure_future(
+                    task = asyncio.create_task(
                         _advance_task_status(task_id, websocket, subscriptions)
                     )
+                    _background_tasks.add(task)
+                    task.add_done_callback(_background_tasks.discard)
 
             elif topic == "/task/sys_config":
                 # 系统模式配置
@@ -169,8 +178,24 @@ async def handle_client(websocket):
 
         # ---- call_service ----------------------------------------------
         elif op == "call_service":
+            service = msg.get("service")
+            values = {}
+            if service == "/rosapi/topic_type":
+                topic = (msg.get("args") or {}).get("topic", "")
+                values = {"type": advertised_topics.get(topic, "")}
+            elif service == "/rosapi/publishers":
+                topic = (msg.get("args") or {}).get("topic", "")
+                values = {
+                    "publishers": ["/rosbridge_websocket"]
+                    if topic in advertised_topics
+                    else []
+                }
             await websocket.send(json.dumps({
-                "op": "service_response", "result": True, "values": {}
+                "op": "service_response",
+                "service": service,
+                "result": True,
+                "values": values,
+                "id": msg.get("id"),
             }))
 
 
@@ -234,6 +259,11 @@ async def _run_server(port: int, stop_event: asyncio.Event):
     import websockets
     async with websockets.serve(handle_client, "127.0.0.1", port):
         await stop_event.wait()
+        pending = list(_background_tasks)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 class MockRosbridgeServer:
@@ -249,6 +279,7 @@ class MockRosbridgeServer:
         received_publishes.clear()
         active_tasks.clear()
         _pending_status_steps.clear()
+        _background_tasks.clear()
         ready = threading.Event()
 
         def _run():

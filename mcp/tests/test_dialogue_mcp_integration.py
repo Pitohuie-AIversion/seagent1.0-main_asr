@@ -15,10 +15,15 @@ import pytest
 import sys
 from pathlib import Path
 
-MCP_DIR = Path(__file__).resolve().parent
+TESTS_DIR = Path(__file__).resolve().parent
+MCP_DIR = TESTS_DIR.parent
+CORE_DIR = MCP_DIR / "core"
+MOCK_DIR = MCP_DIR / "mock"
 SEAGENT_ROOT = MCP_DIR.parent
-sys.path.insert(0, str(MCP_DIR))
-sys.path.insert(0, str(SEAGENT_ROOT))
+
+for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, SEAGENT_ROOT]:
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 
 from bridge_service import SEAgentMCPBridgeService
 from dialogue_mcp_integration import attach_mcp_bridge, dispatch_dialogue_result
@@ -125,7 +130,8 @@ class TestDialogueMCPIntegration:
             "priority": 10,
             "location": {"oilfield": "涠洲油田", "water_depth_m": 80.0},
             "task": {"type": "pipeline_inspection", "details": {
-                "target": {"latitude": 21.0, "longitude": 109.5},
+                "start_point": {"latitude": 21.0, "longitude": 109.5},
+                "end_point": {"latitude": 21.1, "longitude": 109.7},
             }},
         }
         dm = MockDialogueManager(phase="done", final_result=task_intent)

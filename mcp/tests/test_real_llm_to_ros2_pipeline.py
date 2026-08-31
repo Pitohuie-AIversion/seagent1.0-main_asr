@@ -20,10 +20,15 @@ from pathlib import Path
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_OFFLINE"] = "1"
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MCP_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(MCP_DIR))
+TESTS_DIR = Path(__file__).resolve().parent
+MCP_DIR = TESTS_DIR.parent
+CORE_DIR = MCP_DIR / "core"
+MOCK_DIR = MCP_DIR / "mock"
+PROJECT_ROOT = MCP_DIR.parent
+
+for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, PROJECT_ROOT]:
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 
 from transformers import AutoTokenizer
 from vllm import LLM
@@ -70,7 +75,7 @@ def main():
     kb = KnowledgeBase()
     dm = DialogueManager(llm=llm_client, kb=kb)
     
-    server_script = Path(__file__).parent / "mock_ros2_mcp_server.py"
+    server_script = MOCK_DIR / "mock_ros2_mcp_server.py"
     mcp_adapter = SeagentROS2MCPAdapter(server_script)
 
     print("\n================================================================================")

@@ -16,6 +16,7 @@ from mcp.client.stdio import stdio_client
 # 映射 TaskIntent task_type 到 SysTaskCmd 枚举编号（参考 UI接口协议.md）
 TASK_TYPE_MAPPING = {
     "pipeline_inspection": 2,  # SEARCH_CABLE 巡缆/巡线
+    "pipeline_burial": 1,      # CLAMP_CABLE 管道/电缆埋设
     "cable_burial": 1,         # CLAMP_CABLE 夹缆/埋设
     "valve_operation": 4,      # INSERT_PLUG / 阀门操作
     "tree_valve_operation": 4, # 插拔/采油树操作

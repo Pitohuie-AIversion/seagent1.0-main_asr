@@ -6930,7 +6930,9 @@ class DialogueManager:
             return False
         return text in {
             "忽略警告",
+            "忽略警告继续",
             "忽略软警告",
+            "忽略软警告继续",
             "忽略",
             "无视警告",
             "无视软警告",

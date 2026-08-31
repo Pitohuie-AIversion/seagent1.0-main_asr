@@ -18,10 +18,15 @@ import time
 import pytest
 from pathlib import Path
 
-MCP_DIR = Path(__file__).resolve().parent
+TESTS_DIR = Path(__file__).resolve().parent
+MCP_DIR = TESTS_DIR.parent
+CORE_DIR = MCP_DIR / "core"
+MOCK_DIR = MCP_DIR / "mock"
 SEAGENT_ROOT = MCP_DIR.parent
-sys.path.insert(0, str(MCP_DIR))
-sys.path.insert(0, str(SEAGENT_ROOT))
+
+for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, SEAGENT_ROOT]:
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 
 from rosbridge_client import (
     TaskType, TaskManageAction, PilotMode, TaskStatus,
@@ -71,16 +76,22 @@ def ws_client(rosbridge_server):
 
 def _intent(task_type="tree_valve_operation", depth=300.0, lat=20.815, lon=115.735,
             priority=15, fail_stop=True):
+    details = {
+        "target": {"latitude": lat, "longitude": lon},
+        "speed_ms": 1.5,
+    }
+    if task_type == "pipeline_inspection":
+        details = {
+            "start_point": {"latitude": lat, "longitude": lon},
+            "end_point": {"latitude": lat + 0.1, "longitude": lon + 0.2},
+        }
     return {
         "schema_version": 2,
         "task_type": task_type,
         "priority": priority,
         "fail_stop": fail_stop,
         "location": {"oilfield": "流花11-1油田", "water_depth_m": depth},
-        "task": {"type": task_type, "details": {
-            "target": {"latitude": lat, "longitude": lon},
-            "speed_ms": 1.5,
-        }},
+        "task": {"type": task_type, "details": details},
         "equipment": {"robot_type": "work_class_rov"},
     }
 

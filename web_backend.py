@@ -450,6 +450,21 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/dashboard")
+def dashboard():
+    return render_template("ros2_dashboard.html")
+
+
+@app.route("/api/telemetry", methods=["GET"])
+def get_telemetry_snapshot():
+    """Compatibility view backed by live ROS telemetry, never by protocol YAML."""
+    bridge = get_mcp_bridge()
+    snapshot = bridge.runtime_snapshot() if bridge is not None else {}
+    resp = jsonify({"code": 200, "snapshot": snapshot})
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
+
+
 @app.route("/favicon.ico")
 def favicon():
     return "", 204
@@ -564,6 +579,26 @@ def api_asr():
 from src.slot_store import SlotVersionConflict
 from src.exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
 
+
+def _dispatch_ros2_on_done_transition(mgr, phase_before):
+    """Dispatch only the state-machine edge into done, never a later done request."""
+    if phase_before == "done" or mgr.phase != "done" or not mgr._last_built_json:
+        return None
+    bridge = get_mcp_bridge()
+    if bridge is None or not bridge.is_healthy():
+        return {"state": "FAILED", "error": "ROS 2 MCP 桥接服务未连接"}
+    try:
+        sent_id = bridge.dispatch_intent(mgr._last_built_json)
+        logging.info("TaskIntent 已写入 ROS 2 传输 (task_id=0x%X)", sent_id)
+        return {
+            "state": "SENT",
+            "task_id": sent_id,
+            "task_id_hex": f"0x{sent_id:X}",
+        }
+    except Exception as bridge_err:
+        logging.error("自动下发至 ROS 2 失败: %s", bridge_err, exc_info=True)
+        return {"state": "FAILED", "error": str(bridge_err)}
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     try:
@@ -597,11 +632,13 @@ def api_chat():
             with _sess_lock:
                 if sid not in _sessions:
                     _sessions[sid] = Session(sid)
+            phase_before = mgr.phase
             reply = mgr.process(
                 msg,
                 request_id=request_id,
             )
             print_status(mgr)
+            ros2_dispatch = None
             if mgr.phase == "done":
                 try:
                     save_conversation(
@@ -622,6 +659,9 @@ def api_chat():
                 except Exception as e:
                     logging.error("保存历史快照失败: %s", e, exc_info=True)
 
+                # 只有首次进入 done 才触发自动下发；重复确认不会再次发布。
+                ros2_dispatch = _dispatch_ros2_on_done_transition(mgr, phase_before)
+
             ui_state = build_frontend_ui_state(mgr)
             resp_data = {
                 "code": 200,
@@ -639,7 +679,8 @@ def api_chat():
                 "task_id": mgr.task_state.get("task_id"),
                 "task_id_preview": mgr.task_id_preview,
                 "emergency": mgr.mode == "emergency",
-                "final_json": mgr._last_built_json if mgr.phase == "done" else None
+                "final_json": mgr._last_built_json if mgr.phase == "done" else None,
+                "ros2_dispatch": ros2_dispatch,
             }
         for k, v in resp_data.items():
             try:
@@ -1142,39 +1183,20 @@ def get_mcp_bridge():
 def get_mcp_status():
     """查询云端 ↔ 支持船 Topside MCP 通信状态与遥测快照"""
     bridge = get_mcp_bridge()
-    if bridge is None or not bridge.is_healthy():
-        return jsonify({
+    if bridge is None:
+        resp = jsonify({
             "code": 200,
             "mcp_connected": False,
-            "msg": "MCP 桥接服务未连接或未初始化",
-            "host": bridge.host if bridge else "N/A",
-            "port": bridge.port if bridge else 0,
-            "telemetry": None,
+            "telemetry_fresh": False,
+            "msg": "MCP 桥接服务未初始化",
+            "host": None,
+            "port": None,
+            "snapshot": {},
         })
-
-    telemetry = bridge.tracker.latest_telemetry()
-    telemetry_data = None
-    if telemetry:
-        telemetry_data = {
-            "received_at": telemetry.received_at,
-            "water_depth_m": telemetry.water_depth,
-            "altitude_m": telemetry.altitude,
-            "ctr_mode": telemetry.ctr_mode,
-            "health": telemetry.health,
-            "task_count": len(telemetry.task_list),
-            "task_list": [
-                {"task_id": t.task_id, "task_type": t.task_type, "status": t.status, "status_name": t.status_name}
-                for t in telemetry.task_list
-            ],
-        }
-
-    return jsonify({
-        "code": 200,
-        "mcp_connected": True,
-        "host": bridge.host,
-        "port": bridge.port,
-        "telemetry": telemetry_data,
-    })
+    else:
+        resp = jsonify({"code": 200, **bridge.status_payload()})
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
 
 
 @app.route("/api/mcp/dispatch", methods=["POST"])
@@ -1188,27 +1210,115 @@ def dispatch_mcp_task():
     sid = data.get("session_id")
     custom_intent = data.get("task_intent")
 
-    if custom_intent and isinstance(custom_intent, dict):
+    allow_custom = bool(app.config.get("ALLOW_MCP_CUSTOM_INTENT", False))
+    if custom_intent and isinstance(custom_intent, dict) and allow_custom:
         intent_to_send = custom_intent
+    elif custom_intent:
+        return jsonify({
+            "code": 403,
+            "msg": "禁止绕过 SEAgent 会话确认与约束校验直接下发 task_intent",
+        }), 403
     elif sid:
         mgr = get_or_create_manager(sid)
         if mgr.phase != "done" or not mgr.final_result:
             return jsonify({"code": 400, "msg": f"当前会话 {sid} 尚未处于 done 阶段，无可下发的任务"}), 400
         intent_to_send = mgr.final_result
     else:
-        return jsonify({"code": 400, "msg": "请提供 session_id 或自定义 task_intent"}), 400
+        return jsonify({"code": 400, "msg": "请提供已完成确认的 session_id"}), 400
 
     try:
         task_id = bridge.dispatch_intent(intent_to_send)
         return jsonify({
             "code": 200,
-            "msg": f"任务成功通过 MCP 下发至 ROS 2 (task_id=0x{task_id:X})",
+            "msg": f"任务已写入 ROS 2 传输 (task_id=0x{task_id:X})，等待机器人遥测确认",
+            "dispatch_state": "SENT",
             "task_id": task_id,
             "task_id_hex": f"0x{task_id:X}",
         })
     except Exception as exc:
         logging.error("MCP 下发任务失败: %s", exc, exc_info=True)
         return jsonify({"code": 500, "msg": f"MCP 下发失败: {exc}"}), 500
+
+
+def _persist_active_gateway(host: str, port: int, mode: str) -> None:
+    """Persist gateway configuration atomically after a successful reconnect."""
+    spec_file = CONFIG_DIR / "ros2_protocol_spec.yaml"
+    with open(spec_file, "r", encoding="utf-8") as config_handle:
+        data = yaml.safe_load(config_handle) or {}
+    gateway = data.setdefault("websocket_gateway", {})
+    gateway["active_host"] = host
+    gateway["active_port"] = port
+    gateway["active_mode"] = mode
+
+    temporary_file = spec_file.with_suffix(
+        f".gateway_tmp_{os.getpid()}_{threading.get_ident()}"
+    )
+    try:
+        with open(temporary_file, "w", encoding="utf-8") as config_handle:
+            yaml.safe_dump(data, config_handle, allow_unicode=True, sort_keys=False)
+            config_handle.flush()
+            os.fsync(config_handle.fileno())
+        os.replace(temporary_file, spec_file)
+        directory_fd = os.open(spec_file.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary_file.unlink(missing_ok=True)
+
+
+@app.route("/api/mcp/gateway", methods=["GET", "POST"])
+def mcp_gateway():
+    """Read or atomically switch the live rosbridge gateway."""
+    bridge = get_mcp_bridge()
+    if bridge is None:
+        return jsonify({"code": 503, "msg": "MCP 桥接服务未初始化"}), 503
+    if request.method == "GET":
+        return jsonify({
+            "code": 200,
+            "gateway": {
+                "host": bridge.host,
+                "port": bridge.port,
+                "mode": "real" if bridge.port == 9090 else "mock",
+                "ws_url": f"ws://{bridge.host}:{bridge.port}",
+                "connected": bridge.is_healthy(),
+            },
+        })
+
+    data = request.get_json(silent=True) or {}
+    host = str(data.get("host", "")).strip()
+    try:
+        port = int(data.get("port"))
+    except (TypeError, ValueError):
+        return jsonify({"code": 400, "msg": "port 必须是整数"}), 400
+    mode = str(data.get("mode") or ("real" if port == 9090 else "mock"))
+    if not host or len(host) > 253 or any(ch.isspace() for ch in host):
+        return jsonify({"code": 400, "msg": "host 格式非法"}), 400
+    if not 1 <= port <= 65535:
+        return jsonify({"code": 400, "msg": "port 必须在 1..65535 范围内"}), 400
+
+    old_host, old_port = bridge.host, bridge.port
+    try:
+        bridge.reconnect(host, port)
+        try:
+            _persist_active_gateway(host, port, mode)
+        except Exception:
+            bridge.reconnect(old_host, old_port)
+            raise
+    except Exception as exc:
+        logging.error("切换 ROS 2 网关失败: %s", exc, exc_info=True)
+        return jsonify({"code": 502, "msg": f"网关切换失败: {exc}"}), 502
+    return jsonify({
+        "code": 200,
+        "gateway": {
+            "host": host,
+            "port": port,
+            "mode": mode,
+            "ws_url": f"ws://{host}:{port}",
+            "connected": True,
+        },
+    })
 
 
 @app.route("/api/mcp/task-manage", methods=["POST"])

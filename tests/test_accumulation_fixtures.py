@@ -87,7 +87,7 @@ class AccumulationFixtureConsistencyTest(unittest.TestCase):
         self.assertIn("OBSROV-75-001", status_refs)
         self.assertIn("WROV-250-001", status_refs)
         self.assertIn("AUV-324cc-001", status_refs)
-        self.assertIn("TOWED-1500-001", status_refs)
+        self.assertIn("CRAWLER-1600-001", status_refs)
         self.assertIn("SPECIAL-600-001", status_refs)
         self.assertIn("LROV-150-001", status_refs)
         self.assertIn("OBSROV-75-001", build_pipeline_task())

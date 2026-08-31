@@ -18,10 +18,15 @@ import pytest
 import sys
 from pathlib import Path
 
-MCP_DIR = Path(__file__).resolve().parent
+TESTS_DIR = Path(__file__).resolve().parent
+MCP_DIR = TESTS_DIR.parent
+CORE_DIR = MCP_DIR / "core"
+MOCK_DIR = MCP_DIR / "mock"
 SEAGENT_ROOT = MCP_DIR.parent
-sys.path.insert(0, str(MCP_DIR))
-sys.path.insert(0, str(SEAGENT_ROOT))
+
+for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, SEAGENT_ROOT]:
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 
 from rosbridge_client import (
     RosbridgeClient, TaskType, TaskManageAction, PilotMode,
@@ -107,7 +112,10 @@ class TestBidirectionalClosedLoop:
         intent = {
             "schema_version": 2, "task_type": "pipeline_inspection",
             "priority": 10, "location": {"water_depth_m": 80.0},
-            "task": {"details": {"target": {"latitude": 21.0, "longitude": 109.5}}}
+            "task": {"details": {
+                "start_point": {"latitude": 21.0, "longitude": 109.5},
+                "end_point": {"latitude": 21.1, "longitude": 109.7},
+            }}
         }
 
         # 1. 下发巡缆任务
@@ -215,7 +223,10 @@ class TestBidirectionalClosedLoop:
             "schema_version": 2, "task_type": "pipeline_inspection",
             "equipment": {"robot_unit_id": "LROV-150-001"},
             "location": {"water_depth_m": 85.0},
-            "task": {"details": {"target": {"latitude": 20.5, "longitude": 115.2}}}
+            "task": {"details": {
+                "start_point": {"latitude": 20.5, "longitude": 115.2},
+                "end_point": {"latitude": 20.6, "longitude": 115.4},
+            }}
         }
 
         tid_wrov = bridge.dispatch_intent(intent_wrov)

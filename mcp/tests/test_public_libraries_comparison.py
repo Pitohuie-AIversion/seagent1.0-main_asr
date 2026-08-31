@@ -10,9 +10,16 @@ import importlib
 from pathlib import Path
 import pytest
 
-SEAGENT_ROOT = Path(__file__).resolve().parent.parent
-MCP_DIR = Path(__file__).resolve().parent
+TESTS_DIR = Path(__file__).resolve().parent
+MCP_DIR = TESTS_DIR.parent
+CORE_DIR = MCP_DIR / "core"
+MOCK_DIR = MCP_DIR / "mock"
+SEAGENT_ROOT = MCP_DIR.parent
 OUTSIDE_DIR = SEAGENT_ROOT / "outside"
+
+for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, SEAGENT_ROOT]:
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 
 
 def _check_import(module_name: str) -> tuple:
@@ -283,7 +290,7 @@ class TestTaskDispatchSimulation:
         sys.path.insert(0, str(MCP_DIR))
         from seagent_mcp_adapter import SeagentROS2MCPAdapter, TASK_TYPE_MAPPING
         sys.path.pop(0)
-        server_script = MCP_DIR / "mock_ros2_mcp_server.py"
+        server_script = MOCK_DIR / "mock_ros2_mcp_server.py"
         return SeagentROS2MCPAdapter(server_script), TASK_TYPE_MAPPING
 
     def test_E1_tree_valve_operation_dispatch(self):
@@ -398,7 +405,7 @@ class TestTelemetryFeedbackSimulation:
         from src.state_info import RobotStateInfo
         sys.path.pop(0)
 
-        server_script = MCP_DIR / "mock_ros2_mcp_server.py"
+        server_script = MOCK_DIR / "mock_ros2_mcp_server.py"
         adapter = SeagentROS2MCPAdapter(server_script)
 
         state_file = tmp_path / "test_state.yaml"

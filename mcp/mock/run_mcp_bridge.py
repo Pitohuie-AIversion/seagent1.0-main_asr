@@ -20,13 +20,21 @@ import sys
 import time
 from pathlib import Path
 
-MCP_DIR = Path(__file__).resolve().parent
-SEAGENT_ROOT = MCP_DIR.parent
-sys.path.insert(0, str(MCP_DIR))
-sys.path.insert(0, str(SEAGENT_ROOT))
+MOCK_DIR = Path(__file__).resolve().parent
+MCP_ROOT = MOCK_DIR.parent
+CORE_DIR = MCP_ROOT / "core"
+SEAGENT_ROOT = MCP_ROOT.parent
 
-from bridge_service import SEAgentMCPBridgeService
-from mock_rosbridge_server import MockRosbridgeServer
+for p in [MOCK_DIR, CORE_DIR, MCP_ROOT, SEAGENT_ROOT]:
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+
+try:
+    from .bridge_service import SEAgentMCPBridgeService
+    from .mock_rosbridge_server import MockRosbridgeServer
+except ImportError:
+    from bridge_service import SEAgentMCPBridgeService
+    from mock_rosbridge_server import MockRosbridgeServer
 from src.state_info import RobotStateInfo
 
 logging.basicConfig(

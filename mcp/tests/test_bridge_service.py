@@ -17,10 +17,15 @@ import pytest
 import sys
 from pathlib import Path
 
-MCP_DIR = Path(__file__).resolve().parent
+TESTS_DIR = Path(__file__).resolve().parent
+MCP_DIR = TESTS_DIR.parent
+CORE_DIR = MCP_DIR / "core"
+MOCK_DIR = MCP_DIR / "mock"
 SEAGENT_ROOT = MCP_DIR.parent
-sys.path.insert(0, str(MCP_DIR))
-sys.path.insert(0, str(SEAGENT_ROOT))
+
+for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, SEAGENT_ROOT]:
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 
 from bridge_service import SEAgentMCPBridgeService
 from mock_rosbridge_server import MockRosbridgeServer, received_publishes, active_tasks
@@ -51,6 +56,14 @@ def state_info(tmp_path):
     state_file.write_text("store_version: 0\nrobots: {}\n", encoding="utf-8")
     fleet_file = SEAGENT_ROOT / "config" / "robot_fleet.yaml"
     return RobotStateInfo(state_file=state_file, fleet_file=fleet_file)
+
+
+@pytest.fixture
+def spec_file(tmp_path):
+    source = SEAGENT_ROOT / "config" / "ros2_protocol_spec.yaml"
+    target = tmp_path / "ros2_protocol_spec.yaml"
+    target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    return target
 
 
 @pytest.fixture
@@ -116,20 +129,57 @@ class TestBridgeService:
         assert 1.0 in actions  # RESUME
         assert 7.0 in actions  # CLEAR_BLOCK
 
-    def test_Q4_telemetry_tracker_memory(self, bridge):
-        """[Q4] 遥测数据在内存 TaskStatusTracker 中保持，不污染 state.yaml 静态配置"""
+    def test_Q4_telemetry_tracker_memory_without_protocol_yaml_writes(self, bridge, spec_file):
+        """[Q4] 遥测只进入运行时内存，协议 YAML 始终保持静态"""
+        protocol_before = spec_file.read_bytes()
         time.sleep(0.4)
         t = bridge.tracker.latest_telemetry()
         assert t is not None
         assert t.water_depth == pytest.approx(312.4)
         assert t.altitude == pytest.approx(2.5)
 
+        intent = {
+            "schema_version": 2, "intent_id": "Q4-INTENT", "task_type": "pipeline_inspection",
+            "location": {"water_depth_m": 80.0},
+            "task": {"details": {
+                "start_point": {"latitude": 20.0, "longitude": 115.0},
+                "end_point": {"latitude": 20.1, "longitude": 115.2},
+            }},
+        }
+        tid = bridge.dispatch_intent(intent)
+
+        # 等待至少一条系统状态回传进入内存快照。
+        status_seen = None
+        progress_seen = None
+        timeout = time.monotonic() + 3.0
+        expected_id = f"0x{tid:X}"
+        while time.monotonic() < timeout:
+            snap = bridge.runtime_snapshot()
+            active_tasks = snap.get("active_tasks", []) or []
+            for item in active_tasks:
+                if str(item.get("task_id")) == expected_id:
+                    status_seen = item.get("status")
+                    progress_seen = item.get("progress")
+                    if status_seen and status_seen != "SENT":
+                        break
+            if status_seen and status_seen != "SENT":
+                break
+            time.sleep(0.15)
+
+        assert status_seen in {"READY", "PLAN", "ENTER", "ONGOING", "FINISH", "FAIL", "PAUSE", "EXIT"}
+        assert isinstance(progress_seen, (int, float))
+        assert progress_seen >= 0.0
+        assert spec_file.read_bytes() == protocol_before
+
     def test_Q5_wait_for_task_finish(self, bridge):
         """[Q5] 下发任务并等待任务在机器人侧推演至 FINISH"""
         intent = {
             "schema_version": 2, "task_type": "pipeline_inspection",
             "location": {"water_depth_m": 80.0},
-            "task": {"details": {"target": {"latitude": 20.0, "longitude": 115.0}}}
+            "task": {"details": {
+                "start_point": {"latitude": 20.0, "longitude": 115.0},
+                "end_point": {"latitude": 20.1, "longitude": 115.2},
+            }}
         }
         tid = bridge.dispatch_intent(intent)
 

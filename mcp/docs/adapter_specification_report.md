@@ -6,7 +6,7 @@
 | **源码路径** | `mcp/seagent_mcp_adapter.py` |
 | **依赖协议库** | Anthropic 官方 `mcp` Python SDK (`mcp.client.stdio`) |
 | **对接网关** | `ros-mcp-server` (RobotMCP / FastMCP 框架) |
-| **底层 ROS 2 消息** | `sealien_ctrlpilot_msgmanagement/SysTaskCmd` (话题: `/task_cmd`) |
+| **底层 ROS 2 消息** | `sealien_ctrlpilot_llmbridge/msg/SysTaskCmd` (话题: `/task_cmd`) |
 | **支持任务类型** | 管缆巡检 (`pipeline_inspection`)、管缆埋设 (`pipeline_burial`)、采油树控制面板插拔 (`tree_valve_operation`) |
 
 ---

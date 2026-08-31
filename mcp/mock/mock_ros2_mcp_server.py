@@ -9,9 +9,11 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
-from fastmcp import FastMCP
-
-mcp = FastMCP("Mock_ROS2_Control_System")
+try:
+    from fastmcp import FastMCP
+    mcp = FastMCP("Mock_ROS2_Control_System")
+except Exception:
+    mcp = None
 
 STORAGE_FILE = Path("/tmp/mock_ros2_received_cmds.json")
 

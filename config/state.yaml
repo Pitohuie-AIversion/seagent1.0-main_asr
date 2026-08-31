@@ -1,4 +1,4 @@
-store_version: 1492
+store_version: 1998
 robots:
   CRAWLER-1600-001:
     water_current_velocity: 1.0
@@ -37,11 +37,11 @@ robots:
     version: 0
     updated_at: '2026-08-21T18:03:20.554033+08:00'
   WROV-250-001:
-    water_current_velocity: 1.0
-    water_turbidity: 8.0
-    obstacle_density: high
+    water_current_velocity: 0.3
+    water_turbidity: 3
+    obstacle_density: low
     mothership_support: strong
-    confidence: 0.9
+    confidence: 0.95
     overall_status: available
     survival_status: normal
     thruster_status: normal
@@ -51,9 +51,9 @@ robots:
     arm_status: normal
     end_effector_status: normal
     acoustic_comms_status: normal
-    tether_connection_status: normal
-    version: 16
-    updated_at: '2026-08-21T18:03:20.554033+08:00'
+    tether_connection_status: abnormal
+    version: 22
+    updated_at: '2026-08-27T09:31:30.526171+08:00'
   LROV-150-001:
     water_current_velocity: 0.1
     water_turbidity: 1.0
@@ -95,7 +95,7 @@ robots:
     water_turbidity: 6.0
     obstacle_density: low
     mothership_support: strong
-    confidence: 0.9
+    confidence: 0.95
     overall_status: available
     survival_status: normal
     thruster_status: normal

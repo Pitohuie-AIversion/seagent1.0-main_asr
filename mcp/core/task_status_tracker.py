@@ -19,11 +19,18 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from rosbridge_client import (
-    RosbridgeClient,
-    TaskStatus,
-    TaskStatusItem,
-)
+try:
+    from .rosbridge_client import (
+        RosbridgeClient,
+        TaskStatus,
+        TaskStatusItem,
+    )
+except ImportError:
+    from rosbridge_client import (
+        RosbridgeClient,
+        TaskStatus,
+        TaskStatusItem,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -223,9 +230,13 @@ class TaskStatusTracker:
                 status_name = TaskStatus(status_val).name
             except ValueError:
                 status_name = f"UNKNOWN({status_val})"
+
+            raw_task_id = task_cmd.get("task_id") if isinstance(task_cmd, dict) and "task_id" in task_cmd else t.get("task_id", 0)
+            raw_task_type = task_cmd.get("task_type") if isinstance(task_cmd, dict) and "task_type" in task_cmd else t.get("task_type", 0)
+
             task_items.append(TaskStatusItem(
-                task_id=int(task_cmd.get("task_id", 0)),
-                task_type=int(task_cmd.get("task_type", 0)),
+                task_id=int(raw_task_id or 0),
+                task_type=int(raw_task_type or 0),
                 status=status_val,
                 status_name=status_name,
             ))

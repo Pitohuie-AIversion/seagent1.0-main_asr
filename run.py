@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from src.llm_client import LLMClient
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
+from src.result_paths import get_result_dir
 from src.simulated_time import get_simulated_time
 from src.asr_service import ASRConfig, ASRService
 
@@ -198,17 +199,15 @@ def _warmup_llm_client(llm_client: LLMClient) -> None:
     """在对外提供 HTTP 服务之前，预热 JSON Schema FSM 编译与核心 Token 缓存"""
     if llm_client.is_mock:
         return
-    print("🔥 预热 LLM 引擎与 JSON Schema FSM 编译...")
+    print("🔥 预热 LLM 引擎...")
     start_t = time.time()
     try:
         warmup_msgs = [{"role": "user", "content": "你好"}]
-        llm_client.classify_interaction(warmup_msgs, max_tokens=64)
-        llm_client.extract_slots(warmup_msgs, max_tokens=64)
         llm_client.generate_text(warmup_msgs, max_tokens=32)
         elapsed = time.time() - start_t
-        print(f"⚡ LLM 预热完成，耗时 {elapsed:.2f} 秒 (后续请求将享受零延迟启动与 KV 缓存)")
+        print(f"⚡ LLM 预热完成，耗时 {elapsed:.2f} 秒")
     except Exception as exc:
-        print(f"⚠️ LLM 预热跳过或遇到警告: {exc}")
+        print(f"⚠️ LLM 预热跳过: {exc}")
 
 
 _mock_rosbridge_srv = None
@@ -217,26 +216,52 @@ _mock_rosbridge_srv = None
 def _init_mcp_service_if_requested(kb, is_mock: bool = False):
     """初始化 SEAgent MCP 桥接服务"""
     global _mock_rosbridge_srv
-    enable_mcp = os.environ.get("ENABLE_MCP") == "1" or "--mcp" in sys.argv or is_mock
+    enable_mcp = os.environ.get("ENABLE_MCP") != "0" and ("--mcp" in sys.argv or is_mock)
     if not enable_mcp:
         return
 
     try:
         mcp_dir = str(Path(__file__).parent / "mcp")
-        if mcp_dir not in sys.path:
-            sys.path.insert(0, mcp_dir)
+        mcp_core_dir = str(Path(__file__).parent / "mcp" / "core")
+        mcp_mock_dir = str(Path(__file__).parent / "mcp" / "mock")
+        for p in [mcp_dir, mcp_core_dir, mcp_mock_dir]:
+            if p not in sys.path:
+                sys.path.insert(0, p)
 
-        mcp_host = os.environ.get("MCP_HOST", "127.0.0.1")
-        mcp_port = int(os.environ.get("MCP_PORT", "9091" if is_mock else "9090"))
+        # 优先读取 config/ros2_protocol_spec.yaml 中的 active_host 和 active_port
+        gw_host = "127.0.0.1"
+        gw_port = 9090
+        try:
+            spec_file = Path(__file__).parent / "config" / "ros2_protocol_spec.yaml"
+            if spec_file.exists():
+                with open(spec_file, "r", encoding="utf-8") as sf:
+                    spec_data = yaml.safe_load(sf) or {}
+                gw_cfg = spec_data.get("websocket_gateway", {})
+                gw_host = gw_cfg.get("active_host", gw_cfg.get("default_host", "127.0.0.1"))
+                gw_port = int(gw_cfg.get("active_port", gw_cfg.get("default_port", 9090)))
+        except Exception:
+            pass
+
+        mcp_host = os.environ.get("MCP_HOST", gw_host)
+        mcp_port = int(os.environ.get("MCP_PORT", str(gw_port)))
+        os.environ.setdefault(
+            "SEAGENT_ROS2_ID_DIR", str(get_result_dir(create=True))
+        )
 
         if is_mock and _mock_rosbridge_srv is None:
-            from mock_rosbridge_server import MockRosbridgeServer
+            try:
+                from mock_rosbridge_server import MockRosbridgeServer
+            except ImportError:
+                from mcp.mock.mock_rosbridge_server import MockRosbridgeServer
             _mock_rosbridge_srv = MockRosbridgeServer(port=mcp_port)
             _mock_rosbridge_srv.start()
             time.sleep(0.3)
             print(f"🛠️ 本地 Mock rosbridge 仿真服务器已启动 (ws://127.0.0.1:{mcp_port})")
 
-        from bridge_service import SEAgentMCPBridgeService
+        try:
+            from bridge_service import SEAgentMCPBridgeService
+        except ImportError:
+            from mcp.core.bridge_service import SEAgentMCPBridgeService
         mcp_bridge = SEAgentMCPBridgeService(
             host=mcp_host,
             port=mcp_port,

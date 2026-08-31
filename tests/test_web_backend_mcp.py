@@ -13,14 +13,20 @@ test_web_backend_mcp.py
 import json
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock
 import pytest
 import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MCP_DIR = PROJECT_ROOT / "mcp"
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(MCP_DIR))
+CORE_DIR = MCP_DIR / "core"
+MOCK_DIR = MCP_DIR / "mock"
+
+for p in [CORE_DIR, MOCK_DIR, MCP_DIR, PROJECT_ROOT]:
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 
 import web_backend
 from mock_rosbridge_server import MockRosbridgeServer, received_publishes, active_tasks
@@ -91,8 +97,8 @@ class WebBackendMCPTestCase(unittest.TestCase):
     # 2. POST /api/mcp/dispatch
     # ------------------------------------------------------------------
 
-    def test_03_dispatch_custom_intent(self):
-        """[03] POST /api/mcp/dispatch 传入自定义 task_intent，成功下发并返回 task_id"""
+    def test_03_dispatch_custom_intent_is_rejected(self):
+        """[03] 自定义 task_intent 不能绕过 SEAgent 会话确认与约束校验"""
         payload = {
             "task_intent": {
                 "schema_version": 2,
@@ -103,21 +109,37 @@ class WebBackendMCPTestCase(unittest.TestCase):
             }
         }
         res = self.client.post("/api/mcp/dispatch", json=payload)
-        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.status_code, 403)
         data = res.get_json()
-        self.assertEqual(data["code"], 200)
-        self.assertIn("task_id", data)
-        self.assertTrue(data["task_id_hex"].startswith("0x8"))
-
-        time.sleep(0.2)
-        pubs = self.server.get_received_publishes()
-        self.assertGreaterEqual(len(pubs), 1)
-        self.assertEqual(pubs[-1]["payload"]["task_type"], 4)
+        self.assertEqual(data["code"], 403)
+        self.assertEqual(self.server.get_received_publishes(), [])
 
     def test_04_dispatch_missing_params(self):
         """[04] POST /api/mcp/dispatch 既无 session_id 也无 task_intent 应返回 400"""
         res = self.client.post("/api/mcp/dispatch", json={})
         self.assertEqual(res.status_code, 400)
+
+    def test_04b_auto_dispatch_only_on_first_transition_to_done(self):
+        manager = SimpleNamespace(
+            phase="done",
+            _last_built_json={
+                "intent_id": "PI-20260828-099",
+                "task_type": "pipeline_inspection",
+            },
+        )
+        bridge = Mock()
+        bridge.is_healthy.return_value = True
+        bridge.dispatch_intent.return_value = 0x80099
+        web_backend.init_mcp_bridge_service(bridge)
+        try:
+            first = web_backend._dispatch_ros2_on_done_transition(manager, "confirming")
+            repeated = web_backend._dispatch_ros2_on_done_transition(manager, "done")
+        finally:
+            web_backend.init_mcp_bridge_service(self.bridge)
+
+        self.assertEqual(first["state"], "SENT")
+        self.assertIsNone(repeated)
+        bridge.dispatch_intent.assert_called_once()
 
     # ------------------------------------------------------------------
     # 3. POST /api/mcp/task-manage
@@ -128,7 +150,10 @@ class WebBackendMCPTestCase(unittest.TestCase):
         # 预先下发任务
         tid = self.bridge.dispatch_intent({
             "schema_version": 2, "task_type": "pipeline_inspection",
-            "location": {"water_depth_m": 80.0}, "task": {"details": {"target": {"latitude": 20.0, "longitude": 115.0}}}
+            "location": {"water_depth_m": 80.0}, "task": {"details": {
+                "start_point": {"latitude": 20.0, "longitude": 115.0},
+                "end_point": {"latitude": 20.1, "longitude": 115.2},
+            }}
         })
         time.sleep(0.1)
 

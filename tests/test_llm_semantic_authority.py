@@ -190,6 +190,29 @@ def test_blocked_soft_deterministic_ignore_warning_fast_path() -> None:
     assert reply == "已记录软警告确认，任务尚未发布。"
 
 
+def test_blocked_soft_accepts_prompted_ignore_warning_continue_phrases() -> None:
+    """回复中提示的控制短语必须走确定性放行路径，不能进入字段重提取。"""
+    for message in ("忽略警告继续", "忽略软警告继续"):
+        llm = ScriptedLLM(
+            plans=[make_plan("WRITE", warning_action=None)],
+        )
+        dm = DialogueManager(llm, KnowledgeBase())
+        dm.phase = "blocked_soft"
+        dm._handle_soft_warning_confirmation = MagicMock(
+            return_value="已记录软警告确认，任务尚未发布。"
+        )
+
+        reply = dm.process(message)
+
+        dm._handle_soft_warning_confirmation.assert_called_once()
+        assert reply == "已记录软警告确认，任务尚未发布。"
+        assert llm.extract_calls == []
+
+
+def test_ignore_warning_continue_negation_is_not_acknowledgement() -> None:
+    assert DialogueManager._is_ignore_warning("不忽略警告继续") is False
+
+
 def test_blocked_hard_rejects_ignore_warning() -> None:
     """在 blocked_hard 阶段，用户输入‘忽略警告’应被坚决拒绝，阻止硬阻断绕过。"""
     llm = ScriptedLLM(
