@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 
-DEFAULT_RESULT_DIR = Path("/root/autodl-tmp/result")
+DEFAULT_RESULT_DIR = Path(__file__).resolve().parent.parent / "runtime" / "result"
 
 
 def get_result_dir(create: bool = False) -> Path:

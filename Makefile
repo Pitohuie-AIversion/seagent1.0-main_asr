@@ -2,7 +2,7 @@
 # Makefile - 水下多智能体任务决策大模型项目自动化命令工具
 # ==============================================================================
 
-PYTHON = /root/miniconda3/envs/seagent/bin/python
+PYTHON ?= python3
 
 .PHONY: help test run clean status
 

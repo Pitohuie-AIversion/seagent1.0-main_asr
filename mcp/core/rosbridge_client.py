@@ -26,6 +26,7 @@ sealien_ctrlpilot_llmbridge/UI接口协议.md
 import fcntl
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -36,6 +37,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import websocket
+import yaml
 
 from .sealien_protocol import (
     LocalOrigin,
@@ -48,18 +50,37 @@ from .sealien_protocol import (
 
 logger = logging.getLogger(__name__)
 
+# The simulator still exposes the legacy msgmanagement ROS contract.  Keep the
+# production llmbridge contract as the default and opt into the simulator
+# adapter explicitly through the service environment.
+LEGACY_MSGMANAGEMENT = os.environ.get("SEAGENT_ROS2_COMPAT", "").lower() in {
+    "msgmanagement", "legacy", "simulator"
+}
+
 
 # ============================================================================
 # ROS 组协议常量
 # ============================================================================
 # 任务闭环主链路（唯一来源）
-TASK_TOPIC = "/task_cmd"
+TASK_TOPIC = "/task/sys_task_cmd" if LEGACY_MSGMANAGEMENT else "/task_cmd"
 CONFIG_TOPIC = "/task/sys_config"
 STATUS_TOPIC = "/task/system_status"
 
-TASK_MESSAGE_TYPE = "sealien_ctrlpilot_llmbridge/msg/SysTaskCmd"
-CONFIG_MESSAGE_TYPE = "sealien_ctrlpilot_llmbridge/msg/SysConfig"
-STATUS_MESSAGE_TYPE = "sealien_ctrlpilot_llmbridge/msg/SysStatus"
+TASK_MESSAGE_TYPE = (
+    "sealien_ctrlpilot_msgmanagement/msg/SysTaskCmd"
+    if LEGACY_MSGMANAGEMENT
+    else "sealien_ctrlpilot_llmbridge/msg/SysTaskCmd"
+)
+CONFIG_MESSAGE_TYPE = (
+    "sealien_ctrlpilot_msgmanagement/msg/SysConfig"
+    if LEGACY_MSGMANAGEMENT
+    else "sealien_ctrlpilot_llmbridge/msg/SysConfig"
+)
+STATUS_MESSAGE_TYPE = (
+    "sealien_ctrlpilot_msgmanagement/msg/SysStatus"
+    if LEGACY_MSGMANAGEMENT
+    else "sealien_ctrlpilot_llmbridge/msg/SysStatus"
+)
 
 # 非核心辅助通道（不作为主协议判据）
 COMPRESSED_IMAGE_TOPIC = "/vision/compressd_image"
@@ -71,6 +92,20 @@ COMPRESSED_IMAGE_TYPE = "sensor_msgs/msg/CompressedImage"
 IMAGE_TYPE = "sensor_msgs/msg/Image"
 KEYPOINTS_TYPE = "sealien_ctrlpilot_msgmanagement/msg/Keypoints"
 PLUG_HOLE_TYPE = "sealien_ctrlpilot_msgmanagement/msg/ConnectChristmasTreePlug"
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROTOCOL_SPEC = _PROJECT_ROOT / "config" / "ros2_protocol_spec.yaml"
+
+
+def load_protocol_spec() -> Dict[str, Any]:
+    """Load the optional YAML protocol catalog without making startup fragile."""
+    try:
+        with _PROTOCOL_SPEC.open("r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        return data if isinstance(data, dict) else {}
+    except (OSError, yaml.YAMLError) as exc:
+        logger.warning("无法读取 ROS 订阅配置 %s: %s", _PROTOCOL_SPEC, exc)
+        return {}
 
 class TaskType(IntEnum):
     """SysTaskCmd.msg 任务类型枚举（与 UI接口协议.md 严格对齐）"""
@@ -332,6 +367,7 @@ def _coordinate_pose(
         depth = float(coordinate.get("depth", default_depth))
         latitude_value = float(latitude)
         longitude_value = float(longitude)
+        yaw = float(coordinate.get("yaw", 0.0))
     except (TypeError, ValueError) as exc:
         raise ProtocolValidationError(f"{field_name} 坐标或水深不是有效数值") from exc
     if depth < 0:
@@ -343,8 +379,14 @@ def _coordinate_pose(
             water_depth_m=depth,
             origin=origin,
         )
-        return Pose(x=east, y=north, z=z)
-    return Pose(x=longitude_value, y=latitude_value, z=-depth)
+        return Pose(
+            x=east, y=north, z=z,
+            qz=math.sin(yaw / 2.0), qw=math.cos(yaw / 2.0),
+        )
+    return Pose(
+        x=longitude_value, y=latitude_value, z=-depth,
+        qz=math.sin(yaw / 2.0), qw=math.cos(yaw / 2.0),
+    )
 
 
 def validate_sys_task_cmd(cmd: SysTaskCmd) -> SysTaskCmd:
@@ -578,6 +620,43 @@ def build_task_manage_cmd(
     return validate_sys_task_cmd(cmd)
 
 
+def _legacy_task_payload(cmd: SysTaskCmd, intent: Optional[Dict[str, Any]] = None) -> dict:
+    """Adapt a rich SysTaskCmd to simulator's single-target legacy message."""
+    legacy_task = {
+        int(TaskType.CLAMP_CABLE): 0,
+        int(TaskType.SEARCH_CABLE): 1,
+        int(TaskType.INSERT_PLUG): 2,
+        int(TaskType.CLAMP_PIN): 2,
+    }.get(int(cmd.task_type), 3)
+    target = cmd.pos_target[0] if cmd.pos_target else Pose()
+    yaw = 2.0 * math.atan2(float(target.qz), float(target.qw))
+    # TaskIntent v2 payloads may carry details at the top level or under the
+    # canonical ``task.details`` envelope.  Keep the legacy adapter lossless
+    # for pose fields (especially yaw) in both layouts.
+    intent_data = intent or {}
+    details = (
+        intent_data.get("task_details")
+        or intent_data.get("details")
+        or ((intent_data.get("task") or {}).get("details") if isinstance(intent_data.get("task"), dict) else {})
+        or {}
+    )
+    hole_id = (intent or {}).get("hole_id", details.get("hole_id", 0))
+    try:
+        hole_id = max(0, min(255, int(hole_id)))
+    except (TypeError, ValueError):
+        hole_id = 0
+    return {
+        "task": legacy_task,
+        "hole_id": hole_id,
+        "x": float(target.x),
+        "y": float(target.y),
+        "z": float(target.z),
+        "roll": 0.0,
+        "pitch": 0.0,
+        "yaw": yaw,
+    }
+
+
 # ============================================================================
 # 生产级 rosbridge WebSocket 客户端
 # ============================================================================
@@ -725,16 +804,12 @@ class RosbridgeClient:
             )
             observed_type = str((response.get("values") or {}).get("type") or "")
             if self._normalize_ros_type(observed_type) == normalized:
-                publishers_response = self.call_service(
-                    "/rosapi/publishers", {"topic": topic}, timeout=self.connect_timeout
-                )
-                publishers = (publishers_response.get("values") or {}).get(
-                    "publishers", []
-                )
-                if any(str(name).rstrip("/").endswith("/rosbridge_websocket") for name in publishers):
-                    with self._lock:
-                        self._advertised_topics[topic] = normalized
-                    return
+                # Existing simulator topics already have a concrete ROS type.
+                # rosbridge may not list itself as a publisher until after the
+                # first publish, so type agreement is sufficient here.
+                with self._lock:
+                    self._advertised_topics[topic] = normalized
+                return
             time.sleep(0.05)
 
         self._last_transport_error = (
@@ -769,6 +844,14 @@ class RosbridgeClient:
         返回实际使用的 task_id。
         """
         cmd = intent_to_syscmd(task_intent, task_id=task_id, use_geodetic=use_geodetic, origin=origin)
+        if LEGACY_MSGMANAGEMENT:
+            self._last_legacy_task_id = cmd.task_id
+            self.publish(TASK_TOPIC, TASK_MESSAGE_TYPE, _legacy_task_payload(cmd, task_intent))
+            logger.info(
+                "[RosbridgeClient] 下发兼容任务: task=%s task_id=0x%X",
+                _legacy_task_payload(cmd, task_intent)["task"], cmd.task_id,
+            )
+            return cmd.task_id
         self.publish(
             TASK_TOPIC,
             TASK_MESSAGE_TYPE,
@@ -783,6 +866,10 @@ class RosbridgeClient:
     def publish_syscmd_raw(self, cmd: SysTaskCmd) -> None:
         """直接发布预构建的 SysTaskCmd 结构体"""
         validate_sys_task_cmd(cmd)
+        if LEGACY_MSGMANAGEMENT:
+            self._last_legacy_task_id = cmd.task_id
+            self.publish(TASK_TOPIC, TASK_MESSAGE_TYPE, _legacy_task_payload(cmd))
+            return
         self.publish(
             TASK_TOPIC,
             TASK_MESSAGE_TYPE,
@@ -866,6 +953,14 @@ class RosbridgeClient:
 
     def set_pilot_mode(self, mode: PilotMode) -> None:
         """设置飞行器控制模式"""
+        if LEGACY_MSGMANAGEMENT:
+            self.publish(
+                CONFIG_TOPIC,
+                CONFIG_MESSAGE_TYPE,
+                {"task_type": 3, "task_src": 1, "plan_threshold": 0.0, "ctr_mode": int(mode)},
+            )
+            logger.info(f"[RosbridgeClient] 设置兼容控制模式: {mode.name}")
+            return
         self.publish(
             CONFIG_TOPIC,
             CONFIG_MESSAGE_TYPE,
@@ -891,8 +986,47 @@ class RosbridgeClient:
                 logger.info(f"[RosbridgeClient] 已订阅: {topic}")
             self._subscriptions[topic].append(callback)
 
+    def subscribe_from_config(
+        self,
+        callbacks: Optional[Dict[str, Callable[[dict], None]]] = None,
+    ) -> List[str]:
+        """Register every enabled subscription from ``ros2_protocol_spec.yaml``.
+
+        The YAML is intentionally the source of topic/type wiring.  Callers may
+        provide callbacks keyed by the YAML entry name; entries without a
+        callback are still subscribed and safely discarded until a consumer is
+        attached through one of the typed ``subscribe_*`` helpers.
+        """
+        callbacks = callbacks or {}
+        registered: List[str] = []
+        spec = load_protocol_spec()
+        subscriptions = spec.get("subscriptions", {})
+        if not isinstance(subscriptions, dict):
+            return registered
+        for name, entry in subscriptions.items():
+            if not isinstance(entry, dict) or not entry.get("enabled", True):
+                continue
+            topic = entry.get("topic")
+            msg_type = entry.get("type")
+            if not isinstance(topic, str) or not isinstance(msg_type, str):
+                logger.warning("忽略无效 ROS 订阅配置: %s", name)
+                continue
+            callback = callbacks.get(name)
+            if callback is None:
+                callback = lambda _msg: None
+            self.subscribe(topic, msg_type, callback)
+            registered.append(name)
+        return registered
+
     def subscribe_system_status(self, callback: Callable[[dict], None]) -> None:
         """订阅 /task/system_status 遥测（ROV → 云端）"""
+        if LEGACY_MSGMANAGEMENT:
+            self.subscribe(
+                STATUS_TOPIC,
+                STATUS_MESSAGE_TYPE,
+                lambda msg: callback({**msg, "_seagent_task_id": getattr(self, "_last_legacy_task_id", 0)}),
+            )
+            return
         self.subscribe(
             STATUS_TOPIC,
             STATUS_MESSAGE_TYPE,

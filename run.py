@@ -41,7 +41,10 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
-LOCAL_MODEL_PATH = "/root/autodl-tmp/model/Qwen3.5-9B"
+LOCAL_MODEL_PATH = os.environ.get(
+    "SEAGENT_LLM_MODEL_PATH",
+    str(Path(__file__).resolve().parent / "runtime" / "model" / "Qwen3.5-9B"),
+)
 PORT = int(os.environ.get("PORT", "8890"))
 
 # ====================== 配置路径（与你的代码一致）======================
@@ -164,7 +167,10 @@ def startup():
         model=LOCAL_MODEL_PATH,
         trust_remote_code=True,
         dtype="bfloat16" if torch.cuda.is_bf16_supported() else "float16",
-        max_num_seqs=4,
+        max_num_seqs=int(os.environ.get("SEAGENT_MAX_NUM_SEQS", "2")),
+        max_model_len=int(os.environ.get("SEAGENT_MAX_MODEL_LEN", "32768")),
+        gpu_memory_utilization=float(os.environ.get("SEAGENT_GPU_MEMORY_UTILIZATION", "0.82")),
+        max_num_batched_tokens=int(os.environ.get("SEAGENT_MAX_NUM_BATCHED_TOKENS", "8192")),
         enable_prefix_caching=True,
     )
 

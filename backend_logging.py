@@ -5,13 +5,14 @@ from __future__ import annotations
 import atexit
 from datetime import datetime
 import logging
+import os
 from pathlib import Path
 import sys
 import threading
 from typing import TextIO
 
 
-DEFAULT_LOG_DIR = Path("/root/autodl-tmp/log")
+DEFAULT_LOG_DIR = Path(os.environ.get("SEAGENT_LOG_DIR", Path(__file__).resolve().parent / "runtime" / "log"))
 DEFAULT_APP_NAME = "seagent_backend"
 
 

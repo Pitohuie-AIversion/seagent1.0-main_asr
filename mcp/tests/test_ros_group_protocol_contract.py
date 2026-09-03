@@ -1,6 +1,7 @@
 """Contracts derived from the ROS group's Sealien UI protocol and ROS package."""
 
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -109,6 +110,33 @@ def test_protocol_spec_covers_all_ui_protocol_topics_and_directions():
             "sealien_ctrlpilot_msgmanagement/msg/ConnectChristmasTreePlug",
             "subscribe",
         ),
+    }
+
+
+def test_enabled_yaml_subscriptions_are_registered_from_catalog():
+    client = RosbridgeClient()
+    client._ws = Mock()
+    client._ws.connected = True
+
+    registered = client.subscribe_from_config()
+
+    assert registered == [
+        "system_status",
+        "keypoints",
+        "plug_hole",
+        "depth_status",
+        "imu_dvl_status",
+        "thruster_status",
+        "heartbeat",
+    ]
+    assert set(client._subscriptions) == {
+        "/task/system_status",
+        "/vision/keypoints",
+        "/vision/plug_hole",
+        "/sensor/depth",
+        "/sensor/imu_dvl",
+        "/sensor/thruster_status",
+        "/system/heartbeat",
     }
 
 

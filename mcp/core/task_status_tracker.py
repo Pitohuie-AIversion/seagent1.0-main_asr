@@ -218,9 +218,23 @@ class TaskStatusTracker:
         twist = msg.get("twist", {})
         linear = twist.get("linear", {})
 
-        # 解析 task_list
+        # Simulator compatibility: msgmanagement SysStatus reports one current
+        # task rather than the llmbridge task_list array.
         task_items = []
-        for t in msg.get("task_list", []):
+        raw_tasks = msg.get("task_list", [])
+        if not raw_tasks and "task_status" in msg:
+            legacy_status = int(msg.get("task_status", 0))
+            status_map = {0: TaskStatus.READY, 1: TaskStatus.ONGOING, 2: TaskStatus.EXIT}
+            status_val = int(status_map.get(legacy_status, TaskStatus.FAIL))
+            task_id = int(msg.get("_seagent_task_id", 0) or 0)
+            if task_id:
+                task_items.append(TaskStatusItem(
+                    task_id=task_id,
+                    task_type=int(msg.get("task_type", 0)),
+                    status=status_val,
+                    status_name=TaskStatus(status_val).name,
+                ))
+        for t in raw_tasks:
             task_cmd = t.get("task", {})
             status_val = int(t.get("status", 0))
             try:

@@ -1,4 +1,4 @@
-model_path: /root/autodl-tmp/model/Qwen-asr-0.6B
+model_path: runtime/model/Qwen-asr-0.6B
 device: auto
 language: Chinese
 max_new_tokens: 256

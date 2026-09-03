@@ -1,0 +1,18 @@
+FROM lmxxf/vllm-deepseek-v4-dgx-spark:latest
+WORKDIR /app
+COPY requirements/base.txt /tmp/requirements-base.txt
+RUN python3 -m pip install --no-cache-dir -r /tmp/requirements-base.txt
+RUN python3 -m pip install --no-cache-dir --no-deps qwen-asr==0.0.6 \
+    nagisa==0.2.11 soynlp==0.0.493 qwen-omni-utils==0.0.9 \
+    librosa soundfile sox lazy_loader scipy scikit-learn pandas pooch soxr joblib narwhals threadpoolctl
+RUN python3 -m pip install --no-cache-dir websocket-client
+COPY . /app
+ENV TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8890
+ENV SEAGENT_MAX_MODEL_LEN=32768
+ENV SEAGENT_MAX_NUM_SEQS=2
+ENV SEAGENT_GPU_MEMORY_UTILIZATION=0.82
+ENV SEAGENT_MAX_NUM_BATCHED_TOKENS=8192
+ENV SEAGENT_ROS2_COMPAT=msgmanagement
+CMD ["python3", "run.py"]

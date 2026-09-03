@@ -45,6 +45,70 @@ websocket_gateway:
   active_host: 127.0.0.1
   active_port: 9090
   active_mode: real
+
+# ROS msgmanagement 消息目录。目录项只声明消息类型；只有在
+# `subscriptions` 中配置了 topic 的项目才会在 MCP 启动时自动订阅。
+message_definitions:
+  WayPoint: sealien_ctrlpilot_msgmanagement/msg/WayPoint
+  WayPointArray: sealien_ctrlpilot_msgmanagement/msg/WayPointArray
+  Bme280Status: sealien_ctrlpilot_msgmanagement/msg/Bme280Status
+  ConnectChristmasTreePlug: sealien_ctrlpilot_msgmanagement/msg/ConnectChristmasTreePlug
+  DepthStatus: sealien_ctrlpilot_msgmanagement/msg/DepthStatus
+  FollowCmd: sealien_ctrlpilot_msgmanagement/msg/FollowCmd
+  GsStatus: sealien_ctrlpilot_msgmanagement/msg/GsStatus
+  HeartbeatStatus: sealien_ctrlpilot_msgmanagement/msg/HeartbeatStatus
+  ImuDvlStatus: sealien_ctrlpilot_msgmanagement/msg/ImuDvlStatus
+  ImuNavStatus: sealien_ctrlpilot_msgmanagement/msg/ImuNavStatus
+  JoystickCmd: sealien_ctrlpilot_msgmanagement/msg/JoystickCmd
+  Keypoints: sealien_ctrlpilot_msgmanagement/msg/Keypoints
+  LedCmd: sealien_ctrlpilot_msgmanagement/msg/LedCmd
+  LedStatus: sealien_ctrlpilot_msgmanagement/msg/LedStatus
+  PlannerOutput: sealien_ctrlpilot_msgmanagement/msg/PlannerOutput
+  RoboticArmRequest: sealien_ctrlpilot_msgmanagement/msg/RoboticArmRequest
+  SonarAltimeterStatus: sealien_ctrlpilot_msgmanagement/msg/SonarAltimeterStatus
+  SwitchCmd: sealien_ctrlpilot_msgmanagement/msg/SwitchCmd
+  SwitchStatus: sealien_ctrlpilot_msgmanagement/msg/SwitchStatus
+  SysConfig: sealien_ctrlpilot_msgmanagement/msg/SysConfig
+  SysStatus: sealien_ctrlpilot_msgmanagement/msg/SysStatus
+  SysTaskCmd: sealien_ctrlpilot_msgmanagement/msg/SysTaskCmd
+  TaskPosCmd: sealien_ctrlpilot_msgmanagement/msg/TaskPosCmd
+  ThrusterCmd: sealien_ctrlpilot_msgmanagement/msg/ThrusterCmd
+  ThrusterStatus: sealien_ctrlpilot_msgmanagement/msg/ThrusterStatus
+  TwistCmd: sealien_ctrlpilot_msgmanagement/msg/TwistCmd
+  VcheckStatus: sealien_ctrlpilot_msgmanagement/msg/VcheckStatus
+  VisonTaskCmd: sealien_ctrlpilot_msgmanagement/msg/VisonTaskCmd
+
+# 运行时自动订阅清单。topic/type 以 simulator 当前 ROS 图为准。
+# enabled=false 的项目仅保留协议定义，不会发起 rosbridge 订阅。
+subscriptions:
+  system_status:
+    topic: /task/system_status
+    type: sealien_ctrlpilot_msgmanagement/msg/SysStatus
+    enabled: true
+  keypoints:
+    topic: /vision/keypoints
+    type: sealien_ctrlpilot_msgmanagement/msg/Keypoints
+    enabled: true
+  plug_hole:
+    topic: /vision/plug_hole
+    type: sealien_ctrlpilot_msgmanagement/msg/ConnectChristmasTreePlug
+    enabled: true
+  depth_status:
+    topic: /sensor/depth
+    type: sealien_ctrlpilot_msgmanagement/msg/DepthStatus
+    enabled: true
+  imu_dvl_status:
+    topic: /sensor/imu_dvl
+    type: sealien_ctrlpilot_msgmanagement/msg/ImuDvlStatus
+    enabled: true
+  thruster_status:
+    topic: /sensor/thruster_status
+    type: sealien_ctrlpilot_msgmanagement/msg/ThrusterStatus
+    enabled: true
+  heartbeat:
+    topic: /system/heartbeat
+    type: sealien_ctrlpilot_msgmanagement/msg/HeartbeatStatus
+    enabled: true
 task_type_mappings:
   pipeline_inspection:
     display_name: 管道/电缆巡检

@@ -57,6 +57,9 @@ class SEAgentMCPBridgeService:
                 return
             self.client.connect()
             try:
+                # Register all enabled auxiliary channels from the shared YAML
+                # catalog before attaching the task-status callback.
+                self.client.subscribe_from_config()
                 self.tracker.start()
             except Exception:
                 self.client.disconnect()
@@ -83,6 +86,7 @@ class SEAgentMCPBridgeService:
         replacement_tracker = TaskStatusTracker(replacement_client)
         try:
             replacement_client.connect()
+            replacement_client.subscribe_from_config()
             replacement_tracker.start()
         except Exception:
             replacement_client.disconnect()
