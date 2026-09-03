@@ -21,6 +21,7 @@ from .exceptions import (
 from .knowledge_retriever import (
     KnowledgeBase,
     RobotSelectionDataError,
+    format_seabed_type,
     robot_selection_result_contract_error,
 )
 from .simulated_time import get_current_datetime
@@ -1362,7 +1363,7 @@ class TaskValidator:
                         if seabed not in supported:
                             rov_name = rov.get("full_name", str(rov))
                             msg = c["violation_message"].replace("{current_rov}", rov_name)
-                            msg = msg.replace("{current_seabed}", str(seabed))
+                            msg = msg.replace("{current_seabed}", format_seabed_type(seabed))
                             return Violation(
                                 c["id"], c["name"], msg.strip(), c["severity"],
                                 rel_fields, check_type=check, observed_value=seabed

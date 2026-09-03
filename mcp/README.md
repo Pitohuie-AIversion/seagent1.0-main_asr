@@ -35,6 +35,7 @@
 | **`rosbridge_client.py`** | **生产客户端** | **核心生产级 WebSocket 客户端**。实现完整内部协议（`UI接口协议.md`）：TaskType 枚举、`intent_to_syscmd` 转换、任务管理（TASK_MANAGE）、设备控制（CTRL_TASK）、AUV 任务、系统配置、遥测订阅，及无死锁后台监听线程。 |
 | **`sealien_protocol.py`** | **高精度算法** | **水下协议与姿态算法组件**。实现 WGS-84 大地坐标系高精度投影 (`geodetic_to_odom_position`)、切线偏航角与四元数推算 (`yaw_between`/`pose`) 及 Payload 去重守护器 (`TaskMessageGuard`/`RequestIdGuard`)。 |
 | **`task_status_tracker.py`** | **状态追踪器** | **任务执行状态实时追踪**。订阅 `/task/system_status`，解析 `SysStatus.msg` 中的 `TaskStatus[]` 任务队列，提供 `wait_for_finish()` 阻塞等待与状态变化回调机制。 |
+| **`runtime_config.py`** | **运行配置** | 加载并校验 `config/ros2_runtime.yaml`，驱动网关、动态订阅、字段提取、消息大小限制和8088展示元数据。 |
 | **`seagent_mcp_adapter.py`** | stdio 适配器 | 通过 FastMCP stdio 协议与 Mock MCP 服务器交互（用于本地测试验证）。 |
 | **`mock_rosbridge_server.py`** | 仿真服务端 | **Mock rosbridge WebSocket 服务端**（支持完整 `SysStatus.msg`、TASK_MANAGE 解析、任务状态生命周期自动推进）。 |
 | **`mock_ros2_mcp_server.py`** | 仿真服务端 | **Mock FastMCP stdio 服务端**，用于本地无网络的 stdio 接口校验。 |
@@ -65,6 +66,7 @@
 - `from mcp.shim.rosbridge_client import RosbridgeClient, TaskType, intent_to_syscmd`
 - `from mcp.shim.sealien_protocol import LocalOrigin, geodetic_to_odom_position`
 - `from mcp.shim.task_status_tracker import TaskStatusTracker`
+- `from mcp.shim.runtime_config import load_ros2_runtime_config`
 - `from mcp.shim.run_mcp_bridge import parse_args, main`
 - `from mcp.shim.mock_rosbridge_server import MockRosbridgeServer, active_tasks, received_publishes`
 - `from mcp.shim.mock_ros2_mcp_server import mcp`
@@ -86,6 +88,48 @@
 主闭环任务链路只允许按上述 3 个主题 + 3 个消息进行判断与回放。
 
 测试契约同步该约束（示例：`mcp/tests/test_ros_group_protocol_contract.py`）。
+
+## 2.3 静态协议与动态运行配置
+
+- `config/ros2_protocol_spec.yaml` 是静态权威协议，只保存核心话题、消息 schema、任务映射与枚举。
+- `config/ros2_runtime.yaml` 是可热加载的运行策略，保存当前网关、启用订阅、解析器和8088展示字段。
+- 6006 自动监控运行配置；合法修改通过一条准备完成的新 rosbridge 连接原子替换旧连接。
+- 非法 YAML 或与核心 `system_status` 协议不一致的配置不会覆盖最后有效运行态，错误会出现在 `/api/mcp/status` 与8088页面。
+- 实时消息只进入6006内存快照，禁止持续写回任一 YAML。
+
+示例订阅：
+
+```yaml
+subscriptions:
+- id: thruster_status
+  enabled: true
+  topic: /sensor/thruster_status
+  message_type: sealien_ctrlpilot_msgmanagement/msg/ThrusterStatus
+  parser: raw
+  stale_after_seconds: 5
+  display:
+    title: 推进器状态
+    show_raw_message: true
+    fields:
+    - path: speed_rpm.0
+      label: 1号转速
+      unit: rpm
+```
+
+修改、增加、删除或禁用订阅后，8088动态卡片会跟随6006返回的 `dynamic_subscriptions` 自动变化。图像等大消息应保持禁用，或关闭 `show_raw_message` 并只提取必要字段。
+
+当前启用的辅助遥测为：
+
+| ID | Topic | ROS 2 类型 |
+|:---|:---|:---|
+| `depth_status` | `/sensor/depth` | `sealien_ctrlpilot_msgmanagement/msg/DepthStatus` |
+| `imu_dvl_status` | `/sensor/imu_dvl` | `sealien_ctrlpilot_msgmanagement/msg/ImuDvlStatus` |
+| `thruster_status` | `/sensor/thruster_status` | `sealien_ctrlpilot_msgmanagement/msg/ThrusterStatus` |
+| `heartbeat_status` | `/system/heartbeat` | `sealien_ctrlpilot_msgmanagement/msg/HeartbeatStatus` |
+
+真实 rosbridge 所在的 ROS 2 环境必须已经构建并 source
+`sealien_ctrlpilot_msgmanagement` 接口包；否则 YAML 卡片能够创建，但 ROS 2 无法解析或发布上述自定义消息。
+`uint8[]` 经 rosbridge 返回时使用 Base64 表示，动态字段路径仍可按 `.0`、`.1` 方式读取单个字节状态码。
 
 ---
 

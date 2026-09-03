@@ -49,6 +49,61 @@ PAYLOAD_GROUP_KEYS = (
     "Operation_tool",
 )
 
+SEABED_TYPE_CN = {
+    "soft": "软泥海床",
+    "hard": "硬质海床",
+    "sandy": "沙质海床",
+    "mixed": "混合底质海床",
+    "mud": "软泥海床",
+    "silt": "淤泥海床",
+    "rock": "岩石海床",
+    "soft_to_medium": "软至中等底质",
+    "unknown": "未知海床",
+}
+
+
+def format_seabed_type(raw_seabed: object) -> str:
+    if not raw_seabed:
+        return "未知海床"
+    val = str(raw_seabed).strip().lower()
+    return SEABED_TYPE_CN.get(val, str(raw_seabed))
+
+
+TELEMETRY_VALUE_CN = {
+    "available": "可用",
+    "offline": "离线",
+    "online": "在线",
+    "busy": "忙碌",
+    "idle": "空闲",
+    "fault": "故障",
+    "abnormal": "异常",
+    "normal": "正常",
+    "high": "高",
+    "medium": "中",
+    "low": "低",
+    "strong": "强",
+    "weak": "弱",
+    "none": "无",
+    "maintenance": "维保中",
+    "soft": "软泥海床",
+    "hard": "硬质海床",
+    "sandy": "沙质海床",
+    "mixed": "混合底质海床",
+    "mud": "软泥海床",
+    "silt": "淤泥海床",
+    "rock": "岩石海床",
+    "soft_to_medium": "软至中等底质",
+    "unknown": "未知",
+}
+
+
+def format_telemetry_value(raw_val: object) -> str:
+    if raw_val is None:
+        return "未知"
+    val_str = str(raw_val).strip()
+    return TELEMETRY_VALUE_CN.get(val_str.lower(), val_str)
+
+
 
 def _flatten_payload_items(raw: object) -> list[str]:
     if raw is None:
@@ -1820,13 +1875,15 @@ class KnowledgeBase:
                             label = label_map.get(k, k)
                             if k == "water_current_velocity":
                                 if isinstance(v, (int, float)):
-                                    state_lines.append(f"  - {label} ({k}): {v:.2f} m/s")
+                                    state_lines.append(f"  - {label}: {v:.2f} m/s")
                                 else:
-                                    state_lines.append(f"  - {label} ({k}): {v} m/s")
+                                    state_lines.append(f"  - {label}: {v} m/s")
                             elif isinstance(v, float):
-                                state_lines.append(f"  - {label} ({k}): {v:.2f}")
+                                state_lines.append(f"  - {label}: {v:.2f}")
+                            elif isinstance(v, str):
+                                state_lines.append(f"  - {label}: {format_telemetry_value(v)}")
                             else:
-                                state_lines.append(f"  - {label} ({k}): {v}")
+                                state_lines.append(f"  - {label}: {v}")
                     if state_lines:
                         sections.append("【当前设备实时状态】\n" + "\n".join(state_lines))
         elif task_type:
@@ -1863,7 +1920,7 @@ class KnowledgeBase:
     def _robot_category_overview(self) -> str:
         lines = ["【机器人四大类说明】"]
         for key, value in self.get_robot_classes().items():
-            lines.append(f"- {value.get('full_name', key)}（{key}）")
+            lines.append(f"- {value.get('full_name', key)}")
         return "\n".join(lines)
 
     def _task_rov_constraint(self, task_type: str) -> str:
@@ -2054,6 +2111,13 @@ class KnowledgeBase:
             if not variant:
                 return None
 
+        # 0. ASR 同音错字与口语前缀转换（例如 "改2号级" -> "2号机"）
+        needle_conv = re.sub(r'^(?:改|改成|换成|采用|使用|选择)?\s*(\d+|[零〇一二两三四五六七八九十]+)\s*(?:号\s*)?级$', r'\1号机', needle)
+        if needle_conv != needle:
+            alt_res = self.resolve_robot_unit(needle_conv, task_type_key, variant_selector)
+            if alt_res:
+                return alt_res
+
         # 1. 优先尝试全库 unit_id 精确匹配
         all_units = self.robot_fleet.get("fleet_units", [])
         variants = {r["variant_id"]: r for r in self.get_all_rovs()}
@@ -2165,9 +2229,10 @@ class KnowledgeBase:
         oil_field = self.get_environment_for_coords(coords)
         if not oil_field:
             return None
+        seabed_cn = format_seabed_type(oil_field.get('seabed_type'))
         return (
             f"{oil_field['name']} \n"
-            f"海底底质: {oil_field['seabed_type']}\n"
+            f"海底底质: {seabed_cn}\n"
             f"备注: {oil_field['notes']}"
         )
 
@@ -2756,6 +2821,11 @@ class KnowledgeBase:
     ) -> dict:
         """执行作业海域、油气田、禁入区与DVL风险区的结构化知识检索。"""
         matched_alias, targets = self._find_environment_entity_targets(user_message)
+        if not targets:
+            context_of = context.get("oilfield_name")
+            if context_of and any(pronoun in user_message for pronoun in ("它", "这个", "那个", "该油田", "该海域", "此海域", "此区域")):
+                matched_alias, targets = self._find_environment_entity_targets(str(context_of))
+
         oil_fields = self.environment.get("oil_fields", [])
         forbidden_areas = self.environment.get("forbidden_areas", [])
         dvl_areas = self.environment.get("dvl_bottom_lock_failure_areas", [])

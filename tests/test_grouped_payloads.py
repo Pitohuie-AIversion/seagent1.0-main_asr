@@ -52,7 +52,7 @@ class GroupedPayloadsTest(unittest.TestCase):
         self.assertIn("双目水下成像系统", values)
         self.assertLess(
             values.index("电液机械臂"),
-            values.index("机械臂工具快换装置"),
+            values.index("腐蚀检测探头"),
         )
 
     def test_grouped_payloads_are_valid_robot_payload_requirements(self):
@@ -88,9 +88,9 @@ class GroupedPayloadsTest(unittest.TestCase):
             EXPECTED_PAYLOAD_GROUPS,
             list(payload_slot["payload_groups"]),
         )
-        self.assertEqual(["电液机械臂"], payload_slot["payload_groups"]["Mechanical_arm"])
+        self.assertIn("电液机械臂", payload_slot["payload_groups"]["Mechanical_arm"])
         self.assertIn("双目水下成像系统", payload_slot["payload_groups"]["Visual_sensor"])
-        self.assertIn("电磁检测传感器", payload_slot["payload_groups"]["Other_sensor"])
+        self.assertIn("TSS管缆跟踪系统", payload_slot["payload_groups"]["Other_sensor"])
 
     def test_payload_ui_state_pairs_onboard_and_supported_groups(self):
         manager = DialogueManager(kb=self.kb)

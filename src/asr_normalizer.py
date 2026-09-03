@@ -232,12 +232,6 @@ TERM_RULES: tuple[TermRule, ...] = (
         category="payload",
     ),
     TermRule(
-        target="机械臂腕部摄像机",
-        aliases=["机械臂万部摄像机", "腕部摄像机", "腕部相机"],
-        context_words=["机械臂", "摄像机", "腕部", "微距", "视场", "抓取", "ROV"],
-        category="sensor",
-    ),
-    TermRule(
         target="多波束声呐系统",
         aliases=["多波束声纳系统", "多波束测深声呐", "多波束声纳"],
         context_words=["测绘", "地形", "扫测", "海床", "声呐", "条带", "水下"],

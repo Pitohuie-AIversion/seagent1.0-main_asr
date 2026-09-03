@@ -72,14 +72,16 @@ def _robot_selection_lineage_contract_error(
     return None
 
 
-class SlotVersionConflict(RuntimeError):
-    """Raised when commit_transaction detects a store version mismatch."""
-    pass
+if "SlotVersionConflict" not in globals():
+    class SlotVersionConflict(RuntimeError):
+        """Raised when commit_transaction detects a store version mismatch."""
+        pass
 
 
-class SnapshotValidationError(ValueError):
-    """Raised when a snapshot fails structure validation."""
-    pass
+if "SnapshotValidationError" not in globals():
+    class SnapshotValidationError(ValueError):
+        """Raised when a snapshot fails structure validation."""
+        pass
 
 
 @dataclasses.dataclass
@@ -1006,12 +1008,15 @@ class SlotStore:
                                 onboard_alias_keys.update(cand_keys)
 
         DOMAIN_SYNONYMS = [
-            ({"水下成像系统", "云台摄像机"}, ["云台摄像", "水下成像"]),
-            ({"fls声呐系统", "前视声呐"}, ["fls声呐", "前视声呐"]),
+            (
+                {"单目水下成像系统", "水下成像系统", "云台摄像机"},
+                ["高清水下摄像机", "云台摄像", "水下成像", "摄像机", "led", "照明"],
+            ),
+            ({"fls声呐系统", "前视声呐系统", "前视声呐"}, ["fls声呐", "前视声呐"]),
             ({"ins惯性导航系统"}, ["ins", "惯导", "惯性导航"]),
-            ({"dvl测速系统"}, ["dvl", "多普勒"]),
-            ({"usbl定位系统"}, ["usbl", "超短基线"]),
-            ({"深度计"}, ["深度计"]),
+            ({"dvl测速系统", "dvl多普勒测速仪", "dvl多普勒测速系统"}, ["dvl", "多普勒"]),
+            ({"usbl定位系统", "usbl定位设备"}, ["usbl", "超短基线"]),
+            ({"深度计", "深度传感器"}, ["深度计", "深度传感器"]),
             ({"高度计"}, ["高度计"]),
             ({"履带模块"}, ["履带模块"]),
         ]
@@ -1041,14 +1046,31 @@ class SlotStore:
 
         def _flatten_items(raw_items: Any) -> List[Any]:
             if isinstance(raw_items, str):
-                raw_items = [raw_items]
-            elif not isinstance(raw_items, list):
+                s = raw_items.strip()
+                try:
+                    p = json.loads(s)
+                    if isinstance(p, list):
+                        raw_items = p
+                    else:
+                        raw_items = [s]
+                except Exception:
+                    try:
+                        import ast
+                        p = ast.literal_eval(s)
+                        if isinstance(p, (list, tuple, set)):
+                            raw_items = list(p)
+                        else:
+                            raw_items = [s]
+                    except Exception:
+                        raw_items = [s]
+            elif not isinstance(raw_items, (list, tuple, set)):
                 return []
             res = []
             import re
             for item in raw_items:
                 if isinstance(item, str):
-                    parts = [p.strip() for p in re.split(r'[,\+，、；;\n]+', item) if p.strip()]
+                    cleaned = item.strip(" \t\n\r'\"[]()")
+                    parts = [p.strip(" \t\n\r'\"") for p in re.split(r'[,\+，、；;\n]+', cleaned) if p.strip(" \t\n\r'\"")]
                     res.extend(parts)
                 else:
                     res.append(item)

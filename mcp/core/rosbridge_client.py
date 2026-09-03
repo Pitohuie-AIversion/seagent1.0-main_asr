@@ -891,6 +891,22 @@ class RosbridgeClient:
                 logger.info(f"[RosbridgeClient] 已订阅: {topic}")
             self._subscriptions[topic].append(callback)
 
+    def unsubscribe(
+        self, topic: str, callback: Optional[Callable[[dict], None]] = None
+    ) -> None:
+        """Remove one callback or the complete rosbridge topic subscription."""
+        with self._lock:
+            callbacks = self._subscriptions.get(topic)
+            if callbacks is None:
+                return
+            if callback is not None:
+                self._subscriptions[topic] = [item for item in callbacks if item != callback]
+                if self._subscriptions[topic]:
+                    return
+            self._subscriptions.pop(topic, None)
+            self._send({"op": "unsubscribe", "topic": topic})
+            logger.info(f"[RosbridgeClient] 已取消订阅: {topic}")
+
     def subscribe_system_status(self, callback: Callable[[dict], None]) -> None:
         """订阅 /task/system_status 遥测（ROV → 云端）"""
         self.subscribe(

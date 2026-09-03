@@ -339,14 +339,31 @@ def build_task_patch(
         items_raw = mut["items"]
         target_raw = mut["target_items"]
 
-        if not isinstance(items_raw, (list, tuple)):
-            raise TaskPatchValidationError(
-                f"list_mutation items 必须为 list 或 tuple，收到 {type(items_raw)}"
-            )
-        if not isinstance(target_raw, (list, tuple)):
-            raise TaskPatchValidationError(
-                f"list_mutation target_items 必须为 list 或 tuple，收到 {type(target_raw)}"
-            )
+        def _ensure_list_repr(val: Any) -> list | tuple:
+            if isinstance(val, (list, tuple)):
+                return val
+            if isinstance(val, str):
+                s = val.strip()
+                try:
+                    p = json.loads(s)
+                    if isinstance(p, list):
+                        return p
+                except Exception:
+                    pass
+                try:
+                    import ast
+                    p = ast.literal_eval(s)
+                    if isinstance(p, (list, tuple, set)):
+                        return list(p)
+                except Exception:
+                    pass
+                cleaned = s.strip(" \t\n\r[]()")
+                if cleaned:
+                    return [x.strip(" \t\n\r'\"") for x in re.split(r"[,，、\n]+", cleaned) if x.strip(" \t\n\r'\"")]
+            return []
+
+        items_raw = _ensure_list_repr(items_raw)
+        target_raw = _ensure_list_repr(target_raw)
 
         raw_t = mut["raw_text"]
         if not isinstance(raw_t, str) or not raw_t.strip():

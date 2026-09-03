@@ -62,6 +62,19 @@ class AssetsContractTest(unittest.TestCase):
             with self.subTest(catalog_id=catalog_id, name=name):
                 self.assertEqual([], conflicting_ids)
 
+    def test_catalog_names_are_unique(self):
+        catalog = self.kb.assets.get("payload_catalog", {})
+        seen = {}
+        duplicates = {}
+        for catalog_id, item in catalog.items():
+            name = item.get("name")
+            if name in seen:
+                duplicates.setdefault(name, [seen[name]]).append(catalog_id)
+            else:
+                seen[name] = catalog_id
+
+        self.assertEqual({}, duplicates)
+
     def test_vessels_ids_are_unique_and_valid(self):
         vessel_ids = [vessel["id"] for vessel in self.kb.assets.get("vessels", [])]
         self.assertTrue(len(vessel_ids) > 0)

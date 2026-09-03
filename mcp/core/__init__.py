@@ -41,6 +41,11 @@ from .task_status_tracker import (
 from .bridge_service import (
     SEAgentMCPBridgeService,
 )
+from .runtime_config import (
+    Ros2RuntimeConfig,
+    Ros2RuntimeConfigError,
+    load_ros2_runtime_config,
+)
 from .dialogue_mcp_integration import (
     attach_mcp_bridge,
     dispatch_dialogue_result,
@@ -69,6 +74,9 @@ __all__ = [
     "TaskStatusTracker",
     "ROVTelemetry",
     "SEAgentMCPBridgeService",
+    "Ros2RuntimeConfig",
+    "Ros2RuntimeConfigError",
+    "load_ros2_runtime_config",
     "attach_mcp_bridge",
     "dispatch_dialogue_result",
 ]

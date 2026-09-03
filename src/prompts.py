@@ -6,6 +6,7 @@ prompts.py — 对话响应 LLM 的 system prompt 构建
 import json
 from .simulated_time import get_current_datetime
 from . import coord_parser
+from .knowledge_retriever import format_telemetry_value
 
 # ── 统一对外身份 ────────────────────────────────────────────────────────────
 
@@ -172,7 +173,7 @@ RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
 3. **字段值约束**：
    - 待收集字段列表中标注了"必须从以下选项中选择"的字段，必须引导用户在给定选项中确认，不接受选项以外的值。
    - 凡是待收集字段包含 allowed_values，回复中展示候选时必须逐字原样展示 allowed_values 中的原始字符串；不得省略、改写、翻译、简称化、同义替换、合并、扩写或自行补充候选。
-   - 例外：当缺失字段是 payload/载荷 且前端已提供载荷卡片时，不要在自然语言回复中展开载荷候选清单；只需提醒当前缺失字段是“载荷”，请用户根据卡片进行筛选。
+   - 例外：【载荷字段卡片强约束】当缺失/需要确认字段包含“载荷 / payload”时，前端 UI 区域已由系统自动唤醒并弹出交互式【前端载荷卡片】。严禁在自然语言文本回复中打印、罗列、展开或枚举任何载荷名称候选清单！追问或提醒载荷时，回复中只需用一句话简短引导：“请根据前端载荷卡片进行筛选；对外可简写为根据卡片进行筛选”。违反此规则在回复中展开长串载荷列表将被判定为严重违规！
    - 用户看到的候选项必须能与 allowed_values 中某一项完全字符串匹配；如果不能完全匹配，就不要输出该候选。
    - 系统向用户展示候选时必须使用 allowed_values 中的标准名称；用户回答时不要求逐字复制标准名称，可以使用配置中的别名、简称、展示名称、自然语言描述或上下文指代。
    - 后端会优先执行确定性标准值/alias匹配；无法确定时，再结合 aliases、allowed_values 和上下文进行语义解析。不得因为用户没有逐字重复标准名称，就直接判定用户输入无效。
@@ -256,7 +257,7 @@ def _format_state_snapshot_summary(state_snapshot: dict | None) -> str:
 
     online_str = "在线" if is_online is True else ("离线" if is_online is False else "未知")
     busy_str = "忙碌" if is_busy is True else ("空闲" if is_busy is False else "未知")
-    overall_disp = f"{overall}（{online_str} / {busy_str}）"
+    overall_disp = f"{format_telemetry_value(overall)}（{online_str} / {busy_str}）"
 
     vel = (
         state_data.get("water_current_velocity")
@@ -277,9 +278,9 @@ def _format_state_snapshot_summary(state_snapshot: dict | None) -> str:
     if turb is not None:
         env_parts.append(f"水体浑浊度 {turb}")
     if obstacle is not None:
-        env_parts.append(f"障碍物密度 {obstacle}")
+        env_parts.append(f"障碍物密度 {format_telemetry_value(obstacle)}")
     if support is not None:
-        env_parts.append(f"母船支援 {support}")
+        env_parts.append(f"母船支援 {format_telemetry_value(support)}")
     env_str = " | ".join(env_parts) if env_parts else "暂无环境指标"
 
     thruster = state_data.get("thruster_status", "normal")
@@ -287,7 +288,7 @@ def _format_state_snapshot_summary(state_snapshot: dict | None) -> str:
     vision = state_data.get("vision_status", "normal")
     sonar = state_data.get("sonar_status", "normal")
 
-    subsys_str = f"推进器 {thruster} | 定深能力 {depth_keeping} | 视觉系统 {vision} | 声呐系统 {sonar}"
+    subsys_str = f"推进器 {format_telemetry_value(thruster)} | 定深能力 {format_telemetry_value(depth_keeping)} | 视觉系统 {format_telemetry_value(vision)} | 声呐系统 {format_telemetry_value(sonar)}"
     updated_at = (
         state_data.get("updated_at")
         or state_snapshot.get("updated_at")
@@ -376,10 +377,11 @@ def build_responder_messages(
             if m.get("type") == "coord":
                 line += "  ← 示例：北纬19.8度，东经113.5度；纬度范围 -90 至 90，经度范围 -180 至 180，东经为 0 至 180。"
             allowed = m.get("allowed_values", [])
-            if is_payload_field and idx <= ask_count:
+            if is_payload_field:
                 line += (
-                    "  ← 当前缺失字段是“载荷”。"
-                    "请不要在回复中展开载荷候选清单，也不要详细说明可选择哪些载荷；"
+                    "  ← 【卡片强约束】当前缺失字段是“载荷”。"
+                    "前端区域已自动唤醒弹出交互式【前端载荷卡片】。"
+                    "绝不可在自然语言文本回复中打印、罗列、展开或枚举任何载荷候选项清单！"
                     "只需提醒用户：请根据前端载荷卡片进行筛选；对外可简写为“根据卡片进行筛选”。"
                 )
             elif allowed:

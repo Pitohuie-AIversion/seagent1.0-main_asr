@@ -1261,6 +1261,23 @@
       font-size: 0.58rem;
     }
 
+    .payload-slot-tag .badge-disabled {
+      color: #ff5252;
+      font-size: 0.58rem;
+      background: rgba(255, 82, 82, 0.12);
+      border: 1px solid rgba(255, 82, 82, 0.3);
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+
+    .payload-group-card.disabled {
+      opacity: 0.5;
+      pointer-events: none;
+      filter: grayscale(0.6);
+      background: rgba(15, 20, 30, 0.4) !important;
+      border-color: rgba(255, 82, 82, 0.15) !important;
+    }
+
     .payload-exchange-slot {
       flex: 1;
       min-width: 0;

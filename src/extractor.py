@@ -158,7 +158,7 @@ EXTRACTION_SYSTEM = """\
       {{"field": "payload", "operation": "add", "items": ["全选"], "raw_text": "用户原表达", "confidence": 0.95}}
 18. 【通用枚举字段语义吸附规则】：
     对于设备体系（equipment_class / equipment_family / equipment_type / equipment_unit_id）、支持船（support_vessel）、管缆类型（cable_type）、油田名称（oilfield_name）等枚举字段：
-    - 结合【所需字段及其描述】中的 allowed_values 允许值列表与候选证据（candidate_evidence），当用户使用口语、简称或自然语言描述（例如“油气管”、“光缆”、“201号船”、“流花油田”、“150马力轻型”）时，必须优先对齐吸附映射为对应的规范标准名称（例如 normalized_value: "海底油气管道", "光纤通信缆", "海洋石油201", "流花11-1油田", "轻型工作级深海机器人 150HP"）。
+    - 结合【所需字段及其描述】中的 allowed_values 允许值列表与候选证据（candidate_evidence），当用户使用口语、简称、同音错别字或自然语言描述（例如“油气管”、“光缆”、“201号船”、“流花油田”、“150马力轻型”、“改2号级”、“2号机”、“2号”）时，必须优先对齐吸附映射为对应的规范标准名称（例如 normalized_value: "海底油气管道", "光纤通信缆", "海洋石油201", "流花11-1油田", "轻型工作级深海机器人 150HP", "LROV-150-002"）。
     - raw_value 必须准确保留用户的原始表达，normalized_value 填写吸附对齐后的标准规范名称。
 
 【枚举字段抽取边界】
@@ -1115,32 +1115,71 @@ class ParameterExtractor:
         return None, self._format_unresolved(candidate, "无法唯一匹配当前合法候选")
 
     @staticmethod
-    def _candidate_match_inputs(candidate: dict) -> list[object]:
-        values = []
-        for key in ("normalized_value", "raw_value"):
-            value = candidate.get(key)
-            if value is not None and value != "":
-                values.append(value)
-        return values
-
-    @staticmethod
     def _strip_colloquial_prefixes(raw_text: str) -> str:
         text = str(raw_text or "").strip()
         prefixes = [
+            "把支持船改成", "把船只改成", "把设备改成", "把管缆改成", "把油田改成",
+            "把工具改成", "把载荷改成", "把水深改成", "把任务改成", "把水深调整为",
             "我要使用", "我要选择", "我想使用", "我想选择", "请选择", "请使用",
-            "选择", "要用", "使用", "切换为", "采用", "配置", "指定", "选", "用", "换成", "更换为"
+            "选择", "要用", "使用", "切换为", "采用", "配置", "指定", "选", "用", "换成",
+            "更换为", "把", "调整为", "设为", "设置成", "修改为", "改成", "改用", "切换至",
+            "选用", "更改为", "重新选择", "替换为", "重置为"
         ]
         for p in prefixes:
             if text.startswith(p) and len(text) > len(p):
                 return text[len(p):].strip()
         return text
 
+    @staticmethod
+    def _strip_colloquial_suffixes(raw_text: str) -> str:
+        text = str(raw_text or "").strip()
+        suffixes = [
+            "号船", "船只", "号", "管道", "电缆", "通信缆", "油田", "区域", "作业点",
+            "位置", "探头", "传感器", "工具", "设备"
+        ]
+        for s in suffixes:
+            if text.endswith(s) and len(text) > len(s):
+                return text[:-len(s)].strip()
+        return text
+
+    @classmethod
+    def _candidate_match_inputs(cls, candidate: dict) -> list[object]:
+        values = []
+        for key in ("normalized_value", "raw_value"):
+            value = candidate.get(key)
+            if value is not None and value != "":
+                val_str = str(value)
+                if val_str not in values:
+                    values.append(val_str)
+                p_stripped = cls._strip_colloquial_prefixes(val_str)
+                if p_stripped not in values:
+                    values.append(p_stripped)
+                s_stripped = cls._strip_colloquial_suffixes(p_stripped)
+                if s_stripped not in values:
+                    values.append(s_stripped)
+        return values
+        
     @classmethod
     def _match_allowed_value(cls, value: object, allowed_values: list) -> object | None:
         raw_str = str(value or "").strip()
         if not raw_str:
             return None
-        candidates = [raw_str, cls._strip_colloquial_prefixes(raw_str)]
+        candidates = [raw_str]
+        p_stripped = cls._strip_colloquial_prefixes(raw_str)
+        if p_stripped not in candidates:
+            candidates.append(p_stripped)
+        s_stripped = cls._strip_colloquial_suffixes(p_stripped)
+        if s_stripped not in candidates:
+            candidates.append(s_stripped)
+
+        expanded_candidates = list(candidates)
+        for cand in candidates:
+            if not cand:
+                continue
+            converted_ji = re.sub(r'(\d+|[零〇一二两三四五六七八九十]+)\s*(?:号\s*)?级$', r'\1号机', cand)
+            if converted_ji != cand and converted_ji not in expanded_candidates:
+                expanded_candidates.append(converted_ji)
+        candidates = expanded_candidates
         
         # 阶段 1：精确全匹配
         for cand in candidates:
@@ -1180,7 +1219,26 @@ class ParameterExtractor:
         if not alias_map:
             return None
 
-        candidates = [raw_str, cls._strip_colloquial_prefixes(raw_str)]
+        candidates = [raw_str]
+        p_stripped = cls._strip_colloquial_prefixes(raw_str)
+        if p_stripped not in candidates:
+            candidates.append(p_stripped)
+        s_stripped = cls._strip_colloquial_suffixes(p_stripped)
+        if s_stripped not in candidates:
+            candidates.append(s_stripped)
+
+        expanded_candidates = list(candidates)
+        for cand in candidates:
+            if not cand:
+                continue
+            # 常见 ASR 同音错字与量词变体转换（如 "2号级" -> "2号机", "2级" -> "2号机"）
+            converted_ji = re.sub(r'(\d+|[零〇一二两三四五六七八九十]+)\s*(?:号\s*)?级$', r'\1号机', cand)
+            if converted_ji != cand and converted_ji not in expanded_candidates:
+                expanded_candidates.append(converted_ji)
+            converted_hao = re.sub(r'(\d+|[零〇一二两三四五六七八九十]+)\s*级$', r'\1号', cand)
+            if converted_hao != cand and converted_hao not in expanded_candidates:
+                expanded_candidates.append(converted_hao)
+        candidates = expanded_candidates
 
         # 阶段 1：精确全匹配
         for cand in candidates:

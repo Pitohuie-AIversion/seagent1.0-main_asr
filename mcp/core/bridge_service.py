@@ -11,7 +11,9 @@ import hashlib
 import json
 import logging
 import threading
+from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .rosbridge_client import (
@@ -21,6 +23,13 @@ from .rosbridge_client import (
     generate_task_id,
 )
 from .task_status_tracker import ROVTelemetry, TaskStatusItem, TaskStatusTracker
+from .runtime_config import (
+    GatewayConfig,
+    Ros2RuntimeConfig,
+    Ros2RuntimeConfigError,
+    SubscriptionConfig,
+    load_ros2_runtime_config,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -37,18 +46,142 @@ class SEAgentMCPBridgeService:
         port: int = 9090,
         state_info: Optional[Any] = None,
         connect_timeout: float = 5.0,
+        runtime_config_path: Optional[str | Path] = None,
+        protocol_config_path: Optional[str | Path] = None,
     ):
+        self._runtime_config_path = (
+            Path(runtime_config_path) if runtime_config_path is not None else None
+        )
+        self._protocol_config_path = (
+            Path(protocol_config_path)
+            if protocol_config_path is not None
+            else Path(__file__).resolve().parents[2] / "config" / "ros2_protocol_spec.yaml"
+        )
+        self._runtime_config: Optional[Ros2RuntimeConfig] = None
+        if self._runtime_config_path is not None:
+            self._runtime_config = load_ros2_runtime_config(
+                self._runtime_config_path, self._protocol_config_path
+            )
+            if host == "127.0.0.1" and port == 9090:
+                host = self._runtime_config.gateway.host
+                port = self._runtime_config.gateway.port
         self.host = host
         self.port = port
         self.state_info = state_info
         self.connect_timeout = connect_timeout
         self.client = RosbridgeClient(host=host, port=port, connect_timeout=connect_timeout)
-        self.tracker = TaskStatusTracker(self.client)
+        self.tracker = self._new_tracker(self.client, self._runtime_config)
         self._running = False
         self._lock = threading.RLock()
         self._dispatch_lock = threading.Lock()
+        self._dynamic_lock = threading.Lock()
         self._dispatch_records: Dict[str, Dict[str, Any]] = {}
+        self._dynamic_callbacks: Dict[str, Any] = {}
+        self._dynamic_messages: Dict[str, Dict[str, Any]] = {}
         self._last_error: Optional[str] = None
+        self._runtime_config_error: Optional[str] = None
+        self._runtime_generation = 1 if self._runtime_config is not None else 0
+        self._runtime_loaded_at = self._now()
+        self._runtime_config_mtime_ns = self._runtime_mtime()
+        self._watcher_stop = threading.Event()
+        self._watcher_thread: Optional[threading.Thread] = None
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+    def _runtime_mtime(self) -> Optional[int]:
+        if self._runtime_config_path is None:
+            return None
+        try:
+            return self._runtime_config_path.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    @staticmethod
+    def _new_tracker(
+        client: RosbridgeClient, config: Optional[Ros2RuntimeConfig]
+    ) -> TaskStatusTracker:
+        if config is None:
+            return TaskStatusTracker(client)
+        status = config.system_status
+        return TaskStatusTracker(
+            client,
+            status_topic=status.topic,
+            status_message_type=status.message_type,
+        )
+
+    def _record_dynamic_message(
+        self, subscription: SubscriptionConfig, message: dict
+    ) -> None:
+        with self._dynamic_lock:
+            previous = self._dynamic_messages.get(subscription.id, {})
+            self._dynamic_messages[subscription.id] = {
+                "message": dict(message),
+                "received_at": self._now(),
+                "message_count": int(previous.get("message_count", 0)) + 1,
+            }
+
+    def _register_subscriptions(
+        self,
+        client: RosbridgeClient,
+        tracker: TaskStatusTracker,
+        config: Optional[Ros2RuntimeConfig],
+    ) -> Dict[str, Any]:
+        tracker.start()
+        callbacks: Dict[str, Any] = {}
+        if config is None:
+            return callbacks
+        for subscription in config.enabled_subscriptions:
+            if subscription.parser == "system_status":
+                continue
+
+            def callback(message, spec=subscription):
+                self._record_dynamic_message(spec, message)
+
+            client.subscribe(subscription.topic, subscription.message_type, callback)
+            callbacks[subscription.id] = callback
+        return callbacks
+
+    def _start_watcher(self) -> None:
+        config = self._runtime_config
+        if (
+            self._runtime_config_path is None
+            or config is None
+            or config.reload.mode != "automatic"
+            or self._watcher_thread is not None
+        ):
+            return
+        self._watcher_stop.clear()
+        self._watcher_thread = threading.Thread(
+            target=self._watch_runtime_config,
+            daemon=True,
+            name="ros2-runtime-config-watcher",
+        )
+        self._watcher_thread.start()
+
+    def _stop_watcher(self) -> None:
+        self._watcher_stop.set()
+        thread = self._watcher_thread
+        self._watcher_thread = None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+
+    def _watch_runtime_config(self) -> None:
+        while not self._watcher_stop.is_set():
+            with self._lock:
+                config = self._runtime_config
+            interval = config.reload.check_interval_seconds if config else 1.0
+            if self._watcher_stop.wait(interval):
+                return
+            current_mtime = self._runtime_mtime()
+            if current_mtime == self._runtime_config_mtime_ns:
+                continue
+            self._runtime_config_mtime_ns = current_mtime
+            try:
+                self.reload_runtime_config()
+            except Exception as exc:
+                logger.error("[MCPBridgeService] ROS2 运行配置热加载失败: %s", exc)
 
     def start(self) -> None:
         """Connect and subscribe to robot telemetry."""
@@ -57,33 +190,45 @@ class SEAgentMCPBridgeService:
                 return
             self.client.connect()
             try:
-                self.tracker.start()
+                self._dynamic_callbacks = self._register_subscriptions(
+                    self.client, self.tracker, self._runtime_config
+                )
             except Exception:
                 self.client.disconnect()
                 raise
             self._running = True
             self._last_error = None
+        self._start_watcher()
         logger.info("[MCPBridgeService] 服务已启动 (ws://%s:%s)", self.host, self.port)
 
     def stop(self) -> None:
         """Stop telemetry tracking and disconnect."""
+        self._stop_watcher()
         with self._lock:
             if not self._running:
                 return
             self._running = False
             self.tracker.stop()
             self.client.disconnect()
+            self._dynamic_callbacks = {}
         logger.info("[MCPBridgeService] 服务已停止")
 
-    def reconnect(self, host: str, port: int) -> None:
-        """Switch gateways only after the replacement connection is ready."""
+    def _replace_connection(
+        self,
+        host: str,
+        port: int,
+        config: Optional[Ros2RuntimeConfig],
+    ) -> None:
+        """Prepare a fully subscribed replacement before dropping the old link."""
         replacement_client = RosbridgeClient(
             host=host, port=port, connect_timeout=self.connect_timeout
         )
-        replacement_tracker = TaskStatusTracker(replacement_client)
+        replacement_tracker = self._new_tracker(replacement_client, config)
         try:
             replacement_client.connect()
-            replacement_tracker.start()
+            replacement_callbacks = self._register_subscriptions(
+                replacement_client, replacement_tracker, config
+            )
         except Exception:
             replacement_client.disconnect()
             raise
@@ -95,11 +240,73 @@ class SEAgentMCPBridgeService:
             self.tracker = replacement_tracker
             self.host = host
             self.port = port
+            self._runtime_config = config
+            self._dynamic_callbacks = replacement_callbacks
             self._running = True
             self._last_error = None
-        old_tracker.stop()
-        old_client.disconnect()
+        with self._dynamic_lock:
+            self._dynamic_messages = {}
+        try:
+            old_tracker.stop()
+        finally:
+            old_client.disconnect()
+
+    def reconnect(self, host: str, port: int, mode: Optional[str] = None) -> None:
+        """Switch gateways only after the replacement connection is ready."""
+        config = self._runtime_config
+        if config is not None:
+            gateway = GatewayConfig(
+                host=host,
+                port=port,
+                mode=mode or config.gateway.mode,
+            )
+            config = replace(config, gateway=gateway)
+        self._replace_connection(host, port, config)
         logger.info("[MCPBridgeService] 已切换网关至 ws://%s:%s", host, port)
+
+    @property
+    def gateway_mode(self) -> str:
+        config = self._runtime_config
+        if config is not None:
+            return config.gateway.mode
+        return "real" if self.port == 9090 else "mock"
+
+    def reload_runtime_config(self) -> bool:
+        """Apply a new valid runtime config while preserving the last good link."""
+        if self._runtime_config_path is None:
+            raise Ros2RuntimeConfigError("未配置 ros2_runtime.yaml 路径")
+        try:
+            candidate = load_ros2_runtime_config(
+                self._runtime_config_path, self._protocol_config_path
+            )
+        except Ros2RuntimeConfigError as exc:
+            self._runtime_config_error = str(exc)
+            raise
+
+        current = self._runtime_config
+        if candidate == current:
+            self._runtime_config_error = None
+            self._runtime_loaded_at = self._now()
+            self._runtime_config_mtime_ns = self._runtime_mtime()
+            return False
+
+        if self._running:
+            self._replace_connection(
+                candidate.gateway.host, candidate.gateway.port, candidate
+            )
+        else:
+            self._runtime_config = candidate
+            self.host = candidate.gateway.host
+            self.port = candidate.gateway.port
+            self.client = RosbridgeClient(
+                host=self.host, port=self.port, connect_timeout=self.connect_timeout
+            )
+            self.tracker = self._new_tracker(self.client, candidate)
+        self._runtime_generation += 1
+        self._runtime_config_error = None
+        self._runtime_loaded_at = self._now()
+        self._runtime_config_mtime_ns = self._runtime_mtime()
+        return True
 
     def is_healthy(self) -> bool:
         """Return transport health; telemetry freshness is reported separately."""
@@ -306,6 +513,62 @@ class SEAgentMCPBridgeService:
             } if telemetry else None,
             "active_tasks_count": len(tasks),
             "active_tasks": tasks,
+            "dynamic_subscriptions": self._dynamic_subscription_views(telemetry),
+        }
+
+    def _dynamic_subscription_views(
+        self, telemetry: Optional[ROVTelemetry]
+    ) -> list[dict[str, Any]]:
+        config = self._runtime_config
+        if config is None:
+            return []
+        with self._dynamic_lock:
+            dynamic_messages = {
+                key: dict(value) for key, value in self._dynamic_messages.items()
+            }
+
+        views = []
+        for subscription in config.enabled_subscriptions:
+            if subscription.parser == "system_status":
+                message = telemetry.raw_msg if telemetry is not None else None
+                received_at = telemetry.received_at if telemetry is not None else None
+                message_count = self.tracker.message_count
+            else:
+                record = dynamic_messages.get(subscription.id, {})
+                message = record.get("message")
+                received_at = record.get("received_at")
+                message_count = int(record.get("message_count", 0))
+            views.append(subscription.build_view(
+                message,
+                received_at=received_at,
+                message_count=message_count,
+            ))
+        return views
+
+    def runtime_config_payload(self) -> Dict[str, Any]:
+        config = self._runtime_config
+        if config is None:
+            return {
+                "path": None,
+                "generation": 0,
+                "loaded_at": None,
+                "last_error": self._runtime_config_error,
+                "reload": None,
+                "dashboard": {"refresh_interval_ms": 1000},
+            }
+        return {
+            "path": str(self._runtime_config_path),
+            "generation": self._runtime_generation,
+            "loaded_at": self._runtime_loaded_at,
+            "last_error": self._runtime_config_error,
+            "reload": {
+                "mode": config.reload.mode,
+                "check_interval_seconds": config.reload.check_interval_seconds,
+            },
+            "dashboard": {
+                "refresh_interval_ms": config.dashboard.refresh_interval_ms,
+                "max_raw_message_bytes": config.dashboard.max_raw_message_bytes,
+            },
         }
 
     def status_payload(self) -> Dict[str, Any]:
@@ -318,4 +581,5 @@ class SEAgentMCPBridgeService:
             "telemetry_fresh": snapshot["telemetry_fresh"],
             "last_error": self._last_error or self.client.last_transport_error,
             "snapshot": snapshot,
+            "runtime_config": self.runtime_config_payload(),
         }

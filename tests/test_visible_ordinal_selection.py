@@ -242,3 +242,27 @@ def test_mixed_numbered_sections_does_not_corrupt_candidate_ordinal_matching() -
     assert slot.source == "assistant_option_selection"
 
 
+def test_catalog_ordinal_queries_referential() -> None:
+    """测试基于展示清单列表的序号引申问答（如“介绍下第一种”、“讲讲第2个”、“说说第一个”）。"""
+    dm = DialogueManager()
+
+    # 1. 任务清单 -> 第一种
+    dm.process("系统包含哪些水下作业任务")
+    assert len(dm._last_visible_catalog_items) > 0
+    r1 = dm.process("介绍下第一种")
+    assert "管缆巡检" in r1
+
+    # 2. 装备清单 -> 第2个
+    dm.process("系统支持哪些机器人装备")
+    assert len(dm._last_visible_catalog_items) > 0
+    r2 = dm.process("讲讲第2个")
+    assert "工作级ROV" in r2 or "通用工作级" in r2
+
+    # 3. 油田清单 -> 第1个
+    dm.process("知识库收录了哪些水下油气田")
+    assert len(dm._last_visible_catalog_items) > 0
+    r3 = dm.process("说说第一个")
+    assert "流花11-1油田" in r3
+
+
+

@@ -170,5 +170,12 @@ class TestFrontendIntegrity(unittest.TestCase):
         self.assertIn("机械臂（替换）", self.js_content)
         self.assertIn("末端执行器（替换）", self.js_content)
 
+    def test_no_arm_disabled_card_integrity(self):
+        """Verify CSS disabled classes and JS no-arm indicator logic exist."""
+        self.assertIn(".payload-group-card.disabled", self.css_content, "Missing .payload-group-card.disabled rule in frontend/css/index.css!")
+        self.assertIn(".badge-disabled", self.css_content, "Missing .badge-disabled rule in frontend/css/index.css!")
+        self.assertIn("isDisabledNoArm", self.js_content, "Missing isDisabledNoArm check in frontend/js/index.js!")
+        self.assertIn("本型号无机械臂", self.js_content, "Missing '本型号无机械臂' text in frontend/js/index.js!")
+
 if __name__ == "__main__":
     unittest.main()

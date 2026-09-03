@@ -36,6 +36,25 @@ from src.state_info import RobotStateInfo
 PORT = 9098
 
 
+def test_gateway_persistence_updates_runtime_not_protocol(tmp_path, monkeypatch):
+    protocol = tmp_path / "ros2_protocol_spec.yaml"
+    protocol.write_text("version: '1.0'\n", encoding="utf-8")
+    runtime = tmp_path / "ros2_runtime.yaml"
+    runtime.write_text(
+        "version: '1.0'\ngateway:\n  host: 127.0.0.1\n  port: 9090\n  mode: real\n",
+        encoding="utf-8",
+    )
+    protocol_before = protocol.read_bytes()
+    monkeypatch.setattr(web_backend, "CONFIG_DIR", tmp_path)
+
+    web_backend._persist_active_gateway("10.0.0.2", 9191, "real")
+
+    assert protocol.read_bytes() == protocol_before
+    persisted = runtime.read_text(encoding="utf-8")
+    assert "host: 10.0.0.2" in persisted
+    assert "port: 9191" in persisted
+
+
 class WebBackendMCPTestCase(unittest.TestCase):
 
     @classmethod

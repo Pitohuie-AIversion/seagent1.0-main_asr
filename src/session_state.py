@@ -19,9 +19,10 @@ from typing import Any
 from .id_sequence import validate_intent_id, validate_task_id, validate_uuid4
 
 
-class StateContractError(ValueError):
-    """Raised when session state validation or conversion fails."""
-    pass
+if "StateContractError" not in globals():
+    class StateContractError(ValueError):
+        """Raised when session state validation or conversion fails."""
+        pass
 
 
 # Supported schema version for SessionState
@@ -131,6 +132,15 @@ def validate_task_phase_transition(old_phase: str, new_phase: str) -> None:
         )
 
 
+def _is_contract_instance(value: Any, expected_cls: type) -> bool:
+    """Accept same-module contract objects created before importlib.reload()."""
+    return isinstance(value, expected_cls) or (
+        value is not None
+        and type(value).__module__ == __name__
+        and type(value).__name__ == expected_cls.__name__
+    )
+
+
 def _validate_mode_transition(transition: Any) -> MappingProxyType[str, Any]:
     """Validate a single mode transition dict and return a read-only MappingProxyType."""
     if not isinstance(transition, (dict, MappingProxyType)):
@@ -166,118 +176,122 @@ def _validate_mode_transition(transition: Any) -> MappingProxyType[str, Any]:
     return MappingProxyType(plain_copy)
 
 
-@dataclass(frozen=True)
-class ConversationState:
-    dialogue_mode: str
-    last_mode_transition: MappingProxyType[str, Any] | None = None
-    mode_transition_history: tuple[MappingProxyType[str, Any], ...] = field(default_factory=tuple)
+if "ConversationState" not in globals():
+    @dataclass(frozen=True)
+    class ConversationState:
+        dialogue_mode: str
+        last_mode_transition: MappingProxyType[str, Any] | None = None
+        mode_transition_history: tuple[MappingProxyType[str, Any], ...] = field(default_factory=tuple)
 
-    def __post_init__(self) -> None:
-        if type(self.dialogue_mode) is not str or not self.dialogue_mode:
-            raise StateContractError(f"dialogue_mode must be non-empty string, got {self.dialogue_mode!r}")
-        if self.dialogue_mode not in VALID_DIALOGUE_MODES:
-            raise StateContractError(f"Invalid dialogue_mode: {self.dialogue_mode!r}")
+        def __post_init__(self) -> None:
+            if type(self.dialogue_mode) is not str or not self.dialogue_mode:
+                raise StateContractError(f"dialogue_mode must be non-empty string, got {self.dialogue_mode!r}")
+            if self.dialogue_mode not in VALID_DIALOGUE_MODES:
+                raise StateContractError(f"Invalid dialogue_mode: {self.dialogue_mode!r}")
 
-        if self.last_mode_transition is not None:
-            validated_last = _validate_mode_transition(self.last_mode_transition)
-            object.__setattr__(self, "last_mode_transition", validated_last)
+            if self.last_mode_transition is not None:
+                validated_last = _validate_mode_transition(self.last_mode_transition)
+                object.__setattr__(self, "last_mode_transition", validated_last)
 
-        if not isinstance(self.mode_transition_history, (tuple, list)):
-            raise StateContractError(f"mode_transition_history must be tuple or list, got {type(self.mode_transition_history).__name__}")
+            if not isinstance(self.mode_transition_history, (tuple, list)):
+                raise StateContractError(f"mode_transition_history must be tuple or list, got {type(self.mode_transition_history).__name__}")
 
-        validated_history = tuple(_validate_mode_transition(item) for item in self.mode_transition_history)
-        object.__setattr__(self, "mode_transition_history", validated_history)
-
-
-@dataclass(frozen=True)
-class TaskLifecycleState:
-    phase: str
-    mode: str
-    awaiting_final_confirm: bool
-
-    def __post_init__(self) -> None:
-        if type(self.phase) is not str or not self.phase:
-            raise StateContractError(f"phase must be non-empty string, got {self.phase!r}")
-        if self.phase not in VALID_PHASES:
-            raise StateContractError(f"Invalid phase: {self.phase!r}")
-
-        if type(self.mode) is not str or not self.mode:
-            raise StateContractError(f"mode must be non-empty string, got {self.mode!r}")
-        if self.mode not in VALID_TASK_MODES:
-            raise StateContractError(f"Invalid task mode: {self.mode!r}")
-
-        if type(self.awaiting_final_confirm) is not bool:
-            raise StateContractError(f"awaiting_final_confirm must be strictly boolean, got {type(self.awaiting_final_confirm).__name__}: {self.awaiting_final_confirm!r}")
+            validated_history = tuple(_validate_mode_transition(item) for item in self.mode_transition_history)
+            object.__setattr__(self, "mode_transition_history", validated_history)
 
 
-@dataclass(frozen=True)
-class ExecutionControlState:
-    control_state: str
-    last_control_request: MappingProxyType[str, Any] | None = None
+if "TaskLifecycleState" not in globals():
+    @dataclass(frozen=True)
+    class TaskLifecycleState:
+        phase: str
+        mode: str
+        awaiting_final_confirm: bool
 
-    def __post_init__(self) -> None:
-        if type(self.control_state) is not str or not self.control_state:
-            raise StateContractError(f"control_state must be non-empty string, got {self.control_state!r}")
-        if self.control_state not in VALID_CONTROL_STATES:
-            raise StateContractError(f"Invalid control_state: {self.control_state!r}")
+        def __post_init__(self) -> None:
+            if type(self.phase) is not str or not self.phase:
+                raise StateContractError(f"phase must be non-empty string, got {self.phase!r}")
+            if self.phase not in VALID_PHASES:
+                raise StateContractError(f"Invalid phase: {self.phase!r}")
 
-        if self.last_control_request is not None:
-            if not isinstance(self.last_control_request, (dict, MappingProxyType)):
-                raise StateContractError(f"last_control_request must be dict, MappingProxyType or None, got {type(self.last_control_request).__name__}")
-            act = self.last_control_request.get("action")
-            if not isinstance(act, str) or type(act) is not str or act not in VALID_CONTROL_ACTIONS:
-                raise StateContractError(f"Invalid action in last_control_request: {act!r}")
-            st = self.last_control_request.get("status")
-            if not isinstance(st, str) or type(st) is not str or st != "requested":
-                raise StateContractError(f"Invalid status in last_control_request: {st!r}")
+            if type(self.mode) is not str or not self.mode:
+                raise StateContractError(f"mode must be non-empty string, got {self.mode!r}")
+            if self.mode not in VALID_TASK_MODES:
+                raise StateContractError(f"Invalid task mode: {self.mode!r}")
 
-            target_intent_id = self.last_control_request.get("target_intent_id")
-            if not target_intent_id or not validate_intent_id(target_intent_id):
-                raise StateContractError(f"Invalid or missing target_intent_id in last_control_request: {target_intent_id!r}")
-
-            target_task_id = self.last_control_request.get("target_task_id")
-            if target_task_id is not None and not validate_task_id(target_task_id):
-                raise StateContractError(f"Invalid target_task_id in last_control_request: {target_task_id!r}")
-
-            target_internal_id = self.last_control_request.get("target_internal_id")
-            if target_internal_id is not None and not validate_uuid4(target_internal_id):
-                raise StateContractError(f"Invalid target_internal_id in last_control_request: {target_internal_id!r}")
-
-            validated_req = MappingProxyType(dict(copy.deepcopy(dict(self.last_control_request))))
-            object.__setattr__(self, "last_control_request", validated_req)
-
-        # Cross-field consistency validation between control_state and last_control_request
-        if self.last_control_request is None:
-            if self.control_state != "idle":
-                raise StateContractError(f"control_state must be 'idle' when last_control_request is None, got {self.control_state!r}")
-        else:
-            act = self.last_control_request["action"]
-            expected_state = f"{act}_requested"
-            if self.control_state != expected_state:
-                raise StateContractError(
-                    f"Mismatched control_state {self.control_state!r} for action {act!r} (expected {expected_state!r})"
-                )
+            if type(self.awaiting_final_confirm) is not bool:
+                raise StateContractError(f"awaiting_final_confirm must be strictly boolean, got {type(self.awaiting_final_confirm).__name__}: {self.awaiting_final_confirm!r}")
 
 
-@dataclass(frozen=True)
-class SessionState:
-    schema_version: int
-    conversation: ConversationState
-    task: TaskLifecycleState
-    execution: ExecutionControlState
+if "ExecutionControlState" not in globals():
+    @dataclass(frozen=True)
+    class ExecutionControlState:
+        control_state: str
+        last_control_request: MappingProxyType[str, Any] | None = None
 
-    def __post_init__(self) -> None:
-        if type(self.schema_version) is not int:
-            raise StateContractError(f"schema_version must be int, got {type(self.schema_version).__name__}: {self.schema_version!r}")
-        if self.schema_version != SUPPORTED_SESSION_STATE_SCHEMA_VERSION:
-            raise StateContractError(f"Unsupported schema_version: {self.schema_version} (supported version: {SUPPORTED_SESSION_STATE_SCHEMA_VERSION})")
+        def __post_init__(self) -> None:
+            if type(self.control_state) is not str or not self.control_state:
+                raise StateContractError(f"control_state must be non-empty string, got {self.control_state!r}")
+            if self.control_state not in VALID_CONTROL_STATES:
+                raise StateContractError(f"Invalid control_state: {self.control_state!r}")
 
-        if not isinstance(self.conversation, ConversationState):
-            raise StateContractError(f"conversation must be ConversationState instance, got {type(self.conversation).__name__}")
-        if not isinstance(self.task, TaskLifecycleState):
-            raise StateContractError(f"task must be TaskLifecycleState instance, got {type(self.task).__name__}")
-        if not isinstance(self.execution, ExecutionControlState):
-            raise StateContractError(f"execution must be ExecutionControlState instance, got {type(self.execution).__name__}")
+            if self.last_control_request is not None:
+                if not isinstance(self.last_control_request, (dict, MappingProxyType)):
+                    raise StateContractError(f"last_control_request must be dict, MappingProxyType or None, got {type(self.last_control_request).__name__}")
+                act = self.last_control_request.get("action")
+                if not isinstance(act, str) or type(act) is not str or act not in VALID_CONTROL_ACTIONS:
+                    raise StateContractError(f"Invalid action in last_control_request: {act!r}")
+                st = self.last_control_request.get("status")
+                if not isinstance(st, str) or type(st) is not str or st != "requested":
+                    raise StateContractError(f"Invalid status in last_control_request: {st!r}")
+
+                target_intent_id = self.last_control_request.get("target_intent_id")
+                if not target_intent_id or not validate_intent_id(target_intent_id):
+                    raise StateContractError(f"Invalid or missing target_intent_id in last_control_request: {target_intent_id!r}")
+
+                target_task_id = self.last_control_request.get("target_task_id")
+                if target_task_id is not None and not validate_task_id(target_task_id):
+                    raise StateContractError(f"Invalid target_task_id in last_control_request: {target_task_id!r}")
+
+                target_internal_id = self.last_control_request.get("target_internal_id")
+                if target_internal_id is not None and not validate_uuid4(target_internal_id):
+                    raise StateContractError(f"Invalid target_internal_id in last_control_request: {target_internal_id!r}")
+
+                validated_req = MappingProxyType(dict(copy.deepcopy(dict(self.last_control_request))))
+                object.__setattr__(self, "last_control_request", validated_req)
+
+            # Cross-field consistency validation between control_state and last_control_request
+            if self.last_control_request is None:
+                if self.control_state != "idle":
+                    raise StateContractError(f"control_state must be 'idle' when last_control_request is None, got {self.control_state!r}")
+            else:
+                act = self.last_control_request["action"]
+                expected_state = f"{act}_requested"
+                if self.control_state != expected_state:
+                    raise StateContractError(
+                        f"Mismatched control_state {self.control_state!r} for action {act!r} (expected {expected_state!r})"
+                    )
+
+
+if "SessionState" not in globals():
+    @dataclass(frozen=True)
+    class SessionState:
+        schema_version: int
+        conversation: ConversationState
+        task: TaskLifecycleState
+        execution: ExecutionControlState
+
+        def __post_init__(self) -> None:
+            if type(self.schema_version) is not int:
+                raise StateContractError(f"schema_version must be int, got {type(self.schema_version).__name__}: {self.schema_version!r}")
+            if self.schema_version != SUPPORTED_SESSION_STATE_SCHEMA_VERSION:
+                raise StateContractError(f"Unsupported schema_version: {self.schema_version} (supported version: {SUPPORTED_SESSION_STATE_SCHEMA_VERSION})")
+
+            if not _is_contract_instance(self.conversation, ConversationState):
+                raise StateContractError(f"conversation must be ConversationState instance, got {type(self.conversation).__name__}")
+            if not _is_contract_instance(self.task, TaskLifecycleState):
+                raise StateContractError(f"task must be TaskLifecycleState instance, got {type(self.task).__name__}")
+            if not _is_contract_instance(self.execution, ExecutionControlState):
+                raise StateContractError(f"execution must be ExecutionControlState instance, got {type(self.execution).__name__}")
 
 
 def session_state_from_legacy_snapshot(snapshot: dict[str, Any]) -> SessionState:
@@ -354,7 +368,7 @@ def session_state_from_legacy_snapshot(snapshot: dict[str, Any]) -> SessionState
 
 def session_state_to_legacy_fields(state: SessionState) -> dict[str, Any]:
     """Convert a SessionState object into a dictionary of legacy snapshot state fields. Outputs plain dict/list."""
-    if not isinstance(state, SessionState):
+    if not _is_contract_instance(state, SessionState):
         raise StateContractError(f"state must be SessionState instance, got {type(state).__name__}")
 
     last_trans = dict(state.conversation.last_mode_transition) if state.conversation.last_mode_transition is not None else None

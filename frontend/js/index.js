@@ -957,6 +957,20 @@ Please describe your operational requirements directly, or ask the question you 
         const labelSpan = document.createElement('span');
         labelSpan.className = 'field-label';
         labelSpan.textContent = `${statusIcon} ${label}`;
+        if (slot.key === 'payload' && uiState && !uiState.read_only && uiState.phase !== 'done') {
+          const editBtn = document.createElement('button');
+          editBtn.type = 'button';
+          editBtn.className = 'btn-modify-payload-action';
+          editBtn.style.cssText = 'margin-left: 8px; background: rgba(0, 210, 255, 0.15); border: 1px solid rgba(0, 210, 255, 0.5); color: #00d2ff; border-radius: 4px; padding: 2px 6px; font-size: 0.75em; cursor: pointer; transition: all 0.2s ease;';
+          editBtn.textContent = currentLang === 'zh' ? '修改' : 'Modify';
+          editBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (typeof window.sendMessage === 'function') {
+              window.sendMessage(currentLang === 'zh' ? '修改载荷' : 'Modify payload');
+            }
+          });
+          labelSpan.appendChild(editBtn);
+        }
         row.appendChild(labelSpan);
 
         const valueSpan = document.createElement('span');
@@ -1258,6 +1272,14 @@ Please describe your operational requirements directly, or ask the question you 
       const supportedGroups = slot.payload_groups || {};
       const onboardGroups = slot.onboard_payload_groups || {};
       const allowedSet = new Set(Array.isArray(slot.allowed_values) ? slot.allowed_values : []);
+
+      const currentTaskType = (
+        (typeof latestUiState !== 'undefined' && latestUiState && (latestUiState.task_type_key || (latestUiState.task_state && latestUiState.task_state.task_type_key) || (latestUiState.built_json && latestUiState.built_json.task_type_key))) ||
+        (slot && slot.task_type_key) ||
+        ''
+      );
+      const isPipelineBurial = currentTaskType === 'pipeline_burial';
+
       const sectionDefs = [
         {
           key: 'Mechanical_arm',
@@ -1294,19 +1316,44 @@ Please describe your operational requirements directly, or ask the question you 
           title: currentLang === 'zh' ? '其他传感器' : 'Other Sensors',
           mode: 'multiple',
         },
-        {
+      ];
+
+      // 只有管缆埋设任务才会提供作业工具，其他任务不提供
+      if (isPipelineBurial) {
+        sectionDefs.push({
           key: 'Operation_tool',
           title: currentLang === 'zh' ? '作业工具' : 'Operation Tools',
           mode: 'multiple',
-        },
-      ];
+        });
+      }
 
       return sectionDefs.map(def => {
         const onboard = Array.isArray(onboardGroups[def.key]) ? onboardGroups[def.key] : [];
         const rawOptions = Array.isArray(supportedGroups[def.key]) ? supportedGroups[def.key] : [];
-        const options = rawOptions.filter(item => allowedSet.size === 0 || allowedSet.has(item));
+        const options = rawOptions.filter(item => {
+          if (allowedSet.size > 0 && !allowedSet.has(item)) return false;
+          // 云台摄像机属于固有的常驻硬件，不作为“可替换设备”选项卡展现
+          if (def.key === 'Visual_sensor' && typeof item === 'string' && (item.includes('云台') || (item.includes('摄像机') && !item.includes('成像系统')))) {
+            return false;
+          }
+          // 已搭载的硬件本身不作为“可扩展/可替换”选项 Chip 展示，统一显示在“已搭载/原装”区域
+          if (onboard.includes(item)) {
+            return false;
+          }
+          return true;
+        });
         return { ...def, onboard, options };
-      }).filter(section => section.onboard.length > 0 || section.options.length > 0);
+      }).filter(section => {
+        if (section.key === 'Mechanical_arm' || section.key === 'End_effector') return true;
+        // 动力模块：只有含有滑靴/滑橇/履带的机器人才会显示替换，不然不显示
+        if (section.key === 'Propulsion_module') {
+          const hasSkidOrCrawler = [...section.onboard, ...section.options].some(item =>
+            typeof item === 'string' && (item.includes('滑靴') || item.includes('滑橇') || item.includes('履带'))
+          );
+          if (!hasSkidOrCrawler) return false;
+        }
+        return section.onboard.length > 0 || section.options.length > 0;
+      });
     }
 
     function renderPayloadSelector(slot, bar) {
@@ -1374,14 +1421,36 @@ Please describe your operational requirements directly, or ask the question you 
 
       const getSelectedList = () => {
         const result = [];
-        if (selected.Mechanical_arm) result.push(selected.Mechanical_arm);
-        if (selected.End_effector) result.push(selected.End_effector);
-        if (selected.Visual_sensor) result.push(selected.Visual_sensor);
-        result.push(...Array.from(selected.Propulsion_module));
-        result.push(...Array.from(selected.Acoustic_sensor));
-        result.push(...Array.from(selected.Navigation_sensor));
-        result.push(...Array.from(selected.Other_sensor));
-        result.push(...Array.from(selected.Operation_tool));
+        sections.forEach(sec => {
+          if (sec.mode === 'single') {
+            if (selected[sec.key]) {
+              result.push(selected[sec.key]);
+              // 属于该单选通道的常驻辅助硬件 (如 云台摄像机) 依然保留
+              sec.onboard.forEach(item => {
+                if (typeof item === 'string' && item.includes('云台')) {
+                  if (!result.includes(item)) result.push(item);
+                }
+              });
+            } else if (sec.onboard && sec.onboard.length > 0) {
+              // 未进行替换选择时，默认原装工具同样进入 payload 字段
+              sec.onboard.forEach(item => {
+                if (!result.includes(item)) result.push(item);
+              });
+            }
+          } else {
+            // 除了 Navigation_sensor 以外，其它分组的已搭载载荷 (onboard) 均打入 payload 字段
+            if (sec.key !== 'Navigation_sensor' && sec.onboard && sec.onboard.length > 0) {
+              sec.onboard.forEach(item => {
+                if (!result.includes(item)) result.push(item);
+              });
+            }
+            if (selected[sec.key] instanceof Set) {
+              selected[sec.key].forEach(val => {
+                if (!result.includes(val)) result.push(val);
+              });
+            }
+          }
+        });
         return result;
       };
 
@@ -1443,9 +1512,15 @@ Please describe your operational requirements directly, or ask the question you 
         confirmBtn.textContent = currentLang === 'zh' ? `确认配置 (${selectedList.length})` : `Confirm Payloads (${selectedList.length})`;
       };
 
+      const armSection = sections.find(s => s.key === 'Mechanical_arm');
+      const hasArmCapability = Boolean(armSection && (armSection.onboard.length > 0 || armSection.options.length > 0));
+
       sections.forEach(section => {
+        const isArmRelated = section.key === 'Mechanical_arm' || section.key === 'End_effector';
+        const isDisabledNoArm = isArmRelated && !hasArmCapability;
+
         const card = document.createElement('div');
-        card.className = `payload-section-card ${section.mode}`;
+        card.className = `payload-section-card ${section.mode} ${isDisabledNoArm ? 'disabled' : ''}`;
 
         const cardHeader = document.createElement('div');
         cardHeader.className = 'payload-section-header';
@@ -1454,9 +1529,14 @@ Please describe your operational requirements directly, or ask the question you 
         cardTitle.textContent = section.title;
         const cardMode = document.createElement('div');
         cardMode.className = 'payload-section-mode';
-        cardMode.textContent = section.mode === 'single'
-          ? (currentLang === 'zh' ? '单选替换' : 'Single Swap')
-          : (currentLang === 'zh' ? '多选' : 'Multiple');
+        if (isDisabledNoArm) {
+          cardMode.textContent = currentLang === 'zh' ? '本型号无机械臂' : 'No Arm Installed';
+          cardMode.style.color = '#ff5252';
+        } else {
+          cardMode.textContent = section.mode === 'single'
+            ? (currentLang === 'zh' ? '单选替换' : 'Single Swap')
+            : (currentLang === 'zh' ? '多选' : 'Multiple');
+        }
         cardHeader.appendChild(cardTitle);
         cardHeader.appendChild(cardMode);
         card.appendChild(cardHeader);

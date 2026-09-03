@@ -87,7 +87,7 @@ class TestEquipmentUnitInteractiveSelection(unittest.TestCase):
             "equipment_type": "轻型工作级深海机器人 150HP",
             "water_depth": 100.0,
         }
-        violations = self.validator.validate_for_fields(task_state, changed_fields={"equipment_type"})
+        violations = self.validator.validate_for_fields(task_state, changed_fields={"equipment_type"}, purpose="interactive")
         val_errors = [v for v in violations if v.check_type == "validation_error"]
         self.assertEqual(val_errors, [])
 

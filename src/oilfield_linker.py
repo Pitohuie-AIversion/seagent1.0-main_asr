@@ -255,8 +255,8 @@ class OilfieldEntityLinker:
             f"{_format_number(coordinate_range['lat'][0])}～{_format_number(coordinate_range['lat'][1])}度、"
             f"东经{_format_number(coordinate_range['lon'][0])}～{_format_number(coordinate_range['lon'][1])}度，"
             f"默认参考水深为{_format_number(reference_depth)}米，知识库校验上限为"
-            f"{_format_number(maximum_reference_depth)}米。当前暂采用油田范围中心坐标"
-            f"（{_format_number(default_coordinates['lat'])}，{_format_number(default_coordinates['lon'])}）"
+            f"{_format_number(maximum_reference_depth)}米。当前暂采用油田范围中心坐标北纬 "
+            f"{_format_number(default_coordinates['lat'])} 度、东经 {_format_number(default_coordinates['lon'])} 度"
             f"和参考水深{_format_number(reference_depth)}米，您后续可以提供实际作业坐标和水深进行覆盖。"
         ]
         issues: list[OilfieldIssue] = []

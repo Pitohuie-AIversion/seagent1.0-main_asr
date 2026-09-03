@@ -2,9 +2,8 @@ version: '1.0'
 description: SEAgent 云端与水下支持船 rosbridge WebSocket 通信格式规范
 protocol_source: outside/sealien_ctrlpilot_llmbridge-ros-mcp-server/sealien_ctrlpilot_llmbridge/UI接口协议.md
 primary_message_package: sealien_ctrlpilot_llmbridge
+auxiliary_sensor_message_package: sealien_ctrlpilot_msgmanagement
 websocket_gateway:
-  default_host: 127.0.0.1
-  default_port: 9090
   protocol: rosbridge_v2.0
   topics:
     task_cmd:
@@ -42,9 +41,26 @@ websocket_gateway:
       type: sealien_ctrlpilot_msgmanagement/msg/ConnectChristmasTreePlug
       direction: subscribe
       description: 采油树插头和插孔位姿
-  active_host: 127.0.0.1
-  active_port: 9090
-  active_mode: real
+    depth_status:
+      name: /sensor/depth
+      type: sealien_ctrlpilot_msgmanagement/msg/DepthStatus
+      direction: subscribe
+      description: 四路深度和温度传感器状态
+    imu_dvl_status:
+      name: /sensor/imu_dvl
+      type: sealien_ctrlpilot_msgmanagement/msg/ImuDvlStatus
+      direction: subscribe
+      description: IMU 与 DVL 组合导航状态
+    thruster_status:
+      name: /sensor/thruster_status
+      type: sealien_ctrlpilot_msgmanagement/msg/ThrusterStatus
+      direction: subscribe
+      description: 推进器转速、功率、温度和故障状态
+    heartbeat_status:
+      name: /system/heartbeat
+      type: sealien_ctrlpilot_msgmanagement/msg/HeartbeatStatus
+      direction: subscribe
+      description: ROV 在线状态和协议版本心跳
 task_type_mappings:
   pipeline_inspection:
     display_name: 管道/电缆巡检

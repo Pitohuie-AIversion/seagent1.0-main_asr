@@ -349,10 +349,21 @@ class IntentRouter:
                 expected_slot_options,
             )
 
-            if explicit_selection or bare_expected_alias or expected_list_selection:
+            is_task_start_intent = any(
+                kw in user_msg_strip
+                for kw in [
+                    "开始这个任务", "那开始这个任务", "就做这个任务", "就安排这个", "开始创建",
+                    "就这个吧", "安排这个任务", "创建这个任务", "就按这个做", "开始做这个",
+                    "开启这个任务", "按这个开始", "就选这个任务", "那就这个", "开始这个",
+                    "开始该任务", "就做这个", "安排这个", "创建这个", "选这个任务", "那开始这个",
+                    "开始吧", "开始该作业", "就按这个", "开始任务",
+                ]
+            ) or (context.get("has_task") and "开始" in user_msg_strip)
+
+            if explicit_selection or bare_expected_alias or expected_list_selection or is_task_start_intent:
                 logger.info(
                     "[IntentRouter] Correcting route to WRITE because user "
-                    "selected an expected slot alias in: %s",
+                    "selected an expected slot alias or issued task start in: %s",
                     user_message,
                 )
                 candidate["operation"] = "WRITE"
@@ -361,9 +372,9 @@ class IntentRouter:
                 candidate["needs_clarification"] = False
                 candidate["clarification_reason"] = None
                 candidate["reason_code"] = (
-                    "EXPECTED_LIST_SELECTION_WRITE_CORRECTION"
-                    if expected_list_selection
-                    else "EXPECTED_SLOT_ALIAS_WRITE_CORRECTION"
+                    "TASK_START_INTENT_WRITE_CORRECTION"
+                    if is_task_start_intent
+                    else ("EXPECTED_LIST_SELECTION_WRITE_CORRECTION" if expected_list_selection else "EXPECTED_SLOT_ALIAS_WRITE_CORRECTION")
                 )
                 plan = validate_interaction_plan(candidate)
 

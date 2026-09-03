@@ -65,16 +65,16 @@ def _parse_number_token(token: str) -> int | None:
     return value if value > 0 else None
 
 
-_ORDINAL_DIGITS = r"(?:[1-9]\d?|[零〇一二两三四五六七八九十]{1,3})"
-_OPTION_NOUN_EXPLICIT = r"(?:个|项|条|台|艘|种|款|组|位|套)"
-_OPTION_NOUN_OPTIONAL = r"(?:个|项|条|台|艘|种|号|款|组|位|套)?"
+_ORDINAL_DIGITS = r"(?:0?[1-9]\d?|[零〇一二两三四五六七八九十]{1,3})"
+_OPTION_NOUN_EXPLICIT = r"(?:个|项|条|台|艘|种|款|组|位|套|号机|号|机)"
+_OPTION_NOUN_OPTIONAL = r"(?:个|项|条|台|艘|种|号机|号|机|款|组|位|套)?"
 _MODAL_OR_END = r"(?:[吧啦了哈呗嘛噢哦呀呢\s.。!！,，~～]|$)"
 
 
 def parse_ordinal_reference(value: object) -> OrdinalReference | None:
-    """识别“第三个/选3/3/倒数第二个/最后一个”等序号选择表达。
+    """识别“第三个/选3/3/倒数第二个/最后一个/1号/选1号/01号”等序号选择表达。
 
-    严格区分列表序号（如“选1”、“第2个”）与实际规格型号/编号（如“选择150HP”、“LROV-150-001”），
+    严格区分列表序号（如“选1”、“第2个”、“1号”）与实际规格型号/编号（如“选择150HP”、“LROV-150-001”），
     避免将带单位、字母或多位实体数值误判为序号引用。
     """
     if not isinstance(value, str):
@@ -83,9 +83,9 @@ def parse_ordinal_reference(value: object) -> OrdinalReference | None:
     if not text:
         return None
 
-    # 1. 倒数第 N 项 (如: 倒数第二个, 倒数第1项)
+    # 1. 倒数第 N 项 / 倒数 N 项 (如: 倒数第二个, 倒数第1项, 倒数1号)
     reverse = re.search(
-        rf"倒数第\s*({_ORDINAL_DIGITS})\s*{_OPTION_NOUN_OPTIONAL}(?!\d|[a-zA-Z])",
+        rf"倒数(?:第)?\s*({_ORDINAL_DIGITS})\s*{_OPTION_NOUN_OPTIONAL}(?!\d|[a-zA-Z])",
         text,
     )
     if reverse:
@@ -93,8 +93,8 @@ def parse_ordinal_reference(value: object) -> OrdinalReference | None:
         if number:
             return OrdinalReference(-number, reverse.group(0))
 
-    # 2. 最后一项 / 倒数第一
-    last = re.search(r"最后(?:一)?(?:个|项|条|台|艘|种|号|款|组|位|套|那个)", text)
+    # 2. 最后一项 / 倒数第一 / 最后1个
+    last = re.search(r"最后(?:一|1)?(?:个|项|条|台|艘|种|号|号机|机|款|组|位|套|那个)", text)
     if last:
         return OrdinalReference(-1, last.group(0))
 
@@ -118,10 +118,11 @@ def parse_ordinal_reference(value: object) -> OrdinalReference | None:
             raw = ordinal_bare.group(0).strip(" \t.。!！,，~～")
             return OrdinalReference(number, raw)
 
-    # 4. 动词 + 序号表达 (如: 选1, 选择2, 选第3个, 选3吧, 定1)
+    # 4. 动词 + 序号表达 (如: 选1, 选择2, 介绍下第一种, 讲讲第2个, 说说第一个)
     # 必须保证数字后没有紧跟英文字母(如150HP)、非序号数字(如150截断)或其他实体后缀
+    _VERB_PREFIX = r"(?:选(?:择)?|采用|使用|用|要|按|定|来|整|搞|配|换|弄|改|更换(?:成|为)?|改成|换成|换做|介绍(?:下|一下)?|说明(?:下|一下)?|讲(?:讲)?(?:下|一下)?|说(?:说)?(?:下|一下)?|聊(?:聊)?(?:下|一下)?|描述(?:下|一下)?|看(?:看)?(?:下|一下)?|查(?:查)?(?:下|一下)?)"
     selected_with_noun = re.search(
-        rf"(?:选(?:择)?|采用|使用|用|要|按|定)\s*(?:第\s*)?({_ORDINAL_DIGITS})\s*{_OPTION_NOUN_EXPLICIT}(?!\d|[a-zA-Z])",
+        rf"{_VERB_PREFIX}\s*(?:个\s*)?(?:第\s*)?({_ORDINAL_DIGITS})\s*{_OPTION_NOUN_EXPLICIT}(?!\d|[a-zA-Z])",
         text,
     )
     if selected_with_noun:
@@ -130,7 +131,7 @@ def parse_ordinal_reference(value: object) -> OrdinalReference | None:
             return OrdinalReference(number, selected_with_noun.group(0))
 
     selected_pure_num = re.search(
-        rf"(?:选(?:择)?|采用|使用|用|要|按|定)\s*(?:第\s*)?({_ORDINAL_DIGITS})\s*{_MODAL_OR_END}",
+        rf"{_VERB_PREFIX}\s*(?:个\s*)?(?:第\s*)?({_ORDINAL_DIGITS})\s*{_MODAL_OR_END}",
         text,
     )
     if selected_pure_num:

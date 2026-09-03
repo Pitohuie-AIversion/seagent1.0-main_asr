@@ -183,18 +183,24 @@ model_variants:
         Mechanical_arm: null
         End_effector: null
         Visual_sensor:
+          - "单目水下成像系统"
           - "管缆外观检测设备"
-        Propulsion_module: null
+        Propulsion_module:
+          - "履带模块"
         Acoustic_sensor:
+          - "前视声呐系统"
           - "机械扫描声呐"
           - "侧扫声呐系统"
           - "多波束声呐系统"
           - "声学应答器"
         Navigation_sensor: null
         Other_sensor:
+          - "厚度检测传感器"
+          - "泄漏检测传感器"
+          - "腐蚀检测探头"
+          - "水质传感器"
           - "TSS管缆跟踪系统"
           - "海床地质探测设备"
-          - "腐蚀检测探头"
           - "激光标尺"
         Operation_tool:
           - "机械切割开沟模块"
@@ -297,9 +303,12 @@ model_variants:
         Mechanical_arm: null
         End_effector: null
         Visual_sensor:
+          - "单目水下成像系统"
           - "管缆外观检测设备"
-        Propulsion_module: null
+        Propulsion_module:
+          - "履带模块"
         Acoustic_sensor:
+          - "前视声呐系统"
           - "机械扫描声呐"
           - "侧扫声呐系统"
           - "多波束声呐系统"
@@ -307,9 +316,12 @@ model_variants:
           - "声学应答器"
         Navigation_sensor: null
         Other_sensor:
+          - "厚度检测传感器"
+          - "泄漏检测传感器"
+          - "腐蚀检测探头"
+          - "水质传感器"
           - "TSS管缆跟踪系统"
           - "海床地质探测设备"
-          - "腐蚀检测探头"
           - "激光标尺"
         Operation_tool:
           - "机械切割开沟模块"
@@ -354,36 +366,39 @@ model_variants:
         Operation_tool: null
       supported_payloads:
         Mechanical_arm: 
+          - "多功能液压机械臂"
           - "电液机械臂"
         End_effector: 
+          - "机械臂末端夹爪 / 夹具"
           - "腐蚀检测探头"
-          - "机械臂工具快换装置"
           - "旋转清洗刷"
-          - "机械臂相关采样工具"
+          - "采样工具"
           - "液压剪切 / 水下锯切工具"
+          - "液压剪切器"
           - "液压电缆剪切器"
           - "阀门扭矩工具"
           - "液压飞线插拔工具"
           - "电气飞线插拔工具"
         Visual_sensor:
+          - "单目水下成像系统"
           - "双目水下成像系统"
           - "浑水水下成像系统"
-          - "机械臂腕部摄像机"
         Propulsion_module: null
         Acoustic_sensor:
+          - "前视声呐系统"
           - "机械扫描声呐"
           - "侧扫声呐系统"
           - "多波束声呐系统"
         Navigation_sensor: null
         Other_sensor:
-          - "电磁检测传感器"
           - "厚度检测传感器"
+          - "泄漏检测传感器"
+          - "腐蚀检测探头"
           - "水质传感器"
           - "TSS管缆跟踪系统"
           - "六维力 / 力矩传感器"
           - "激光标尺"
-        Operation_tool:
-          - "独立采样器"
+        Operation_tool: null
       max_payload_weight_kg: 650
       structural_lifting_capacity_kg: 4000
       min_turning_radius_m: null
@@ -424,32 +439,34 @@ model_variants:
         Operation_tool: null
       supported_payloads:
         Mechanical_arm: 
+          - "轻型多功能液压机械臂"
           - "轻型电液机械臂"
           - "五自由度机械臂"
         End_effector: 
+          - "机械臂末端夹爪 / 夹具"
           - "腐蚀检测探头"
-          - "机械臂相关采样工具"
-          - "机械臂工具快换装置"
+          - "采样工具"
           - "旋转清洗刷"
         Visual_sensor:
+          - "单目水下成像系统"
           - "双目水下成像系统"
           - "浑水水下成像系统"
-          - "机械臂腕部摄像机"
         Propulsion_module: null
         Acoustic_sensor:
+          - "前视声呐系统"
           - "机械扫描声呐"
           - "侧扫声呐系统"
           - "多波束声呐系统"
         Navigation_sensor: null
         Other_sensor:
-          - "电磁检测传感器"
           - "厚度检测传感器"
+          - "泄漏检测传感器"
+          - "腐蚀检测探头"
           - "水质传感器"
           - "TSS管缆跟踪系统"
           - "六维力 / 力矩传感器"
           - "激光标尺"
-        Operation_tool:
-          - "独立采样器"
+        Operation_tool: null
       max_payload_weight_kg: 16
       structural_lifting_capacity_kg: 100
       min_turning_radius_m: null
@@ -490,23 +507,24 @@ model_variants:
         Mechanical_arm: null
         End_effector: null
         Visual_sensor:
+          - "高清水下摄像机"
           - "双目水下成像系统"
           - "浑水水下成像系统"
         Propulsion_module: null
         Acoustic_sensor:
+          - "前视声呐系统"
           - "机械扫描声呐"
           - "侧扫声呐系统"
           - "多波束声呐系统"
         Navigation_sensor: null
         Other_sensor:
-          - "电磁检测传感器"
           - "腐蚀检测探头"
           - "厚度检测传感器"
+          - "泄漏检测传感器"
           - "水质传感器"
           - "TSS管缆跟踪系统"
           - "激光标尺"
-        Operation_tool:
-          - "独立采样器"
+        Operation_tool: null
       max_payload_weight_kg: 16
       structural_lifting_capacity_kg: 100
       min_turning_radius_m: null
@@ -547,12 +565,17 @@ model_variants:
           - "单目水下成像系统"
         Propulsion_module: null
         Acoustic_sensor:
+          - "前视声呐系统"
+          - "侧扫声呐"
           - "侧扫声呐系统"
           - "合成孔径声呐"
           - "多波束声呐系统"
         Navigation_sensor:
           - "USBL辅助定位模块"
         Other_sensor:
+          - "厚度检测传感器"
+          - "泄漏检测传感器"
+          - "腐蚀检测探头"
           - "浅地层剖面仪"
           - "CTD"
           - "水质传感器"

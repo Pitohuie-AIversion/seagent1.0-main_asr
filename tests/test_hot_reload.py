@@ -1,4 +1,5 @@
 import os
+import importlib
 import sys
 import tempfile
 import time
@@ -116,3 +117,36 @@ def test_api_dev_reload_events_endpoint_returns_new_events():
         assert data["ok"] is True
         assert data["events"]
         assert data["events"][-1]["changed_files"] == ["state.yaml"]
+
+
+def test_reload_preserves_state_contract_exception_identity():
+    """Reload must not break already-imported contract exception handlers."""
+    import src.exceptions as exc_mod
+    import src.session_state as session_mod
+    import src.slot_store as slot_mod
+
+    old_slot_conflict = slot_mod.SlotVersionConflict
+    old_snapshot_error = slot_mod.SnapshotValidationError
+    old_state_error = session_mod.StateContractError
+    old_conversation_state = session_mod.ConversationState
+    old_task_state = session_mod.TaskLifecycleState
+    old_execution_state = session_mod.ExecutionControlState
+    old_session_state = session_mod.SessionState
+    old_persistence_error = exc_mod.TaskPersistenceError
+    old_intent_conflict = exc_mod.IntentIdConflict
+    old_id_reservation_error = exc_mod.IdReservationError
+
+    reloaded_exc = importlib.reload(exc_mod)
+    reloaded_session = importlib.reload(session_mod)
+    reloaded_slot = importlib.reload(slot_mod)
+
+    assert reloaded_slot.SlotVersionConflict is old_slot_conflict
+    assert reloaded_slot.SnapshotValidationError is old_snapshot_error
+    assert reloaded_session.StateContractError is old_state_error
+    assert reloaded_session.ConversationState is old_conversation_state
+    assert reloaded_session.TaskLifecycleState is old_task_state
+    assert reloaded_session.ExecutionControlState is old_execution_state
+    assert reloaded_session.SessionState is old_session_state
+    assert reloaded_exc.TaskPersistenceError is old_persistence_error
+    assert reloaded_exc.IntentIdConflict is old_intent_conflict
+    assert reloaded_exc.IdReservationError is old_id_reservation_error

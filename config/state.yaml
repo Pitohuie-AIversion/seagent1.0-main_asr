@@ -1,4 +1,4 @@
-store_version: 2242
+store_version: 3171
 robots:
   CRAWLER-1600-001:
     water_current_velocity: 1.0
@@ -88,8 +88,8 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    version: 1439
-    updated_at: '2026-08-31T16:48:24.697275+08:00'
+    version: 2276
+    updated_at: '2026-06-30T17:38:00.072675+08:00'
   OBSROV-75-001:
     water_current_velocity: 0.2
     water_turbidity: 3
@@ -106,8 +106,8 @@ robots:
     end_effector_status: normal
     acoustic_comms_status: normal
     tether_connection_status: normal
-    version: 202
-    updated_at: '2026-06-30T17:38:09.734952+08:00'
+    version: 294
+    updated_at: '2026-06-30T17:38:06.864888+08:00'
   AUV-324cc-001:
     water_current_velocity: 1
     water_turbidity: 8.0

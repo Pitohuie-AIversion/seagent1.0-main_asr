@@ -155,6 +155,17 @@
     .detail-row dt { color: var(--muted); }
     .detail-row dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
     .error-box { display: none; margin: 14px; padding: 12px; color: #842c2c; background: #fae8e8; border-left: 3px solid var(--red); }
+    .dynamic-panel { margin-top: 16px; }
+    .subscription-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 12px; padding: 14px; }
+    .subscription-card { min-width: 0; border: 1px solid var(--line); background: var(--surface-muted); }
+    .subscription-card-head { display: flex; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+    .subscription-card-head h3 { margin: 0; font-size: 13px; }
+    .subscription-meta { margin-top: 4px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+    .subscription-fields { margin: 0; }
+    .subscription-fields .detail-row { grid-template-columns: minmax(100px, .8fr) minmax(0, 1.2fr); padding: 9px 14px; }
+    .raw-message { margin: 0; padding: 12px 14px; border-top: 1px solid var(--line); }
+    .raw-message summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 700; }
+    .raw-message pre { max-height: 280px; margin: 10px 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
 
     dialog { width: min(440px, calc(100vw - 28px)); border: 1px solid var(--line); border-radius: 6px; padding: 0; }
     dialog::backdrop { background: rgba(13, 24, 29, .48); }
@@ -253,6 +264,12 @@
         <div class="error-box" id="errorBox"></div>
       </aside>
     </section>
+
+    <section class="panel dynamic-panel" aria-label="配置驱动的ROS订阅">
+      <div class="panel-head"><h2>动态 ROS 订阅</h2><span class="counter" id="subscriptionCounter">0 channels</span></div>
+      <div class="subscription-grid" id="dynamicSubscriptions"></div>
+      <div class="empty" id="emptySubscriptions">当前 YAML 没有启用的动态订阅</div>
+    </section>
   </main>
 
   <dialog id="gatewayDialog">
@@ -271,6 +288,7 @@
     const taskTypeNames = {0: 'TASK_MANAGE', 1: 'CLAMP_CABLE', 2: 'SEARCH_CABLE', 3: 'CLAMP_PIN', 4: 'INSERT_PLUG', 5: 'MOVE_TASK', 6: 'CTRL_TASK', 10: 'AUV_TASK'};
     const statusClasses = {READY: '', PLAN: 'active', ENTER: 'active', ONGOING: 'active', EXIT: 'active', FINISH: 'success', PAUSE: 'warn', FAIL: 'fail', FAILED: 'fail', SENT: ''};
     let pollTimer = null;
+    let pollIntervalMs = 1000;
 
     const text = (id, value) => { document.getElementById(id).textContent = value ?? '--'; };
     const number = value => value === null || value === undefined || Number.isNaN(Number(value)) ? '--' : Number(value).toFixed(1);
@@ -310,6 +328,80 @@
       });
     }
 
+    function displayValue(value, unit) {
+      if (value === null || value === undefined) return '--';
+      const rendered = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      return unit ? `${rendered} ${unit}` : rendered;
+    }
+
+    function renderDynamicSubscriptions(subscriptions) {
+      const container = document.getElementById('dynamicSubscriptions');
+      const empty = document.getElementById('emptySubscriptions');
+      container.replaceChildren();
+      empty.style.display = subscriptions.length ? 'none' : 'block';
+      text('subscriptionCounter', `${subscriptions.length} channels`);
+
+      subscriptions.forEach(subscription => {
+        const card = document.createElement('article');
+        card.className = 'subscription-card';
+
+        const header = document.createElement('div');
+        header.className = 'subscription-card-head';
+        const titleBox = document.createElement('div');
+        const title = document.createElement('h3');
+        title.textContent = subscription.title || subscription.id;
+        const meta = document.createElement('div');
+        meta.className = 'subscription-meta mono';
+        meta.textContent = `${subscription.topic} · ${subscription.message_type}`;
+        titleBox.append(title, meta);
+        const badge = document.createElement('span');
+        badge.className = `status ${subscription.status === 'LIVE' ? 'success' : subscription.status === 'STALE' ? 'warn' : ''}`;
+        badge.textContent = subscription.status || 'WAITING';
+        header.append(titleBox, badge);
+        card.appendChild(header);
+
+        const fields = document.createElement('dl');
+        fields.className = 'subscription-fields';
+        (subscription.fields || []).forEach(field => {
+          const row = document.createElement('div');
+          row.className = 'detail-row';
+          const label = document.createElement('dt');
+          label.textContent = field.label || field.path;
+          const value = document.createElement('dd');
+          value.textContent = displayValue(field.value, field.unit);
+          row.append(label, value);
+          fields.appendChild(row);
+        });
+        if (fields.childElementCount) card.appendChild(fields);
+
+        if (subscription.raw_message !== null && subscription.raw_message !== undefined) {
+          const details = document.createElement('details');
+          details.className = 'raw-message';
+          const summary = document.createElement('summary');
+          summary.textContent = '原始消息 JSON';
+          const raw = document.createElement('pre');
+          raw.textContent = JSON.stringify(subscription.raw_message, null, 2);
+          details.append(summary, raw);
+          card.appendChild(details);
+        } else if (subscription.raw_truncated) {
+          const truncated = document.createElement('div');
+          truncated.className = 'subscription-meta';
+          truncated.textContent = '原始消息超过 YAML 配置的大小上限，已省略。';
+          card.appendChild(truncated);
+        }
+        container.appendChild(card);
+      });
+    }
+
+    function schedulePolling(value) {
+      const requested = Number(value);
+      const nextInterval = Number.isFinite(requested) ? Math.max(250, Math.min(60000, requested)) : 1000;
+      if (pollTimer && nextInterval === pollIntervalMs) return;
+      if (pollTimer) window.clearInterval(pollTimer);
+      pollIntervalMs = nextInterval;
+      pollTimer = window.setInterval(refreshStatus, pollIntervalMs);
+    }
+
     function renderStatus(data) {
       const snapshot = data.snapshot || {};
       const connected = Boolean(data.mcp_connected);
@@ -329,8 +421,10 @@
       text('poseZ', `${number(pose.z_m)} m`);
       text('systemHealth', snapshot.health === 0 ? 'HEALTHY' : snapshot.health ?? '--');
       renderTasks(Array.isArray(snapshot.active_tasks) ? snapshot.active_tasks : []);
+      renderDynamicSubscriptions(Array.isArray(snapshot.dynamic_subscriptions) ? snapshot.dynamic_subscriptions : []);
+      schedulePolling(data.runtime_config?.dashboard?.refresh_interval_ms);
       const errorBox = document.getElementById('errorBox');
-      const error = data.last_error || (!connected ? data.msg : '');
+      const error = data.runtime_config?.last_error || data.last_error || (!connected ? data.msg : '');
       errorBox.textContent = error || '';
       errorBox.style.display = error ? 'block' : 'none';
     }
@@ -377,7 +471,7 @@
     });
 
     refreshStatus();
-    pollTimer = window.setInterval(refreshStatus, 1000);
+    schedulePolling(1000);
   </script>
 </body>
 </html>

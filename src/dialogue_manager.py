@@ -19,6 +19,7 @@ dialogue_manager.py - 对话主控制器
 """
 
 import copy
+import dataclasses
 import json
 import logging
 import math
@@ -65,7 +66,7 @@ from .normalization_contract import (
     validate_normalization_runtime_flags,
 )
 from .task_patch import build_task_patch, task_patch_to_legacy_updates
-from .knowledge_retriever import KnowledgeBase, RobotSelectionDataError
+from .knowledge_retriever import KnowledgeBase, RobotSelectionDataError, format_seabed_type, format_telemetry_value
 from .extractor import ParameterExtractor
 from .task_slot_filter import TaskSlotFilter
 from .task_capability_adapter import TaskCapabilityAdapter
@@ -330,6 +331,7 @@ class DialogueManager:
         self.final_result: dict | None = None
         self.awaiting_final_confirm = False
         self.task_start_now = False
+        self._last_visible_catalog_items: list[dict] = []
 
         # 约束管理状态
         self._blocking_violations: list[Violation] = []
@@ -340,6 +342,10 @@ class DialogueManager:
 
         # ROV候选暂存
         self._pending_rov_candidates: list[dict] = []
+        self._last_discussed_task_type: str | None = None
+        self._last_discussed_robot: str | None = None
+        self._last_discussed_oilfield: str | None = None
+        self._last_discussed_payload: str | None = None
 
         # 缓存构建结果
         self._last_built_json: dict = {}
@@ -509,15 +515,42 @@ class DialogueManager:
 
     def process(self, user_message: str, request_id: str = "req_default") -> str:
         with self._session_lock:
-            if getattr(self.slot_store, "validation_result", None) is not None or self.task_state.get("task_type_key"):
-                if self._is_state_snapshot_stale():
-                    try:
-                        self.refresh_external_state_constraints()
-                    except Exception as exc:
-                        logger.warning("[DialogueManager] 自动刷新外部状态失败: %s", exc)
-            reply = self._process_internal(user_message, request_id)
-            self._run_session_state_shadow_check(checkpoint="process", request_id=request_id)
-            return reply
+            request_snapshot = copy.deepcopy(self.slot_store.export_snapshot())
+            request_task_state = copy.deepcopy(self.task_state)
+            request_built_json = copy.deepcopy(self._last_built_json)
+            request_missing = copy.deepcopy(self._last_missing)
+            request_phase = self.phase
+            request_soft_whitelist = copy.deepcopy(self._soft_whitelist)
+            request_pending_rov = copy.deepcopy(self._pending_rov_candidates)
+            request_blocking_violations = copy.deepcopy(self._blocking_violations)
+            request_history = list(self.conversation_history)
+            request_task_start_now = self.task_start_now
+
+            try:
+                reply = self._process_internal(user_message, request_id)
+                self._run_session_state_shadow_check(checkpoint="process", request_id=request_id)
+                return reply
+            except (TaskPersistenceError, IntentIdConflict, IdReservationError) as exc:
+                if self.phase == "blocked_soft":
+                    raise
+
+                try:
+                    self.slot_store.restore_snapshot(request_snapshot)
+                    self.task_state = request_task_state
+                    self._last_built_json = request_built_json
+                    self._last_missing = request_missing
+                    self._transition_phase(request_phase, reason="request_rollback")
+                    self._soft_whitelist = request_soft_whitelist
+                    self._pending_rov_candidates = request_pending_rov
+                    self._blocking_violations = request_blocking_violations
+                    self.conversation_history = request_history
+                    self.task_start_now = request_task_start_now
+                    self.final_result = None
+                except Exception as rb_exc:
+                    raise TaskRollbackError(
+                        f"Request failed ({exc}) and request rollback failed: {rb_exc}"
+                    ) from exc
+                raise
 
     def _run_session_state_shadow_check(
         self,
@@ -577,7 +610,88 @@ class DialogueManager:
 
         query_intent = route.query_intent
 
-        if self._is_environment_status_query(user_message, route):
+        # 0. 优先检测基于上一轮可见选项列表的序号提问指代 (如: "介绍下第一种", "第2个水深多少")
+        ordinal_ref = parse_ordinal_reference(user_message)
+        if ordinal_ref and self._last_visible_catalog_items:
+            idx = ordinal_ref.position
+            target_item = None
+            if 1 <= idx <= len(self._last_visible_catalog_items):
+                target_item = self._last_visible_catalog_items[idx - 1]
+            elif idx < 0 and abs(idx) <= len(self._last_visible_catalog_items):
+                target_item = self._last_visible_catalog_items[idx]
+
+            if target_item:
+                item_name = target_item.get("name")
+                item_type = target_item.get("type")
+                item_key = target_item.get("key")
+
+                if item_type == "task_type":
+                    self._last_discussed_task_type = item_key
+                    reply = self._build_grounded_single_task_introduction(item_key)
+                elif item_type == "device_class":
+                    self._last_discussed_robot = item_name
+                    new_msg = f"介绍一下{item_name}"
+                    raw_route = self.intent_router.route(new_msg, self.conversation_history, self.task_state, expected_slots=[])
+                    new_plan = dataclasses.replace(raw_route.interaction_plan, query_intent="DEVICE_CAPABILITY", subject_text=item_name) if raw_route.interaction_plan else None
+                    new_route = dataclasses.replace(raw_route, query_intent="DEVICE_CAPABILITY", interaction_plan=new_plan)
+                    class_ans = self._build_grounded_device_class_answer(new_msg, new_route)
+                    if class_ans:
+                        reply = class_ans
+                    else:
+                        reply = self._handle_knowledge_query(new_msg, new_route, request_id)
+                elif item_type == "environment":
+                    self._last_discussed_oilfield = item_name
+                    new_msg = f"介绍一下{item_name}"
+                    raw_route = self.intent_router.route(new_msg, self.conversation_history, self.task_state, expected_slots=[])
+                    new_plan = dataclasses.replace(raw_route.interaction_plan, query_intent="ENVIRONMENT_QUERY", subject_text=item_name) if raw_route.interaction_plan else None
+                    new_route = dataclasses.replace(raw_route, query_intent="ENVIRONMENT_QUERY", interaction_plan=new_plan)
+                    reply = self._handle_knowledge_query(new_msg, new_route, request_id)
+                else:
+                    new_msg = f"介绍一下{item_name}"
+                    raw_route = self.intent_router.route(new_msg, self.conversation_history, self.task_state, expected_slots=[])
+                    new_intent = "TOOL_QUERY" if item_type == "tool_category" else "KNOWLEDGE_QA"
+                    new_plan = dataclasses.replace(raw_route.interaction_plan, query_intent=new_intent, subject_text=item_name) if raw_route.interaction_plan else None
+                    new_route = dataclasses.replace(raw_route, query_intent=new_intent, interaction_plan=new_plan)
+                    reply = self._handle_knowledge_query(new_msg, new_route, request_id)
+
+                self.conversation_history.append({"role": "user", "content": user_message})
+                self.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
+
+        if (
+            any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
+            and any(q in user_message for q in ("介绍", "哪些", "什么", "支持", "包含", "列表", "清单", "所有", "推荐", "有哪些", "有什么"))
+            and not any(e in user_message for e in ("金牛座", "天鹰座", "凤凰座", "LROV", "WROV", "通用工作级", "轻型工作级", "特种工作级", "001", "002"))
+        ):
+            reply = self._build_grounded_fleet_introduction()
+        elif (
+            any(t in user_message for t in ("任务", "作业类型", "活", "工作"))
+            and any(q in user_message for q in ("介绍", "哪些", "什么", "支持", "包含", "列表", "清单", "能做", "干什么", "能干", "有什么"))
+        ):
+            spec_task = self._extract_task_type_from_text(user_message)
+            if spec_task:
+                self._last_discussed_task_type = spec_task
+                reply = self._build_grounded_single_task_introduction(spec_task)
+            else:
+                reply = self._build_grounded_task_catalog_introduction()
+        elif (
+            any(p in user_message for p in ("载荷", "工具", "传感器", "机械臂", "摄像机", "声呐", "水射流", "切断刀", "扳手", "刷洗"))
+            and any(q in user_message for q in ("哪些", "什么", "支持", "包含", "列表", "清单", "有哪些", "有什么"))
+            and any(q in user_message for q in ("所有", "概览", "汇总", "清单", "有哪些", "有什么"))
+        ):
+            reply = self._build_grounded_tool_catalog_introduction()
+        elif (
+            any(o in user_message for o in ("油田", "油气田", "海域", "水域", "区域"))
+            and any(q in user_message for q in ("介绍", "哪些", "什么", "支持", "包含", "列表", "收录", "有什么", "在哪些"))
+            and not any(of in user_message for of in ("流花", "陆丰", "文昌", "陵水", "11-1", "14-8", "16-2", "17-2"))
+        ):
+            reply = self._build_grounded_oilfield_catalog_introduction()
+        elif (
+            any(r in user_message for r in ("约束", "规则", "准入", "限制", "硬约束", "安全条件", "风控"))
+            and any(q in user_message for q in ("介绍", "哪些", "什么", "说明", "要求", "有什么", "机制"))
+        ):
+            reply = self._build_grounded_rule_catalog_introduction()
+        elif self._is_environment_status_query(user_message, route):
             reply = self._handle_status_query(user_message, route, as_environment_status=True)
         elif query_intent in ("TOOL_QUERY", "DEVICE_CAPABILITY", "KNOWLEDGE_QA"):
             reply = self._handle_knowledge_query(user_message, route, request_id)
@@ -666,7 +780,8 @@ class DialogueManager:
                 if isinstance(item, dict):
                     if item.get("category") == "oil_field_details":
                         of = item.get("oil_field", {})
-                        return f"【{of.get('name')}】参考水深约 {of.get('water_depth')} 米，校验上限 {of.get('maximum_reference_water_depth')} 米，海床类型为 {of.get('seabed_type')}。说明：{of.get('notes')}"
+                        seabed_cn = format_seabed_type(of.get("seabed_type"))
+                        return f"【{of.get('name')}】参考水深约 {of.get('water_depth')} 米，校验水深上限 {of.get('maximum_reference_water_depth')} 米，海床类型为{seabed_cn}。说明：{of.get('notes')}"
                     elif item.get("category") == "forbidden_area_details":
                         fa = item.get("forbidden_area", {})
                         return f"【{fa.get('name')}】为生态敏感禁入保护区，坐标范围纬度 {fa.get('lat_range')}，经度 {fa.get('lon_range')}。说明：{fa.get('notes')}"
@@ -916,6 +1031,204 @@ class DialogueManager:
             if class_id in matched
         ]
 
+    def _extract_robot_entity_from_text(self, text: str) -> str | None:
+        """从文本中提取提及的水下机器人名称、系列或型号代号。"""
+        if not text:
+            return None
+        raw = str(text).strip()
+        families = self.kb.robot_fleet.get("robot_families", {})
+        for fid, f_cfg in families.items():
+            names = [f_cfg.get("full_name"), *(f_cfg.get("aliases") or [])]
+            for n in names:
+                if n and n in raw:
+                    return f_cfg.get("full_name") or fid
+        units = self.kb.robot_fleet.get("fleet_units", [])
+        if isinstance(units, dict):
+            units_list = list(units.values())
+        elif isinstance(units, list):
+            units_list = units
+        else:
+            units_list = []
+        for u_cfg in units_list:
+            if isinstance(u_cfg, dict):
+                uid = u_cfg.get("id") or u_cfg.get("unit_id") or ""
+                if uid and uid in raw:
+                    return uid
+        classes = self.kb.get_robot_classes()
+        for cid, c_cfg in classes.items():
+            name = c_cfg.get("full_name", cid)
+            if name in raw or cid in raw:
+                return name
+        return None
+
+    def _extract_oilfield_entity_from_text(self, text: str) -> str | None:
+        """从文本中提取提及的水下油气田或作业海域名称。"""
+        if not text:
+            return None
+        raw = str(text).strip()
+        oilfields = (
+            self.kb.environment.get("oil_fields")
+            or self.kb.environment.get("oilfields")
+            or []
+            if hasattr(self.kb, "environment")
+            else []
+        )
+        if isinstance(oilfields, dict):
+            oilfields_list = list(oilfields.values())
+        elif isinstance(oilfields, list):
+            oilfields_list = oilfields
+        else:
+            oilfields_list = []
+        for o_cfg in oilfields_list:
+            if isinstance(o_cfg, dict):
+                name = o_cfg.get("name") or o_cfg.get("oilfield_name") or ""
+                aliases = o_cfg.get("aliases") or []
+                if (name and name in raw) or any(a in raw for a in aliases if a):
+                    return name
+        return None
+
+    def _extract_payload_entity_from_text(self, text: str) -> str | None:
+        """从文本中提取提及的水下载荷或机械工器具名称。"""
+        if not text:
+            return None
+        raw = str(text).strip()
+        payload_catalog = getattr(self.kb, "onboard_payloads", {}).get("payload_catalog", {}) if hasattr(self.kb, "onboard_payloads") else {}
+        for pid, p_cfg in payload_catalog.items():
+            name = p_cfg.get("name") or pid
+            aliases = p_cfg.get("aliases") or []
+            if name in raw or any(a in raw for a in aliases if a):
+                return name
+        kw_map = {
+            "摄像机": "高清水下摄像机",
+            "声呐": "前视避障声呐",
+            "激光": "水下激光标尺",
+            "机械手": "七功能液压机械手",
+            "腐蚀": "阴极保护腐蚀检测仪",
+            "厚度": "超声波厚度传感器",
+        }
+        for kw, canonical in kw_map.items():
+            if kw in raw:
+                return canonical
+        return None
+
+    def _extract_task_type_from_text(self, text: str) -> str | None:
+        """从文本中提取明确提及或匹配的水下任务类型 Key。"""
+        if not text:
+            return None
+        raw = str(text).lower()
+        if any(kw in raw for kw in ("巡检", "管缆巡检", "管道巡检", "电缆巡检", "pipeline_inspection")):
+            return "pipeline_inspection"
+        if any(kw in raw for kw in ("埋设", "管缆埋设", "开沟埋设", "埋缆", "pipeline_burial")):
+            return "pipeline_burial"
+        if any(kw in raw for kw in ("采油树", "阀门", "控制面板", "阀门操作", "tree_valve_operation")):
+            return "tree_valve_operation"
+        return None
+
+    def _build_grounded_single_task_introduction(self, task_type_key: str) -> str:
+        templates = self.kb.task_schemas.get("task_templates", {})
+        tv = templates.get(task_type_key, {})
+        name = tv.get("display_name") or tv.get("name") or task_type_key
+        desc = tv.get("description") or ""
+        allowed_classes = tv.get("allowed_robot_classes") or tv.get("allowed_equipment_classes") or []
+        cn_classes = []
+        for cid in allowed_classes:
+            c_info = self.kb.get_robot_classes().get(cid, {})
+            cn_classes.append(c_info.get("full_name") or cid)
+        class_str = f"，适用装备：{' / '.join(cn_classes)}" if cn_classes else ""
+        desc_clean = desc.rstrip("。")
+        return (
+            f"**{name}**：{desc_clean}{class_str}。\n\n"
+            f"如需开启该任务规划，请回复“开始这个任务”或直接提供作业参数（如水深、区域或机器人）。"
+        )
+
+    def _build_grounded_fleet_introduction(self) -> str:
+        """依据 robot_fleet 配置返回真实水下机器人与作业装备阵列介绍。"""
+        classes = self.kb.get_robot_classes()
+        families = self.kb.robot_fleet.get("robot_families", {})
+        lines = ["本系统当前支持以下水下机器人与作业装备阵列："]
+        visible_items = []
+        for idx, (cid, cinfo) in enumerate(classes.items(), start=1):
+            c_name = cinfo.get("full_name", cid)
+            visible_items.append({"index": idx, "name": c_name, "type": "device_class", "key": cid})
+            f_names = [f.get("full_name") for f in families.values() if f.get("robot_class") == cid and f.get("full_name")]
+            aliases = []
+            for f in families.values():
+                if f.get("robot_class") == cid and f.get("aliases"):
+                    aliases.extend([a for a in f.get("aliases") if "座" in a or "HP" in a or "马力" in a])
+            alias_str = f"，涵盖系列代号：{'/'.join(list(dict.fromkeys(aliases))[:3])}" if aliases else ""
+            f_str = f"包含 {', '.join(f_names)}" if f_names else ""
+            lines.append(f"{idx}. **{c_name}**：{f_str}{alias_str}。".strip())
+
+        self._last_visible_catalog_items = visible_items
+        lines.append("\n您可以指定具体的机器人类别或系列代号，也可由系统根据任务水深与作业需求自动为您匹配推荐。")
+        return "\n".join(lines)
+
+    def _build_grounded_task_catalog_introduction(self) -> str:
+        """依据 task_schemas 配置返回真实水下作业任务类型清单。"""
+        templates = self.kb.task_schemas.get("task_templates", {})
+        lines = ["本系统当前支持以下水下作业任务类型："]
+        visible_items = []
+        for idx, (tk, tv) in enumerate(templates.items(), start=1):
+            name = tv.get("display_name") or tv.get("name") or tk
+            visible_items.append({"index": idx, "name": name, "type": "task_type", "key": tk})
+            desc = tv.get("description") or ""
+            allowed_classes = tv.get("allowed_robot_classes") or tv.get("allowed_equipment_classes") or []
+            cn_classes = []
+            for cid in allowed_classes:
+                c_info = self.kb.get_robot_classes().get(cid, {})
+                cn_classes.append(c_info.get("full_name") or cid)
+            class_str = f"，适用装备：{' / '.join(cn_classes)}" if cn_classes else ""
+            desc_clean = desc.rstrip("。")
+            lines.append(f"{idx}. **{name}**：{desc_clean}{class_str}。".strip())
+        self._last_visible_catalog_items = visible_items
+        lines.append("\n您可以输入具体任务指令（例如“帮我安排一个管缆巡检任务”），系统将引导您收集参数并完成校验发布。")
+        return "\n".join(lines)
+
+    def _build_grounded_tool_catalog_introduction(self) -> str:
+        """依据 robot_fleet 配置返回真实水下载荷、工具与传感器清单。"""
+        payloads = self.kb.robot_fleet.get("onboard_payloads", {})
+        categories: dict[str, list[str]] = {}
+        for pk, pv in payloads.items():
+            cat = pv.get("category") or "通用载荷"
+            name = pv.get("name") or pk
+            categories.setdefault(cat, []).append(name)
+        lines = ["本系统当前支持以下水下载荷、工具与传感器配置："]
+        visible_items = []
+        for idx, (cat, items) in enumerate(categories.items(), start=1):
+            visible_items.append({"index": idx, "name": cat, "type": "tool_category", "key": cat, "items": items})
+            lines.append(f"{idx}. **{cat}**：{'、'.join(items)}")
+        self._last_visible_catalog_items = visible_items
+        lines.append("\n创建任务时，您可以随时为机器人挂载或卸载特定载荷（例如：“机械臂带上海胆式刷洗工具”）。")
+        return "\n".join(lines)
+
+    def _build_grounded_oilfield_catalog_introduction(self) -> str:
+        """依据 environment_info 配置返回收录的水下油气田清单。"""
+        oil_fields = self.kb.environment.get("oil_fields", [])
+        lines = ["本系统知识库目前收录的水下油气田与作业海域包括："]
+        visible_items = []
+        for idx, of in enumerate(oil_fields, start=1):
+            name = of.get("name") or "未命名油田"
+            visible_items.append({"index": idx, "name": name, "type": "environment", "key": of.get("id")})
+            depth = of.get("water_depth")
+            max_d = of.get("maximum_reference_water_depth")
+            seabed_raw = of.get("seabed_type") or "未知"
+            seabed_cn = format_seabed_type(seabed_raw)
+            lines.append(f"{idx}. **{name}**：参考水深 {depth}m，校验上限 {max_d}m，{seabed_cn}。")
+        self._last_visible_catalog_items = visible_items
+        lines.append("\n系统会根据您选择的油气田自动校验水下机器人的额定耐压水深与履带接地比压。")
+        return "\n".join(lines)
+
+    def _build_grounded_rule_catalog_introduction(self) -> str:
+        """返回系统安全准入与硬约束校验规则说明。"""
+        return (
+            "本系统在任务创建与发布前会自动执行以下四项严格的物理与物理安全约束校验：\n"
+            "1. **耐压水深与接地比压**：校验机器人额定最大深度是否满足目标油气田水深，履带式机器人额外校验海床硬度与接地比压；\n"
+            "2. **海流与水体能见度**：校验现场海流是否超过 3.0 节抗流上限，能见度是否低于 0.5 米；\n"
+            "3. **地理与禁航区限制**：校验作业起始点与终点坐标是否侵入生态敏感保护区或危险禁航区；\n"
+            "4. **DVL底锁与配载浮力**：校验海床泥沙高度是否引发DVL失锁风险，以及工具载荷配平与电力配额。\n\n"
+            "存在任何硬约束违规时系统将阻断任务发布并引导修正。"
+        )
+
     def _build_grounded_device_class_answer(
         self,
         user_message: str,
@@ -1069,6 +1382,13 @@ class DialogueManager:
         off_topic_reply = _check_off_topic_gate(user_message)
         if off_topic_reply is not None:
             return off_topic_reply
+
+        if (
+            any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
+            and any(q in user_message for q in ("介绍", "哪些", "什么", "支持", "包含", "列表", "清单", "所有", "推荐", "有哪些", "有什么"))
+        ):
+            return self._build_grounded_fleet_introduction()
+
         grounded_recommendation = self._build_grounded_recommendation(
             route,
             user_message=user_message,
@@ -1093,11 +1413,17 @@ class DialogueManager:
             return self._handle_general_chat(user_message, route)
 
         context = {
-            "task_type_key": self.task_state.get("task_type_key"),
+            "task_type_key": self.task_state.get("task_type_key") or self._last_discussed_task_type,
             "equipment_type": (
                 self.task_state.get("equipment_type")
                 or self.task_state.get("equipment_name")
+                or self._last_discussed_robot
             ),
+            "oilfield_name": (
+                self.task_state.get("oilfield_name")
+                or self._last_discussed_oilfield
+            ),
+            "payload_name": self._last_discussed_payload,
             "phase": self.phase,
             "mode": self.mode,
             "user_requirements": self.slot_store.get_built_json(),
@@ -1129,13 +1455,31 @@ class DialogueManager:
             kb_evidence.get("reason"),
             kb_evidence,
         )
+
+        # 遇到确切实体检索结果时，更新上一轮讨论的设备/油田实体，便于下一轮代词指代消解
+        if kb_evidence.get("found"):
+            matched_alias = kb_evidence.get("matched_alias")
+            if matched_alias:
+                qtype = kb_evidence.get("query_type")
+                if qtype == "ENVIRONMENT_QUERY":
+                    self._last_discussed_oilfield = str(matched_alias)
+                elif qtype in ("DEVICE_CAPABILITY", "TOOL_QUERY"):
+                    self._last_discussed_robot = str(matched_alias)
+
         if not kb_evidence.get("found"):
             reason = kb_evidence.get("reason")
             is_system_query = (
                 reason == "system_identity"
-                or context.get("subject_type") in {"system_rule", "device_family"}
-                or any(kw in user_message for kw in ("你具备", "你能干", "你会", "你的能力", "你能做", "干什么", "会什么", "自我介绍", "系统功能", "系统能力", "哪些能力", "能做什么"))
+                or (context.get("subject_type") in {"system_rule"} and not any(d in user_message for d in ("机器人", "ROV", "AUV", "油田", "水深", "能力", "工具")))
+                or any(kw in user_message for kw in ("你叫什么", "你是什么系统", "自我介绍", "系统功能介绍", "系统能力介绍", "你有什么能力"))
             )
+            is_fleet_query = (
+                any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
+                and any(q in user_message for q in ("介绍", "哪些", "什么", "支持", "包含", "列表", "清单", "所有", "推荐", "有哪些", "有什么"))
+            )
+            if is_fleet_query:
+                return self._build_grounded_fleet_introduction()
+
             if is_system_query:
                 from .prompts import PUBLIC_IDENTITY_REPLY
                 return PUBLIC_IDENTITY_REPLY
@@ -1152,14 +1496,8 @@ class DialogueManager:
                 cands = kb_evidence.get("candidate_entities", [])
                 return f"设备别名【{alias}】对应多个候选设备，请明确说明具体型号系列。"
             elif reason in ("no_matching_device", "unsupported_relation"):
-                if any(kw in user_message for kw in ("能力", "系统", "功能", "机器人", "支持", "你能")):
-                    from .prompts import PUBLIC_IDENTITY_REPLY
-                    return PUBLIC_IDENTITY_REPLY
-                return "当前暂不支持该维度的查询，您可以查询机器人的能力、载荷、所属系列或适合作业水深。"
+                return "当前知识库暂未查到该维度的信息。您可以查询机器人的最大作业水深、支持载荷、适用任务或收录的油气田信息。"
             else:
-                if any(kw in user_message for kw in ("能力", "系统", "功能", "机器人", "支持", "你能")):
-                    from .prompts import PUBLIC_IDENTITY_REPLY
-                    return PUBLIC_IDENTITY_REPLY
                 return "当前知识库未提供该信息。"
 
         if kb_evidence.get("reason") == "system_identity" or kb_evidence.get("query_mode") == "system_identity":
@@ -1190,7 +1528,7 @@ class DialogueManager:
             item.get("matches_depth_condition") is False
             for item in result_items
         )
-        if not reply or not reply.strip() or ("符合条件" in reply and all_devices_unmet):
+        if not reply or not reply.strip() or ("符合条件" in reply and all_devices_unmet) or ("已返回相关信息" in reply):
             if route.query_intent == "DEVICE_CAPABILITY" and kb_evidence.get("query_mode") == "device_check":
                 if all_devices_unmet:
                     dev = result_items[0]
@@ -1313,7 +1651,8 @@ class DialogueManager:
             value = state_dict.get(key)
             if value is None or label in emitted_labels:
                 continue
-            lines.append(f"- {label}：{value}{unit}")
+            formatted_val = format_telemetry_value(value) if isinstance(value, str) else value
+            lines.append(f"- {label}：{formatted_val}{unit}")
             emitted_labels.add(label)
 
         timestamp = state_dict.get("update_timestamp")
@@ -2088,6 +2427,11 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
+        if self._is_payload_modification_request(user_message):
+            payload_mod_reply = self._handle_payload_modification_request(user_message)
+            if payload_mod_reply is not None:
+                return payload_mod_reply
+
         if self.phase == "blocked_hard" and (
             self._is_confirmation_only(user_message)
             or self._is_final_publish_confirmation(user_message)
@@ -2127,6 +2471,94 @@ class DialogueManager:
                 self.conversation_history.append({"role": "user", "content": user_message})
                 self.conversation_history.append({"role": "assistant", "content": reply})
                 return reply
+
+        # 四大实体 (Task, Robot, Oilfield, Payload) 全量上下文提取与暂存
+        r_ent = self._extract_robot_entity_from_text(user_message)
+        if r_ent:
+            self._last_discussed_robot = r_ent
+
+        o_ent = self._extract_oilfield_entity_from_text(user_message)
+        if o_ent:
+            self._last_discussed_oilfield = o_ent
+
+        p_ent = self._extract_payload_entity_from_text(user_message)
+        if p_ent:
+            self._last_discussed_payload = p_ent
+
+        # 1. 任务类型指代继承
+        REFERENTIAL_START_TRIGGERS = (
+            "那开始这个任务", "开始这个任务", "就做这个任务", "就安排这个", "开始创建",
+            "就这个吧", "安排这个任务", "创建这个任务", "就按这个做", "开始做这个",
+            "开启这个任务", "按这个开始", "就选这个任务", "那就这个", "开始这个",
+            "开始该任务", "就做这个", "安排这个", "创建这个", "选这个任务", "那开始这个",
+            "开始吧", "开始该作业", "就按这个", "开始任务"
+        )
+        is_referential_start = any(kw in user_message for kw in REFERENTIAL_START_TRIGGERS) or (
+            ("开始" in user_message or "做" in user_message or "安排" in user_message or "创建" in user_message)
+            and ("这个" in user_message or "任务" in user_message)
+            and "不" not in user_message and "别" not in user_message and "取消" not in user_message
+        )
+        if is_referential_start and not self.task_state.get("task_type_key") and self._last_discussed_task_type:
+            schema = self.builder.get_schema(self._last_discussed_task_type, self.mode)
+            self.slot_store.init_task_slots(schema)
+            self.slot_store.slots["task_type_key"] = Slot(
+                slot_name="task_type_key",
+                value=self._last_discussed_task_type,
+                value_type="string",
+                status="valid",
+                source="user",
+            )
+            self._transition_phase("collecting", reason="referential_carryover")
+            self._switch_dialogue_mode("task_collection", source="referential_carryover", reason="继承上一轮讨论的任务类型")
+            user_message = f"开启{self._last_discussed_task_type}任务"
+
+        # 2. 机器人实体指代继承
+        ROBOT_TRIGGERS = ("就用这个机器人", "选这个机器人", "用这个设备", "就用这款", "选这个型", "安排这个机", "就用它", "用它", "选这个设备", "用这个机器人", "就这个机器人")
+        is_robot_ref = any(kw in user_message for kw in ROBOT_TRIGGERS) or (
+            ("用" in user_message or "选" in user_message or "安排" in user_message)
+            and ("这个机器人" in user_message or "该设备" in user_message or "这款" in user_message or "它" in user_message)
+        )
+        if is_robot_ref and self._last_discussed_robot:
+            r_val = self._last_discussed_robot
+            if any(f in r_val for f in ["座", "天鹰", "金牛", "御夫", "奇点", "双子", "凤凰"]):
+                self.slot_store.slots["robot_family"] = Slot(slot_name="robot_family", value=r_val, value_type="string", status="valid", source="user")
+            elif any(c in r_val for c in ["观察级", "工作级", "履带式"]):
+                self.slot_store.slots["robot_class"] = Slot(slot_name="robot_class", value=r_val, value_type="string", status="valid", source="user")
+            else:
+                self.slot_store.slots["specific_robot_id"] = Slot(slot_name="specific_robot_id", value=r_val, value_type="string", status="valid", source="user")
+            if self.phase not in ("collecting", "confirming"):
+                self._transition_phase("collecting", reason="robot_referential_carryover")
+            self._switch_dialogue_mode("task_collection", source="referential_carryover", reason="继承上一轮讨论的机器人")
+
+        # 3. 油田海域实体指代继承
+        OILFIELD_TRIGGERS = ("就去这个油田", "选这个油田", "去这个海域", "选这个区域", "就在这做", "去这里", "就选这个油田", "去这个油田", "在这做")
+        is_oilfield_ref = any(kw in user_message for kw in OILFIELD_TRIGGERS) or (
+            ("去" in user_message or "选" in user_message or "在" in user_message)
+            and ("这个油田" in user_message or "该海域" in user_message or "这个区域" in user_message or "这里" in user_message)
+        )
+        if is_oilfield_ref and self._last_discussed_oilfield:
+            self.slot_store.slots["raw_oilfield_name"] = Slot(slot_name="raw_oilfield_name", value=self._last_discussed_oilfield, value_type="string", status="valid", source="user")
+            self.slot_store.slots["oilfield_name"] = Slot(slot_name="oilfield_name", value=self._last_discussed_oilfield, value_type="string", status="valid", source="user")
+            if self.phase not in ("collecting", "confirming"):
+                self._transition_phase("collecting", reason="oilfield_referential_carryover")
+            self._switch_dialogue_mode("task_collection", source="referential_carryover", reason="继承上一轮讨论的油田")
+
+        # 4. 载荷工具实体指代继承
+        PAYLOAD_TRIGGERS = ("就用这个工具", "带上这个", "选这个载荷", "挂载这个", "就带这个", "就用这个载荷", "装上这个", "用这个工具", "带这个")
+        is_payload_ref = any(kw in user_message for kw in PAYLOAD_TRIGGERS) or (
+            ("用" in user_message or "带" in user_message or "挂载" in user_message or "装" in user_message)
+            and ("这个工具" in user_message or "该载荷" in user_message or "这个传感器" in user_message)
+        )
+        if is_payload_ref and self._last_discussed_payload:
+            current_payloads = self.slot_store.slots.get("onboard_payloads").value if self.slot_store.slots.get("onboard_payloads") else []
+            if not isinstance(current_payloads, list):
+                current_payloads = [current_payloads] if current_payloads else []
+            if self._last_discussed_payload not in current_payloads:
+                current_payloads.append(self._last_discussed_payload)
+            self.slot_store.slots["onboard_payloads"] = Slot(slot_name="onboard_payloads", value=current_payloads, value_type="list", status="valid", source="user")
+            if self.phase not in ("collecting", "confirming"):
+                self._transition_phase("collecting", reason="payload_referential_carryover")
+            self._switch_dialogue_mode("task_collection", source="referential_carryover", reason="继承上一轮讨论的载荷工具")
 
         # ── 独立意图路由分流阶段 ──
         expected_slots = [m["key"] for m in self._last_missing if isinstance(m, dict) and "key" in m]
@@ -2291,15 +2723,8 @@ class DialogueManager:
             if not unresolved:
                 unresolved.append("模型没有返回可验证的任务字段候选")
 
-            missing = (
-                self.builder.get_missing_fields(
-                    task_type_key,
-                    self.mode,
-                    self.slot_store.get_task_state(),
-                )
-                if task_type_key
-                else []
-            )
+            req_fields = self.builder.get_required(task_type_key, self.mode, self.slot_store.get_task_state()) if task_type_key else []
+            missing = self.slot_store.get_missing_slots(req_fields) if task_type_key else []
             knowledge_context = self.kb.get_context_for_state(self.task_state)
             constraint_context = self._run_constraint_check(set(), purpose="interactive")
 
@@ -2326,6 +2751,10 @@ class DialogueManager:
                 role=ModelRole.TASK_RESPONDER,
             )
             model_reply = self._safe_llm_filter_reply(model_reply, role=ModelRole.FILTER_REPLY)
+            if task_type_key and (not model_reply or "已就绪" in model_reply):
+                tv = self.kb.task_schemas.get("task_templates", {}).get(task_type_key, {})
+                task_name = tv.get("display_name") or tv.get("name") or task_type_key
+                model_reply = f"已为您开启【{task_name}】任务规划。请提供具体作业参数（如管缆类型、作业区域与执行机器人）。"
 
             reply = self._ground_write_reply(
                 model_reply,
@@ -7077,6 +7506,67 @@ class DialogueManager:
         )
         return any(keyword in message for keyword in keywords)
 
+    @staticmethod
+    def _is_payload_modification_request(user_message: str) -> bool:
+        """判断用户是否明确请求重新选择/修改/配置载荷（且不属于取消修改指令）。"""
+        msg = user_message.strip().lower()
+        if any(neg in msg for neg in ["取消", "放弃", "不要", "不修改", "不用"]):
+            return False
+
+        direct_keywords = (
+            "修改载荷", "重新选择载荷", "重新选载荷", "重新配置载荷",
+            "修改payload", "重选载荷", "更换载荷", "换载荷", "重置载荷",
+            "清除载荷", "调出载荷卡片", "载荷卡片", "重配置载荷", "修改工具",
+            "重新选择工具", "更换工具", "换工具"
+        )
+        if any(kw in msg for kw in direct_keywords):
+            return True
+
+        has_target = any(t in msg for t in ["载荷", "payload", "工具"])
+        has_action = any(a in msg for a in ["修改", "重选", "重新选择", "更换", "重新配置", "重置", "清除"])
+        return has_target and has_action
+
+    def _handle_payload_modification_request(self, user_message: str) -> str | None:
+        """用户请求重新选择/修改/配置载荷时，重置 payload 槽位为 missing 并调整阶段供前端调出卡片。"""
+        payload_slot = self.slot_store.slots.get("payload")
+        task_type_slot = self.slot_store.slots.get("task_type_key")
+
+        if payload_slot is None and task_type_slot and task_type_slot.value:
+            schema = self.builder.get_schema(task_type_slot.value, self.mode)
+            for f in schema:
+                k = f.get("key")
+                if k and k not in self.slot_store.slots:
+                    from src.slot_store import Slot
+                    self.slot_store.slots[k] = Slot(slot_name=k, value_type=f.get("type", "string"), status="missing")
+            payload_slot = self.slot_store.slots.get("payload")
+
+        if payload_slot is not None:
+            existing_val = payload_slot.candidate_value or copy.deepcopy(payload_slot.value)
+            payload_slot.candidate_value = existing_val if existing_val is not None else None
+            payload_slot.status = "missing"
+            payload_slot.value = None
+            payload_slot.validation_error = None
+            payload_slot.source = "user"
+            self.slot_store.slots["payload"] = payload_slot
+            self.slot_store.version += 1
+
+            if self.phase in ("confirming", "validating", "blocked_soft", "blocked_hard"):
+                self._transition_phase("collecting", reason="user_requested_payload_modification")
+
+            self._blocking_violations = []
+            self._switch_dialogue_mode("task_collection", source="user_payload_modification", reason="用户请求重新配置/修改载荷")
+
+            if task_type_slot and task_type_slot.value:
+                req_fields = self.builder.get_required(task_type_slot.value, self.mode, self.slot_store.get_task_state())
+                self._last_missing = self.slot_store.get_missing_slots(req_fields)
+
+            reply = "已为您重新调出载荷配置卡片。请在下方对话区域或卡片中重新选择与配置要携带的工具。"
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        return None
+
     def _normalize_payload_list_mutations(
         self,
         extraction_res: dict,
@@ -7110,11 +7600,17 @@ class DialogueManager:
         if not payload_cands:
             return
 
-        cand = payload_cands[0]
-        val = cand.get("normalized_value")
-        if val is None:
-            val = cand.get("raw_value")
-        items = val if isinstance(val, list) else ([val] if val is not None else [])
+        items = []
+        for cand in payload_cands:
+            val = cand.get("normalized_value")
+            if val is None:
+                val = cand.get("raw_value")
+            if isinstance(val, list):
+                for item in val:
+                    if item and item not in items:
+                        items.append(item)
+            elif val and val not in items:
+                items.append(val)
         if not items:
             return
 
@@ -7135,6 +7631,8 @@ class DialogueManager:
             and len(payload_slot.value) > 0
         )
 
+        max_confidence = max((c.get("confidence", 0.95) for c in payload_cands if isinstance(c, dict)), default=0.95)
+
         if is_add or (has_existing_payload and not is_replace and not is_remove):
             extraction_res["slot_candidates"] = [
                 c for c in candidates
@@ -7146,7 +7644,7 @@ class DialogueManager:
                 "items": items,
                 "target_items": [],
                 "raw_text": msg,
-                "confidence": cand.get("confidence", 0.95),
+                "confidence": max_confidence,
                 "source": "user_input",
             })
         elif is_remove:
@@ -7160,7 +7658,7 @@ class DialogueManager:
                 "items": items,
                 "target_items": [],
                 "raw_text": msg,
-                "confidence": cand.get("confidence", 0.95),
+                "confidence": max_confidence,
                 "source": "user_input",
             })
 

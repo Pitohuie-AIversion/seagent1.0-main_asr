@@ -24,6 +24,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .rosbridge_client import (
     RosbridgeClient,
+    STATUS_MESSAGE_TYPE,
+    STATUS_TOPIC,
     TaskStatus,
     TaskStatusItem,
 )
@@ -69,21 +71,39 @@ class TaskStatusTracker:
         result = tracker.wait_for_finish(task_id, timeout=60.0)
     """
 
-    def __init__(self, client: RosbridgeClient):
+    def __init__(
+        self,
+        client: RosbridgeClient,
+        status_topic: str = STATUS_TOPIC,
+        status_message_type: str = STATUS_MESSAGE_TYPE,
+    ):
         self._client = client
+        self._status_topic = status_topic
+        self._status_message_type = status_message_type
         self._latest: Optional[ROVTelemetry] = None
+        self._message_count = 0
         self._task_history: Dict[int, List[TaskStatusItem]] = {}
         self._lock = threading.Lock()
+        self._started = False
         self._status_callbacks: List[Callable[[ROVTelemetry], None]] = []
         self._change_callbacks: Dict[int, List[Callable[[TaskStatusItem], None]]] = {}
 
     def start(self) -> None:
-        """开始订阅 /task/system_status"""
-        self._client.subscribe_system_status(self._on_sys_status)
-        logger.info("[TaskStatusTracker] 开始追踪任务状态")
+        """开始订阅配置的系统状态话题。"""
+        if self._started:
+            return
+        self._client.subscribe(
+            self._status_topic, self._status_message_type, self._on_sys_status
+        )
+        self._started = True
+        logger.info("[TaskStatusTracker] 开始追踪任务状态: %s", self._status_topic)
 
     def stop(self) -> None:
-        """停止追踪（取消订阅由 RosbridgeClient 管理）"""
+        """停止追踪并取消当前回调。"""
+        if not self._started:
+            return
+        self._client.unsubscribe(self._status_topic, self._on_sys_status)
+        self._started = False
         logger.info("[TaskStatusTracker] 停止追踪")
 
     # ------------------------------------------------------------------
@@ -112,6 +132,11 @@ class TaskStatusTracker:
         """获取最新 ROV 遥测快照（线程安全）"""
         with self._lock:
             return self._latest
+
+    @property
+    def message_count(self) -> int:
+        with self._lock:
+            return self._message_count
 
     def get_task_status(self, task_id: int) -> Optional[TaskStatusItem]:
         """查询指定 task_id 的最新状态（来自最近一次 system_status）"""
@@ -170,6 +195,7 @@ class TaskStatusTracker:
             telemetry = self._parse_sys_status(msg)
             with self._lock:
                 self._latest = telemetry
+                self._message_count += 1
                 # 记录任务历史
                 for item in telemetry.task_list:
                     if item.task_id not in self._task_history:

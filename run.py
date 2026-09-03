@@ -228,19 +228,13 @@ def _init_mcp_service_if_requested(kb, is_mock: bool = False):
             if p not in sys.path:
                 sys.path.insert(0, p)
 
-        # 优先读取 config/ros2_protocol_spec.yaml 中的 active_host 和 active_port
-        gw_host = "127.0.0.1"
-        gw_port = 9090
-        try:
-            spec_file = Path(__file__).parent / "config" / "ros2_protocol_spec.yaml"
-            if spec_file.exists():
-                with open(spec_file, "r", encoding="utf-8") as sf:
-                    spec_data = yaml.safe_load(sf) or {}
-                gw_cfg = spec_data.get("websocket_gateway", {})
-                gw_host = gw_cfg.get("active_host", gw_cfg.get("default_host", "127.0.0.1"))
-                gw_port = int(gw_cfg.get("active_port", gw_cfg.get("default_port", 9090)))
-        except Exception:
-            pass
+        runtime_file = Path(__file__).parent / "config" / "ros2_runtime.yaml"
+        protocol_file = Path(__file__).parent / "config" / "ros2_protocol_spec.yaml"
+        from mcp.shim.runtime_config import load_ros2_runtime_config
+
+        runtime_config = load_ros2_runtime_config(runtime_file, protocol_file)
+        gw_host = runtime_config.gateway.host
+        gw_port = runtime_config.gateway.port
 
         mcp_host = os.environ.get("MCP_HOST", gw_host)
         mcp_port = int(os.environ.get("MCP_PORT", str(gw_port)))
@@ -271,6 +265,8 @@ def _init_mcp_service_if_requested(kb, is_mock: bool = False):
             port=mcp_port,
             state_info=getattr(kb, "state_info", None),
             connect_timeout=3.0,
+            runtime_config_path=runtime_file,
+            protocol_config_path=protocol_file,
         )
         mcp_bridge.start()
         web_backend.init_mcp_bridge_service(mcp_bridge)

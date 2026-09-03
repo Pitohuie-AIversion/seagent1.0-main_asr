@@ -1242,16 +1242,16 @@ def dispatch_mcp_task():
 
 
 def _persist_active_gateway(host: str, port: int, mode: str) -> None:
-    """Persist gateway configuration atomically after a successful reconnect."""
-    spec_file = CONFIG_DIR / "ros2_protocol_spec.yaml"
-    with open(spec_file, "r", encoding="utf-8") as config_handle:
+    """Persist the mutable gateway in ros2_runtime.yaml atomically."""
+    runtime_file = CONFIG_DIR / "ros2_runtime.yaml"
+    with open(runtime_file, "r", encoding="utf-8") as config_handle:
         data = yaml.safe_load(config_handle) or {}
-    gateway = data.setdefault("websocket_gateway", {})
-    gateway["active_host"] = host
-    gateway["active_port"] = port
-    gateway["active_mode"] = mode
+    gateway = data.setdefault("gateway", {})
+    gateway["host"] = host
+    gateway["port"] = port
+    gateway["mode"] = mode
 
-    temporary_file = spec_file.with_suffix(
+    temporary_file = runtime_file.with_suffix(
         f".gateway_tmp_{os.getpid()}_{threading.get_ident()}"
     )
     try:
@@ -1259,8 +1259,8 @@ def _persist_active_gateway(host: str, port: int, mode: str) -> None:
             yaml.safe_dump(data, config_handle, allow_unicode=True, sort_keys=False)
             config_handle.flush()
             os.fsync(config_handle.fileno())
-        os.replace(temporary_file, spec_file)
-        directory_fd = os.open(spec_file.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        os.replace(temporary_file, runtime_file)
+        directory_fd = os.open(runtime_file.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(directory_fd)
         finally:
@@ -1281,7 +1281,7 @@ def mcp_gateway():
             "gateway": {
                 "host": bridge.host,
                 "port": bridge.port,
-                "mode": "real" if bridge.port == 9090 else "mock",
+                "mode": bridge.gateway_mode,
                 "ws_url": f"ws://{bridge.host}:{bridge.port}",
                 "connected": bridge.is_healthy(),
             },
@@ -1299,13 +1299,13 @@ def mcp_gateway():
     if not 1 <= port <= 65535:
         return jsonify({"code": 400, "msg": "port 必须在 1..65535 范围内"}), 400
 
-    old_host, old_port = bridge.host, bridge.port
+    old_host, old_port, old_mode = bridge.host, bridge.port, bridge.gateway_mode
     try:
-        bridge.reconnect(host, port)
+        bridge.reconnect(host, port, mode=mode)
         try:
             _persist_active_gateway(host, port, mode)
         except Exception:
-            bridge.reconnect(old_host, old_port)
+            bridge.reconnect(old_host, old_port, mode=old_mode)
             raise
     except Exception as exc:
         logging.error("切换 ROS 2 网关失败: %s", exc, exc_info=True)

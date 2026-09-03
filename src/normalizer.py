@@ -254,29 +254,50 @@ class FieldNormalizer:
                 return list(allowed) if allowed else None
 
         # 将原始值统一为列表
+        items = []
         if isinstance(raw, str):
-            # 尝试解析 JSON 数组，否则按常见分隔符拆分
+            text = raw.strip()
+            # 1. 尝试 json.loads
             try:
-                parsed = json.loads(raw)
+                parsed = json.loads(text)
                 if isinstance(parsed, list):
                     items = [str(x) for x in parsed]
                 else:
-                    items = [raw]
+                    items = [text]
             except Exception:
-                items = re.split(r"[,，、\n]+", raw)
-                items = [x.strip() for x in items if x.strip()]
-        else:
+                # 2. 尝试 ast.literal_eval 处理 Python List 字符串表示（如 "['item1', 'item2']"）
+                try:
+                    import ast
+                    parsed = ast.literal_eval(text)
+                    if isinstance(parsed, (list, tuple, set)):
+                        items = [str(x) for x in parsed]
+                    else:
+                        items = []
+                except Exception:
+                    items = []
+
+                if not items:
+                    # 3. 按常见分隔符拆分并剔除外围括号与引号
+                    cleaned = text.strip(" \t\n\r[]()")
+                    items = re.split(r"[,，、\n]+", cleaned)
+                    items = [x.strip(" \t\n\r'\"") for x in items if x.strip(" \t\n\r'\"")]
+        elif isinstance(raw, (list, tuple, set)):
             items = [str(x) for x in raw]
+        else:
+            items = [str(raw)]
 
         if not items:
             return [] if isinstance(raw, list) else None
 
         result = []
         for item in items:
-            matched_item = self._match_key(item)
+            cleaned_item = str(item).strip(" \t\n\r'\"[]()")
+            if not cleaned_item:
+                continue
+            matched_item = self._match_key(cleaned_item)
             if any(kw in matched_item for kw in ("全选", "全部", "所有", "全配置", "全都要")) and not any(neg in matched_item for neg in ("不", "取消", "清空", "除去")):
                 return list(allowed) if allowed else None
-            mapped = self._normalize_string(item, allowed)
+            mapped = self._normalize_string(cleaned_item, allowed)
             if mapped is None:
                 return None
             if mapped not in result:

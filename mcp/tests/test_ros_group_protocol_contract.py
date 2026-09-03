@@ -109,6 +109,26 @@ def test_protocol_spec_covers_all_ui_protocol_topics_and_directions():
             "sealien_ctrlpilot_msgmanagement/msg/ConnectChristmasTreePlug",
             "subscribe",
         ),
+        "depth_status": (
+            "/sensor/depth",
+            "sealien_ctrlpilot_msgmanagement/msg/DepthStatus",
+            "subscribe",
+        ),
+        "imu_dvl_status": (
+            "/sensor/imu_dvl",
+            "sealien_ctrlpilot_msgmanagement/msg/ImuDvlStatus",
+            "subscribe",
+        ),
+        "thruster_status": (
+            "/sensor/thruster_status",
+            "sealien_ctrlpilot_msgmanagement/msg/ThrusterStatus",
+            "subscribe",
+        ),
+        "heartbeat_status": (
+            "/system/heartbeat",
+            "sealien_ctrlpilot_msgmanagement/msg/HeartbeatStatus",
+            "subscribe",
+        ),
     }
 
 

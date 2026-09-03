@@ -1,0 +1,186 @@
+version: '1.0'
+description: SEAgent ROS2 网关、动态订阅与8088展示运行配置
+gateway:
+  host: 127.0.0.1
+  port: 9090
+  mode: real
+reload:
+  mode: automatic
+  check_interval_seconds: 1.0
+dashboard:
+  refresh_interval_ms: 1000
+  max_raw_message_bytes: 65536
+subscriptions:
+- id: system_status
+  enabled: true
+  topic: /task/system_status
+  message_type: sealien_ctrlpilot_llmbridge/msg/SysStatus
+  parser: system_status
+  stale_after_seconds: 5.0
+  display:
+    title: 系统与任务状态
+    show_raw_message: false
+    fields:
+    - path: pose.pose.position.x
+      label: X坐标
+      unit: m
+    - path: pose.pose.position.y
+      label: Y坐标
+      unit: m
+    - path: pose.pose.position.z
+      label: Z坐标
+      unit: m
+    - path: alt
+      label: 离底高度
+      unit: m
+    - path: ctr_mode
+      label: 控制模式码
+    - path: health
+      label: 健康码
+- id: depth_status
+  enabled: true
+  topic: /sensor/depth
+  message_type: sealien_ctrlpilot_msgmanagement/msg/DepthStatus
+  parser: raw
+  stale_after_seconds: 5.0
+  display:
+    title: 深度与温度传感器
+    show_raw_message: false
+    fields:
+    - path: depth_m.0
+      label: 1号深度
+      unit: m
+    - path: depth_m.1
+      label: 2号深度
+      unit: m
+    - path: temperature_c.0
+      label: 1号温度
+      unit: °C
+    - path: timestamp_ms
+      label: 下位机时间
+      unit: ms
+- id: imu_dvl_status
+  enabled: true
+  topic: /sensor/imu_dvl
+  message_type: sealien_ctrlpilot_msgmanagement/msg/ImuDvlStatus
+  parser: raw
+  stale_after_seconds: 5.0
+  display:
+    title: IMU 与 DVL 组合导航
+    show_raw_message: false
+    fields:
+    - path: latitude_deg
+      label: 纬度
+      unit: °
+    - path: longitude_deg
+      label: 经度
+      unit: °
+    - path: roll_deg
+      label: 横滚角
+      unit: °
+    - path: pitch_deg
+      label: 俯仰角
+      unit: °
+    - path: yaw_deg
+      label: 偏航角
+      unit: °
+    - path: dvl_height
+      label: DVL离底高度
+      unit: m
+    - path: dvl_status
+      label: DVL状态码
+    - path: imu_error_code
+      label: IMU故障码
+- id: thruster_status
+  enabled: true
+  topic: /sensor/thruster_status
+  message_type: sealien_ctrlpilot_msgmanagement/msg/ThrusterStatus
+  parser: raw
+  stale_after_seconds: 5.0
+  display:
+    title: 推进器工况
+    show_raw_message: false
+    fields:
+    - path: speed_rpm.0
+      label: 1号转速
+      unit: rpm
+    - path: speed_rpm.1
+      label: 2号转速
+      unit: rpm
+    - path: power_w.0
+      label: 1号功率原始值
+      unit: 10W
+    - path: temperature_c.0
+      label: 1号温度原始值
+      unit: 0.1°C
+    - path: thruster_error_code.0
+      label: 1号故障码
+    - path: power_lock
+      label: 动力锁
+- id: heartbeat_status
+  enabled: true
+  topic: /system/heartbeat
+  message_type: sealien_ctrlpilot_msgmanagement/msg/HeartbeatStatus
+  parser: raw
+  stale_after_seconds: 5.0
+  display:
+    title: ROV 心跳
+    show_raw_message: false
+    fields:
+    - path: type
+      label: 设备类型
+    - path: system_status
+      label: 系统状态码
+    - path: mavlink_version
+      label: MAVLink版本
+    - path: timestamp_ms
+      label: 下位机时间
+      unit: ms
+- id: compressed_image
+  enabled: false
+  topic: /vision/compressd_image
+  message_type: sensor_msgs/msg/CompressedImage
+  parser: raw
+  stale_after_seconds: 5.0
+  display:
+    title: 压缩图像
+    show_raw_message: false
+    fields:
+    - path: format
+      label: 图像格式
+- id: image
+  enabled: false
+  topic: /vision/image
+  message_type: sensor_msgs/msg/Image
+  parser: raw
+  stale_after_seconds: 5.0
+  display:
+    title: 原始图像
+    show_raw_message: false
+    fields:
+    - path: width
+      label: 宽度
+      unit: px
+    - path: height
+      label: 高度
+      unit: px
+- id: keypoints
+  enabled: false
+  topic: /vision/keypoints
+  message_type: sealien_ctrlpilot_msgmanagement/msg/Keypoints
+  parser: raw
+  stale_after_seconds: 5.0
+  display:
+    title: 电缆视觉关键点
+    show_raw_message: true
+    fields: []
+- id: plug_hole
+  enabled: false
+  topic: /vision/plug_hole
+  message_type: sealien_ctrlpilot_msgmanagement/msg/ConnectChristmasTreePlug
+  parser: raw
+  stale_after_seconds: 5.0
+  display:
+    title: 采油树插头与插孔位姿
+    show_raw_message: true
+    fields: []

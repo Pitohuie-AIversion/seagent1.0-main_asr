@@ -23,3 +23,14 @@ def test_dashboard_frontend_has_no_chat_controls():
     assert "Intent ID" in html
     assert "SEAgent task ID" not in html
     assert "th:nth-child(5), td:nth-child(5) { display: none; }" in html
+
+
+def test_dashboard_frontend_renders_yaml_driven_subscriptions_safely():
+    html = dashboard_server.FRONTEND_FILE.read_text(encoding="utf-8")
+
+    assert 'id="dynamicSubscriptions"' in html
+    assert "dynamic_subscriptions" in html
+    assert "renderDynamicSubscriptions" in html
+    assert "document.createElement" in html
+    assert ".textContent" in html
+    assert "refresh_interval_ms" in html
