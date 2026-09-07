@@ -27,12 +27,16 @@ venv/
 outside/
 record/
 docs/regression_report.md
-chrome_e2e_screenshot.png
+test_logs/chrome_e2e_screenshot.png
+test_logs/*.jsonl
+test_logs/*.json
 probe_*.py
 verify_*.py
 hardcore_*.py
 .agents/README-summary.md
 config/.state.yaml.lock
 config/*.lock
+*.lock
+
 
 

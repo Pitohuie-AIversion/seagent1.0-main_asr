@@ -160,11 +160,14 @@ def startup():
     )
 
     print("Loading vLLM model...")
+    vllm_gpu_util = float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.95"))
+    vllm_max_seqs = int(os.getenv("VLLM_MAX_NUM_SEQS", "64"))
     llm_engine = LLM(
         model=LOCAL_MODEL_PATH,
         trust_remote_code=True,
         dtype="bfloat16" if torch.cuda.is_bf16_supported() else "float16",
-        max_num_seqs=4,
+        gpu_memory_utilization=vllm_gpu_util,
+        max_num_seqs=vllm_max_seqs,
         enable_prefix_caching=True,
     )
 
