@@ -568,12 +568,14 @@ class OutputBuilder:
             for _, family in self.kb.get_robot_families_for_task(task_type_key):
                 standard = family.get("full_name")
                 if standard:
+                    brief = " ".join(str(family.get("brief") or family.get("description") or "").split())
                     catalog.append(
                         {
                             "canonical_value": standard,
                             "aliases": list(family.get("aliases", []) or []),
                             "display_name": family.get("display_name"),
                             "parent": None,
+                            "description": brief,
                         }
                     )
             return catalog

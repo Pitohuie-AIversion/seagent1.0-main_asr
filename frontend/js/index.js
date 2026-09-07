@@ -657,8 +657,10 @@ Please describe your operational requirements directly, or ask the question you 
       messageContainer.appendChild(div);
       messageContainer.scrollTop = messageContainer.scrollHeight;
 
-      if (options.kind !== 'welcome' && options.kind !== 'system' && currentLang === 'en' && hasChinese(content)) {
-        autoTranslateMessage(div);
+      if (options.kind !== 'welcome' && currentLang === 'en' && hasChinese(content)) {
+        if (options.kind !== 'system') {
+          autoTranslateMessage(div);
+        }
       }
 
       return div;
@@ -730,7 +732,40 @@ Please describe your operational requirements directly, or ask the question you 
       }
     }
 
+    let reloadEventSource = null;
+
     function startReloadEventPolling() {
+      if (reloadEventSource) {
+        try { reloadEventSource.close(); } catch (e) {}
+        reloadEventSource = null;
+      }
+      if (window.EventSource) {
+        try {
+          reloadEventSource = new EventSource(API_BASE + '/api/dev/reload-events/stream?after=' + encodeURIComponent(lastReloadEventId));
+          reloadEventSource.addEventListener('reload', async (e) => {
+            try {
+              const event = JSON.parse(e.data);
+              const eventId = Number(event.event_id || 0);
+              if (eventId > lastReloadEventId) {
+                lastReloadEventId = eventId;
+                if (event.ok) {
+                  await refreshSessionStateAfterReload();
+                }
+              }
+              removeReloadNotificationBubbles();
+            } catch (err) {
+              console.warn('Process reload event failed', err);
+            }
+          });
+          reloadEventSource.onerror = () => {
+            // EventSource 会自动重试连接
+          };
+          return;
+        } catch (err) {
+          console.warn('SSE reload stream failed, fallback to polling', err);
+        }
+      }
+
       if (reloadPollTimer) clearInterval(reloadPollTimer);
       pollReloadEvents();
       reloadPollTimer = setInterval(pollReloadEvents, 2000);
@@ -2256,6 +2291,94 @@ Please describe your operational requirements directly, or ask the question you 
       messageInput.value = '';
 
       let data = {};
+      let streamHandled = false;
+
+      // 优先尝试基于 Server-Sent Events (SSE) 的流式交互
+      try {
+        if (window.ReadableStream && typeof TextDecoder !== 'undefined') {
+          const streamRes = await fetch(API_BASE + '/api/chat/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, message: msg, source }),
+            signal: currentAbortController.signal,
+          });
+
+          if (streamRes.ok && (streamRes.headers.get('content-type') || '').includes('text/event-stream')) {
+            const reader = streamRes.body.getReader();
+            const decoder = new TextDecoder();
+            let accumulatedReply = '';
+            let botMsgDiv = null;
+            let streamBuffer = '';
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) {
+                reader.cancel();
+                return;
+              }
+              streamBuffer += decoder.decode(value, { stream: true });
+              const lines = streamBuffer.split('\n');
+              streamBuffer = lines.pop() || '';
+
+              for (const rawLine of lines) {
+                const line = rawLine.trim();
+                if (line.startsWith('data: ')) {
+                  const payloadStr = line.slice(6);
+                  if (payloadStr === '[DONE]') continue;
+                  try {
+                    const parsed = JSON.parse(payloadStr);
+                    if (parsed.delta) {
+                      accumulatedReply += parsed.delta;
+                      if (!botMsgDiv) {
+                        botMsgDiv = addMessage('bot', accumulatedReply);
+                      } else {
+                        const bubble = botMsgDiv.querySelector('.bubble');
+                        if (bubble) bubble.textContent = accumulatedReply;
+                        botMsgDiv.setAttribute('data-original', accumulatedReply);
+                      }
+                      messageContainer.scrollTop = messageContainer.scrollHeight;
+                    } else if (parsed.code === 200 && parsed.ui_state) {
+                      data = parsed;
+                      streamHandled = true;
+                    } else if (parsed.error) {
+                      const errMsg = parsed.msg || parsed.message || '请求处理异常';
+                      const reqId = parsed.request_id ? ` [request_id: ${parsed.request_id}]` : '';
+                      const retryHint = parsed.retryable ? ' (可尝试重试)' : '';
+                      addMessage('bot', `⛔ 错误 (${parsed.error}): ${errMsg}${reqId}${retryHint}`);
+                      streamHandled = true;
+                      return;
+                    }
+                  } catch (e) {}
+                }
+              }
+            }
+
+            if (streamHandled && data.code === 200) {
+              if (data.session_id) {
+                sessionId = data.session_id;
+                try { localStorage.setItem('seagent_session_id', sessionId); } catch(e){}
+              }
+              const phase = data.ui_state ? data.ui_state.phase : (data.done ? 'done' : null);
+              if (phase === 'done' && !data.rejected) {
+                if (data.final_json) {
+                  addMessage('bot', I18N[currentLang].taskSuccessMsg);
+                  addMessage('bot', '```json\n' + JSON.stringify(data.final_json, null, 2) + '\n```');
+                }
+              } else if (data.rejected || phase === 'rejected') {
+                addMessage('bot', I18N[currentLang].taskRejectedMsg);
+              }
+              updateSidebar(data);
+              return;
+            }
+          }
+        }
+      } catch (streamErr) {
+        if (streamErr.name === 'AbortError') return;
+        console.warn('SSE stream encountered error, falling back to sync fetch:', streamErr);
+      }
+
+      // 同步回退：若未走流式则执行标准 /api/chat
       try {
         const res = await fetch(API_BASE + '/api/chat', {
           method: 'POST',

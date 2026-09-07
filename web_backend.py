@@ -12,7 +12,7 @@ import yaml
 
 import logging
 from pathlib import Path
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, Response, stream_with_context
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import tempfile
@@ -278,6 +278,52 @@ def dev_reload_events():
         "code": 200,
         "events": get_reload_events(after_event_id=after),
     })
+
+
+@app.route("/api/dev/reload-events/stream", methods=["GET"])
+def dev_reload_events_stream():
+    """返回热重载 SSE 事件流，实时推送后端更新，替代短轮询机制。"""
+    from src.hot_reload import get_reload_events
+    import time
+
+    after_id_str = request.args.get("after", "0")
+    try:
+        after_id = int(after_id_str)
+    except Exception:
+        after_id = 0
+
+    def event_stream():
+        nonlocal after_id
+        yield f"event: ping\ndata: {json.dumps({'status': 'connected', 'last_id': after_id})}\n\n"
+        initial_events = get_reload_events(after_event_id=after_id)
+        for ev in initial_events:
+            ev_id = int(ev.get("event_id", 0))
+            if ev_id > after_id:
+                after_id = ev_id
+            yield f"event: reload\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+        start_time = time.time()
+        while time.time() - start_time < 30:
+            time.sleep(1.0)
+            new_events = get_reload_events(after_event_id=after_id)
+            if new_events:
+                for ev in new_events:
+                    ev_id = int(ev.get("event_id", 0))
+                    if ev_id > after_id:
+                        after_id = ev_id
+                    yield f"event: reload\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+            else:
+                yield f"event: ping\ndata: {json.dumps({'time': time.time()})}\n\n"
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 # =========================================
 
 
@@ -732,6 +778,118 @@ def api_chat():
         }), 400
     except Exception as exc:
         logging.error(f"Unhandled exception in /api/chat: {exc}", exc_info=True)
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "error": "InternalServerError",
+            "msg": "服务器内部错误，请稍后重试。",
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": True
+        }), 500
+
+
+@app.route("/api/chat/stream", methods=["POST"])
+def api_chat_stream():
+    """SSE 流式会话更新机制（Server-Sent Events），提供细粒度事件流与实时更新契约。"""
+    try:
+        data = request.json or {}
+        sid = data.get("session_id") or str(uuid.uuid4())
+        request_id = data.get("request_id") or f"req_{uuid.uuid4().hex[:8]}"
+        msg = data.get("message", "").strip()
+        if not msg:
+            return jsonify({
+                "ok": False,
+                "code": 400,
+                "error": "EmptyMessage",
+                "msg": "消息内容不能为空。",
+                "request_id": request_id,
+                "retryable": False,
+            }), 400
+
+        mgr = get_or_create_manager(sid)
+
+        def event_stream():
+            yield f"event: ping\ndata: {json.dumps({'status': 'connected', 'session_id': sid, 'request_id': request_id})}\n\n"
+
+            with mgr._session_lock:
+                with _sessions_lock:
+                    if _sessions_manager.get(sid) is not mgr:
+                        yield f"event: error\ndata: {json.dumps({'code': 409, 'error': 'SessionReset', 'msg': '当前会话已重新开始，请在新会话中重试。', 'request_id': request_id, 'retryable': True})}\n\n"
+                        return
+                with _sess_lock:
+                    if sid not in _sessions:
+                        _sessions[sid] = Session(sid)
+
+                yield f"event: step\ndata: {json.dumps({'step': 'processing', 'message': '正在分析指令与状态...', 'phase': mgr.phase})}\n\n"
+
+                phase_before = mgr.phase
+                try:
+                    reply = mgr.process(msg, request_id=request_id)
+                except Exception as exc:
+                    yield f"event: error\ndata: {json.dumps({'code': 500, 'error': type(exc).__name__, 'msg': str(exc), 'request_id': request_id, 'retryable': True})}\n\n"
+                    return
+
+                chunk_size = 12
+                for i in range(0, len(reply), chunk_size):
+                    delta_text = reply[i:i + chunk_size]
+                    yield f"event: delta\ndata: {json.dumps({'delta': delta_text, 'request_id': request_id}, ensure_ascii=False)}\n\n"
+
+                ros2_dispatch = None
+                if mgr.phase == "done":
+                    try:
+                        save_conversation(
+                            session_id=sid,
+                            conversation_history=mgr.conversation_history,
+                            task_state=mgr.task_state,
+                            built_json=mgr._last_built_json,
+                            mode=mgr.mode,
+                            phase=mgr.phase,
+                            intent_id=mgr.task_state.get('intent_id'),
+                            slot_store=mgr.slot_store,
+                            dialogue_mode=mgr.dialogue_mode,
+                            last_mode_transition=mgr.last_mode_transition,
+                            mode_transition_history=mgr.mode_transition_history,
+                            control_state=mgr.control_state,
+                            last_control_request=mgr.last_control_request,
+                        )
+                    except Exception as e:
+                        logging.error("保存历史快照失败: %s", e, exc_info=True)
+
+                    ros2_dispatch = _dispatch_ros2_on_done_transition(mgr, phase_before)
+
+                ui_state = build_frontend_ui_state(mgr)
+                resp_data = {
+                    "code": 200,
+                    "session_id": sid,
+                    "request_id": request_id,
+                    "reply": reply,
+                    "ui_state": ui_state,
+                    "done": mgr.phase == "done",
+                    "rejected": mgr.phase == "rejected",
+                    "collected": mgr._last_built_json,
+                    "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
+                    "task_type": mgr.task_state.get("task_type_key"),
+                    "task_id": mgr.task_state.get("task_id"),
+                    "task_id_preview": mgr.task_id_preview,
+                    "emergency": mgr.mode == "emergency",
+                    "final_json": mgr._last_built_json if mgr.phase == "done" else None,
+                    "ros2_dispatch": ros2_dispatch,
+                }
+
+                yield f"event: result\ndata: {json.dumps(resp_data, ensure_ascii=False)}\n\n"
+                yield "event: end\ndata: [DONE]\n\n"
+
+        return Response(
+            stream_with_context(event_stream()),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
+    except Exception as exc:
+        logging.error(f"Unhandled exception in /api/chat/stream: {exc}", exc_info=True)
         return jsonify({
             "ok": False,
             "code": 500,

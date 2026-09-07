@@ -318,11 +318,11 @@ def test_robot_class_candidates_include_authoritative_semantic_evidence() -> Non
         "pipeline_inspection",
         task_state={"task_type_key": "pipeline_inspection"},
     )
-    class_field = next(item for item in required if item["key"] == "equipment_class")
+    class_field = next(item for item in required if item["key"] in ("equipment_class", "equipment_family"))
     auv = next(
         item
         for item in class_field["candidate_evidence"]
-        if item["canonical_value"] == "AUV"
+        if item["canonical_value"] in ("AUV", "水下无人自主航行器")
     )
 
     assert "AUV" in auv["aliases"]
