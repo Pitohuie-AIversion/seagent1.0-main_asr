@@ -48,4 +48,14 @@ def configure_test_artifact_paths() -> Path:
     os.environ["SEAGENT_RESULT_DIR"] = str(test_root)
     os.environ.pop("SEAGENT_TASK_DIR", None)
     os.environ.pop("SEAGENT_HISTORY_DIR", None)
+
+    # 隔离 state.yaml，防止测试运行中修改机器人遥测状态写穿到 config/state.yaml
+    if not os.environ.get("SEAGENT_STATE_FILE"):
+        project_root = Path(__file__).resolve().parents[1]
+        orig_state = project_root / "config" / "state.yaml"
+        isolated_state = test_root / "state.yaml"
+        if orig_state.exists() and not isolated_state.exists():
+            shutil.copy(orig_state, isolated_state)
+        os.environ["SEAGENT_STATE_FILE"] = str(isolated_state)
+
     return test_root

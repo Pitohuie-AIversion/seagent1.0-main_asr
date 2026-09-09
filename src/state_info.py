@@ -69,9 +69,21 @@ class RobotStateInfo:
         fleet_file: Path | str | None = None,
     ):
         config_dir = Path(__file__).parent.parent / "config"
-        self.state_file = Path(state_file) if state_file else config_dir / "state.yaml"
+        env_state_file = os.environ.get("SEAGENT_STATE_FILE")
+        env_fleet_file = os.environ.get("SEAGENT_ROBOT_FLEET_FILE")
+        self.state_file = (
+            Path(state_file)
+            if state_file
+            else Path(env_state_file)
+            if env_state_file
+            else config_dir / "state.yaml"
+        )
         self.fleet_file = (
-            Path(fleet_file) if fleet_file else config_dir / "robot_fleet.yaml"
+            Path(fleet_file)
+            if fleet_file
+            else Path(env_fleet_file)
+            if env_fleet_file
+            else config_dir / "robot_fleet.yaml"
         )
         self._thread_lock = threading.RLock()
 

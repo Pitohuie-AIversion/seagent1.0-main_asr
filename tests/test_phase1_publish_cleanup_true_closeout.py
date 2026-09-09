@@ -602,7 +602,7 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
                     "equipment_specification": ({"type": "power_hp", "value": 1600, "unit": "hp", "display_value": "1600HP", "variant_id": selected_rov.get("variant_id", "crawler_heavy_seabed_robot_1600hp")}, "object"),
                     "equipment_type": (selected_rov["full_name"], "string"),
                     "equipment_unit_id": (selected_rov.get("unit_ids", ["WCROV-STD-001"])[0], "string"),
-                    "payload": (["高清水下摄像机"], "list"),
+                    "payload": (["单目水下成像系统"], "list"),
                     "support_vessel": ("DSV-Oceanic", "string"),
                     "intent_id": ("TI2026063002", "string"),
                 }

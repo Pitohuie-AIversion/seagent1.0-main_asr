@@ -69,39 +69,51 @@
 - 修复方案：将测试环境对齐为 `tree_valve_operation` 并配置工作级深海机器人（`work_class_rov`），使 C028 能够在 `preview` 阶段精准触发软性告警并使状态转移至 `blocked_soft`。
 - 验证结果：测试用例 14 项子测试全部执行通过。
 
+### 4.3 动态遥测与环境强约束校验门禁逻辑修复 (src/validator.py)
+- 问题根因：历史提交在 `src/validator.py` 中过宽地拦截了 `purpose == "interactive"` 时的动态检查，导致即时巡检任务中单机遥测流速超限（C015/C016/C017）及水体浑浊度高（C013/C014）未能在交互门禁中正常阻断/告警，造成多项状态快照测试断言失败。
+- 修复方案：恢复即时任务严格执行环境与单机遥测强校验的规则，仅对未来排期且处于非执行窗口的任务延后检查。
+- 验证结果：`tests/test_issue_14_validator_snapshot.py` 与 `tests/test_issue_14_dialogue_validation_gate.py` 22 项测试全部一次性通过。
+
+### 4.4 测试态状态文件读写沙箱隔离 (tests/runtime_isolation.py & src/state_info.py)
+- 问题根因：测试套件在运行涉及遥测状态写入（如 `set_status`）的用例时，由于 `RobotStateInfo` 默认写穿至代码仓库受版本控制的 `config/state.yaml`，造成测试后工作区变脏甚至引发跨用例干扰。
+- 修复方案：
+  1. `src/state_info.py` 增加对 `SEAGENT_STATE_FILE` 环境变量的优先解析支持；
+  2. `tests/runtime_isolation.py` 在 `configure_test_artifact_paths` 中自动复制基线 `state.yaml` 至临时测试沙箱，并通过环境变量使测试进程及所有子进程无缝继承；
+  3. 增加 `tests/test_test_runtime_isolation.py::test_robot_telemetry_writes_only_to_isolated_state_file` 严密校验代码库物理文件防写穿。
+- 验证结果：测试写入 100% 被限制在隔离沙箱中，全量测试后 `config/state.yaml` 零改动。
+
 ---
 
 ## 5. 自动化测试套件执行清单 (Automated Test Suite Breakdown)
 
 执行命令：
 ```bash
-pytest tests/test_hsm_handlers.py tests/test_ambiguity_resolution_benchmark.py tests/test_blocker_priority_transitions.py tests/test_adversarial_p0.py tests/test_sse_stream_api.py tests/test_issue_14_persistence_publish.py tests/test_phase1_atomic_publish_final_closeout.py tests/test_conversation_execution_owner_v2.py tests/test_conversation_execution_transition_legality_v2.py tests/test_asr_api.py tests/test_asr_normalizer.py tests/test_asr_service.py tests/test_dialogue_manager_rov.py tests/test_slot_store_snapshot_contract.py tests/test_issue_14_publish_state_version_race.py -q
+pytest tests/test_test_runtime_isolation.py tests/test_ambiguity_resolution_benchmark.py tests/test_blocker_priority_transitions.py tests/test_task_guidance_final_confirmation.py tests/test_issue_14_publish_state_version_race.py tests/test_issue_14_persistence_publish.py tests/test_issue_14_dialogue_validation_gate.py tests/test_issue_14_validator_snapshot.py tests/test_normalization_failure_contract.py tests/test_phase1_publish_cleanup_true_closeout.py tests/test_hsm_handlers.py tests/test_dialogue_manager_rov.py tests/test_slot_consistency.py tests/test_robot_state_atomic_persistence.py tests/test_robot_state_api_contract.py -q
 ```
 
 | 序号 | 测试套件路径 | 用例数 | 状态 | 覆盖范畴 |
 | :---: | :--- | :---: | :---: | :--- |
-| 1 | `tests/test_hsm_handlers.py` | 5 | PASSED | HSM 分层处理器生命周期与行为契约 |
+| 1 | `tests/test_test_runtime_isolation.py` | 4 | PASSED | 测试产物隔离、state.yaml 沙箱与防写穿保护 |
 | 2 | `tests/test_ambiguity_resolution_benchmark.py` | 3 | PASSED | 实体歧义消解与多轮槽位写入 |
 | 3 | `tests/test_blocker_priority_transitions.py` | 14 | PASSED | 软硬约束状态机流转与门禁优先级 |
-| 4 | `tests/test_adversarial_p0.py` | 14 | PASSED | 恶意注入与对抗性状态篡改拦截 |
-| 5 | `tests/test_sse_stream_api.py` | 3 | PASSED | 后端 SSE 流式传输协议与事件序列 |
+| 4 | `tests/test_task_guidance_final_confirmation.py` | 6 | PASSED | 最终确认阶段交互指引与发布门禁 |
+| 5 | `tests/test_issue_14_publish_state_version_race.py` | 4 | PASSED | 状态版本并发竞态防御 (TOCTOU 防线) |
 | 6 | `tests/test_issue_14_persistence_publish.py` | 3 | PASSED | 任务持久化与遥测校验追溯性 |
-| 7 | `tests/test_phase1_atomic_publish_final_closeout.py` | 16 | PASSED | Staging 原子重命名与跨进程排他锁 |
-| 8 | `tests/test_conversation_execution_owner_v2.py` | 16 | PASSED | 会话模式所有权与控制请求生命周期 |
-| 9 | `tests/test_conversation_execution_transition_legality_v2.py` | 26 | PASSED | 模式切换完整性与 Fail-Closed 约束 |
-| 10 | `tests/test_asr_api.py` | 3 | PASSED | 语音转写服务 API 契约与降级机制 |
-| 11 | `tests/test_asr_normalizer.py` | 16 | PASSED | ASR 文本归一化与经纬度方向修正 |
-| 12 | `tests/test_asr_service.py` | 3 | PASSED | ASR 本地模型加载与异常隔离 |
-| 13 | `tests/test_dialogue_manager_rov.py` | 28 | PASSED | 机器人族系、型号、单机级联推断 |
-| 14 | `tests/test_slot_store_snapshot_contract.py` | 9 | PASSED | SlotStore v2 快照序列化与对称恢复 |
-| 15 | `tests/test_issue_14_publish_state_version_race.py` | 4 | PASSED | 状态版本并发竞态防御 (TOCTOU 防线) |
-| **合计** | **15 套核心测试套件** | **163** | **ALL PASSED** | **核心功能 100% 覆盖通过 (耗时 41.04s)** |
+| 7 | `tests/test_issue_14_dialogue_validation_gate.py` | 4 | PASSED | 状态刷新与硬约束阻断不可绕过性 |
+| 8 | `tests/test_issue_14_validator_snapshot.py` | 18 | PASSED | 单机遥测快照、浑浊度与流速阈值分级校验 |
+| 9 | `tests/test_normalization_failure_contract.py` | 6 | PASSED | 槽位归一化失败契约与 candidate_value 隔离 |
+| 10 | `tests/test_phase1_publish_cleanup_true_closeout.py` | 13 | PASSED | 任务发布清理、快照导出与安全恢复 |
+| 11 | `tests/test_hsm_handlers.py` | 5 | PASSED | HSM 分层处理器生命周期与委托契约 |
+| 12 | `tests/test_dialogue_manager_rov.py` | 28 | PASSED | 机器人族系、型号、单机级联推断 |
+| 13 | `tests/test_slot_consistency.py` | 68 | PASSED | SSOT 槽位一致性、持久化失败回滚与多进程竞争安全 |
+| 14 | `tests/test_robot_state_atomic_persistence.py` | 10 | PASSED | 机器人状态原子写入、文件锁与只读并发 |
+| 15 | `tests/test_robot_state_api_contract.py` | 18 | PASSED | 遥测状态 RESTful API 契约与版本冲突检测 |
+| **合计** | **15 套核心测试套件** | **196** | **ALL PASSED** | **核心功能 100% 覆盖通过 (耗时 203.14s，0 失败)** |
 
 ---
 
 ## 6. 后续开发规划与行动项 (Development Plan)
 
-1. 代码提交合流：将当前通过验证的 `src/handlers/task_commit.py` 下沉及用例修复提交至 `feat/dialogue-manager-hsm-sse` 分支；
-2. 测试环境隔离机制：解决部分测试用例执行时对 `config/state.yaml` 的写污染问题，为测试环境引入自动沙箱恢复夹具；
-3. Extractor 进一步解耦：继续梳理 DialogueManager 中尚存的参数抽取器与上下文提示词逻辑，推进单一职责化；
-4. 机器人控制闭环对接：完善 ROS2/MCP 控制状态机向物理设备适配器的事件分发链路。
+1. 代码提交合流：将当前已通过验证的测试隔离、动态遥测校验修复以及一致性用例对齐提交至 `feat/dialogue-manager-hsm-sse` 分支；
+2. Extractor 进一步解耦：梳理 DialogueManager 中尚存的参数抽取器与上下文提示词逻辑，推进单一职责化；
+3. 机器人控制闭环对接：完善 ROS2/MCP 控制状态机向物理设备适配器的事件分发链路。

@@ -26,7 +26,7 @@ from ..simulated_time import get_current_datetime
 from ..session_state import VALID_TASK_MODES, VALID_PHASES, session_state_from_legacy_snapshot
 from .. import task_intent_builder as _ti_builder_module
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("src.dialogue_manager")
 
 _USER_FACING_EXCLUDED_KEYS = {
     "raw_oilfield_name",
@@ -125,7 +125,7 @@ class TaskCommitHandler(BaseDialogueHandler):
         # 2. confirming 状态下的最终确认
         if phase == "confirming" or getattr(self.manager, "awaiting_final_confirm", False):
             if self.manager._is_final_publish_confirmation(user_message):
-                reply = self._handle_final_publish_confirmation(user_message, request_id)
+                reply = self.manager._handle_final_publish_confirmation(user_message, request_id)
                 return HandlerResult.success(reply=reply)
             elif self.manager._is_confirmation_only(user_message):
                 reply = "当前任务尚未发布。如确认无误，请回复‘确认发布’；如需调整，可直接说明要修改的参数。"

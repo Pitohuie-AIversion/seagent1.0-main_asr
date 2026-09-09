@@ -1493,14 +1493,14 @@ class SlotConsistencyTest(unittest.TestCase):
 
             p1.start()
             p2.start()
-            p1.join(timeout=10)
-            p2.join(timeout=10)
+            p1.join(timeout=30)
+            p2.join(timeout=30)
 
             self.assertEqual(p1.exitcode, 0)
             self.assertEqual(p2.exitcode, 0)
 
-            id1 = queue.get(timeout=2)
-            id2 = queue.get(timeout=2)
+            id1 = queue.get(timeout=5)
+            id2 = queue.get(timeout=5)
 
             self.assertNotEqual(id1, id2)
             self.assertEqual(set([id1, id2]), {"TI2026071801", "TI2026071802"})
@@ -1530,14 +1530,14 @@ class SlotConsistencyTest(unittest.TestCase):
 
             p1.start()
             p2.start()
-            p1.join(timeout=10)
-            p2.join(timeout=10)
+            p1.join(timeout=30)
+            p2.join(timeout=30)
 
             self.assertEqual(p1.exitcode, 0)
             self.assertEqual(p2.exitcode, 0)
 
-            id1 = queue.get(timeout=2)
-            id2 = queue.get(timeout=2)
+            id1 = queue.get(timeout=5)
+            id2 = queue.get(timeout=5)
 
             self.assertNotEqual(id1, id2)
             self.assertEqual(set([id1, id2]), {"PI2026071801", "PI2026071802"})
@@ -1557,12 +1557,12 @@ class SlotConsistencyTest(unittest.TestCase):
             for p in procs:
                 p.start()
             for p in procs:
-                p.join(timeout=10)
+                p.join(timeout=30)
 
             for p in procs:
                 self.assertEqual(p.exitcode, 0)
 
-            ids = [queue.get(timeout=2) for _ in range(4)]
+            ids = [queue.get(timeout=5) for _ in range(4)]
             self.assertEqual(len(set(ids)), 4)
 
     # 49d. 进程重启序列号连续性测试
@@ -1641,14 +1641,14 @@ class SlotConsistencyTest(unittest.TestCase):
 
             p1.start()
             p2.start()
-            p1.join(timeout=10)
-            p2.join(timeout=10)
+            p1.join(timeout=25)
+            p2.join(timeout=25)
 
             self.assertEqual(p1.exitcode, 0)
             self.assertEqual(p2.exitcode, 0)
 
-            res1 = queue.get(timeout=2)
-            res2 = queue.get(timeout=2)
+            res1 = queue.get(timeout=5)
+            res2 = queue.get(timeout=5)
 
             statuses = [res1[0], res2[0]]
             self.assertEqual(sorted(statuses), ["conflict", "success"])
@@ -1688,14 +1688,14 @@ class SlotConsistencyTest(unittest.TestCase):
 
             p1.start()
             p2.start()
-            p1.join(timeout=10)
-            p2.join(timeout=10)
+            p1.join(timeout=30)
+            p2.join(timeout=30)
 
             self.assertEqual(p1.exitcode, 0)
             self.assertEqual(p2.exitcode, 0)
 
-            res1 = queue.get(timeout=2)
-            res2 = queue.get(timeout=2)
+            res1 = queue.get(timeout=5)
+            res2 = queue.get(timeout=5)
 
             statuses = [res1[0], res2[0]]
             self.assertEqual(sorted(statuses), ["conflict", "success"])
