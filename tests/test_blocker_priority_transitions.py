@@ -194,11 +194,11 @@ class BlockerPriorityTransitionsTest(unittest.TestCase):
     # 11. C028 单独触发 -> 在 collecting + interactive 维持 collecting，在 preview 触发 blocked_soft
     def test_11_real_oilfield_c028_triggers_blocked_soft(self):
         dm = DialogueManager(self.llm, self.kb)
-        dm.task_state["task_type_key"] = "pipeline_inspection"
-        dm.task_state["equipment_class"] = "observation_rov"
-        dm.task_state["equipment_family"] = "light_work_class_rov"
-        dm.task_state["equipment_type"] = "轻型工作级深海机器人 150HP"
-        dm.task_state["equipment_unit_id"] = "LROV-150-002"
+        dm.task_state["task_type_key"] = "tree_valve_operation"
+        dm.task_state["equipment_class"] = "work_class_rov"
+        dm.task_state["equipment_family"] = "general_work_class_rov"
+        dm.task_state["equipment_type"] = "通用工作级深海机器人 250HP"
+        dm.task_state["equipment_unit_id"] = "WROV-250-001"
         dm.task_state["oilfield_entity_id"] = "liuhua_11_1"
         dm.task_state["oilfield_name"] = "流花11-1油田"
         dm.task_state["start_point"] = {"lat": 10.0, "lon": 10.0}

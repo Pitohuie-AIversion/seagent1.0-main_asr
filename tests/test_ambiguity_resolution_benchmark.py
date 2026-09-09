@@ -42,9 +42,9 @@ class AmbiguityResolutionBenchmarkTest(unittest.TestCase):
                 extraction_result(
                     slot_candidate(
                         "task_type_key",
-                        "pipeline_inspection",
+                        "tree_valve_operation",
                         raw_key="任务类型",
-                        raw_value="管缆巡检",
+                        raw_value="采油树控制面板插入",
                     )
                 ),
                 extraction_result(
@@ -68,7 +68,7 @@ class AmbiguityResolutionBenchmarkTest(unittest.TestCase):
         dm = DialogueManager(llm, self.kb)
 
         version_before = dm.slot_store.version
-        dm.process("执行17-2油田管缆巡检")
+        dm.process("执行17-2油田采油树控制面板插入作业")
         task_state1 = dict(dm.task_state)
 
         self.assertGreater(dm.slot_store.version, version_before)
