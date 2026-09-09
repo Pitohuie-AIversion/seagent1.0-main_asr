@@ -105,3 +105,37 @@ class TestHSMHandlersContract:
         res = dm.constraint_handler.handle(ctx)
         assert res.handled is True
         assert "记录" in res.reply or "警告" in res.reply
+
+    def test_slot_filling_handler_handles_payload_modification(self):
+        dm = DialogueManager()
+        dm.phase = "confirming"
+        dm.task_state = {
+            "task_type_key": "submarine_pipeline_inspection",
+            "payload": ["高清晰度水下摄像机"],
+        }
+        ctx = DialogueContext(manager=dm, user_message="重新配置载荷")
+        assert dm.slot_handler.can_handle(ctx) is True
+        res = dm.slot_handler.handle(ctx)
+        assert res.handled is True
+        assert "载荷配置卡片" in res.reply
+        assert dm.phase == "collecting"
+
+    def test_slot_filling_handler_ground_write_reply(self):
+        accepted = {"water_depth": 350.0}
+        unresolved = []
+        reply = SlotFillingHandler.ground_write_reply(
+            model_reply="水深参数已接收。",
+            accepted_updates=accepted,
+            unresolved_inputs=unresolved,
+        )
+        assert "水深" in reply
+        assert "350" in reply
+        assert "✅ 已记录" in reply
+
+    def test_slot_filling_handler_execute_slot_filling(self):
+        dm = DialogueManager()
+        dm.slot_store.slots["task_type_key"] = MagicMock(status="valid", value="submarine_pipeline_inspection")
+        ctx = DialogueContext(manager=dm, user_message="作业水深设为500米")
+        reply = dm.slot_handler.execute_slot_filling(ctx)
+        assert isinstance(reply, str)
+        assert len(reply) > 0

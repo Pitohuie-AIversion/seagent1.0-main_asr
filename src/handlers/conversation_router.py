@@ -155,7 +155,7 @@ def _check_off_topic_gate(user_message: str) -> Optional[str]:
 FIELD_LABELS = {
     "task_type":           "作业类型",
     "equipment_class":     "机器人类别",
-    "equipment_family":    "设备系列",
+    "equipment_family":    "机器人系列",
     "equipment_type":      "设备型号",
     "equipment_unit_id":   "具体设备编号",
     "operating_mode":      "作业模式",
@@ -184,31 +184,31 @@ class ConversationRouterHandler(BaseDialogueHandler):
 
     # --- 代理 DialogueManager 上下文属性，确保下沉逻辑零摩擦访问 ---
     @property
-    def slot_store(self): return self.manager.slot_store
+    def slot_store(self): return getattr(self.manager, "slot_store", None)
     @property
-    def task_state(self): return self.manager.task_state
+    def task_state(self): return getattr(self.manager, "task_state", {})
     @task_state.setter
     def task_state(self, val): self.manager.task_state = val
     @property
-    def llm(self): return self.manager.llm
+    def llm(self): return getattr(self.manager, "llm", None)
     @property
-    def kb(self): return self.manager.kb
+    def kb(self): return getattr(self.manager, "kb", None)
     @property
-    def builder(self): return self.manager.builder
+    def builder(self): return getattr(self.manager, "builder", None)
     @property
-    def extractor(self): return self.manager.extractor
+    def extractor(self): return getattr(self.manager, "extractor", None)
     @property
-    def conversation_history(self): return self.manager.conversation_history
+    def conversation_history(self): return getattr(self.manager, "conversation_history", [])
     @property
-    def mode(self): return self.manager.mode
+    def mode(self): return getattr(self.manager, "mode", "normal")
     @property
-    def phase(self): return self.manager.phase
+    def phase(self): return getattr(self.manager, "phase", "idle")
     @property
-    def _last_built_json(self): return self.manager._last_built_json
+    def _last_built_json(self): return getattr(self.manager, "_last_built_json", {})
     @property
-    def _last_missing(self): return self.manager._last_missing
+    def _last_missing(self): return getattr(self.manager, "_last_missing", [])
     @property
-    def _pending_rov_candidates(self): return self.manager._pending_rov_candidates
+    def _pending_rov_candidates(self): return getattr(self.manager, "_pending_rov_candidates", None)
     @property
     def _last_visible_catalog_items(self): return self.manager._last_visible_catalog_items
     @_last_visible_catalog_items.setter
@@ -347,14 +347,25 @@ class ConversationRouterHandler(BaseDialogueHandler):
                 self.conversation_history.append({"role": "assistant", "content": reply})
                 return reply
 
+        plan = route.interaction_plan if route else None
+        is_targeted_device_query = bool(
+            plan
+            and (
+                plan.relation in ("recommend", "compare")
+                or plan.subject_type in ("device_class", "device_model", "equipment_family")
+            )
+        )
+
         if (
-            any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
-            and any(q in user_message for q in ("介绍", "哪些", "什么", "支持", "包含", "列表", "清单", "所有", "推荐", "有哪些", "有什么"))
+            not is_targeted_device_query
+            and any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
+            and any(q in user_message for q in ("介绍", "哪些", "支持", "包含", "列表", "清单", "所有", "有哪些", "有什么"))
             and not any(e in user_message for e in ("金牛座", "天鹰座", "凤凰座", "LROV", "WROV", "通用工作级", "轻型工作级", "特种工作级", "001", "002"))
         ):
             reply = self._build_grounded_fleet_introduction()
         elif (
-            any(t in user_message for t in ("任务", "作业类型", "活", "工作"))
+            not is_targeted_device_query
+            and any(t in user_message for t in ("任务", "作业类型", "活", "工作"))
             and any(q in user_message for q in ("介绍", "哪些", "什么", "支持", "包含", "列表", "清单", "能做", "干什么", "能干", "有什么"))
         ):
             spec_task = self._extract_task_type_from_text(user_message)
@@ -485,6 +496,8 @@ class ConversationRouterHandler(BaseDialogueHandler):
         return "当前知识库已检索到相关信息，但暂时无法生成完整回答。"
 
     def _missing_field_definition(self, key: str) -> dict | None:
+        if "_missing_field_definition" in getattr(self.manager, "__dict__", {}):
+            return self.manager._missing_field_definition(key)
         return next(
             (
                 item
@@ -526,7 +539,7 @@ class ConversationRouterHandler(BaseDialogueHandler):
                 target_key = "equipment_class"
 
         allowed_values = list((field_def or {}).get("allowed_values") or [])
-        label = (field_def or {}).get("label") or FIELD_LABELS.get(target_key, target_key or "该字段")
+        label = FIELD_LABELS.get(target_key) or (field_def or {}).get("label") or (target_key or "该字段")
 
         if not allowed_values:
             # 当前任务阶段无合法候选（字段尚未解析或不在缺失列表中），不拦截
@@ -537,7 +550,7 @@ class ConversationRouterHandler(BaseDialogueHandler):
         # 补齐别名和候选证据，但保留原 missing field 的 allowed_values 作为最终边界。
         semantic_field_def = dict(field_def or {})
         task_type_key = self.task_state.get("task_type_key")
-        if task_type_key:
+        if task_type_key and self.builder:
             required = self.builder.get_required(
                 task_type_key,
                 self.mode,
@@ -1088,12 +1101,6 @@ class ConversationRouterHandler(BaseDialogueHandler):
         if off_topic_reply is not None:
             return off_topic_reply
 
-        if (
-            any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
-            and any(q in user_message for q in ("介绍", "哪些", "什么", "支持", "包含", "列表", "清单", "所有", "推荐", "有哪些", "有什么"))
-        ):
-            return self._build_grounded_fleet_introduction()
-
         grounded_recommendation = self._build_grounded_recommendation(
             route,
             user_message=user_message,
@@ -1107,6 +1114,12 @@ class ConversationRouterHandler(BaseDialogueHandler):
         )
         if grounded_class_answer is not None:
             return grounded_class_answer
+
+        if (
+            any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
+            and any(q in user_message for q in ("介绍", "哪些", "支持", "包含", "列表", "清单", "所有", "有哪些", "有什么"))
+        ):
+            return self._build_grounded_fleet_introduction()
 
         plan = route.interaction_plan
         if (

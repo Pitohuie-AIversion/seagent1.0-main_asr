@@ -1710,96 +1710,108 @@ def test_duration_delta_from_user_text_overrides_misclassified_end_time_candidat
 def test_august_31_explicit_date_and_duration() -> None:
     # 场景：用户说“任务从8月31号早上6点开始，任务持续8个小时”
     # 模拟大模型在 start_time 误选了当前日期 (2026-08-18)，但 raw_value 保留了 "8月31号早上6点"
-    llm = ScriptedLLM(
-        extractions=[
-            {
-                "slot_candidates": [
-                    slot_candidate(
-                        "start_time",
-                        "2026-08-18T06:00:00",  # 模型误选了当天
-                        raw_key="开始时间",
-                        raw_value="8月31号早上6点",
-                    ),
-                ],
-                "list_mutations": [],
-                "time_relation": {
-                    "has_duration": True,
-                    "duration_seconds": 28800,  # 8小时
-                    "raw_text": "持续8个小时",
-                    "confidence": 0.95,
-                },
-                "unresolved": [],
-            }
-        ]
-    )
-    extractor = ParameterExtractor(llm)
+    from datetime import datetime
+    from src.simulated_time import get_simulated_time
+    get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0))
+    try:
+        llm = ScriptedLLM(
+            extractions=[
+                {
+                    "slot_candidates": [
+                        slot_candidate(
+                            "start_time",
+                            "2026-08-18T06:00:00",  # 模型误选了当天
+                            raw_key="开始时间",
+                            raw_value="8月31号早上6点",
+                        ),
+                    ],
+                    "list_mutations": [],
+                    "time_relation": {
+                        "has_duration": True,
+                        "duration_seconds": 28800,  # 8小时
+                        "raw_text": "持续8个小时",
+                        "confidence": 0.95,
+                    },
+                    "unresolved": [],
+                }
+            ]
+        )
+        extractor = ParameterExtractor(llm)
 
-    result = extractor.extract_updates(
-        "任务从8月31号早上6点开始，任务持续8个小时",
-        current_state={"task_type_key": "pipeline_inspection"},
-        task_type_key="pipeline_inspection",
-        required=[
-            {"key": "start_time", "type": "datetime"},
-            {"key": "end_time", "type": "datetime"},
-        ],
-    )
+        result = extractor.extract_updates(
+            "任务从8月31号早上6点开始，任务持续8个小时",
+            current_state={"task_type_key": "pipeline_inspection"},
+            task_type_key="pipeline_inspection",
+            required=[
+                {"key": "start_time", "type": "datetime"},
+                {"key": "end_time", "type": "datetime"},
+            ],
+        )
 
-    candidates = {
-        item["canonical_key"]: item
-        for item in result["slot_candidates"]
-    }
-    # 1. 验证 Python 后端相对/绝对时间解析器覆盖模型误选，确定性算出 2026-08-31T06:00:00
-    assert candidates["start_time"]["normalized_value"] == "2026-08-31T06:00:00"
-    assert candidates["start_time"]["resolution_method"] == "relative_date_parsed"
-    # 2. 验证 Python 后端根据 2026-08-31T06:00:00 + 8小时得出 2026-08-31T14:00:00
-    assert candidates["end_time"]["normalized_value"] == "2026-08-31T14:00:00"
-    assert candidates["end_time"]["resolution_method"] == "duration_arithmetic"
+        candidates = {
+            item["canonical_key"]: item
+            for item in result["slot_candidates"]
+        }
+        # 1. 验证 Python 后端相对/绝对时间解析器覆盖模型误选，确定性算出 2026-08-31T06:00:00
+        assert candidates["start_time"]["normalized_value"] == "2026-08-31T06:00:00"
+        assert candidates["start_time"]["resolution_method"] == "relative_date_parsed"
+        # 2. 验证 Python 后端根据 2026-08-31T06:00:00 + 8小时得出 2026-08-31T14:00:00
+        assert candidates["end_time"]["normalized_value"] == "2026-08-31T14:00:00"
+        assert candidates["end_time"]["resolution_method"] == "duration_arithmetic"
+    finally:
+        get_simulated_time().reset()
 
 
 def test_august_31_truncated_raw_value_recovers_from_full_user_message() -> None:
     # 场景：大模型 LLM 将 raw_value 截断为 "早上6点"（丢失了 8月31号），但用户原话为 "任务从8月31号早上6点开始，任务持续12个小时"
-    llm = ScriptedLLM(
-        extractions=[
-            {
-                "slot_candidates": [
-                    slot_candidate(
-                        "start_time",
-                        "2026-08-18T06:00:00",  # 模型误算当天
-                        raw_key="开始时间",
-                        raw_value="早上6点",  # 截断的 raw_value
-                    ),
-                ],
-                "list_mutations": [],
-                "time_relation": {
-                    "has_duration": True,
-                    "duration_seconds": 43200,  # 12小时
-                    "raw_text": "持续12个小时",
-                    "confidence": 0.95,
-                },
-                "unresolved": [],
-            }
-        ]
-    )
-    extractor = ParameterExtractor(llm)
+    from datetime import datetime
+    from src.simulated_time import get_simulated_time
+    get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0))
+    try:
+        llm = ScriptedLLM(
+            extractions=[
+                {
+                    "slot_candidates": [
+                        slot_candidate(
+                            "start_time",
+                            "2026-08-18T06:00:00",  # 模型误算当天
+                            raw_key="开始时间",
+                            raw_value="早上6点",  # 截断的 raw_value
+                        ),
+                    ],
+                    "list_mutations": [],
+                    "time_relation": {
+                        "has_duration": True,
+                        "duration_seconds": 43200,  # 12小时
+                        "raw_text": "持续12个小时",
+                        "confidence": 0.95,
+                    },
+                    "unresolved": [],
+                }
+            ]
+        )
+        extractor = ParameterExtractor(llm)
 
-    result = extractor.extract_updates(
-        "任务从8月31号早上6点开始，任务持续12个小时",
-        current_state={"task_type_key": "pipeline_inspection"},
-        task_type_key="pipeline_inspection",
-        required=[
-            {"key": "start_time", "type": "datetime"},
-            {"key": "end_time", "type": "datetime"},
-        ],
-    )
+        result = extractor.extract_updates(
+            "任务从8月31号早上6点开始，任务持续12个小时",
+            current_state={"task_type_key": "pipeline_inspection"},
+            task_type_key="pipeline_inspection",
+            required=[
+                {"key": "start_time", "type": "datetime"},
+                {"key": "end_time", "type": "datetime"},
+            ],
+        )
 
-    candidates = {
-        item["canonical_key"]: item
-        for item in result["slot_candidates"]
-    }
-    # 1. 验证即使 LLM 给出的 raw_value 只有 "早上6点"，后端依然从整句中救出 "8月31号"，得出 2026-08-31T06:00:00
-    assert candidates["start_time"]["normalized_value"] == "2026-08-31T06:00:00"
-    # 2. 验证 06:00 + 12h 确定性计算得 2026-08-31T18:00:00
-    assert candidates["end_time"]["normalized_value"] == "2026-08-31T18:00:00"
+        candidates = {
+            item["canonical_key"]: item
+            for item in result["slot_candidates"]
+        }
+        # 1. 验证即使 LLM 给出的 raw_value 只有 "早上6点"，后端依然从整句中救出 "8月31号"，得出 2026-08-31T06:00:00
+        assert candidates["start_time"]["normalized_value"] == "2026-08-31T06:00:00"
+        # 2. 验证 06:00 + 12h 确定性计算得 2026-08-31T18:00:00
+        assert candidates["end_time"]["normalized_value"] == "2026-08-31T18:00:00"
+    finally:
+        get_simulated_time().reset()
 
 
 def test_today_am_11_and_three_hours() -> None:
