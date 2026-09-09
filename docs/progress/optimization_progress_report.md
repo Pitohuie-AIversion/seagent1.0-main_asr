@@ -50,6 +50,8 @@
 | `src/handlers/task_commit.py` | `_handle_final_publish_confirmation` | `TaskCommitHandler.handle` | 正式任务编号预留、staging 生成、原子发布与全流程异常回滚 |
 | `src/handlers/task_commit.py` | `sanitize_user_facing_json` | `web_backend.py`, Handlers | 剔除内部下划线字段与敏感候选匹配键，向前端提供干净模型 |
 | `src/handlers/constraint_decision.py` | `ConstraintDecisionHandler` | `DialogueManager.process` | 软警告确认吸收、硬约束防绕过驳回 |
+| `src/handlers/constraint_decision.py` | `_handle_soft_warning_confirmation` | `ConstraintDecisionHandler.handle` | 软性告警忽略确认录入与快照版本指纹绑定 |
+| `src/handlers/constraint_decision.py` | `_reject_hard_constraint_bypass` | `ConstraintDecisionHandler.handle` | 硬约束防绕过强制驳回与格式化告警回显 |
 | `src/handlers/slot_filling.py` | `SlotFillingHandler` | `DialogueManager.process` | 槽位合法性抽取与事务级写入 |
 | `web_backend.py` | `/api/chat/stream` | 前端流式交互客户端 | SSE 文本生成事件流路由端点 |
 
@@ -103,17 +105,16 @@ pytest tests/test_test_runtime_isolation.py tests/test_ambiguity_resolution_benc
 | 8 | `tests/test_issue_14_validator_snapshot.py` | 18 | PASSED | 单机遥测快照、浑浊度与流速阈值分级校验 |
 | 9 | `tests/test_normalization_failure_contract.py` | 6 | PASSED | 槽位归一化失败契约与 candidate_value 隔离 |
 | 10 | `tests/test_phase1_publish_cleanup_true_closeout.py` | 13 | PASSED | 任务发布清理、快照导出与安全恢复 |
-| 11 | `tests/test_hsm_handlers.py` | 5 | PASSED | HSM 分层处理器生命周期与委托契约 |
+| 11 | `tests/test_hsm_handlers.py` | 6 | PASSED | HSM 分层处理器生命周期与软硬约束委托契约 |
 | 12 | `tests/test_dialogue_manager_rov.py` | 28 | PASSED | 机器人族系、型号、单机级联推断 |
 | 13 | `tests/test_slot_consistency.py` | 68 | PASSED | SSOT 槽位一致性、持久化失败回滚与多进程竞争安全 |
 | 14 | `tests/test_robot_state_atomic_persistence.py` | 10 | PASSED | 机器人状态原子写入、文件锁与只读并发 |
 | 15 | `tests/test_robot_state_api_contract.py` | 18 | PASSED | 遥测状态 RESTful API 契约与版本冲突检测 |
-| **合计** | **15 套核心测试套件** | **196** | **ALL PASSED** | **核心功能 100% 覆盖通过 (耗时 203.14s，0 失败)** |
+| **合计** | **15 套核心测试套件** | **197** | **ALL PASSED** | **核心功能 100% 覆盖通过 (耗时 230.38s，0 失败)** |
 
 ---
 
 ## 6. 后续开发规划与行动项 (Development Plan)
 
-1. 代码提交合流：将当前已通过验证的测试隔离、动态遥测校验修复以及一致性用例对齐提交至 `feat/dialogue-manager-hsm-sse` 分支；
-2. Extractor 进一步解耦：梳理 DialogueManager 中尚存的参数抽取器与上下文提示词逻辑，推进单一职责化；
-3. 机器人控制闭环对接：完善 ROS2/MCP 控制状态机向物理设备适配器的事件分发链路。
+1. Extractor 进一步解耦：梳理 DialogueManager 中尚存的参数抽取器与上下文提示词逻辑，推进单一职责化；
+2. 机器人控制闭环对接：完善 ROS2/MCP 控制状态机向物理设备适配器的事件分发链路。

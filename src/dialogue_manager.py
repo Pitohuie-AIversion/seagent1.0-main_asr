@@ -762,109 +762,7 @@ class DialogueManager:
         return valid_acks
 
     def _handle_soft_warning_confirmation(self, user_message: str, request_id: str) -> str:
-        """blocked_soft 阶段的确认/忽略处理。
-
-        将已确认忽略的软警告录入 SlotStore.validation_acknowledgements 绑定快照版本，
-        清除 _blocking_violations，然后根据缺失槽位决定进入 collecting 或 confirming。
-        """
-        task_type_key = self.task_state.get("task_type_key")
-        missing = []
-        if task_type_key:
-            req_schema = self.builder.get_schema(task_type_key, self.mode)
-            user_req_schema = [f for f in req_schema if f.get("type") not in ("auto", "fixed")]
-            missing = self.slot_store.get_missing_slots(
-                user_req_schema,
-                allowed_values_resolver=lambda field: self.builder.resolve_allowed_values(
-                    field,
-                    task_type_key,
-                    self.task_state,
-                ),
-            )
-        if not task_type_key:
-            target_purpose = "interactive"
-        else:
-            target_purpose = "preview" if not missing else "interactive"
-
-        res = self._refresh_validation(purpose=target_purpose)
-        status_ref = res.state_snapshot.get("status_ref") if res.state_snapshot else None
-        state_ver = res.state_snapshot.get("state_version") if res.state_snapshot else None
-
-        if self._blocking_violations:
-            for v in self._blocking_violations:
-                if getattr(v, "severity", "soft") == "soft":
-                    ack = ValidationAcknowledgement(
-                        constraint_id=v.constraint_id,
-                        acknowledged_at=get_current_datetime().isoformat(timespec="seconds"),
-                        task_version=res.task_version,
-                        validation_version=res.validation_version,
-                        validation_fingerprint=res.validation_fingerprint,
-                        status_ref=status_ref or "",
-                        state_version=state_ver or 0,
-                        field=getattr(v, "related_fields", [""])[0] if getattr(v, "related_fields", None) else "",
-                        value=getattr(v, "observed_value", None),
-                    )
-                    if ack not in self.slot_store.validation_acknowledgements:
-                        self.slot_store.validation_acknowledgements.append(ack)
-                for f in v.related_fields:
-                    val = self.task_state.get(f)
-                    if val is not None:
-                        self._soft_whitelist.add((f, str(val), v.constraint_id))
-            self._blocking_violations = []
-
-        # 重新检查约束（使用白名单过滤后的结果）
-        res = self._refresh_validation(purpose=target_purpose)
-        all_violations = res.violations
-        remaining_soft = [v for v in all_violations
-                          if v.severity == "soft" and not self._is_whitelisted(v)]
-        remaining_hard = [v for v in all_violations if v.severity == "hard"]
-
-        if remaining_hard:
-            self._transition_phase("blocked_hard", reason="hard_constraint_detected")
-            self._blocking_violations = remaining_hard
-        elif remaining_soft:
-            self._transition_phase("blocked_soft", reason="soft_warning_detected")
-            self._blocking_violations = remaining_soft
-        else:
-            if task_type_key:
-                if not missing:
-                    self._transition_phase("confirming", reason="required_slots_complete")
-                else:
-                    self._transition_phase("collecting", reason="required_slots_missing")
-            else:
-                self._transition_phase("collecting", reason="task_type_missing")
-
-        if remaining_hard:
-            reply = (
-                "未能继续：重新校验发现硬约束，软警告确认不能绕过硬约束。"
-                "任务尚未发布，请先修改相关参数。"
-            )
-        elif remaining_soft:
-            reply = (
-                "已记录可忽略软警告的确认，但仍有未确认的软警告。"
-                "任务保持阻断且尚未发布。"
-            )
-        elif self.phase == "confirming":
-            reply = (
-                "已记录您对当前软警告的确认。任务尚未发布；"
-                "所有必填字段已完整，如确认无误，请回复“确认发布”。"
-            )
-        else:
-            labels = [
-                item.get("label") or item.get("key")
-                for item in self._last_missing
-                if isinstance(item, dict) and (item.get("label") or item.get("key"))
-            ]
-            missing_text = "、".join(labels)
-            suffix = (
-                f"请继续补充：{missing_text}。"
-                if missing_text
-                else "请继续补充任务信息。"
-            )
-            reply = f"已记录您对当前软警告的确认。任务尚未发布；{suffix}"
-
-        self.conversation_history.append({"role": "user", "content": user_message})
-        self.conversation_history.append({"role": "assistant", "content": reply})
-        return reply
+        return self.constraint_handler._handle_soft_warning_confirmation(user_message, request_id)
 
     def _handle_final_publish_confirmation(self, user_message: str, request_id: str) -> str:
         return self.commit_handler._handle_final_publish_confirmation(user_message, request_id)
@@ -5982,27 +5880,7 @@ class DialogueManager:
         return f"{reply}\n\n{details}"
 
     def _reject_hard_constraint_bypass(self, user_message: str) -> str:
-        """Reject confirmation/ignore commands while hard violations remain."""
-        violations = [
-            violation
-            for violation in self._blocking_violations
-            if violation.severity == "hard"
-        ]
-        if not violations:
-            val_res = self._refresh_validation(purpose="interactive")
-            violations = [
-                v for v in val_res.violations
-                if v.severity == "hard"
-            ]
-
-        reply = "硬性约束不能通过确认或忽略警告绕过。请先修正以下问题后再发布任务。"
-        if violations:
-            reply = f"{reply}\n\n{self.validator.format_violations(violations)}"
-            self._blocking_violations = violations
-
-        self.conversation_history.append({"role": "user", "content": user_message})
-        self.conversation_history.append({"role": "assistant", "content": reply})
-        return reply
+        return self.constraint_handler._reject_hard_constraint_bypass(user_message)
 
     @staticmethod
     def _user_cancelled(message: str) -> bool:

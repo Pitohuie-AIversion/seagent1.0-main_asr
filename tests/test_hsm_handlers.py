@@ -80,3 +80,28 @@ class TestHSMHandlersContract:
         res = dm.constraint_handler.handle(ctx)
         assert res.handled is True
         assert "违规" in res.reply or "无法直接" in res.reply or "阻断" in res.reply or "修改" in res.reply
+
+    def test_constraint_handler_handles_soft_warning_ignore(self):
+        dm = DialogueManager()
+        dm.phase = "blocked_soft"
+        mock_violation = MagicMock()
+        mock_violation.severity = "soft"
+        mock_violation.constraint_id = "C013"
+        mock_violation.related_fields = ["turbidity"]
+        mock_violation.observed_value = 7
+        dm._blocking_violations = [mock_violation]
+
+        mock_val_res = MagicMock()
+        mock_val_res.violations = [mock_violation]
+        mock_val_res.task_version = 1
+        mock_val_res.validation_version = 1
+        mock_val_res.validation_fingerprint = "fp123"
+        mock_val_res.state_snapshot = {}
+        dm._refresh_validation = MagicMock(return_value=mock_val_res)
+        dm.builder.get_schema = MagicMock(return_value=[])
+
+        ctx = DialogueContext(manager=dm, user_message="忽略警告")
+        assert dm.constraint_handler.can_handle(ctx) is True
+        res = dm.constraint_handler.handle(ctx)
+        assert res.handled is True
+        assert "记录" in res.reply or "警告" in res.reply
