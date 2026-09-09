@@ -1,4 +1,5 @@
 # 大体积数据
+runtime/
 qwen_model_cache/
 qwen_model_cache.lnk/
 *.zip
@@ -34,5 +35,4 @@ hardcore_*.py
 .agents/README-summary.md
 config/.state.yaml.lock
 config/*.lock
-
 

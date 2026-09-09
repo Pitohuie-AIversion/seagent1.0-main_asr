@@ -27,6 +27,36 @@
 
 task_templates:
 
+  # ── 仿真/兼容移动 ────────────────────────────────────────────────────────
+  underwater_move:
+    code: "UM"
+    display_name: "水下移动任务"
+    allowed_robot_classes: ["work_class_rov", "observation_rov", "auv"]
+    required_capabilities: []
+    task_type_values:
+      - "水下移动任务"
+    output_schema:
+      normal:
+        - {key: task_id, label: "任务编号", type: auto}
+        - {key: task_type, label: "任务类型", type: tasktype}
+        - {key: start_time, label: "任务开始时间", type: datetime}
+        - {key: end_time, label: "任务结束时间", type: datetime}
+        - {key: target, label: "目标位姿（odom）", type: raw}
+        - {key: water_depth, label: "水深（米）", type: number, exclusive_minimum: 0}
+        - {key: equipment_family, label: "作业机器人系列", type: string, allowed_values_ref: "robot_family_full_names"}
+        - {key: equipment_type, label: "作业设备型号", type: string, allowed_values_ref: "robot_variant_full_names"}
+        - {key: equipment_unit_id, label: "具体机器人编号", type: string, allowed_values_ref: "robot_unit_ids"}
+        - {key: payload, label: "携带工具", type: fixed, fixed_value: []}
+        - {key: support_vessel, label: "支持船编号", type: string, allowed_values_ref: "vessel_ids"}
+      emergency:
+        - {key: task_id, label: "任务编号", type: auto}
+        - {key: task_type, label: "任务类型", type: tasktype}
+        - {key: start_time, label: "任务开始时间", type: datetime}
+        - {key: target, label: "目标位姿（odom）", type: raw}
+        - {key: water_depth, label: "水深（米）", type: number, exclusive_minimum: 0}
+        - {key: equipment_type, label: "作业设备型号", type: string, allowed_values_ref: "robot_variant_full_names"}
+        - {key: equipment_unit_id, label: "具体机器人编号", type: string, allowed_values_ref: "robot_unit_ids"}
+
   # ── 管缆巡检 ─────────────────────────────────────────────────────────────
   pipeline_inspection:
     code: "PI"

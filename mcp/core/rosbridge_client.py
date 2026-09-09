@@ -56,6 +56,16 @@ logger = logging.getLogger(__name__)
 LEGACY_MSGMANAGEMENT = os.environ.get("SEAGENT_ROS2_COMPAT", "").lower() in {
     "msgmanagement", "legacy", "simulator"
 }
+# Temporary simulator-only compatibility mode: flatten every target-bearing
+# SEAgent task into the legacy ACTION_TASK (task=3) path so the simulator uses
+# the ODOM vertex from TaskIntent instead of task-node built-in work points.
+WRAP_ALL_LEGACY_TASKS_AS_MOVE = os.environ.get(
+    "SEAGENT_WRAP_ALL_TASKS_AS_MOVE", ""
+).lower() in {"1", "true", "yes", "on"}
+# The legacy task node routes targets above this threshold directly to the
+# controller.  The simulator has no planner subscriber, so a zero threshold
+# would leave every SEAgent move waiting forever on /task/planner_target.
+LEGACY_PLAN_THRESHOLD = float(os.environ.get("SEAGENT_LEGACY_PLAN_THRESHOLD", "10000"))
 
 
 # ============================================================================
@@ -359,6 +369,28 @@ def _coordinate_pose(
     origin: Optional[LocalOrigin],
     field_name: str,
 ) -> Pose:
+    # Simulator tasks may provide an explicit local target.  This path is
+    # intentionally opt-in via coordinate_mode/frame_id so a real geodetic
+    # payload can never be silently interpreted as metres.
+    coordinate_mode = str(
+        coordinate.get("coordinate_mode") or coordinate.get("frame_id") or ""
+    ).lower()
+    if coordinate_mode in {"odom", "enu", "local"} or (
+        "x" in coordinate and "y" in coordinate
+    ):
+        try:
+            x = float(coordinate["x"])
+            y = float(coordinate["y"])
+            z = float(coordinate.get("z", -default_depth))
+            yaw = float(coordinate.get("yaw", 0.0))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProtocolValidationError(
+                f"{field_name} 局部坐标 x/y/z 不是有效数值"
+            ) from exc
+        return Pose(
+            x=x, y=y, z=z,
+            qz=math.sin(yaw / 2.0), qw=math.cos(yaw / 2.0),
+        )
     latitude = coordinate.get("latitude")
     longitude = coordinate.get("longitude")
     if latitude is None or longitude is None:
@@ -628,7 +660,7 @@ def _legacy_task_payload(cmd: SysTaskCmd, intent: Optional[Dict[str, Any]] = Non
         int(TaskType.INSERT_PLUG): 2,
         int(TaskType.CLAMP_PIN): 2,
     }.get(int(cmd.task_type), 3)
-    target = cmd.pos_target[0] if cmd.pos_target else Pose()
+    target = cmd.pos_target[-1] if cmd.pos_target else Pose()
     yaw = 2.0 * math.atan2(float(target.qz), float(target.qw))
     # TaskIntent v2 payloads may carry details at the top level or under the
     # canonical ``task.details`` envelope.  Keep the legacy adapter lossless
@@ -640,6 +672,13 @@ def _legacy_task_payload(cmd: SysTaskCmd, intent: Optional[Dict[str, Any]] = Non
         or ((intent_data.get("task") or {}).get("details") if isinstance(intent_data.get("task"), dict) else {})
         or {}
     )
+    if WRAP_ALL_LEGACY_TASKS_AS_MOVE:
+        # For multi-point tasks (e.g. pipeline inspection), use the final
+        # converted ODOM point as the temporary movement vertex.  For single
+        # target tasks the normal first/last point is identical.
+        legacy_task = 3
+        if cmd.pos_target:
+            target = cmd.pos_target[-1]
     hole_id = (intent or {}).get("hole_id", details.get("hole_id", 0))
     try:
         hole_id = max(0, min(255, int(hole_id)))
@@ -696,7 +735,12 @@ class RosbridgeClient:
             if self._ws and self._ws.connected:
                 return
             self._ws = websocket.create_connection(
-                self._url, timeout=self.connect_timeout
+                self._url,
+                timeout=self.connect_timeout,
+                # Keep long-running SEAgent model inference from letting an
+                # otherwise healthy rosbridge connection go idle.
+                ping_interval=self.HEARTBEAT_INTERVAL,
+                ping_timeout=max(3.0, self.HEARTBEAT_INTERVAL / 3.0),
             )
             logger.info(f"[RosbridgeClient] 已连接: {self._url}")
         self._running = True
@@ -886,9 +930,42 @@ class RosbridgeClient:
         发送任务管理指令（挂起/恢复/删除/查询/清除阻塞）。
         返回本条管理指令的 task_id。
         """
-        cmd = build_task_manage_cmd(action, target_task_id)
+        try:
+            normalized_action = TaskManageAction(int(action))
+        except (TypeError, ValueError) as exc:
+            raise ProtocolValidationError(f"不支持的 TASK_MANAGE action: {action}") from exc
+
+        if LEGACY_MSGMANAGEMENT:
+            # msgmanagement SysTaskCmd is not the llmbridge TASK_MANAGE
+            # envelope.  Its task=255 value is the simulator's native
+            # clear-all command; adapting any other management command through
+            # _legacy_task_payload would incorrectly turn it into task=3 and
+            # could command a move to the zero pose.
+            if normalized_action != TaskManageAction.DELETE_ALL:
+                raise ProtocolValidationError(
+                    f"msgmanagement 兼容模式不支持 {normalized_action.name}; "
+                    "仅支持 DELETE_ALL（legacy task=255）"
+                )
+            if target_task_id is not None:
+                raise ProtocolValidationError("DELETE_ALL 不使用 target_task_id")
+            cmd_task_id = generate_task_id()
+            self.publish(TASK_TOPIC, TASK_MESSAGE_TYPE, {
+                "task": 255,
+                "hole_id": 0,
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0,
+                "roll": 0.0,
+                "pitch": 0.0,
+                "yaw": 0.0,
+            })
+            self._last_legacy_task_id = 0
+            logger.info("[RosbridgeClient] 兼容任务管理: DELETE_ALL (task=255)")
+            return cmd_task_id
+
+        cmd = build_task_manage_cmd(normalized_action, target_task_id)
         self.publish_syscmd_raw(cmd)
-        action_name = action.name
+        action_name = normalized_action.name
         if target_task_id:
             logger.info(f"[RosbridgeClient] 任务管理: {action_name} -> task 0x{target_task_id:X}")
         else:
@@ -957,7 +1034,12 @@ class RosbridgeClient:
             self.publish(
                 CONFIG_TOPIC,
                 CONFIG_MESSAGE_TYPE,
-                {"task_type": 3, "task_src": 1, "plan_threshold": 0.0, "ctr_mode": int(mode)},
+                {
+                    "task_type": 3,
+                    "task_src": 1,
+                    "plan_threshold": LEGACY_PLAN_THRESHOLD,
+                    "ctr_mode": int(mode),
+                },
             )
             logger.info(f"[RosbridgeClient] 设置兼容控制模式: {mode.name}")
             return

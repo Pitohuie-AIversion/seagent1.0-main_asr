@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="560" viewBox="0 0 900 560">
+  <rect width="900" height="560" fill="#ffffff"/>
+  <text x="450" y="34" text-anchor="middle" font-family="sans-serif" font-size="22" fill="#222">HoloOcean 仿真短距离运动实测轨迹</text>
+  <text x="450" y="62" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#555">目标：相对当前位置前移 0.3 m，保持当前深度</text>
+  <rect x="95" y="95" width="730" height="350" fill="#fafafa" stroke="#999"/>
+  <line x1="95" y1="270" x2="825" y2="270" stroke="#ddd"/>
+  <line x1="460" y1="95" x2="460" y2="445" stroke="#ddd"/>
+  <text x="460" y="480" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#333">odom X (m)</text>
+  <text x="35" y="270" text-anchor="middle" transform="rotate(-90 35 270)" font-family="sans-serif" font-size="15" fill="#333">odom Y (m)</text>
+  <line x1="665" y1="190" x2="225" y2="390" stroke="#1f77b4" stroke-width="6"/>
+  <polygon points="225,390 243,374 247,397" fill="#1f77b4"/>
+  <circle cx="665" cy="190" r="11" fill="#2ca02c"/>
+  <circle cx="225" cy="390" r="11" fill="#d62728"/>
+  <text x="682" y="180" font-family="sans-serif" font-size="15" fill="#222">START</text>
+  <text x="682" y="201" font-family="sans-serif" font-size="13" fill="#555">(-155.747, 70.050)</text>
+  <text x="125" y="380" font-family="sans-serif" font-size="15" fill="#222">FINISH</text>
+  <text x="125" y="401" font-family="sans-serif" font-size="13" fill="#555">(-155.960, 69.836)</text>
+  <rect x="120" y="475" width="660" height="55" rx="4" fill="#f3f6fa" stroke="#ccd6e0"/>
+  <text x="450" y="497" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#222">实测 Δx=-0.212 m，Δy=-0.214 m，平面位移=0.301 m</text>
+  <text x="450" y="518" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#222">实测 Δz=0.000 m（深度保持）｜轨迹来自 ROS2 遥测，不是视频截图</text>
+</svg>

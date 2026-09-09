@@ -18,6 +18,12 @@ FRONTEND_FILE = SEAGENT_ROOT / "frontend" / "ros2_dashboard.html"
 SEAGENT_BACKEND_URL = os.environ.get(
     "SEAGENT_BACKEND_URL", "http://127.0.0.1:6006"
 ).rstrip("/")
+try:
+    SEAGENT_BACKEND_TIMEOUT = max(
+        1.0, float(os.environ.get("SEAGENT_BACKEND_TIMEOUT", "120"))
+    )
+except ValueError:
+    SEAGENT_BACKEND_TIMEOUT = 120.0
 
 app = Flask(__name__)
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
@@ -32,7 +38,9 @@ def _proxy_backend(path: str, method: str = "GET", payload: dict | None = None):
         headers={"Content-Type": "application/json"} if body is not None else {},
     )
     try:
-        with urllib.request.urlopen(backend_request, timeout=8.0) as response:
+        with urllib.request.urlopen(
+            backend_request, timeout=SEAGENT_BACKEND_TIMEOUT
+        ) as response:
             data = json.loads(response.read().decode("utf-8"))
             status = response.status
     except urllib.error.HTTPError as exc:

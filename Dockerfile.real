@@ -10,9 +10,12 @@ COPY . /app
 ENV TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8890
-ENV SEAGENT_MAX_MODEL_LEN=32768
+ENV SEAGENT_MAX_MODEL_LEN=262144
 ENV SEAGENT_MAX_NUM_SEQS=2
-ENV SEAGENT_GPU_MEMORY_UTILIZATION=0.82
+ENV SEAGENT_GPU_MEMORY_UTILIZATION=0.93
 ENV SEAGENT_MAX_NUM_BATCHED_TOKENS=8192
 ENV SEAGENT_ROS2_COMPAT=msgmanagement
+# Container readiness probe: requires both the HTTP server and live MCP link.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
+  CMD python3 -c "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8890/health', timeout=4); d=json.load(r); raise SystemExit(0 if d.get('status') == 'ok' else 1)"
 CMD ["python3", "run.py"]

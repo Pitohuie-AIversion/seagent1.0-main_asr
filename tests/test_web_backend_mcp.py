@@ -189,6 +189,20 @@ class WebBackendMCPTestCase(unittest.TestCase):
         res = self.client.post("/api/mcp/task-manage", json={"action": "unknown_action"})
         self.assertEqual(res.status_code, 400)
 
+    def test_07b_task_manage_delete_all(self):
+        """[07b] delete_all 通过桥接服务清理全部任务。"""
+        bridge = Mock()
+        bridge.is_healthy.return_value = True
+        bridge.delete_all_tasks.return_value = 0x80042
+        web_backend.init_mcp_bridge_service(bridge)
+        try:
+            res = self.client.post("/api/mcp/task-manage", json={"action": "delete_all"})
+        finally:
+            web_backend.init_mcp_bridge_service(self.bridge)
+
+        self.assertEqual(res.status_code, 200)
+        bridge.delete_all_tasks.assert_called_once_with()
+
     # ------------------------------------------------------------------
     # 4. POST /api/mcp/ctrl-task
     # ------------------------------------------------------------------

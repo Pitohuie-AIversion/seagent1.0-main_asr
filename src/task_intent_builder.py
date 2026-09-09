@@ -2,6 +2,7 @@
 task_intent_builder.py — 生成符合 TaskIntent 规范的 JSON 文件
 """
 import fcntl
+import ast
 import json
 import os
 import re
@@ -25,6 +26,7 @@ from .utils import (
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 TASK_ALLOWED_ROBOT_TYPES = {
+    "underwater_move": {"observation_rov", "work_class_rov", "auv"},
     "pipeline_inspection": {"observation_rov", "auv"},
     "pipeline_burial": {"work_class_rov"},
     "tree_valve_operation": {"work_class_rov"},
@@ -153,6 +155,19 @@ def _task_intent_payload_error(intent: dict) -> str | None:
     if not isinstance(details, dict):
         return "task.details must be an object"
     for key in ("start_point", "end_point", "target"):
+        # The simulator-only movement template carries an explicit local odom
+        # pose rather than geodetic latitude/longitude.
+        if (
+            key == "target"
+            and task.get("type") == "underwater_move"
+            and isinstance(details.get(key), dict)
+            and "x" in details[key]
+            and "y" in details[key]
+        ):
+            pose = details[key]
+            if not all(_is_finite_number(pose.get(axis)) for axis in ("x", "y", "z")):
+                return "task.details.target odom x/y/z must be finite numbers"
+            continue
         error = _coordinate_error(details.get(key), f"task.details.{key}")
         if error:
             return error
@@ -681,6 +696,7 @@ class TaskIntentBuilder:
 
     def _resolve_output_task_type(self, task_type_key: str) -> str:
         mapping = {
+            "underwater_move": "underwater_move",
             "pipeline_inspection": "pipeline_inspection",
             "pipeline_burial": "pipeline_burial",
             "tree_valve_operation": "valve_operation",
@@ -744,6 +760,17 @@ class TaskIntentBuilder:
         task_state: Dict[str, Any],
         built_json: Dict[str, Any],
     ) -> Dict[str, Any]:
+        if task_type_key == "underwater_move":
+            target = built_json.get("target") or task_state.get("target")
+            if isinstance(target, str):
+                try:
+                    parsed_target = ast.literal_eval(target)
+                except (ValueError, SyntaxError):
+                    parsed_target = None
+                target = parsed_target if isinstance(parsed_target, dict) else target
+            if not isinstance(target, dict):
+                raise TaskPersistenceError("水下移动任务必须提供 target 位姿对象")
+            return {"target": target, "frame_id": target.get("frame_id", "odom")}
         if task_type_key in ("pipeline_inspection", "pipeline_burial"):
             return self._build_pipeline_inspection_details(task_state, built_json)
         if task_type_key == "tree_valve_operation":

@@ -8,8 +8,10 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import logging
+import math
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -142,6 +144,61 @@ class SEAgentMCPBridgeService:
             raise ValueError(f"不支持的 SEAgent task_type: {key}")
         return int(mapped)
 
+    def _resolve_relative_move_intent(
+        self, task_intent: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Resolve a body/relative underwater move against fresh ROS telemetry."""
+        task = task_intent.get("task") or {}
+        details = task.get("details") or {}
+        target = details.get("target") or {}
+        task_type = task_intent.get("task_type_key") or task_intent.get("task_type") or task.get("type")
+        frame_id = str(target.get("frame_id") or details.get("frame_id") or "odom").lower()
+        is_relative = bool(target.get("relative")) or frame_id in {
+            "base_link", "body", "relative", "odom_relative"
+        }
+        if task_type != "underwater_move" or not is_relative:
+            return task_intent
+
+        telemetry = self.tracker.latest_telemetry()
+        if not self._telemetry_is_fresh(telemetry):
+            raise RuntimeError("相对移动任务需要新鲜的 ROS2 位姿遥测")
+        try:
+            dx = float(target.get("x", 0.0))
+            dy = float(target.get("y", 0.0))
+            dz = float(target.get("z", 0.0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("相对移动 target x/y/z 必须为有限数值") from exc
+        if not all(math.isfinite(value) for value in (dx, dy, dz)):
+            raise ValueError("相对移动 target x/y/z 必须为有限数值")
+        if math.sqrt(dx * dx + dy * dy + dz * dz) > 50.0:
+            raise ValueError("单次相对移动距离不得超过 50 米")
+
+        yaw = 0.0
+        if frame_id in {"base_link", "body"}:
+            pose_stamped = (telemetry.raw_msg or {}).get("pose", {})
+            pose = pose_stamped.get("pose", {}) or pose_stamped
+            orientation = pose.get("orientation", {}) or {}
+            qx = float(orientation.get("x", 0.0))
+            qy = float(orientation.get("y", 0.0))
+            qz = float(orientation.get("z", 0.0))
+            qw = float(orientation.get("w", 1.0))
+            yaw = math.atan2(
+                2.0 * (qw * qz + qx * qy),
+                1.0 - 2.0 * (qy * qy + qz * qz),
+            )
+
+        resolved = copy.deepcopy(task_intent)
+        resolved_details = resolved["task"]["details"]
+        resolved_details["target"] = {
+            "x": telemetry.pose_x + dx * math.cos(yaw) - dy * math.sin(yaw),
+            "y": telemetry.pose_y + dx * math.sin(yaw) + dy * math.cos(yaw),
+            "z": telemetry.pose_z + dz,
+            "yaw": yaw + float(target.get("yaw", 0.0)),
+            "frame_id": "odom",
+        }
+        resolved_details["frame_id"] = "odom"
+        return resolved
+
     def dispatch_intent(
         self,
         task_intent: Dict[str, Any],
@@ -154,9 +211,16 @@ class SEAgentMCPBridgeService:
         A failed transport attempt keeps the same ROS task ID for an explicit retry.
         """
         if not self.is_healthy():
-            raise RuntimeError(
-                f"MCPBridgeService 未连接到支持船网关 (ws://{self.host}:{self.port})"
-            )
+            # Model inference can take longer than a gateway's idle timeout.
+            # Re-establish the same gateway transparently before rejecting a
+            # confirmed task; the dispatch record still preserves idempotency.
+            try:
+                self.reconnect(self.host, self.port)
+            except Exception as exc:
+                self._last_error = str(exc)
+                raise RuntimeError(
+                    f"MCPBridgeService 未连接到支持船网关 (ws://{self.host}:{self.port}): {exc}"
+                ) from exc
         identity = self._intent_identity(task_intent)
 
         with self._dispatch_lock:
@@ -179,8 +243,14 @@ class SEAgentMCPBridgeService:
             }
             self._dispatch_records[identity] = record
             try:
+                intent_to_publish = self._resolve_relative_move_intent(task_intent)
+                # The simulator/controller accepts target motion only in the
+                # mission execution mode; AUTOHOLD is restored by the caller
+                # after task cleanup.
+                if record["task_type"] == int(SEAGENT_TO_ROS2_TASK_TYPE.get("underwater_move")):
+                    self.client.set_pilot_mode(PilotMode.MISSION1)
                 self.client.publish_task_cmd(
-                    task_intent,
+                    intent_to_publish,
                     task_id=assigned_task_id,
                     use_geodetic=use_geodetic,
                     origin=origin,
@@ -216,6 +286,15 @@ class SEAgentMCPBridgeService:
 
     def delete_task(self, task_id: int) -> int:
         return self.client.delete_task(task_id)
+
+    def delete_all_tasks(self) -> int:
+        """Clear ROS tasks and the bridge's correlated in-memory task state."""
+        cmd_task_id = self.client.delete_all()
+        with self._dispatch_lock:
+            self._dispatch_records.clear()
+        self.tracker.clear_task_state()
+        self._last_error = None
+        return cmd_task_id
 
     def emergency_clear_block(self) -> int:
         return self.client.clear_block()

@@ -31,6 +31,60 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
+_RELATIVE_MOVE_CUES = re.compile(
+    r"(?:向前|向后|向左|向右|前进|后退|左移|右移|上浮|下潜|相对|当前位置|当前仿真位置)"
+)
+_ABSOLUTE_MOVE_CUES = re.compile(r"(?:绝对坐标|绝对位置|odom\s*[=:：]|x\s*[=:])", re.I)
+
+
+def _mark_relative_underwater_target(
+    task_type_key: str,
+    built_json: Dict[str, Any],
+    conversation_history: List[Dict[str, Any]],
+) -> None:
+    """Preserve relative-movement semantics that the raw target slot cannot encode."""
+    if task_type_key != "underwater_move":
+        return
+    user_text = "\n".join(
+        str(item.get("content", ""))
+        for item in conversation_history
+        if item.get("role") == "user"
+    )
+    if not _RELATIVE_MOVE_CUES.search(user_text) or _ABSOLUTE_MOVE_CUES.search(user_text):
+        return
+    target = built_json.get("target")
+    if isinstance(target, str):
+        try:
+            import ast
+            target = ast.literal_eval(target)
+        except (ValueError, SyntaxError):
+            # LLM/raw-slot fallback: turn common natural-language relative
+            # movement into the canonical body-frame pose object.
+            distance = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(?:米|m)", target, re.I)
+            if not distance and re.search(r"relative_position", target, re.I):
+                distance = re.search(r"x\s*[:=]\s*([-+]?[0-9]+(?:\.[0-9]+)?)", target, re.I)
+            if not distance:
+                return
+            value = float(distance.group(1))
+            if re.search(r"向后|后退", target):
+                value = -value
+            if re.search(r"向左|左移", target):
+                target = {"x": 0.0, "y": value, "z": 0.0}
+            elif re.search(r"向右|右移", target):
+                target = {"x": 0.0, "y": -value, "z": 0.0}
+            elif re.search(r"上浮", target):
+                target = {"x": 0.0, "y": 0.0, "z": -value}
+            elif re.search(r"下潜", target):
+                target = {"x": 0.0, "y": 0.0, "z": value}
+            else:
+                target = {"x": value, "y": 0.0, "z": 0.0}
+    if not isinstance(target, dict) or not all(axis in target for axis in ("x", "y", "z")):
+        return
+    target = copy.deepcopy(target)
+    target["relative"] = True
+    target["frame_id"] = "base_link"
+    built_json["target"] = target
+
 from .llm_client import LLMClient
 from .model_profile import (
     ModelRole,
@@ -1840,6 +1894,9 @@ class DialogueManager:
 
             cand_state = dict(self.task_state)
             cand_built = dict(self._last_built_json)
+            _mark_relative_underwater_target(
+                task_type_key, cand_built, self.conversation_history
+            )
 
             # TOCTOU 防线：在最终写盘发布前核对 state_version (仅即时任务需要防线)
             if unit_id and is_task_now and val_res and getattr(val_res, "state_snapshot", None):
@@ -6954,7 +7011,7 @@ class DialogueManager:
         negated = ["不忽略", "不要忽略", "不能忽略", "别忽略", "不无视", "不要无视", "不是忽略"]
         if any(neg in text for neg in negated):
             return False
-        return text in {
+        if text in {
             "忽略警告",
             "忽略警告继续",
             "忽略软警告",
@@ -6969,7 +7026,14 @@ class DialogueManager:
             "接受风险",
             "忽略风险",
             "无视",
-        }
+        }:
+            return True
+        # 允许自然语言确认，但仍要求同时出现风险接受/忽略语义与警告对象，
+        # 避免把普通的“继续”或泛确认误判为风险豁免。
+        has_warning_object = any(token in text for token in ("警告", "风险", "约束"))
+        has_accept_action = any(token in text for token in ("忽略", "无视", "接受", "同意", "知悉"))
+        # “忽略/接受警告”本身就是授权动作；可附带“继续发布/执行”，但不强制要求。
+        return has_warning_object and has_accept_action
 
 
 

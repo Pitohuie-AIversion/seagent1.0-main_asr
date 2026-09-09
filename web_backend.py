@@ -179,6 +179,22 @@ app = Flask(
     static_url_path="/static",
 )
 
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    """Lightweight liveness/readiness probe for the deployed service."""
+    bridge = get_mcp_bridge()
+    if bridge is None:
+        return jsonify({"status": "degraded", "model": "ready", "mcp_connected": False}), 503
+    connected = bridge.is_healthy()
+    payload = {
+        "status": "ok" if connected else "degraded",
+        "model": "ready",
+        "mcp_connected": connected,
+        "active_tasks_count": bridge.runtime_snapshot().get("active_tasks_count", 0),
+    }
+    return jsonify(payload), (200 if connected else 503)
+
 @app.before_request
 def _hot_reload_check_before_request():
     check_and_hot_reload_modules()
@@ -1324,7 +1340,7 @@ def mcp_gateway():
 
 @app.route("/api/mcp/task-manage", methods=["POST"])
 def mcp_task_manage():
-    """发送任务管理指令 (suspend, resume, delete, clear_block)"""
+    """发送任务管理指令（含兼容模式支持的 delete_all）。"""
     bridge = get_mcp_bridge()
     if bridge is None or not bridge.is_healthy():
         return jsonify({"code": 503, "msg": "MCP 桥接服务未连接"}), 503
@@ -1346,6 +1362,8 @@ def mcp_task_manage():
             if not target_task_id:
                 return jsonify({"code": 400, "msg": "删除任务需提供 task_id"}), 400
             tid = bridge.delete_task(int(target_task_id))
+        elif action_str in ("delete_all", "clear_all"):
+            tid = bridge.delete_all_tasks()
         elif action_str in ("clear_block", "clear"):
             tid = bridge.emergency_clear_block()
         else:

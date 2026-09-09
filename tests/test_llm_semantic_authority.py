@@ -209,6 +209,15 @@ def test_blocked_soft_accepts_prompted_ignore_warning_continue_phrases() -> None
         assert llm.extract_calls == []
 
 
+def test_blocked_soft_accepts_natural_warning_acknowledgements() -> None:
+    for message in (
+        "我明确接受当前所有软警告，继续发布。",
+        "忽略所有软警告。",
+        "我接受这个风险并继续执行。",
+    ):
+        assert DialogueManager._is_ignore_warning(message) is True
+
+
 def test_ignore_warning_continue_negation_is_not_acknowledgement() -> None:
     assert DialogueManager._is_ignore_warning("不忽略警告继续") is False
 
@@ -2153,4 +2162,3 @@ def test_no_candidates_invokes_llm_model_for_natural_response() -> None:
 
     assert "抱歉，我没有识别到具体的任务类型候选" in reply
     assert not reply.startswith("本轮没有任务字段通过验证，因此未写入任务状态。")
-

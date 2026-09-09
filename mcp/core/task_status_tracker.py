@@ -160,6 +160,19 @@ class TaskStatusTracker:
         item = self.get_task_status(task_id)
         return item is not None and item.is_active()
 
+    def clear_task_state(self) -> None:
+        """Clear locally correlated task state while preserving live telemetry.
+
+        The legacy simulator status message has no task ID.  After an explicit
+        clear-all command, keeping the previously injected SEAgent ID would make
+        the dashboard report a task that no longer exists on the ROS side.
+        """
+        with self._lock:
+            self._task_history.clear()
+            self._change_callbacks.clear()
+            if self._latest is not None:
+                self._latest.task_list = []
+
     # ------------------------------------------------------------------
     # 内部回调（由 rosbridge 监听线程调用）
     # ------------------------------------------------------------------
@@ -224,7 +237,17 @@ class TaskStatusTracker:
         raw_tasks = msg.get("task_list", [])
         if not raw_tasks and "task_status" in msg:
             legacy_status = int(msg.get("task_status", 0))
-            status_map = {0: TaskStatus.READY, 1: TaskStatus.ONGOING, 2: TaskStatus.EXIT}
+            # msgmanagement/task_node uses a different enum ordering:
+            # PLAN=0, ENTER=1, EXECUTE=2, EXIT=3, FINISH=4, PAUSE=5.
+            # Normalize it before exposing status to SEAgent callers.
+            status_map = {
+                0: TaskStatus.PLAN,
+                1: TaskStatus.ENTER,
+                2: TaskStatus.ONGOING,
+                3: TaskStatus.EXIT,
+                4: TaskStatus.FINISH,
+                5: TaskStatus.PAUSE,
+            }
             status_val = int(status_map.get(legacy_status, TaskStatus.FAIL))
             task_id = int(msg.get("_seagent_task_id", 0) or 0)
             if task_id:
