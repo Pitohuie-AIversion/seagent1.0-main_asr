@@ -71,6 +71,16 @@ class TaskPublishLock:
                 self._close_fd()
 
 
+def _write_all(fd: int, content: bytes) -> None:
+    """Write the complete buffer, including when the OS accepts only a prefix."""
+    remaining = memoryview(content)
+    while remaining:
+        written = os.write(fd, remaining)
+        if written <= 0:
+            raise TaskPersistenceError("Task file write made no progress")
+        remaining = remaining[written:]
+
+
 def _atomic_commit_noreplace(temp_file: Path, final_file: Path) -> None:
     """原子提交临时文件为正式文件，已存在时拒绝覆盖"""
     if final_file.exists():
@@ -483,7 +493,7 @@ class TaskIntentBuilder:
                 fd = os.open(staging_file, flags, 0o600)
                 try:
                     content_bytes = json.dumps(intent, ensure_ascii=False, indent=2).encode("utf-8")
-                    os.write(fd, content_bytes)
+                    _write_all(fd, content_bytes)
                     os.fsync(fd)
                 finally:
                     os.close(fd)
@@ -560,12 +570,15 @@ class TaskIntentBuilder:
                 if not stat.S_ISREG(validated_stat.st_mode):
                     raise TaskPersistenceError("Staging file descriptor is not a regular file")
 
-                with os.fdopen(st_fd, "r", encoding="utf-8", closefd=True) as f:
+                with os.fdopen(st_fd, "r", encoding="utf-8", closefd=False) as f:
                     staging_data = json.load(f)
             except TaskPersistenceError:
                 raise
             except Exception as e:
                 raise TaskPersistenceError(f"Failed to parse staging JSON content: {e}") from e
+            finally:
+                # Retain descriptor ownership through validation and fdopen setup.
+                os.close(st_fd)
 
             if not isinstance(staging_data, dict):
                 raise TaskPersistenceError("Staging JSON top-level must be a dictionary")
@@ -592,7 +605,7 @@ class TaskIntentBuilder:
                 tmp_fd = os.open(tmp_file, tmp_flags, 0o600)
                 try:
                     content_bytes = json.dumps(intent, ensure_ascii=False, indent=2).encode("utf-8")
-                    os.write(tmp_fd, content_bytes)
+                    _write_all(tmp_fd, content_bytes)
                     os.fsync(tmp_fd)
                 finally:
                     os.close(tmp_fd)
@@ -601,10 +614,12 @@ class TaskIntentBuilder:
                 t_fd = os.open(tmp_file, read_flags)
                 try:
                     tmp_stat = os.fstat(t_fd)
-                    with os.fdopen(t_fd, "r", encoding="utf-8", closefd=True) as f:
+                    with os.fdopen(t_fd, "r", encoding="utf-8", closefd=False) as f:
                         written_data = json.load(f)
                 except Exception as e:
                     raise TaskPersistenceError(f"Failed to read back written temp file: {e}") from e
+                finally:
+                    os.close(t_fd)
 
                 if written_data != intent:
                     raise TaskPersistenceError("Temp file written content mismatch")
