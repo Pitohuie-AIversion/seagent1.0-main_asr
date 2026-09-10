@@ -601,27 +601,33 @@ class RobotStateInfo:
                     os.O_RDWR | os.O_CREAT,
                     0o600,
                 )
-                os.fchmod(lock_fd, 0o600)
             except OSError as exc:
                 raise StatePersistenceError(
                     "Unable to open the robot state lock"
                 ) from exc
 
-            operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
             try:
-                fcntl.flock(lock_fd, operation)
-            except OSError as exc:
-                os.close(lock_fd)
-                raise StatePersistenceError(
-                    "Unable to acquire the robot state lock"
-                ) from exc
-            try:
-                yield
-            finally:
                 try:
-                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    os.fchmod(lock_fd, 0o600)
+                except OSError as exc:
+                    raise StatePersistenceError(
+                        "Unable to open the robot state lock"
+                    ) from exc
+
+                operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                try:
+                    fcntl.flock(lock_fd, operation)
+                except OSError as exc:
+                    raise StatePersistenceError(
+                        "Unable to acquire the robot state lock"
+                    ) from exc
+                try:
+                    yield
                 finally:
-                    os.close(lock_fd)
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                # Setup and interrupted acquisition also own an open descriptor.
+                os.close(lock_fd)
 
     def _load_state_unlocked(self) -> Dict[str, Any]:
         if not self.state_file.exists():

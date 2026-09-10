@@ -3,6 +3,7 @@ task_intent_builder.py — 生成符合 TaskIntent 规范的 JSON 文件
 """
 import fcntl
 import json
+import logging
 import os
 import re
 import stat
@@ -24,6 +25,7 @@ from .utils import (
 )
 
 BEIJING_TZ = timezone(timedelta(hours=8))
+logger = logging.getLogger(__name__)
 TASK_ALLOWED_ROBOT_TYPES = {
     "pipeline_inspection": {"observation_rov", "auv"},
     "pipeline_burial": {"work_class_rov"},
@@ -43,23 +45,30 @@ class TaskPublishLock:
         try:
             self._fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
             fcntl.flock(self._fd, fcntl.LOCK_EX)
-        except Exception as e:
-            if self._fd is not None:
-                try:
-                    os.close(self._fd)
-                except Exception:
-                    pass
-            raise TaskPersistenceError(f"Failed to acquire publish lock: {e}") from e
+        except BaseException as e:
+            # Interrupted acquisition never reaches __exit__, so release here too.
+            self._close_fd()
+            if isinstance(e, Exception):
+                raise TaskPersistenceError(f"Failed to acquire publish lock: {e}") from e
+            raise
         return self
+
+    def _close_fd(self):
+        fd, self._fd = self._fd, None
+        if fd is not None:
+            try:
+                os.close(fd)
+            except Exception:
+                logger.debug("Failed to close publish lock %s", self.lock_path, exc_info=True)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._fd is not None:
             try:
                 fcntl.flock(self._fd, fcntl.LOCK_UN)
-                os.close(self._fd)
             except Exception:
-                pass
-            self._fd = None
+                logger.debug("Failed to unlock publish lock %s", self.lock_path, exc_info=True)
+            finally:
+                self._close_fd()
 
 
 def _atomic_commit_noreplace(temp_file: Path, final_file: Path) -> None:
