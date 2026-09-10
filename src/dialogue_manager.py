@@ -1171,13 +1171,28 @@ class DialogueManager:
 
 
 
-    def _link_oilfield_update_in_transaction(self, updates: dict, new_slots: dict, user_message: str = "") -> dict:
-        task_type_key = updates.get("task_type_key") or (
-            new_slots["task_type_key"].value
-            if new_slots.get("task_type_key")
-            and new_slots["task_type_key"].status == "valid"
-            else None
+    def _link_oilfield_update_in_transaction(
+        self,
+        updates: dict,
+        new_slots: dict,
+        user_message: str = "",
+        extracted_oilfield: str | None = None,
+    ) -> dict:
+        existing_task_id = new_slots.get("task_id")
+        is_task_id_locked = bool(existing_task_id and existing_task_id.status == "valid" and existing_task_id.value)
+        current_tt = (
+            (new_slots["task_type_key"].value if new_slots.get("task_type_key") and new_slots["task_type_key"].value else None)
+            or self.task_state.get("task_type_key")
         )
+
+        tt_val = updates.get("task_type_key")
+        if isinstance(tt_val, dict):
+            tt_val = tt_val.get("value")
+
+        if is_task_id_locked and current_tt:
+            task_type_key = current_tt
+        else:
+            task_type_key = tt_val or current_tt
         if task_type_key:
             field_defs = self.builder.get_schema(task_type_key, self.mode)
             schema_keys = {str(field.get("key")) for field in field_defs if field.get("key")}
@@ -1185,11 +1200,33 @@ class DialogueManager:
                 linked = dict(updates)
                 linked.pop("oilfield_name", None)
                 linked.pop("raw_oilfield_name", None)
+                for k in (
+                    "oilfield_name",
+                    "raw_oilfield_name",
+                    "oilfield_match_status",
+                    "oilfield_match_confidence",
+                    "oilfield_match_evidence",
+                    "oilfield_match_candidates",
+                    "oilfield_entity_id",
+                    "pending_oilfield_name",
+                ):
+                    if k in new_slots:
+                        new_slots[k].value = None
+                        new_slots[k].status = "missing"
                 return linked
 
-        raw_name = updates.get("oilfield_name") or updates.get("raw_oilfield_name")
+        raw_name = (
+            updates.get("oilfield_name")
+            or updates.get("raw_oilfield_name")
+            or extracted_oilfield
+        )
         if isinstance(raw_name, dict):
             raw_name = raw_name.get("value")
+
+        if not raw_name and user_message and any(kw in user_message for kw in ("油田", "气田", "海域")):
+            m = self.oilfield_linker.link(user_message)
+            if m and m.status == "accepted" and m.standard_name:
+                raw_name = m.standard_name
 
         coords = (
             updates.get("oilfield_coordinates")

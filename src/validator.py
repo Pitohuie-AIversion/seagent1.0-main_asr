@@ -634,7 +634,7 @@ class TaskValidator:
         *,
         task_version: int = 1,
         previous_result: ValidationResult | dict | None = None,
-        purpose: str = "interactive",
+        purpose: str = "preview",
     ) -> ValidationResult:
         """
         结构化约束校验服务主入口。
@@ -1175,11 +1175,12 @@ class TaskValidator:
         state_snapshot: dict | None,
         purpose: str = "interactive",
     ) -> Violation | None:
-        # 发布前核验 (publish / preview / runtime_execution) 或即时任务必须执行动态状态与环境检查。
         # 仅当任务为未来排期任务且处于非执行窗口时，跳过当前近实时动态遥测检查（保留 C032 延后提示）。
-        is_pre_publish_or_execution = purpose in ("publish", "preview", "runtime_execution")
+        # 交互收集模式 (interactive) 同样不执行近实时动态遥测检查。
         if check in _DYNAMIC_CHECKS:
-            if not self._is_task_start_now(task_state) and not is_pre_publish_or_execution:
+            if purpose == "interactive":
+                return None
+            if purpose != "runtime_execution" and not self._is_task_start_now(task_state):
                 return None
 
         rel_fields = _CHECK_FIELDS.get(check, [])

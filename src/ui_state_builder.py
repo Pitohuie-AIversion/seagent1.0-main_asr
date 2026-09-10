@@ -325,19 +325,24 @@ def _state_snapshot_matches_current_unit(
     if not any(key in slot_snapshot for key in _ROBOT_STATE_SELECTOR_KEYS):
         return True
 
+    snapshot_unit = (
+        state_snapshot.get("unit_id")
+        or state_snapshot.get("equipment_unit_id")
+    )
+    snapshot_status_ref = state_snapshot.get("status_ref")
+
+    # If the state_snapshot has no unit info or status_ref, it is not tied to a robot unit.
+    if snapshot_unit in (None, "") and snapshot_status_ref in (None, ""):
+        return True
+
     current_unit = _valid_slot_value(slot_snapshot, "equipment_unit_id")
     if current_unit is None:
         return False
     current_unit = str(current_unit)
 
-    snapshot_unit = (
-        state_snapshot.get("unit_id")
-        or state_snapshot.get("equipment_unit_id")
-    )
     if snapshot_unit not in (None, ""):
         return str(snapshot_unit) == current_unit
 
-    snapshot_status_ref = state_snapshot.get("status_ref")
     current_status_ref = _resolve_current_status_ref(manager, current_unit)
     if snapshot_status_ref not in (None, "") and current_status_ref:
         return str(snapshot_status_ref) == current_status_ref

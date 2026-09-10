@@ -166,6 +166,20 @@ class TaskCommitHandler(BaseDialogueHandler):
             unit_slot = dm.slot_store.slots.get("equipment_unit_id")
             if unit_slot and unit_slot.status == "valid":
                 unit_id = unit_slot.value
+        # 运行时设备可用性重新校验 (Issue #12)
+        # 仅即时执行任务才在发布瞬间核验当前单机遥测时效与实时可用性。未来任务延后至执行前动态校验。
+        if unit_id and is_task_now:
+            runtime_res = dm.kb.state_info.check_runtime_availability(str(unit_id))
+            if not runtime_res.get("available"):
+                # 遥测过期表示发布时无法确认当前就绪性，不是任务本身触发了
+                # 硬约束。保持 confirming 并拒绝本次发布，等遥测刷新后可直接重试。
+                # 离线、忙碌、状态缺失/损坏等真实不可用性仍按硬阻断处理。
+                if runtime_res.get("reason_code") != "STATE_EXPIRED":
+                    dm._transition_phase("blocked_hard", reason="runtime_equipment_unavailable")
+                reply = runtime_res.get("message") or f"无法发布任务：机器人 {unit_id} 当前不可用。"
+                dm.conversation_history.append({"role": "user", "content": user_message})
+                dm.conversation_history.append({"role": "assistant", "content": reply})
+                return reply
 
         # 最终约束全量检查（包含 C020 设备总体状态与 C019 遥测新鲜度核验）
         val_res = dm._refresh_validation(purpose="publish")

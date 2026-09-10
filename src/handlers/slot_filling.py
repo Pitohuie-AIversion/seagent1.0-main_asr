@@ -564,8 +564,10 @@ class SlotFillingHandler(BaseDialogueHandler):
         old_phase = ctx.old_phase
 
         # 3. Parameter Extraction & Processing Pipeline (Atomic Transaction with Optimistic Lock)
-        task_patch_v2_active = is_task_patch_v2_enabled()
-        norm_v2_active = is_normalization_contract_v2_enabled()
+        import sys
+        _dm_mod = sys.modules.get("src.dialogue_manager")
+        task_patch_v2_active = getattr(_dm_mod, "is_task_patch_v2_enabled", is_task_patch_v2_enabled)()
+        norm_v2_active = getattr(_dm_mod, "is_normalization_contract_v2_enabled", is_normalization_contract_v2_enabled)()
         validate_normalization_runtime_flags(task_patch_v2_active, norm_v2_active)
 
         new_slots, _previous_unresolved, expected_version = manager.slot_store.snapshot()
@@ -694,7 +696,7 @@ class SlotFillingHandler(BaseDialogueHandler):
                 allow_empty_for_side_effect=has_acknowledge_action,
             )
 
-            if is_task_patch_v2_enabled():
+            if getattr(_dm_mod, "is_task_patch_v2_enabled", is_task_patch_v2_enabled)():
                 allowed_stage1 = {"task_type", "task_type_key", "emergency_mode"}
                 patch = build_task_patch(extraction_res, allowed_keys=allowed_stage1)
                 stage1_updates, _, patch_unresolved = task_patch_to_legacy_updates(patch)
@@ -1214,7 +1216,20 @@ class SlotFillingHandler(BaseDialogueHandler):
 
             if transition_state_active:
                 manager._clear_non_inherited_transition_slots(new_slots)
-            raw_linked = manager._link_oilfield_update_in_transaction({k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()}, new_slots, user_message=user_message)
+            extracted_oilfield = next(
+                (
+                    str(c.get("raw_value") or c.get("normalized_value"))
+                    for c in (filtered_candidates or [])
+                    if isinstance(c, dict) and c.get("canonical_key") in ("oilfield_name", "raw_oilfield_name")
+                ),
+                None,
+            )
+            raw_linked = manager._link_oilfield_update_in_transaction(
+                {k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()},
+                new_slots,
+                user_message=user_message,
+                extracted_oilfield=extracted_oilfield,
+            )
             if "oilfield_name" in stage2_updates and "oilfield_name" not in raw_linked:
                 stage2_updates.pop("oilfield_name", None)
                 merged_updates.pop("oilfield_name", None)
