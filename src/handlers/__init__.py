@@ -13,6 +13,9 @@ from .payload_mutation import PayloadMutationManager
 from .write_reply_grounder import WriteReplyGrounder
 from .oilfield_confirmation import OilfieldConfirmationHandler
 from .slot_transaction import SlotTransactionManager
+from .off_topic_gate import check_off_topic_gate, is_off_topic_output
+from .grounded_catalog import GroundedCatalogHandler
+from .telemetry_status import TelemetryStatusHandler
 
 __all__ = [
     "BaseDialogueHandler",
@@ -28,4 +31,8 @@ __all__ = [
     "WriteReplyGrounder",
     "OilfieldConfirmationHandler",
     "SlotTransactionManager",
+    "check_off_topic_gate",
+    "is_off_topic_output",
+    "GroundedCatalogHandler",
+    "TelemetryStatusHandler",
 ]
