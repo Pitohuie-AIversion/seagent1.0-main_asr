@@ -21,6 +21,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
 from .equipment_cascade import EquipmentCascadeResolver
 from .task_transition import TaskTransitionManager
+from .payload_mutation import PayloadMutationManager
+from .write_reply_grounder import WriteReplyGrounder
+from .oilfield_confirmation import OilfieldConfirmationHandler
+from .slot_transaction import SlotTransactionManager
 from ..model_profile import (
     ModelRole,
     is_normalization_contract_v2_enabled,
@@ -65,14 +69,24 @@ class SlotFillingHandler(BaseDialogueHandler):
         super().__init__(manager)
         self.equipment_cascade = EquipmentCascadeResolver(manager)
         self.task_transition = TaskTransitionManager(manager)
+        self.payload_mutation = PayloadMutationManager(manager)
+        self.reply_grounder = WriteReplyGrounder(manager)
+        self.oilfield_confirmation = OilfieldConfirmationHandler(manager)
+        self.slot_transaction = SlotTransactionManager(manager)
 
     def __getattr__(self, name: str) -> Any:
         if '_manager_resolving' in self.__dict__:
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
-        if 'equipment_cascade' in self.__dict__ and hasattr(self.equipment_cascade, name):
-            return getattr(self.equipment_cascade, name)
-        if 'task_transition' in self.__dict__ and hasattr(self.task_transition, name):
-            return getattr(self.task_transition, name)
+        for sub in (
+            'equipment_cascade',
+            'task_transition',
+            'payload_mutation',
+            'reply_grounder',
+            'oilfield_confirmation',
+            'slot_transaction',
+        ):
+            if sub in self.__dict__ and hasattr(self.__dict__[sub], name):
+                return getattr(self.__dict__[sub], name)
         try:
             self.__dict__['_manager_resolving'] = True
             return getattr(self.manager, name)
@@ -85,95 +99,20 @@ class SlotFillingHandler(BaseDialogueHandler):
         当前仅当用户发起载荷就地调整指令时在 Level 3 拦截处理。
         普通槽位抽取由主流程显式调用 execute_slot_filling 完成。
         """
-        user_message = ctx.user_message
-        return self.is_payload_modification_request(user_message)
+        return self.payload_mutation.can_handle(ctx)
 
     def handle(self, ctx: DialogueContext) -> HandlerResult:
         """执行槽位就地修改（载荷卡片重置等）"""
-        user_message = ctx.user_message
-        if self.is_payload_modification_request(user_message):
-            payload_mod_reply = self.handle_payload_modification(user_message)
-            if payload_mod_reply is not None:
-                return HandlerResult.success(reply=payload_mod_reply)
-        return HandlerResult.not_handled()
+        return self.payload_mutation.handle(ctx)
 
     @staticmethod
     def is_payload_modification_request(user_message: str) -> bool:
         """判断用户是否明确请求重新选择/修改/配置载荷（且不属于取消修改指令）。"""
-        msg = (user_message or "").strip().lower()
-        if any(neg in msg for neg in ["取消", "放弃", "不要", "不修改", "不用"]):
-            return False
-
-        direct_keywords = (
-            "修改载荷", "重新选择载荷", "重新选载荷", "重新配置载荷",
-            "修改payload", "重选载荷", "更换载荷", "换载荷", "重置载荷",
-            "清除载荷", "调出载荷卡片", "载荷卡片", "重配置载荷", "修改工具",
-            "重新选择工具", "更换工具", "换工具"
-        )
-        if any(kw in msg for kw in direct_keywords):
-            return True
-
-        has_target = any(t in msg for t in ["载荷", "payload", "工具"])
-        has_action = any(a in msg for a in ["修改", "重选", "重新选择", "更换", "重新配置", "重置", "清除"])
-        return bool(has_target and has_action)
+        return PayloadMutationManager.is_payload_modification_request(user_message)
 
     def handle_payload_modification(self, user_message: str) -> str | None:
         """用户请求重新选择/修改/配置载荷时，重置 payload 槽位为 missing 并调整阶段供前端调出卡片。"""
-        manager = self.manager
-        payload_slot = manager.slot_store.slots.get("payload")
-        task_type_slot = manager.slot_store.slots.get("task_type_key")
-
-        task_type_val = (
-            task_type_slot.value if (task_type_slot and task_type_slot.value)
-            else manager.task_state.get("task_type_key")
-        )
-
-        if payload_slot is None and task_type_val:
-            schema = manager.builder.get_schema(task_type_val, manager.mode)
-            for f in schema:
-                k = f.get("key")
-                if k and k not in manager.slot_store.slots:
-                    manager.slot_store.slots[k] = Slot(slot_name=k, value_type=f.get("type", "string"), status="missing")
-            payload_slot = manager.slot_store.slots.get("payload")
-
-        if payload_slot is None:
-            existing_payload = manager.task_state.get("payload")
-            payload_slot = Slot(
-                slot_name="payload",
-                value=None,
-                candidate_value=existing_payload,
-                value_type="list",
-                status="missing",
-                source="user",
-            )
-            manager.slot_store.slots["payload"] = payload_slot
-
-        if payload_slot is not None:
-            existing_val = payload_slot.candidate_value or copy.deepcopy(payload_slot.value)
-            payload_slot.candidate_value = existing_val if existing_val is not None else None
-            payload_slot.status = "missing"
-            payload_slot.value = None
-            payload_slot.validation_error = None
-            payload_slot.source = "user"
-            manager.slot_store.slots["payload"] = payload_slot
-            manager.slot_store.version += 1
-
-            if manager.phase in ("confirming", "validating", "blocked_soft", "blocked_hard"):
-                manager._transition_phase("collecting", reason="user_requested_payload_modification")
-
-            manager._blocking_violations = []
-            manager._switch_dialogue_mode("task_collection", source="user_payload_modification", reason="用户请求重新配置/修改载荷")
-
-            if task_type_slot and task_type_slot.value:
-                req_fields = manager.builder.get_required(task_type_slot.value, manager.mode, manager.slot_store.get_task_state())
-                manager._last_missing = manager.slot_store.get_missing_slots(req_fields)
-
-            reply = "已为您重新调出载荷配置卡片。请在下方对话区域或卡片中重新选择与配置要携带的工具。"
-            manager.conversation_history.append({"role": "user", "content": user_message})
-            manager.conversation_history.append({"role": "assistant", "content": reply})
-            return reply
-
-        return None
+        return self.payload_mutation.handle_payload_modification(user_message)
 
     def normalize_payload_list_mutations(
         self,
@@ -181,138 +120,23 @@ class SlotFillingHandler(BaseDialogueHandler):
         user_message: str,
         current_slots: dict,
     ) -> None:
-        """兜底防护：当 LLM 抽取的 extraction_res 将 payload 误放入 slot_candidates 时，
-        基于用户增量/减量意图或现有槽位，自动转换为 list_mutations（op: add/remove），
-        防止列表字段被整体覆盖。
-        """
-        mutations = extraction_res.get("list_mutations")
-        if not isinstance(mutations, list):
-            mutations = []
-            extraction_res["list_mutations"] = mutations
-
-        has_payload_mutation = any(
-            isinstance(m, dict) and m.get("field") == "payload"
-            for m in mutations
+        """兜底防护：转换 LLM 误抽取的 payload 候选为 list_mutations。"""
+        return self.payload_mutation.normalize_payload_list_mutations(
+            extraction_res,
+            user_message,
+            current_slots,
         )
-        if has_payload_mutation:
-            return
-
-        candidates = extraction_res.get("slot_candidates")
-        if not isinstance(candidates, list):
-            return
-
-        payload_cands = [
-            c for c in candidates
-            if isinstance(c, dict) and c.get("canonical_key") == "payload"
-        ]
-        if not payload_cands:
-            return
-
-        items = []
-        for cand in payload_cands:
-            val = cand.get("normalized_value")
-            if val is None:
-                val = cand.get("raw_value")
-            if isinstance(val, list):
-                for item in val:
-                    if item and item not in items:
-                        items.append(item)
-            elif val and val not in items:
-                items.append(val)
-        if not items:
-            return
-
-        msg = str(user_message or "")
-        add_kws = ("添加", "加装", "增加", "加上", "还要", "补充", "带上", "携带", "配置", "配合", "还要带", "加个")
-        remove_kws = ("删除", "去掉", "移除", "不要", "取消", "别带")
-        replace_kws = ("替换", "改成", "换成", "重置", "覆盖")
-
-        is_add = any(kw in msg for kw in add_kws)
-        is_remove = any(kw in msg for kw in remove_kws)
-        is_replace = any(kw in msg for kw in replace_kws)
-
-        payload_slot = current_slots.get("payload")
-        has_existing_payload = bool(
-            payload_slot
-            and payload_slot.status == "valid"
-            and isinstance(payload_slot.value, list)
-            and len(payload_slot.value) > 0
-        )
-
-        max_confidence = max((c.get("confidence", 0.95) for c in payload_cands if isinstance(c, dict)), default=0.95)
-
-        if is_add or (has_existing_payload and not is_replace and not is_remove):
-            extraction_res["slot_candidates"] = [
-                c for c in candidates
-                if isinstance(c, dict) and c.get("canonical_key") != "payload"
-            ]
-            mutations.append({
-                "field": "payload",
-                "operation": "add",
-                "items": items,
-                "target_items": [],
-                "raw_text": msg,
-                "confidence": max_confidence,
-                "source": "user_input",
-            })
-        elif is_remove:
-            extraction_res["slot_candidates"] = [
-                c for c in candidates
-                if isinstance(c, dict) and c.get("canonical_key") != "payload"
-            ]
-            mutations.append({
-                "field": "payload",
-                "operation": "remove",
-                "items": items,
-                "target_items": [],
-                "raw_text": msg,
-                "confidence": max_confidence,
-                "source": "user_input",
-            })
 
     @staticmethod
     def filter_robot_selection_unresolved(
         unresolved_items: list,
         accepted_updates: dict | None,
     ) -> list:
-        """清理机器人选择迁移后的 unresolved 噪声。
-
-        equipment_class 已经是内部派生元数据，不再是 schema 采集字段；同一个
-        raw phrase 如果已被 family/type/unit 成功写入，下游层级对同 raw 的失败
-        fan-out 也不应继续展示给用户。
-        """
-        if not unresolved_items:
-            return []
-
-        accepted_raws: set[str] = set()
-        for key, info in (accepted_updates or {}).items():
-            if key not in {
-                "equipment_family",
-                "equipment_type",
-                "equipment_unit_id",
-                "equipment_name",
-            }:
-                continue
-            raw = info.get("raw_value") if isinstance(info, dict) else None
-            value = info.get("value") if isinstance(info, dict) else info
-            for item in (raw, value):
-                if item is not None and str(item).strip():
-                    accepted_raws.add(str(item).strip())
-
-        filtered: list = []
-        for item in unresolved_items:
-            text = str(item)
-            if "equipment_class" in text:
-                continue
-            match = re.search(
-                r"(equipment_family|equipment_type|equipment_unit_id|equipment_name) 表达“([^”]+)”",
-                text,
-            )
-            if match and match.group(2).strip() in accepted_raws:
-                continue
-            if item not in filtered:
-                filtered.append(item)
-        return filtered
+        """清理机器人选择迁移后的 unresolved 噪声。"""
+        return WriteReplyGrounder.filter_robot_selection_unresolved(
+            unresolved_items,
+            accepted_updates,
+        )
 
     def project_legacy_equipment_class_candidate(
         self,
@@ -321,54 +145,15 @@ class SlotFillingHandler(BaseDialogueHandler):
         task_state: dict | None,
     ) -> dict | None:
         """Map a legacy equipment_class candidate to family when unambiguous."""
-        manager = self.manager
-        raw_value = candidate.get("raw_value", candidate.get("normalized_value"))
-        normalized_value = candidate.get("normalized_value", raw_value)
-        class_id = manager.kb._resolve_class_key(str(normalized_value or ""))
-        if not class_id and raw_value is not None:
-            class_id = manager.kb._resolve_class_key(str(raw_value))
-        if not class_id or not task_type_key:
-            return None
-        try:
-            domain = manager.kb.get_feasible_robot_selection_domain(
-                task_type_key,
-                task_state,
-            )
-        except Exception:
-            return None
-        class_node = next(
-            (
-                item
-                for item in domain.get("classes", [])
-                if item.get("class_id") == class_id
-            ),
-            None,
+        return self.reply_grounder.project_legacy_equipment_class_candidate(
+            candidate,
+            task_type_key,
+            task_state,
         )
-        families = class_node.get("families", []) if class_node else []
-        if len(families) != 1:
-            return None
-        family = families[0]
-        projected = dict(candidate)
-        projected["canonical_key"] = "equipment_family"
-        projected["normalized_value"] = family.get("full_name") or family.get("family_id")
-        projected.setdefault("raw_value", raw_value)
-        projected["resolution_method"] = "legacy_class_to_single_family"
-        return projected
 
     def get_committed_update_display_values(self, accepted_updates: dict) -> dict:
         """从领域配置生成写入回执的展示值，不改变 SlotStore 标准值。"""
-        manager = self.manager
-        display = {}
-        for k, v in (accepted_updates or {}).items():
-            if k == "equipment_class" and v is not None:
-                class_config = manager.kb.get_robot_classes().get(str(v), {})
-                display["equipment_class"] = class_config.get(
-                    "full_name",
-                    v,
-                )
-            else:
-                display[k] = coord_parser.format_slot_display_value(k, v)
-        return display
+        return self.reply_grounder.get_committed_update_display_values(accepted_updates)
 
     def get_committed_turn_updates(
         self,
@@ -376,41 +161,10 @@ class SlotFillingHandler(BaseDialogueHandler):
         state_before_turn: dict,
     ) -> dict:
         """返回本轮已由 SlotStore 提交的用户字段更新。"""
-        manager = self.manager
-        if not proposed_updates:
-            return {}
-
-        # 内部元数据字段：由 oilfield linker 等中间件写入，仅供后端推理，不得面向用户展示
-        _INTERNAL_METADATA_KEYS = {
-            "raw_oilfield_name",
-            "oilfield_match_status",
-            "oilfield_match_confidence",
-            "oilfield_match_evidence",
-            "oilfield_match_candidates",
-            "oilfield_entity_id",
-            "pending_oilfield_name",
-            "pending_oilfield_candidates",
-        }
-        ignored_keys = {
-            "task_id",
-            "intent_id",
-            "internal_id",
-            "task_type_key",
-            "emergency_mode",
-            "rov_description",
-            "__clear_oilfield_name",
-            "__clear_pending_oilfield",
-        } | _INTERNAL_METADATA_KEYS
-        accepted: dict = {}
-        for key, value in manager.task_state.items():
-            if key in ignored_keys or key.startswith("__") or value is None:
-                continue
-            if key not in proposed_updates and state_before_turn.get(key) == value:
-                continue
-            slot = manager.slot_store.slots.get(key)
-            if slot and slot.status == "valid":
-                accepted[key] = value
-        return accepted
+        return self.reply_grounder.get_committed_turn_updates(
+            proposed_updates,
+            state_before_turn,
+        )
 
     @staticmethod
     def ground_write_reply(
@@ -422,145 +176,16 @@ class SlotFillingHandler(BaseDialogueHandler):
         missing_fields: list[dict] | None = None,
         display_updates: dict | None = None,
     ) -> str:
-        """在 LLM 自然语言回复后追加事实锚点摘要，防止回复内容与实际写入状态不一致。
+        """在 LLM 自然语言回复后追加事实锚点摘要，防止回复内容与实际写入状态不一致。"""
+        return WriteReplyGrounder.ground_write_reply(
+            self_or_reply,
+            model_reply,
+            accepted_updates=accepted_updates,
+            unresolved_inputs=unresolved_inputs,
+            missing_fields=missing_fields,
+            display_updates=display_updates,
+        )
 
-        设计原则：
-        - ``model_reply`` 作为主体自然语言回复，原样保留，不得丢弃。
-        - 仅将 FIELD_LABELS 中有中文标签的用户可见字段写入摘要，内部元数据字段不得出现。
-        - 当 ``accepted_updates`` 非空时，在回复末尾追加一行简明的字段确认摘要。
-        - 当 LLM 回复为空时，退化为纯摘要模式（兜底）。
-        """
-        if isinstance(self_or_reply, str):
-            self_obj = None
-            actual_model_reply = self_or_reply
-        else:
-            self_obj = self_or_reply
-            actual_model_reply = model_reply
-
-        # 只展示 FIELD_LABELS 中有中文标签的用户可见字段
-        user_visible_updates = {
-            key: value
-            for key, value in accepted_updates.items()
-            if key in FIELD_LABELS
-        }
-        resolved_labels = {
-            FIELD_LABELS[key]
-            for key in user_visible_updates
-        }
-        unresolved = []
-        for item in unresolved_inputs:
-            text = str(item).strip()
-            if not text:
-                continue
-            if (
-                any(label in text for label in resolved_labels)
-                and ("无法解析" in text or "Invalid datetime format" in text)
-            ):
-                continue
-            unresolved.append(text)
-
-        suffix_parts: list[str] = []
-        if user_visible_updates:
-            committed = []
-            for key, value in user_visible_updates.items():
-                label = FIELD_LABELS[key]
-                display_value = (display_updates or {}).get(key, value)
-                rendered = coord_parser.format_slot_display_value(key, display_value)
-                committed.append(f"{label}：{rendered}")
-            suffix_parts.append("✅ 已记录：" + "；".join(committed) + "。")
-
-        if unresolved:
-            suffix_parts.append("⚠️ 未写入或仍需确认：" + "；".join(unresolved) + "。")
-
-        if missing_fields is not None:
-            labels = [
-                str(item.get("label") or item.get("key"))
-                for item in missing_fields
-                if isinstance(item, dict) and (item.get("label") or item.get("key"))
-            ]
-            if labels:
-                next_labels = labels[:3]
-                suffix_parts.append("仍需补充：" + "、".join(next_labels) + "。")
-                if any(isinstance(item, dict) and item.get("key") == "payload" for item in missing_fields[:3]):
-                    eq_type = str(
-                        (accepted_updates or {}).get("equipment_type")
-                        or ((display_updates or {}).get("equipment_type"))
-                        or ""
-                    )
-                    manager_obj = getattr(self_obj, "manager", self_obj)
-                    if not eq_type and manager_obj and hasattr(manager_obj, "slot_store") and manager_obj.slot_store:
-                        eq_slot = manager_obj.slot_store.slots.get("equipment_type")
-                        if eq_slot and eq_slot.status == "valid" and eq_slot.value:
-                            eq_type = str(eq_slot.value)
-                    if eq_type and manager_obj and hasattr(manager_obj, "kb") and manager_obj.kb:
-                        robot = manager_obj.kb.get_rov(eq_type)
-                        if robot:
-                            ob_list = robot.get("onboard_payloads", [])
-                            if ob_list and hasattr(manager_obj, "capability_adapter"):
-                                guidance_msg = manager_obj.capability_adapter.format_payload_guidance(
-                                    "",
-                                    [{"key": "payload", "equipment_type": eq_type, "onboard_payloads": ob_list}]
-                                )
-                                suffix_parts.append(guidance_msg)
-            elif user_visible_updates:
-                suffix_parts.append("所有必填字段已收集完成，任务尚未发布。")
-
-        suffix = "\n".join(suffix_parts)
-
-        # 区分有提交和无提交的响应安全规则：
-        # 1. 若 LLM 回复为空，退化为纯摘要模式（兜底）。
-        if not actual_model_reply or not str(actual_model_reply).strip():
-            if not accepted_updates:
-                reply = "本轮没有任务字段通过验证，因此未写入任务状态。"
-                if suffix:
-                    reply = f"{reply}\n{suffix}"
-                return reply
-            return suffix if suffix else "已写入本轮通过验证的字段。"
-
-        # 2. 若有 LLM 回复，以 LLM 自然语言回复为主体，末尾追加规则生成的客观校验/记录摘要。
-        model_reply_str = str(actual_model_reply)
-        if not accepted_updates:
-            for false_claim in ("已创建", "指令已下发", "已经设置"):
-                if false_claim in model_reply_str:
-                    model_reply_str = model_reply_str.replace(false_claim, "未写入任务状态")
-            if "未写入" not in model_reply_str and not any("未写入" in p for p in suffix_parts):
-                suffix_parts.insert(0, "⚠️ 本轮未写入任务状态。")
-
-        def _normalize(text: object) -> str:
-            if not isinstance(text, str):
-                text = str(text)
-            return re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
-
-        norm_reply = _normalize(model_reply_str)
-        deduped_parts = []
-        for part in suffix_parts:
-            norm_part = _normalize(part)
-            # 检查整段是否已存在（严格或去空）
-            if part in model_reply_str or (norm_part and norm_part in norm_reply):
-                continue
-            # 检查特定模式
-            if part.startswith("✅ 已记录：") and ("✅ 已记录：" in model_reply_str or "✅已记录：" in model_reply_str):
-                labels_in_reply = all(
-                    FIELD_LABELS[k] in model_reply_str
-                    for k in user_visible_updates
-                )
-                if labels_in_reply:
-                    continue
-            if part.startswith("仍需补充：") and ("仍需补充：" in model_reply_str or "仍需补充" in model_reply_str):
-                continue
-            if part.startswith("⚠️ 未写入或仍需确认：") and ("⚠️ 未写入或仍需确认：" in model_reply_str or "未写入或仍需确认" in model_reply_str):
-                continue
-            if part.startswith("【提示】") or "已搭载" in part:
-                if any(kw in model_reply_str for kw in ("已搭载", "自带载荷", "已具备", "【提示】", "替换、增加或减少")):
-                    continue
-            deduped_parts.append(part)
-
-        deduped_suffix = "\n".join(deduped_parts)
-        if deduped_suffix:
-            if isinstance(actual_model_reply, str):
-                return f"{model_reply_str.rstrip()}\n\n{deduped_suffix}".rstrip()
-            return f"{model_reply_str}\n\n{deduped_suffix}"
-        return model_reply_str.strip() if isinstance(actual_model_reply, str) else model_reply_str
 
     def execute_slot_filling(
         self,
@@ -1686,214 +1311,27 @@ class SlotFillingHandler(BaseDialogueHandler):
         pending_action: str | None = None,
         subject_text: str | None = None,
     ) -> str | None:
-        manager = self.manager
-        pending_slot = manager.slot_store.slots.get("pending_oilfield_name")
-        if not pending_slot or not pending_slot.value or pending_slot.status != "valid":
-            return None
-        if pending_action == "reject" or (
-            pending_action is None and self.user_cancelled_oilfield(user_message)
-        ):
-            oil_slot = manager.slot_store.slots.get("oilfield_name")
-            clear_oil = ("oilfield_name", "oilfield_entity_id") if (not oil_slot or oil_slot.status != "valid") else ()
-            manager._commit_internal_slot_values(
-                {},
-                clear_keys=(
-                    "pending_oilfield_name",
-                    "pending_oilfield_candidates",
-                    *clear_oil,
-                ),
-            )
-            manager._rebuild_cache()
-            return "已取消当前待确认油田名称，请提供标准的油田名称（例如：流花11-1油田、陵水17-2油田等），或补充油田坐标。"
-
-        if pending_action not in {"confirm", None}:
-            return None
-        if pending_action is None and not self.user_confirmed_oilfield(user_message):
-            return None
-
-        candidate = self.top_pending_oilfield_candidate(subject_text or user_message)
-        if not candidate:
-            return self.build_pending_oilfield_reply()
-
-        confirmed_name = candidate.get("name")
-        manager._commit_internal_slot_values(
-            {
-                "oilfield_name": confirmed_name,
-                "raw_oilfield_name": confirmed_name,
-                "oilfield_entity_id": candidate.get("id"),
-                "oilfield_match_status": "accepted",
-                "oilfield_match_confidence": candidate.get("confidence"),
-                "oilfield_match_evidence": candidate.get("evidence", []),
-            },
-            clear_keys=(
-                "pending_oilfield_name",
-                "pending_oilfield_candidates",
-            ),
+        return self.oilfield_confirmation.resolve_pending_oilfield_confirmation(
+            user_message,
+            request_id=request_id,
+            pending_action=pending_action,
+            subject_text=subject_text,
         )
-        manager._rebuild_cache()
-        return f"已确认油田名称为“{confirmed_name}”，我会按这个标准名称继续收集任务信息。"
 
     def build_pending_oilfield_reply(self) -> str | None:
-        manager = self.manager
-        task_type_slot = manager.slot_store.slots.get("task_type_key")
-        task_type_key = task_type_slot.value if task_type_slot and task_type_slot.status == "valid" else None
-        if task_type_key:
-            field_defs = manager.builder.get_schema(task_type_key, manager.mode)
-            schema_keys = {str(field.get("key")) for field in field_defs if field.get("key")}
-            if not manager.slot_filter.supports_oilfield_slots(schema_keys):
-                return None
-
-        pending_slot = manager.slot_store.slots.get("pending_oilfield_name")
-        raw_name = pending_slot.value if (pending_slot and pending_slot.status == "valid") else None
-        oil_slot = manager.slot_store.slots.get("oilfield_name")
-        has_oilfield = oil_slot.value if (oil_slot and oil_slot.status == "valid") else None
-        if not raw_name or has_oilfield:
-            return None
-
-        candidate = self.top_pending_oilfield_candidate()
-        if candidate:
-            name = candidate.get("name")
-            return f"我识别到油田名称“{raw_name}”，疑似为“{name}”。请确认是否采用该标准油田名称？"
-        return (
-            f"我识别到油田名称“{raw_name}”，但没有匹配到标准油田。"
-            "请提供标准的油田名称（例如：流花11-1油田、陵水17-2油田等），或补充油田坐标。"
-        )
+        return self.oilfield_confirmation.build_pending_oilfield_reply()
 
     def top_pending_oilfield_candidate(self, user_message: str = "") -> dict | None:
-        cand_slot = self.manager.slot_store.slots.get("pending_oilfield_candidates")
-        candidates = cand_slot.value if (cand_slot and cand_slot.status == "valid") else None
-        if isinstance(candidates, list) and candidates:
-            if user_message:
-                for c in candidates:
-                    if isinstance(c, dict) and c.get("name") and c.get("name") in user_message:
-                        return c
-            candidate = candidates[0]
-            if isinstance(candidate, dict) and candidate.get("name"):
-                return candidate
-        return None
+        return self.oilfield_confirmation.top_pending_oilfield_candidate(user_message)
 
     def user_confirmed_oilfield(self, message: str) -> bool:
-        keywords = ["是", "对", "就是", "采用", "确认", "确定", "可以", "好的", "ok", "使用"]
-        negations = ["不", "别", "不要", "不是", "取消"]
-        msg = message.strip().lower()
-        if any(neg in msg for neg in negations):
-            return False
-        return any(kw in msg for kw in keywords)
+        return self.oilfield_confirmation.user_confirmed_oilfield(message)
 
     def user_cancelled_oilfield(self, message: str) -> bool:
-        msg = message.strip()
-        if any(neg in msg for neg in ["不是要取消", "不是取消", "不要取消", "不取消", "别取消", "不要修改", "不修改"]):
-            return False
-        if any(mod_kw in msg for mod_kw in ["改成", "修改", "水深", "支持船", "管缆", "设备", "载荷"]) and "油田" not in msg:
-            return False
-        if "任务" in msg or "取消任务" in msg:
-            return False
-
-        pending_slot = self.manager.slot_store.slots.get("pending_oilfield_name")
-        pending_name = pending_slot.value if (pending_slot and pending_slot.status == "valid") else None
-        if pending_name:
-            import re
-            mentioned_oilfields = re.findall(r"[\u4e00-\u9fa50-9\-]+油田", msg)
-            if mentioned_oilfields:
-                p_norm = pending_name.replace("油田", "").strip()
-                matched_any = any(p_norm in m or m.replace("油田", "").strip() in p_norm for m in mentioned_oilfields)
-                if not matched_any:
-                    return False
-
-        keywords = ["不是", "不对", "否", "错了", "重新", "取消油田", "不要此油田", "这个油田不对", "不要"]
-        return any(kw in msg for kw in keywords) or msg in ("不要", "取消", "不对", "不是")
+        return self.oilfield_confirmation.user_cancelled_oilfield(message)
 
     def process_referential_carryover(self, user_message: str) -> str:
-        manager = self.manager
-        # 四大实体 (Task, Robot, Oilfield, Payload) 全量上下文提取与暂存
-        r_ent = manager._extract_robot_entity_from_text(user_message)
-        if r_ent:
-            manager._last_discussed_robot = r_ent
-
-        o_ent = manager._extract_oilfield_entity_from_text(user_message)
-        if o_ent:
-            manager._last_discussed_oilfield = o_ent
-
-        p_ent = manager._extract_payload_entity_from_text(user_message)
-        if p_ent:
-            manager._last_discussed_payload = p_ent
-
-        # 1. 任务类型指代继承
-        REFERENTIAL_START_TRIGGERS = (
-            "那开始这个任务", "开始这个任务", "就做这个任务", "就安排这个", "开始创建",
-            "就这个吧", "安排这个任务", "创建这个任务", "就按这个做", "开始做这个",
-            "开启这个任务", "按这个开始", "就选这个任务", "那就这个", "开始这个",
-            "开始该任务", "就做这个", "安排这个", "创建这个", "选这个任务", "那开始这个",
-            "开始吧", "开始该作业", "就按这个", "开始任务"
-        )
-        is_referential_start = any(kw in user_message for kw in REFERENTIAL_START_TRIGGERS) or (
-            ("开始" in user_message or "做" in user_message or "安排" in user_message or "创建" in user_message)
-            and ("这个" in user_message or "任务" in user_message)
-            and "不" not in user_message and "别" not in user_message and "取消" not in user_message
-        )
-        if is_referential_start and not manager.task_state.get("task_type_key") and manager._last_discussed_task_type:
-            schema = manager.builder.get_schema(manager._last_discussed_task_type, manager.mode)
-            manager.slot_store.init_task_slots(schema)
-            manager.slot_store.slots["task_type_key"] = Slot(
-                slot_name="task_type_key",
-                value=manager._last_discussed_task_type,
-                value_type="string",
-                status="valid",
-                source="user",
-            )
-            manager._transition_phase("collecting", reason="referential_carryover")
-            manager._switch_dialogue_mode("task_collection", source="referential_carryover", reason="继承上一轮讨论的任务类型")
-            user_message = f"开启{manager._last_discussed_task_type}任务"
-
-        # 2. 机器人实体指代继承
-        ROBOT_TRIGGERS = ("就用这个机器人", "选这个机器人", "用这个设备", "就用这款", "选这个型", "安排这个机", "就用它", "用它", "选这个设备", "用这个机器人", "就这个机器人")
-        is_robot_ref = any(kw in user_message for kw in ROBOT_TRIGGERS) or (
-            ("用" in user_message or "选" in user_message or "安排" in user_message)
-            and ("这个机器人" in user_message or "该设备" in user_message or "这款" in user_message or "它" in user_message)
-        )
-        if is_robot_ref and manager._last_discussed_robot:
-            r_val = manager._last_discussed_robot
-            if any(f in r_val for f in ["座", "天鹰", "金牛", "御夫", "奇点", "双子", "凤凰"]):
-                manager.slot_store.slots["robot_family"] = Slot(slot_name="robot_family", value=r_val, value_type="string", status="valid", source="user")
-            elif any(c in r_val for c in ["观察级", "工作级", "履带式"]):
-                manager.slot_store.slots["robot_class"] = Slot(slot_name="robot_class", value=r_val, value_type="string", status="valid", source="user")
-            else:
-                manager.slot_store.slots["specific_robot_id"] = Slot(slot_name="specific_robot_id", value=r_val, value_type="string", status="valid", source="user")
-            if manager.phase not in ("collecting", "confirming"):
-                manager._transition_phase("collecting", reason="robot_referential_carryover")
-            manager._switch_dialogue_mode("task_collection", source="referential_carryover", reason="继承上一轮讨论的机器人")
-
-        # 3. 油田海域实体指代继承
-        OILFIELD_TRIGGERS = ("就去这个油田", "选这个油田", "去这个海域", "选这个区域", "就在这做", "去这里", "就选这个油田", "去这个油田", "在这做")
-        is_oilfield_ref = any(kw in user_message for kw in OILFIELD_TRIGGERS) or (
-            ("去" in user_message or "选" in user_message or "在" in user_message)
-            and ("这个油田" in user_message or "该海域" in user_message or "这个区域" in user_message or "这里" in user_message)
-        )
-        if is_oilfield_ref and manager._last_discussed_oilfield:
-            manager.slot_store.slots["raw_oilfield_name"] = Slot(slot_name="raw_oilfield_name", value=manager._last_discussed_oilfield, value_type="string", status="valid", source="user")
-            manager.slot_store.slots["oilfield_name"] = Slot(slot_name="oilfield_name", value=manager._last_discussed_oilfield, value_type="string", status="valid", source="user")
-            if manager.phase not in ("collecting", "confirming"):
-                manager._transition_phase("collecting", reason="oilfield_referential_carryover")
-            manager._switch_dialogue_mode("task_collection", source="referential_carryover", reason="继承上一轮讨论的油田")
-
-        # 4. 载荷工具实体指代继承
-        PAYLOAD_TRIGGERS = ("就用这个工具", "带上这个", "选这个载荷", "挂载这个", "就带这个", "就用这个载荷", "装上这个", "用这个工具", "带这个")
-        is_payload_ref = any(kw in user_message for kw in PAYLOAD_TRIGGERS) or (
-            ("用" in user_message or "带" in user_message or "挂载" in user_message or "装" in user_message)
-            and ("这个工具" in user_message or "该载荷" in user_message or "这个传感器" in user_message)
-        )
-        if is_payload_ref and manager._last_discussed_payload:
-            current_payloads = manager.slot_store.slots.get("onboard_payloads").value if manager.slot_store.slots.get("onboard_payloads") else []
-            if not isinstance(current_payloads, list):
-                current_payloads = [current_payloads] if current_payloads else []
-            if manager._last_discussed_payload not in current_payloads:
-                current_payloads.append(manager._last_discussed_payload)
-            manager.slot_store.slots["onboard_payloads"] = Slot(slot_name="onboard_payloads", value=current_payloads, value_type="list", status="valid", source="user")
-            if manager.phase not in ("collecting", "confirming"):
-                manager._transition_phase("collecting", reason="payload_referential_carryover")
-            manager._switch_dialogue_mode("task_collection", source="referential_carryover", reason="继承上一轮讨论的载荷工具")
-
-        return user_message
+        return self.oilfield_confirmation.process_referential_carryover(user_message)
 
     def link_oilfield_update_in_transaction(
         self,
@@ -1902,199 +1340,12 @@ class SlotFillingHandler(BaseDialogueHandler):
         user_message: str = "",
         extracted_oilfield: str | None = None,
     ) -> dict:
-        manager = self.manager
-        existing_task_id = new_slots.get("task_id")
-        is_task_id_locked = bool(existing_task_id and existing_task_id.status == "valid" and existing_task_id.value)
-        current_tt = (
-            (new_slots["task_type_key"].value if new_slots.get("task_type_key") and new_slots["task_type_key"].value else None)
-            or manager.task_state.get("task_type_key")
+        return self.oilfield_confirmation.link_oilfield_update_in_transaction(
+            updates,
+            new_slots,
+            user_message=user_message,
+            extracted_oilfield=extracted_oilfield,
         )
-
-        tt_val = updates.get("task_type_key")
-        if isinstance(tt_val, dict):
-            tt_val = tt_val.get("value")
-
-        if is_task_id_locked and current_tt:
-            task_type_key = current_tt
-        else:
-            task_type_key = tt_val or current_tt
-        supports_oilfield = True
-        if task_type_key:
-            field_defs = manager.builder.get_schema(task_type_key, manager.mode)
-            schema_keys = {str(field.get("key")) for field in field_defs if field.get("key")}
-            supports_oilfield = manager.slot_filter.supports_oilfield_slots(schema_keys)
-
-        raw_name = (
-            updates.get("oilfield_name")
-            or updates.get("raw_oilfield_name")
-            or extracted_oilfield
-        )
-        if isinstance(raw_name, dict):
-            raw_name = raw_name.get("value")
-
-        if not raw_name and user_message and any(kw in user_message for kw in ("油田", "气田", "海域")):
-            m = manager.oilfield_linker.link(user_message)
-            if m and m.status == "accepted" and m.standard_name:
-                raw_name = m.standard_name
-
-        is_task_switching = bool(current_tt and tt_val and tt_val != current_tt)
-        is_locked_switch_rejected = bool(is_task_id_locked and current_tt and tt_val and tt_val != current_tt)
-        if (is_locked_switch_rejected and not supports_oilfield) or (is_task_switching and not supports_oilfield and not raw_name):
-            linked = dict(updates)
-            linked.pop("oilfield_name", None)
-            linked.pop("raw_oilfield_name", None)
-            for k in (
-                "oilfield_name",
-                "raw_oilfield_name",
-                "oilfield_match_status",
-                "oilfield_match_confidence",
-                "oilfield_match_evidence",
-                "oilfield_match_candidates",
-                "oilfield_entity_id",
-                "pending_oilfield_name",
-                "pending_oilfield_candidates",
-            ):
-                if k in new_slots:
-                    new_slots[k].value = None
-                    new_slots[k].status = "missing"
-            return linked
-
-        coords = (
-            updates.get("oilfield_coordinates")
-            or updates.get("start_point")
-            or updates.get("cable_position")
-            or next(
-                (
-                    new_slots[key].value
-                    for key in (
-                        "oilfield_coordinates",
-                        "start_point",
-                        "cable_position",
-                    )
-                    if new_slots.get(key)
-                    and new_slots[key].status == "valid"
-                    and new_slots[key].value is not None
-                ),
-                None,
-            )
-        )
-        linked = dict(updates)
-
-        # 反向映射：检查坐标是否包含在知识库某油田范围内
-        matched_entity_by_coords = manager.oilfield_linker.find_entity_by_coords(coords) if coords else None
-
-        if not raw_name:
-            if matched_entity_by_coords:
-                # 坐标落入已知油田，反向自动跟随推导油田名称
-                raw_name = matched_entity_by_coords.get("name")
-            else:
-                # 坐标不落入任何已知油田，且用户未提供油田名称：
-                # 若坐标被更新且原槽位绑定了知识库油田，解绑原知识库油田，让用户提供名称占位
-                existing_entity_id_slot = new_slots.get("oilfield_entity_id")
-                if (
-                    "oilfield_coordinates" in updates
-                    or "start_point" in updates
-                    or "cable_position" in updates
-                ) and existing_entity_id_slot and existing_entity_id_slot.value is not None:
-                    linked.pop("oilfield_name", None)
-                    if "oilfield_name" in new_slots:
-                        new_slots["oilfield_name"].value = None
-                        new_slots["oilfield_name"].status = "missing"
-                    if "oilfield_entity_id" in new_slots:
-                        new_slots["oilfield_entity_id"].value = None
-                        new_slots["oilfield_entity_id"].status = "missing"
-                    linked["__clear_oilfield_name"] = True
-                return linked
-
-        match = manager.oilfield_linker.link(str(raw_name), coords)
-
-        for k in ("raw_oilfield_name", "oilfield_match_status", "oilfield_match_confidence", "oilfield_match_evidence", "oilfield_match_candidates"):
-            if k not in new_slots:
-                new_slots[k] = Slot(slot_name=k)
-
-        new_slots["raw_oilfield_name"].value = match.raw
-        new_slots["raw_oilfield_name"].status = "valid"
-        new_slots["oilfield_match_status"].value = match.status
-        new_slots["oilfield_match_status"].status = "valid"
-        new_slots["oilfield_match_confidence"].value = match.confidence
-        new_slots["oilfield_match_confidence"].status = "valid"
-        new_slots["oilfield_match_evidence"].value = match.evidence
-        new_slots["oilfield_match_evidence"].status = "valid"
-        new_slots["oilfield_match_candidates"].value = match.candidates
-        new_slots["oilfield_match_candidates"].status = "valid"
-
-        if not supports_oilfield:
-            linked.pop("oilfield_name", None)
-            linked.pop("raw_oilfield_name", None)
-            if "oilfield_name" in new_slots:
-                new_slots["oilfield_name"].value = None
-                new_slots["oilfield_name"].status = "missing"
-            if "oilfield_entity_id" in new_slots:
-                new_slots["oilfield_entity_id"].value = None
-                new_slots["oilfield_entity_id"].status = "missing"
-            return linked
-
-        if match.status == "accepted" and match.standard_name:
-            linked["oilfield_name"] = match.standard_name
-            if "oilfield_name" not in new_slots:
-                new_slots["oilfield_name"] = Slot("oilfield_name")
-            new_slots["oilfield_name"].value = match.standard_name
-            new_slots["oilfield_name"].status = "valid"
-            if "oilfield_entity_id" not in new_slots:
-                new_slots["oilfield_entity_id"] = Slot("oilfield_entity_id")
-            new_slots["oilfield_entity_id"].value = match.entity_id
-            new_slots["oilfield_entity_id"].status = "valid"
-            linked["__clear_pending_oilfield"] = True
-
-            # 自动映射油田坐标（若用户未上报自定义坐标）
-            existing_coord_slot = new_slots.get("oilfield_coordinates")
-            has_user_custom_coord = (
-                "oilfield_coordinates" in updates
-                or (
-                    existing_coord_slot
-                    and existing_coord_slot.status == "valid"
-                    and existing_coord_slot.value is not None
-                    and getattr(existing_coord_slot, "source", None) != "oilfield_default"
-                )
-            )
-            if not has_user_custom_coord and match.entity_id:
-                try:
-                    ctx_res = manager.oilfield_linker.evaluate_context(entity_id=match.entity_id)
-                    if ctx_res and ctx_res.default_coordinates:
-                        default_coord = ctx_res.default_coordinates
-                        linked["oilfield_coordinates"] = default_coord
-                        if "oilfield_coordinates" not in new_slots:
-                            new_slots["oilfield_coordinates"] = Slot("oilfield_coordinates")
-                        new_slots["oilfield_coordinates"].value = default_coord
-                        new_slots["oilfield_coordinates"].status = "valid"
-                        new_slots["oilfield_coordinates"].source = "oilfield_default"
-                except Exception:
-                    pass
-        elif match.raw and not matched_entity_by_coords and not match.candidates:
-            # 用户显式输入了自定义名称（如“自设A区”），且坐标不属于知识库任何油田：
-            # 允许自定义名称作为 oilfield_name 生效（自定义名称占位），entity_id 为 None
-            linked["oilfield_name"] = match.raw
-            if "oilfield_name" not in new_slots:
-                new_slots["oilfield_name"] = Slot("oilfield_name")
-            new_slots["oilfield_name"].value = match.raw
-            new_slots["oilfield_name"].status = "valid"
-            new_slots["oilfield_name"].source = "user_input"
-            if "oilfield_entity_id" not in new_slots:
-                new_slots["oilfield_entity_id"] = Slot("oilfield_entity_id")
-            new_slots["oilfield_entity_id"].value = None
-            new_slots["oilfield_entity_id"].status = "missing"
-            linked["__clear_pending_oilfield"] = True
-        else:
-            linked.pop("oilfield_name", None)
-            for k in ("pending_oilfield_name", "pending_oilfield_candidates"):
-                if k not in new_slots:
-                    new_slots[k] = Slot(slot_name=k)
-            new_slots["pending_oilfield_name"].value = match.raw
-            new_slots["pending_oilfield_name"].status = "valid"
-            new_slots["pending_oilfield_candidates"].value = match.candidates
-            new_slots["pending_oilfield_candidates"].status = "valid"
-            linked["__clear_oilfield_name"] = True
-        return linked
 
     def _apply_updates_in_transaction(
         self,
@@ -2103,245 +1354,12 @@ class SlotFillingHandler(BaseDialogueHandler):
         allow_overwrite: bool = False,
         transition_slots_already_cleared: bool = False,
     ):
-        # main extractor 会携带 raw/confidence/source；LHL 归一化器只接收值本身。
-        # 在事务入口拆开二者，既保留确定性归一化，也保留槽位审计信息。
-        update_meta: dict[str, dict] = {}
-        plain_updates: dict = {}
-        # equipment_specification 是结构化 typed dict，其 "value" 字段是规格量值，不是 meta 包装。
-        # 所有 equipment_specification 值应直接透传，不拆包。
-        _spec_passthrough_keys = set()
-        for key, item in updates.items():
-            if key in _spec_passthrough_keys:
-                plain_updates[key] = item
-            elif isinstance(item, dict) and "value" in item:
-                value = item.get("value")
-                plain_updates[key] = value
-                update_meta[key] = {
-                    "raw_value": item.get("raw_value", value),
-                    "confidence": item.get("confidence", 1.0),
-                    "source": item.get("source", "user_input"),
-                }
-            else:
-                plain_updates[key] = item
-        updates = plain_updates
-
-        task_type_slot = new_slots.get("task_type_key")
-        task_type_key = (
-            task_type_slot.value
-            if task_type_slot and task_type_slot.status == "valid"
-            else None
+        return self.slot_transaction._apply_updates_in_transaction(
+            updates=updates,
+            new_slots=new_slots,
+            allow_overwrite=allow_overwrite,
+            transition_slots_already_cleared=transition_slots_already_cleared,
         )
-        (
-            pending_task_type_key,
-            normalization_task_type_key,
-            _task_type_change_locked,
-            task_type_preflight_error,
-        ) = self._resolve_task_type_update_context(updates, new_slots)
-        if task_type_preflight_error:
-            self._record_task_type_update_error(
-                new_slots,
-                task_type_preflight_error,
-            )
-            return
-
-        if (
-            pending_task_type_key
-            and task_type_key
-            and pending_task_type_key != task_type_key
-            and not _task_type_change_locked
-            and not transition_slots_already_cleared
-        ):
-            self._clear_non_inherited_transition_slots(new_slots)
-            task_type_slot = new_slots.get("task_type_key")
-
-        if updates.get("__clear_oilfield_name"):
-            if "oilfield_name" in new_slots:
-                new_slots["oilfield_name"].value = None
-                new_slots["oilfield_name"].status = "missing"
-            if "oilfield_entity_id" in new_slots:
-                new_slots["oilfield_entity_id"].value = None
-                new_slots["oilfield_entity_id"].status = "missing"
-        if updates.get("__clear_pending_oilfield"):
-            if "pending_oilfield_name" in new_slots:
-                new_slots["pending_oilfield_name"].value = None
-                new_slots["pending_oilfield_name"].status = "missing"
-            if "pending_oilfield_candidates" in new_slots:
-                new_slots["pending_oilfield_candidates"].value = None
-                new_slots["pending_oilfield_candidates"].status = "missing"
-
-        equipment_keys = {
-            "equipment_class",
-            "equipment_family",
-            "equipment_type",
-            "equipment_name",
-            "equipment_unit_id",
-        }
-        passthrough_keys = {
-            "task_type",
-            "task_type_key",
-            "emergency_mode",
-            "rov_description",
-            "oilfield_name",
-            "__clear_oilfield_name",
-            "__clear_pending_oilfield",
-            "task_id",
-            "intent_id",
-            "internal_id",
-        }
-
-        # Schema fields in a task-switch turn belong to the target task. Keep
-        # the real task-type mutation in the normal apply loop (so task-id
-        # locks and cascade invalidation remain atomic), but select the target
-        # schema for this transaction's normalization.
-        failures = {}
-        if normalization_task_type_key:
-            evaluation_slots = copy.deepcopy(new_slots)
-            evaluation_task_slot = evaluation_slots.get("task_type_key")
-            if evaluation_task_slot is None:
-                evaluation_task_slot = Slot(
-                    "task_type_key",
-                    value_type="string",
-                )
-                evaluation_slots["task_type_key"] = evaluation_task_slot
-            evaluation_task_slot.value = normalization_task_type_key
-            evaluation_task_slot.status = "valid"
-            evaluation_task_slot.candidate_value = None
-            evaluation_task_slot.validation_error = None
-
-            evaluation_equipment_updates = {
-                key: value
-                for key, value in updates.items()
-                if key in equipment_keys
-            }
-            if evaluation_equipment_updates:
-                self.manager._project_equipment_updates_for_evaluation(
-                    evaluation_equipment_updates,
-                    evaluation_slots,
-                    normalization_task_type_key,
-                )
-            current_state = {
-                key: slot.value
-                for key, slot in evaluation_slots.items()
-                if slot.status == "valid" and slot.value is not None
-            }
-            if pending_task_type_key:
-                current_state["task_type_key"] = pending_task_type_key
-            schema_updates = {
-                k: v for k, v in updates.items()
-                if k not in equipment_keys and k not in passthrough_keys
-            }
-            norm_res = self.normalizer.normalize_updates_with_failures(
-                schema_updates,
-                self.builder.get_schema(normalization_task_type_key, self.mode),
-                current_state,
-                lambda field_def, state: self.builder._resolve_allowed(
-                    field_def,
-                    normalization_task_type_key,
-                    state,
-                ),
-            )
-            norm_schema = norm_res.normalized_updates
-            failures = norm_res.failures
-            eq_updates = {k: v for k, v in updates.items() if k in equipment_keys}
-            pass_updates = {k: v for k, v in updates.items() if k in passthrough_keys}
-            updates = {**norm_schema, **pass_updates, **eq_updates}
-
-        skip = {
-            "emergency_mode",
-            "rov_description",
-            "__clear_oilfield_name",
-            "__clear_pending_oilfield",
-            "task_id",
-            "intent_id",
-            "internal_id",
-            *equipment_keys,
-        }
-
-        for key, value in updates.items():
-            if key in skip or value is None or value == "":
-                continue
-            if key in ("task_type", "task_type_key"):
-                self._handle_task_type_update_in_transaction(key, value, new_slots)
-                continue
-            self._apply_slot_update_in_transaction(
-                key,
-                value,
-                new_slots,
-                allow_overwrite,
-            )
-            slot = new_slots.get(key)
-            meta = update_meta.get(key)
-            if slot and meta:
-                slot.raw_value = meta["raw_value"]
-                slot.confidence = meta["confidence"]
-                slot.source = meta["source"]
-
-        for key, failure in failures.items():
-            slot = new_slots.get(key)
-            meta = update_meta.get(key)
-            raw_val = failure.raw_value
-            msg = failure.message
-
-            candidate_val = raw_val
-            original_raw = (
-                meta.get("raw_value")
-                if meta and meta.get("raw_value") is not None
-                else (str(raw_val) if raw_val is not None else "")
-            )
-
-            if slot and slot.status in ("valid", "conflict") and slot.value is not None:
-                slot.status = "conflict"
-                slot.candidate_value = candidate_val
-                slot.raw_value = str(original_raw)
-                slot.validation_error = msg
-            else:
-                if slot is None:
-                    slot = Slot(slot_name=key)
-                    new_slots[key] = slot
-                slot.value = None
-                slot.status = "invalid"
-                slot.candidate_value = candidate_val
-                slot.raw_value = str(original_raw)
-                slot.validation_error = msg
-
-            if meta:
-                slot.confidence = meta.get("confidence", 1.0)
-                slot.source = meta.get("source", "user_input")
-
-        if "emergency_mode" in updates:
-            em_val = updates["emergency_mode"]
-            if em_val is True:
-                if "emergency_mode" not in new_slots:
-                    new_slots["emergency_mode"] = Slot("emergency_mode")
-                new_slots["emergency_mode"].value = True
-                new_slots["emergency_mode"].status = "valid"
-                self.mode = "emergency"
-            elif em_val is False:
-                if "emergency_mode" in new_slots:
-                    new_slots["emergency_mode"].value = False
-                    new_slots["emergency_mode"].status = "valid"
-                self.mode = "normal"
-
-        self.manager._handle_equipment_updates_in_transaction(
-            updates,
-            new_slots,
-            allow_overwrite,
-        )
-        for key in (
-            "equipment_class",
-            "equipment_family",
-            "equipment_type",
-            "equipment_name",
-            "equipment_unit_id",
-        ):
-            slot = new_slots.get(key)
-            meta = update_meta.get(key)
-            if slot and meta:
-                slot.raw_value = meta["raw_value"]
-                slot.confidence = meta["confidence"]
-                slot.source = meta["source"]
-
-        self.manager._auto_collapse_robot_cascade(new_slots, allow_overwrite)
 
     def _apply_normalized_plan_in_transaction(
         self,
@@ -2351,72 +1369,13 @@ class SlotFillingHandler(BaseDialogueHandler):
         transition_from_task_type_key: str | None = None,
         transition_to_task_type_key: str | None = None,
     ) -> None:
-        """根据 NormalizationApplyPlan 修改 working dict new_slots。"""
-        # 1. 成功 outcomes 写入 new_slots
-        for succ in plan.successful_updates:
-            key = succ.key
-            value = succ.value
-            slot = new_slots.get(key)
-
-            if (
-                slot
-                and slot.status == "valid"
-                and slot.value is not None
-                and slot.value != value
-                and not allow_overwrite
-            ):
-                slot.status = "conflict"
-                slot.candidate_value = value
-                slot.raw_value = str(succ.raw_value) if succ.raw_value is not None else str(value)
-                slot.confidence = succ.confidence
-                slot.source = succ.source
-                slot.validation_error = None
-            else:
-                if slot is None:
-                    slot = Slot(slot_name=key)
-                    new_slots[key] = slot
-
-                slot.value = value
-                slot.status = "valid"
-                slot.candidate_value = None
-                slot.raw_value = str(succ.raw_value) if succ.raw_value is not None else str(value)
-                slot.confidence = succ.confidence
-                slot.source = succ.source
-                slot.validation_error = None
-
-        # 2. 失败 outcomes 写入 new_slots
-        for failure in plan.failures:
-            key = failure.key
-            slot = new_slots.get(key)
-            cand_val = failure.candidate_value
-            raw_val = failure.raw_value
-            raw_str = str(raw_val) if raw_val is not None else ""
-
-            if slot and slot.status in ("valid", "conflict") and slot.value is not None:
-                slot.status = "conflict"
-                slot.candidate_value = cand_val
-                slot.raw_value = raw_str
-                slot.confidence = failure.confidence
-                slot.source = failure.source
-                slot.validation_error = failure.error_message
-            else:
-                if slot is None:
-                    slot = Slot(slot_name=key)
-                    new_slots[key] = slot
-                slot.value = None
-                slot.status = "invalid"
-                slot.candidate_value = cand_val
-                slot.raw_value = raw_str
-                slot.confidence = failure.confidence
-                slot.source = failure.source
-                slot.validation_error = failure.error_message
-
-        if not (
-            transition_from_task_type_key
-            and transition_to_task_type_key
-            and transition_from_task_type_key != transition_to_task_type_key
-        ):
-            self.manager._auto_collapse_robot_cascade(new_slots, allow_overwrite)
+        return self.slot_transaction._apply_normalized_plan_in_transaction(
+            plan=plan,
+            new_slots=new_slots,
+            allow_overwrite=allow_overwrite,
+            transition_from_task_type_key=transition_from_task_type_key,
+            transition_to_task_type_key=transition_to_task_type_key,
+        )
 
     @staticmethod
     def _apply_slot_update_in_transaction(
@@ -2425,30 +1384,12 @@ class SlotFillingHandler(BaseDialogueHandler):
         new_slots: dict,
         allow_overwrite: bool,
     ) -> None:
-        """把一个候选值写入临时槽位；正式状态只能由后续 commit 生效。"""
-        slot = new_slots.get(key)
-        if (
-            slot
-            and slot.status == "valid"
-            and slot.value is not None
-            and slot.value != value
-            and not allow_overwrite
-        ):
-            slot.status = "conflict"
-            slot.candidate_value = value
-            slot.raw_value = str(value)
-            slot.validation_error = None
-            return
-
-        if slot is None:
-            slot = Slot(slot_name=key)
-            new_slots[key] = slot
-
-        slot.value = value
-        slot.status = "candidate"
-        slot.candidate_value = None
-        slot.raw_value = str(value)
-        slot.validation_error = None
+        return SlotTransactionManager._apply_slot_update_in_transaction(
+            key=key,
+            value=value,
+            new_slots=new_slots,
+            allow_overwrite=allow_overwrite,
+        )
 
     def _normalize_and_validate_in_transaction(
         self,
@@ -2456,124 +1397,11 @@ class SlotFillingHandler(BaseDialogueHandler):
         task_type_key: str | None,
         skip_schema_keys: set[str] | frozenset[str] | None = None,
     ):
-        if not task_type_key:
-            return
-
-        schema = self.builder.get_schema(task_type_key, self.mode)
-
-        for field_def in schema:
-            key = field_def["key"]
-            if skip_schema_keys and key in skip_schema_keys:
-                continue
-            ftype = field_def["type"]
-            slot = new_slots.get(key)
-            if not slot or slot.status in ("conflict", "invalid") or key.startswith("equipment_"):
-                continue
-
-            target_val = slot.candidate_value if slot.candidate_value is not None else slot.value
-            if target_val is None or (isinstance(target_val, list) and len(target_val) == 0):
-                if isinstance(target_val, list) and len(target_val) == 0 and slot.status != "conflict":
-                    slot.status = "missing"
-                continue
-
-            temp_state = {
-                state_key: (
-                    state_slot.candidate_value
-                    if state_slot.candidate_value is not None
-                    else state_slot.value
-                )
-                for state_key, state_slot in new_slots.items()
-                if (
-                    state_slot.status not in ("invalid", "missing")
-                    and (
-                        state_slot.value is not None
-                        or state_slot.candidate_value is not None
-                    )
-                    # Robot hierarchy fields are authoritative only after the
-                    # dedicated equipment handler marks them valid.  A
-                    # restored candidate/conflict must not influence dynamic
-                    # payload or other schema candidate normalization.
-                    and (
-                        not state_key.startswith("equipment_")
-                        or state_slot.status == "valid"
-                    )
-                )
-            }
-
-            allowed = self.builder._resolve_allowed(field_def, task_type_key, temp_state)
-            if allowed:
-                raw = target_val
-                if ftype == "list":
-                    normalized = self.normalizer.normalize(raw, allowed, ftype)
-                else:
-                    normalized = self.normalizer.normalize(str(raw), allowed, ftype)
-
-                if normalized is not None:
-                    slot.value = normalized
-                    slot.candidate_value = None
-                    slot.status = "valid"
-                    if key != "payload" or slot.validation_error is None:
-                        slot.validation_error = None
-                else:
-                    slot.status = "invalid"
-                    slot.candidate_value = raw
-                    slot.validation_error = f"Value '{raw}' could not be normalized to allowed options: {allowed}"
-            else:
-                if ftype == "datetime":
-                    val_str = str(target_val)
-                    pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"
-                    if re.match(pattern, val_str):
-                        slot.value = val_str
-                        slot.candidate_value = None
-                        slot.status = "valid"
-                        slot.validation_error = None
-                    else:
-                        slot.status = "invalid"
-                        slot.candidate_value = target_val
-                        slot.validation_error = f"Invalid datetime format: {val_str}. Expected YYYY-MM-DDTHH:MM:SS"
-                elif ftype == "coord":
-                    coord = self.builder._validate_coord(target_val)
-                    if coord:
-                        slot.value = coord
-                        slot.candidate_value = None
-                        slot.status = "valid"
-                        slot.validation_error = None
-                    else:
-                        slot.status = "invalid"
-                        slot.candidate_value = target_val
-                        slot.validation_error = f"Invalid coordinate format: {target_val}"
-                elif ftype == "number":
-                    num = self.builder._validate_number(target_val)
-                    if num is not None:
-                        slot.value = num
-                        slot.candidate_value = None
-                        slot.status = "valid"
-                        slot.validation_error = None
-                    else:
-                        slot.status = "invalid"
-                        slot.candidate_value = target_val
-                        slot.validation_error = f"Invalid number: {target_val}"
-                else:
-                    slot.value = target_val
-                    slot.candidate_value = None
-                    slot.status = "valid"
-                    slot.validation_error = None
-
-        # Non-equipment facts become authoritative only after normalization.
-        # Equipment updates are validated and promoted inside the dedicated
-        # four-level handler.  Never scan/promote arbitrary equipment
-        # candidates here: a restored candidate is pending user confirmation,
-        # not a value submitted by this transaction.
-        # Recompute the robot domain now so water_depth/start_time/payload from
-        # this same transaction can participate in candidate convergence.
-        self.manager._auto_collapse_robot_cascade(new_slots, allow_overwrite=True)
-
-
-        # 字段自身的格式/候选合法性与任务组合约束是两类状态：
-        # 例如“水深 600m”和“最大水深 500m 的设备”均可被正确录入，
-        # 但二者组合会触发硬约束。硬约束由对话阶段 blocked_hard 管理，
-        # 不能把已合法录入的关联字段重新标记为 invalid，否则前端会误报缺失。
-
+        return self.slot_transaction._normalize_and_validate_in_transaction(
+            new_slots=new_slots,
+            task_type_key=task_type_key,
+            skip_schema_keys=skip_schema_keys,
+        )
 
     # 别名兼容
     apply_updates_in_transaction = _apply_updates_in_transaction

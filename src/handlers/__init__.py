@@ -7,6 +7,12 @@ from .conversation_router import ConversationRouterHandler
 from .slot_filling import SlotFillingHandler
 from .constraint_decision import ConstraintDecisionHandler
 from .task_commit import TaskCommitHandler
+from .equipment_cascade import EquipmentCascadeResolver
+from .task_transition import TaskTransitionManager
+from .payload_mutation import PayloadMutationManager
+from .write_reply_grounder import WriteReplyGrounder
+from .oilfield_confirmation import OilfieldConfirmationHandler
+from .slot_transaction import SlotTransactionManager
 
 __all__ = [
     "BaseDialogueHandler",
@@ -16,4 +22,10 @@ __all__ = [
     "SlotFillingHandler",
     "ConstraintDecisionHandler",
     "TaskCommitHandler",
+    "EquipmentCascadeResolver",
+    "TaskTransitionManager",
+    "PayloadMutationManager",
+    "WriteReplyGrounder",
+    "OilfieldConfirmationHandler",
+    "SlotTransactionManager",
 ]
