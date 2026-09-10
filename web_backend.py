@@ -1,1625 +1,194 @@
 """
-web_backend.py - Web 后端主控
+web_backend.py - Web 后端主控与服务统一外观（Facade）
 支持多会话隔离：每个 session_id 拥有独立的 DialogueManager 实例，
 共享只读模型（LLMClient, KnowledgeBase）。
+底层路由已模块化下沉至 src/web/ 蓝图体系，此处提供统一 Flask 应用装配与 100% 向后兼容导出。
 """
 
-import json
-import re
-import threading
-import uuid
-import yaml
-from functools import wraps
-
 import logging
+import os
+import sys
 from pathlib import Path
-from flask import Flask, request, jsonify, render_template, Response, stream_with_context
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-import tempfile
-from werkzeug.utils import secure_filename
+from typing import Any
+from flask import Flask
 
+import src.web.state as state
 from session import Session
 from src.dialogue_manager import DialogueManager
-from src.simulated_time import get_simulated_time
 from src.history_manager import save_conversation, list_history, load_history
-from src.result_paths import get_result_dir
-from src.asr_normalizer import normalize_terminology
-from src.asr_service import ASRUnavailableError
 from src.ui_state_builder import build_frontend_ui_state
-from src.exceptions import (
-    StatePersistenceError,
-    StateSelectorError,
-    StateVersionConflict,
+from src.web import register_blueprints
+from src.web.routes_asr import (
+    _allowed_audio_extensions,
+    _asr_api_config,
+    _asr_direct_to_llm,
+    _config_bool,
+    _is_allowed_audio,
+    _load_asr_api_config,
+    api_asr,
+    asr_bp,
+)
+from src.web.routes_chat import (
+    _dispatch_ros2_on_done_transition,
+    _persist_and_dispatch_done_transition,
+    api_chat,
+    api_chat_stream,
+    api_reset,
+    chat_bp,
+    get_session_state,
+)
+from src.web.routes_dev import (
+    auto_hot_reload_check,
+    dev_bp,
+    dev_reload_events,
+    dev_reload_events_stream,
+    manual_dev_reload,
+)
+from src.web.routes_mcp import (
+    _persist_active_gateway,
+    dispatch_mcp_task,
+    get_mcp_status,
+    mcp_bp,
+    mcp_ctrl_task,
+    mcp_gateway,
+    mcp_task_manage,
+)
+from src.web.routes_pages import (
+    dashboard,
+    disable_static_cache_after_request as _disable_static_cache_after_request,
+    favicon,
+    index,
+    pages_bp,
+)
+from src.web.routes_robot import (
+    get_telemetry_snapshot,
+    robot_bp,
+    set_robot_state_info,
+)
+from src.web.routes_time_history import (
+    api_history_list,
+    api_history_load,
+    get_current_time,
+    set_current_time,
+    time_history_bp,
+)
+from src.web.routes_translate import (
+    TRANSLATION_CACHE_FILE,
+    TRANSLATION_CHUNK_SIZE,
+    TRANSLATION_MAX_INPUT_CHARS,
+    TRANSLATION_MAX_TOKENS,
+    TRANSLATION_USE_CACHE,
+    _CJK_RE,
+    _get_cache_key,
+    _is_dirty_translation,
+    _split_into_chunks,
+    _translate_single_chunk,
+    _translate_text_internal,
+    _translation_cache,
+    _translation_cache_file,
+    _translation_cache_lock,
+    _validate_translation_quality,
+    api_translate,
+    translate_bp,
+)
+import types
+
+from src.web.state import (
+    CONFIG_DIR,
+    FRONTEND_DIR,
+    EndpointFilter,
+    _load_api_tokens,
+    _require_api_token,
+    _sess_lock,
+    _sessions,
+    _sessions_lock,
+    _sessions_manager,
+    _shared_asr,
+    _shared_kb,
+    _shared_llm,
+    _shared_mcp_bridge,
+    _token_from_request,
+    _translation_cache,
+    _translation_cache_lock,
+    get_mcp_bridge,
+    get_or_create_manager,
+    init_asr_service,
+    init_manager,
+    init_mcp_bridge_service,
+    print_status,
 )
 
-# ========== 配置路径（与你的项目一致）==========
-CONFIG_DIR = Path(__file__).parent / "config"
-FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
+logger = logging.getLogger(__name__)
 
-# ---------- 全局只读资源（所有会话共享）----------
-_shared_llm = None       # LLMClient 实例
-_shared_kb = None        # KnowledgeBase 实例
-_shared_asr = None       # ASRService 实例
-
-# ---------- 会话管理器 ----------
-_sessions_manager: dict[str, DialogueManager] = {}
-_sessions_lock = threading.Lock()
-
-_sessions = {}           # 兼容原有的 Session 对象（用于前端展示）
-_sess_lock = threading.Lock()
-
-
-def init_manager(dialogue_manager):
-    """在启动时由 run.py 调用，注入完整的 DialogueManager 实例，
-    并从中提取只读的 llm 和 kb 供所有会话复用。
-    """
-    global _shared_llm, _shared_kb
-    _shared_llm = dialogue_manager.llm
-    _shared_kb = dialogue_manager.kb
-
-def init_asr_service(asr_service):
-    global _shared_asr
-    _shared_asr = asr_service
-
-import os
-
-
-def get_or_create_manager(sid: str) -> DialogueManager:
-    """获取或创建会话专属的 DialogueManager 实例"""
-    with _sessions_lock:
-        if sid not in _sessions_manager:
-            _sessions_manager[sid] = DialogueManager(_shared_llm, _shared_kb, session_id=sid)
-        return _sessions_manager[sid]
-
-
-def print_status(manager: DialogueManager):
-    """每轮对话后打印结构化任务状态面板"""
-    status = manager.get_status()
-
-    phase_labels = {
-        "collecting":   "收集中",
-        "validating":   "约束校验中",
-        "confirming":   "待用户确认",
-        "done":         "✅ 已完成",
-        "rejected":     "❌ 已拒绝",
-    }
-    phase_value = status.get("workflow_phase") or status["phase"]
-    phase_str = phase_labels.get(phase_value, phase_value)
-    mode_str  = "🚨 紧急模式" if status["mode"] == "emergency" else "普通模式"
-
-    print()
-    print("┌─ 任务状态 " + "─" * 48)
-    print(f"│ 阶段：{phase_str}　模式：{mode_str}")
-    print("├─ 已提取字段（规范化结果）" + "─" * 33)
-
-    if status["filled"]:
-        for key, info in status["filled"].items():
-            val = info["value"]
-            if isinstance(val, dict):
-                val_str = ", ".join(f"{k}={v}" for k, v in val.items())
-            elif isinstance(val, list):
-                val_str = " / ".join(str(x) for x in val)
-            else:
-                val_str = str(val)
-            print(f"│  ✓ {info['label']:<18} {val_str}")
-    else:
-        print("│  （暂无）")
-
-    print("├─ 待补充字段 " + "─" * 45)
-    if status["missing"]:
-        for m in status["missing"]:
-            allowed = m.get("allowed_values", [])
-            if allowed:
-                print(f"│  ✗ {m['label']:<18} 可选：{allowed}")
-            else:
-                print(f"│  ✗ {m['label']}")
-    else:
-        print("│  （无缺失，所有必填字段已收集 ✓）")
-
-    if status["whitelisted_soft"]:
-        print("├─ 已忽略的 Soft 警告 " + "─" * 37)
-        for cid in status["whitelisted_soft"]:
-            print(f"│  ~ [{cid}]")
-
-    print("└" + "─" * 58)
-    print()
-
-
+# ========== 核心 Flask 应用初始化 ==========
 app = Flask(
     __name__,
     template_folder=str(FRONTEND_DIR),
     static_folder=str(FRONTEND_DIR),
     static_url_path="/static",
 )
-app.config["SEAGENT_API_TOKENS"] = []
 
-@app.after_request
-def _disable_static_cache_after_request(response):
-    """Disable browser static caching during development to ensure instant frontend JS/CSS updates."""
-    if request.path.startswith("/static/") or request.path in ("/", "/index.html"):
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-    return response
-
-
-def _load_api_tokens() -> list[str]:
-    """从环境变量读取控制面 Token，未配置时返回空列表表示关闭鉴权。"""
-    raw_tokens = (
-        os.getenv("SEAGENT_API_TOKENS", "")
-        or os.getenv("API_TOKENS", "")
-        or os.getenv("SEAGENT_API_TOKEN", "")
-        or os.getenv("API_TOKEN", "")
-    ).strip()
-    if not raw_tokens:
-        return []
-
-    tokens = []
-    for token in re.split(r"[,\s]+", raw_tokens):
-        token = token.strip()
-        if token:
-            tokens.append(token)
-    return tokens
-
-
-def _token_from_request() -> str:
-    authorization = request.headers.get("Authorization", "").strip()
-    if authorization.startswith("Bearer "):
-        return authorization.removeprefix("Bearer ").strip()
-    return request.headers.get("X-API-Token", "").strip()
-
-
-def _require_api_token(view_fn):
-    """当且仅当配置了 API token 时，对路由进行鉴权。"""
-
-    @wraps(view_fn)
-    def wrapped(*args, **kwargs):
-        allowed_tokens = app.config.get("SEAGENT_API_TOKENS", [])
-        if not allowed_tokens:
-            return view_fn(*args, **kwargs)
-
-        provided = _token_from_request()
-        if provided in allowed_tokens:
-            return view_fn(*args, **kwargs)
-
-        response = jsonify({
-            "code": 401,
-            "error": "Unauthorized",
-            "msg": "缺少有效 API token",
-        })
-        response.status_code = 401
-        response.headers["WWW-Authenticate"] = "Bearer"
-        return response
-
-    return wrapped
-
-
-def _load_asr_api_config() -> dict:
-    cfg_path = CONFIG_DIR / "asr.yaml"
-    if not cfg_path.exists():
-        return {}
-    with open(cfg_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
-
-
-def _config_bool(config: dict, key: str, default: bool) -> bool:
-    value = config.get(key, default)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"true", "1", "yes", "y", "on"}:
-            return True
-        if normalized in {"false", "0", "no", "n", "off"}:
-            return False
-    return default
-
-
-_asr_api_config = _load_asr_api_config()
 app.config["MAX_CONTENT_LENGTH"] = int(_asr_api_config.get("max_upload_mb", 25)) * 1024 * 1024
 app.config["SEAGENT_API_TOKENS"] = _load_api_tokens()
-_asr_direct_to_llm = _config_bool(_asr_api_config, "direct_to_llm", True)
-_allowed_audio_extensions = {
-    str(ext).lower().lstrip(".")
-    for ext in _asr_api_config.get("allowed_extensions", ["wav", "mp3", "flac", "m4a", "ogg", "webm"])
-}
 
-
-def _is_allowed_audio(filename: str) -> bool:
-    suffix = Path(filename).suffix.lower().lstrip(".")
-    return bool(suffix and suffix in _allowed_audio_extensions)
-
+# 批量挂载业务模块蓝图
+register_blueprints(app)
 
 # ========== 日志过滤器：屏蔽 /api/time/current 的访问日志 ==========
-class EndpointFilter(logging.Filter):
-    """过滤包含 '/api/time/current' 的访问日志"""
-    def filter(self, record):
-        msg = record.getMessage()
-        if '/api/time/current' in msg:
-            return False
-        return True
-
-werkzeug_logger = logging.getLogger('werkzeug')
-logger = logging.getLogger(__name__)
+werkzeug_logger = logging.getLogger("werkzeug")
 for f in werkzeug_logger.filters[:]:
     if isinstance(f, EndpointFilter):
         werkzeug_logger.removeFilter(f)
 werkzeug_logger.addFilter(EndpointFilter())
-# ==================================================================
 
 
-# ========== 业务模块热重载钩子 ==========
-@app.before_request
-def auto_hot_reload_check():
-    """在每个请求处理前，检测 src/ 和 config/ 是否有代码变更并自动热重载"""
-    # 忽略静态资源与轮询时间接口的重载检查，降低微小开销
-    if request.path.startswith("/static/") or request.path == "/api/time/current":
-        return
-    try:
-        from src.hot_reload import maybe_auto_reload
-        maybe_auto_reload()
-    except Exception as exc:
-        logger.warning("[Hot-Reload] auto check failed: %s", exc)
+# ========== 针对外部/测试用例直接访问与覆写全局对象的透明代理 ==========
+_STATE_SYMBOLS = {
+    "_shared_llm",
+    "_shared_kb",
+    "_shared_asr",
+    "_shared_mcp_bridge",
+    "_sessions_manager",
+    "_sessions_lock",
+    "_sessions",
+    "_sess_lock",
+    "_translation_cache",
+    "_translation_cache_lock",
+    "init_manager",
+    "init_asr_service",
+    "init_mcp_bridge_service",
+    "get_mcp_bridge",
+    "get_or_create_manager",
+}
 
 
-@app.route("/api/dev/reload", methods=["GET", "POST"])
-@_require_api_token
-def manual_dev_reload():
-    """开发者手动热重载接口"""
-    from src.hot_reload import force_reload, code_reload_enabled
-    if not code_reload_enabled():
-        return jsonify({"ok": False, "code": 403, "msg": "代码热重载未启用"}), 403
-    res = force_reload()
-    return jsonify(res)
+class _WebBackendModule(types.ModuleType):
+    """自定义 ModuleType，保证通过 web_backend 访问与覆写的全局符号与 src.web.state 实时同步，
+    同时作为原生 ModuleType 实例，100% 兼容 unittest.mock.patch.object、__dict__ 检查、
+    delattr 及 inspect 等反射操作。
+    """
 
+    def __getattribute__(self, name: str) -> Any:
+        if name in _STATE_SYMBOLS:
+            if hasattr(state, name):
+                return getattr(state, name)
+        return super().__getattribute__(name)
 
-@app.route("/api/dev/reload-events", methods=["GET"])
-@_require_api_token
-def dev_reload_events():
-    """返回热重载事件，供前端轮询并刷新当前会话状态。"""
-    from src.hot_reload import get_reload_events
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _STATE_SYMBOLS:
+            setattr(state, name, value)
+        super().__setattr__(name, value)
 
-    after = request.args.get("after", 0)
-    return jsonify({
-        "ok": True,
-        "code": 200,
-        "events": get_reload_events(after_event_id=after),
-    })
-
-
-@app.route("/api/dev/reload-events/stream", methods=["GET"])
-@_require_api_token
-def dev_reload_events_stream():
-    """返回热重载 SSE 事件流，实时推送后端更新，替代短轮询机制。"""
-    from src.hot_reload import get_reload_events
-    import time
-
-    after_id_str = request.args.get("after", "0")
-    try:
-        after_id = int(after_id_str)
-    except Exception:
-        after_id = 0
-
-    def event_stream():
-        nonlocal after_id
-        yield f"event: ping\ndata: {json.dumps({'status': 'connected', 'last_id': after_id})}\n\n"
-        initial_events = get_reload_events(after_event_id=after_id)
-        for ev in initial_events:
-            ev_id = int(ev.get("event_id", 0))
-            if ev_id > after_id:
-                after_id = ev_id
-            yield f"event: reload\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
-
-        start_time = time.time()
-        while time.time() - start_time < 30:
-            time.sleep(1.0)
-            new_events = get_reload_events(after_event_id=after_id)
-            if new_events:
-                for ev in new_events:
-                    ev_id = int(ev.get("event_id", 0))
-                    if ev_id > after_id:
-                        after_id = ev_id
-                    yield f"event: reload\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
-            else:
-                yield f"event: ping\ndata: {json.dumps({'time': time.time()})}\n\n"
-
-    return Response(
-        stream_with_context(event_stream()),
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
-    )
-# =========================================
-
-
-@app.route("/api/robot/set-state-info", methods=["POST"])
-@_require_api_token
-def set_robot_state_info():
-    supplied_request_id = request.headers.get("X-Request-ID", "")
-    request_id = (
-        supplied_request_id
-        if re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", supplied_request_id)
-        else f"req_{uuid.uuid4().hex[:12]}"
-    )
-    if _shared_kb is None:
-        return jsonify({
-            "ok": False,
-            "code": 503,
-            "error": "service_unavailable",
-            "msg": "Robot state service is not initialized",
-            "request_id": request_id,
-            "retryable": True,
-        }), 503
-
-    robot_name = None
-    expected_version = None
-    status_ref = None
-    current_version = None
-    try:
-        data = request.get_json(silent=True)
-        if not isinstance(data, dict):
-            raise ValueError("request body must be a JSON object")
-        robot_name = data.get("robot_name")
-        params = data.get("params")
-        expected_version = data.get("expected_version")
-
-        if not isinstance(robot_name, str) or not robot_name.strip():
-            raise ValueError("robot_name must be a non-empty string")
-        if not isinstance(params, dict) or not params:
-            raise ValueError("params must be a non-empty JSON object")
-
-        status_ref = _shared_kb.state_info.resolve_status_ref(robot_name)
-        state_before = _shared_kb.state_info.get_robot_state(robot_name)
-        if isinstance(state_before, dict):
-            current_version = state_before.get("version", 0)
-
-        result = _shared_kb.state_info.set_status(
-            robot_name,
-            params,
-            expected_version=expected_version,
-        )
-        refreshed_sessions = []
-        with _sessions_lock:
-            active_sessions = list(_sessions_manager.items())
-        for sid, mgr in active_sessions:
+    def __delattr__(self, name: str) -> None:
+        if name in _STATE_SYMBOLS:
             try:
-                with mgr._session_lock:
-                    refresh = mgr.refresh_external_state_constraints(
-                        result["status_ref"],
-                    )
-                if refresh.get("refreshed"):
-                    refreshed_sessions.append({
-                        "session_id": sid,
-                        "phase": refresh.get("phase"),
-                        "hard_violations": refresh.get("hard_violations", 0),
-                        "soft_violations": refresh.get("soft_violations", 0),
-                    })
-            except Exception as refresh_exc:
-                logger.warning(
-                    "Robot state session refresh failed: request_id=%s session_id=%s status_ref=%s err=%s",
-                    request_id,
-                    sid,
-                    result["status_ref"],
-                    refresh_exc,
-                )
-        logger.info(
-            "Robot state updated: request_id=%s status_ref=%s "
-            "expected_version=%s current_version=%s",
-            request_id,
-            result["status_ref"],
-            expected_version,
-            result["version"],
-        )
-        return jsonify({
-            "ok": True,
-            "code": 200,
-            "msg": "状态更新成功",
-            "robot": robot_name,
-            "status_ref": result["status_ref"],
-            "version": result["version"],
-            "store_version": result["store_version"],
-            "updated_at": result["updated_at"],
-            "state": result["state"],
-            "refreshed_sessions": refreshed_sessions,
-            "request_id": request_id,
-        })
-    except StateVersionConflict as exc:
-        logger.warning(
-            "Robot state version conflict: request_id=%s status_ref=%s "
-            "expected_version=%s current_version=%s",
-            request_id,
-            exc.status_ref,
-            exc.expected_version,
-            exc.current_version,
-        )
-        return jsonify({
-            "ok": False,
-            "code": 409,
-            "error": "StateVersionConflict",
-            "msg": "Robot state version is stale",
-            "status_ref": exc.status_ref,
-            "expected_version": exc.expected_version,
-            "current_version": exc.current_version,
-            "request_id": request_id,
-            "retryable": True,
-        }), 409
-    except (StateSelectorError, TypeError, ValueError) as exc:
-        logger.warning(
-            "Invalid robot state update: request_id=%s status_ref=%s "
-            "expected_version=%s current_version=%s error=%s",
-            request_id,
-            status_ref,
-            expected_version,
-            current_version,
-            type(exc).__name__,
-        )
-        return jsonify({
-            "ok": False,
-            "code": 400,
-            "error": type(exc).__name__,
-            "msg": "Invalid robot state update request",
-            "request_id": request_id,
-            "retryable": False,
-        }), 400
-    except StatePersistenceError:
-        logger.exception(
-            "Robot state persistence failed: request_id=%s status_ref=%s "
-            "expected_version=%s current_version=%s",
-            request_id,
-            status_ref,
-            expected_version,
-            current_version,
-        )
-        return jsonify({
-            "ok": False,
-            "code": 500,
-            "error": "StatePersistenceError",
-            "msg": "Robot state persistence failed",
-            "request_id": request_id,
-            "retryable": True,
-        }), 500
-    except Exception:
-        logger.exception(
-            "Unhandled robot state update failure: request_id=%s status_ref=%s "
-            "expected_version=%s current_version=%s",
-            request_id,
-            status_ref,
-            expected_version,
-            current_version,
-        )
-        return jsonify({
-            "ok": False,
-            "code": 500,
-            "error": "internal_error",
-            "msg": "Internal server error",
-            "request_id": request_id,
-            "retryable": False,
-        }), 500
-
-
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-
-@app.route("/dashboard")
-def dashboard():
-    return render_template("ros2_dashboard.html")
-
-
-@app.route("/api/telemetry", methods=["GET"])
-def get_telemetry_snapshot():
-    """Compatibility view backed by live ROS telemetry, never by protocol YAML."""
-    bridge = get_mcp_bridge()
-    snapshot = bridge.runtime_snapshot() if bridge is not None else {}
-    resp = jsonify({"code": 200, "snapshot": snapshot})
-    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    return resp
-
-
-@app.route("/favicon.ico")
-def favicon():
-    return "", 204
-
-
-@app.route("/api/asr", methods=["POST"])
-@_require_api_token
-def api_asr():
-    req_id = f"req_{uuid.uuid4().hex[:8]}"
-    if _shared_asr is None:
-        return jsonify({
-            "ok": False,
-            "code": 503,
-            "error": "service_unavailable",
-            "msg": "ASR service is not initialized",
-            "request_id": req_id,
-            "retryable": True
-        }), 503
-
-    audio = request.files.get("audio")
-    if audio is None or not audio.filename:
-        return jsonify({
-            "ok": False,
-            "code": 400,
-            "error": "missing_file",
-            "msg": "missing audio file (expected form field: 'audio')",
-            "request_id": req_id,
-            "retryable": False
-        }), 400
-
-    original_filename = audio.filename
-    filename = secure_filename(original_filename)
-    content_length = request.content_length
-    audit_ip = request.remote_addr or "UNKNOWN"
-    audit_ua = (request.headers.get('User-Agent') or '')[:200]
-    audit_ts = datetime.now(timezone.utc).isoformat()
-    audit_size = content_length if content_length is not None else -1
-    logger.info(
-        "[SECURITY_ASR_AUDIT] sanitization orig_filename=%r safe_filename=%r size_bytes=%s remote_ip=%s user_agent=%r utc_time=%s request_id=%s",
-        original_filename, filename, audit_size, audit_ip, audit_ua, audit_ts, req_id,
-    )
-    if filename != original_filename:
-        logger.warning(
-            "[SECURITY_ASR_SANITIZED] Filename was changed by secure_filename(). orig=%r safe=%r ip=%s ua=%r time=%s request_id=%s",
-            original_filename, filename, audit_ip, audit_ua[:100], audit_ts, req_id,
-        )
-    if not _is_allowed_audio(filename):
-        return jsonify({
-            "ok": False,
-            "code": 400,
-            "error": "unsupported_format",
-            "msg": f"unsupported audio format: {Path(filename).suffix}",
-            "allowed_extensions": sorted(_allowed_audio_extensions),
-            "request_id": req_id,
-            "retryable": False
-        }), 400
-
-    language = (request.form.get("language") or _asr_api_config.get("language") or "Chinese").strip()
-
-    try:
-        with tempfile.TemporaryDirectory(prefix="seagent_asr_") as tmpdir:
-            audio_path = Path(tmpdir) / filename
-            audio.save(audio_path)
-            result = _shared_asr.transcribe_file(audio_path, language=language)
-            
-            raw_text = result["text"]
-            if language.lower() == "english" and raw_text.strip():
-                try:
-                    translated_text = _translate_text_internal(raw_text, "Chinese")
-                except Exception as translate_err:
-                    logging.error(f"Failed to translate English ASR to Chinese: {translate_err}")
-                    translated_text = raw_text
-            else:
-                translated_text = raw_text
-
-            normalization = normalize_terminology(translated_text)
-
-        return jsonify({
-            "code": 200,
-            "text": result["text"],
-            "corrected_text": normalization["corrected_text"],
-            "normalization_changed": normalization["normalization_changed"] or (translated_text != raw_text),
-            "replacements": normalization["replacements"],
-            "warnings": normalization["warnings"],
-            "transcript": result["text"],
-            "direct_to_llm": _asr_direct_to_llm,
-            "language_hint": result["language_hint"],
-            "device": result["device"],
-            "elapsed_ms": result["elapsed_ms"],
-            "segments": result["segments"],
-        })
-    except ASRUnavailableError as e:
-        logging.error("ASR service unavailable: %s", e)
-        return jsonify({
-            "ok": False,
-            "code": 503,
-            "error": "service_unavailable",
-            "msg": "语音识别服务当前不可用，请稍后重试。",
-            "request_id": req_id,
-            "retryable": True
-        }), 503
-    except Exception as e:
-        logging.error(f"ASR processing exception: {e}", exc_info=True)
-        return jsonify({
-            "ok": False,
-            "code": 500,
-            "error": "ASRProcessingError",
-            "msg": "语音识别服务异常，请稍后重试。",
-            "request_id": req_id,
-            "retryable": True
-        }), 500
-
-from src.slot_store import SlotVersionConflict
-from src.exceptions import TaskPersistenceError, TaskRollbackError, IntentIdConflict, IdReservationError
-
-
-def _dispatch_ros2_on_done_transition(mgr, phase_before):
-    """Dispatch only the state-machine edge into done, never a later done request."""
-    task_intent = getattr(mgr, "final_result", None)
-    if phase_before == "done" or mgr.phase != "done" or not task_intent:
-        return None
-    bridge = get_mcp_bridge()
-    if bridge is None or not bridge.is_healthy():
-        return {"state": "FAILED", "error": "ROS 2 MCP 桥接服务未连接"}
-    try:
-        sent_id = bridge.dispatch_intent(task_intent)
-        logging.info("TaskIntent 已写入 ROS 2 传输 (task_id=0x%X)", sent_id)
-        return {
-            "state": "SENT",
-            "task_id": sent_id,
-            "task_id_hex": f"0x{sent_id:X}",
-        }
-    except Exception as bridge_err:
-        logging.error("自动下发至 ROS 2 失败: %s", bridge_err, exc_info=True)
-        return {"state": "FAILED", "error": str(bridge_err)}
-
-
-def _persist_and_dispatch_done_transition(mgr, phase_before):
-    """当会话首次到达 done 阶段时，先保存会话快照再尝试下发 ROS 2。"""
-    ros2_dispatch = None
-    if phase_before == "done" or mgr.phase != "done":
-        return ros2_dispatch
-
-    try:
-        save_conversation(
-            session_id=mgr.session_id,
-            conversation_history=mgr.conversation_history,
-            task_state=mgr.task_state,
-            built_json=mgr._last_built_json,
-            mode=mgr.mode,
-            phase=mgr.phase,
-            intent_id=mgr.task_state.get("intent_id"),
-            slot_store=mgr.slot_store,
-            dialogue_mode=mgr.dialogue_mode,
-            last_mode_transition=mgr.last_mode_transition,
-            mode_transition_history=mgr.mode_transition_history,
-            control_state=mgr.control_state,
-            last_control_request=mgr.last_control_request,
-        )
-    except Exception as exc:
-        logging.error("保存历史快照失败: %s", exc, exc_info=True)
-
-    ros2_dispatch = _dispatch_ros2_on_done_transition(mgr, phase_before)
-    return ros2_dispatch
-
-@app.route("/api/chat", methods=["POST"])
-@_require_api_token
-def api_chat():
-    try:
-        data = request.json or {}
-        sid = data.get("session_id") or str(uuid.uuid4())
-        request_id = data.get("request_id") or f"req_{uuid.uuid4().hex[:8]}"
-        msg = data.get("message", "").strip()
-        if not msg:
-            return jsonify({
-                "ok": False,
-                "code": 400,
-                "error": "EmptyMessage",
-                "msg": "消息内容不能为空。",
-                "request_id": request_id,
-                "retryable": False
-            }), 400
-
-        mgr = get_or_create_manager(sid)
-
-        with mgr._session_lock:
-            with _sessions_lock:
-                if _sessions_manager.get(sid) is not mgr:
-                    return jsonify({
-                        "ok": False,
-                        "code": 409,
-                        "error": "SessionReset",
-                        "msg": "当前会话已重新开始，请在新会话中重试。",
-                        "request_id": request_id,
-                        "retryable": True,
-                    }), 409
-            with _sess_lock:
-                if sid not in _sessions:
-                    _sessions[sid] = Session(sid)
-            phase_before = mgr.phase
-            reply = mgr.process(
-                msg,
-                request_id=request_id,
-            )
-            print_status(mgr)
-            ros2_dispatch = None
-            if mgr.phase == "done":
-                try:
-                    save_conversation(
-                        session_id=sid,
-                        conversation_history=mgr.conversation_history,
-                        task_state=mgr.task_state,
-                        built_json=mgr._last_built_json,
-                        mode=mgr.mode,
-                        phase=mgr.phase,
-                        intent_id=mgr.task_state.get('intent_id'),
-                        slot_store=mgr.slot_store,
-                        dialogue_mode=mgr.dialogue_mode,
-                        last_mode_transition=mgr.last_mode_transition,
-                        mode_transition_history=mgr.mode_transition_history,
-                        control_state=mgr.control_state,
-                        last_control_request=mgr.last_control_request,
-                    )
-                except Exception as e:
-                    logging.error("保存历史快照失败: %s", e, exc_info=True)
-
-                # 只有首次进入 done 才触发自动下发；重复确认不会再次发布。
-                ros2_dispatch = _dispatch_ros2_on_done_transition(mgr, phase_before)
-
-            ui_state = build_frontend_ui_state(mgr)
-            resp_data = {
-                "code": 200,
-                "session_id": sid,
-                "request_id": request_id,
-                "reply": reply,
-                # ui_state: 统一前端状态契约（Issue #31）
-                "ui_state": ui_state,
-                # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
-                "done": mgr.phase == "done",
-                "rejected": mgr.phase == "rejected",
-                "collected": mgr._last_built_json,
-                "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
-                "task_type": mgr.task_state.get("task_type_key"),
-                "task_id": mgr.task_state.get("task_id"),
-                "task_id_preview": mgr.task_id_preview,
-                "emergency": mgr.mode == "emergency",
-                "final_json": mgr._last_built_json if mgr.phase == "done" else None,
-                "ros2_dispatch": ros2_dispatch,
-            }
-        for k, v in resp_data.items():
-            try:
-                json.dumps(v)
-            except Exception as e:
-                raise TypeError(f"Field '{k}' is not JSON serializable: {type(v)} -> {v}") from e
-
-        return jsonify(resp_data)
-    except SlotVersionConflict as svc:
-        logging.error(f"Slot version conflict in /api/chat: {svc}", exc_info=True)
-        return jsonify({
-            "ok": False,
-            "code": 409,
-            "error": "SlotVersionConflict",
-            "msg": f"并发版本冲突: {str(svc)}",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown",
-            "retryable": True
-        }), 409
-    except IntentIdConflict as iic:
-        logging.error(f"Intent ID conflict in /api/chat: {iic}", exc_info=True)
-        return jsonify({
-            "ok": False,
-            "code": 409,
-            "error": "IntentIdConflict",
-            "msg": "Intent ID 存在冲突，未覆盖已有任务文件。",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown",
-            "retryable": True
-        }), 409
-    except (TaskPersistenceError, IdReservationError, TaskRollbackError) as tpe:
-        logging.error(f"Task persistence error in /api/chat: {tpe}", exc_info=True)
-        return jsonify({
-            "ok": False,
-            "code": 500,
-            "error": type(tpe).__name__,
-            "msg": "任务文件保存失败，任务未能成功下发。",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown",
-            "retryable": True
-        }), 500
-    except ValueError as ve:
-        logging.error(f"Validation error in /api/chat: {ve}", exc_info=True)
-        return jsonify({
-            "ok": False,
-            "code": 400,
-            "error": "ValidationError",
-            "msg": f"槽位校验失败: {str(ve)}",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown",
-            "retryable": False
-        }), 400
-    except Exception as exc:
-        logging.error(f"Unhandled exception in /api/chat: {exc}", exc_info=True)
-        return jsonify({
-            "ok": False,
-            "code": 500,
-            "error": "InternalServerError",
-            "msg": "服务器内部错误，请稍后重试。",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown",
-            "retryable": True
-        }), 500
-
-
-@app.route("/api/chat/stream", methods=["POST"])
-@_require_api_token
-def api_chat_stream():
-    """SSE 流式会话更新机制（Server-Sent Events），提供细粒度事件流与实时更新契约。"""
-    try:
-        data = request.json or {}
-        sid = data.get("session_id") or str(uuid.uuid4())
-        request_id = data.get("request_id") or f"req_{uuid.uuid4().hex[:8]}"
-        msg = data.get("message", "").strip()
-        if not msg:
-            return jsonify({
-                "ok": False,
-                "code": 400,
-                "error": "EmptyMessage",
-                "msg": "消息内容不能为空。",
-                "request_id": request_id,
-                "retryable": False,
-            }), 400
-
-        mgr = get_or_create_manager(sid)
-
-        session_error = None
-        reply = ""
-        result_json = ""
-        with mgr._session_lock:
-            with _sessions_lock:
-                if _sessions_manager.get(sid) is not mgr:
-                    session_error = {"code": 409, "error": "SessionReset", "msg": "当前会话已重新开始，请在新会话中重试。", "request_id": request_id, "retryable": True}
-                else:
-                    with _sess_lock:
-                        if sid not in _sessions:
-                            _sessions[sid] = Session(sid)
-
-            if session_error is None:
-                try:
-                    phase_before = mgr.phase
-                    reply = mgr.process(msg, request_id=request_id)
-                    ros2_dispatch = _persist_and_dispatch_done_transition(mgr, phase_before)
-                    ui_state = build_frontend_ui_state(mgr)
-                    resp_data = {
-                        "code": 200,
-                        "session_id": sid,
-                        "request_id": request_id,
-                        "reply": reply,
-                        # ui_state: 统一前端状态契约（Issue #31）
-                        "ui_state": ui_state,
-                        # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
-                        "done": mgr.phase == "done",
-                        "rejected": mgr.phase == "rejected",
-                        "collected": mgr._last_built_json,
-                        "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
-                        "task_type": mgr.task_state.get("task_type_key"),
-                        "task_id": mgr.task_state.get("task_id"),
-                        "task_id_preview": mgr.task_id_preview,
-                        "emergency": mgr.mode == "emergency",
-                        "final_json": mgr._last_built_json if mgr.phase == "done" else None,
-                        "ros2_dispatch": ros2_dispatch,
-                    }
-                    for k, v in resp_data.items():
-                        json.dumps(v)
-                    result_json = json.dumps(resp_data, ensure_ascii=False)
-                except SlotVersionConflict as svc:
-                    logging.error(f"Slot version conflict in /api/chat/stream: {svc}", exc_info=True)
-                    session_error = {
-                        "code": 409,
-                        "error": "SlotVersionConflict",
-                        "msg": f"并发版本冲突: {str(svc)}",
-                        "request_id": request_id,
-                        "retryable": True,
-                    }
-                except IntentIdConflict as iic:
-                    logging.error(f"Intent ID conflict in /api/chat/stream: {iic}", exc_info=True)
-                    session_error = {
-                        "code": 409,
-                        "error": "IntentIdConflict",
-                        "msg": "Intent ID 存在冲突，未覆盖已有任务文件。",
-                        "request_id": request_id,
-                        "retryable": True,
-                    }
-                except (TaskPersistenceError, IdReservationError, TaskRollbackError) as tpe:
-                    logging.error(f"Task persistence error in /api/chat/stream: {tpe}", exc_info=True)
-                    session_error = {
-                        "code": 500,
-                        "error": type(tpe).__name__,
-                        "msg": "任务文件保存失败，任务未能成功下发。",
-                        "request_id": request_id,
-                        "retryable": True,
-                    }
-                except ValueError as ve:
-                    logging.error(f"Validation error in /api/chat/stream: {ve}", exc_info=True)
-                    session_error = {
-                        "code": 400,
-                        "error": "ValidationError",
-                        "msg": f"槽位校验失败: {str(ve)}",
-                        "request_id": request_id,
-                        "retryable": False,
-                    }
-                except Exception as exc:
-                    logging.error(f"Unhandled exception in /api/chat/stream: {exc}", exc_info=True)
-                    session_error = {
-                        "code": 500,
-                        "error": "InternalServerError",
-                        "msg": "服务器内部错误，请稍后重试。",
-                        "request_id": request_id,
-                        "retryable": True,
-                    }
-
-        def event_stream():
-            if session_error is not None:
-                yield f"event: error\ndata: {json.dumps(session_error, ensure_ascii=False)}\n\n"
-                return
-
-            yield f"event: ping\ndata: {json.dumps({'status': 'connected', 'session_id': sid, 'request_id': request_id})}\n\n"
-            yield f"event: step\ndata: {json.dumps({'step': 'processing', 'message': '正在分析指令与状态...', 'phase': mgr.phase})}\n\n"
-
-            for i in range(0, len(reply), 12):
-                delta_text = reply[i:i + 12]
-                yield f"event: delta\ndata: {json.dumps({'delta': delta_text, 'request_id': request_id}, ensure_ascii=False)}\n\n"
-            yield f"event: result\ndata: {result_json}\n\n"
-            yield "event: end\ndata: [DONE]\n\n"
-
-        return Response(
-            stream_with_context(event_stream()),
-            mimetype="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
-            },
-        )
-    except Exception as exc:
-        logging.error(f"Unhandled exception in /api/chat/stream: {exc}", exc_info=True)
-        return jsonify({
-            "ok": False,
-            "code": 500,
-            "error": "InternalServerError",
-            "msg": "服务器内部错误，请稍后重试。",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown",
-            "retryable": True
-        }), 500
-
-
-@app.route("/api/reset", methods=["POST"])
-@_require_api_token
-def api_reset():
-    sid = (request.json or {}).get("session_id")
-    if not isinstance(sid, str) or not sid.strip():
-        return jsonify({
-            "ok": False,
-            "code": 400,
-            "error": "MissingSessionId",
-            "msg": "session_id 不能为空",
-            "retryable": False,
-        }), 400
-
-    with _sessions_lock:
-        mgr = _sessions_manager.get(sid)
-    if mgr is None:
-        with _sess_lock:
-            _sessions.pop(sid, None)
-        return jsonify({"ok": True, "reset": True})
-
-    with mgr._session_lock:
-        with _sessions_lock:
-            if _sessions_manager.get(sid) is not mgr:
-                return jsonify({"ok": True, "reset": True})
-            _sessions_manager.pop(sid, None)
-        with _sess_lock:
-            _sessions.pop(sid, None)
-        mgr.reset()
-
-    return jsonify({"ok": True, "reset": True})
-
-
-@app.route("/api/session/state", methods=["GET"])
-def get_session_state():
-    sid = request.args.get("session_id")
-    if not sid:
-        return jsonify({"ok": False, "code": 400, "error": "MissingSessionId", "msg": "session_id 不能为空", "retryable": False}), 400
-    refresh_constraints = str(request.args.get("refresh_constraints", "")).strip().lower() in {"1", "true", "yes", "on"}
-
-    with _sessions_lock:
-        mgr = _sessions_manager.get(sid)
-
-    if not mgr:
-        return jsonify({"ok": True, "code": 200, "exists": False}), 200
-
-    constraint_refresh = None
-    with mgr._session_lock:
-        if refresh_constraints:
-            try:
-                constraint_refresh = mgr.refresh_external_state_constraints()
-            except Exception as exc:
-                logger.warning("session state constraint refresh failed: session_id=%s error=%s", sid, exc, exc_info=True)
-                constraint_refresh = {
-                    "refreshed": False,
-                    "reason": "refresh_error",
-                    "message": str(exc),
-                }
-        ui_state = build_frontend_ui_state(mgr)
-        return jsonify({
-            "ok": True,
-            "code": 200,
-            "exists": True,
-            "session_id": sid,
-            # ui_state: 统一前端状态契约（Issue #31）
-            "ui_state": ui_state,
-            "constraint_refresh": constraint_refresh,
-            # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
-            "done": mgr.phase == "done",
-            "rejected": mgr.phase == "rejected",
-            "collected": mgr._last_built_json,
-            "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
-            "task_type": mgr.task_state.get("task_type_key"),
-            "task_id": mgr.task_state.get("task_id"),
-            "task_id_preview": mgr.task_id_preview,
-            "emergency": mgr.mode == "emergency",
-            "history": mgr.conversation_history,
-            "final_json": mgr._last_built_json if mgr.phase == "done" else None
-        })
-
-
-import re as _re_module
-
-_CJK_RE = _re_module.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
-
-TRANSLATION_CHUNK_SIZE = 2000
-TRANSLATION_MAX_INPUT_CHARS = 20000
-TRANSLATION_MAX_TOKENS = 4096
-TRANSLATION_CACHE_FILE = get_result_dir(create=True) / "translation_cache.json"
-_translation_cache_file = TRANSLATION_CACHE_FILE
-_translation_cache_lock = threading.Lock()
-_translation_cache: dict[str, str] = {}
-TRANSLATION_USE_CACHE = True
-
-def _get_cache_key(text: str, target_lang: str) -> str:
-    return f"{target_lang}:{text}"
-
-# 翻译系统提示词
-_TRANSLATE_SYSTEM_PROMPT = (
-    "You are a professional translator specializing in subsea engineering and oilfield operations. "
-    "Translate the given text into {target_lang}. "
-    "Rules: "
-    "1. Keep ALL markdown formatting (tables, lists, bold, code blocks, headers) exactly as-is. "
-    "2. Keep HTML tags, emojis, and technical identifiers (e.g. sealien_work_class, PL-003, A03) unchanged. "
-    "3. Do NOT add any explanations, notes, or preamble. "
-    "4. Output ONLY the translated text, nothing else. "
-    "5. If the input is already in {target_lang}, output it unchanged."
-)
-
-
-def _is_dirty_translation(target_lang: str, translated: str) -> bool:
-    """
-    检测翻译结果是否为脏数据（与目标语言不符）。
-    与前端 isDirtyTranslation() 逻辑保持一致。
-    """
-    if not translated or not translated.strip():
-        return True
-    t = translated.strip()
-    # JSON / 列表格式不应作为翻译结果
-    if t.startswith("{") or t.startswith("["):
-        return True
-    # English 目标但结果含中文字符
-    if target_lang == "English" and _CJK_RE.search(translated):
-        return True
-    return False
-
-
-def _validate_translation_quality(
-    original: str, translated: str, target_lang: str
-) -> tuple[bool, str]:
-    """
-    校验翻译结果质量。
-    返回 (is_valid, reason)。
-
-    注意：中文字符信息密度约为英文的 2-4 倍，因此中英互译后长度差异较大是正常现象。
-    例如：英文 50 字符 → 中文约 15-20 字符（ratio ~0.3~0.4）。
-    下限设置为 0.08，上限设置为 6.0，仅过滤极端异常情况。
-    """
-    if _is_dirty_translation(target_lang, translated):
-        return False, "dirty_content"
-    # 翻译结果长度比例校验（容忍中英文字符密度差异）
-    orig_len = len(original)
-    tran_len = len(translated)
-    if orig_len > 100:  # 仅对较长文本做比例检查
-        ratio = tran_len / orig_len if orig_len > 0 else 0
-        if ratio < 0.08 or ratio > 6.0:
-            return False, f"length_ratio_abnormal({ratio:.2f})"
-    return True, "ok"
-
-
-def _split_into_chunks(text: str, chunk_size: int) -> list[str]:
-    """
-    按段落分割文本，尽量保持段落完整性。
-    优先按双换行（段落边界）分割，不超过 chunk_size 字符。
-    """
-    # 先按双换行分段
-    paragraphs = _re_module.split(r"\n\n+", text)
-    chunks = []
-    current = []
-    current_len = 0
-    for para in paragraphs:
-        para_len = len(para)
-        if current_len + para_len > chunk_size and current:
-            chunks.append("\n\n".join(current))
-            current = [para]
-            current_len = para_len
-        else:
-            current.append(para)
-            current_len += para_len + 2  # +2 for \n\n
-    if current:
-        chunks.append("\n\n".join(current))
-    return chunks
-
-
-def _translate_single_chunk(text: str, target_lang: str) -> str:
-    """翻译单个文本块，不做缓存，直接走 LLM。"""
-    from src.model_profile import ModelRole
-    system_instruction = _TRANSLATE_SYSTEM_PROMPT.format(target_lang=target_lang)
-    messages = [
-        {"role": "system", "content": system_instruction},
-        {"role": "user", "content": text},
-    ]
-    return _shared_llm.chat(
-        messages,
-        temperature=0.1,
-        max_tokens=TRANSLATION_MAX_TOKENS,
-        role=ModelRole.TRANSLATION,
-    )
-
-
-
-def _translate_text_internal(text: str, target_lang: str) -> str:
-    """
-    核心翻译函数。
-    - 每次请求均调用 LLM 实时翻译。
-    - 超过 TRANSLATION_CHUNK_SIZE 字符时分段翻译后合并。
-    - 翻译结果经质量校验；校验失败时返回原文并记录 warning。
-    """
-    text = text.strip()
-    if not text:
-        return ""
-
-    cache_key = _get_cache_key(text, target_lang)
-    if TRANSLATION_USE_CACHE:
-        with _translation_cache_lock:
-            if cache_key in _translation_cache:
-                return _translation_cache[cache_key]
-
-    # 输入长度硬限制
-    if len(text) > TRANSLATION_MAX_INPUT_CHARS:
-        logging.warning(
-            f"[translate] Input too long ({len(text)} chars > {TRANSLATION_MAX_INPUT_CHARS}), "
-            "truncating to limit."
-        )
-        text = text[:TRANSLATION_MAX_INPUT_CHARS]
-
-    if _shared_llm is None:
-        raise RuntimeError("LLM client is not initialized")
-
-    # 分段翻译（长文本）
-    if len(text) > TRANSLATION_CHUNK_SIZE:
-        chunks = _split_into_chunks(text, TRANSLATION_CHUNK_SIZE)
-        logging.info(
-            f"[translate] Long text ({len(text)} chars) split into {len(chunks)} chunks."
-        )
-        translated_chunks = []
-        for i, chunk in enumerate(chunks):
-            chunk_result = _translate_single_chunk(chunk, target_lang)
-            valid, reason = _validate_translation_quality(chunk, chunk_result, target_lang)
-            if not valid:
-                logging.warning(
-                    f"[translate] Chunk {i+1}/{len(chunks)} quality check failed: {reason}. "
-                    "Falling back to original chunk."
-                )
-                translated_chunks.append(chunk)  # 原文回退
-            else:
-                translated_chunks.append(chunk_result)
-        translated = "\n\n".join(translated_chunks)
-    else:
-        translated = _translate_single_chunk(text, target_lang)
-
-    # 整体翻译质量校验
-    valid, reason = _validate_translation_quality(text, translated, target_lang)
-    if not valid:
-        logging.error(
-            f"[translate] Translation quality check failed: {reason}. "
-            f"lang={target_lang}, input='{text[:60]}...'"
-        )
-        # 返回原文（安全回退）
-        return text
-
-    if TRANSLATION_USE_CACHE:
-        with _translation_cache_lock:
-            _translation_cache[cache_key] = translated
-
-    return translated
-
-
-@app.route("/api/translate", methods=["POST"])
-@_require_api_token
-def api_translate():
-    req_id = f"req_{uuid.uuid4().hex[:8]}"
-    data = request.json or {}
-    text = data.get("text", "").strip()
-
-    if "target_lang" not in data or data.get("target_lang") is None:
-        return jsonify({
-            "ok": False,
-            "code": 400,
-            "error": "missing_parameter",
-            "msg": "Missing required parameter: target_lang",
-            "request_id": req_id,
-            "retryable": False
-        }), 400
-
-    target_lang = str(data.get("target_lang", "")).strip()
-
-    if not text:
-        return jsonify({"code": 200, "translated_text": ""})
-
-    # 校验 target_lang
-    allowed_langs = {"English", "Chinese"}
-    if target_lang not in allowed_langs:
-        return jsonify({
-            "ok": False,
-            "code": 400,
-            "error": "unsupported_language",
-            "msg": f"Unsupported target_lang: {target_lang}. Allowed: {sorted(allowed_langs)}",
-            "request_id": req_id,
-            "retryable": False
-        }), 400
-
-    try:
-        original_text = text
-        translated = _translate_text_internal(text, target_lang)
-
-        # 检测是否发生了原文回退（质量校验失败时 translated == original）
-        quality_warning = None
-        if translated == original_text and _is_dirty_translation(target_lang, original_text) is False:
-            # 正常情况（原文本身就是目标语言）不报 warning
+                delattr(state, name)
+            except AttributeError:
+                pass
+        try:
+            super().__delattr__(name)
+        except AttributeError:
             pass
-        elif translated == original_text and target_lang == "English" and _CJK_RE.search(original_text):
-            quality_warning = "fallback_to_original"
-
-        resp = {"code": 200, "translated_text": translated}
-        if quality_warning:
-            resp["quality_warning"] = quality_warning
-        return jsonify(resp)
-
-    except RuntimeError as re_err:
-        return jsonify({
-            "ok": False,
-            "code": 503,
-            "error": "model_error",
-            "msg": str(re_err),
-            "request_id": req_id,
-            "retryable": True
-        }), 503
-    except Exception as e:
-        logging.exception("[translate] Unexpected error in api_translate")
-        return jsonify({
-            "ok": False,
-            "code": 500,
-            "error": "internal_error",
-            "msg": "Internal server error during translation",
-            "request_id": req_id,
-            "retryable": True
-        }), 500
 
 
-# ==============================================================================
-# 模拟时间接口（离线环境时间同步）
-# ==============================================================================
-@app.route("/api/time/current", methods=["GET"])
-def get_current_time():
-    sim = get_simulated_time()
-    current = sim.get_current_time()
-    return jsonify({
-        "code": 200,
-        "current_time": current.isoformat(),
-        "timestamp": current.timestamp()
-    })
-
-
-@app.route("/api/time/set", methods=["POST"])
-@_require_api_token
-def set_current_time():
-    data = request.get_json()
-    time_str = data.get("time")
-    if not time_str:
-        return jsonify({"code": 400, "msg": "缺少 time 字段"}), 400
-    try:
-        dt = datetime.fromisoformat(time_str)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
-        sim = get_simulated_time()
-        sim.set_current_time(dt)
-        return jsonify({
-            "code": 200,
-            "msg": "时间设置成功",
-            "current_time": sim.get_current_time().isoformat()
-        })
-    except Exception as e:
-        return jsonify({"code": 500, "msg": f"时间格式错误: {str(e)}"}), 500
-
-
-@app.route("/api/history/list", methods=["GET"])
-def api_history_list():
-    """返回历史记录列表"""
-    try:
-        records = list_history()
-        return jsonify({"code": 200, "data": records})
-    except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
-
-
-@app.route("/api/history/load", methods=["POST"])
-@_require_api_token
-def api_history_load():
-    """加载指定的历史快照，并恢复到当前会话"""
-    data = request.get_json() or {}
-    history_id = data.get("history_id")
-    sid = data.get("session_id")
-    if not history_id or not sid:
-        return jsonify({"code": 400, "msg": "缺少 history_id 或 session_id"}), 400
-
-    try:
-        snapshot = load_history(history_id)
-    except ValueError as exc:
-        logging.warning("拒绝非法历史快照请求: history_id=%r, error=%s", history_id, exc)
-        return jsonify({"code": 400, "msg": f"历史记录参数或内容非法: {exc}"}), 400
-    except OSError as exc:
-        logging.error("读取历史快照失败: history_id=%r", history_id, exc_info=True)
-        return jsonify({"code": 500, "msg": f"读取历史记录失败: {exc}"}), 500
-
-    if not snapshot:
-        return jsonify({"code": 404, "msg": "历史记录不存在"}), 404
-
-    mgr = get_or_create_manager(sid)
-    with mgr._session_lock:
-        try:
-            mgr.load_snapshot(snapshot)
-        except (TypeError, ValueError) as exc:
-            logging.warning("历史快照结构校验失败: history_id=%r, error=%s", history_id, exc)
-            return jsonify({"code": 400, "msg": f"历史快照结构非法: {exc}"}), 400
-        except Exception as exc:
-            logging.error("恢复历史快照失败: history_id=%r", history_id, exc_info=True)
-            return jsonify({"code": 500, "msg": f"恢复历史记录失败: {exc}"}), 500
-
-        ui_state = build_frontend_ui_state(mgr)
-        return jsonify({
-            "code": 200,
-            "session_id": sid,
-            "conversation_history": mgr.conversation_history,
-            # ui_state: 统一前端状态契约（Issue #31）
-            "ui_state": ui_state,
-            # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
-            "built_json": mgr._last_built_json,
-            "missing": [miss["key"] for miss in mgr._last_missing],
-            "task_type": mgr.task_state.get("task_type_key"),
-            "mode": mgr.mode,
-            "phase": mgr.phase,
-        })
-
-
-# ============================================================================
-# SEAgent ROS 2 MCP Web API 接口
-# ============================================================================
-
-_shared_mcp_bridge = None
-
-
-def init_mcp_bridge_service(bridge_service):
-    """初始化并注入全局 MCP 桥接服务实例"""
-    global _shared_mcp_bridge
-    _shared_mcp_bridge = bridge_service
-
-
-def get_mcp_bridge():
-    """获取全局 MCP 桥接服务实例"""
-    return _shared_mcp_bridge
-
-
-@app.route("/api/mcp/status", methods=["GET"])
-@_require_api_token
-def get_mcp_status():
-    """查询云端 ↔ 支持船 Topside MCP 通信状态与遥测快照"""
-    bridge = get_mcp_bridge()
-    if bridge is None:
-        resp = jsonify({
-            "code": 200,
-            "mcp_connected": False,
-            "telemetry_fresh": False,
-            "msg": "MCP 桥接服务未初始化",
-            "host": None,
-            "port": None,
-            "snapshot": {},
-        })
-    else:
-        resp = jsonify({"code": 200, **bridge.status_payload()})
-    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    return resp
-
-
-@app.route("/api/mcp/dispatch", methods=["POST"])
-@_require_api_token
-def dispatch_mcp_task():
-    """下发指定 TaskIntent 或当前会话完成的任务到 ROS 2 控制系统"""
-    bridge = get_mcp_bridge()
-    if bridge is None or not bridge.is_healthy():
-        return jsonify({"code": 503, "msg": "MCP 桥接服务未初始化或连接断开"}), 503
-
-    data = request.get_json(silent=True) or {}
-    sid = data.get("session_id")
-    custom_intent = data.get("task_intent")
-
-    allow_custom = bool(app.config.get("ALLOW_MCP_CUSTOM_INTENT", False))
-    if custom_intent and isinstance(custom_intent, dict) and allow_custom:
-        intent_to_send = custom_intent
-    elif custom_intent:
-        return jsonify({
-            "code": 403,
-            "msg": "禁止绕过 SEAgent 会话确认与约束校验直接下发 task_intent",
-        }), 403
-    elif sid:
-        mgr = get_or_create_manager(sid)
-        if mgr.phase != "done" or not mgr.final_result:
-            return jsonify({"code": 400, "msg": f"当前会话 {sid} 尚未处于 done 阶段，无可下发的任务"}), 400
-        intent_to_send = mgr.final_result
-    else:
-        return jsonify({"code": 400, "msg": "请提供已完成确认的 session_id"}), 400
-
-    try:
-        task_id = bridge.dispatch_intent(intent_to_send)
-        return jsonify({
-            "code": 200,
-            "msg": f"任务已写入 ROS 2 传输 (task_id=0x{task_id:X})，等待机器人遥测确认",
-            "dispatch_state": "SENT",
-            "task_id": task_id,
-            "task_id_hex": f"0x{task_id:X}",
-        })
-    except Exception as exc:
-        logging.error("MCP 下发任务失败: %s", exc, exc_info=True)
-        return jsonify({"code": 500, "msg": f"MCP 下发失败: {exc}"}), 500
-
-
-def _persist_active_gateway(host: str, port: int, mode: str) -> None:
-    """Persist the mutable gateway in ros2_runtime.yaml atomically."""
-    runtime_file = CONFIG_DIR / "ros2_runtime.yaml"
-    with open(runtime_file, "r", encoding="utf-8") as config_handle:
-        data = yaml.safe_load(config_handle) or {}
-    gateway = data.setdefault("gateway", {})
-    gateway["host"] = host
-    gateway["port"] = port
-    gateway["mode"] = mode
-
-    temporary_file = runtime_file.with_suffix(
-        f".gateway_tmp_{os.getpid()}_{threading.get_ident()}"
-    )
-    try:
-        with open(temporary_file, "w", encoding="utf-8") as config_handle:
-            yaml.safe_dump(data, config_handle, allow_unicode=True, sort_keys=False)
-            config_handle.flush()
-            os.fsync(config_handle.fileno())
-        os.replace(temporary_file, runtime_file)
-        directory_fd = os.open(runtime_file.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        temporary_file.unlink(missing_ok=True)
-
-
-@app.route("/api/mcp/gateway", methods=["GET", "POST"])
-@_require_api_token
-def mcp_gateway():
-    """Read or atomically switch the live rosbridge gateway."""
-    bridge = get_mcp_bridge()
-    if bridge is None:
-        return jsonify({"code": 503, "msg": "MCP 桥接服务未初始化"}), 503
-    if request.method == "GET":
-        return jsonify({
-            "code": 200,
-            "gateway": {
-                "host": bridge.host,
-                "port": bridge.port,
-                "mode": bridge.gateway_mode,
-                "ws_url": f"ws://{bridge.host}:{bridge.port}",
-                "connected": bridge.is_healthy(),
-            },
-        })
-
-    data = request.get_json(silent=True) or {}
-    host = str(data.get("host", "")).strip()
-    try:
-        port = int(data.get("port"))
-    except (TypeError, ValueError):
-        return jsonify({"code": 400, "msg": "port 必须是整数"}), 400
-    mode = str(data.get("mode") or ("real" if port == 9090 else "mock"))
-    if not host or len(host) > 253 or any(ch.isspace() for ch in host):
-        return jsonify({"code": 400, "msg": "host 格式非法"}), 400
-    if not 1 <= port <= 65535:
-        return jsonify({"code": 400, "msg": "port 必须在 1..65535 范围内"}), 400
-
-    old_host, old_port, old_mode = bridge.host, bridge.port, bridge.gateway_mode
-    try:
-        bridge.reconnect(host, port, mode=mode)
-        try:
-            _persist_active_gateway(host, port, mode)
-        except Exception:
-            bridge.reconnect(old_host, old_port, mode=old_mode)
-            raise
-    except Exception as exc:
-        logging.error("切换 ROS 2 网关失败: %s", exc, exc_info=True)
-        return jsonify({"code": 502, "msg": f"网关切换失败: {exc}"}), 502
-    return jsonify({
-        "code": 200,
-        "gateway": {
-            "host": host,
-            "port": port,
-            "mode": mode,
-            "ws_url": f"ws://{host}:{port}",
-            "connected": True,
-        },
-    })
-
-
-@app.route("/api/mcp/task-manage", methods=["POST"])
-@_require_api_token
-def mcp_task_manage():
-    """发送任务管理指令 (suspend, resume, delete, clear_block)"""
-    bridge = get_mcp_bridge()
-    if bridge is None or not bridge.is_healthy():
-        return jsonify({"code": 503, "msg": "MCP 桥接服务未连接"}), 503
-
-    data = request.get_json(silent=True) or {}
-    action_str = str(data.get("action", "")).lower()
-    target_task_id = data.get("task_id")
-
-    try:
-        if action_str == "suspend":
-            if not target_task_id:
-                return jsonify({"code": 400, "msg": "挂起任务需提供 task_id"}), 400
-            tid = bridge.suspend_task(int(target_task_id))
-        elif action_str == "resume":
-            if not target_task_id:
-                return jsonify({"code": 400, "msg": "恢复任务需提供 task_id"}), 400
-            tid = bridge.resume_task(int(target_task_id))
-        elif action_str == "delete":
-            if not target_task_id:
-                return jsonify({"code": 400, "msg": "删除任务需提供 task_id"}), 400
-            tid = bridge.delete_task(int(target_task_id))
-        elif action_str in ("clear_block", "clear"):
-            tid = bridge.emergency_clear_block()
-        else:
-            return jsonify({"code": 400, "msg": f"未知的管理动作: {action_str}"}), 400
-
-        return jsonify({
-            "code": 200,
-            "msg": f"任务管理指令 {action_str} 已下发",
-            "cmd_task_id": tid,
-        })
-    except Exception as exc:
-        logging.error("MCP 任务管理指令下发失败: %s", exc, exc_info=True)
-        return jsonify({"code": 500, "msg": f"管理指令失败: {exc}"}), 500
-
-
-@app.route("/api/mcp/ctrl-task", methods=["POST"])
-@_require_api_token
-def mcp_ctrl_task():
-    """设备控制指令（开关灯、继电器等）"""
-    bridge = get_mcp_bridge()
-    if bridge is None or not bridge.is_healthy():
-        return jsonify({"code": 503, "msg": "MCP 桥接服务未连接"}), 503
-
-    data = request.get_json(silent=True) or {}
-    device_id = data.get("device_id")
-    value = data.get("value", 0.0)
-
-    if device_id is None:
-        return jsonify({"code": 400, "msg": "缺少 device_id 参数"}), 400
-
-    try:
-        tid = bridge.control_device(device_id=int(device_id), value=float(value))
-        return jsonify({
-            "code": 200,
-            "msg": f"设备控制指令已发送 (device={device_id}, value={value})",
-            "cmd_task_id": tid,
-        })
-    except Exception as exc:
-        logging.error("MCP 设备控制下发失败: %s", exc, exc_info=True)
-        return jsonify({"code": 500, "msg": f"控制下发失败: {exc}"}), 500
+sys.modules[__name__].__class__ = _WebBackendModule
