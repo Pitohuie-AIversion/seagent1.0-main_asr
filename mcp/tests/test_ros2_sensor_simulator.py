@@ -1,6 +1,6 @@
 """Contracts for the real-rosbridge sensor telemetry simulator."""
 
-from scratch.run_ros2_telemetry_echo_node import (
+from scripts.run_ros2_telemetry_echo_node import (
     _SENSOR_TOPICS,
     _build_sensor_messages,
 )
