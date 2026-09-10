@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import fcntl
 import os
+import logging
 import tempfile
 import threading
 from contextlib import contextmanager
@@ -34,6 +35,8 @@ _SYSTEM_OWNED_FIELDS = {
     "updated_at",
     "update_timestamp",
 }
+
+logger = logging.getLogger(__name__)
 
 ROBOT_STATE_MAX_AGE_SECONDS = 30 * 60
 TELEMETRY_MAX_FUTURE_SKEW_SECONDS = 5 * 60
@@ -685,8 +688,12 @@ class RobotStateInfo:
                         if latest_dt is None or dt > latest_dt:
                             latest_dt = dt
                             latest_ts = ts
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug(
+                            "Robot state snapshot updated_at candidate %s invalid, skip: %s",
+                            ts,
+                            exc,
+                        )
                 state["updated_at"] = latest_ts
                 state["update_timestamp"] = latest_ts
             else:
@@ -790,9 +797,15 @@ class RobotStateInfo:
                 try:
                     os.unlink(temp_path)
                 except FileNotFoundError:
-                    pass
+                    logger.debug(
+                        "State persistence cleanup: temp file already removed while cleaning %s",
+                        temp_path,
+                    )
                 except OSError:
-                    pass
+                    logger.debug(
+                        "State persistence cleanup: failed to remove temp file %s",
+                        temp_path,
+                    )
 
     def _write_temp_file(self, content: bytes) -> Path:
         file_descriptor, raw_path = tempfile.mkstemp(
@@ -815,7 +828,10 @@ class RobotStateInfo:
             try:
                 os.unlink(temp_path)
             except FileNotFoundError:
-                pass
+                logger.debug(
+                    "State persistence temp-write cleanup: temp file %s was already removed",
+                    temp_path,
+                )
             raise
 
     def _fsync_parent_directory(self) -> None:
@@ -842,20 +858,30 @@ class RobotStateInfo:
                     try:
                         os.unlink(rollback_temp)
                     except FileNotFoundError:
-                        pass
+                        logger.debug(
+                            "State rollback cleanup: temp file %s was already removed",
+                            rollback_temp,
+                        )
                 try:
                     self._fsync_parent_directory()
                 except OSError:
-                    pass
+                    logger.debug(
+                        "State rollback cleanup: failed to fsync parent directory after rollback restore"
+                    )
                 return
             try:
                 os.unlink(self.state_file)
             except FileNotFoundError:
-                pass
+                logger.debug(
+                    "State rollback cleanup: original state file %s was already removed",
+                    self.state_file,
+                )
             try:
                 self._fsync_parent_directory()
             except OSError:
-                pass
+                logger.debug(
+                    "State rollback cleanup: failed to fsync parent directory after unlink"
+                )
         except OSError as exc:
             raise StatePersistenceError(
                 "Robot state persistence failed and rollback was unsuccessful"

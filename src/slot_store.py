@@ -593,8 +593,11 @@ def normalize_slot_value_type(schema_type: Optional[str] = None, value: Any = No
                         if len(value) >= 10 and "T" in value:
                             datetime.fromisoformat(clean_ts)
                             return "datetime"
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug(
+                            "SlotStore: failed to parse datetime hint for string value: %s",
+                            exc,
+                        )
                     return "string"
                 return "string"
             else:
@@ -618,8 +621,11 @@ def normalize_slot_value_type(schema_type: Optional[str] = None, value: Any = No
                     if len(value) >= 10 and "T" in value:
                         datetime.fromisoformat(clean_ts)
                         return "datetime"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(
+                        "SlotStore: failed to parse datetime hint for auto value: %s",
+                        exc,
+                    )
                 return "string"
             return "string"
         if st == "fixed":
@@ -644,8 +650,11 @@ def normalize_slot_value_type(schema_type: Optional[str] = None, value: Any = No
                 if len(value) >= 10 and "T" in value:
                     datetime.fromisoformat(clean_ts)
                     return "datetime"
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "SlotStore: failed to parse datetime hint for string fallback value: %s",
+                    exc,
+                )
             return "string"
 
     return "string"
@@ -877,12 +886,15 @@ class SlotStore:
                             and v.value is not None
                         }
                         allowed_values = OutputBuilder(self.kb).resolve_allowed_values(
-                            schema_field,
-                            str(task_type_key or ""),
-                            current_state,
-                        ) or []
-                    except Exception:
-                        pass
+                                schema_field,
+                                str(task_type_key or ""),
+                                current_state,
+                            ) or []
+                    except Exception as exc:
+                        logger.debug(
+                            "SlotStore: resolve_allowed_values fallback skipped: %s",
+                            exc,
+                        )
 
         def _resolve(item_str: str) -> Tuple[Optional[str], Optional[str]]:
             """解析项的 (catalog_id, task_canonical_name)。
@@ -1417,8 +1429,11 @@ class SlotStore:
                             model_variants = rf_cfg.get("model_variants", {})
                             robot_families = rf_cfg.get("robot_families", {})
                             robot_classes = rf_cfg.get("robot_classes", {})
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug(
+                                "SlotStore: load robot_fleet.yaml for legacy equipment_specification failed: %s",
+                                exc,
+                            )
 
                     if variant_id not in model_variants:
                         raise SnapshotValidationError(

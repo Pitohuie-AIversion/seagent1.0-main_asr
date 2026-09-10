@@ -133,8 +133,11 @@ def _build_slots(
     try:
         if hasattr(manager, "task_state") and isinstance(manager.task_state, dict):
             task_type_key = manager.task_state.get("task_type_key")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(
+            "build_frontend_ui_state: failed to read task_type_key from manager.task_state: %s",
+            exc,
+        )
 
     if not task_type_key:
         return []
@@ -160,8 +163,12 @@ def _build_slots(
                     return builder.resolve_allowed_values(field_def, ttk, ts)
                 return _resolver
             resolver = _make_resolver(manager.builder, task_type_key, manager.task_state)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(
+            "build_frontend_ui_state: failed to create schema resolver for task_type_key=%r: %s",
+            task_type_key,
+            exc,
+        )
 
     result = []
     for field_def in schema_fields:
@@ -300,7 +307,12 @@ def _resolve_current_status_ref(manager: "DialogueManager", unit_id: str) -> str
         if callable(resolver):
             resolved = resolver(unit_id)
             return str(resolved) if resolved not in (None, "") else None
-    except Exception:
+    except Exception as exc:
+        logger.debug(
+            "build_frontend_ui_state: resolve_status_ref failed for unit_id=%s: %s",
+            unit_id,
+            exc,
+        )
         return None
     return None
 
@@ -377,8 +389,11 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
     try:
         if hasattr(manager.slot_store, "validation_result"):
             val_result = manager.slot_store.validation_result
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(
+            "build_frontend_ui_state: validation_result unavailable: %s",
+            exc,
+        )
 
     if val_result is not None:
         source = "validation_result"
@@ -479,18 +494,20 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
         violations = []
         try:
             violations = list(manager._blocking_violations or [])
-        except AttributeError:
-            pass
-
-        for v in violations:
-            v_dict = _serialize_violation(v)
-            if v_dict is None:
-                continue
-            all_serialized_violations.append(v_dict)
-            if v_dict["severity"] == "hard":
-                hard_violations.append(v_dict)
-            else:
-                soft_warnings.append(v_dict)
+            for v in violations:
+                v_dict = _serialize_violation(v)
+                if v_dict is None:
+                    continue
+                all_serialized_violations.append(v_dict)
+                if v_dict["severity"] == "hard":
+                    hard_violations.append(v_dict)
+                else:
+                    soft_warnings.append(v_dict)
+        except AttributeError as exc:
+            logger.debug(
+                "build_frontend_ui_state: _blocking_violations missing during fallback path: %s",
+                exc,
+            )
 
         try:
             whitelist = manager._soft_whitelist or set()
@@ -501,13 +518,18 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
                         "value": item[1],
                         "constraint_id": item[2],
                     })
-        except AttributeError:
-            pass
+        except AttributeError as exc:
+            logger.debug(
+                "build_frontend_ui_state: _soft_whitelist missing during fallback path: %s",
+                exc,
+            )
 
         # 降级路径同样从 soft_warnings 剔除已白名单的条目
         if ignored_soft_warnings:
             ignored_cids = {a.get("constraint_id") for a in ignored_soft_warnings}
-            soft_warnings = [w for w in soft_warnings if w.get("constraint_id") not in ignored_cids]
+            soft_warnings = [
+                w for w in soft_warnings if w.get("constraint_id") not in ignored_cids
+            ]
 
         phase = getattr(manager, "phase", "collecting")
         if phase == "blocked_hard":
@@ -573,8 +595,11 @@ def _build_frontend_ui_state_locked(manager: "DialogueManager") -> dict:
                 task_type_key = manager.task_state.get("task_type_key")
                 task_id = manager.task_state.get("task_id")
             task_id_preview = getattr(manager, "task_id_preview", None)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "build_frontend_ui_state: reading manager state failed, using safe defaults: %s",
+                exc,
+            )
 
         slot_snapshot = {}
         slot_version = 0
