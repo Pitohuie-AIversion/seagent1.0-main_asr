@@ -43,6 +43,10 @@ from ..prompts import (
 )
 from ..extractor import ParameterExtractor
 from ..model_profile import ModelRole, _is_unsupported_role_keyword_error
+from ..constants import (
+    FIELD_LABELS as CORE_FIELD_LABELS,
+    RECOMMENDATION_FIELD_BY_SUBJECT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,29 +157,20 @@ def _check_off_topic_gate(user_message: str) -> Optional[str]:
 
 # 领域字段与推荐标签常量
 FIELD_LABELS = {
-    "task_type":           "作业类型",
-    "equipment_class":     "机器人类别",
-    "equipment_family":    "机器人系列",
-    "equipment_type":      "设备型号",
-    "equipment_unit_id":   "具体设备编号",
-    "operating_mode":      "作业模式",
-    "pipeline_type":       "管线类型",
-    "target_depth":        "作业水深",
-    "start_point":         "起始坐标",
-    "end_point":           "结束坐标",
-    "work_duration":       "作业时长",
-    "payload":             "搭载工具",
-    "cleaning_tool":       "清洗工具",
-    "inspection_sensor":   "巡检传感器",
-    "operation_tool":      "操作工具",
-    "oilfield_name":       "油田海域",
-    "wellhead_id":         "井口编号",
-}
-
-RECOMMENDATION_FIELD_BY_SUBJECT = {
-    "device_class": "equipment_family",
-    "device_family": "equipment_family",
-    "device": "equipment_type",
+    **CORE_FIELD_LABELS,
+    "task_type": "作业类型",
+    "equipment_unit_id": "具体设备编号",
+    "operating_mode": "作业模式",
+    "pipeline_type": "管线类型",
+    "target_depth": "作业水深",
+    "start_point": "起始坐标",
+    "end_point": "结束坐标",
+    "work_duration": "作业时长",
+    "payload": "搭载工具",
+    "cleaning_tool": "清洗工具",
+    "inspection_sensor": "巡检传感器",
+    "operation_tool": "操作工具",
+    "oilfield_name": "油田海域",
 }
 
 
@@ -1401,8 +1396,8 @@ class ConversationRouterHandler(BaseDialogueHandler):
                     prefix = match.group(1)
                     return f"{prefix}：{vel_str} m/s"
                 reply = re.sub(pattern, replace_vel, reply)
-            except Exception:
-                pass
+            except (ValueError, TypeError):
+                logger.debug("Failed to normalize reply water velocity sync. vel=%r", vel)
 
         # 2. 强制水体浑浊度对齐 (water_turbidity / turbidity)
         turb = state_dict.get("water_turbidity")
@@ -1417,8 +1412,8 @@ class ConversationRouterHandler(BaseDialogueHandler):
                     prefix = match.group(1)
                     return f"{prefix}：{turb_str} NTU"
                 reply = re.sub(pattern, replace_turb, reply)
-            except Exception:
-                pass
+            except (ValueError, TypeError):
+                logger.debug("Failed to normalize reply turbidity sync. turb=%r", turb)
 
         # 3. 强制障碍物密度对齐 (obstacle_density)
         obs = state_dict.get("obstacle_density")
@@ -1459,8 +1454,8 @@ class ConversationRouterHandler(BaseDialogueHandler):
                 ver_str = str(ver)
                 pattern = r"(状态版本号|版本号|version)\s*[:：]\s*\d+"
                 reply = re.sub(pattern, rf"\1：{ver_str}", reply)
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                logger.debug("Failed to align version in status reply. ver=%r", ver)
 
         # 8. 强制最后更新时间对齐 (updated_at / update_timestamp)
         up_time = state_dict.get("updated_at") or state_dict.get("update_timestamp")
@@ -1502,5 +1497,3 @@ class ConversationRouterHandler(BaseDialogueHandler):
     # --------------------------------------------------------------------------
     # TASK_CONFIRM 独立控制指令处理（彻底隔离于槽位抽取流水线）
     # --------------------------------------------------------------------------
-
-

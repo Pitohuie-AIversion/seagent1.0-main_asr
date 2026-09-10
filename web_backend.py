@@ -527,6 +527,7 @@ def favicon():
 
 
 @app.route("/api/asr", methods=["POST"])
+@_require_api_token
 def api_asr():
     req_id = f"req_{uuid.uuid4().hex[:8]}"
     if _shared_asr is None:
@@ -686,6 +687,7 @@ def _persist_and_dispatch_done_transition(mgr, phase_before):
     return ros2_dispatch
 
 @app.route("/api/chat", methods=["POST"])
+@_require_api_token
 def api_chat():
     try:
         data = request.json or {}
@@ -828,6 +830,7 @@ def api_chat():
 
 
 @app.route("/api/chat/stream", methods=["POST"])
+@_require_api_token
 def api_chat_stream():
     """SSE 流式会话更新机制（Server-Sent Events），提供细粒度事件流与实时更新契约。"""
     try:
@@ -969,6 +972,7 @@ def api_chat_stream():
 
 
 @app.route("/api/reset", methods=["POST"])
+@_require_api_token
 def api_reset():
     sid = (request.json or {}).get("session_id")
     if not isinstance(sid, str) or not sid.strip():
@@ -1225,6 +1229,7 @@ def _translate_text_internal(text: str, target_lang: str) -> str:
 
 
 @app.route("/api/translate", methods=["POST"])
+@_require_api_token
 def api_translate():
     req_id = f"req_{uuid.uuid4().hex[:8]}"
     data = request.json or {}
@@ -1310,6 +1315,7 @@ def get_current_time():
 
 
 @app.route("/api/time/set", methods=["POST"])
+@_require_api_token
 def set_current_time():
     data = request.get_json()
     time_str = data.get("time")
@@ -1341,6 +1347,7 @@ def api_history_list():
 
 
 @app.route("/api/history/load", methods=["POST"])
+@_require_api_token
 def api_history_load():
     """加载指定的历史快照，并恢复到当前会话"""
     data = request.get_json() or {}

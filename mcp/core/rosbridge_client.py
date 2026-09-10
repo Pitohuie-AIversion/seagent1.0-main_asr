@@ -629,14 +629,19 @@ class RosbridgeClient:
     def disconnect(self) -> None:
         """关闭连接与监听线程"""
         self._running = False
+        listener_thread = None
         with self._lock:
             if self._ws:
                 try:
                     self._ws.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("[RosbridgeClient] 关闭 WebSocket 时异常: %s", exc)
                 self._ws = None
+            listener_thread = self._listener_thread
+            self._listener_thread = None
         logger.info("[RosbridgeClient] 已断开")
+        if listener_thread is not None and listener_thread is not threading.current_thread():
+            listener_thread.join(timeout=2.0)
 
     def is_connected(self) -> bool:
         with self._lock:

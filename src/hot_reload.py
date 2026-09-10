@@ -111,21 +111,21 @@ def _scan_monitored_files() -> Dict[str, float]:
         for p in SRC_DIR.rglob("*.py"):
             try:
                 current_mtimes[str(p.resolve())] = p.stat().st_mtime
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug("[Hot-Reload] 读取源码文件 mtime 失败: %s (%s)", p, exc)
 
     # 扫描 config
     if CONFIG_DIR.exists():
         for p in CONFIG_DIR.rglob("*.yaml"):
             try:
                 current_mtimes[str(p.resolve())] = p.stat().st_mtime
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug("[Hot-Reload] 读取配置文件 mtime 失败: %s (%s)", p, exc)
         for p in CONFIG_DIR.rglob("*.yml"):
             try:
                 current_mtimes[str(p.resolve())] = p.stat().st_mtime
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug("[Hot-Reload] 读取配置文件 mtime 失败: %s (%s)", p, exc)
 
     return current_mtimes
 
@@ -176,8 +176,12 @@ def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str
                     try:
                         mod = importlib.import_module(mod_name)
                         reloaded_mods.append(mod_name)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(
+                            "[Hot-Reload] 首次导入模块失败: %s, error=%s",
+                            mod_name,
+                            exc,
+                        )
 
             # 2. 刷新 web_backend 模块内的引用
             if "web_backend" in sys.modules:

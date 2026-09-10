@@ -15,7 +15,10 @@ from typing import Any, Optional
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
 from ..slot_store import ValidationAcknowledgement
+from ..validator import Violation
+from ..coord_parser import parse_coordinate_updates
 from ..simulated_time import get_current_datetime
+from ..constants import HARD_REFUSAL_LIMIT
 
 logger = logging.getLogger("src.dialogue_manager")
 
@@ -226,3 +229,461 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
         dm.conversation_history.append({"role": "user", "content": user_message})
         dm.conversation_history.append({"role": "assistant", "content": reply})
         return reply
+
+    def _merge_oilfield_context_violations(self, new_violations: list[Violation]) -> list[Violation]:
+        task_type_key = self.task_state.get("task_type_key")
+        if task_type_key:
+            schema_keys = {
+                str(field.get("key"))
+                for field in self.builder.get_schema(task_type_key, self.mode)
+                if isinstance(field, dict) and field.get("key")
+            }
+            # Oilfield linker metadata is task-scoped.  Even if an old/legacy
+            # snapshot leaked an entity id, it must not inject C028/C029 into a
+            # known task whose schema has no oilfield contract.  A missing task
+            # key is retained as a fail-closed compatibility path for direct
+            # validation of pre-schema/legacy state.
+            if "oilfield_name" not in schema_keys:
+                return new_violations
+
+        entity_id = self.task_state.get("oilfield_entity_id")
+        if not entity_id:
+            return new_violations
+
+        coords = self.task_state.get("oilfield_coordinates") or self.task_state.get("start_point")
+        water_depth = self.task_state.get("water_depth")
+
+        try:
+            ctx_res = self.oilfield_linker.evaluate_context(
+                entity_id=entity_id,
+                coordinates=coords if coords is not None else _UNSET,
+                water_depth=water_depth if water_depth is not None else _UNSET,
+            )
+            if ctx_res and ctx_res.issues:
+                merged = list(new_violations)
+                existing_ids = {v.constraint_id for v in merged}
+                applicable_ids = None
+                if task_type_key:
+                    applicable_ids = {
+                        str(item.get("id"))
+                        for item in self.kb.get_constraints()
+                        if isinstance(item, dict)
+                        and (
+                            task_type_key in (item.get("applies_to") or [])
+                            or "all" in (item.get("applies_to") or [])
+                        )
+                    }
+                for issue in ctx_res.issues:
+                    if (
+                        (
+                            applicable_ids is None
+                            or issue.constraint_id in applicable_ids
+                        )
+                        and issue.constraint_id not in existing_ids
+                    ):
+                        merged.append(
+                            Violation(
+                                constraint_id=issue.constraint_id,
+                                constraint_name=issue.constraint_name,
+                                check_type=issue.check_type,
+                                severity=issue.severity,
+                                message=issue.message,
+                                related_fields=list(issue.related_fields),
+                            )
+                        )
+                return merged
+        except Exception as exc:
+            merged = list(new_violations)
+            merged.append(
+                Violation(
+                    constraint_id="C029",
+                    constraint_name="油田上下文计算异常",
+                    check_type="oilfield_context_failure",
+                    severity="hard",
+                    message=f"油田上下文计算失败，安全熔断: {exc}",
+                    related_fields=["oilfield_name"],
+                )
+            )
+            return merged
+
+        return new_violations
+    def _is_state_snapshot_stale(self) -> bool:
+        """检查当前 validation_result 中绑定的 state_snapshot 是否已过时或与 state.yaml 不一致。"""
+        val_res = getattr(self.slot_store, "validation_result", None)
+        if not val_res:
+            return True
+        state_snap = getattr(val_res, "state_snapshot", None)
+        if not state_snap or not isinstance(state_snap, dict):
+            return False
+        unit_id = state_snap.get("unit_id") or self.task_state.get("equipment_unit_id")
+        if unit_id and isinstance(unit_id, str):
+            try:
+                curr_snap = self.kb.get_unit_state_snapshot(unit_id)
+                if not curr_snap or not isinstance(curr_snap, dict):
+                    return True
+                if curr_snap.get("state_version") != state_snap.get("state_version"):
+                    return True
+                if curr_snap.get("updated_at") != state_snap.get("updated_at"):
+                    return True
+                if curr_snap.get("state") != state_snap.get("state"):
+                    return True
+            except Exception:
+                return True
+        else:
+            try:
+                if hasattr(self.kb, "state_info") and self.kb.state_info.get_store_version() != state_snap.get("store_version", 0):
+                    return True
+            except Exception:
+                return True
+        return False
+
+    def _run_constraint_check(self, changed_fields: set[str], purpose: str = "interactive") -> dict:
+        """执行约束检查，返回上下文"""
+        if not changed_fields and self.phase not in ("blocked_hard", "blocked_soft") and not self._is_state_snapshot_stale():
+            state_snap = getattr(self.slot_store.validation_result, "state_snapshot", None)
+            return {"type": "none", "violations": [], "hard_refusal_counts": {}, "state_snapshot": state_snap}
+
+        val_res = self._refresh_validation(purpose=purpose, changed_fields=changed_fields)
+        state_snap = val_res.state_snapshot
+        new_violations = self._merge_oilfield_context_violations(val_res.violations)
+
+        current_hard = [
+            v for v in new_violations
+            if v.severity == "hard" and (purpose != "interactive" or v.constraint_id not in ("CLASS_NOT_ALLOWED_FOR_TASK", "FAMILY_CLASS_MISMATCH"))
+        ]
+        current_soft = [
+            v for v in new_violations
+            if v.severity == "soft" and not self._is_whitelisted(v)
+        ]
+        current_blockers = current_hard + current_soft
+
+        # 处理 soft 阻塞升级为 hard / 维持 / 解除
+        if self.phase == "blocked_soft":
+            if current_hard:
+                self._transition_phase("blocked_hard", reason="soft_upgraded_to_hard")
+                self._blocking_violations = current_blockers
+                for v in current_hard:
+                    if v.constraint_id not in self._hard_refusal_counts:
+                        self._hard_refusal_counts[v.constraint_id] = 0
+
+                return {
+                    "type": "hard",
+                    "violations": current_hard,
+                    "hard_refusal_counts": dict(self._hard_refusal_counts),
+                    "state_snapshot": state_snap,
+                }
+
+            if current_soft:
+                self._blocking_violations = current_soft
+                return {
+                    "type": "soft",
+                    "violations": current_soft,
+                    "hard_refusal_counts": {},
+                    "state_snapshot": state_snap,
+                }
+
+            self._blocking_violations = []
+            self._transition_phase("collecting", reason="soft_warning_resolved")
+            return {
+                "type": "none",
+                "violations": [],
+                "hard_refusal_counts": {},
+                "state_snapshot": state_snap,
+            }
+
+        # 处理 hard 阻塞维持 / 降级为 soft / 解除
+        if self.phase == "blocked_hard":
+            if current_hard:
+                self._blocking_violations = current_blockers
+                for v in current_hard:
+                    self._hard_refusal_counts[v.constraint_id] = \
+                        self._hard_refusal_counts.get(v.constraint_id, 0) + 1
+
+                final_ids = {
+                    cid for cid, cnt in self._hard_refusal_counts.items()
+                    if cnt >= HARD_REFUSAL_LIMIT
+                }
+                if final_ids:
+                    self._transition_phase("rejected", reason="hard_refusal_limit_reached")
+                    self._blocking_violations = []
+                    return {
+                        "type": "hard_rejected",
+                        "violations": current_hard,
+                        "hard_refusal_counts": dict(self._hard_refusal_counts),
+                        "state_snapshot": state_snap,
+                    }
+
+                warn_ids = {
+                    cid for cid, cnt in self._hard_refusal_counts.items()
+                    if cnt == HARD_REFUSAL_LIMIT - 1
+                }
+                ctx_type = "hard_final_warning" if warn_ids else "hard"
+                return {
+                    "type": ctx_type,
+                    "violations": current_hard,
+                    "hard_refusal_counts": dict(self._hard_refusal_counts),
+                    "state_snapshot": state_snap,
+                }
+            else:
+                # 硬约束解除，清除计数
+                resolved_ids = set(self._hard_refusal_counts.keys())
+                for cid in resolved_ids:
+                    self._hard_refusal_counts.pop(cid, None)
+
+                if current_soft and purpose in ("preview", "publish"):
+                    self._transition_phase("blocked_soft", reason="hard_downgraded_to_soft")
+                    self._blocking_violations = current_soft
+                    return {
+                        "type": "soft",
+                        "violations": current_soft,
+                        "hard_refusal_counts": {},
+                        "state_snapshot": state_snap,
+                    }
+
+                self._transition_phase("collecting", reason="hard_constraint_resolved")
+                self._blocking_violations = []
+                return {
+                    "type": "none",
+                    "violations": [],
+                    "hard_refusal_counts": {},
+                    "state_snapshot": state_snap,
+                }
+
+        # collecting / confirming 状态下的新违规
+        if self.phase in ("collecting", "confirming"):
+            if current_hard:
+                self._transition_phase("blocked_hard", reason="hard_constraint_detected")
+                self._blocking_violations = current_blockers
+                for v in current_hard:
+                    if v.constraint_id not in self._hard_refusal_counts:
+                        self._hard_refusal_counts[v.constraint_id] = 0
+                return {
+                    "type": "hard",
+                    "violations": current_hard,
+                    "hard_refusal_counts": dict(self._hard_refusal_counts),
+                    "state_snapshot": state_snap,
+                }
+
+            if current_soft:
+                # 统一规则：所有的软警告都在任务字段收集完毕进行统一检查（purpose in ("preview", "publish") 或 confirming 阶段）。
+                # 在字段收集阶段（collecting 且 purpose == "interactive"），软警告不中断槽位收集，只有硬约束可以在收集过程中即时触发阻断。
+                if self.phase != "collecting" or purpose in ("preview", "publish"):
+                    self._transition_phase("blocked_soft", reason="soft_warning_detected")
+                    self._blocking_violations = current_soft
+                    return {
+                        "type": "soft",
+                        "violations": current_soft,
+                        "hard_refusal_counts": {},
+                        "kb_alternatives": self._get_kb_alternatives_for_violations(current_soft),
+                        "state_snapshot": state_snap,
+                    }
+
+        res = {"type": "none", "violations": [], "hard_refusal_counts": {}, "state_snapshot": state_snap}
+        if current_blockers:
+            res["kb_alternatives"] = self._get_kb_alternatives_for_violations(current_blockers)
+        return res
+
+    def _get_kb_alternatives_for_violations(self, violations: list) -> list[dict]:
+        """从 KnowledgeBase 中检索真实的合规替代设备，严禁凭空编造非 KB 型号。"""
+        task_type_key = self.task_state.get("task_type_key")
+        water_depth = self.task_state.get("water_depth")
+        if not task_type_key:
+            return []
+
+        try:
+            wd = float(water_depth) if water_depth is not None else None
+        except (ValueError, TypeError):
+            wd = None
+
+        valid_robots = self.kb.get_task_allowed_robot_variants(task_type_key)
+        if wd is not None:
+            valid_robots = [
+                r for r in valid_robots
+                if r.get("max_depth_m") is not None and float(r.get("max_depth_m")) >= wd
+            ]
+
+        curr_eq = self.task_state.get("equipment_type")
+        alts = []
+        for r in valid_robots:
+            name = r.get("full_name") or r.get("name")
+            if name and name != curr_eq:
+                alts.append({
+                    "name": name,
+                    "max_depth_m": r.get("max_depth_m"),
+                    "capabilities": r.get("capabilities") or [],
+                })
+        return alts[:3]
+
+    # --------------------------------------------------------------------------
+    # 工具方法
+    # --------------------------------------------------------------------------
+
+    def _merge_coordinate_updates(
+        self,
+        user_message: str,
+        updates: dict,
+        required: list[dict] | None,
+    ) -> dict:
+        coord_fields = {
+            item["key"]
+            for item in (required or [])
+            if item.get("type") == "coord" and item.get("key")
+        }
+        coord_updates = parse_coordinate_updates(
+            user_message,
+            coord_fields,
+            current_state=self.task_state,
+            proposed_updates=updates,
+        )
+        if not coord_updates:
+            return updates
+        merged = dict(updates)
+        merged.update(coord_updates)
+        return merged
+
+    def _invalidate_whitelist(self, changed_fields: set[str]):
+        if changed_fields:
+            self._soft_whitelist -= {e for e in self._soft_whitelist if e[0] in changed_fields}
+
+    def _is_whitelisted(self, v: Violation) -> bool:
+        res = getattr(self.slot_store, "validation_result", None)
+        if res is None:
+            return False
+
+        curr_fp = getattr(res, "validation_fingerprint", None)
+        state_snap = getattr(res, "state_snapshot", None)
+        # 非遥测类约束（例如时间、区域风险）在尚未选择机器人时没有
+        # state_snapshot。ValidationAcknowledgement 与 UI 契约均使用 ("", 0)
+        # 表示该合法空状态；白名单校验必须采用同一标准值，否则确认会被永久判旧。
+        curr_state_ver = (
+            state_snap.get("state_version")
+            if isinstance(state_snap, dict)
+            else 0
+        )
+        curr_status_ref = (
+            state_snap.get("status_ref")
+            if isinstance(state_snap, dict)
+            else ""
+        )
+        curr_state_ver = 0 if curr_state_ver is None else curr_state_ver
+        curr_status_ref = curr_status_ref or ""
+
+        if not curr_fp:
+            return False
+
+        acks = getattr(self.slot_store, "validation_acknowledgements", [])
+        for ack in acks:
+            ack_cid = getattr(ack, "constraint_id", None) if not isinstance(ack, dict) else ack.get("constraint_id")
+            if ack_cid != v.constraint_id:
+                continue
+
+            ack_tv = getattr(ack, "task_version", None) if not isinstance(ack, dict) else ack.get("task_version")
+            ack_vv = getattr(ack, "validation_version", None) if not isinstance(ack, dict) else ack.get("validation_version")
+            ack_fp = getattr(ack, "validation_fingerprint", None) if not isinstance(ack, dict) else ack.get("validation_fingerprint")
+            ack_sref = getattr(ack, "status_ref", None) if not isinstance(ack, dict) else ack.get("status_ref")
+            ack_sver = getattr(ack, "state_version", None) if not isinstance(ack, dict) else ack.get("state_version")
+
+            ack_val = getattr(ack, "value", None) if not isinstance(ack, dict) else ack.get("value")
+
+            if (
+                ack_tv == getattr(res, "task_version", 1)
+                and ack_vv == getattr(res, "validation_version", 1)
+                and ack_fp == curr_fp
+                and ack_sref == curr_status_ref
+                and ack_sver == curr_state_ver
+            ):
+                return True
+
+            # 对于 check_type == 'state_timestamp' (如 C019)，只要环境观察值未改变，在补充槽位过程中保持白名单有效
+            if (
+                getattr(v, "check_type", None) == "state_timestamp"
+                and ack_val is not None
+                and ack_val == getattr(v, "observed_value", None)
+            ):
+                return True
+
+            # 若单机状态版本与引用未变，且针对该约束的观察值一致，白名单保持有效
+            if (
+                ack_tv <= getattr(res, "task_version", 1)
+                and ack_sref == curr_status_ref
+                and ack_sver == curr_state_ver
+                and (
+                    ack_val is None
+                    or ack_val == getattr(v, "observed_value", None)
+                )
+            ):
+                return True
+
+            # 兼容基于字段与值的 _soft_whitelist 检查
+            for f in getattr(v, "related_fields", []):
+                val = self.task_state.get(f)
+                if val is not None and (f, str(val), v.constraint_id) in self._soft_whitelist:
+                    return True
+
+        # 若 _soft_whitelist 中包含相关字段且字段值未变，同样放行
+        for f in getattr(v, "related_fields", []):
+            val = self.task_state.get(f)
+            if val is not None and (f, str(val), v.constraint_id) in self._soft_whitelist:
+                return True
+
+        return False
+
+    def _ensure_constraint_details(self, reply: str, constraint_context: dict) -> str:
+        """Append canonical hard-blocking details omitted or paraphrased by the LLM."""
+        context_type = str((constraint_context or {}).get("type") or "")
+        if not context_type.startswith("hard"):
+            return reply
+
+        violations = [
+            violation
+            for violation in ((constraint_context or {}).get("violations") or [])
+            if getattr(violation, "severity", "") == "hard"
+        ]
+        import re
+
+        reply_str = str(reply)
+
+        def _normalize(text: object) -> str:
+            if not isinstance(text, str):
+                text = str(text)
+            return re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
+
+        norm_reply = _normalize(reply_str)
+
+        missing = []
+        for violation in violations:
+            msg = getattr(violation, "message", "") or ""
+            cid = getattr(violation, "id", "") or getattr(violation, "constraint_id", "") or ""
+            name = getattr(violation, "name", "") or getattr(violation, "constraint_name", "") or ""
+
+            # 1. 严格包含
+            if msg and str(msg) in reply_str:
+                continue
+            # 2. 规范化包含（忽略空格/标点差异）
+            if msg and _normalize(msg) in norm_reply:
+                continue
+            # 3. 如果 reply 已经包含了约束 ID 或约束名称
+            if cid and str(cid) in reply_str:
+                continue
+            if name and (_normalize(name) in norm_reply or str(name) in reply_str):
+                continue
+            missing.append(violation)
+
+        if not missing:
+            return reply
+
+        details = self.validator.format_violations(missing)
+        if isinstance(reply, str):
+            return f"{reply.rstrip()}\n\n{details}" if reply.strip() else details
+        return f"{reply}\n\n{details}"
+
+
+    # 别名兼容
+    merge_oilfield_context_violations = _merge_oilfield_context_violations
+    is_state_snapshot_stale = _is_state_snapshot_stale
+    run_constraint_check = _run_constraint_check
+    get_kb_alternatives_for_violations = _get_kb_alternatives_for_violations
+    merge_coordinate_updates = _merge_coordinate_updates
+    invalidate_whitelist = _invalidate_whitelist
+    is_whitelisted = _is_whitelisted
+    ensure_constraint_details = _ensure_constraint_details
