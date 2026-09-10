@@ -1695,6 +1695,7 @@ class DialogueManager:
             domain = self.kb.get_feasible_robot_selection_domain(
                 task_type_key,
                 task_state,
+                purpose="auto_collapse",
             )
             # The admission domain contains only task/class/capability and
             # registry hierarchy rules.  It deliberately excludes mutable

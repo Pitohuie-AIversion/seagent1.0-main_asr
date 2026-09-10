@@ -13,7 +13,6 @@ import asyncio
 import json
 import os
 import sys
-import torch
 from pathlib import Path
 
 # 设置离线模式与项目路径
@@ -30,8 +29,6 @@ for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, PROJECT_ROOT]:
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-from transformers import AutoTokenizer
-from vllm import LLM
 
 from src.llm_client import LLMClient
 from src.knowledge_retriever import KnowledgeBase
@@ -44,6 +41,12 @@ LOCAL_MODEL_PATH = "/root/autodl-tmp/model/Qwen3.5-9B"
 
 
 def main():
+    # GPU libraries are required only when this manual integration script runs.
+    # CPU pytest collection must not import the model runtime.
+    import torch
+    from transformers import AutoTokenizer
+    from vllm import LLM
+
     # 0. 清理旧数据并启动时钟
     tmp_file = Path("/tmp/mock_ros2_received_cmds.json")
     if tmp_file.exists():

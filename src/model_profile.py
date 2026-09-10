@@ -27,16 +27,19 @@ class ModelRole(str, Enum):
     TRANSLATION = "translation"
 
 
-class ModelProfileError(RuntimeError):
-    """ModelProfile 基础异常。"""
+if "ModelProfileError" not in globals():
+    class ModelProfileError(RuntimeError):
+        """ModelProfile 基础异常。"""
 
 
-class ModelProfileConfigError(ModelProfileError):
-    """ModelProfile 配置不合法异常。"""
+if "ModelProfileConfigError" not in globals():
+    class ModelProfileConfigError(ModelProfileError):
+        """ModelProfile 配置不合法异常。"""
 
 
-class ModelProfileNotFoundError(ModelProfileError):
-    """ModelProfile 缺失异常。"""
+if "ModelProfileNotFoundError" not in globals():
+    class ModelProfileNotFoundError(ModelProfileError):
+        """ModelProfile 缺失异常。"""
 
 
 @dataclass(frozen=True)

@@ -1209,7 +1209,18 @@ class KnowledgeBase:
         }
 
     def list_robot_classes(self, task_type_key: str | None = None) -> list[dict]:
-        if task_type_key is not None:
+        template = self._validate_task_type_key(task_type_key)
+        robot_classes = self.get_robot_classes()
+        if template is not None:
+            allowed_classes = template.get("allowed_robot_classes", [])
+            for class_id in allowed_classes:
+                if class_id not in robot_classes:
+                    raise RobotSelectionDataError(
+                        f"Task template '{task_type_key}' references non-existent robot_class '{class_id}'.",
+                        error_code="INVALID_ROBOT_CLASS_REFERENCE",
+                        expected_field="robot_classes",
+                        actual_value=class_id,
+                    )
             domain = self.get_feasible_robot_selection_domain(task_type_key)
             return [
                 {
@@ -1219,7 +1230,6 @@ class KnowledgeBase:
                 }
                 for c in domain["classes"]
             ]
-        robot_classes = self.get_robot_classes()
         family_class_ids = [
             family.get("robot_class")
             for family in (self.robot_fleet.get("robot_families", {}) or {}).values()
@@ -1272,14 +1282,15 @@ class KnowledgeBase:
             ]
 
         result = []
+        robot_classes = self.get_robot_classes()
         robot_families = self.robot_fleet.get("robot_families", {})
         for family_id, family in robot_families.items():
             f_class = family.get("robot_class")
-            if not f_class or not isinstance(f_class, str):
+            if not f_class or not isinstance(f_class, str) or f_class not in robot_classes:
                 raise RobotSelectionDataError(
-                    f"Family '{family_id}' is missing robot_class grouping metadata '{f_class}'.",
+                    f"Family '{family_id}' references missing or invalid robot_class '{f_class}'.",
                     error_code="INVALID_ROBOT_CLASS_REFERENCE",
-                    expected_field="robot_families.robot_class",
+                    expected_field="robot_classes",
                     actual_value=f_class,
                 )
             if f_class != class_id:
@@ -1348,6 +1359,15 @@ class KnowledgeBase:
             )
 
         if task_type_key is not None:
+            template = self.task_schemas.get("task_templates", {}).get(task_type_key, {})
+            allowed_classes = template.get("allowed_robot_classes")
+            if allowed_classes is not None and class_id not in allowed_classes:
+                raise RobotSelectionDataError(
+                    f"Robot class '{class_id}' is not allowed for task '{task_type_key}'.",
+                    error_code="CLASS_NOT_ALLOWED_FOR_TASK",
+                    robot_class=class_id,
+                    family_id=family_id,
+                )
             domain = self.get_feasible_robot_selection_domain(task_type_key)
             target_cnode = next((c for c in domain["classes"] if c["class_id"] == class_id), None)
             target_fnode = next((f for f in target_cnode["families"] if f["family_id"] == family_id), None) if target_cnode else None
@@ -1724,12 +1744,18 @@ class KnowledgeBase:
         supported = hard_params.get("supported_payloads")
         onboard_list, onboard_groups = normalize_payload_groups(onboard)
         supported_list, payload_groups = normalize_supported_payloads(supported)
+        onboard_set = set(onboard_list)
+        clean_supported_list = [p for p in supported_list if p not in onboard_set]
+        clean_payload_groups = {
+            g: [p for p in items if p not in onboard_set]
+            for g, items in payload_groups.items()
+        }
         robot["onboard_payloads"] = onboard_list
         robot["onboard_payload_groups"] = onboard_groups
-        robot["raw_supported_payloads"] = supported_list
-        robot["supported_payloads"] = supported_list
-        robot["payload_groups"] = payload_groups
-        robot["all_payloads"] = list(dict.fromkeys(onboard_list + supported_list))
+        robot["raw_supported_payloads"] = clean_supported_list
+        robot["supported_payloads"] = clean_supported_list
+        robot["payload_groups"] = clean_payload_groups
+        robot["all_payloads"] = list(dict.fromkeys(onboard_list + clean_supported_list))
         return robot
 
     def _build_robot_variant_index(self) -> list[dict]:

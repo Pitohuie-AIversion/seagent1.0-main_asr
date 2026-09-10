@@ -3,7 +3,10 @@ tests/test_sse_stream_api.py - Server-Sent Events (SSE) 流式接口契约测试
 """
 
 import json
+import threading
+from unittest.mock import Mock
 import pytest
+import web_backend
 from web_backend import app, init_manager
 from src.dialogue_manager import DialogueManager
 
@@ -65,3 +68,40 @@ class TestSSEStreamAPI:
         first_chunk = next(resp.response).decode("utf-8")
         assert "event: ping" in first_chunk
         assert "connected" in first_chunk
+
+
+def test_disconnect_after_delta_completes_dispatch_and_releases_session_lock(monkeypatch):
+    manager = DialogueManager()
+    sid = "sse-disconnect-regression"
+    def finish_task(*args, **kwargs):
+        manager.phase = "done"
+        return "任务已经完成，等待机器人确认。"
+
+    monkeypatch.setattr(manager, "process", finish_task)
+    monkeypatch.setitem(web_backend._sessions_manager, sid, manager)
+    monkeypatch.setattr(web_backend, "get_or_create_manager", lambda _: manager)
+    monkeypatch.setattr(web_backend, "build_frontend_ui_state", lambda _: {})
+    save = Mock()
+    dispatch = Mock(return_value={"state": "SENT"})
+    monkeypatch.setattr(web_backend, "save_conversation", save)
+    monkeypatch.setattr(web_backend, "_dispatch_ros2_on_done_transition", dispatch)
+    with app.test_client() as client:
+        response = client.post("/api/chat/stream", json={"session_id": sid, "message": "确认"}, buffered=False)
+        try:
+            for chunk in response.response:
+                if b"event: delta" in chunk:
+                    break
+            save.assert_called_once()
+            dispatch.assert_called_once()
+            acquired = []
+            def try_lock():
+                locked = manager._session_lock.acquire(timeout=0.5)
+                acquired.append(locked)
+                if locked:
+                    manager._session_lock.release()
+            worker = threading.Thread(target=try_lock)
+            worker.start()
+            worker.join(timeout=2)
+            assert acquired == [True]
+        finally:
+            response.close()

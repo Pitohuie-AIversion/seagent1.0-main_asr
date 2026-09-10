@@ -899,19 +899,18 @@ class OutputBuilder:
             if eq_type:
                 robot = self.kb.get_rov(eq_type)
                 if robot:
-                    # 当选定机器人后，预期的合法携带工具应同时涵盖该机器支持的扩展载荷(supported_payloads)与自带设备(onboard_payloads)
+                    # 当选定机器人后，推荐与合法携带工具只包含该机器支持的扩展载荷 supported_payloads
+                    # （优先按当前任务通用建议集 task_commons 排序，再包含机器的其他 supported_payloads，排除自带设备 onboard_payloads）
                     robot_supported = list(robot.get("raw_supported_payloads", robot.get("supported_payloads", [])))
-                    robot_onboard = list(robot.get("raw_onboard_payloads", robot.get("onboard_payloads", [])))
-                    all_robot_payloads = robot_supported + robot_onboard
-                    robot_payloads_map = {p.strip().replace(" ", ""): p for p in all_robot_payloads}
+                    robot_supported_map = {p.strip().replace(" ", ""): p for p in robot_supported}
                     res = []
                     seen = set()
                     for item in task_commons:
                         k = item.strip().replace(" ", "")
-                        if k in robot_payloads_map and k not in seen:
-                            res.append(robot_payloads_map[k])
+                        if k in robot_supported_map and k not in seen:
+                            res.append(robot_supported_map[k])
                             seen.add(k)
-                    for item in all_robot_payloads:
+                    for item in robot_supported:
                         k = item.strip().replace(" ", "")
                         if k not in seen:
                             res.append(item)

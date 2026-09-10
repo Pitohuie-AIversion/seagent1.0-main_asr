@@ -107,6 +107,7 @@ payload_options:
       - 泄漏检测传感器
       - 水质传感器
       - TSS管缆跟踪系统
+      - TSS管缆跟踪传感器
       - USBL辅助定位模块
       - 侧扫声呐
       - 合成孔径声呐
@@ -132,6 +133,7 @@ payload_options:
       - 云台摄像机
       - 履带模块
       - 前视声呐系统
+      - 前视声呐
       - INS惯性导航系统
       - DVL测速系统
       - USBL定位系统
@@ -139,6 +141,7 @@ payload_options:
       - 高度计
       - 机械切割开沟模块
       - TSS管缆跟踪系统
+      - TSS管缆跟踪传感器
       - 激光标尺
       - 机械扫描声呐
       - 水下定位信标
@@ -1079,6 +1082,9 @@ payload_catalog:
     aliases:
       - TSS管缆跟踪仪
       - TSS系统
+      - TSS
+      - TSS 350
+      - TSS 440
     description: 利用电磁感应原理探测埋入海床底质下方的金属管缆或通电电缆，实时测量管缆偏航与埋深的感知系统。
     capabilities:
       - 埋深测量

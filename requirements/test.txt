@@ -1,2 +1,8 @@
 -r base.txt
 requests>=2.28.0
+pytest>=9.0
+networkx>=3.2
+websocket-client>=1.6
+websockets>=14.0
+cn2an>=0.5.22
+dateparser>=1.2

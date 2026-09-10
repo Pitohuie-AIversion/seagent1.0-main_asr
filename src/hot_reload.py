@@ -271,13 +271,21 @@ def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str
             return False, err_msg, reloaded_mods
 
 
+def code_reload_enabled() -> bool:
+    """Code replacement is an explicit development capability."""
+    return (
+        os.environ.get("SEAGENT_ENABLE_CODE_RELOAD") == "1"
+        and os.environ.get("DISABLE_HOT_RELOAD") != "1"
+    )
+
+
 def maybe_auto_reload() -> Optional[Tuple[bool, str]]:
     """
     检查文件变动并自动执行热重载（若有变更）。
     通常在 Flask @app.before_request 中调用。
     """
     # 允许通过环境变量禁用热重载（如测试环境）
-    if os.environ.get("DISABLE_HOT_RELOAD") == "1":
+    if not code_reload_enabled():
         return None
 
     changed = check_changed_files()

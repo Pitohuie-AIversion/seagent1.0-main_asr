@@ -29,17 +29,14 @@ jobs:
           pip install -r requirements/test.txt
 
       - name: 1. Python Syntax & Compilation Check
-        run: python -m compileall -q src tests
+        run: python -m compileall -q src tests mcp/core mcp/tests
 
       - name: 2. Run Full Test Suite & Enforce Audit Gate
         run: |
           set +e
-          TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m unittest discover -s tests -t . -v 2>&1 | tee full_test.log
+          TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q tests mcp/tests --junitxml=pytest-results.xml 2>&1 | tee full_test.log
           test_exit=${PIPESTATUS[0]}
           set -e
-          
-          python scratch/parse_tests.py
-          python scratch/generate_report.py
           
           if [ "${test_exit}" -ne 0 ]; then
             echo "Full test suite failed with exit code ${test_exit}"
@@ -52,6 +49,5 @@ jobs:
         with:
           name: regression-audit-report
           path: |
-            docs/regression_report.md
+            pytest-results.xml
             full_test.log
-            /tmp/test_records.json

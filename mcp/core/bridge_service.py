@@ -10,7 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from contextlib import contextmanager
 import threading
+import os
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +41,8 @@ class SEAgentMCPBridgeService:
     """Owns the live rosbridge connection, dispatch idempotency and telemetry."""
 
     TELEMETRY_MAX_AGE_SECONDS = 5.0
+    DISPATCH_RECORD_FILE = ".mcp_dispatch_records.json"
+    DISPATCH_RECORD_LOCK_FILE = ".mcp_dispatch_records.lock"
 
     def __init__(
         self,
@@ -48,6 +52,8 @@ class SEAgentMCPBridgeService:
         connect_timeout: float = 5.0,
         runtime_config_path: Optional[str | Path] = None,
         protocol_config_path: Optional[str | Path] = None,
+        dispatch_records_dir: Optional[str | Path] = None,
+        clear_records: bool = False,
     ):
         self._runtime_config_path = (
             Path(runtime_config_path) if runtime_config_path is not None else None
@@ -85,6 +91,123 @@ class SEAgentMCPBridgeService:
         self._runtime_config_mtime_ns = self._runtime_mtime()
         self._watcher_stop = threading.Event()
         self._watcher_thread: Optional[threading.Thread] = None
+        self._dispatch_records_path: Optional[Path] = None
+        self._dispatch_lock_path: Optional[Path] = None
+        self._dispatch_records_dir = (
+            Path(dispatch_records_dir) if dispatch_records_dir is not None else None
+        )
+        self._init_dispatch_record_paths()
+        if clear_records:
+            self.clear_dispatch_records()
+        else:
+            self._load_dispatch_records()
+
+    def clear_dispatch_records(self) -> None:
+        """Clear in-memory and persistent dispatch records."""
+        with self._dispatch_lock:
+            self._dispatch_records.clear()
+            if self._dispatch_records_path is not None and self._dispatch_records_path.exists():
+                try:
+                    self._dispatch_records_path.unlink()
+                except OSError:
+                    pass
+
+    def _init_dispatch_record_paths(self) -> None:
+        if self._dispatch_records_dir is not None:
+            base = self._dispatch_records_dir
+        else:
+            dispatch_dir = os.environ.get("SEAGENT_MCP_DISPATCH_DIR") or os.environ.get(
+                "SEAGENT_ROS2_ID_DIR"
+            )
+            if not dispatch_dir:
+                return
+            base = Path(dispatch_dir)
+        self._dispatch_records_path = base / self.DISPATCH_RECORD_FILE
+        self._dispatch_lock_path = base / self.DISPATCH_RECORD_LOCK_FILE
+
+    @staticmethod
+    def _is_safe_json_record(entry: dict) -> bool:
+        return (
+            isinstance(entry.get("task_id"), int)
+            and isinstance(entry.get("intent_id"), str)
+            and isinstance(entry.get("dispatch_state"), str)
+        )
+
+    def _load_dispatch_records(self) -> None:
+        if self._dispatch_records_path is None:
+            return
+        if self._dispatch_records_path.exists():
+            try:
+                raw_data = self._dispatch_records_path.read_text(encoding="utf-8")
+                loaded = json.loads(raw_data)
+            except (OSError, ValueError) as exc:
+                logger.error(
+                    "[MCPBridgeService] 读取任务下发记录文件失败: %s", exc
+                )
+                self._dispatch_records = {}
+                return
+        else:
+            loaded = {}
+
+        if not isinstance(loaded, dict):
+            logger.error(
+                "[MCPBridgeService] 下发记录文件格式错误：%s",
+                self._dispatch_records_path,
+            )
+            self._dispatch_records = {}
+            return
+
+        sanitized: Dict[str, Dict[str, Any]] = {}
+        for identity, entry in loaded.items():
+            if not isinstance(identity, str) or not isinstance(entry, dict):
+                continue
+            if self._is_safe_json_record(entry):
+                sanitized[identity] = dict(entry)
+        self._dispatch_records = sanitized
+
+    @contextmanager
+    def _with_dispatch_file_lock(self):
+        if self._dispatch_lock_path is None:
+            yield None
+            return
+
+        lock_path = self._dispatch_lock_path
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        import fcntl
+
+        with open(lock_path, "a+", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield lock_handle
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+    def _persist_dispatch_records(self) -> None:
+        if self._dispatch_records_path is None:
+            return
+
+        self._dispatch_records_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(self._dispatch_records, ensure_ascii=False, sort_keys=True)
+        temporary_path = self._dispatch_records_path.with_name(
+            f"{self._dispatch_records_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        with open(temporary_path, "w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_path, self._dispatch_records_path)
+        directory_fd = os.open(
+            self._dispatch_records_path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    def _record_dispatch(self, identity: str, record: Dict[str, Any]) -> None:
+        self._dispatch_records[identity] = dict(record)
+        self._persist_dispatch_records()
 
     @staticmethod
     def _now() -> str:
@@ -352,9 +475,11 @@ class SEAgentMCPBridgeService:
         use_geodetic: bool = False,
         origin: Optional[Any] = None,
     ) -> int:
-        """Send one finalized intent at most once per bridge process.
+        """Send one finalized intent at most once per intent identity.
 
         A failed transport attempt keeps the same ROS task ID for an explicit retry.
+        When persistent dispatch records are enabled, idempotency also spans
+        process restarts.
         """
         if not self.is_healthy():
             raise RuntimeError(
@@ -364,6 +489,61 @@ class SEAgentMCPBridgeService:
 
         with self._dispatch_lock:
             existing = self._dispatch_records.get(identity)
+            if self._dispatch_records_path is not None:
+                with self._with_dispatch_file_lock():
+                    self._load_dispatch_records()
+                    existing = self._dispatch_records.get(identity)
+                    if existing and existing["dispatch_state"] != "FAILED":
+                        return int(existing["task_id"])
+
+                    assigned_task_id = (
+                        int(existing["task_id"])
+                        if existing is not None
+                        else (int(task_id) if task_id is not None else generate_task_id())
+                    )
+                    record = {
+                        "task_id": assigned_task_id,
+                        "intent_id": identity,
+                        "task_type": self._task_type_code(task_intent),
+                        "dispatch_state": "SENDING",
+                        "dispatched_at": None,
+                        "error": None,
+                    }
+                    self._record_dispatch(identity, record)
+
+                    try:
+                        self.client.publish_task_cmd(
+                            task_intent,
+                            task_id=assigned_task_id,
+                            use_geodetic=use_geodetic,
+                            origin=origin,
+                        )
+                    except Exception as exc:
+                        record["dispatch_state"] = "FAILED"
+                        record["error"] = str(exc)
+                        self._last_error = str(exc)
+                        self._record_dispatch(identity, record)
+                        logger.error(
+                            "[MCPBridgeService] TaskIntent 下发失败 intent_id=%s: %s",
+                            identity,
+                            exc,
+                        )
+                        raise
+
+                    record["dispatch_state"] = "SENT"
+                    record["dispatched_at"] = datetime.now(timezone.utc).isoformat(
+                        timespec="milliseconds"
+                    )
+                    self._last_error = None
+                    self._record_dispatch(identity, record)
+
+                logger.info(
+                    "[MCPBridgeService] TaskIntent 已写入 ROS 2 传输: intent_id=%s task_id=0x%X",
+                    identity,
+                    assigned_task_id,
+                )
+                return assigned_task_id
+
             if existing and existing["dispatch_state"] != "FAILED":
                 return int(existing["task_id"])
 
@@ -381,6 +561,7 @@ class SEAgentMCPBridgeService:
                 "error": None,
             }
             self._dispatch_records[identity] = record
+
             try:
                 self.client.publish_task_cmd(
                     task_intent,
@@ -392,6 +573,7 @@ class SEAgentMCPBridgeService:
                 record["dispatch_state"] = "FAILED"
                 record["error"] = str(exc)
                 self._last_error = str(exc)
+                self._dispatch_records[identity] = record
                 logger.error(
                     "[MCPBridgeService] TaskIntent 下发失败 intent_id=%s: %s",
                     identity,
@@ -403,13 +585,14 @@ class SEAgentMCPBridgeService:
             record["dispatched_at"] = datetime.now(timezone.utc).isoformat(
                 timespec="milliseconds"
             )
+            self._dispatch_records[identity] = record
             self._last_error = None
-            logger.info(
-                "[MCPBridgeService] TaskIntent 已写入 ROS 2 传输: intent_id=%s task_id=0x%X",
-                identity,
-                assigned_task_id,
-            )
-            return assigned_task_id
+        logger.info(
+            "[MCPBridgeService] TaskIntent 已写入 ROS 2 传输: intent_id=%s task_id=0x%X",
+            identity,
+            assigned_task_id,
+        )
+        return assigned_task_id
 
     def suspend_task(self, task_id: int) -> int:
         return self.client.suspend_task(task_id)

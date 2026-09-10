@@ -1905,27 +1905,11 @@ class SlotFillingHandler(BaseDialogueHandler):
             task_type_key = current_tt
         else:
             task_type_key = tt_val or current_tt
+        supports_oilfield = True
         if task_type_key:
             field_defs = manager.builder.get_schema(task_type_key, manager.mode)
             schema_keys = {str(field.get("key")) for field in field_defs if field.get("key")}
-            if not manager.slot_filter.supports_oilfield_slots(schema_keys):
-                linked = dict(updates)
-                linked.pop("oilfield_name", None)
-                linked.pop("raw_oilfield_name", None)
-                for k in (
-                    "oilfield_name",
-                    "raw_oilfield_name",
-                    "oilfield_match_status",
-                    "oilfield_match_confidence",
-                    "oilfield_match_evidence",
-                    "oilfield_match_candidates",
-                    "oilfield_entity_id",
-                    "pending_oilfield_name",
-                ):
-                    if k in new_slots:
-                        new_slots[k].value = None
-                        new_slots[k].status = "missing"
-                return linked
+            supports_oilfield = manager.slot_filter.supports_oilfield_slots(schema_keys)
 
         raw_name = (
             updates.get("oilfield_name")
@@ -1939,6 +1923,28 @@ class SlotFillingHandler(BaseDialogueHandler):
             m = manager.oilfield_linker.link(user_message)
             if m and m.status == "accepted" and m.standard_name:
                 raw_name = m.standard_name
+
+        is_task_switching = bool(current_tt and tt_val and tt_val != current_tt)
+        is_locked_switch_rejected = bool(is_task_id_locked and current_tt and tt_val and tt_val != current_tt)
+        if (is_locked_switch_rejected and not supports_oilfield) or (is_task_switching and not supports_oilfield and not raw_name):
+            linked = dict(updates)
+            linked.pop("oilfield_name", None)
+            linked.pop("raw_oilfield_name", None)
+            for k in (
+                "oilfield_name",
+                "raw_oilfield_name",
+                "oilfield_match_status",
+                "oilfield_match_confidence",
+                "oilfield_match_evidence",
+                "oilfield_match_candidates",
+                "oilfield_entity_id",
+                "pending_oilfield_name",
+                "pending_oilfield_candidates",
+            ):
+                if k in new_slots:
+                    new_slots[k].value = None
+                    new_slots[k].status = "missing"
+            return linked
 
         coords = (
             updates.get("oilfield_coordinates")
@@ -2003,6 +2009,17 @@ class SlotFillingHandler(BaseDialogueHandler):
         new_slots["oilfield_match_evidence"].status = "valid"
         new_slots["oilfield_match_candidates"].value = match.candidates
         new_slots["oilfield_match_candidates"].status = "valid"
+
+        if not supports_oilfield:
+            linked.pop("oilfield_name", None)
+            linked.pop("raw_oilfield_name", None)
+            if "oilfield_name" in new_slots:
+                new_slots["oilfield_name"].value = None
+                new_slots["oilfield_name"].status = "missing"
+            if "oilfield_entity_id" in new_slots:
+                new_slots["oilfield_entity_id"].value = None
+                new_slots["oilfield_entity_id"].status = "missing"
+            return linked
 
         if match.status == "accepted" and match.standard_name:
             linked["oilfield_name"] = match.standard_name

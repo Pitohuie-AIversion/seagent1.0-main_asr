@@ -75,8 +75,10 @@ def test_session_state_migration_during_reload():
         web_backend._sessions_manager.pop(sid, None)
 
 
-def test_api_dev_reload_endpoint():
+def test_api_dev_reload_endpoint(monkeypatch):
     """测试 /api/dev/reload 接口返回正确 JSON"""
+    monkeypatch.setenv("SEAGENT_ENABLE_CODE_RELOAD", "1")
+    monkeypatch.delenv("DISABLE_HOT_RELOAD", raising=False)
     with patch("importlib.reload", side_effect=lambda m: m):
         with web_backend.app.test_client() as client:
             resp = client.get("/api/dev/reload")
@@ -127,6 +129,8 @@ def test_reload_preserves_state_contract_exception_identity():
 
     old_slot_conflict = slot_mod.SlotVersionConflict
     old_snapshot_error = slot_mod.SnapshotValidationError
+    old_slot = slot_mod.Slot
+    old_val_ack = slot_mod.ValidationAcknowledgement
     old_state_error = session_mod.StateContractError
     old_conversation_state = session_mod.ConversationState
     old_task_state = session_mod.TaskLifecycleState
@@ -135,6 +139,10 @@ def test_reload_preserves_state_contract_exception_identity():
     old_persistence_error = exc_mod.TaskPersistenceError
     old_intent_conflict = exc_mod.IntentIdConflict
     old_id_reservation_error = exc_mod.IdReservationError
+    state_errors = {
+        name: getattr(exc_mod, name)
+        for name in ("StatePersistenceError", "StateVersionConflict", "StateSnapshotValidationError", "StateSelectorError")
+    }
 
     reloaded_exc = importlib.reload(exc_mod)
     reloaded_session = importlib.reload(session_mod)
@@ -142,6 +150,8 @@ def test_reload_preserves_state_contract_exception_identity():
 
     assert reloaded_slot.SlotVersionConflict is old_slot_conflict
     assert reloaded_slot.SnapshotValidationError is old_snapshot_error
+    assert reloaded_slot.Slot is old_slot
+    assert reloaded_slot.ValidationAcknowledgement is old_val_ack
     assert reloaded_session.StateContractError is old_state_error
     assert reloaded_session.ConversationState is old_conversation_state
     assert reloaded_session.TaskLifecycleState is old_task_state
@@ -150,3 +160,25 @@ def test_reload_preserves_state_contract_exception_identity():
     assert reloaded_exc.TaskPersistenceError is old_persistence_error
     assert reloaded_exc.IntentIdConflict is old_intent_conflict
     assert reloaded_exc.IdReservationError is old_id_reservation_error
+    for name, old_type in state_errors.items():
+        assert getattr(reloaded_exc, name) is old_type
+
+
+def test_model_profile_reload_preserves_error_handlers():
+    import src.model_profile as profiles
+    error_types = {name: getattr(profiles, name) for name in (
+        "ModelProfileError", "ModelProfileConfigError", "ModelProfileNotFoundError",
+    )}
+    importlib.reload(profiles)
+    for name, old_type in error_types.items():
+        assert getattr(profiles, name) is old_type
+
+
+def test_code_reload_requires_explicit_opt_in(monkeypatch):
+    monkeypatch.delenv("SEAGENT_ENABLE_CODE_RELOAD", raising=False)
+    with patch("src.hot_reload.perform_reload") as reload, patch("src.hot_reload.check_changed_files") as scan:
+        assert maybe_auto_reload() is None
+        with web_backend.app.test_client() as client:
+            assert client.post("/api/dev/reload").status_code == 403
+        scan.assert_not_called()
+        reload.assert_not_called()

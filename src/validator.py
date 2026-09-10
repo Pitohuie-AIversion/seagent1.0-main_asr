@@ -673,7 +673,7 @@ class TaskValidator:
                 canonical_selection, error_dict = self.validate_robot_selection_tuple(
                     task_state,
                     require_unit=purpose
-                    in ("publish", "preview", "runtime_execution"),
+                    in ("publish", "runtime_execution"),
                 )
 
             # During collection, a task/robot capability mismatch is an
@@ -682,7 +682,7 @@ class TaskValidator:
             # execution, while allowing the existing robot_category rules to
             # explain and block an incompatible interactive choice.
             if (
-                purpose == "interactive"
+                purpose in ("interactive", "preview")
                 and error_dict is not None
                 and error_dict.get("code")
                 in {
@@ -726,7 +726,7 @@ class TaskValidator:
 
             violations: list[Violation] = []
             is_future_pending_telemetry = (
-                not is_now
+                (not is_now or purpose == "interactive")
                 and purpose != "runtime_execution"
                 and error_dict is not None
                 and error_dict.get("code") in ("INVALID_STATE_SNAPSHOT", "MISSING_TELEMETRY", "EXPIRED_TELEMETRY", "INVALID_STATE_DATA", "STATE_READ_FAILED")
@@ -1160,8 +1160,20 @@ class TaskValidator:
             now = now.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
         else:
             now = now.astimezone(ZoneInfo("Asia/Shanghai"))
+
+        end_time_raw = task_state.get("end_time")
+        end_dt = None
+        if end_time_raw and isinstance(end_time_raw, str) and end_time_raw.strip():
+            end_dt, _ = self._validate_time_value(end_time_raw, "end_time")
+
         delta_seconds = (st_dt - now).total_seconds()
-        return delta_seconds <= time_window_minutes * 60
+        # 1. 任务计划在当前或不久的将来开始 (支持前置5分钟容差至未来窗口期)
+        if -300 <= delta_seconds <= time_window_minutes * 60:
+            return True
+        # 2. 任务当前处于进行中窗口期 (已经开始且尚未结束)
+        if end_dt and st_dt <= now <= end_dt:
+            return True
+        return False
 
     def _check_one(
         self,
@@ -1173,7 +1185,7 @@ class TaskValidator:
         vessel_id: str | None,
         tree_type: str | None,
         state_snapshot: dict | None,
-        purpose: str = "interactive",
+        purpose: str = "publish",
     ) -> Violation | None:
         # 仅当任务为未来排期任务且处于非执行窗口时，跳过当前近实时动态遥测检查（保留 C032 延后提示）。
         # 交互收集模式 (interactive) 同样不执行近实时动态遥测检查。
@@ -1275,7 +1287,14 @@ class TaskValidator:
             start_time, st_err = self._validate_time_value(task_state.get("start_time"), "start_time")
             if st_err or start_time is None:
                 return None
-            if not self._is_task_start_now(task_state):
+            now = get_current_datetime().replace(microsecond=0)
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+            else:
+                now = now.astimezone(ZoneInfo("Asia/Shanghai"))
+            if (start_time - now).total_seconds() > 0 and not self._is_task_start_now(task_state):
                 msg = (
                     c["violation_message"]
                     .replace("{start_time}", start_time.strftime("%Y-%m-%d %H:%M:%S"))

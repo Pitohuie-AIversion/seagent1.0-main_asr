@@ -69,7 +69,7 @@ class TestIssue12ContractCorrection(unittest.TestCase):
         )
         self.assertEqual(
             list(ROBOT_CASCADE_DEPENDENCIES.get("equipment_type")),
-            ["equipment_unit_id", "equipment_name"],
+            ["equipment_unit_id", "equipment_name", "payload"],
         )
 
     # Scenario 4: KnowledgeBase.list_robot_variants

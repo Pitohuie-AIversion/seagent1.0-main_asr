@@ -84,46 +84,47 @@ if "SnapshotValidationError" not in globals():
         pass
 
 
-@dataclasses.dataclass
-class ValidationAcknowledgement:
-    constraint_id: str
-    acknowledged_at: str
-    task_version: int
-    validation_version: int
-    validation_fingerprint: str
-    status_ref: str
-    state_version: int
-    field: str = ""
-    value: Any = None
+if "ValidationAcknowledgement" not in globals():
+    @dataclasses.dataclass
+    class ValidationAcknowledgement:
+        constraint_id: str
+        acknowledged_at: str
+        task_version: int
+        validation_version: int
+        validation_fingerprint: str
+        status_ref: str
+        state_version: int
+        field: str = ""
+        value: Any = None
 
-    def to_dict(self) -> dict:
-        return {
-            "constraint_id": self.constraint_id,
-            "acknowledged_at": self.acknowledged_at,
-            "task_version": self.task_version,
-            "validation_version": self.validation_version,
-            "validation_fingerprint": self.validation_fingerprint,
-            "status_ref": self.status_ref,
-            "state_version": self.state_version,
-            "field": self.field,
-            "value": copy.deepcopy(self.value),
-        }
+        def to_dict(self) -> dict:
+            return {
+                "constraint_id": self.constraint_id,
+                "acknowledged_at": self.acknowledged_at,
+                "task_version": self.task_version,
+                "validation_version": self.validation_version,
+                "validation_fingerprint": self.validation_fingerprint,
+                "status_ref": self.status_ref,
+                "state_version": self.state_version,
+                "field": self.field,
+                "value": copy.deepcopy(self.value),
+            }
 
-    @classmethod
-    def from_dict(cls, data: dict) -> "ValidationAcknowledgement":
-        if not isinstance(data, dict):
-            raise TypeError("ValidationAcknowledgement data must be a dictionary")
-        return cls(
-            constraint_id=str(data.get("constraint_id", "")),
-            acknowledged_at=str(data.get("acknowledged_at", "")),
-            task_version=int(data.get("task_version", 1)),
-            validation_version=int(data.get("validation_version", 1)),
-            validation_fingerprint=str(data.get("validation_fingerprint", "")),
-            status_ref=str(data.get("status_ref", "")),
-            state_version=int(data.get("state_version", 0)),
-            field=str(data.get("field", "")),
-            value=copy.deepcopy(data.get("value")),
-        )
+        @classmethod
+        def from_dict(cls, data: dict) -> "ValidationAcknowledgement":
+            if not isinstance(data, dict):
+                raise TypeError("ValidationAcknowledgement data must be a dictionary")
+            return cls(
+                constraint_id=str(data.get("constraint_id", "")),
+                acknowledged_at=str(data.get("acknowledged_at", "")),
+                task_version=int(data.get("task_version", 1)),
+                validation_version=int(data.get("validation_version", 1)),
+                validation_fingerprint=str(data.get("validation_fingerprint", "")),
+                status_ref=str(data.get("status_ref", "")),
+                state_version=int(data.get("state_version", 0)),
+                field=str(data.get("field", "")),
+                value=copy.deepcopy(data.get("value")),
+            )
 
 
 BASE_SLOT_TYPES = {
@@ -651,65 +652,66 @@ def normalize_slot_value_type(schema_type: Optional[str] = None, value: Any = No
 
 
 
-class Slot:
-    def __init__(
-        self,
-        slot_name: str,
-        value: Any = None,
-        value_type: str = "string",
-        status: str = "missing",
-        source: str = "user_input",
-        raw_value: Any = None,
-        confidence: Optional[float] = None,
-        validation_error: Optional[str] = None,
-        updated_at: Optional[str] = None,
-        version: int = 0,
-        candidate_value: Any = None,
-    ):
-        self.slot_name = slot_name
-        self.value = value
-        if value_type == "string" and value is not None and not isinstance(value, str):
-            self.value_type = normalize_slot_value_type(value=value)
-        else:
-            self.value_type = normalize_slot_value_type(schema_type=value_type, value=value)
-        self.status = status  # missing | candidate | valid | invalid | conflict | unresolved
-        self.source = source  # user_input | auto | fixed | system-derived values
-        self.raw_value = raw_value
-        self.confidence = confidence
-        self.validation_error = validation_error
-        self.updated_at = updated_at or datetime.now().isoformat()
-        self.version = version
-        self.candidate_value = candidate_value
+if "Slot" not in globals():
+    class Slot:
+        def __init__(
+            self,
+            slot_name: str,
+            value: Any = None,
+            value_type: str = "string",
+            status: str = "missing",
+            source: str = "user_input",
+            raw_value: Any = None,
+            confidence: Optional[float] = None,
+            validation_error: Optional[str] = None,
+            updated_at: Optional[str] = None,
+            version: int = 0,
+            candidate_value: Any = None,
+        ):
+            self.slot_name = slot_name
+            self.value = value
+            if value_type == "string" and value is not None and not isinstance(value, str):
+                self.value_type = normalize_slot_value_type(value=value)
+            else:
+                self.value_type = normalize_slot_value_type(schema_type=value_type, value=value)
+            self.status = status  # missing | candidate | valid | invalid | conflict | unresolved
+            self.source = source  # user_input | auto | fixed | system-derived values
+            self.raw_value = raw_value
+            self.confidence = confidence
+            self.validation_error = validation_error
+            self.updated_at = updated_at or datetime.now().isoformat()
+            self.version = version
+            self.candidate_value = candidate_value
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "slot_name": self.slot_name,
-            "value": copy.deepcopy(self.value),
-            "value_type": self.value_type,
-            "status": self.status,
-            "source": self.source,
-            "raw_value": copy.deepcopy(self.raw_value),
-            "confidence": self.confidence,
-            "validation_error": self.validation_error,
-            "updated_at": self.updated_at,
-            "version": self.version,
-            "candidate_value": copy.deepcopy(self.candidate_value),
-        }
+        def to_dict(self) -> Dict[str, Any]:
+            return {
+                "slot_name": self.slot_name,
+                "value": copy.deepcopy(self.value),
+                "value_type": self.value_type,
+                "status": self.status,
+                "source": self.source,
+                "raw_value": copy.deepcopy(self.raw_value),
+                "confidence": self.confidence,
+                "validation_error": self.validation_error,
+                "updated_at": self.updated_at,
+                "version": self.version,
+                "candidate_value": copy.deepcopy(self.candidate_value),
+            }
 
-    def copy(self):
-        return Slot(
-            slot_name=self.slot_name,
-            value=copy.deepcopy(self.value),
-            value_type=self.value_type,
-            status=self.status,
-            source=self.source,
-            raw_value=copy.deepcopy(self.raw_value),
-            confidence=self.confidence,
-            validation_error=self.validation_error,
-            updated_at=self.updated_at,
-            version=self.version,
-            candidate_value=copy.deepcopy(self.candidate_value),
-        )
+        def copy(self):
+            return Slot(
+                slot_name=self.slot_name,
+                value=copy.deepcopy(self.value),
+                value_type=self.value_type,
+                status=self.status,
+                source=self.source,
+                raw_value=copy.deepcopy(self.raw_value),
+                confidence=self.confidence,
+                validation_error=self.validation_error,
+                updated_at=self.updated_at,
+                version=self.version,
+                candidate_value=copy.deepcopy(self.candidate_value),
+            )
 
 
 class SlotStore:
@@ -1361,8 +1363,13 @@ class SlotStore:
                             parsed_acks.append(ValidationAcknowledgement.from_dict(a))
                         except Exception as exc:
                             raise SnapshotValidationError(f"Invalid validation_acknowledgements format: {exc}")
-                    elif hasattr(a, "__dataclass_fields__"):
-                        parsed_acks.append(copy.deepcopy(a))
+                    elif hasattr(a, "__dataclass_fields__") or type(a).__name__ == "ValidationAcknowledgement":
+                        if isinstance(a, ValidationAcknowledgement):
+                            parsed_acks.append(copy.deepcopy(a))
+                        elif hasattr(a, "to_dict"):
+                            parsed_acks.append(ValidationAcknowledgement.from_dict(a.to_dict()))
+                        else:
+                            parsed_acks.append(ValidationAcknowledgement.from_dict(dataclasses.asdict(a)))
                     else:
                         raise SnapshotValidationError("Each entry in validation_acknowledgements must be a dictionary or ValidationAcknowledgement.")
 

@@ -1,6 +1,7 @@
 """Regression contracts for the SEAgent -> rosbridge -> dashboard runtime path."""
 
 from unittest.mock import Mock
+import pytest
 
 from mcp.shim.bridge_service import SEAgentMCPBridgeService
 import mcp.shim.rosbridge_client as rosbridge_client
@@ -22,7 +23,7 @@ def _intent(intent_id="PI-20260828-001"):
 
 
 def test_dispatch_is_idempotent_for_same_final_intent():
-    bridge = SEAgentMCPBridgeService()
+    bridge = SEAgentMCPBridgeService(clear_records=True)
     bridge._running = True
     bridge.client.is_connected = Mock(return_value=True)
     bridge.client.publish_task_cmd = Mock()
@@ -36,7 +37,7 @@ def test_dispatch_is_idempotent_for_same_final_intent():
 
 
 def test_dispatch_uses_stable_fingerprint_when_internal_intent_has_no_id():
-    bridge = SEAgentMCPBridgeService()
+    bridge = SEAgentMCPBridgeService(clear_records=True)
     bridge._running = True
     bridge.client.is_connected = Mock(return_value=True)
     bridge.client.publish_task_cmd = Mock()
@@ -47,7 +48,7 @@ def test_dispatch_uses_stable_fingerprint_when_internal_intent_has_no_id():
 
 
 def test_runtime_snapshot_marks_transport_send_separately_from_ros_status():
-    bridge = SEAgentMCPBridgeService()
+    bridge = SEAgentMCPBridgeService(clear_records=True)
     bridge._running = True
     bridge.client.is_connected = Mock(return_value=True)
     bridge.client.publish_task_cmd = Mock(return_value=0x80022)
@@ -106,3 +107,51 @@ def test_production_task_id_sequence_survives_process_restart(tmp_path, monkeypa
 
     assert second == first + 1
     assert (tmp_path / ".ros2_task_id_sequence").read_text() == "2"
+
+
+def test_dispatch_record_is_reused_after_process_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEAGENT_MCP_DISPATCH_DIR", str(tmp_path))
+
+    bridge_a = SEAgentMCPBridgeService()
+    bridge_a._running = True
+    bridge_a.client.is_connected = Mock(return_value=True)
+    bridge_a.client.publish_task_cmd = Mock()
+
+    first = bridge_a.dispatch_intent(_intent("PI-20260828-003"))
+
+    bridge_b = SEAgentMCPBridgeService()
+    bridge_b._running = True
+    bridge_b.client.is_connected = Mock(return_value=True)
+    bridge_b.client.publish_task_cmd = Mock()
+
+    second = bridge_b.dispatch_intent(_intent("PI-20260828-003"))
+
+    assert second == first
+    assert bridge_a.client.publish_task_cmd.call_count == 1
+    assert bridge_b.client.publish_task_cmd.call_count == 0
+    assert (tmp_path / ".mcp_dispatch_records.json").exists()
+
+
+def test_dispatch_record_failure_is_retryable_after_process_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEAGENT_MCP_DISPATCH_DIR", str(tmp_path))
+
+    bridge_a = SEAgentMCPBridgeService()
+    bridge_a._running = True
+    bridge_a.client.is_connected = Mock(return_value=True)
+    bridge_a.client.publish_task_cmd = Mock(side_effect=RuntimeError("mock publish fail"))
+
+    with pytest.raises(RuntimeError):
+        bridge_a.dispatch_intent(_intent("PI-20260828-004"))
+
+    bridge_b = SEAgentMCPBridgeService()
+    bridge_b._running = True
+    bridge_b.client.is_connected = Mock(return_value=True)
+    bridge_b.client.publish_task_cmd = Mock()
+
+    task_id = bridge_b.dispatch_intent(_intent("PI-20260828-004"))
+
+    assert isinstance(task_id, int)
+    assert bridge_b.client.publish_task_cmd.call_count == 1
+
+    record = bridge_b._dispatch_records
+    assert record["PI-20260828-004"]["dispatch_state"] == "SENT"

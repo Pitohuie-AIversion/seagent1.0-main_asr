@@ -9,6 +9,7 @@ import re
 import threading
 import uuid
 import yaml
+from functools import wraps
 
 import logging
 from pathlib import Path
@@ -61,58 +62,11 @@ def init_asr_service(asr_service):
     global _shared_asr
     _shared_asr = asr_service
 
-import importlib
 import os
-import sys
-
-_MODULES_TO_WATCH = [
-    "src.exceptions",
-    "src.result_paths",
-    "src.simulated_time",
-    "src.environment_info",
-    "src.state_info",
-    "src.asr_normalizer",
-    "src.coord_parser",
-    "src.prompts",
-    "src.oilfield_linker",
-    "src.model_profile",
-    "src.session_state",
-    "src.knowledge_retriever",
-    "src.normalizer",
-    "src.validator",
-    "src.extractor",
-    "src.slot_store",
-    "src.task_intent_builder",
-    "src.intent_router",
-    "src.output_builder",
-    "src.ui_state_builder",
-    "src.dialogue_manager",
-    "src.history_manager",
-]
-_module_mtimes = {}
-
-
-def check_and_hot_reload_modules():
-    """Hot-reload business logic Python modules when files are edited on disk, without re-loading heavy GPU LLM/ASR models."""
-    global DialogueManager
-    for mod_name in _MODULES_TO_WATCH:
-        try:
-            mod = sys.modules.get(mod_name)
-            if mod and hasattr(mod, "__file__") and mod.__file__:
-                mtime = os.path.getmtime(mod.__file__)
-                if mod_name in _module_mtimes and mtime > _module_mtimes[mod_name]:
-                    logging.info("🔥 Hot-reloading business logic module: %s", mod_name)
-                    reloaded = importlib.reload(mod)
-                    if mod_name == "src.dialogue_manager":
-                        DialogueManager = reloaded.DialogueManager
-                _module_mtimes[mod_name] = mtime
-        except Exception as exc:
-            logging.warning("Hot reload check failed for %s: %s", mod_name, exc)
 
 
 def get_or_create_manager(sid: str) -> DialogueManager:
     """获取或创建会话专属的 DialogueManager 实例"""
-    check_and_hot_reload_modules()
     with _sessions_lock:
         if sid not in _sessions_manager:
             _sessions_manager[sid] = DialogueManager(_shared_llm, _shared_kb, session_id=sid)
@@ -178,10 +132,7 @@ app = Flask(
     static_folder=str(FRONTEND_DIR),
     static_url_path="/static",
 )
-
-@app.before_request
-def _hot_reload_check_before_request():
-    check_and_hot_reload_modules()
+app.config["SEAGENT_API_TOKENS"] = []
 
 @app.after_request
 def _disable_static_cache_after_request(response):
@@ -191,6 +142,58 @@ def _disable_static_cache_after_request(response):
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
     return response
+
+
+def _load_api_tokens() -> list[str]:
+    """从环境变量读取控制面 Token，未配置时返回空列表表示关闭鉴权。"""
+    raw_tokens = (
+        os.getenv("SEAGENT_API_TOKENS", "")
+        or os.getenv("API_TOKENS", "")
+        or os.getenv("SEAGENT_API_TOKEN", "")
+        or os.getenv("API_TOKEN", "")
+    ).strip()
+    if not raw_tokens:
+        return []
+
+    tokens = []
+    for token in re.split(r"[,\s]+", raw_tokens):
+        token = token.strip()
+        if token:
+            tokens.append(token)
+    return tokens
+
+
+def _token_from_request() -> str:
+    authorization = request.headers.get("Authorization", "").strip()
+    if authorization.startswith("Bearer "):
+        return authorization.removeprefix("Bearer ").strip()
+    return request.headers.get("X-API-Token", "").strip()
+
+
+def _require_api_token(view_fn):
+    """当且仅当配置了 API token 时，对路由进行鉴权。"""
+
+    @wraps(view_fn)
+    def wrapped(*args, **kwargs):
+        allowed_tokens = app.config.get("SEAGENT_API_TOKENS", [])
+        if not allowed_tokens:
+            return view_fn(*args, **kwargs)
+
+        provided = _token_from_request()
+        if provided in allowed_tokens:
+            return view_fn(*args, **kwargs)
+
+        response = jsonify({
+            "code": 401,
+            "error": "Unauthorized",
+            "msg": "缺少有效 API token",
+        })
+        response.status_code = 401
+        response.headers["WWW-Authenticate"] = "Bearer"
+        return response
+
+    return wrapped
+
 
 def _load_asr_api_config() -> dict:
     cfg_path = CONFIG_DIR / "asr.yaml"
@@ -215,6 +218,7 @@ def _config_bool(config: dict, key: str, default: bool) -> bool:
 
 _asr_api_config = _load_asr_api_config()
 app.config["MAX_CONTENT_LENGTH"] = int(_asr_api_config.get("max_upload_mb", 25)) * 1024 * 1024
+app.config["SEAGENT_API_TOKENS"] = _load_api_tokens()
 _asr_direct_to_llm = _config_bool(_asr_api_config, "direct_to_llm", True)
 _allowed_audio_extensions = {
     str(ext).lower().lstrip(".")
@@ -260,14 +264,18 @@ def auto_hot_reload_check():
 
 
 @app.route("/api/dev/reload", methods=["GET", "POST"])
+@_require_api_token
 def manual_dev_reload():
     """开发者手动热重载接口"""
-    from src.hot_reload import force_reload
+    from src.hot_reload import force_reload, code_reload_enabled
+    if not code_reload_enabled():
+        return jsonify({"ok": False, "code": 403, "msg": "代码热重载未启用"}), 403
     res = force_reload()
     return jsonify(res)
 
 
 @app.route("/api/dev/reload-events", methods=["GET"])
+@_require_api_token
 def dev_reload_events():
     """返回热重载事件，供前端轮询并刷新当前会话状态。"""
     from src.hot_reload import get_reload_events
@@ -281,6 +289,7 @@ def dev_reload_events():
 
 
 @app.route("/api/dev/reload-events/stream", methods=["GET"])
+@_require_api_token
 def dev_reload_events_stream():
     """返回热重载 SSE 事件流，实时推送后端更新，替代短轮询机制。"""
     from src.hot_reload import get_reload_events
@@ -328,6 +337,7 @@ def dev_reload_events_stream():
 
 
 @app.route("/api/robot/set-state-info", methods=["POST"])
+@_require_api_token
 def set_robot_state_info():
     supplied_request_id = request.headers.get("X-Request-ID", "")
     request_id = (
@@ -646,6 +656,35 @@ def _dispatch_ros2_on_done_transition(mgr, phase_before):
         logging.error("自动下发至 ROS 2 失败: %s", bridge_err, exc_info=True)
         return {"state": "FAILED", "error": str(bridge_err)}
 
+
+def _persist_and_dispatch_done_transition(mgr, phase_before):
+    """当会话首次到达 done 阶段时，先保存会话快照再尝试下发 ROS 2。"""
+    ros2_dispatch = None
+    if phase_before == "done" or mgr.phase != "done":
+        return ros2_dispatch
+
+    try:
+        save_conversation(
+            session_id=mgr.session_id,
+            conversation_history=mgr.conversation_history,
+            task_state=mgr.task_state,
+            built_json=mgr._last_built_json,
+            mode=mgr.mode,
+            phase=mgr.phase,
+            intent_id=mgr.task_state.get("intent_id"),
+            slot_store=mgr.slot_store,
+            dialogue_mode=mgr.dialogue_mode,
+            last_mode_transition=mgr.last_mode_transition,
+            mode_transition_history=mgr.mode_transition_history,
+            control_state=mgr.control_state,
+            last_control_request=mgr.last_control_request,
+        )
+    except Exception as exc:
+        logging.error("保存历史快照失败: %s", exc, exc_info=True)
+
+    ros2_dispatch = _dispatch_ros2_on_done_transition(mgr, phase_before)
+    return ros2_dispatch
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     try:
@@ -808,76 +847,105 @@ def api_chat_stream():
 
         mgr = get_or_create_manager(sid)
 
-        def event_stream():
-            yield f"event: ping\ndata: {json.dumps({'status': 'connected', 'session_id': sid, 'request_id': request_id})}\n\n"
+        session_error = None
+        reply = ""
+        result_json = ""
+        with mgr._session_lock:
+            with _sessions_lock:
+                if _sessions_manager.get(sid) is not mgr:
+                    session_error = {"code": 409, "error": "SessionReset", "msg": "当前会话已重新开始，请在新会话中重试。", "request_id": request_id, "retryable": True}
+                else:
+                    with _sess_lock:
+                        if sid not in _sessions:
+                            _sessions[sid] = Session(sid)
 
-            with mgr._session_lock:
-                with _sessions_lock:
-                    if _sessions_manager.get(sid) is not mgr:
-                        yield f"event: error\ndata: {json.dumps({'code': 409, 'error': 'SessionReset', 'msg': '当前会话已重新开始，请在新会话中重试。', 'request_id': request_id, 'retryable': True})}\n\n"
-                        return
-                with _sess_lock:
-                    if sid not in _sessions:
-                        _sessions[sid] = Session(sid)
-
-                yield f"event: step\ndata: {json.dumps({'step': 'processing', 'message': '正在分析指令与状态...', 'phase': mgr.phase})}\n\n"
-
-                phase_before = mgr.phase
+            if session_error is None:
                 try:
+                    phase_before = mgr.phase
                     reply = mgr.process(msg, request_id=request_id)
+                    ros2_dispatch = _persist_and_dispatch_done_transition(mgr, phase_before)
+                    ui_state = build_frontend_ui_state(mgr)
+                    resp_data = {
+                        "code": 200,
+                        "session_id": sid,
+                        "request_id": request_id,
+                        "reply": reply,
+                        # ui_state: 统一前端状态契约（Issue #31）
+                        "ui_state": ui_state,
+                        # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
+                        "done": mgr.phase == "done",
+                        "rejected": mgr.phase == "rejected",
+                        "collected": mgr._last_built_json,
+                        "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
+                        "task_type": mgr.task_state.get("task_type_key"),
+                        "task_id": mgr.task_state.get("task_id"),
+                        "task_id_preview": mgr.task_id_preview,
+                        "emergency": mgr.mode == "emergency",
+                        "final_json": mgr._last_built_json if mgr.phase == "done" else None,
+                        "ros2_dispatch": ros2_dispatch,
+                    }
+                    for k, v in resp_data.items():
+                        json.dumps(v)
+                    result_json = json.dumps(resp_data, ensure_ascii=False)
+                except SlotVersionConflict as svc:
+                    logging.error(f"Slot version conflict in /api/chat/stream: {svc}", exc_info=True)
+                    session_error = {
+                        "code": 409,
+                        "error": "SlotVersionConflict",
+                        "msg": f"并发版本冲突: {str(svc)}",
+                        "request_id": request_id,
+                        "retryable": True,
+                    }
+                except IntentIdConflict as iic:
+                    logging.error(f"Intent ID conflict in /api/chat/stream: {iic}", exc_info=True)
+                    session_error = {
+                        "code": 409,
+                        "error": "IntentIdConflict",
+                        "msg": "Intent ID 存在冲突，未覆盖已有任务文件。",
+                        "request_id": request_id,
+                        "retryable": True,
+                    }
+                except (TaskPersistenceError, IdReservationError, TaskRollbackError) as tpe:
+                    logging.error(f"Task persistence error in /api/chat/stream: {tpe}", exc_info=True)
+                    session_error = {
+                        "code": 500,
+                        "error": type(tpe).__name__,
+                        "msg": "任务文件保存失败，任务未能成功下发。",
+                        "request_id": request_id,
+                        "retryable": True,
+                    }
+                except ValueError as ve:
+                    logging.error(f"Validation error in /api/chat/stream: {ve}", exc_info=True)
+                    session_error = {
+                        "code": 400,
+                        "error": "ValidationError",
+                        "msg": f"槽位校验失败: {str(ve)}",
+                        "request_id": request_id,
+                        "retryable": False,
+                    }
                 except Exception as exc:
-                    yield f"event: error\ndata: {json.dumps({'code': 500, 'error': type(exc).__name__, 'msg': str(exc), 'request_id': request_id, 'retryable': True})}\n\n"
-                    return
+                    logging.error(f"Unhandled exception in /api/chat/stream: {exc}", exc_info=True)
+                    session_error = {
+                        "code": 500,
+                        "error": "InternalServerError",
+                        "msg": "服务器内部错误，请稍后重试。",
+                        "request_id": request_id,
+                        "retryable": True,
+                    }
 
-                chunk_size = 12
-                for i in range(0, len(reply), chunk_size):
-                    delta_text = reply[i:i + chunk_size]
-                    yield f"event: delta\ndata: {json.dumps({'delta': delta_text, 'request_id': request_id}, ensure_ascii=False)}\n\n"
+        def event_stream():
+            if session_error is not None:
+                yield f"event: error\ndata: {json.dumps(session_error, ensure_ascii=False)}\n\n"
+                return
 
-                ros2_dispatch = None
-                if mgr.phase == "done":
-                    try:
-                        save_conversation(
-                            session_id=sid,
-                            conversation_history=mgr.conversation_history,
-                            task_state=mgr.task_state,
-                            built_json=mgr._last_built_json,
-                            mode=mgr.mode,
-                            phase=mgr.phase,
-                            intent_id=mgr.task_state.get('intent_id'),
-                            slot_store=mgr.slot_store,
-                            dialogue_mode=mgr.dialogue_mode,
-                            last_mode_transition=mgr.last_mode_transition,
-                            mode_transition_history=mgr.mode_transition_history,
-                            control_state=mgr.control_state,
-                            last_control_request=mgr.last_control_request,
-                        )
-                    except Exception as e:
-                        logging.error("保存历史快照失败: %s", e, exc_info=True)
+            yield f"event: ping\ndata: {json.dumps({'status': 'connected', 'session_id': sid, 'request_id': request_id})}\n\n"
+            yield f"event: step\ndata: {json.dumps({'step': 'processing', 'message': '正在分析指令与状态...', 'phase': mgr.phase})}\n\n"
 
-                    ros2_dispatch = _dispatch_ros2_on_done_transition(mgr, phase_before)
-
-                ui_state = build_frontend_ui_state(mgr)
-                resp_data = {
-                    "code": 200,
-                    "session_id": sid,
-                    "request_id": request_id,
-                    "reply": reply,
-                    "ui_state": ui_state,
-                    "done": mgr.phase == "done",
-                    "rejected": mgr.phase == "rejected",
-                    "collected": mgr._last_built_json,
-                    "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
-                    "task_type": mgr.task_state.get("task_type_key"),
-                    "task_id": mgr.task_state.get("task_id"),
-                    "task_id_preview": mgr.task_id_preview,
-                    "emergency": mgr.mode == "emergency",
-                    "final_json": mgr._last_built_json if mgr.phase == "done" else None,
-                    "ros2_dispatch": ros2_dispatch,
-                }
-
-                yield f"event: result\ndata: {json.dumps(resp_data, ensure_ascii=False)}\n\n"
-                yield "event: end\ndata: [DONE]\n\n"
+            for i in range(0, len(reply), 12):
+                delta_text = reply[i:i + 12]
+                yield f"event: delta\ndata: {json.dumps({'delta': delta_text, 'request_id': request_id}, ensure_ascii=False)}\n\n"
+            yield f"event: result\ndata: {result_json}\n\n"
+            yield "event: end\ndata: [DONE]\n\n"
 
         return Response(
             stream_with_context(event_stream()),
@@ -1339,6 +1407,7 @@ def get_mcp_bridge():
 
 
 @app.route("/api/mcp/status", methods=["GET"])
+@_require_api_token
 def get_mcp_status():
     """查询云端 ↔ 支持船 Topside MCP 通信状态与遥测快照"""
     bridge = get_mcp_bridge()
@@ -1359,6 +1428,7 @@ def get_mcp_status():
 
 
 @app.route("/api/mcp/dispatch", methods=["POST"])
+@_require_api_token
 def dispatch_mcp_task():
     """下发指定 TaskIntent 或当前会话完成的任务到 ROS 2 控制系统"""
     bridge = get_mcp_bridge()
@@ -1428,6 +1498,7 @@ def _persist_active_gateway(host: str, port: int, mode: str) -> None:
 
 
 @app.route("/api/mcp/gateway", methods=["GET", "POST"])
+@_require_api_token
 def mcp_gateway():
     """Read or atomically switch the live rosbridge gateway."""
     bridge = get_mcp_bridge()
@@ -1481,6 +1552,7 @@ def mcp_gateway():
 
 
 @app.route("/api/mcp/task-manage", methods=["POST"])
+@_require_api_token
 def mcp_task_manage():
     """发送任务管理指令 (suspend, resume, delete, clear_block)"""
     bridge = get_mcp_bridge()
@@ -1520,6 +1592,7 @@ def mcp_task_manage():
 
 
 @app.route("/api/mcp/ctrl-task", methods=["POST"])
+@_require_api_token
 def mcp_ctrl_task():
     """设备控制指令（开关灯、继电器等）"""
     bridge = get_mcp_bridge()

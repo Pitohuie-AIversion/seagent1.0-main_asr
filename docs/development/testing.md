@@ -45,11 +45,10 @@ TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q
 TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -v
 ```
 
-CI 审计仍需 unittest 原生计数器时，必须使用包级发现，使 `tests/__init__.py`
-在业务测试模块之前启动同一隔离器：
+默认 pytest 收集 `tests/` 和 `mcp/tests/`。CI 使用同一入口并保存原生 JUnit 报告：
 
 ```bash
-python -m unittest discover -s tests -t . -v
+python -m pytest -q tests mcp/tests --junitxml=pytest-results.xml
 ```
 
 ### 2.3 常用单测试模块运行
@@ -85,7 +84,7 @@ python -m unittest discover -s tests -t . -v
 flowchart LR
     CI_Start[CI 触发 Event] --> Step1[1. Python 语法编译检查]
     Step1 --> Step2[2. 离线环境变量设置]
-    Step2 --> Step3[3. unittest 全量测试套件]
+    Step2 --> Step3[3. pytest 全量测试套件]
     Step3 --> Step4[4. 生成并归档回归报告]
 ```
 
@@ -93,8 +92,8 @@ flowchart LR
 | :--- | :--- | :--- |
 | **语法编译检查** | `python -m compileall -q src tests` | `python -m compileall -q src tests` |
 | **环境与离线设置** | `export TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1` | `export TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1` |
-| **全量回归测试** | `python -m unittest discover -s tests -t . -v` | `python -m pytest -q` |
-| **测试报告解析** | `python scratch/parse_tests.py` | `python scratch/parse_tests.py` |
+| **全量回归测试** | `python -m pytest -q tests mcp/tests --junitxml=pytest-results.xml` | `python -m pytest -q` |
+| **测试报告** | 上传 `pytest-results.xml` 和 `full_test.log` | 可添加 `--junitxml=pytest-results.xml` |
 
 ---
 

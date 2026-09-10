@@ -13,6 +13,7 @@ import tempfile
 import uuid
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -30,8 +31,12 @@ from tests.interaction_plan_support import (
 
 class TestSlotCollectionTelemetryDeferral(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = tempfile.mkdtemp(prefix="seagent_test_")
-        os.environ["SEAGENT_RESULT_DIR"] = self.temp_dir
+        temporary_dir = tempfile.TemporaryDirectory(prefix="seagent_test_")
+        self.addCleanup(temporary_dir.cleanup)
+        self.temp_dir = temporary_dir.name
+        environment = patch.dict(os.environ, {"SEAGENT_RESULT_DIR": self.temp_dir})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.kb = KnowledgeBase()
 
     def test_telemetry_check_deferred_until_slots_complete(self):

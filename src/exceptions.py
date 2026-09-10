@@ -23,32 +23,36 @@ if "IdReservationError" not in globals():
         """ID 序列号预留或生成失败。"""
 
 
-class StatePersistenceError(RuntimeError):
-    """机器人实时状态无法可靠持久化。"""
+if "StatePersistenceError" not in globals():
+    class StatePersistenceError(RuntimeError):
+        """机器人实时状态无法可靠持久化。"""
 
 
-class StateVersionConflict(StatePersistenceError):
-    """机器人状态的乐观锁版本与当前持久化版本不一致。"""
+if "StateVersionConflict" not in globals():
+    class StateVersionConflict(StatePersistenceError):
+        """机器人状态的乐观锁版本与当前持久化版本不一致。"""
 
-    def __init__(
-        self,
-        status_ref: str,
-        expected_version: int,
-        current_version: int,
-    ):
-        self.status_ref = status_ref
-        self.expected_version = expected_version
-        self.current_version = current_version
-        super().__init__(
-            "Robot state version conflict "
-            f"for {status_ref}: expected {expected_version}, "
-            f"current {current_version}"
-        )
-
-
-class StateSnapshotValidationError(StatePersistenceError):
-    """机器人状态快照无法解析或不符合持久化 schema。"""
+        def __init__(
+            self,
+            status_ref: str,
+            expected_version: int,
+            current_version: int,
+        ):
+            self.status_ref = status_ref
+            self.expected_version = expected_version
+            self.current_version = current_version
+            super().__init__(
+                "Robot state version conflict "
+                f"for {status_ref}: expected {expected_version}, "
+                f"current {current_version}"
+            )
 
 
-class StateSelectorError(ValueError):
-    """机器人选择器无法唯一解析为已配置的 status_ref。"""
+if "StateSnapshotValidationError" not in globals():
+    class StateSnapshotValidationError(StatePersistenceError):
+        """机器人状态快照无法解析或不符合持久化 schema。"""
+
+
+if "StateSelectorError" not in globals():
+    class StateSelectorError(ValueError):
+        """机器人选择器无法唯一解析为已配置的 status_ref。"""

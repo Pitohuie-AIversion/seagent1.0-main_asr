@@ -45,7 +45,7 @@ known-first-party = ["src"]
 section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "mcp/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -93,4 +93,3 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/example/seagent-asr"
 Issues = "https://github.com/example/seagent-asr/issues"
-

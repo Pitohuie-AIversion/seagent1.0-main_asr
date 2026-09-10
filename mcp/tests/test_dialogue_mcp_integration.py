@@ -100,6 +100,7 @@ class TestDialogueMCPIntegration:
         """[R3] done 阶段成功触发 MCP 下发，Mock rosbridge 捕获 SysTaskCmd"""
         task_intent = {
             "schema_version": 2,
+            "intent_id": "TEST-DIALOGUE-MCP-R3",
             "task_type": "tree_valve_operation",
             "priority": 15,
             "location": {"oilfield": "流花11-1油田", "water_depth_m": 300.0},
@@ -115,8 +116,12 @@ class TestDialogueMCPIntegration:
         assert res["status"] == "success"
         assert dm.dispatched_ros2_task_id == res["task_id"]
 
-        time.sleep(0.2)
-        pubs = rosbridge_server.get_received_publishes()
+        pubs = []
+        for _ in range(20):
+            pubs = rosbridge_server.get_received_publishes()
+            if pubs:
+                break
+            time.sleep(0.1)
         assert len(pubs) >= 1
         cmd = pubs[-1]["payload"]
         assert cmd["task_type"] == 4
@@ -126,6 +131,7 @@ class TestDialogueMCPIntegration:
         """[R4] 端到端：完成对话 → 下发至 ROS 2 → 等待机器人推演至 FINISH"""
         task_intent = {
             "schema_version": 2,
+            "intent_id": "TEST-DIALOGUE-MCP-R4",
             "task_type": "pipeline_inspection",
             "priority": 10,
             "location": {"oilfield": "涠洲油田", "water_depth_m": 80.0},

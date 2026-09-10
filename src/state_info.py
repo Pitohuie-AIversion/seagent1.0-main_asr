@@ -129,6 +129,11 @@ class RobotStateInfo:
                     next_state["water_turbidity"] = value
                 elif key == "water_turbidity":
                     next_state["turbidity"] = value
+                elif key == "overall_status":
+                    if value in ("available", "idle", "ready") and "is_busy" not in params:
+                        next_state["is_busy"] = False
+                    elif value in ("busy", "working", "operating", "executing") and "is_busy" not in params:
+                        next_state["is_busy"] = True
             updated_at = get_current_datetime().isoformat(timespec="microseconds")
             next_state["version"] = current_version + 1
             next_state["updated_at"] = updated_at
