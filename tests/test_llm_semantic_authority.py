@@ -1717,6 +1717,17 @@ def test_duration_delta_from_user_text_overrides_misclassified_end_time_candidat
 
 
 def test_august_31_explicit_date_and_duration() -> None:
+    from datetime import datetime
+    from src.simulated_time import get_simulated_time
+
+    get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0))
+    try:
+        _assert_august_31_explicit_date_and_duration()
+    finally:
+        get_simulated_time().reset()
+
+
+def _assert_august_31_explicit_date_and_duration() -> None:
     # 场景：用户说“任务从8月31号早上6点开始，任务持续8个小时”
     # 模拟大模型在 start_time 误选了当前日期 (2026-08-18)，但 raw_value 保留了 "8月31号早上6点"
     llm = ScriptedLLM(
@@ -1766,6 +1777,17 @@ def test_august_31_explicit_date_and_duration() -> None:
 
 
 def test_august_31_truncated_raw_value_recovers_from_full_user_message() -> None:
+    from datetime import datetime
+    from src.simulated_time import get_simulated_time
+
+    get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0))
+    try:
+        _assert_august_31_truncated_raw_value_recovers_from_full_user_message()
+    finally:
+        get_simulated_time().reset()
+
+
+def _assert_august_31_truncated_raw_value_recovers_from_full_user_message() -> None:
     # 场景：大模型 LLM 将 raw_value 截断为 "早上6点"（丢失了 8月31号），但用户原话为 "任务从8月31号早上6点开始，任务持续12个小时"
     llm = ScriptedLLM(
         extractions=[

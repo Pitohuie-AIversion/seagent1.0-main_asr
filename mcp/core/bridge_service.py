@@ -59,10 +59,13 @@ class SEAgentMCPBridgeService:
                 return
             self.client.connect()
             try:
-                # Register all enabled auxiliary channels from the shared YAML
-                # catalog before attaching the task-status callback.
-                self.client.subscribe_from_config()
+                # Attach the real system-status consumer before the YAML
+                # catalog subscribes with fallback no-op callbacks, otherwise
+                # an immediate initial snapshot can be consumed and lost.
                 self.tracker.start()
+                # Register all enabled auxiliary channels from the shared YAML
+                # catalog after the task-status callback is active.
+                self.client.subscribe_from_config()
             except Exception:
                 self.client.disconnect()
                 raise

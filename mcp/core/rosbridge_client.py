@@ -1058,15 +1058,24 @@ class RosbridgeClient:
                   callback: Callable[[dict], None]) -> None:
         """订阅 ROS 2 话题，消息到达时异步回调"""
         with self._lock:
-            if topic not in self._subscriptions:
-                self._subscriptions[topic] = []
-                self._send({
-                    "op":    "subscribe",
-                    "topic": topic,
-                    "type":  msg_type,
-                })
+            is_new_subscription = topic not in self._subscriptions
+            callbacks = self._subscriptions.setdefault(topic, [])
+            # Register before sending: a fast gateway may publish the initial
+            # snapshot immediately after processing the subscribe request.
+            callbacks.append(callback)
+            if is_new_subscription:
+                try:
+                    self._send({
+                        "op":    "subscribe",
+                        "topic": topic,
+                        "type":  msg_type,
+                    })
+                except Exception:
+                    callbacks.remove(callback)
+                    if not callbacks:
+                        self._subscriptions.pop(topic, None)
+                    raise
                 logger.info(f"[RosbridgeClient] 已订阅: {topic}")
-            self._subscriptions[topic].append(callback)
 
     def subscribe_from_config(
         self,

@@ -124,7 +124,12 @@ class TestBridgeService:
         time.sleep(0.2)
 
         cmds = rosbridge_server.get_received_publishes()
-        actions = [c["payload"]["params"][0] for c in cmds if c["payload"]["task_type"] == 0]
+        actions = [
+            c["payload"]["params"][0]
+            for c in cmds
+            if c["topic"] == "/task_cmd"
+            and c["payload"].get("task_type") == 0
+        ]
         assert 0.0 in actions  # SUSPEND
         assert 1.0 in actions  # RESUME
         assert 7.0 in actions  # CLEAR_BLOCK
