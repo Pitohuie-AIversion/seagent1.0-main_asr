@@ -677,6 +677,154 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
             return f"{reply.rstrip()}\n\n{details}" if reply.strip() else details
         return f"{reply}\n\n{details}"
 
+    def task_uses_status_ref(self, status_ref: str | None) -> bool:
+        """Return whether the current task is tied to a specific robot state ref."""
+        if not status_ref:
+            return True
+
+        dm = self.manager
+        selectors = [
+            dm.task_state.get("equipment_unit_id"),
+            dm._last_built_json.get("equipment_unit_id"),
+        ]
+        unit_slot = dm.slot_store.slots.get("equipment_unit_id")
+        if unit_slot and unit_slot.status == "valid" and unit_slot.value is not None:
+            selectors.append(unit_slot.value)
+
+        for selector in selectors:
+            if selector is None or selector == "":
+                continue
+            try:
+                resolved_ref = dm.kb.state_info.resolve_status_ref(str(selector))
+            except Exception:
+                resolved_ref = None
+            if resolved_ref == status_ref or str(selector) == status_ref:
+                return True
+        return False
+
+    def refresh_external_state_constraints(self, status_ref: str | None = None) -> dict:
+        """Refresh validation after external robot telemetry/state changes.
+
+        This does not publish or edit task slots; it only synchronizes phase,
+        blockers, validation_result, and missing fields with current evidence.
+        """
+        dm = self.manager
+        if dm.phase in ("done", "rejected"):
+            return {"refreshed": False, "reason": "terminal_phase"}
+        if not self.task_uses_status_ref(status_ref):
+            return {"refreshed": False, "reason": "unrelated_status_ref"}
+
+        task_type_key = dm.task_state.get("task_type_key")
+        missing: list[dict] = []
+        if task_type_key:
+            schema = dm.builder.get_schema(task_type_key, dm.mode)
+            user_req_schema = [
+                field for field in schema
+                if field.get("type") not in ("auto", "fixed")
+            ]
+            missing = dm.slot_store.get_missing_slots(
+                user_req_schema,
+                allowed_values_resolver=lambda field: dm.builder.resolve_allowed_values(
+                    field,
+                    task_type_key,
+                    dm.task_state,
+                ),
+            )
+            dm._last_missing = missing
+        else:
+            dm._last_missing = [{
+                "key": "task_type",
+                "label": "任务类型",
+                "type": "string",
+                "allowed_values": dm.kb.get_all_task_type_values(),
+            }]
+            missing = dm._last_missing
+
+        purpose = "preview" if task_type_key and not missing else "interactive"
+        val_res = dm._refresh_validation(purpose=purpose)
+        violations = self._merge_oilfield_context_violations(val_res.violations)
+        hard = [v for v in violations if v.severity == "hard"]
+        soft = [
+            v for v in violations
+            if v.severity == "soft" and not self._is_whitelisted(v)
+        ]
+
+        if hard or val_res.overall_status == "validation_error":
+            dm._transition_phase("blocked_hard", reason="external_state_hard_detected")
+            dm._blocking_violations = hard
+        elif soft:
+            dm._transition_phase("blocked_soft", reason="external_state_soft_detected")
+            dm._blocking_violations = soft
+        else:
+            dm._blocking_violations = []
+            dm._hard_refusal_counts.clear()
+            if task_type_key and not missing:
+                dm._transition_phase("confirming", reason="external_state_constraints_resolved")
+            else:
+                dm._transition_phase("collecting", reason="external_state_constraints_resolved")
+
+        return {
+            "refreshed": True,
+            "phase": dm.phase,
+            "overall_status": val_res.overall_status,
+            "hard_violations": len(hard),
+            "soft_violations": len(soft),
+            "missing": [m.get("key") for m in missing if isinstance(m, dict)],
+        }
+
+    def get_valid_acknowledgements(
+        self,
+        validation_result: Any,
+    ) -> list[ValidationAcknowledgement]:
+        """
+        过滤并返回与当前 validation_result 完全匹配的有效确认。
+        至少匹配：
+        - constraint_id
+        - task_version
+        - validation_version
+        - validation_fingerprint
+        - status_ref
+        - state_version
+        - observed_value (or field/value)
+        """
+        dm = self.manager
+        if not validation_result or not dm.slot_store.validation_acknowledgements:
+            return []
+
+        status_ref = (
+            validation_result.state_snapshot.get("status_ref", "")
+            if validation_result.state_snapshot
+            else ""
+        )
+        state_version = (
+            validation_result.state_snapshot.get("state_version", 0)
+            if validation_result.state_snapshot
+            else 0
+        )
+
+        violation_map = {
+            v.constraint_id: v for v in (validation_result.violations or [])
+        }
+
+        valid_acks = []
+        for ack in dm.slot_store.validation_acknowledgements:
+            if not isinstance(ack, ValidationAcknowledgement):
+                continue
+            # ack 的创建版本不能晚于当前 validation_result
+            if ack.task_version > validation_result.task_version:
+                continue
+            if ack.status_ref != status_ref:
+                continue
+            if ack.state_version != state_version:
+                continue
+            # 必须对应当前实际存在的软警告 Violation
+            if ack.constraint_id not in violation_map:
+                continue
+            v = violation_map[ack.constraint_id]
+            if ack.value != getattr(v, "observed_value", None) and ack.field not in getattr(v, "related_fields", []):
+                continue
+            valid_acks.append(ack)
+        return valid_acks
 
     # 别名兼容
     merge_oilfield_context_violations = _merge_oilfield_context_violations
@@ -687,3 +835,5 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
     invalidate_whitelist = _invalidate_whitelist
     is_whitelisted = _is_whitelisted
     ensure_constraint_details = _ensure_constraint_details
+    _task_uses_status_ref = task_uses_status_ref
+    _get_valid_acknowledgements = get_valid_acknowledgements

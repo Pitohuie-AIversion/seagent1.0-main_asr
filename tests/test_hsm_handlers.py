@@ -139,3 +139,27 @@ class TestHSMHandlersContract:
         reply = dm.slot_handler.execute_slot_filling(ctx)
         assert isinstance(reply, str)
         assert len(reply) > 0
+
+    def test_constraint_handler_telemetry_refresh(self):
+        dm = DialogueManager()
+        # 验证默认状态下关联 status_ref 为 True
+        assert dm.constraint_handler.task_uses_status_ref(None) is True
+        assert dm._task_uses_status_ref(None) is True
+
+        # 测试在 terminal phase 下 refresh 返回 terminal_phase
+        dm.phase = "done"
+        res = dm.refresh_external_state_constraints()
+        assert res["refreshed"] is False
+        assert res["reason"] == "terminal_phase"
+
+        # 测试在 collecting 阶段正常触发刷新
+        dm.phase = "collecting"
+        res2 = dm.refresh_external_state_constraints()
+        assert res2["refreshed"] is True
+        assert "phase" in res2
+
+    def test_constraint_handler_get_valid_acknowledgements_empty(self):
+        dm = DialogueManager()
+        # 空结果时返回 []
+        assert dm.constraint_handler.get_valid_acknowledgements(None) == []
+        assert dm._get_valid_acknowledgements(None) == []
