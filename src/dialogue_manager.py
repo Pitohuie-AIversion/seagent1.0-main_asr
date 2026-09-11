@@ -19,23 +19,16 @@ dialogue_manager.py - 对话主控制器
 """
 
 import copy
-import dataclasses
-import json
 import logging
-import math
 import re
 import threading
-import uuid
-from typing import Any, Dict, List, Optional, Set, Tuple
-from zoneinfo import ZoneInfo
 from datetime import datetime, timezone
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 from .llm_client import LLMClient
 from .model_profile import (
-    ModelRole,
-    _is_unsupported_role_keyword_error,
     is_normalization_contract_v2_enabled,
     is_session_state_v2_enabled,
     is_shadow_compare_enabled,
@@ -53,71 +46,32 @@ from .session_state import (
     StateContractError,
     TaskLifecycleState,
     VALID_DIALOGUE_MODES,
-    VALID_PHASES,
-    VALID_TASK_MODES,
-    session_state_from_legacy_snapshot,
     session_state_to_legacy_fields,
     validate_task_phase_transition,
 )
-from .normalization_contract import (
-    NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS,
-    NormalizationApplyPlan,
-    normalize_task_patch,
-    normalized_task_patch_to_apply_plan,
-    validate_normalization_runtime_flags,
-)
-from .task_patch import build_task_patch, task_patch_to_legacy_updates
-from .knowledge_retriever import KnowledgeBase, RobotSelectionDataError, format_seabed_type, format_telemetry_value
+from .task_patch import build_task_patch
+from .knowledge_retriever import KnowledgeBase
 from .extractor import ParameterExtractor
 from .task_slot_filter import TaskSlotFilter
 from .task_capability_adapter import TaskCapabilityAdapter
 from .handlers import (
-    BaseDialogueHandler,
     DialogueContext,
-    HandlerResult,
     ConversationRouterHandler,
     SlotFillingHandler,
     ConstraintDecisionHandler,
     TaskCommitHandler,
     ExecutionControlHandler,
 )
-from .handlers.task_commit import (
-    sanitize_user_facing_json,
-    _USER_FACING_EXCLUDED_KEYS,
-)
+from .handlers.task_commit import sanitize_user_facing_json
 from .dialogue_snapshot import DialogueSnapshotManager
-
 
 from .normalizer import FieldNormalizer
 from .output_builder import OutputBuilder
 from .validator import TaskValidator, Violation, ValidationResult
-from .prompts import (
-    OFF_TOPIC_REJECT_TEMPLATE,
-    build_responder_messages,
-    build_general_chat_messages,
-    build_knowledge_responder_messages,
-    build_status_responder_messages,
-)
 from .task_intent_builder import TaskIntentBuilder
-from .simulated_time import get_current_datetime
-from .time_context import get_time_context, is_standalone_time_query
-from .coord_parser import parse_coordinate_updates
-from . import coord_parser
-from .oilfield_linker import OilfieldEntityLinker, _UNSET
-from . import task_intent_builder as _ti_builder_module
-from .constants import (
-    FIELD_LABELS,
-)
-from .id_sequence import validate_intent_id, validate_task_id, validate_task_id_for_task_type, next_daily_id
-from .slot_store import (
-    BASE_SLOT_TYPES,
-    Slot,
-    SlotStore,
-    SnapshotValidationError,
-    ValidationAcknowledgement,
-    normalize_slot_value_type,
-    reset_slot_to_missing,
-)
+from .oilfield_linker import OilfieldEntityLinker
+from .constants import FIELD_LABELS
+from .slot_store import Slot, SlotStore, ValidationAcknowledgement
 
 from .exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError, TaskRollbackError
 from .intent_router import IntentRouter, IntentRouteResult
