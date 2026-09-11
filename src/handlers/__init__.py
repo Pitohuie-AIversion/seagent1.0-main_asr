@@ -18,6 +18,7 @@ from .slot_transaction import SlotTransactionManager
 from .off_topic_gate import check_off_topic_gate, is_off_topic_output
 from .grounded_catalog import GroundedCatalogHandler
 from .telemetry_status import TelemetryStatusHandler
+from .execution_control import ExecutionControlHandler
 
 __all__ = [
     "BaseDialogueHandler",
@@ -39,4 +40,5 @@ __all__ = [
     "is_off_topic_output",
     "GroundedCatalogHandler",
     "TelemetryStatusHandler",
+    "ExecutionControlHandler",
 ]

@@ -79,6 +79,7 @@ from .handlers import (
     SlotFillingHandler,
     ConstraintDecisionHandler,
     TaskCommitHandler,
+    ExecutionControlHandler,
 )
 from .handlers.task_commit import (
     sanitize_user_facing_json,
@@ -195,6 +196,7 @@ class DialogueManager:
         self.commit_handler = TaskCommitHandler(self)
         self.slot_handler = SlotFillingHandler(self)
         self.snapshot_manager = DialogueSnapshotManager(self)
+        self.execution_control_handler = ExecutionControlHandler(self)
 
     def __getattr__(self, name: str):
         if name == "router_handler":
@@ -216,6 +218,10 @@ class DialogueManager:
         if name == "snapshot_manager":
             handler = DialogueSnapshotManager(self)
             self.__dict__["snapshot_manager"] = handler
+            return handler
+        if name == "execution_control_handler":
+            handler = ExecutionControlHandler(self)
+            self.__dict__["execution_control_handler"] = handler
             return handler
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
@@ -297,18 +303,12 @@ class DialogueManager:
 
         Runtime 修改 control_state 与 last_control_request 两个字段的唯一入口。
         """
-        if is_session_state_v2_enabled():
-            if control_state != "idle" and self.phase != "done":
-                raise StateContractError(
-                    f"Cannot set non-idle execution control state '{control_state}' when task phase is '{self.phase}' (must be 'done')"
-                )
-            _cand_exec = ExecutionControlState(
-                control_state=control_state,
-                last_control_request=last_control_request,
-            )
-
-        self.control_state = control_state
-        self.last_control_request = copy.deepcopy(last_control_request) if last_control_request is not None else None
+        self.execution_control_handler.set_execution_control_state(
+            control_state,
+            last_control_request,
+            reason=reason,
+            source=source,
+        )
 
     def _transition_phase(
         self,
@@ -724,23 +724,7 @@ class DialogueManager:
 
     def _clear_task_draft_preserving_dialogue_audit(self) -> None:
         """清空未发布任务草稿与约束，但保留会话历史与模式流转审计。"""
-        task_type_key = self.task_state.get("task_type_key")
-        self.slot_store = SlotStore(self.kb)
-        if task_type_key:
-            schema = self.builder.get_schema(task_type_key, self.mode)
-            self.slot_store.init_task_slots(schema)
-
-        self.task_state = self.slot_store.get_task_state()
-        self.final_result = None
-        self.awaiting_final_confirm = False
-        self.task_start_now = False
-        self._blocking_violations = []
-        self._soft_whitelist = set()
-        self._hard_refusal_counts = {}
-        self._pending_rov_candidates = []
-        self._last_built_json = {}
-        self._last_missing = []
-        self._set_execution_control_state("idle", None, reason="clear_task_draft")
+        self.execution_control_handler.clear_task_draft_preserving_dialogue_audit()
 
     def _handle_emergency_intervention(
         self,
@@ -748,75 +732,11 @@ class DialogueManager:
         route: IntentRouteResult,
         request_id: str = "req_default",
     ) -> str:
-        action = route.emergency_action
-        valid_actions = {"stop", "pause", "abort", "cancel"}
-        if not action or action not in valid_actions:
-            return self._handle_non_task_route(user_message, route, request_id)
-
-        action_cn_map = {
-            "stop": "停止",
-            "pause": "暂停",
-            "abort": "终止",
-            "cancel": "取消",
-        }
-        action_cn = action_cn_map.get(action, action)
-
-        if self.phase == "done":
-            target_intent_id = self.task_state.get("intent_id") or (self._last_built_json.get("intent_id") if isinstance(self._last_built_json, dict) else None)
-            target_task_id = self.task_state.get("task_id") or (self._last_built_json.get("task_id") if isinstance(self._last_built_json, dict) else None)
-            target_internal_id = self.task_state.get("internal_id") or (self._last_built_json.get("internal_id") if isinstance(self._last_built_json, dict) else None)
-
-            if is_session_state_v2_enabled():
-                if not target_intent_id or not validate_intent_id(target_intent_id):
-                    raise StateContractError(
-                        f"Cannot create execution control request: invalid or missing target_intent_id ({target_intent_id!r}) in phase 'done'"
-                    )
-
-            req_dict = {
-                "action": action,
-                "status": "requested",
-                "target_intent_id": target_intent_id,
-                "target_task_id": target_task_id,
-                "target_internal_id": target_internal_id,
-                "source": route.source,
-                "confidence": route.confidence,
-                "reason": route.reason,
-            }
-            self._set_execution_control_state(
-                f"{action}_requested",
-                req_dict,
-                reason="emergency_intervention_requested",
-                source=route.source,
-            )
-            reply = f"已识别针对已发布任务的控制指令【{action_cn}】。该控制请求已记录，等待机器人控制适配器对接执行。"
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.conversation_history.append({"role": "assistant", "content": reply})
-            return reply
-
-        has_active_draft = bool(self.task_state.get("task_type_key")) or any(
-            s.status == "valid" and s.value is not None
-            for s in self.slot_store.slots.values()
-        ) or bool(self._last_built_json)
-
-        if has_active_draft:
-            if action == "cancel":
-                self._clear_task_draft_preserving_dialogue_audit()
-                self._transition_phase("rejected", reason="user_cancelled_draft")
-                self.final_result = None
-                reply = "任务已取消。如需重新规划，请重新开始。"
-            else:
-                reply = (
-                    f"当前任务尚未发布，无正在运行的机器人实例可执行【{action_cn}】操作。"
-                    f"任务草稿已保留；如需放弃草稿，请明确指示“取消当前任务”。"
-                )
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.conversation_history.append({"role": "assistant", "content": reply})
-            return reply
-        else:
-            reply = "当前没有活动任务或可取消的未发布任务。"
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.conversation_history.append({"role": "assistant", "content": reply})
-            return reply
+        return self.execution_control_handler.handle_emergency_intervention(
+            user_message,
+            route,
+            request_id=request_id,
+        )
 
     def _process_internal(self, user_message: str, request_id: str = "req_default") -> str:
         old_phase = self.phase
