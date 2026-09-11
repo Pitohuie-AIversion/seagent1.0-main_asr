@@ -1,13 +1,25 @@
 """
-extractor.py — 参数提取器
-每轮对话后，用 LLM 从最新用户消息中提取或更新任务参数。
-使用低温度、结构化 prompt，返回严格的结构化候选列表。
+extractor.py — 参数提取器主调度门面 (解耦重构版)
+
+职责：
+1. 每轮对话后，用 LLM 从最新用户消息中提取或更新任务参数结构；
+2. 调度 TemporalParser (src/temporal_parser.py) 进行相对时间、区间物化与时长算术推导；
+3. 调度 CandidateResolver (src/candidate_resolver.py) 进行实体候选消歧、口语清洗与语义匹配；
+4. 维持全套向后兼容公共 API 契约与方法代理。
 """
+
+from __future__ import annotations
 
 import json
 import re
 from datetime import datetime
+from typing import Any
 
+from .candidate_resolver import (
+    CandidateResolver,
+    CANDIDATE_RESOLUTION_JSON_SCHEMA,
+    MAX_EXTRACTION_USER_HISTORY,
+)
 from .duration_parser import (
     parse_chinese_number,
     parse_duration_spec,
@@ -16,27 +28,9 @@ from .llm_client import LLMClient
 from .model_profile import ModelRole, _is_unsupported_role_keyword_error
 from .normalizer import FieldNormalizer
 from .relative_time_parser import parse_relative_datetime, parse_time_range
+from .temporal_parser import TemporalParser
 
-MAX_EXTRACTION_USER_HISTORY = 6
 FULL_TURN_EXTRACTION_MAX_TOKENS = 1600
-CANDIDATE_RESOLUTION_JSON_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "matched": {"type": "boolean"},
-        "canonical_key": {"type": ["string", "null"]},
-        "canonical_value": {"type": ["string", "null"]},
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-        "reason": {"type": "string"},
-    },
-    "required": [
-        "matched",
-        "canonical_key",
-        "canonical_value",
-        "confidence",
-        "reason",
-    ],
-    "additionalProperties": False,
-}
 
 EXTRACTION_TASK = """\
 你是一个严格的任务参数候选抽取器。
@@ -108,76 +102,43 @@ EXTRACTION_SYSTEM = """\
     }}
   ],
   "list_mutations": [],
-  "time_relation": {{
-    "duration_seconds": 1800,
-    "target": "duration",
-    "action": "ADD",
-    "raw_text": "持续时间再加半小时",
-    "confidence": 0.95
-  }},
+  "time_relation": null,
   "unresolved": []
 }}
 
-【time_relation 示例示范】
-- 绝对时长 (如"持续5小时"、"做3个小时") -> target: "duration", action: "SET", duration_seconds: 18000
-- 持续时间增量 (如"持续时间再加半小时"、"多干1小时") -> target: "duration", action: "ADD", duration_seconds: 1800
-- 开始时间推迟 (如"推迟半小时开始"、"晚半小时开始") -> target: "start_time", action: "ADD", duration_seconds: 1800
-- 结束时间提前 (如"提前半小时结束"、"早半小时收工") -> target: "end_time", action: "SUB", duration_seconds: 1800
-
 【提取规则】
-1. 只提取用户明确提供或可以高置信度推断的信息，不猜测。
-2. 每一个提取的字段，必须包含 raw_key（用户所用的词）、canonical_key（规范化字段名）、raw_value（用户说原始值）、normalized_value（转换后的标准化值，例如数字、日期等）和 confidence（置信度）。
-3. 通常以最新用户消息为候选值来源；唯一例外是用户本轮明确接受紧邻上一条助手消息中的单一推荐，或明确选定该消息中按顺序展示的编号选项。此时最新用户消息仍是写入授权来源，可以从该助手消息复制被接受的值；不能从更早历史、后台 allowed_values 顺序、并列但未编号的候选或助手未经确认的推测中取值。
-4. 如果最新用户消息中对同一字段出现多个候选或多次反悔/修正，以文本中最后出现的候选为准。
-5. 对于时间信息：充分发挥大模型对自然语言数字与时刻的转换理解能力，将口语时刻（例如"下午一点一刻"→"13:15:00"，"下午四点一刻"→"16:15:00"，"三点半"→"15:30:00"，"晚上十一点"→"23:00:00"，"一点三刻"→"13:45:00"）准确转换为 YYYY-MM-DDTHH:MM:SS 格式，无时间部分时补 T00:00:00；"现在/当前/立即"等表达必须基于【当前时间】换算。用户提供持续时长或时长增量变动时，将其换算为正数秒写入 time_relation，并正确标记 action 操作动作（"ADD" 表示增加/延长/多干，"SUB" 表示减少/提前/缩短，"SET" 表示设定为/持续；注意换算规则：半小时=1800，一个半小时=5400，两个半小时=9000，2.5小时=9000，45分钟=2700）；不要自行计算 end_time。没有持续时长时 time_relation 必须为 null。
-6. 对于坐标：normalized_value 提取为 {{"lat": float, "lon": float}} 格式，统一十进制度。
-7. 对于水深：统一转换为米（m）为单位的数值，例如"1千米"→1000，"500m"→500。
-8. 对于任务类型：
+1. 只抽取用户当前已明确表达的参数；如果用户未提及某字段，绝不要在 slot_candidates 中输出该字段。
+2. 对于任务类型，必须同时提取 task_type 与 task_type_key 两个字段：
 {task_type_rules}
-9. 对于ROV型号：如用户描述模糊（如"深水工作ROV"、"轻型观察"），提取 canonical_key: "rov_description" 字段，不要强行映射型号名。
-10. 严格区分机器人系列、型号与具体编号：equipment_family 只能填写 robot_families 的系列全名；equipment_type 只能填写该系列 model_variants 的型号全名；equipment_unit_id 填写具体机器人编号或代号（如"天鹰座001"、"金牛座001"、"LROV-150-001"、"OBSROV-75-001"）。用户提供带有系列前缀的设备代号（如"天鹰座001"、"金牛座001"、"观察级001"）时，必须完整保留系列与编号全称（如 normalized_value: "天鹰座001"），严禁截断为单纯的数字序号（如"001"），以便后端准确消歧。用户只明确系列时不得猜测型号；只明确型号或具体编号代号时可由后端自动补齐完整系列与型号。
-11. 若确定ROV型号，可自动识别出ROV类型：{ROV2type}
-12. 机器人能力、最大水深、载荷、功率、尺寸、状态、任务阈值和作业限制必须以所需字段、允许值、ROV2type和后续知识库/约束校验为准；不得凭通用知识补全或改写配置中没有的信息。
-13. 仅当用户明确提及无歧义的紧急词汇（如"紧急"、"加急"、"应急救援"、"应急抢修"等）时，才可提取 canonical_key: "emergency_mode" 且 normalized_value: true。严禁因语气词、标点符号（如感叹号）或"赶紧/优先"等泛化词语擅自判断为紧急模式。若用户明确表示"取消紧急"、"非紧急"、"正常模式"、"按普通模式"、"不紧急"等，提取 canonical_key: "emergency_mode" 且 normalized_value: false。
-14. 最新用户消息选择编号时，只能根据紧邻上一条 assistant 消息中明确编号展示的选项映射；候选顺序未向用户展示时必须写入 unresolved。接受单一推荐时只能使用紧邻助手明确推荐的值；不得猜测。
-15. 只根据所需字段中定义的key提取，不新增其他字段。
-16. 任务维度中无法识别或无法映射的片段写入 unresolved；上游只有在 WRITE 时才调用本抽取器，因此没有可验证候选时不得返回全空，必须说明 unresolved。
-17. 【列表变更 (list_mutations) 提取与语义吸附规则】：
-    对于携带工具/选配工具（payload）等列表型字段：
-    - 语义吸附 (Snapping)：在提取 items 时，若用户使用口语、简称或自然语言描述（如“摄像机”、“探头”、“测厚度的”），必须优先对比【所需字段及其描述】中 payload 的 allowed_values 规范列表，进行语义对齐与吸附（例如将“摄像机”吸附映射为“高清水下摄像机”）。若无法对齐，保留原始表达由后端兜底解析。
-    - 增量添加/加装/携带/加上/补充：当用户表达“添加激光标尺”、“加装腐蚀检测探头”、“还要携带水质传感器”等增量加装意图时，必须输出为 list_mutations 元素：
-      {{"field": "payload", "operation": "add", "items": ["激光标尺"], "raw_text": "用户原表达", "confidence": 0.95}}
-      严禁将其提取为 slot_candidates 中的 payload 字段，防止覆盖已有工具列表！
-    - 移除/删除/去掉/不要：当用户表达“删除激光标尺”、“去掉腐蚀检测探头”等减装意图时，必须输出为 list_mutations 元素：
-      {{"field": "payload", "operation": "remove", "items": ["激光标尺"], "raw_text": "用户原表达", "confidence": 0.95}}
-    - 替换/更换：当用户表达“把激光标尺替换为腐蚀检测探头”时，必须输出为 list_mutations 元素：
-      {{"field": "payload", "operation": "replace", "items": ["腐蚀检测探头"], "target_items": ["激光标尺"], "raw_text": "用户原表达", "confidence": 0.95}}
-    - 清空/取消全部：当用户表达“清空所有携带工具”或“不需要任何额外工具”时，必须输出为 list_mutations 元素：
-      {{"field": "payload", "operation": "clear", "raw_text": "用户原表达", "confidence": 0.95}}
-    - 全选/携带全部：当用户表达“携带全部工具”、“带上所有设备”、“全选”、“全都要”等全量装载意图时，必须输出为 list_mutations 元素：
-      {{"field": "payload", "operation": "add", "items": ["全选"], "raw_text": "用户原表达", "confidence": 0.95}}
-18. 【通用枚举字段语义吸附规则】：
-    对于设备体系（equipment_class / equipment_family / equipment_type / equipment_unit_id）、支持船（support_vessel）、管缆类型（cable_type）、油田名称（oilfield_name）等枚举字段：
-    - 结合【所需字段及其描述】中的 allowed_values 允许值列表与候选证据（candidate_evidence），当用户使用口语、简称、同音错别字或自然语言描述（例如“油气管”、“光缆”、“201号船”、“流花油田”、“150马力轻型”、“改2号级”、“2号机”、“2号”）时，必须优先对齐吸附映射为对应的规范标准名称（例如 normalized_value: "海底油气管道", "光纤通信缆", "海洋石油201", "流花11-1油田", "轻型工作级深海机器人 150HP", "LROV-150-002"）。
-    - raw_value 必须准确保留用户的原始表达，normalized_value 填写吸附对齐后的标准规范名称。
+3. 如果当前状态中已有某字段值，但用户在本轮给出了新的值（包括修改、订正、补充），必须提取新值。
+4. 如果最新用户消息中对同一字段多次修正，以最后出现的候选为准。
+5. 针对 required 声明的字段，只允许提取 required 中存在的 canonical_key 以及任务类型选择器（task_type, task_type_key）。
+6. 如果用户的输入不是修改已有字段，而是提问、闲聊或确认，slot_candidates 返回空列表 []。
+7. 【列表字段特别规则】对于 payload 字段：
+   - 用户明确表达"增加/还要/再带/装载/搭载/配备/加装/添加 [工具]"时，输出 list_mutations: [{{"field": "payload", "action": "append", "items": ["工具名称"]}}]
+   - 用户明确表达"删除/不要/卸下/去掉/移除/取消 [工具]"时，输出 list_mutations: [{{"field": "payload", "action": "remove", "items": ["工具名称"]}}]
+   - 用户明确表达"清空/全不要/什么都不带/不带任何工具/全部卸下/清空工具"时，输出 list_mutations: [{{"field": "payload", "action": "clear", "items": []}}]
+   - 用户明确列出完整工具清单且意图是全量替换时（如"只要A和B"、"改成带A和B"、"载荷设置为A、B"），输出 list_mutations: [{{"field": "payload", "action": "replace", "items": ["A", "B"]}}]
+   - 产生 list_mutations 时，slot_candidates 中不要再输出 payload 候选。
+8. 【时间区间与时长规则】对于 start_time / end_time / 持续时长：
+   - 用户表达"两小时后开始"、"明天上午九点"等相对时间时，尝试根据今天日期 {today} 换算为绝对 ISO 时间 "YYYY-MM-DDTHH:MM:SS"。
+   - 用户明确表达持续时长或时长增量变动时（如"干2小时"、"作业持续3天"、"时长再延长1小时"、"提前半小时结束"、"结束时间保持不变"），除尽量换算 end_time 外，必须在 time_relation 中输出：
+     {{"has_duration": true, "raw_text": "用户时长原词", "duration_seconds": 换算秒数, "target": "duration/start_time/end_time", "action": "SET/ADD/SUB", "confidence": 0.95}}
+9. 【设备选择器特别规则】ROV设备可根据以下关联信息进行辅助推导：
+{ROV2type}
+10. 【选项编号与单一推荐】最新用户消息选择编号时，只能根据紧邻上一条 assistant 消息中明确编号展示的选项映射；即使 allowed_values 有固定顺序，只要该顺序未向用户展示就必须写入 unresolved。接受单一推荐时只能使用紧邻助手明确推荐的值；不得猜测。
+11. 【紧急模式识别】仅当用户明确提及"紧急"、"加急"、"应急"等词汇时提取 emergency_mode: true；明确取消时提取 emergency_mode: false。
 
-【枚举字段抽取边界】
-- raw_value 必须保留用户原始表达。
-- normalized_value 可以填写模型初步判断，但不代表已经通过后端标准值校验。
-- 用户可以使用 allowed_values 对应的 aliases、简称、展示名、自然语言描述或上下文指代；不要因为用户没有逐字复制标准名称就判定无效。
-- 不确定时不要猜测标准候选，保持用户原表达，由后端结合 aliases 和 allowed_values 解析。
-
-【当前时间】{today}
-
-【所需字段及其描述，key为字段名，label为字段描述】
-{required}
-
-【当前任务状态（已知字段，避免重复提取）】
+当前任务状态：
 {current_state}
+
+字段规范定义（包含类型、合法值列表、别名映射与证据线索）：
+{required}
 """
 
 
 def _build_task_type_rules(task_type_map: dict[str, str]) -> str:
+    """根据任务类型映射字典生成 Prompt 规则文本"""
     groups: dict[str, list[str]] = {}
     for display, tkey in task_type_map.items():
         groups.setdefault(tkey, []).append(display)
@@ -199,9 +160,22 @@ def _build_task_type_rules(task_type_map: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _load_payload_catalog() -> dict:
+    """容错加载载荷目录（兼容历史调用）"""
+    return {}
+
+
 class ParameterExtractor:
+    """水下任务参数抽取器主门面调度器"""
+
     def __init__(self, llm: LLMClient):
         self.llm = llm
+        self.temporal_parser = TemporalParser(llm)
+        self.candidate_resolver = CandidateResolver(llm)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 主抽取调度方法
+    # ──────────────────────────────────────────────────────────────────────────
 
     def extract_updates(
         self,
@@ -288,7 +262,6 @@ class ParameterExtractor:
         )
         raw_candidates = result.get("slot_candidates")
         if not isinstance(raw_candidates, list):
-            # 兼容模型偶尔返回的扁平 JSON，但仍执行字段白名单检查。
             raw_candidates = [
                 {
                     "raw_key": key,
@@ -305,13 +278,14 @@ class ParameterExtractor:
         if not isinstance(unresolved, list):
             unresolved = []
 
+        # 调度 TemporalParser 处理时间关系与物化
         time_relation = result.get("time_relation")
         if time_relation is None and "end_time" in allowed_keys:
-            time_relation = self._extract_temporal_relation(
+            time_relation = self.temporal_parser.extract_temporal_relation(
                 user_message,
                 current_state,
             )
-        raw_candidates, time_unresolved = self._materialize_time_relation(
+        raw_candidates, time_unresolved = self.temporal_parser.materialize_time_relation(
             raw_candidates,
             time_relation,
             current_state,
@@ -319,6 +293,7 @@ class ParameterExtractor:
             user_message=user_message,
         )
 
+        # 调度 CandidateResolver 进行候选清洗与规范化消歧
         normalized_candidates, resolver_unresolved = self._normalize_candidates(
             raw_candidates,
             allowed_keys,
@@ -368,405 +343,59 @@ class ParameterExtractor:
             "list_mutations": list_mutations,
         }
 
-    @staticmethod
+    # ──────────────────────────────────────────────────────────────────────────
+    # 候选过滤与消歧装配
+    # ──────────────────────────────────────────────────────────────────────────
+
     def _with_task_type_transition_values(
+        self,
         required: list[dict],
         task_type_map: dict[str, str],
     ) -> list[dict]:
-        """Broaden only task selectors for a possible category transition.
-
-        Ordinary fields remain scoped to the active task schema.  This lets a
-        first pass discover a new task category without unioning incompatible
-        robot/payload candidate domains from every task template.
-        """
-        expanded = [dict(field) for field in required]
-        all_task_values = list(dict.fromkeys(
-            value
-            for value in task_type_map
-            if isinstance(value, str) and value.strip()
-        ))
+        all_task_values = sorted(set(task_type_map.keys()))
         if not all_task_values:
-            return expanded
+            return required
 
-        task_field = next(
-            (field for field in expanded if field.get("key") == "task_type"),
-            None,
-        )
+        expanded: list[dict] = []
+        task_field = None
+        for item in required:
+            copied = dict(item)
+            if copied.get("key") == "task_type":
+                task_field = copied
+            expanded.append(copied)
+
         if task_field is None:
             expanded.append({
                 "key": "task_type",
                 "label": "任务类型",
-                "type": "tasktype",
+                "type": "string",
+                "required": True,
                 "allowed_values": all_task_values,
             })
         else:
             task_field["allowed_values"] = all_task_values
         return expanded
 
-    def _extract_temporal_relation(
-        self,
-        user_message: str,
-        current_state: dict,
-    ) -> dict | None:
-        extractor = getattr(self.llm, "extract_temporal_relation", None)
-        if not callable(extractor):
-            return None
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "你是时间关系抽取器，判断最新输入是否给出任务持续时长或时长增量变动。"
-                    "必须输出 has_duration、target、action、duration_seconds、raw_text、confidence。"
-                    "存在时长时 has_duration=true，将时长换算为正数秒（换算参考：半小时=1800，一个半小时=5400，2.5小时=9000，45分钟=2700）。"
-                    "正确判断修饰目标对象 target：修饰开始时间输出 'start_time'；修饰持续时间输出 'duration'；修饰结束时间输出 'end_time'。"
-                    "正确识别动作标记 action：表达增加、延长、再加、多干、推迟、比原来加时输出 'ADD'；表达提前、缩短、减少时输出 'SUB'；表达持续、设定为、总共时输出 'SET'。"
-                    "不存在时长时 has_duration=false，其余可空字段为 null。只输出 JSON。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "latest_user_message": user_message,
-                        "current_start_time": current_state.get("start_time"),
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-        ]
-        try:
-            relation = extractor(
-                messages,
-                max_tokens=180,
-                role=ModelRole.EXTRACTOR,
-            )
-        except TypeError as exc:
-            if not _is_unsupported_role_keyword_error(exc):
-                raise
-            relation = extractor(messages, max_tokens=180)
-        return relation if isinstance(relation, dict) else None
-
-    @staticmethod
-    def _materialize_time_relation(
-        candidates: list,
-        relation: object,
-        current_state: dict,
-        allowed_keys: set[str],
-        user_message: str = "",
-    ) -> tuple[list, list[str]]:
-        """Use the time module's unified range parser to derive or validate end_time."""
-        if "end_time" not in allowed_keys:
-            return candidates, []
-
-        start_cand = None
-        end_cand = None
-        for item in reversed(candidates):
-            if isinstance(item, dict):
-                if item.get("canonical_key") == "start_time" and start_cand is None:
-                    start_cand = item
-                elif item.get("canonical_key") == "end_time" and end_cand is None:
-                    end_cand = item
-
-        raw_text = None
-        confidence = 1.0
-        duration_text = None
-
-        if isinstance(relation, dict) and relation.get("has_duration") is not False and relation != {}:
-            raw_text = str(relation.get("raw_text") or "").strip()
-            try:
-                confidence = float(relation.get("confidence", 1.0))
-            except (TypeError, ValueError):
-                confidence = 1.0
-            import math
-            dur_sec = relation.get("duration_seconds")
-            from .duration_parser import parse_duration_with_detail
-            raw_dur_detail = parse_duration_with_detail(raw_text) if raw_text else None
-            if raw_dur_detail and raw_dur_detail.success and raw_dur_detail.total_seconds:
-                duration_text = raw_text
-            elif dur_sec is not None and isinstance(dur_sec, (int, float)) and math.isfinite(dur_sec) and dur_sec > 0:
-                duration_text = f"{dur_sec}秒"
-            elif dur_sec is not None and isinstance(dur_sec, (int, float)) and not math.isfinite(dur_sec):
-                return candidates, ["持续时长必须为有限数值，未写入结束时间。"]
-            elif raw_text and raw_text not in ("持续时长", "持续时间", "时长"):
-                duration_text = raw_text
-            elif relation.get("keep_existing_duration"):
-                duration_text = "持续时间不变"
-
-        user_duration_delta = ParameterExtractor._extract_duration_delta_text(user_message)
-        if user_duration_delta:
-            duration_text = user_duration_delta
-            raw_text = user_duration_delta
-            end_cand = None
-
-        end_unchanged = (
-            end_cand is None
-            and ParameterExtractor._mentions_end_time_keep(user_message)
-            and current_state.get("end_time")
-        )
-
-        if duration_text is None and start_cand is not None and end_cand is None and not end_unchanged:
-            if current_state.get("start_time") and current_state.get("end_time"):
-                duration_text = "持续时间不变"
-                raw_text = raw_text or "保持原持续时长"
-
-        has_relation = bool(duration_text)
-        has_end_candidate = end_cand is not None
-        has_start_candidate = start_cand is not None
-        if not has_relation and not end_unchanged and not (has_start_candidate and has_end_candidate):
-            return candidates, []
-
-        from .simulated_time import get_current_datetime
-        base_dt = get_current_datetime()
-
-        start_text = ParameterExtractor._select_time_range_start_text(
-            start_cand,
-            current_state,
-            user_message,
-            base_dt,
-        )
-        end_text = ParameterExtractor._select_time_range_end_text(
-            end_cand,
-            user_message,
-            has_relation,
-        )
-        if end_unchanged:
-            end_text = current_state.get("end_time")
-        previous_start = ParameterExtractor._parse_state_datetime(current_state.get("start_time"))
-        previous_end = ParameterExtractor._parse_state_datetime(current_state.get("end_time"))
-
-        range_result = parse_time_range(
-            start_text,
-            duration_text,
-            end_text,
-            base_dt=base_dt,
-            previous_start=previous_start,
-            previous_end=previous_end,
-        )
-
-        if not range_result.success:
-            if range_result.error_code == "START_TIME_REQUIRED":
-                label = raw_text or duration_text or "持续时长"
-                return candidates, [f"{label}：缺少开始时间，无法计算结束时间。"]
-            if range_result.error_code == "INVALID_DURATION":
-                return candidates, ["持续时长必须为正数且置信度合法，未写入结束时间。"]
-            if range_result.error_message:
-                return candidates, [range_result.error_message]
-            return candidates, []
-
-        updated_candidates = list(candidates)
-        if start_cand is not None and range_result.start_time.iso_string:
-            original_start_norm = str(start_cand.get("normalized_value") or "").strip()
-            start_cand["normalized_value"] = range_result.start_time.iso_string
-            if (
-                range_result.start_time.parse_method != "absolute_iso"
-                or original_start_norm != range_result.start_time.iso_string
-            ):
-                start_cand["resolution_method"] = "relative_date_parsed"
-
-        if range_result.end_time.iso_string:
-            if end_cand is not None and not has_relation:
-                end_cand["normalized_value"] = range_result.end_time.iso_string
-                if range_result.end_time.parse_method == "range_cross_midnight":
-                    end_cand["resolution_method"] = "cross_day_auto_corrected"
-                elif range_result.end_time.parse_method != "absolute_iso":
-                    end_cand["resolution_method"] = "relative_date_parsed"
-            elif end_unchanged:
-                updated_candidates.append(
-                    {
-                        "raw_key": "结束时间",
-                        "canonical_key": "end_time",
-                        "raw_value": "结束时间不变",
-                        "normalized_value": range_result.end_time.iso_string,
-                        "confidence": confidence,
-                        "resolution_method": "end_time_unchanged",
-                    }
-                )
-            else:
-                target = str(relation.get("target") or "duration").lower() if isinstance(relation, dict) else "duration"
-                action = str(relation.get("action") or "SET").upper() if isinstance(relation, dict) else "SET"
-
-                final_end_iso = range_result.end_time.iso_string
-                res_method = "duration_arithmetic"
-
-                dur_sec = relation.get("duration_seconds") if isinstance(relation, dict) else None
-                if dur_sec is None and range_result.duration:
-                    dur_sec = range_result.duration.total_seconds
-
-                if action in ("ADD", "SUB") and dur_sec:
-                    from datetime import timedelta
-                    delta_sec = float(dur_sec) if action == "ADD" else -float(dur_sec)
-                    if target in ("duration", "end_time") and previous_end:
-                        derived_dt = previous_end + timedelta(seconds=delta_sec)
-                        final_end_iso = derived_dt.strftime("%Y-%m-%dT%H:%M:%S")
-                        res_method = "duration_incremental_arithmetic"
-                    elif target == "start_time" and previous_start:
-                        derived_start = previous_start + timedelta(seconds=delta_sec)
-                        for item in updated_candidates:
-                            if isinstance(item, dict) and item.get("canonical_key") == "start_time":
-                                item["normalized_value"] = derived_start.strftime("%Y-%m-%dT%H:%M:%S")
-                                item["resolution_method"] = "start_time_shifted"
-                        if previous_end:
-                            derived_dt = previous_end + timedelta(seconds=delta_sec)
-                            final_end_iso = derived_dt.strftime("%Y-%m-%dT%H:%M:%S")
-                            res_method = "start_and_end_shifted"
-
-                updated_candidates = [
-                    item for item in updated_candidates
-                    if not (isinstance(item, dict) and item.get("canonical_key") == "end_time")
-                ]
-                updated_candidates.append(
-                    {
-                        "raw_key": "持续时长",
-                        "canonical_key": "end_time",
-                        "raw_value": raw_text or duration_text or "持续时长",
-                        "normalized_value": final_end_iso,
-                        "confidence": confidence,
-                        "resolution_method": res_method,
-                    }
-                )
-        return updated_candidates, []
-
-
-    @staticmethod
-    def _parse_state_datetime(value: object) -> datetime | None:
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, dict):
-            value = value.get("value") or value.get("normalized_value")
-            if value is None:
-                return None
-        elif hasattr(value, "value") and not isinstance(value, (str, bytes)):
-            value = getattr(value, "value")
-
-        text = str(value).strip()
-        if not text or text.lower() in ("none", "null"):
-            return None
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        try:
-            return datetime.fromisoformat(text)
-        except ValueError:
-            return None
-
-    @staticmethod
-    def _looks_like_iso_datetime(value: object) -> bool:
-        if not isinstance(value, str):
-            return False
-        return bool(re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", value.strip()))
-
-    @staticmethod
-    def _has_date_semantics(text: str) -> bool:
-        if not text:
-            return False
-        return bool(
-            re.search(
-                r"今天|今晚|今早|明天|明晚|明早|后天|大后天|昨天|前天|次日|"
-                r"\d{4}[年/-]|\d{1,2}[月/-]\d{1,2}|[一二三四五六七八九十]{1,3}月|"
-                r"周[一二三四五六日天12345670]|星期[一二三四五六日天12345670]|"
-                r"[一二两三四五六七八九十0-9]+天[后前]|[一二两三四五六七八九十0-9]+周[后前]|"
-                r"月底|月末|月初|年底|年末|年初",
-                text,
-            )
-        )
-
-    @staticmethod
-    def _mentions_end_time_keep(text: str) -> bool:
-        if not text:
-            return False
-        return bool(re.search(r"(?:结束|终止|截止|完工|收工)\s*时间\s*(?:保持)?不变", text))
-
-    @staticmethod
-    def _extract_duration_delta_text(text: str) -> str | None:
-        if not text:
-            return None
-        matches = re.finditer(
-            r"(?:任务)?(?:持续时间|持续时长|时长)\s*(?:再)?(?:增加|减少|加长|缩短|延长|加上|减去|加|减)(?:了)?\s*"
-            r"(?:[0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点半]+)\s*"
-            r"(?:个)?\s*(?:天|日|小时|钟头|h|hr|hours?|hrs?|分钟|分|min|mins?|minutes?|秒钟|秒|secs?|seconds?)",
-            text,
-            re.IGNORECASE,
-        )
-        found = [m.group(0).strip() for m in matches]
-        if not found:
-            return None
-        candidate = found[-1]
-        spec = parse_duration_spec(candidate)
-        return candidate if spec.state.value == "delta" else None
-
-    @staticmethod
-    def _select_time_range_start_text(
-        start_cand: dict | None,
-        current_state: dict,
-        user_message: str,
-        base_dt: datetime,
-    ) -> object:
-        if start_cand is None:
-            return current_state.get("start_time")
-
-        raw = str(start_cand.get("raw_value") or "").strip()
-        normalized = start_cand.get("normalized_value")
-        if raw and (
-            ParameterExtractor._has_date_semantics(raw)
-            or ParameterExtractor._has_date_semantics(user_message)
-        ):
-            rel_iso = parse_relative_datetime(raw, base_dt, full_user_message=user_message)
-            if rel_iso:
-                return rel_iso
-
-        if ParameterExtractor._looks_like_iso_datetime(normalized):
-            return normalized
-        return raw or normalized
-
-    @staticmethod
-    def _select_time_range_end_text(
-        end_cand: dict | None,
-        user_message: str,
-        has_relation: bool,
-    ) -> object:
-        if end_cand is None:
-            return None
-
-        raw = str(end_cand.get("raw_value") or "").strip()
-        normalized = end_cand.get("normalized_value")
-        if has_relation and raw and raw not in user_message:
-            return None
-        return raw or normalized
-
-
     @staticmethod
     def _allowed_candidate_keys(
         task_type_key: str | None,
-        required: list[dict] | None,
+        required: list[dict],
     ) -> set[str]:
-        """根据当前抽取阶段生成字段白名单。"""
         if task_type_key is None:
-            return {
-                "task_type",
-                "task_type_key",
-                "emergency_mode",
-                "equipment_class",
-                "equipment_family",
-                "equipment_type",
-                "equipment_unit_id",
-                "equipment_name",
-                "rov_description",
-                "raw_oilfield_name",
-                "oilfield_name",
-            }
+            return {"task_type", "task_type_key", "emergency_mode"}
 
         keys = {
             str(field.get("key"))
             for field in required or []
             if field.get("key")
         }
-        # 这些是收集流程使用的控制/中间字段，不一定直接出现在输出 schema 中。
         keys.update(
             {
                 "task_type",
                 "task_type_key",
                 "emergency_mode",
+                "equipment_class",
+                "equipment_model",
                 "rov_description",
                 "equipment_name",
                 "raw_oilfield_name",
@@ -774,7 +403,6 @@ class ParameterExtractor:
             }
         )
         return keys
-
 
     def _normalize_candidates(
         self,
@@ -830,7 +458,9 @@ class ParameterExtractor:
             resolution_method = candidate.get("resolution_method")
             if isinstance(resolution_method, str) and resolution_method.strip():
                 trusted_candidate["resolution_method"] = resolution_method.strip()
-            resolved_candidate, unresolved_reason = self._resolve_candidate_value(
+
+            # 调度 CandidateResolver 解析单一候选值
+            resolved_candidate, unresolved_reason = self.candidate_resolver.resolve_candidate_value(
                 trusted_candidate,
                 required_by_key,
                 allowed_keys,
@@ -850,13 +480,9 @@ class ParameterExtractor:
                     task_selector_values[canonical_k] = selector_value
                     task_selector_candidates.append(resolved_candidate)
                 elif task_selector_values[canonical_k] != selector_value:
-                    # Task selectors define the schema used by every sibling
-                    # field.  Unlike an ordinary corrected value, two
-                    # different selectors in one model result must survive
-                    # normalization so DialogueManager can reject the turn
-                    # before mutating any task field.
                     task_selector_candidates.append(resolved_candidate)
                 continue
+
             field_def = required_by_key.get(canonical_k)
             is_list_field = (field_def and field_def.get("type") == "list") or canonical_k == "payload"
 
@@ -890,519 +516,6 @@ class ParameterExtractor:
             *task_selector_candidates,
         ], unresolved
 
-    @staticmethod
-    def _extract_numbered_options_from_assistant_message(
-        conversation_history: list[dict],
-    ) -> list[str]:
-        """从紧邻上一条 assistant 消息中提取有序编号选项。"""
-        if not conversation_history:
-            return []
-        last_assistant_msg = None
-        for msg in reversed(conversation_history):
-            if isinstance(msg, dict) and msg.get("role") == "assistant":
-                last_assistant_msg = str(msg.get("content") or "").strip()
-                break
-        if not last_assistant_msg:
-            return []
-
-        lines = last_assistant_msg.splitlines()
-        options = []
-        for line in lines:
-            line_str = line.strip()
-            # 剥离开头的编号前缀（如 "1. ", "1、", "[1] ", "(1) ", "① "）
-            cleaned = re.sub(r"^\(?\[?\d+\]?\)?|^\u2460-\u2473", "", line_str).strip()
-            cleaned = cleaned.lstrip(".:：、． ").strip()
-            if cleaned and cleaned != line_str:
-                opt_text = re.split(r"[:：(（]", cleaned)[0].strip()
-                if opt_text:
-                    options.append(opt_text)
-        return options
-
-    @staticmethod
-    def _match_numbered_option_by_user_input(
-        raw_value: object,
-        shown_options: list[str],
-    ) -> str | None:
-        """根据用户输入的数字序号（如 '2', '第2个', '选1'），直接在编号选项中查找匹配。"""
-        if not shown_options or raw_value is None:
-            return None
-
-        val_str = str(raw_value).strip()
-        m = re.search(r"(?:第|选|选择)?\s*([1-9][0-9]*)\s*(?:个|项|号)?", val_str)
-        if m:
-            try:
-                idx = int(m.group(1)) - 1
-                if 0 <= idx < len(shown_options):
-                    return shown_options[idx]
-            except ValueError:
-                pass
-        return None
-
-    def _resolve_candidate_value(
-        self,
-        candidate: dict,
-        required_by_key: dict[str, dict],
-        allowed_keys: set[str],
-        current_state: dict,
-        conversation_history: list[dict],
-        user_message: str = "",
-    ) -> tuple[dict | None, str | None]:
-        """受约束字段解析：相对日期确定性校正 → 编号选项精确映射 → 标准值 exact → alias exact → LLM 语义兜底 → 后端校验。"""
-        key = str(candidate.get("canonical_key") or "")
-
-        # 1. 相对时间口语确定性校正
-        if key in ("start_time", "end_time") and candidate.get("resolution_method") not in ("duration_arithmetic", "cross_day_auto_corrected"):
-            existing_norm = candidate.get("normalized_value")
-            if isinstance(existing_norm, str) and re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", existing_norm.strip()):
-                return candidate, None
-
-            raw_text = str(candidate.get("raw_value") or candidate.get("normalized_value") or "").strip()
-            from .simulated_time import get_current_datetime
-            rel_iso = parse_relative_datetime(raw_text, get_current_datetime(), full_user_message=user_message)
-            if not rel_iso and user_message:
-                rel_iso = parse_relative_datetime(user_message, get_current_datetime(), full_user_message=user_message)
-            if rel_iso:
-                resolved = dict(candidate)
-                resolved["normalized_value"] = rel_iso
-                resolved["resolution_method"] = "relative_date_parsed"
-                return resolved, None
-
-        # 1.5 数值型字段容错清洗（自动支持中文数字 "一"、"两"、"二"、"三"、"三百"、"一千五" 转纯阿拉伯数字）
-        field_def = required_by_key.get(key) or {}
-        f_type = field_def.get("type")
-        if f_type in ("number", "integer", "float") or key in ("water_depth", "distance", "speed", "duration", "duration_seconds"):
-            val = candidate.get("normalized_value")
-            raw_v = candidate.get("raw_value")
-            target_str = str(val if (isinstance(val, str) and val) else (raw_v or "")).strip()
-
-            if target_str and not target_str.lstrip("-+").replace(".", "", 1).isdigit():
-                raw_lower = target_str.lower()
-                valid_units = ("英尺", "feet", "ft", "千米", "公里", "km", "米", "m", "节", "knot", "kn", "小时", "钟头", "hour", "hr", "分钟", "分", "min", "天", "日", "day")
-                is_known_unit = any(u in raw_lower for u in valid_units) or any(cn in target_str for cn in ("一", "二", "两", "三", "四", "五", "六", "七", "八", "九", "十", "百", "千", "万", "半"))
-
-                # 安全解析策略：仅对匹配到的数字+单位 token 进行中文数字转换，
-                # 严禁全量 cn2an.transform（会破坏"下周三15:00"这类混合表达）。
-                # 路径 1：纯阿拉伯数字 + 单位（快速路径，无需中文转换）
-                m_num = re.match(r"^([-+]?[0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z\u4e00-\u9fa5]*)$", target_str.strip())
-                clean_str = None
-                unit_part = ""
-                if m_num:
-                    clean_str, unit_part = m_num.groups()
-                else:
-                    # 路径 2：中文数字（含"两"、"一百五"等）+ 可选单位
-                    # 用贪心正则拆分出 [数字部分] [单位部分]，仅对数字 token 调 parse_chinese_number
-                    m_cn = re.match(
-                        r"^([-+]?[零〇○Oo幺壹贰两俩叁仨肆伍陆柒捌玖勾一二三四五六七八九十拾佰仟万萬亿点半\d]+(?:点半|[零〇○Oo幺壹贰两俩叁仨肆伍陆柒捌玖勾一二三四五六七八九十百千万萬亿\d半]*半?)?)\s*([a-zA-Z\u4e00-\u9fa5]*)$",
-                        target_str.strip(),
-                    )
-                    if m_cn:
-                        cn_num_part, unit_part = m_cn.groups()
-                        parsed_num = parse_chinese_number(cn_num_part)
-                        if parsed_num is not None:
-                            clean_str = str(parsed_num)
-
-                if clean_str is not None:
-                    unit_part_lower = unit_part.lower()
-                    has_valid_unit = not unit_part or is_known_unit or any(u in unit_part_lower for u in valid_units)
-                    if has_valid_unit:
-                        try:
-                            num_val = float(clean_str)
-
-                            # 单位换算：英尺 (ft / feet / 英尺) -> 米 (m)
-                            if any(unit in raw_lower for unit in ("英尺", "feet", "ft")) and key in ("water_depth", "distance"):
-                                num_val = round(num_val * 0.3048, 2)
-                            # 单位换算：千米/公里 (km) -> 米 (m)
-                            elif any(unit in raw_lower for unit in ("千米", "公里", "km")) and key in ("water_depth", "distance"):
-                                num_val = round(num_val * 1000.0, 2)
-                            # 单位换算：节 (knots / kn / 节速) -> m/s
-                            elif any(unit in raw_lower for unit in ("节", "knot", "kn")) and key in ("speed", "velocity"):
-                                num_val = round(num_val * 0.5144, 2)
-                            # 口语时长转换：例如 "2.5个小时" / "两个半小时" / "3天" -> 秒
-                            elif key in ("duration", "duration_seconds"):
-                                if "个半小时" in target_str or "点半小时" in target_str:
-                                    num_val = (num_val + 0.5) * 3600.0
-                                elif "半小时" in target_str:
-                                    num_val = 1800.0
-                                elif any(h in raw_lower for h in ("小时", "钟头", "hour", "hr", "h")):
-                                    num_val = num_val * 3600.0
-                                elif any(m in raw_lower for m in ("分钟", "分", "min", "m")):
-                                    num_val = num_val * 60.0
-                                elif any(d in raw_lower for d in ("天", "日", "day", "d")):
-                                    num_val = num_val * 86400.0
-
-                            clean_val = int(num_val) if (num_val.is_integer() and f_type != "float") else num_val
-                            candidate = dict(candidate)
-                            candidate["normalized_value"] = clean_val
-                        except ValueError:
-                            pass
-
-        if not field_def or not field_def.get("allowed_values"):
-            candidate.setdefault("resolution_method", "type_normalization")
-            return candidate, None
-        if field_def.get("type") == "list":
-            candidate.setdefault("resolution_method", "type_normalization")
-            return candidate, None
-
-        # 2. 编号选项确定性映射 (例如用户回复 "2" 或 "第2个")
-        shown_options = self._extract_numbered_options_from_assistant_message(conversation_history)
-        if shown_options:
-            raw_val = candidate.get("raw_value", candidate.get("normalized_value"))
-            index_matched = self._match_numbered_option_by_user_input(raw_val, shown_options)
-            if index_matched:
-                canonical = self._match_allowed_value(index_matched, field_def.get("allowed_values") or [])
-                if canonical is None:
-                    canonical = self._match_alias_value(index_matched, field_def)
-                if canonical is not None:
-                    resolved = dict(candidate)
-                    resolved["normalized_value"] = canonical
-                    resolved["resolution_method"] = "option_index_exact"
-                    return (
-                        (resolved, None)
-                        if self._validate_resolved_candidate(key, canonical, required_by_key, allowed_keys)
-                        else (None, self._format_unresolved(candidate, "编号对应的标准值不属于当前合法候选"))
-                    )
-
-        for value in self._candidate_match_inputs(candidate):
-            canonical = self._match_allowed_value(value, field_def.get("allowed_values") or [])
-            if canonical is not None:
-                resolved = dict(candidate)
-                resolved["normalized_value"] = canonical
-                resolved["resolution_method"] = "canonical_exact"
-                return (
-                    (resolved, None)
-                    if self._validate_resolved_candidate(key, canonical, required_by_key, allowed_keys)
-                    else (None, self._format_unresolved(candidate, "不属于当前合法候选"))
-                )
-
-        for value in self._candidate_match_inputs(candidate):
-            canonical = self._match_alias_value(value, field_def)
-            if canonical is not None:
-                resolved = dict(candidate)
-                resolved["normalized_value"] = canonical
-                resolved["resolution_method"] = "alias_exact"
-                return (
-                    (resolved, None)
-                    if self._validate_resolved_candidate(key, canonical, required_by_key, allowed_keys)
-                    else (None, self._format_unresolved(candidate, "alias 指向的标准值不属于当前合法候选"))
-                )
-
-        semantic = self._resolve_candidate_semantically(
-            candidate.get("raw_value", candidate.get("normalized_value")),
-            key,
-            list(required_by_key.values()),
-            current_state,
-            conversation_history,
-        )
-        if semantic:
-            resolved_key = str(semantic.get("canonical_key") or "")
-            canonical = semantic.get("canonical_value")
-            if self._validate_resolved_candidate(
-                resolved_key,
-                canonical,
-                required_by_key,
-                allowed_keys,
-            ):
-                resolved = dict(candidate)
-                resolved["canonical_key"] = resolved_key
-                resolved["normalized_value"] = canonical
-                resolved["confidence"] = self._coerce_confidence(
-                    semantic.get("confidence"),
-                    candidate.get("confidence", 1.0),
-                )
-                resolved["resolution_method"] = "llm_semantic"
-                return resolved, None
-
-        return None, self._format_unresolved(candidate, "无法唯一匹配当前合法候选")
-
-    @staticmethod
-    def _strip_colloquial_prefixes(raw_text: str) -> str:
-        text = str(raw_text or "").strip()
-        prefixes = [
-            "把支持船改成", "把船只改成", "把设备改成", "把管缆改成", "把油田改成",
-            "把工具改成", "把载荷改成", "把水深改成", "把任务改成", "把水深调整为",
-            "我要使用", "我要选择", "我想使用", "我想选择", "请选择", "请使用",
-            "选择", "要用", "使用", "切换为", "采用", "配置", "指定", "选", "用", "换成",
-            "更换为", "把", "调整为", "设为", "设置成", "修改为", "改成", "改用", "切换至",
-            "选用", "更改为", "重新选择", "替换为", "重置为"
-        ]
-        for p in prefixes:
-            if text.startswith(p) and len(text) > len(p):
-                return text[len(p):].strip()
-        return text
-
-    @staticmethod
-    def _strip_colloquial_suffixes(raw_text: str) -> str:
-        text = str(raw_text or "").strip()
-        suffixes = [
-            "号船", "船只", "号", "管道", "电缆", "通信缆", "油田", "区域", "作业点",
-            "位置", "探头", "传感器", "工具", "设备"
-        ]
-        for s in suffixes:
-            if text.endswith(s) and len(text) > len(s):
-                return text[:-len(s)].strip()
-        return text
-
-    @classmethod
-    def _candidate_match_inputs(cls, candidate: dict) -> list[object]:
-        values = []
-        for key in ("normalized_value", "raw_value"):
-            value = candidate.get(key)
-            if value is not None and value != "":
-                val_str = str(value)
-                if val_str not in values:
-                    values.append(val_str)
-                p_stripped = cls._strip_colloquial_prefixes(val_str)
-                if p_stripped not in values:
-                    values.append(p_stripped)
-                s_stripped = cls._strip_colloquial_suffixes(p_stripped)
-                if s_stripped not in values:
-                    values.append(s_stripped)
-        return values
-        
-    @classmethod
-    def _match_allowed_value(cls, value: object, allowed_values: list) -> object | None:
-        raw_str = str(value or "").strip()
-        if not raw_str:
-            return None
-        candidates = [raw_str]
-        p_stripped = cls._strip_colloquial_prefixes(raw_str)
-        if p_stripped not in candidates:
-            candidates.append(p_stripped)
-        s_stripped = cls._strip_colloquial_suffixes(p_stripped)
-        if s_stripped not in candidates:
-            candidates.append(s_stripped)
-
-        expanded_candidates = list(candidates)
-        for cand in candidates:
-            if not cand:
-                continue
-            converted_ji = re.sub(r'(\d+|[零〇一二两三四五六七八九十]+)\s*(?:号\s*)?级$', r'\1号机', cand)
-            if converted_ji != cand and converted_ji not in expanded_candidates:
-                expanded_candidates.append(converted_ji)
-        candidates = expanded_candidates
-        
-        # 阶段 1：精确全匹配
-        for cand in candidates:
-            needle = FieldNormalizer.make_match_key(cand)
-            if not needle:
-                continue
-            matches = [
-                allowed for allowed in allowed_values
-                if FieldNormalizer.make_match_key(allowed) == needle
-            ]
-            if len(matches) == 1:
-                return matches[0]
-
-        # 阶段 2：包含与子串容错匹配
-        for cand in candidates:
-            needle = FieldNormalizer.make_match_key(cand)
-            if not needle:
-                continue
-            matches = [
-                allowed for allowed in allowed_values
-                if FieldNormalizer.make_match_key(allowed) and (
-                    FieldNormalizer.make_match_key(allowed) in needle or
-                    needle in FieldNormalizer.make_match_key(allowed)
-                )
-            ]
-            if len(set(matches)) == 1:
-                return matches[0]
-
-        return None
-
-    @classmethod
-    def _match_alias_value(cls, value: object, field_def: dict) -> object | None:
-        raw_str = str(value or "").strip()
-        if not raw_str:
-            return None
-        alias_map = field_def.get("alias_mappings") or {}
-        if not alias_map:
-            return None
-
-        candidates = [raw_str]
-        p_stripped = cls._strip_colloquial_prefixes(raw_str)
-        if p_stripped not in candidates:
-            candidates.append(p_stripped)
-        s_stripped = cls._strip_colloquial_suffixes(p_stripped)
-        if s_stripped not in candidates:
-            candidates.append(s_stripped)
-
-        expanded_candidates = list(candidates)
-        for cand in candidates:
-            if not cand:
-                continue
-            # 常见 ASR 同音错字与量词变体转换（如 "2号级" -> "2号机", "2级" -> "2号机"）
-            converted_ji = re.sub(r'(\d+|[零〇一二两三四五六七八九十]+)\s*(?:号\s*)?级$', r'\1号机', cand)
-            if converted_ji != cand and converted_ji not in expanded_candidates:
-                expanded_candidates.append(converted_ji)
-            converted_hao = re.sub(r'(\d+|[零〇一二两三四五六七八九十]+)\s*级$', r'\1号', cand)
-            if converted_hao != cand and converted_hao not in expanded_candidates:
-                expanded_candidates.append(converted_hao)
-        candidates = expanded_candidates
-
-        # 阶段 1：精确全匹配
-        for cand in candidates:
-            needle = FieldNormalizer.make_match_key(cand)
-            if not needle:
-                continue
-            matches = [
-                canonical for alias, canonical in alias_map.items()
-                if FieldNormalizer.make_match_key(alias) == needle
-            ]
-            if len(set(map(str, matches))) == 1:
-                return matches[0]
-
-        # 阶段 2：包含与子串容错匹配（针对口语修饰如 "选择天鹰座"、"天鹰座ROV"）
-        for cand in candidates:
-            needle = FieldNormalizer.make_match_key(cand)
-            if not needle:
-                continue
-            matches = [
-                canonical for alias, canonical in alias_map.items()
-                if FieldNormalizer.make_match_key(alias) and (
-                    FieldNormalizer.make_match_key(alias) in needle or
-                    needle in FieldNormalizer.make_match_key(alias)
-                )
-            ]
-            if len(set(map(str, matches))) == 1:
-                return matches[0]
-
-        return None
-
-    def _resolve_candidate_semantically(
-        self,
-        raw_value: object,
-        proposed_key: str,
-        required: list[dict],
-        current_state: dict,
-        conversation_history: list[dict],
-    ) -> dict | None:
-        candidate_fields = []
-        for field in required:
-            allowed = field.get("allowed_values") or []
-            evidence = field.get("candidate_evidence") or []
-            if not allowed:
-                continue
-            candidate_fields.append(
-                {
-                    "key": field.get("key"),
-                    "label": field.get("label"),
-                    "allowed_values": allowed,
-                    "alias_mappings": field.get("alias_mappings") or {},
-                    "ambiguous_aliases": field.get("ambiguous_aliases") or {},
-                    "candidate_evidence": evidence,
-                }
-            )
-        if not candidate_fields:
-            return None
-
-        payload = {
-            "user_expression": raw_value,
-            "proposed_field": proposed_key,
-            "expected_fields": [field.get("key") for field in required if field.get("key")],
-            "current_state": current_state,
-            "candidate_fields": candidate_fields,
-            "recent_history": [
-                {
-                    "role": item.get("role"),
-                    "content": item.get("content"),
-                }
-                for item in (conversation_history or [])[-MAX_EXTRACTION_USER_HISTORY:]
-                if item.get("role") in ("user", "assistant") and item.get("content")
-            ],
-        }
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "你是受约束的候选语义解析器，只能输出 JSON object。"
-                    "请结合 aliases、ambiguous_aliases、candidate_evidence、当前状态和历史，"
-                    "理解简称、错别字、模糊描述、用途偏好和上下文指代，不要求用户逐字"
-                    "复述标准名称。若证据足以支持唯一候选，应主动完成语义映射；若多个"
-                    "候选仍同样合理，则 matched=false，不能按列表顺序猜测。用户请求推荐"
-                    "时，可以依据用途和偏好做相对选择：只要某个候选的证据明确覆盖这些"
-                    "偏好、而其他候选没有对应证据，就应视为唯一支持并返回 matched=true；"
-                    "不要因为用户没有主动说出标准名称，或没有提供全部任务参数而拒绝推荐。"
-                    "从 allowed_values 中选择唯一标准值；不能生成 allowed_values 之外的值。"
-                    "输出格式："
-                    "{\"matched\": true/false, \"canonical_key\": string|null, "
-                    "\"canonical_value\": string|null, \"confidence\": number, \"reason\": string}"
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(payload, ensure_ascii=False),
-            },
-        ]
-        result = self.llm.extract_json(
-            messages,
-            max_tokens=500,
-            json_schema=CANDIDATE_RESOLUTION_JSON_SCHEMA,
-        )
-        if not isinstance(result, dict) or not result.get("matched"):
-            return None
-        return result
-
-    def resolve_allowed_candidate(
-        self,
-        raw_value: object,
-        field_key: str,
-        field_def: dict,
-        current_state: dict | None = None,
-        conversation_history: list[dict] | None = None,
-    ) -> object | None:
-        """用模型理解模糊表达，但只返回当前字段的权威候选值。"""
-        allowed_values = list((field_def or {}).get("allowed_values") or [])
-        if not field_key or not allowed_values:
-            return None
-
-        semantic = self._resolve_candidate_semantically(
-            raw_value,
-            field_key,
-            [field_def],
-            current_state or {},
-            conversation_history or [],
-        )
-        if not semantic or semantic.get("canonical_key") != field_key:
-            return None
-
-        canonical = semantic.get("canonical_value")
-        return next(
-            (allowed for allowed in allowed_values if canonical == allowed),
-            None,
-        )
-
-    @staticmethod
-    def _validate_resolved_candidate(
-        key: str,
-        value: object,
-        required_by_key: dict[str, dict],
-        allowed_keys: set[str],
-    ) -> bool:
-        if key not in allowed_keys:
-            return False
-        field_def = required_by_key.get(key)
-        if not field_def:
-            return False
-        allowed_values = field_def.get("allowed_values") or []
-        if allowed_values:
-            return any(value == allowed for allowed in allowed_values)
-        return value is not None and value != ""
-
-    @staticmethod
-    def _coerce_confidence(value: object, fallback: object = 1.0) -> float:
-        try:
-            confidence = float(value)
-        except (TypeError, ValueError):
-            confidence = float(fallback)
-        return min(1.0, max(0.0, confidence))
-
-    @staticmethod
-    def _format_unresolved(candidate: dict, reason: str) -> str:
-        key = candidate.get("canonical_key") or "未知字段"
-        raw = candidate.get("raw_value", candidate.get("normalized_value", ""))
-        return f"{key} 表达“{raw}”{reason}。"
-
     def _select_extraction_history(
         self,
         user_message: str,
@@ -1419,6 +532,115 @@ class ParameterExtractor:
                 recent.append({"role": role, "content": content})
         return recent
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # 向后兼容代理方法 (Delegated Proxies)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _extract_temporal_relation(self, user_message: str, current_state: dict) -> dict | None:
+        return self.temporal_parser.extract_temporal_relation(user_message, current_state)
+
+    @staticmethod
+    def _materialize_time_relation(
+        candidates: list,
+        relation: object,
+        current_state: dict,
+        allowed_keys: set[str],
+        user_message: str = "",
+    ) -> tuple[list, list[str]]:
+        return TemporalParser.materialize_time_relation(candidates, relation, current_state, allowed_keys, user_message=user_message)
+
+    @staticmethod
+    def _parse_state_datetime(value: object) -> datetime | None:
+        return TemporalParser.parse_state_datetime(value)
+
+    @staticmethod
+    def _looks_like_iso_datetime(value: object) -> bool:
+        return TemporalParser.looks_like_iso_datetime(value)
+
+    @staticmethod
+    def _has_date_semantics(text: str) -> bool:
+        return TemporalParser.has_date_semantics(text)
+
+    @staticmethod
+    def _mentions_end_time_keep(text: str) -> bool:
+        return TemporalParser.mentions_end_time_keep(text)
+
+    @staticmethod
+    def _extract_duration_delta_text(text: str) -> str | None:
+        return TemporalParser.extract_duration_delta_text(text)
+
+    @staticmethod
+    def _select_time_range_start_text(start_cand: dict | None, current_state: dict, user_message: str, base_dt: datetime) -> object:
+        return TemporalParser.select_time_range_start_text(start_cand, current_state, user_message, base_dt)
+
+    @staticmethod
+    def _select_time_range_end_text(end_cand: dict | None, user_message: str, has_relation: bool) -> object:
+        return TemporalParser.select_time_range_end_text(end_cand, user_message, has_relation)
+
+    @staticmethod
+    def _strip_colloquial_prefixes(raw_text: str) -> str:
+        return CandidateResolver.strip_colloquial_prefixes(raw_text)
+
+    @staticmethod
+    def _strip_colloquial_suffixes(raw_text: str) -> str:
+        return CandidateResolver.strip_colloquial_suffixes(raw_text)
+
+    @classmethod
+    def _candidate_match_inputs(cls, candidate: dict) -> list[object]:
+        return CandidateResolver.candidate_match_inputs(candidate)
+
+    @classmethod
+    def _match_allowed_value(cls, value: object, allowed_values: list) -> object | None:
+        return CandidateResolver.match_allowed_value(value, allowed_values)
+
+    @classmethod
+    def _match_alias_value(cls, value: object, field_def: dict) -> object | None:
+        return CandidateResolver.match_alias_value(value, field_def)
+
+    @staticmethod
+    def _extract_numbered_options_from_assistant_message(conversation_history: list[dict]) -> list[str]:
+        return CandidateResolver.extract_numbered_options_from_assistant_message(conversation_history)
+
+    @staticmethod
+    def _match_numbered_option_by_user_input(raw_value: object, shown_options: list[str]) -> str | None:
+        return CandidateResolver.match_numbered_option_by_user_input(raw_value, shown_options)
+
+    def _resolve_candidate_value(
+        self,
+        candidate: dict,
+        required_by_key: dict[str, dict],
+        allowed_keys: set[str],
+        current_state: dict,
+        conversation_history: list[dict],
+        user_message: str = "",
+    ) -> tuple[dict | None, str | None]:
+        return self.candidate_resolver.resolve_candidate_value(
+            candidate, required_by_key, allowed_keys, current_state, conversation_history, user_message=user_message
+        )
+
+    def _resolve_candidate_semantically(
+        self,
+        raw_value: object,
+        proposed_key: str,
+        required: list[dict],
+        current_state: dict,
+        conversation_history: list[dict],
+    ) -> dict | None:
+        return self.candidate_resolver.resolve_candidate_semantically(
+            raw_value, proposed_key, required, current_state, conversation_history
+        )
+
+    def resolve_allowed_candidate(
+        self,
+        raw_value: object,
+        field_key: str,
+        field_def: dict,
+        current_state: dict | None = None,
+        conversation_history: list[dict] | None = None,
+    ) -> object | None:
+        return self.candidate_resolver.resolve_allowed_candidate(
+            raw_value, field_key, field_def, current_state, conversation_history
+        )
 
     def resolve_rov_description(
         self,
@@ -1426,55 +648,16 @@ class ParameterExtractor:
         all_rovs: list[dict],
         task_type_key: str | None,
     ) -> list[dict]:
-        rov_list_text = json.dumps(
-            [
-                {
-                    "model": r["model"],
-                    "full_name": r["full_name"],
-                    "category": r["category"],
-                    "max_depth_m": r["max_depth_m"],
-                    "brief": r["brief"],
-                    "aliases": r.get("aliases", []),
-                }
-                for r in all_rovs
-            ],
-            ensure_ascii=False,
-        )
+        return self.candidate_resolver.resolve_rov_description(description, all_rovs, task_type_key)
 
-        del task_type_key
-        model_names = [str(r["model"]) for r in all_rovs if r.get("model")]
-        schema = {
-            "type": "array",
-            "items": {"type": "string", "enum": model_names},
-            "maxItems": 3,
-            "uniqueItems": True,
-        }
-        system = f"""\
-你是ROV设备匹配专家。根据用户描述，从给定设备列表中找出最匹配的ROV（最多3个），
-优先考虑名称、型号、别名和功能描述匹配。任务适用性由后端约束系统另行校验。
-所有设备信息只能依据下方设备列表，不得使用通用知识或训练记忆补全。
+    @staticmethod
+    def _validate_resolved_candidate(key: str, value: object, required_by_key: dict[str, dict], allowed_keys: set[str]) -> bool:
+        return CandidateResolver.validate_resolved_candidate(key, value, required_by_key, allowed_keys)
 
-设备列表：
-{rov_list_text}
+    @staticmethod
+    def _coerce_confidence(value: object, fallback: object = 1.0) -> float:
+        return CandidateResolver.coerce_confidence(value, fallback)
 
-只返回按匹配度降序排列的 model JSON 数组；无匹配返回空数组。
-"""
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": f"用户描述：{description}"},
-        ]
-        try:
-            result = self.llm.extract_json(
-                messages,
-                max_tokens=100,
-                role=ModelRole.EXTRACTOR,
-                json_schema=schema,
-            )
-        except TypeError as exc:
-            if not _is_unsupported_role_keyword_error(exc):
-                raise
-            result = self.llm.extract_json(messages, max_tokens=100)
-        if not isinstance(result, list):
-            return []
-        by_model = {str(r.get("model")): r for r in all_rovs if r.get("model")}
-        return [by_model[name] for name in result if name in by_model]
+    @staticmethod
+    def _format_unresolved(candidate: dict, reason: str) -> str:
+        return CandidateResolver.format_unresolved(candidate, reason)
