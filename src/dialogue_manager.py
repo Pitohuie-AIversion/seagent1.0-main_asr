@@ -152,36 +152,99 @@ class DialogueManager:
         self.snapshot_manager = DialogueSnapshotManager(self)
         self.execution_control_handler = ExecutionControlHandler(self)
 
+    _DELEGATE_MAP: dict[str, tuple[str, str]] = {
+        "_align_status_reply_with_backend_facts": ("router_handler", "_align_status_reply_with_backend_facts"),
+        "_apply_normalized_plan_in_transaction": ("slot_handler", "apply_normalized_plan_in_transaction"),
+        "_apply_slot_update_in_transaction": ("slot_handler", "apply_slot_update_in_transaction"),
+        "_auto_collapse_robot_cascade": ("slot_handler", "auto_collapse_robot_cascade"),
+        "_build_environment_status_reply": ("router_handler", "_build_environment_status_reply"),
+        "_build_grounded_device_class_answer": ("router_handler", "_build_grounded_device_class_answer"),
+        "_build_grounded_fleet_introduction": ("router_handler", "_build_grounded_fleet_introduction"),
+        "_build_grounded_oilfield_catalog_introduction": ("router_handler", "_build_grounded_oilfield_catalog_introduction"),
+        "_build_grounded_recommendation": ("router_handler", "_build_grounded_recommendation"),
+        "_build_grounded_rule_catalog_introduction": ("router_handler", "_build_grounded_rule_catalog_introduction"),
+        "_build_grounded_single_task_introduction": ("router_handler", "_build_grounded_single_task_introduction"),
+        "_build_grounded_task_catalog_introduction": ("router_handler", "_build_grounded_task_catalog_introduction"),
+        "_build_grounded_tool_catalog_introduction": ("router_handler", "_build_grounded_tool_catalog_introduction"),
+        "_build_knowledge_fallback": ("router_handler", "_build_knowledge_fallback"),
+        "_build_pending_oilfield_reply": ("slot_handler", "build_pending_oilfield_reply"),
+        "_build_post_update_evaluation_context": ("slot_handler", "build_post_update_evaluation_context"),
+        "_build_task_transition_state": ("slot_handler", "build_task_transition_state"),
+        "_clear_non_inherited_transition_slots": ("slot_handler", "clear_non_inherited_transition_slots"),
+        "_clear_task_draft_preserving_dialogue_audit": ("execution_control_handler", "clear_task_draft_preserving_dialogue_audit"),
+        "_dynamic_allowed_schema_keys": ("slot_handler", "dynamic_allowed_schema_keys"),
+        "_ensure_constraint_details": ("constraint_handler", "ensure_constraint_details"),
+        "_ensure_payload_guidance": ("capability_adapter", "format_payload_guidance"),
+        "_extract_oilfield_entity_from_text": ("router_handler", "_extract_oilfield_entity_from_text"),
+        "_extract_payload_entity_from_text": ("router_handler", "_extract_payload_entity_from_text"),
+        "_extract_robot_entity_from_text": ("router_handler", "_extract_robot_entity_from_text"),
+        "_extract_task_type_from_text": ("router_handler", "_extract_task_type_from_text"),
+        "_get_committed_update_display_values": ("slot_handler", "get_committed_update_display_values"),
+        "_get_kb_alternatives_for_violations": ("constraint_handler", "get_kb_alternatives_for_violations"),
+        "_handle_clarification": ("router_handler", "_handle_clarification"),
+        "_handle_emergency_intervention": ("execution_control_handler", "handle_emergency_intervention"),
+        "_handle_general_chat": ("router_handler", "_handle_general_chat"),
+        "_handle_knowledge_query": ("router_handler", "_handle_knowledge_query"),
+        "_handle_non_task_route": ("router_handler", "_handle_non_task_route"),
+        "_handle_payload_modification_request": ("slot_handler", "handle_payload_modification"),
+        "_handle_rov_description_in_transaction": ("slot_handler", "handle_rov_description_in_transaction"),
+        "_handle_status_query": ("router_handler", "_handle_status_query"),
+        "_handle_unknown_intent": ("router_handler", "_handle_unknown_intent"),
+        "_invalidate_whitelist": ("constraint_handler", "invalidate_whitelist"),
+        "_is_environment_status_query": ("router_handler", "_is_environment_status_query"),
+        "_is_state_snapshot_stale": ("constraint_handler", "is_state_snapshot_stale"),
+        "_is_whitelisted": ("constraint_handler", "is_whitelisted"),
+        "_link_oilfield_update_in_transaction": ("slot_handler", "link_oilfield_update_in_transaction"),
+        "_merge_coordinate_updates": ("constraint_handler", "merge_coordinate_updates"),
+        "_merge_oilfield_context_violations": ("constraint_handler", "merge_oilfield_context_violations"),
+        "_merge_task_transition_extractions": ("slot_handler", "merge_task_transition_extractions"),
+        "_missing_field_definition": ("router_handler", "_missing_field_definition"),
+        "_normalize_and_validate_in_transaction": ("slot_handler", "normalize_and_validate_in_transaction"),
+        "_normalize_transition_discovery_candidates": ("slot_handler", "normalize_transition_discovery_candidates"),
+        "_project_equipment_updates_for_evaluation": ("slot_handler", "project_equipment_updates_for_evaluation"),
+        "_record_task_type_update_error": ("slot_handler", "record_task_type_update_error"),
+        "_reject_hard_constraint_bypass": ("constraint_handler", "_reject_hard_constraint_bypass"),
+        "_resolve_pending_oilfield_confirmation": ("slot_handler", "resolve_pending_oilfield_confirmation"),
+        "_resolve_project_robot_classes": ("router_handler", "_resolve_project_robot_classes"),
+        "_resolve_task_type_target": ("slot_handler", "resolve_task_type_target"),
+        "_resolve_task_type_update_context": ("slot_handler", "resolve_task_type_update_context"),
+        "_run_constraint_check": ("constraint_handler", "run_constraint_check"),
+        "_safe_llm_chat": ("router_handler", "_safe_llm_chat"),
+        "_safe_llm_filter_reply": ("router_handler", "_safe_llm_filter_reply"),
+        "_scope_confirmed_recommendation": ("slot_handler", "scope_confirmed_recommendation"),
+        "_scope_visible_ordinal_selections": ("slot_handler", "scope_visible_ordinal_selections"),
+        "_source_for_resolution_method": ("slot_handler", "source_for_resolution_method"),
+        "_task_selector_updates_from_extraction": ("slot_handler", "task_selector_updates_from_extraction"),
+        "_task_transition_shared_field_keys": ("slot_handler", "task_transition_shared_field_keys"),
+        "_task_uses_status_ref": ("constraint_handler", "task_uses_status_ref"),
+        "_top_pending_oilfield_candidate": ("slot_handler", "top_pending_oilfield_candidate"),
+        "_user_cancelled_oilfield": ("slot_handler", "user_cancelled_oilfield"),
+        "_user_confirmed_oilfield": ("slot_handler", "user_confirmed_oilfield"),
+    }
+
     def __getattr__(self, name: str):
-        if name == "router_handler":
-            handler = ConversationRouterHandler(self)
-            self.__dict__["router_handler"] = handler
+        handler_classes = {
+            "router_handler": ConversationRouterHandler,
+            "constraint_handler": ConstraintDecisionHandler,
+            "commit_handler": TaskCommitHandler,
+            "slot_handler": SlotFillingHandler,
+            "snapshot_manager": DialogueSnapshotManager,
+            "execution_control_handler": ExecutionControlHandler,
+        }
+        if name in handler_classes:
+            handler = handler_classes[name](self)
+            self.__dict__[name] = handler
             return handler
-        if name == "constraint_handler":
-            handler = ConstraintDecisionHandler(self)
-            self.__dict__["constraint_handler"] = handler
-            return handler
-        if name == "commit_handler":
-            handler = TaskCommitHandler(self)
-            self.__dict__["commit_handler"] = handler
-            return handler
-        if name == "slot_handler":
-            handler = SlotFillingHandler(self)
-            self.__dict__["slot_handler"] = handler
-            return handler
-        if name == "snapshot_manager":
-            handler = DialogueSnapshotManager(self)
-            self.__dict__["snapshot_manager"] = handler
-            return handler
-        if name == "execution_control_handler":
-            handler = ExecutionControlHandler(self)
-            self.__dict__["execution_control_handler"] = handler
-            return handler
+
+        if name in self._DELEGATE_MAP:
+            target_attr, target_name = self._DELEGATE_MAP[name]
+            target_obj = getattr(self, target_attr, None)
+            if target_obj is not None:
+                return getattr(target_obj, target_name)
+
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
 
-    def _ensure_payload_guidance(self, text: str, missing_fields: list) -> str:
-        return self.capability_adapter.format_payload_guidance(text, missing_fields)
 
     @property
     def task_id_preview(self) -> str | None:
@@ -411,83 +474,31 @@ class DialogueManager:
     # 非任务路由与知识检索处理集群（委托至 ConversationRouterHandler）
     # --------------------------------------------------------------------------
 
-    def _handle_non_task_route(self, user_message: str, route: IntentRouteResult, request_id: str) -> str:
-        return self.router_handler._handle_non_task_route(user_message, route, request_id)
 
-    def _build_knowledge_fallback(self, kb_evidence: dict) -> str:
-        return self.router_handler._build_knowledge_fallback(kb_evidence)
 
-    def _missing_field_definition(self, key: str) -> dict | None:
-        return self.router_handler._missing_field_definition(key)
 
-    def _build_grounded_recommendation(self, route: IntentRouteResult, user_message: str | None = None) -> str | None:
-        return self.router_handler._build_grounded_recommendation(route, user_message)
 
-    def _resolve_project_robot_classes(self, text: str) -> list[tuple[str, str]]:
-        return self.router_handler._resolve_project_robot_classes(text)
 
-    def _extract_robot_entity_from_text(self, text: str) -> str | None:
-        return self.router_handler._extract_robot_entity_from_text(text)
 
-    def _extract_oilfield_entity_from_text(self, text: str) -> str | None:
-        return self.router_handler._extract_oilfield_entity_from_text(text)
 
-    def _extract_payload_entity_from_text(self, text: str) -> str | None:
-        return self.router_handler._extract_payload_entity_from_text(text)
 
-    def _extract_task_type_from_text(self, text: str) -> str | None:
-        return self.router_handler._extract_task_type_from_text(text)
 
-    def _build_grounded_single_task_introduction(self, task_type_key: str) -> str:
-        return self.router_handler._build_grounded_single_task_introduction(task_type_key)
 
-    def _build_grounded_fleet_introduction(self) -> str:
-        return self.router_handler._build_grounded_fleet_introduction()
 
-    def _build_grounded_task_catalog_introduction(self) -> str:
-        return self.router_handler._build_grounded_task_catalog_introduction()
 
-    def _build_grounded_tool_catalog_introduction(self) -> str:
-        return self.router_handler._build_grounded_tool_catalog_introduction()
 
-    def _build_grounded_oilfield_catalog_introduction(self) -> str:
-        return self.router_handler._build_grounded_oilfield_catalog_introduction()
 
-    def _build_grounded_rule_catalog_introduction(self) -> str:
-        return self.router_handler._build_grounded_rule_catalog_introduction()
 
-    def _build_grounded_device_class_answer(self, user_message: str, route: IntentRouteResult) -> str | None:
-        return self.router_handler._build_grounded_device_class_answer(user_message, route)
 
-    def _safe_llm_chat(self, *args, **kwargs) -> str:
-        return self.router_handler._safe_llm_chat(*args, **kwargs)
 
-    def _safe_llm_filter_reply(self, *args, **kwargs) -> str:
-        return self.router_handler._safe_llm_filter_reply(*args, **kwargs)
 
-    def _handle_knowledge_query(self, user_message: str, route: IntentRouteResult, request_id: str = "req_default") -> str:
-        return self.router_handler._handle_knowledge_query(user_message, route, request_id)
 
-    def _is_environment_status_query(self, user_message: str, route: IntentRouteResult) -> bool:
-        return self.router_handler._is_environment_status_query(user_message, route)
 
-    def _handle_status_query(self, user_message: str, route: IntentRouteResult, as_environment_status: bool = False) -> str:
-        return self.router_handler._handle_status_query(user_message, route, as_environment_status=as_environment_status)
 
-    def _build_environment_status_reply(self, equipment: str, state_dict: dict) -> str:
-        return self.router_handler._build_environment_status_reply(equipment, state_dict)
 
-    def _align_status_reply_with_backend_facts(self, reply: str, state_dict: dict | None) -> str:
-        return self.router_handler._align_status_reply_with_backend_facts(reply, state_dict)
 
-    def _handle_general_chat(self, user_message: str, route: IntentRouteResult) -> str:
-        return self.router_handler._handle_general_chat(user_message, route)
 
-    def _handle_clarification(self, user_message: str, route: IntentRouteResult) -> str:
-        return self.router_handler._handle_clarification(user_message, route)
 
-    def _handle_unknown_intent(self, user_message: str, route: IntentRouteResult) -> str:
-        return self.router_handler._handle_unknown_intent(user_message, route)
 
     def _handle_task_confirm(self, user_message: str, request_id: str = "req_default") -> str:
         """处理 TASK_CONFIRM 控制指令。
@@ -524,9 +535,6 @@ class DialogueManager:
         self.slot_store.validation_result = res
         return res
 
-    def _task_uses_status_ref(self, status_ref: str | None) -> bool:
-        """Return whether the current task is tied to a specific robot state ref."""
-        return self.constraint_handler.task_uses_status_ref(status_ref)
 
     def refresh_external_state_constraints(self, status_ref: str | None = None) -> dict:
         """Refresh validation after external robot telemetry/state changes.
@@ -549,21 +557,7 @@ class DialogueManager:
     def _handle_final_publish_confirmation(self, user_message: str, request_id: str) -> str:
         return self.commit_handler._handle_final_publish_confirmation(user_message, request_id)
 
-    def _clear_task_draft_preserving_dialogue_audit(self) -> None:
-        """清空未发布任务草稿与约束，但保留会话历史与模式流转审计。"""
-        self.execution_control_handler.clear_task_draft_preserving_dialogue_audit()
 
-    def _handle_emergency_intervention(
-        self,
-        user_message: str,
-        route: IntentRouteResult,
-        request_id: str = "req_default",
-    ) -> str:
-        return self.execution_control_handler.handle_emergency_intervention(
-            user_message,
-            route,
-            request_id=request_id,
-        )
 
     def _process_internal(self, user_message: str, request_id: str = "req_default") -> str:
         old_phase = self.phase
@@ -752,9 +746,6 @@ class DialogueManager:
             task_state,
         )
 
-    def _get_committed_update_display_values(self, accepted_updates: dict) -> dict:
-        """从领域配置生成写入回执的展示值，不改变 SlotStore 标准值。"""
-        return self.slot_handler.get_committed_update_display_values(accepted_updates)
 
     def _get_committed_turn_updates(
         self,
@@ -769,19 +760,6 @@ class DialogueManager:
 
 
 
-    def _link_oilfield_update_in_transaction(
-        self,
-        updates: dict,
-        new_slots: dict,
-        user_message: str = "",
-        extracted_oilfield: str | None = None,
-    ) -> dict:
-        return self.slot_handler.link_oilfield_update_in_transaction(
-            updates,
-            new_slots,
-            user_message=user_message,
-            extracted_oilfield=extracted_oilfield,
-        )
 
 
     # --------------------------------------------------------------------------
@@ -791,96 +769,35 @@ class DialogueManager:
     def _apply_updates_in_transaction(self, *args, **kwargs):
         return self.slot_handler.apply_updates_in_transaction(*args, **kwargs)
 
-    def _apply_normalized_plan_in_transaction(self, *args, **kwargs):
-        return self.slot_handler.apply_normalized_plan_in_transaction(*args, **kwargs)
 
-    def _apply_slot_update_in_transaction(self, *args, **kwargs):
-        return self.slot_handler.apply_slot_update_in_transaction(*args, **kwargs)
 
-    def _normalize_and_validate_in_transaction(self, *args, **kwargs):
-        return self.slot_handler.normalize_and_validate_in_transaction(*args, **kwargs)
 
-    def _source_for_resolution_method(self, *args, **kwargs):
-        return self.slot_handler.source_for_resolution_method(*args, **kwargs)
 
-    def _scope_confirmed_recommendation(self, *args, **kwargs):
-        return self.slot_handler.scope_confirmed_recommendation(*args, **kwargs)
 
-    def _scope_visible_ordinal_selections(self, *args, **kwargs):
-        return self.slot_handler.scope_visible_ordinal_selections(*args, **kwargs)
 
-    def _auto_collapse_robot_cascade(self, *args, **kwargs):
-        return self.slot_handler.auto_collapse_robot_cascade(*args, **kwargs)
 
     def _handle_equipment_updates_in_transaction(self, *args, **kwargs):
         return self.slot_handler.handle_equipment_updates_in_transaction(*args, **kwargs)
 
-    def _project_equipment_updates_for_evaluation(self, *args, **kwargs):
-        return self.slot_handler.project_equipment_updates_for_evaluation(*args, **kwargs)
 
-    def _resolve_task_type_target(self, *args, **kwargs):
-        return self.slot_handler.resolve_task_type_target(*args, **kwargs)
 
-    def _task_transition_shared_field_keys(self, *args, **kwargs):
-        return self.slot_handler.task_transition_shared_field_keys(*args, **kwargs)
 
-    def _build_task_transition_state(self, *args, **kwargs):
-        return self.slot_handler.build_task_transition_state(*args, **kwargs)
 
-    def _build_post_update_evaluation_context(self, *args, **kwargs):
-        return self.slot_handler.build_post_update_evaluation_context(*args, **kwargs)
 
-    def _dynamic_allowed_schema_keys(self, *args, **kwargs):
-        return self.slot_handler.dynamic_allowed_schema_keys(*args, **kwargs)
 
-    def _clear_non_inherited_transition_slots(self, *args, **kwargs):
-        return self.slot_handler.clear_non_inherited_transition_slots(*args, **kwargs)
 
-    def _normalize_transition_discovery_candidates(self, *args, **kwargs):
-        return self.slot_handler.normalize_transition_discovery_candidates(*args, **kwargs)
 
-    def _merge_task_transition_extractions(self, *args, **kwargs):
-        return self.slot_handler.merge_task_transition_extractions(*args, **kwargs)
 
-    def _task_selector_updates_from_extraction(self, *args, **kwargs):
-        return self.slot_handler.task_selector_updates_from_extraction(*args, **kwargs)
 
-    def _resolve_task_type_update_context(self, *args, **kwargs):
-        return self.slot_handler.resolve_task_type_update_context(*args, **kwargs)
 
-    def _record_task_type_update_error(self, *args, **kwargs):
-        return self.slot_handler.record_task_type_update_error(*args, **kwargs)
 
     def _handle_task_type_update_in_transaction(self, *args, **kwargs):
         return self.slot_handler.handle_task_type_update_in_transaction(*args, **kwargs)
 
-    def _handle_rov_description_in_transaction(self, *args, **kwargs):
-        return self.slot_handler.handle_rov_description_in_transaction(*args, **kwargs)
-    def _resolve_pending_oilfield_confirmation(
-        self,
-        user_message: str,
-        request_id: str = "req_default",
-        pending_action: str | None = None,
-        subject_text: str | None = None,
-    ) -> str | None:
-        return self.slot_handler.resolve_pending_oilfield_confirmation(
-            user_message,
-            request_id=request_id,
-            pending_action=pending_action,
-            subject_text=subject_text,
-        )
 
-    def _build_pending_oilfield_reply(self) -> str | None:
-        return self.slot_handler.build_pending_oilfield_reply()
 
-    def _top_pending_oilfield_candidate(self, user_message: str = "") -> dict | None:
-        return self.slot_handler.top_pending_oilfield_candidate(user_message)
 
-    def _user_confirmed_oilfield(self, message: str) -> bool:
-        return self.slot_handler.user_confirmed_oilfield(message)
 
-    def _user_cancelled_oilfield(self, message: str) -> bool:
-        return self.slot_handler.user_cancelled_oilfield(message)
 
 
 
@@ -893,26 +810,12 @@ class DialogueManager:
     # 约束检查与决策集群（委托至 ConstraintDecisionHandler）
     # --------------------------------------------------------------------------
 
-    def _merge_oilfield_context_violations(self, *args, **kwargs):
-        return self.constraint_handler.merge_oilfield_context_violations(*args, **kwargs)
 
-    def _is_state_snapshot_stale(self, *args, **kwargs):
-        return self.constraint_handler.is_state_snapshot_stale(*args, **kwargs)
 
-    def _run_constraint_check(self, *args, **kwargs):
-        return self.constraint_handler.run_constraint_check(*args, **kwargs)
 
-    def _get_kb_alternatives_for_violations(self, *args, **kwargs):
-        return self.constraint_handler.get_kb_alternatives_for_violations(*args, **kwargs)
 
-    def _merge_coordinate_updates(self, *args, **kwargs):
-        return self.constraint_handler.merge_coordinate_updates(*args, **kwargs)
 
-    def _invalidate_whitelist(self, *args, **kwargs):
-        return self.constraint_handler.invalidate_whitelist(*args, **kwargs)
 
-    def _is_whitelisted(self, *args, **kwargs):
-        return self.constraint_handler.is_whitelisted(*args, **kwargs)
     @staticmethod
     def _is_business_identity_query(message: str) -> bool:
         text = message.strip().lower()
@@ -994,10 +897,6 @@ class DialogueManager:
 
 
 
-    def _ensure_constraint_details(self, *args, **kwargs):
-        return self.constraint_handler.ensure_constraint_details(*args, **kwargs)
-    def _reject_hard_constraint_bypass(self, user_message: str) -> str:
-        return self.constraint_handler._reject_hard_constraint_bypass(user_message)
 
     @staticmethod
     def _user_cancelled(message: str) -> bool:
@@ -1036,9 +935,6 @@ class DialogueManager:
         """判断用户是否明确请求重新选择/修改/配置载荷（且不属于取消修改指令）。"""
         return SlotFillingHandler.is_payload_modification_request(user_message)
 
-    def _handle_payload_modification_request(self, user_message: str) -> str | None:
-        """用户请求重新选择/修改/配置载荷时，重置 payload 槽位为 missing 并调整阶段供前端调出卡片。"""
-        return self.slot_handler.handle_payload_modification(user_message)
 
     def _normalize_payload_list_mutations(
         self,
@@ -1181,12 +1077,19 @@ class DialogueManager:
     # 时间判断
     # --------------------------------------------------------------------------
 
-    def is_start_time_near_now(self, time_window_minutes: int = 60) -> bool:
-        return self.validator._is_task_start_now(self.task_state, time_window_minutes=time_window_minutes)
 
     # --------------------------------------------------------------------------
     # 缓存重建
     # --------------------------------------------------------------------------
+
+    def _build_grounded_recommendation(self, route: IntentRouteResult, user_message: str | None = None) -> str | None:
+        return self.router_handler._build_grounded_recommendation(route, user_message)
+
+    def _scope_confirmed_recommendation(self, *args, **kwargs):
+        return self.slot_handler.scope_confirmed_recommendation(*args, **kwargs)
+
+    def is_start_time_near_now(self, time_window_minutes: int = 60) -> bool:
+        return self.validator._is_task_start_now(self.task_state, time_window_minutes=time_window_minutes)
 
     def _rebuild_cache(self, commit_derived: bool = True) -> None:
         """根据当前 slot_store 重新构建 task_state, _last_built_json 和 _last_missing"""
