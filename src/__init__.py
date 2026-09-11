@@ -24,6 +24,7 @@ from .simulated_time import (
 
 if TYPE_CHECKING:
     from .dialogue_manager import DialogueManager
+    from .dialogue_snapshot import DialogueSnapshotManager
     from .intent_router import IntentRouter
     from .knowledge_retriever import KnowledgeBase
     from .llm_client import LLMClient
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
 
 _LAZY_EXPORTS = {
     "DialogueManager": ".dialogue_manager",
+    "DialogueSnapshotManager": ".dialogue_snapshot",
     "IntentRouter": ".intent_router",
     "KnowledgeBase": ".knowledge_retriever",
     "LLMClient": ".llm_client",
@@ -65,6 +67,7 @@ def __dir__():
 
 __all__ = [
     "DialogueManager",
+    "DialogueSnapshotManager",
     "LLMClient",
     "KnowledgeBase",
     "OutputBuilder",
@@ -78,6 +81,7 @@ __all__ = [
     "TaskPublishLock",
     "IntentRouter",
     "FIELD_LABELS",
+
     "ROBOT_CASCADE_FIELDS",
     "OILFIELD_CONTEXT_FIELDS",
     "TASK_TRANSITION_NON_INHERITED_FIELDS",
