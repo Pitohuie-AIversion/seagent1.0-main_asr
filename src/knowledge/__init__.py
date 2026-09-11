@@ -4,6 +4,8 @@ src/knowledge/__init__.py — 知识库专业领域分层子包
 
 from .hierarchy_graph import HierarchyGraphManager
 from .selection_engine import RobotSelectionEngine
+from .variant_evaluator import VariantEvaluator
+from .unit_resolver import UnitResolver
 from .prompt_grounder import PromptGrounder
 from .query_executor import QueryExecutor
 from .models import (
@@ -42,6 +44,8 @@ __all__ = [
     "RobotSelectionDataError",
     "HierarchyGraphManager",
     "RobotSelectionEngine",
+    "VariantEvaluator",
+    "UnitResolver",
     "PromptGrounder",
     "QueryExecutor",
 ]
