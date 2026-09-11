@@ -19,6 +19,7 @@ from .off_topic_gate import check_off_topic_gate, is_off_topic_output
 from .grounded_catalog import GroundedCatalogHandler
 from .telemetry_status import TelemetryStatusHandler
 from .execution_control import ExecutionControlHandler
+from .slot_extraction_pipeline import SlotExtractionPipeline, ExtractionPipelineResult
 
 __all__ = [
     "BaseDialogueHandler",
@@ -41,4 +42,6 @@ __all__ = [
     "GroundedCatalogHandler",
     "TelemetryStatusHandler",
     "ExecutionControlHandler",
+    "SlotExtractionPipeline",
+    "ExtractionPipelineResult",
 ]
