@@ -8,6 +8,8 @@ from .slot_filling import SlotFillingHandler
 from .constraint_decision import ConstraintDecisionHandler
 from .task_commit import TaskCommitHandler
 from .equipment_cascade import EquipmentCascadeResolver
+from .equipment_scoping import EquipmentScopingHandler
+from .equipment_collapse import EquipmentCollapseHandler
 from .task_transition import TaskTransitionManager
 from .payload_mutation import PayloadMutationManager
 from .write_reply_grounder import WriteReplyGrounder
@@ -26,6 +28,8 @@ __all__ = [
     "ConstraintDecisionHandler",
     "TaskCommitHandler",
     "EquipmentCascadeResolver",
+    "EquipmentScopingHandler",
+    "EquipmentCollapseHandler",
     "TaskTransitionManager",
     "PayloadMutationManager",
     "WriteReplyGrounder",
