@@ -266,6 +266,12 @@ def api_chat_stream():
         session_error = None
         reply = ""
         result_json = ""
+        step_events: list[dict] = []
+
+        def event_sink(event_type: str, ev_data: dict) -> None:
+            if event_type == "step" and isinstance(ev_data, dict):
+                step_events.append(ev_data)
+
         with mgr._session_lock:
             with state._sessions_lock:
                 if state._sessions_manager.get(sid) is not mgr:
@@ -278,7 +284,12 @@ def api_chat_stream():
             if session_error is None:
                 try:
                     phase_before = mgr.phase
-                    reply = mgr.process(msg, request_id=request_id)
+                    try:
+                        reply = mgr.process(msg, request_id=request_id, event_sink=event_sink)
+                    except TypeError:
+                        # 兼容外部只接受旧参数签名的 mock/stub process
+                        reply = mgr.process(msg, request_id=request_id)
+
                     ros2_dispatch = _persist_and_dispatch_done_transition(mgr, phase_before)
                     ui_builder = _get_backend_symbol("build_frontend_ui_state", build_frontend_ui_state)
                     ui_state = ui_builder(mgr)
@@ -356,7 +367,11 @@ def api_chat_stream():
                 return
 
             yield f"event: ping\ndata: {json.dumps({'status': 'connected', 'session_id': sid, 'request_id': request_id})}\n\n"
-            yield f"event: step\ndata: {json.dumps({'step': 'processing', 'message': '正在分析指令与状态...', 'phase': mgr.phase})}\n\n"
+            if step_events:
+                for step_ev in step_events:
+                    yield f"event: step\ndata: {json.dumps(step_ev, ensure_ascii=False)}\n\n"
+            else:
+                yield f"event: step\ndata: {json.dumps({'step': 'processing', 'message': '正在分析指令与状态...', 'phase': mgr.phase})}\n\n"
 
             for i in range(0, len(reply), 12):
                 delta_text = reply[i:i + 12]

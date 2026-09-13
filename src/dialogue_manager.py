@@ -23,7 +23,7 @@ import logging
 import re
 import threading
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -387,7 +387,26 @@ class DialogueManager:
     # 主入口
     # --------------------------------------------------------------------------
 
-    def process(self, user_message: str, request_id: str = "req_default") -> str:
+    def emit_event(
+        self,
+        event_sink: Optional[Callable[[str, dict], None]],
+        event_type: str,
+        data: dict,
+    ) -> None:
+        """安全广播生命周期事件，异常隔离不破坏主流程。"""
+        if event_sink is None or not callable(event_sink):
+            return
+        try:
+            event_sink(event_type, data)
+        except Exception as exc:
+            logger.debug("Failed to emit dialogue event: %s", exc)
+
+    def process(
+        self,
+        user_message: str,
+        request_id: str = "req_default",
+        event_sink: Optional[Callable[[str, dict], None]] = None,
+    ) -> str:
         with self._session_lock:
             request_snapshot = copy.deepcopy(self.slot_store.export_snapshot())
             request_task_state = copy.deepcopy(self.task_state)
@@ -401,7 +420,7 @@ class DialogueManager:
             request_task_start_now = self.task_start_now
 
             try:
-                reply = self._process_internal(user_message, request_id)
+                reply = self._process_internal(user_message, request_id, event_sink=event_sink)
                 self._run_session_state_shadow_check(checkpoint="process", request_id=request_id)
                 return reply
             except (TaskPersistenceError, IntentIdConflict, IdReservationError) as exc:
@@ -559,8 +578,14 @@ class DialogueManager:
 
 
 
-    def _process_internal(self, user_message: str, request_id: str = "req_default") -> str:
+    def _process_internal(
+        self,
+        user_message: str,
+        request_id: str = "req_default",
+        event_sink: Optional[Callable[[str, dict], None]] = None,
+    ) -> str:
         old_phase = self.phase
+        self.emit_event(event_sink, "step", {"step": "guard_check", "message": "正在审查请求合法性与全局门禁...", "phase": self.phase})
 
         # ----------------------------------------------------------------------
         # 分层状态机（Hierarchical State Machine, HSM）调度层
@@ -570,30 +595,35 @@ class DialogueManager:
             user_message=user_message,
             request_id=request_id,
             old_phase=old_phase,
+            metadata={"event_sink": event_sink},
         )
 
         # Level 1: 全局门禁与快捷路由（离题检测、系统时间查询）
         if self.router_handler.can_handle(ctx):
             res = self.router_handler.handle(ctx)
             if res.handled and res.reply is not None:
+                self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在生成处理结果...", "phase": self.phase})
                 return res.reply
 
         # Level 2: 任务提交流程与已归档任务防护（done重复确认/就地篡改拦截、confirming最终确认）
         if self.commit_handler.can_handle(ctx):
             res = self.commit_handler.handle(ctx)
             if res.handled and res.reply is not None:
+                self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在生成发布结果...", "phase": self.phase})
                 return res.reply
 
         # Level 3: 槽位填报特定调整（如搭载工具就地修改补丁）
         if self.slot_handler.can_handle(ctx):
             res = self.slot_handler.handle(ctx)
             if res.handled and res.reply is not None:
+                self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在更新槽位状态...", "phase": self.phase})
                 return res.reply
 
         # Level 4: 约束决策与阻断拦截（blocked_hard 防绕过、blocked_soft 明确忽略）
         if self.constraint_handler.can_handle(ctx):
             res = self.constraint_handler.handle(ctx)
             if res.handled and res.reply is not None:
+                self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在生成约束审查反馈...", "phase": self.phase})
                 return res.reply
 
         # 指代消解与继承（委托至 SlotFillingHandler）
@@ -617,6 +647,7 @@ class DialogueManager:
         #   否则 L1207-1212 _switch_dialogue_mode(route.dialogue_mode)
         #   会把原本的 task_collection 先覆盖成 knowledge_qa，
         #   后续 _already_in_task 检测（用 self.dialogue_mode）永远 False。
+        self.emit_event(event_sink, "step", {"step": "intent_routing", "message": "正在分析指令意图与调度模式...", "phase": self.phase})
         route = self.intent_router.route(
             user_message=user_message,
             conversation_history=self.conversation_history,
@@ -632,6 +663,12 @@ class DialogueManager:
             confidence=route.confidence,
             reason=route.reason,
         )
+        self.emit_event(event_sink, "step", {
+            "step": "intent_routed",
+            "message": f"意图已收敛为: {route.dialogue_mode}",
+            "phase": self.phase,
+            "dialogue_mode": route.dialogue_mode,
+        })
 
         plan = route.interaction_plan
         is_ignore_warning_cmd = self._is_ignore_warning(user_message)
@@ -661,12 +698,15 @@ class DialogueManager:
             )
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": pending_reply})
+            self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在组织待确认反馈...", "phase": self.phase})
             return pending_reply
 
         if route.dialogue_mode == "emergency_intervention":
+            self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在组织紧急干预响应...", "phase": self.phase})
             return self._handle_emergency_intervention(user_message, route, request_id)
 
         if route.interaction_type == "QUERY":
+            self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在组织知识库检索反馈...", "phase": self.phase})
             return self._handle_non_task_route(user_message, route, request_id)
 
         if self.phase == "done":
@@ -678,6 +718,7 @@ class DialogueManager:
                 reply = f"当前任务已正式确认发布{intent_detail}并归档，无法就地修改参数。如需调整，请点击“重新开始”创建新任务，或提交工单变更申请。"
                 self.conversation_history.append({"role": "user", "content": user_message})
                 self.conversation_history.append({"role": "assistant", "content": reply})
+                self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在生成已发布归档提示...", "phase": self.phase})
                 return reply
 
         compound_request = analyze_task_request(
@@ -688,15 +729,19 @@ class DialogueManager:
             reply = compound_request.build_reply()
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": reply})
+            self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在生成复合任务提示...", "phase": self.phase})
             return reply
 
         # 3. 委托至 Level 3 SlotFillingHandler 执行槽位抽取、消歧、原子事务提交与事实锚点落地
-        return self.slot_handler.execute_slot_filling(
+        self.emit_event(event_sink, "step", {"step": "slot_filling", "message": "正在抽取并归一化作业参数...", "phase": self.phase})
+        reply = self.slot_handler.execute_slot_filling(
             ctx,
             route=route,
             plan=plan,
             has_acknowledge_action=has_acknowledge_action,
         )
+        self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在组织任务反馈与状态卡片...", "phase": self.phase})
+        return reply
 
     # --------------------------------------------------------------------------
     # 参数更新与规范化

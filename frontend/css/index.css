@@ -1624,3 +1624,25 @@
     ::-webkit-scrollbar-thumb:hover {
       background: var(--accent-cyan);
     }
+
+    /* SSE 流式细粒度步骤微状态指示器 */
+    .message[data-message-kind="streaming-status"] .bubble {
+      background: rgba(0, 229, 255, 0.08);
+      border: 1px dashed rgba(0, 229, 255, 0.35);
+      color: #9fe8f7;
+      font-style: italic;
+      letter-spacing: 0.2px;
+      animation: pulseStreamingStatus 2s infinite ease-in-out;
+    }
+
+    @keyframes pulseStreamingStatus {
+      0%, 100% {
+        opacity: 0.85;
+        border-color: rgba(0, 229, 255, 0.3);
+      }
+      50% {
+        opacity: 1;
+        border-color: rgba(0, 255, 196, 0.6);
+        box-shadow: 0 0 10px rgba(0, 229, 255, 0.15);
+      }
+    }

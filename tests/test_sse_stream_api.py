@@ -61,6 +61,28 @@ class TestSSEStreamAPI:
         assert "reply" in result_payload
         assert result_payload["session_id"] == "test_sse_02"
 
+    def test_fine_grained_step_event_flow(self, client):
+        resp = client.post(
+            "/api/chat/stream",
+            json={"session_id": "test_sse_steps_01", "message": "安排水下管道巡检任务"},
+        )
+        assert resp.status_code == 200
+        raw_stream = resp.get_data(as_text=True)
+
+        # 收集所有 step 事件中的 payload
+        step_payloads = []
+        lines = raw_stream.split("\n")
+        for i, line in enumerate(lines):
+            if line == "event: step" and i + 1 < len(lines):
+                data_line = lines[i + 1]
+                if data_line.startswith("data: "):
+                    step_payloads.append(json.loads(data_line[6:]))
+
+        assert len(step_payloads) >= 2, f"Expected multiple fine-grained steps, got: {step_payloads}"
+        step_names = [item.get("step") for item in step_payloads]
+        assert "guard_check" in step_names
+        assert any(s in step_names for s in ["intent_routing", "slot_filling", "synthesizing"])
+
     def test_reload_events_stream(self, client):
         resp = client.get("/api/dev/reload-events/stream?after=0")
         assert resp.status_code == 200

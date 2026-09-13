@@ -2328,7 +2328,21 @@ Please describe your operational requirements directly, or ask the question you 
                   if (payloadStr === '[DONE]') continue;
                   try {
                     const parsed = JSON.parse(payloadStr);
-                    if (parsed.delta) {
+                    if (parsed.step && !accumulatedReply) {
+                      const stepMsg = parsed.message || '正在分析与处理...';
+                      const displayText = `⚡ ${stepMsg}`;
+                      if (!botMsgDiv) {
+                        botMsgDiv = addMessage('bot', displayText, { kind: 'streaming-status' });
+                      } else if (botMsgDiv.dataset.messageKind === 'streaming-status') {
+                        const bubble = botMsgDiv.querySelector('.bubble');
+                        if (bubble) bubble.textContent = displayText;
+                        botMsgDiv.setAttribute('data-original', displayText);
+                      }
+                      messageContainer.scrollTop = messageContainer.scrollHeight;
+                    } else if (parsed.delta) {
+                      if (botMsgDiv && botMsgDiv.dataset.messageKind === 'streaming-status') {
+                        delete botMsgDiv.dataset.messageKind;
+                      }
                       accumulatedReply += parsed.delta;
                       if (!botMsgDiv) {
                         botMsgDiv = addMessage('bot', accumulatedReply);
@@ -2355,6 +2369,11 @@ Please describe your operational requirements directly, or ask the question you 
             }
 
             if (streamHandled && data.code === 200) {
+              if (botMsgDiv && botMsgDiv.dataset.messageKind === 'streaming-status') {
+                delete botMsgDiv.dataset.messageKind;
+                const bubble = botMsgDiv.querySelector('.bubble');
+                if (bubble && data.reply) bubble.textContent = data.reply;
+              }
               if (data.session_id) {
                 sessionId = data.session_id;
                 try { localStorage.setItem('seagent_session_id', sessionId); } catch(e){}
