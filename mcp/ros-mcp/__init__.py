@@ -35,11 +35,20 @@ def _load_upstream_mcp_symbols() -> None:
 
     # Import symbols from upstream modules that are actually used in the repository
     # and by `fastmcp` runtime dependencies.
-    from .client.session import ClientSession
-    from .client.stdio import StdioServerParameters, stdio_client
-    from .server.session import ServerSession
-    from .server.stdio import stdio_server
-    from .shared.exceptions import McpError, UrlElicitationRequiredError
+    try:
+        from mcp.client.session import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.server.session import ServerSession
+        from mcp.server.stdio import stdio_server
+        from mcp.shared.exceptions import McpError, UrlElicitationRequiredError
+    except Exception:
+        ClientSession = None
+        StdioServerParameters = None
+        stdio_client = None
+        ServerSession = None
+        stdio_server = None
+        McpError = Exception
+        UrlElicitationRequiredError = Exception
 
     import mcp.types as types
 

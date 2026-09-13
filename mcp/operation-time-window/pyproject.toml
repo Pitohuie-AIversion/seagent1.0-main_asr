@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seagent_marine_current"
+version = "0.1.0"
+description = "FastMCP marine current forecast service and local operation window calculator for SEAgent"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "SEAgent Development Team" }
+]
+dependencies = [
+    "pydantic>=2.0.0",
+    "fastmcp>=2.0.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+copernicus = [
+    "copernicusmarine>=2.0.0",
+    "xarray>=2023.0.0",
+]
+test = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests_unit", "tests_mcp"]

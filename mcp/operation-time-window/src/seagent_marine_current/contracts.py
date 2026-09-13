@@ -1,0 +1,114 @@
+"""Data contracts, request/response models, and validation schemas for marine current forecast."""
+
+from __future__ import annotations
+
+import hashlib
+from datetime import datetime, timezone
+from typing import List, Literal, Optional
+from pydantic import AwareDatetime, BaseModel, Field, model_validator
+
+
+class CurrentQuery(BaseModel):
+    """Structured query for ocean current forecast."""
+
+    latitude: float = Field(..., ge=-90.0, le=90.0, description="Target latitude in WGS-84 degrees")
+    longitude: float = Field(..., ge=-180.0, le=180.0, description="Target longitude in WGS-84 degrees")
+    operation_depth_m: float = Field(..., ge=0.0, description="Target operating depth in meters (positive down)")
+    start_time: AwareDatetime = Field(..., description="Query start time with timezone")
+    end_time: AwareDatetime = Field(..., description="Query end time with timezone (must be > start_time)")
+
+    @model_validator(mode="after")
+    def validate_time_order(self) -> CurrentQuery:
+        if self.end_time <= self.start_time:
+            raise ValueError(f"end_time ({self.end_time.isoformat()}) must be strictly after start_time ({self.start_time.isoformat()})")
+        return self
+
+    @property
+    def fingerprint(self) -> str:
+        """Deterministic fingerprint representing location, depth, and time bounds."""
+        st_utc = self.start_time.astimezone(timezone.utc).isoformat()
+        et_utc = self.end_time.astimezone(timezone.utc).isoformat()
+        raw = f"{self.latitude:.4f}|{self.longitude:.4f}|{self.operation_depth_m:.1f}|{st_utc}|{et_utc}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+class ForecastError(BaseModel):
+    """Structured error payload when forecast cannot be evaluated."""
+
+    code: Literal[
+        "NOT_CONFIGURED",
+        "OUT_OF_BOUNDS",
+        "LAND_OR_INVALID",
+        "MISSING_DATA",
+        "TIMEOUT",
+        "BUSY",
+        "PROVIDER_ERROR",
+        "INVALID_REQUEST",
+    ] = Field(..., description="Machine-readable error code")
+    message: str = Field(..., description="Human-readable explanation of failure")
+    retryable: bool = Field(False, description="Whether caller can retry without changing query")
+
+
+class CurrentForecastData(BaseModel):
+    """Structured raw ocean current data from provider."""
+
+    request_fingerprint: str = Field(..., description="Matching fingerprint of the initiating query")
+    snapshot_id: str = Field(..., description="Unique snapshot identifier for telemetry binding")
+    provider: str = Field("copernicus_marine", description="Data provider name")
+    product: str = Field("GLOBAL_ANALYSISFORECAST_PHY_001_024", description="Official product identifier")
+    dataset: str = Field("cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i", description="Official dataset identifier")
+    variables: List[str] = Field(default_factory=lambda: ["uo", "vo"], description="Exported physical variables")
+    retrieved_at: AwareDatetime = Field(..., description="System timestamp when forecast was retrieved")
+    model_run: Optional[AwareDatetime] = Field(None, description="Model forecast reference time (if published)")
+
+    actual_grid_latitude: float = Field(..., description="Latitude of nearest ocean grid point")
+    actual_grid_longitude: float = Field(..., description="Longitude of nearest ocean grid point")
+    grid_distance_km: float = Field(..., ge=0.0, description="Horizontal distance from target coordinate to grid point")
+
+    native_time_steps: List[AwareDatetime] = Field(..., min_length=2, description="Native time nodes bounding query interval")
+    native_depth_layers_m: List[float] = Field(..., min_length=1, max_length=2, description="Target exact layer or 2 adjacent bounding layers (m)")
+
+    uo: List[List[float]] = Field(..., description="Eastward seawater velocity matrix [time][depth] in m/s")
+    vo: List[List[float]] = Field(..., description="Northward seawater velocity matrix [time][depth] in m/s")
+    warnings: List[str] = Field(default_factory=list, description="Non-blocking warning messages")
+
+    @model_validator(mode="after")
+    def validate_matrices_shape(self) -> CurrentForecastData:
+        num_t = len(self.native_time_steps)
+        num_d = len(self.native_depth_layers_m)
+
+        if len(self.uo) != num_t:
+            raise ValueError(f"uo time dimension length {len(self.uo)} does not match native_time_steps length {num_t}")
+        if len(self.vo) != num_t:
+            raise ValueError(f"vo time dimension length {len(self.vo)} does not match native_time_steps length {num_t}")
+
+        for i, row in enumerate(self.uo):
+            if len(row) != num_d:
+                raise ValueError(f"uo[{i}] depth dimension length {len(row)} does not match native_depth_layers_m length {num_d}")
+        for i, row in enumerate(self.vo):
+            if len(row) != num_d:
+                raise ValueError(f"vo[{i}] depth dimension length {len(row)} does not match native_depth_layers_m length {num_d}")
+
+        return self
+
+
+class ForecastReply(BaseModel):
+    """Standard FastMCP return wrapper."""
+
+    status: Literal["OK", "NOT_EVALUABLE"] = Field(..., description="High-level availability status")
+    data: Optional[CurrentForecastData] = Field(None, description="Current data payload when status == OK")
+    error: Optional[ForecastError] = Field(None, description="Error details when status == NOT_EVALUABLE")
+
+    @model_validator(mode="after")
+    def validate_status_consistency(self) -> ForecastReply:
+        if self.status == "OK":
+            if self.data is None:
+                raise ValueError("data must be non-null when status is OK")
+            if self.error is not None:
+                raise ValueError("error must be null when status is OK")
+        elif self.status == "NOT_EVALUABLE":
+            if self.error is None:
+                raise ValueError("error must be non-null when status is NOT_EVALUABLE")
+            if self.data is not None:
+                raise ValueError("data must be null when status is NOT_EVALUABLE")
+        return self
