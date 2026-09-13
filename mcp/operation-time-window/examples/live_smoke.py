@@ -42,6 +42,7 @@ async def main_async(args):
         env_overrides["COPERNICUSMARINE_SERVICE_PASSWORD"] = pwd
 
     if args.use_synthetic:
+        env_overrides["SEAGENT_CURRENT_ENV"] = "test"
         env_overrides["SEAGENT_CURRENT_USE_SYNTHETIC"] = "1"
 
     now_utc = datetime.now(timezone.utc)
@@ -57,9 +58,9 @@ async def main_async(args):
     )
 
     print(f"[*] Querying Ocean Current Forecast:")
-    print(f"    - Position: ({query.latitude:.4f}, {query.longitude:.4f})")
-    print(f"    - Depth: {query.operation_depth_m:.1f} m")
-    print(f"    - Interval: {query.start_time.isoformat()} to {query.end_time.isoformat()} ({args.hours:.1f}h)")
+    print(f"    - Target Position: ({query.latitude:.4f}, {query.longitude:.4f})")
+    print(f"    - Target Depth: {query.operation_depth_m:.1f} m")
+    print(f"    - Target Interval: {query.start_time.isoformat()} to {query.end_time.isoformat()} ({args.hours:.1f}h)")
     print(f"    - Fingerprint: {query.fingerprint}")
 
     server_script = str(SRC_DIR / "seagent_marine_current" / "server.py")
@@ -73,8 +74,16 @@ async def main_async(args):
 
         print(f"[*] Result status: {reply.status}")
         if reply.status == "OK" and reply.data:
-            print(f"[+] Received {len(reply.data.native_time_steps)} native time steps at depths {reply.data.native_depth_layers_m} m")
-            print(f"[+] Grid point: ({reply.data.actual_grid_latitude}, {reply.data.actual_grid_longitude}) - Distance: {reply.data.grid_distance_km:.2f} km")
+            d = reply.data
+            print(f"[+] Provenance: provider={d.provider}, dataset={d.dataset}, is_synthetic={d.is_synthetic}")
+            print(f"[+] Nearest Grid Point: ({d.actual_grid_latitude:.4f}, {d.actual_grid_longitude:.4f}) - Distance: {d.grid_distance_km:.2f} km")
+            print(f"[+] Target Depth {query.operation_depth_m}m mapped to native bounding layers: {d.native_depth_layers_m} m")
+            print(f"[+] Native Time Nodes ({len(d.native_time_steps)} steps, ~6h cadence):")
+            print(f"    From: {d.native_time_steps[0].isoformat()} To: {d.native_time_steps[-1].isoformat()}")
+            print(f"[+] Current Matrices: uo[{len(d.uo)}][{len(d.uo[0])}], vo[{len(d.vo)}][{len(d.vo[0])}] in m/s")
+            print(f"    First step uo/vo: u={d.uo[0]}, v={d.vo[0]}")
+            print(f"    Last step uo/vo:  u={d.uo[-1]}, v={d.vo[-1]}")
+            print(f"[+] System Retrieved At: {d.retrieved_at.isoformat()}, Model Run: {d.model_run}")
             out_path = Path(args.output)
             out_path.write_text(reply.model_dump_json(indent=2), encoding="utf-8")
             print(f"[+] Saved forecast payload to {out_path.resolve()}")
