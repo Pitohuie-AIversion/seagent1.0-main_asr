@@ -1,30 +1,36 @@
 {
+  "provenance_security": {
+    "v0_1_production_single_source": "Copernicus Marine (cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i)",
+    "synthetic_fixture_allowed_environments": ["test"],
+    "production_synthetic_attempt_behavior": "FAIL_CLOSED (RuntimeError: Security Violation)",
+    "formal_window_service_behavior_on_synthetic": "FAIL_CLOSED (NOT_EVALUABLE: SYNTHETIC_DATA_NOT_ALLOWED)"
+  },
   "unit_tests": {
     "status": "PASS",
-    "count": 50,
+    "count": 54,
     "synthetic_input": true,
     "command": "PYTHONPATH=src /root/miniconda3/envs/seagent/bin/python -m pytest tests_unit -v --junitxml=evidence/unit-results.xml",
     "junit_xml": "evidence/unit-results.xml",
-    "duration_seconds": 0.12
+    "duration_seconds": 0.13
   },
   "mcp_tests": {
     "status": "PASS",
-    "count": 4,
+    "count": 5,
     "skipped": 1,
     "skip_reason": "Live remote Copernicus test skipped when credentials not in environment",
     "transport": "stdio",
     "command": "PYTHONPATH=src /root/miniconda3/envs/seagent/bin/python -m pytest tests_mcp -v --junitxml=evidence/mcp-results.xml",
     "junit_xml": "evidence/mcp-results.xml",
-    "duration_seconds": 6.45
+    "duration_seconds": 7.81
   },
   "seagent_integration": {
     "status": "PASS",
     "count": 5,
     "file": "tests/test_marine_current_dialogue_integration.py",
-    "duration_seconds": 0.44
+    "duration_seconds": 0.43
   },
   "total_marine_tests": {
-    "passed": 59,
+    "passed": 64,
     "skipped": 1,
     "failed": 0
   },
@@ -34,7 +40,7 @@
   },
   "live_copernicus": {
     "status": "READY_STANDBY",
-    "reason": "SDK installed and verified with synthetic engine; awaiting user credentials in .env for public CMEMS download"
+    "reason": "SDK installed and verified; awaiting user credentials in .env for public CMEMS download"
   },
   "seagent_repo_modified": false,
   "seagent_regression_run": true,

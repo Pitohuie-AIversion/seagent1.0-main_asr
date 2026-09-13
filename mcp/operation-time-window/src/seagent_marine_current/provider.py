@@ -203,6 +203,7 @@ class CopernicusProvider:
                 request_fingerprint=query.fingerprint,
                 snapshot_id=f"snap_{uuid.uuid4().hex[:12]}",
                 provider="copernicus_marine",
+                is_synthetic=False,
                 product=self.PRODUCT,
                 dataset=self.DATASET,
                 variables=["uo", "vo"],
@@ -229,7 +230,11 @@ class CopernicusProvider:
 
 
 class SyntheticCopernicusProvider:
-    """High-fidelity synthetic provider for testing without external network or credentials."""
+    """Deterministic synthetic current fixture for offline algorithmic testing.
+
+    Generates synthetic test data with periodicity and depth variation for algorithm
+    and contract verification. Does NOT represent real ocean conditions.
+    """
 
     PRODUCT = "GLOBAL_ANALYSISFORECAST_PHY_001_024"
     DATASET = "cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i"
@@ -298,7 +303,8 @@ class SyntheticCopernicusProvider:
         return CurrentForecastData(
             request_fingerprint=query.fingerprint,
             snapshot_id=f"snap_synth_{uuid.uuid4().hex[:10]}",
-            provider="copernicus_marine",
+            provider="synthetic_test_fixture",
+            is_synthetic=True,
             product=self.PRODUCT,
             dataset=self.DATASET,
             variables=["uo", "vo"],
@@ -311,5 +317,5 @@ class SyntheticCopernicusProvider:
             native_depth_layers_m=depth_layers,
             uo=uo_matrix,
             vo=vo_matrix,
-            warnings=[],
+            warnings=["SYNTHETIC_DATA_TEST_FIXTURE_NOT_FOR_PRODUCTION"],
         )

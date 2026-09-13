@@ -59,8 +59,9 @@ async def test_mcp_unconfigured_credentials_returns_not_evaluable(server_script)
 
 @pytest.mark.asyncio
 async def test_mcp_synthetic_query_returns_ok_data(server_script):
-    """Test full roundtrip over FastMCP stdio using synthetic provider."""
+    """Test full roundtrip over FastMCP stdio using synthetic provider in explicit TEST env."""
     env = {
+        "SEAGENT_CURRENT_ENV": "test",
         "SEAGENT_CURRENT_USE_SYNTHETIC": "1",
     }
     st = datetime.now(timezone.utc) + timedelta(hours=10)
@@ -113,3 +114,15 @@ async def test_backend_busy_concurrency_lock():
 
     res1 = await task1
     assert res1.status == "OK"
+
+
+@pytest.mark.asyncio
+async def test_mcp_server_production_env_rejects_synthetic(server_script):
+    """Production environment MUST reject server startup when synthetic provider is requested."""
+    env = {
+        "SEAGENT_CURRENT_ENV": "production",
+        "SEAGENT_CURRENT_USE_SYNTHETIC": "1",
+    }
+    with pytest.raises(Exception):
+        async with make_client(server_python=sys.executable, server_script=server_script, env=env) as client:
+            await client.list_tools()

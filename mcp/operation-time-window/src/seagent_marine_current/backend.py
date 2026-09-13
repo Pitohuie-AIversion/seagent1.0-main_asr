@@ -23,9 +23,16 @@ class WorkerBackend:
         timeout_seconds: Optional[float] = None,
     ):
         if worker is None:
-            # Check if synthetic mode requested via environment
+            env_mode = os.getenv("SEAGENT_CURRENT_ENV", os.getenv("APP_ENV", "production")).lower()
             use_synth = os.getenv("SEAGENT_CURRENT_USE_SYNTHETIC", "0") == "1"
+
             if use_synth:
+                if env_mode == "production":
+                    raise RuntimeError(
+                        "Security Violation: Synthetic test fixture is strictly forbidden in production environment. "
+                        "v0.1 single source of truth must be Copernicus Marine."
+                    )
+                logger.warning("WorkerBackend instantiated with SyntheticCopernicusProvider in %s mode.", env_mode)
                 worker = CurrentWorker(SyntheticCopernicusProvider())
             else:
                 worker = CurrentWorker(CopernicusProvider())

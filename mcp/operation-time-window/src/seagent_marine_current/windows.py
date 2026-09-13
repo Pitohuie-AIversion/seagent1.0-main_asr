@@ -81,11 +81,25 @@ class OperationWindowService:
         start_time: datetime,
         end_time: datetime,
         current_limit_mps: float,
+        allow_synthetic_for_testing: bool = False,
     ) -> WindowCheckResult:
         """CHECK: Evaluates whether fixed interval [start_time, end_time] satisfies current_limit.
 
         Does not shift, search, or mutate user task intent.
+        Strict Safety Rule: Synthetic test fixture data is rejected unless explicitly in test mode.
         """
+        if getattr(forecast, "is_synthetic", False) and not allow_synthetic_for_testing:
+            return WindowCheckResult(
+                status="NOT_EVALUABLE",
+                start_time=start_time,
+                end_time=end_time,
+                duration_hours=None,
+                v_max_mps=None,
+                current_limit_mps=current_limit_mps,
+                reason_code="SYNTHETIC_DATA_NOT_ALLOWED",
+                message="Synthetic test data cannot be used for operational window authorization.",
+            )
+
         if end_time <= start_time:
             return WindowCheckResult(
                 status="NOT_EVALUABLE",
@@ -148,13 +162,28 @@ class OperationWindowService:
         duration_hours: float,
         current_limit_mps: float,
         candidate_step_seconds: float = 3600.0,
+        allow_synthetic_for_testing: bool = False,
     ) -> WindowSearchResult:
         """SEARCH: Explores candidates of length duration_hours in [search_start, search_end].
 
         Generates candidate start times progressing by candidate_step_seconds (default 1h),
         plus the boundary start time (search_end - duration).
         Sorts matches by start_time ascending, then v_max ascending.
+        Strict Safety Rule: Synthetic test fixture data is rejected unless explicitly in test mode.
         """
+        if getattr(forecast, "is_synthetic", False) and not allow_synthetic_for_testing:
+            return WindowSearchResult(
+                status="NOT_EVALUABLE",
+                search_start=search_start,
+                search_end=search_end,
+                duration_hours=duration_hours,
+                current_limit_mps=current_limit_mps,
+                candidate_step_seconds=candidate_step_seconds,
+                total_checked_candidates=0,
+                reason_code="SYNTHETIC_DATA_NOT_ALLOWED",
+                message="Synthetic test data cannot be used for operational window authorization.",
+            )
+
         if duration_hours <= 0:
             return WindowSearchResult(
                 status="NOT_EVALUABLE",

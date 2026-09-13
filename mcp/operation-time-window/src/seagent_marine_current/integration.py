@@ -192,6 +192,7 @@ class MarineCurrentBridge:
         self,
         task_state: Dict[str, Any],
         current_limit_mps: Optional[float] = None,
+        allow_synthetic_for_testing: bool = False,
     ) -> Optional[WindowCheckResult]:
         """Evaluate fixed [start_time, end_time] window against cached forecast."""
         if not self._cached_forecast:
@@ -210,6 +211,7 @@ class MarineCurrentBridge:
             start_time=st,
             end_time=et,
             current_limit_mps=limit,
+            allow_synthetic_for_testing=allow_synthetic_for_testing,
         )
 
     def search_task_windows(
@@ -218,6 +220,7 @@ class MarineCurrentBridge:
         duration_hours: float,
         search_range_hours: float = 48.0,
         current_limit_mps: Optional[float] = None,
+        allow_synthetic_for_testing: bool = False,
     ) -> Optional[WindowSearchResult]:
         """Search available windows for task of specified duration."""
         if not self._cached_forecast:
@@ -240,6 +243,7 @@ class MarineCurrentBridge:
             search_end=et,
             duration_hours=duration_hours,
             current_limit_mps=limit,
+            allow_synthetic_for_testing=allow_synthetic_for_testing,
         )
 
 

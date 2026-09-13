@@ -70,19 +70,38 @@ def test_dialogue_state_extracts_query_and_evaluates_window(oilfield_kb):
     assert q_after_unrelated is not None
     assert bridge.is_cache_valid_for(q_after_unrelated)
 
-    # 5. Fixed-window CHECK evaluation
-    check_res = bridge.evaluate_task_window(task_state, current_limit_mps=0.5)
+    # 5. Fixed-window CHECK evaluation:
+    # 5a. Default formal call MUST reject synthetic forecast as NOT_EVALUABLE
+    check_res_rejected = bridge.evaluate_task_window(task_state, current_limit_mps=0.5, allow_synthetic_for_testing=False)
+    assert check_res_rejected is not None
+    assert check_res_rejected.status == "NOT_EVALUABLE"
+    assert check_res_rejected.reason_code == "SYNTHETIC_DATA_NOT_ALLOWED"
+
+    # 5b. Explicit test authorization allows algorithm validation
+    check_res = bridge.evaluate_task_window(task_state, current_limit_mps=0.5, allow_synthetic_for_testing=True)
     assert check_res is not None
     assert check_res.status in ("AVAILABLE", "UNAVAILABLE")
     assert check_res.basis == "interpolated_model_current_only"
     assert check_res.execution_authorized is False
 
     # 6. Alternative window SEARCH
+    search_res_rejected = bridge.search_task_windows(
+        task_state,
+        duration_hours=4.0,
+        search_range_hours=24.0,
+        current_limit_mps=0.5,
+        allow_synthetic_for_testing=False,
+    )
+    assert search_res_rejected is not None
+    assert search_res_rejected.status == "NOT_EVALUABLE"
+    assert search_res_rejected.reason_code == "SYNTHETIC_DATA_NOT_ALLOWED"
+
     search_res = bridge.search_task_windows(
         task_state,
         duration_hours=4.0,
         search_range_hours=24.0,
         current_limit_mps=0.5,
+        allow_synthetic_for_testing=True,
     )
     assert search_res is not None
     assert search_res.status in ("AVAILABLE", "UNAVAILABLE")

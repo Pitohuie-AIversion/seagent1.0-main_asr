@@ -100,7 +100,14 @@ def test_marine_current_bridge_caching_and_evaluation(base_time):
         "end_time": (base_time + timedelta(hours=4)).isoformat(),
         "operation_depth": 130.0,
     }
-    res_check = bridge.evaluate_task_window(task_state)
+    # Default formal call MUST reject synthetic forecast as NOT_EVALUABLE
+    res_rejected = bridge.evaluate_task_window(task_state, allow_synthetic_for_testing=False)
+    assert res_rejected is not None
+    assert res_rejected.status == "NOT_EVALUABLE"
+    assert res_rejected.reason_code == "SYNTHETIC_DATA_NOT_ALLOWED"
+
+    # Explicit test authorization allows algorithm validation
+    res_check = bridge.evaluate_task_window(task_state, allow_synthetic_for_testing=True)
     assert res_check is not None
     assert res_check.status in ("AVAILABLE", "UNAVAILABLE")
 
