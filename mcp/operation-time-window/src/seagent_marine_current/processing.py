@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import os
 from typing import List, Optional, Tuple
 
 from .contracts import CurrentForecastData
@@ -25,7 +26,19 @@ class CurrentProcessor:
     """Pure mathematical processing of ocean current matrices (depth and time interpolation)."""
 
     @staticmethod
+    def _verify_forecast_security(forecast: CurrentForecastData) -> None:
+        """Fail-closed security check: synthetic data must NEVER be processed outside explicit test environment."""
+        if getattr(forecast, "is_synthetic", False):
+            env_mode = os.getenv("SEAGENT_CURRENT_ENV", "production").lower()
+            if env_mode != "test":
+                raise RuntimeError(
+                    f"Security Violation: Attempted to process synthetic current forecast in {env_mode} environment. "
+                    "Synthetic fixtures are strictly restricted to SEAGENT_CURRENT_ENV=test profile."
+                )
+
+    @classmethod
     def interpolate_depth_at_nodes(
+        cls,
         forecast: CurrentForecastData,
         target_depth_m: float,
     ) -> List[Tuple[datetime, float, float]]:
@@ -33,6 +46,7 @@ class CurrentProcessor:
 
         Returns list of (native_timestamp, u_interpolated, v_interpolated).
         """
+        cls._verify_forecast_security(forecast)
         depths = forecast.native_depth_layers_m
         time_steps = forecast.native_time_steps
         uo = forecast.uo

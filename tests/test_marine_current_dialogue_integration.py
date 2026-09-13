@@ -33,7 +33,7 @@ def oilfield_kb():
     return {"oil_fields": []}
 
 
-def test_dialogue_state_extracts_query_and_evaluates_window(oilfield_kb):
+def test_dialogue_state_extracts_query_and_evaluates_window(oilfield_kb, monkeypatch):
     """Test that SEAgent task state can automatically extract query, cache it, and evaluate window."""
     base_time = datetime(2026, 9, 14, 8, 0, 0, tzinfo=timezone.utc)
 
@@ -71,13 +71,21 @@ def test_dialogue_state_extracts_query_and_evaluates_window(oilfield_kb):
     assert bridge.is_cache_valid_for(q_after_unrelated)
 
     # 5. Fixed-window CHECK evaluation:
-    # 5a. Default formal call MUST reject synthetic forecast as NOT_EVALUABLE
+    # 5a. Production environment MUST reject synthetic forecast even if caller requests allow_synthetic_for_testing=True
+    monkeypatch.setenv("SEAGENT_CURRENT_ENV", "production")
+    check_res_prod_bypass = bridge.evaluate_task_window(task_state, current_limit_mps=0.5, allow_synthetic_for_testing=True)
+    assert check_res_prod_bypass is not None
+    assert check_res_prod_bypass.status == "NOT_EVALUABLE"
+    assert check_res_prod_bypass.reason_code == "SYNTHETIC_DATA_NOT_ALLOWED"
+
+    # 5b. Default formal call (allow_synthetic=False) in test profile MUST ALSO reject
+    monkeypatch.setenv("SEAGENT_CURRENT_ENV", "test")
     check_res_rejected = bridge.evaluate_task_window(task_state, current_limit_mps=0.5, allow_synthetic_for_testing=False)
     assert check_res_rejected is not None
     assert check_res_rejected.status == "NOT_EVALUABLE"
     assert check_res_rejected.reason_code == "SYNTHETIC_DATA_NOT_ALLOWED"
 
-    # 5b. Explicit test authorization allows algorithm validation
+    # 5c. Explicit test profile + explicit test authorization allows algorithm validation
     check_res = bridge.evaluate_task_window(task_state, current_limit_mps=0.5, allow_synthetic_for_testing=True)
     assert check_res is not None
     assert check_res.status in ("AVAILABLE", "UNAVAILABLE")

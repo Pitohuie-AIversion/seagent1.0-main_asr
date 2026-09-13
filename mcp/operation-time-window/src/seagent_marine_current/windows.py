@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import os
 from typing import List, Literal, Optional
 
 from .contracts import CurrentForecastData
@@ -88,7 +89,9 @@ class OperationWindowService:
         Does not shift, search, or mutate user task intent.
         Strict Safety Rule: Synthetic test fixture data is rejected unless explicitly in test mode.
         """
-        if getattr(forecast, "is_synthetic", False) and not allow_synthetic_for_testing:
+        is_synthetic = bool(getattr(forecast, "is_synthetic", False))
+        is_test_env = os.getenv("SEAGENT_CURRENT_ENV", "").lower() == "test"
+        if is_synthetic and not (allow_synthetic_for_testing and is_test_env):
             return WindowCheckResult(
                 status="NOT_EVALUABLE",
                 start_time=start_time,
@@ -97,7 +100,7 @@ class OperationWindowService:
                 v_max_mps=None,
                 current_limit_mps=current_limit_mps,
                 reason_code="SYNTHETIC_DATA_NOT_ALLOWED",
-                message="Synthetic test data cannot be used for operational window authorization.",
+                message="Synthetic test data cannot be used for operational window authorization outside explicit test profile.",
             )
 
         if end_time <= start_time:
@@ -171,7 +174,9 @@ class OperationWindowService:
         Sorts matches by start_time ascending, then v_max ascending.
         Strict Safety Rule: Synthetic test fixture data is rejected unless explicitly in test mode.
         """
-        if getattr(forecast, "is_synthetic", False) and not allow_synthetic_for_testing:
+        is_synthetic = bool(getattr(forecast, "is_synthetic", False))
+        is_test_env = os.getenv("SEAGENT_CURRENT_ENV", "").lower() == "test"
+        if is_synthetic and not (allow_synthetic_for_testing and is_test_env):
             return WindowSearchResult(
                 status="NOT_EVALUABLE",
                 search_start=search_start,
@@ -181,7 +186,7 @@ class OperationWindowService:
                 candidate_step_seconds=candidate_step_seconds,
                 total_checked_candidates=0,
                 reason_code="SYNTHETIC_DATA_NOT_ALLOWED",
-                message="Synthetic test data cannot be used for operational window authorization.",
+                message="Synthetic test data cannot be used for operational window authorization outside explicit test profile.",
             )
 
         if duration_hours <= 0:

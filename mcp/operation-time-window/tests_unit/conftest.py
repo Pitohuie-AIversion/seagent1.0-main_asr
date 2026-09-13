@@ -16,6 +16,12 @@ from seagent_marine_current.contracts import CurrentForecastData, CurrentQuery
 from seagent_marine_current.provider import SyntheticCopernicusProvider
 
 
+@pytest.fixture(autouse=True)
+def enforce_test_profile(monkeypatch):
+    """Set SEAGENT_CURRENT_ENV=test explicitly for unit test suite by default."""
+    monkeypatch.setenv("SEAGENT_CURRENT_ENV", "test")
+
+
 @pytest.fixture
 def base_time():
     """Fixed reference datetime in UTC."""

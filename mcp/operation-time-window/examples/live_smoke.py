@@ -75,18 +75,71 @@ async def main_async(args):
         print(f"[*] Result status: {reply.status}")
         if reply.status == "OK" and reply.data:
             d = reply.data
-            print(f"[+] Provenance: provider={d.provider}, dataset={d.dataset}, is_synthetic={d.is_synthetic}")
-            print(f"[+] Nearest Grid Point: ({d.actual_grid_latitude:.4f}, {d.actual_grid_longitude:.4f}) - Distance: {d.grid_distance_km:.2f} km")
-            print(f"[+] Target Depth {query.operation_depth_m}m mapped to native bounding layers: {d.native_depth_layers_m} m")
-            print(f"[+] Native Time Nodes ({len(d.native_time_steps)} steps, ~6h cadence):")
-            print(f"    From: {d.native_time_steps[0].isoformat()} To: {d.native_time_steps[-1].isoformat()}")
-            print(f"[+] Current Matrices: uo[{len(d.uo)}][{len(d.uo[0])}], vo[{len(d.vo)}][{len(d.vo[0])}] in m/s")
-            print(f"    First step uo/vo: u={d.uo[0]}, v={d.vo[0]}")
-            print(f"    Last step uo/vo:  u={d.uo[-1]}, v={d.vo[-1]}")
-            print(f"[+] System Retrieved At: {d.retrieved_at.isoformat()}, Model Run: {d.model_run}")
+            import math
+            print("=" * 60)
+            print("         OCEAN CURRENT FORECAST VERIFICATION REPORT")
+            print("=" * 60)
+            print(f"Provider:    {d.provider} (is_synthetic={d.is_synthetic})")
+            print(f"Product ID:  {d.product}")
+            print(f"Dataset ID:  {d.dataset}")
+            print("-" * 60)
+            print("REQUESTED:")
+            print(f"  Latitude:  {query.latitude:.4f}")
+            print(f"  Longitude: {query.longitude:.4f}")
+            print(f"  Depth:     {query.operation_depth_m:.1f} m")
+            print(f"  Interval:  {query.start_time.isoformat()} -> {query.end_time.isoformat()}")
+            print("-" * 60)
+            print("RESOLVED GRID & COORDINATES:")
+            print(f"  Actual Latitude:  {d.actual_grid_latitude:.4f}")
+            print(f"  Actual Longitude: {d.actual_grid_longitude:.4f}")
+            print(f"  Distance:         {d.grid_distance_km:.2f} km")
+            print("-" * 60)
+            print("NATIVE DEPTH LEVELS:")
+            if len(d.native_depth_layers_m) == 2:
+                lower, upper = d.native_depth_layers_m[0], d.native_depth_layers_m[1]
+                print(f"  Lower Level: {lower} m")
+                print(f"  Upper Level: {upper} m")
+                is_bounded = (lower <= query.operation_depth_m <= upper)
+                print(f"  Clamped Bounding Check: {lower} <= {query.operation_depth_m} <= {upper} -> {'PASSED' if is_bounded else 'FAILED'}")
+            else:
+                print(f"  Exact Level: {d.native_depth_layers_m[0]} m (Exact Match)")
+            print("-" * 60)
+            print("NATIVE TIMESTAMPS:")
+            print(f"  Total Steps:  {len(d.native_time_steps)}")
+            print(f"  First Node:   {d.native_time_steps[0].isoformat()}")
+            print(f"  Second Node:  {d.native_time_steps[1].isoformat() if len(d.native_time_steps) > 1 else 'N/A'}")
+            print(f"  Last Node:    {d.native_time_steps[-1].isoformat()}")
+            if len(d.native_time_steps) > 1:
+                cadence = (d.native_time_steps[1] - d.native_time_steps[0]).total_seconds()
+                print(f"  Cadence:      {cadence:.0f}s ({cadence/3600:.1f} hours)")
+            print("-" * 60)
+            # Count finite and NaN
+            flat_uo = [x for row in d.uo for x in row]
+            flat_vo = [x for row in d.vo for x in row]
+            nan_count = sum(1 for x in flat_uo + flat_vo if math.isnan(x))
+            finite_count = sum(1 for x in flat_uo + flat_vo if math.isfinite(x))
+            print("MATRICES & SANITY CHECK:")
+            print(f"  uo Shape:     [{len(d.uo)} x {len(d.uo[0])}]")
+            print(f"  vo Shape:     [{len(d.vo)} x {len(d.vo[0])}]")
+            print(f"  Units:        m/s")
+            print(f"  Finite Count: {finite_count}")
+            print(f"  NaN Count:    {nan_count}")
+            print(f"  Retrieved At: {d.retrieved_at.isoformat()}")
+            print("-" * 60)
+            print("FIRST FEW NATIVE NODES SPEED SANITY CHECK (V = sqrt(u^2 + v^2)):")
+            print(f"  {'Timestamp':<25} | {'Depth(m)':<8} | {'u (m/s)':<8} | {'v (m/s)':<8} | {'V (m/s)':<8}")
+            print("  " + "-" * 65)
+            for idx in range(min(4, len(d.native_time_steps))):
+                t_iso = d.native_time_steps[idx].strftime("%Y-%m-%d %H:%M:%S")
+                for d_idx, z_val in enumerate(d.native_depth_layers_m):
+                    u_val = d.uo[idx][d_idx]
+                    v_val = d.vo[idx][d_idx]
+                    spd = math.hypot(u_val, v_val)
+                    print(f"  {t_iso:<25} | {z_val:<8.1f} | {u_val:<8.4f} | {v_val:<8.4f} | {spd:<8.4f}")
+            print("=" * 60)
             out_path = Path(args.output)
             out_path.write_text(reply.model_dump_json(indent=2), encoding="utf-8")
-            print(f"[+] Saved forecast payload to {out_path.resolve()}")
+            print(f"[+] Saved complete forecast payload to {out_path.resolve()}")
             return 0
         else:
             err = reply.error

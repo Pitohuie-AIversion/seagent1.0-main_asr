@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 from .contracts import CurrentForecastData, CurrentQuery
 
@@ -106,12 +109,12 @@ class CopernicusProvider:
     def check_credentials(self) -> None:
         """Enforce strict non-interactive check: fail fast if unconfigured."""
         if not self.username or not self.password:
+            logger.error(
+                "Copernicus credentials missing: please set COPERNICUSMARINE_SERVICE_USERNAME and COPERNICUSMARINE_SERVICE_PASSWORD in environment."
+            )
             raise ProviderError(
                 code="NOT_CONFIGURED",
-                message=(
-                    "Copernicus credentials not configured in environment. "
-                    "Please set COPERNICUSMARINE_SERVICE_USERNAME and COPERNICUSMARINE_SERVICE_PASSWORD."
-                ),
+                message="当前海流预测数据服务未配置凭据，暂时无法评估作业窗口。",
                 retryable=False,
             )
 
