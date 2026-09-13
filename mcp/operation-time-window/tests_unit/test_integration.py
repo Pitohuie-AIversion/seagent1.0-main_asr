@@ -50,6 +50,7 @@ def test_extract_current_query_with_oilfield_kb_lookup():
         ]
     }
     state = {
+        "task_type_key": "pipeline_inspection",
         "start_time": "2026-09-14 08:00:00",
         "end_time": "2026-09-15 08:00:00",
         "oilfield_name": "流花11-1油田",

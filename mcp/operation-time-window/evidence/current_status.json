@@ -1,0 +1,52 @@
+{
+  "unit_tests": {
+    "status": "PASS",
+    "count": 50,
+    "synthetic_input": true,
+    "command": "PYTHONPATH=src /root/miniconda3/envs/seagent/bin/python -m pytest tests_unit -v --junitxml=evidence/unit-results.xml",
+    "junit_xml": "evidence/unit-results.xml",
+    "duration_seconds": 0.12
+  },
+  "mcp_tests": {
+    "status": "PASS",
+    "count": 4,
+    "skipped": 1,
+    "skip_reason": "Live remote Copernicus test skipped when credentials not in environment",
+    "transport": "stdio",
+    "command": "PYTHONPATH=src /root/miniconda3/envs/seagent/bin/python -m pytest tests_mcp -v --junitxml=evidence/mcp-results.xml",
+    "junit_xml": "evidence/mcp-results.xml",
+    "duration_seconds": 6.45
+  },
+  "seagent_integration": {
+    "status": "PASS",
+    "count": 5,
+    "file": "tests/test_marine_current_dialogue_integration.py",
+    "duration_seconds": 0.44
+  },
+  "total_marine_tests": {
+    "passed": 59,
+    "skipped": 1,
+    "failed": 0
+  },
+  "dependency_install": {
+    "status": "PASS",
+    "installed_as_editable": "pip install -e mcp/operation-time-window --no-deps"
+  },
+  "live_copernicus": {
+    "status": "READY_STANDBY",
+    "reason": "SDK installed and verified with synthetic engine; awaiting user credentials in .env for public CMEMS download"
+  },
+  "seagent_repo_modified": false,
+  "seagent_regression_run": true,
+  "ros_regression_run": {
+    "status": "PASS",
+    "count": 148,
+    "path": "mcp/ros-mcp/tests"
+  },
+  "environment": {
+    "python": "3.12.3",
+    "fastmcp": "2.14.5",
+    "pytest": "9.1.1",
+    "pydantic": "2.10.6"
+  }
+}

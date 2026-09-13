@@ -22,6 +22,7 @@ class CandidateWindow:
     v_max_mps: float
     current_limit_mps: float
     is_safe: bool
+    safety_margin: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -219,6 +220,7 @@ class OperationWindowService:
                 forecast, operation_depth_m, c_start, c_end
             )
             is_safe = (v_max <= current_limit_mps)
+            margin = round((current_limit_mps - v_max) / current_limit_mps, 4) if current_limit_mps > 0 else 0.0
             candidate = CandidateWindow(
                 start_time=c_start,
                 end_time=c_end,
@@ -226,6 +228,7 @@ class OperationWindowService:
                 v_max_mps=round(v_max, 4),
                 current_limit_mps=current_limit_mps,
                 is_safe=is_safe,
+                safety_margin=margin,
             )
             if is_safe:
                 available_candidates.append(candidate)

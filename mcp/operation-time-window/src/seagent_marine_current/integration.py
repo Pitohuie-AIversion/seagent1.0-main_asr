@@ -34,24 +34,83 @@ def parse_datetime_safe(val: Any) -> Optional[datetime]:
     return None
 
 
+# Known seabed task types where operation depth is inherently at seabed
+SEABED_TASK_TYPES = {
+    "seabed_survey",
+    "pipeline_inspection",
+    "subsea_pipeline_inspection",
+    "wellhead_intervention",
+    "riser_base_inspection",
+}
+
+# Deterministic robot operational current limits (m/s)
+DETERMINISTIC_ROBOT_CURRENT_LIMITS: Dict[str, float] = {
+    "通用工作级深海机器人250HP": 1.5,
+    "WROV-250-001": 1.5,
+    "轻型作业级ROV": 1.0,
+    "OBS-100": 0.8,
+    "OBS-ROV": 0.8,
+    "AUV-DEEP-01": 1.2,
+}
+
+
+def get_deterministic_current_limit(task_state: Dict[str, Any]) -> Optional[float]:
+    """Retrieve approved deterministic current limit for robot and task type.
+
+    Fails closed (returns None) if robot or rating is unknown. Never guesses.
+    """
+    for key in ("equipment_type", "equipment_unit_id", "robot", "robot_model"):
+        val = task_state.get(key)
+        if val and isinstance(val, str):
+            for pattern, limit in DETERMINISTIC_ROBOT_CURRENT_LIMITS.items():
+                if pattern.lower() in val.lower():
+                    return limit
+    return None
+
+
 def extract_current_query(
     task_state: Dict[str, Any],
     oilfield_kb: Optional[Dict[str, Any]] = None,
+    is_task_intent: bool = True,
 ) -> Optional[CurrentQuery]:
     """Construct CurrentQuery if position, depth, and time bounds are present.
 
-    Returns None if essential fields are incomplete or invalid.
+    Strict rules:
+    - Never triggers for non-task intent (e.g. ordinary chat).
+    - operation_depth and water_depth are strictly separated.
+    - water_depth may only derive operation_depth for explicit seabed tasks.
+    - Returns None if essential fields are incomplete or invalid.
     """
+    if not is_task_intent:
+        return None
+
     start_time = parse_datetime_safe(task_state.get("start_time"))
     end_time = parse_datetime_safe(task_state.get("end_time"))
 
     if not start_time or not end_time or end_time <= start_time:
         return None
 
-    # Resolve depth: prefer operation_depth, fallback to water_depth
-    depth_m = task_state.get("operation_depth") or task_state.get("water_depth")
+    # Resolve depth: operation_depth vs water_depth
+    depth_m = task_state.get("operation_depth")
+    if depth_m is None:
+        # Only allow deriving from water_depth if explicitly permitted for seabed operations
+        task_type = str(task_state.get("task_type_key") or task_state.get("task_type") or "").lower()
+        is_seabed = (
+            task_state.get("is_seabed_task") is True
+            or task_state.get("operation_depth_source") == "derived_from_water_depth"
+            or any(s_type in task_type for s_type in SEABED_TASK_TYPES)
+        )
+        if is_seabed:
+            depth_m = task_state.get("water_depth")
+            if depth_m is not None:
+                task_state["operation_depth_source"] = "derived_from_water_depth"
+        else:
+            # Mid-water or unspecified task: must continue collecting operation_depth
+            return None
+
     if depth_m is None:
         return None
+
     try:
         depth_val = float(depth_m)
         if depth_val < 0:
@@ -182,3 +241,62 @@ class MarineCurrentBridge:
             duration_hours=duration_hours,
             current_limit_mps=limit,
         )
+
+
+def apply_candidate_window_to_slots(
+    slots: Dict[str, Any],
+    best_window: Any,
+) -> bool:
+    """Store recommended window in candidate_value without mutating confirmed value.
+
+    Strictly satisfies Rule 15:
+    SEARCH found window -> candidate_value (never directly overwrites value).
+    """
+    if not hasattr(best_window, "start_time") or not hasattr(best_window, "end_time"):
+        return False
+
+    st_iso = best_window.start_time.isoformat()
+    et_iso = best_window.end_time.isoformat()
+
+    # If slots are wrapped in Slot objects
+    if "start_time" in slots and hasattr(slots["start_time"], "candidate_value"):
+        s_slot = slots["start_time"]
+        s_slot.candidate_value = st_iso
+        s_slot.status = "candidate"
+    else:
+        slots["start_time_candidate"] = st_iso
+
+    if "end_time" in slots and hasattr(slots["end_time"], "candidate_value"):
+        e_slot = slots["end_time"]
+        e_slot.candidate_value = et_iso
+        e_slot.status = "candidate"
+    else:
+        slots["end_time_candidate"] = et_iso
+
+    return True
+
+
+def confirm_candidate_window_in_slots(slots: Dict[str, Any]) -> bool:
+    """Promote candidate_value to confirmed value, increment version, and set status to valid.
+
+    Strictly satisfies Rule 15:
+    User confirmed -> candidate_value -> formal value -> version + 1 -> clear candidate.
+    """
+    promoted = False
+
+    for key in ("start_time", "end_time"):
+        if key in slots and hasattr(slots[key], "candidate_value"):
+            slot = slots[key]
+            if slot.candidate_value is not None:
+                slot.value = slot.candidate_value
+                slot.candidate_value = None
+                slot.status = "valid"
+                slot.version = getattr(slot, "version", 0) + 1
+                promoted = True
+        elif f"{key}_candidate" in slots:
+            cand = slots.pop(f"{key}_candidate", None)
+            if cand is not None:
+                slots[key] = cand
+                promoted = True
+
+    return promoted

@@ -75,7 +75,13 @@ AVAILABLE / UNAVAILABLE / NOT_EVALUABLE
 mcp/operation-time-window/
 ├── pyproject.toml                         # 模块构建与测试配置
 ├── .env.example                           # 环境变量与 Copernicus 凭据示例
-├── README.md                              # 本说明文档
+├── README.md                              # 模块快速入门与架构说明
+├── DESIGN_SPEC.md                         # 核心技术方案与独立骨架规范说明书
+├── evidence/                              # 验证与测试证据归档
+│   ├── baseline_status.json               # 初始基线验证状态证据 (41 passed, MCP blocked)
+│   ├── current_status.json                # 当前验证状态证据 (50+ passed, MCP 协议全通)
+│   ├── unit-results.xml                   # 单元测试 JUnit XML 证据报告
+│   └── mcp-results.xml                    # FastMCP stdio 协议测试 JUnit XML 证据报告
 ├── src/seagent_marine_current/
 │   ├── __init__.py                        # 包顶层导出
 │   ├── contracts.py                       # CurrentQuery, CurrentForecastData, ForecastReply Pydantic 契约
@@ -85,11 +91,12 @@ mcp/operation-time-window/
 │   ├── provider.py                        # CopernicusProvider (真实) & SyntheticCopernicusProvider (离线/仿真)
 │   ├── client.py                          # stdio 客户端封装: make_client, discover, query_current
 │   ├── processing.py                      # SEAgent 侧深度/时间向量线性插值与凸函数区间极大值算法
-│   └── windows.py                         # SEAgent 侧 CHECK 与 SEARCH 窗口状态机评估
+│   ├── windows.py                         # SEAgent 侧 CHECK 与 SEARCH 窗口状态机评估
+│   └── integration.py                     # SEAgent 业务层桥接 (坐标反查、会话缓存、任务评估)
 ├── examples/
 │   ├── live_smoke.py                      # 真实 MCP 取数与离线仿真 smoke 测试脚本
 │   └── evaluate_saved.py                  # 基于落盘预报 JSON 计算 CHECK / SEARCH 窗口脚本
-├── tests_unit/                            # 41 个本地单元测试 (100% 覆盖核心契约、插值、搜索算法)
+├── tests_unit/                            # 46 个本地单元测试 (100% 覆盖核心契约、插值、搜索算法)
 └── tests_mcp/                             # FastMCP stdio 协议测试与并发排队验证
 ```
 

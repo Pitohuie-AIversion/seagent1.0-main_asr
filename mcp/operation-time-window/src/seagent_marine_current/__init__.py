@@ -16,6 +16,13 @@ from .windows import (
     CandidateWindow,
     WindowStatus,
 )
+from .integration import (
+    MarineCurrentBridge,
+    extract_current_query,
+    get_deterministic_current_limit,
+    apply_candidate_window_to_slots,
+    confirm_candidate_window_in_slots,
+)
 
 __all__ = [
     "CurrentQuery",
@@ -29,4 +36,9 @@ __all__ = [
     "WindowSearchResult",
     "CandidateWindow",
     "WindowStatus",
+    "MarineCurrentBridge",
+    "extract_current_query",
+    "get_deterministic_current_limit",
+    "apply_candidate_window_to_slots",
+    "confirm_candidate_window_in_slots",
 ]

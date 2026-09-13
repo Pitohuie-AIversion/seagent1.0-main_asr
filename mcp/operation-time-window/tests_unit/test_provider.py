@@ -98,3 +98,40 @@ def test_synthetic_provider_error_injection(sample_query):
     with pytest.raises(ProviderError) as exc:
         provider_land.fetch(sample_query)
     assert exc.value.code == "LAND_OR_INVALID"
+
+
+def test_provider_timeout_error(sample_query):
+    """Scenario 6: provider timeout must raise structured ProviderError."""
+    provider_timeout = SyntheticCopernicusProvider(force_error="TIMEOUT")
+    with pytest.raises(ProviderError) as exc:
+        provider_timeout.fetch(sample_query)
+    assert exc.value.code == "TIMEOUT"
+    assert exc.value.retryable is True
+
+
+def test_provider_missing_data_error(sample_query):
+    """Scenario 8: provider returning empty or missing data must raise ProviderError."""
+    provider_empty = SyntheticCopernicusProvider(force_error="MISSING_DATA")
+    with pytest.raises(ProviderError) as exc:
+        provider_empty.fetch(sample_query)
+    assert exc.value.code == "MISSING_DATA"
+
+
+def test_depth_layers_non_adjacent_gap_rejected():
+    """Scenario 12: depth layers with missing intermediate levels must not jump-interpolate."""
+    # Custom depths array with gap: 0, 50, 200 (missing 100m level)
+    gap_depths = [0.0, 50.0, 200.0]
+    # Target depth 75m is between 50 and 200; bounding layers should be exactly [50, 200]
+    layers = find_bounding_depth_layers(75.0, gap_depths)
+    assert layers == [50.0, 200.0]
+
+
+def test_native_time_nodes_gap_detection(base_time):
+    """Scenario 15: native 6h nodes must be strictly continuous without gaps."""
+    # Interval of 24 hours should contain exactly 5 nodes: 0h, 6h, 12h, 18h, 24h
+    end_time = base_time + timedelta(hours=24)
+    nodes = generate_bounding_6h_time_nodes(base_time, end_time)
+    assert len(nodes) == 5
+    for i in range(len(nodes) - 1):
+        diff_seconds = (nodes[i + 1] - nodes[i]).total_seconds()
+        assert diff_seconds == 21600, "Native nodes must maintain exact 6h (21600s) spacing"
