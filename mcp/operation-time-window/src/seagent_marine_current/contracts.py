@@ -8,6 +8,16 @@ from typing import List, Literal, Optional
 from pydantic import AwareDatetime, BaseModel, Field, model_validator
 
 
+class MarineCurrentError(Exception):
+    """Base exception class for all domain errors within the marine current subsystem."""
+    pass
+
+
+class SyntheticDataSecurityError(MarineCurrentError):
+    """Raised when synthetic test fixture data is accessed or processed outside explicit test profile."""
+    pass
+
+
 class CurrentQuery(BaseModel):
     """Structured query for ocean current forecast."""
 

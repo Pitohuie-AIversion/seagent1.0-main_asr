@@ -11,7 +11,7 @@ import os
 import pytest
 
 from seagent_marine_current.backend import WorkerBackend
-from seagent_marine_current.contracts import CurrentQuery
+from seagent_marine_current.contracts import CurrentQuery, SyntheticDataSecurityError
 from seagent_marine_current.provider import SyntheticCopernicusProvider
 from seagent_marine_current.windows import OperationWindowService
 
@@ -21,7 +21,7 @@ def test_production_environment_rejects_synthetic_configuration(monkeypatch):
     monkeypatch.setenv("SEAGENT_CURRENT_ENV", "production")
     monkeypatch.setenv("SEAGENT_CURRENT_USE_SYNTHETIC", "1")
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(SyntheticDataSecurityError) as exc_info:
         WorkerBackend()
 
     err_msg = str(exc_info.value)
@@ -124,7 +124,7 @@ def test_production_environment_rejects_current_processor_direct_call(monkeypatc
     synth_forecast = provider.fetch(sample_query)
     assert synth_forecast.is_synthetic is True
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(SyntheticDataSecurityError) as exc_info:
         CurrentProcessor.interpolate_depth_at_nodes(synth_forecast, 130.0)
 
     err = str(exc_info.value)

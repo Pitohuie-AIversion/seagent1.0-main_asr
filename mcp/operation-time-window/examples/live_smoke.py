@@ -113,18 +113,22 @@ async def main_async(args):
                 cadence = (d.native_time_steps[1] - d.native_time_steps[0]).total_seconds()
                 print(f"  Cadence:      {cadence:.0f}s ({cadence/3600:.1f} hours)")
             print("-" * 60)
-            # Count finite and NaN
+            # Required samples finiteness check
             flat_uo = [x for row in d.uo for x in row]
             flat_vo = [x for row in d.vo for x in row]
-            nan_count = sum(1 for x in flat_uo + flat_vo if math.isnan(x))
+            total_required = len(flat_uo) + len(flat_vo)
             finite_count = sum(1 for x in flat_uo + flat_vo if math.isfinite(x))
-            print("MATRICES & SANITY CHECK:")
-            print(f"  uo Shape:     [{len(d.uo)} x {len(d.uo[0])}]")
-            print(f"  vo Shape:     [{len(d.vo)} x {len(d.vo[0])}]")
-            print(f"  Units:        m/s")
-            print(f"  Finite Count: {finite_count}")
-            print(f"  NaN Count:    {nan_count}")
-            print(f"  Retrieved At: {d.retrieved_at.isoformat()}")
+            non_finite_count = total_required - finite_count
+            finiteness_status = "PASSED (All required samples finite)" if non_finite_count == 0 else f"FAILED ({non_finite_count} non-finite samples)"
+            print("MATRICES & REQUIRED SAMPLES FINITENESS:")
+            print(f"  uo Shape:             [{len(d.uo)} x {len(d.uo[0])}]")
+            print(f"  vo Shape:             [{len(d.vo)} x {len(d.vo[0])}]")
+            print(f"  Units:                m/s")
+            print(f"  Required Samples:     {total_required} ({len(d.native_time_steps)} nodes x {len(d.native_depth_layers_m)} layers x 2 components)")
+            print(f"  Finite Sample Count:  {finite_count}")
+            print(f"  Non-finite Count:     {non_finite_count}")
+            print(f"  Finiteness Check:     {finiteness_status}")
+            print(f"  Retrieved At:         {d.retrieved_at.isoformat()}")
             print("-" * 60)
             print("FIRST FEW NATIVE NODES SPEED SANITY CHECK (V = sqrt(u^2 + v^2)):")
             print(f"  {'Timestamp':<25} | {'Depth(m)':<8} | {'u (m/s)':<8} | {'v (m/s)':<8} | {'V (m/s)':<8}")

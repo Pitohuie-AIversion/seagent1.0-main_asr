@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import os
 from typing import List, Optional, Tuple
 
-from .contracts import CurrentForecastData
+from .contracts import CurrentForecastData, SyntheticDataSecurityError
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ class CurrentProcessor:
         if getattr(forecast, "is_synthetic", False):
             env_mode = os.getenv("SEAGENT_CURRENT_ENV", "production").lower()
             if env_mode != "test":
-                raise RuntimeError(
+                raise SyntheticDataSecurityError(
                     f"Security Violation: Attempted to process synthetic current forecast in {env_mode} environment. "
                     "Synthetic fixtures are strictly restricted to SEAGENT_CURRENT_ENV=test profile."
                 )

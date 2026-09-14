@@ -177,14 +177,19 @@ class CopernicusProvider:
             ]
             actual_depths = [float(d) for d in loaded.depth.values]
 
+            import numpy as np
+
             uo_raw = loaded.uo.values
             vo_raw = loaded.vo.values
 
-            # Check for NaN / land mask
-            if bool(xr.ufuncs.isnan(loaded.uo).any()) or bool(xr.ufuncs.isnan(loaded.vo).any()):
+            # Contract check: all required velocity samples for the target depth layers and time interval must be finite
+            if not bool(np.all(np.isfinite(uo_raw))) or not bool(np.all(np.isfinite(vo_raw))):
                 raise ProviderError(
-                    code="LAND_OR_INVALID",
-                    message=f"Location ({query.latitude}, {query.longitude}) is over land or has missing current data.",
+                    code="MISSING_DATA",
+                    message=(
+                        f"Required velocity samples at location ({query.latitude:.4f}, {query.longitude:.4f}), "
+                        f"depth layers {actual_depths} m contain non-finite values (land mask or missing data)."
+                    ),
                     retryable=False,
                 )
 

@@ -7,7 +7,7 @@ import logging
 import os
 from typing import Optional
 
-from .contracts import CurrentForecastData, CurrentQuery, ForecastError, ForecastReply
+from .contracts import CurrentForecastData, CurrentQuery, ForecastError, ForecastReply, SyntheticDataSecurityError
 from .provider import CopernicusProvider, ProviderError, SyntheticCopernicusProvider
 from .worker import CurrentWorker
 
@@ -28,7 +28,7 @@ class WorkerBackend:
 
             if use_synth:
                 if env_mode == "production":
-                    raise RuntimeError(
+                    raise SyntheticDataSecurityError(
                         "Security Violation: Synthetic test fixture is strictly forbidden in production environment. "
                         "v0.1 single source of truth must be Copernicus Marine."
                     )
