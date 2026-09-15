@@ -32,10 +32,7 @@ chat_bp = Blueprint("chat", __name__)
 
 
 def _get_backend_symbol(name: str, fallback: Any) -> Any:
-    backend = sys.modules.get("web_backend")
-    if backend is not None and hasattr(backend, name):
-        return getattr(backend, name)
-    return fallback
+    return state.get_service_symbol(name, fallback)
 
 
 def _dispatch_ros2_on_done_transition(mgr, phase_before):
@@ -124,9 +121,6 @@ def api_chat():
                         "request_id": request_id,
                         "retryable": True,
                     }), 409
-            with state._sess_lock:
-                if sid not in state._sessions:
-                    state._sessions[sid] = Session(sid)
             phase_before = mgr.phase
             reply = mgr.process(
                 msg,
@@ -276,10 +270,6 @@ def api_chat_stream():
             with state._sessions_lock:
                 if state._sessions_manager.get(sid) is not mgr:
                     session_error = {"code": 409, "error": "SessionReset", "msg": "当前会话已重新开始，请在新会话中重试。", "request_id": request_id, "retryable": True}
-                else:
-                    with state._sess_lock:
-                        if sid not in state._sessions:
-                            state._sessions[sid] = Session(sid)
 
             if session_error is None:
                 try:

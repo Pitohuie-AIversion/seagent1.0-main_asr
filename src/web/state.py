@@ -190,3 +190,25 @@ class EndpointFilter(logging.Filter):
         if '/api/time/current' in msg:
             return False
         return True
+
+
+# ========== 统一服务钩子与依赖注入（解耦顶层 monkeypatch 依赖）==========
+_service_hooks: dict[str, Any] = {}
+
+
+def register_service_hook(name: str, service_callable: Any) -> None:
+    """注册或覆盖后端服务钩子"""
+    _service_hooks[name] = service_callable
+
+
+def get_service_symbol(name: str, fallback: Any) -> Any:
+    """解析服务符号：优先读取显式注册的 hook，次级读取 web_backend 的动态 monkeypatch，最后使用 fallback。"""
+    if name in _service_hooks:
+        return _service_hooks[name]
+    import sys
+    backend = sys.modules.get("web_backend")
+    if backend is not None and hasattr(backend, name):
+        symbol = getattr(backend, name)
+        if symbol is not fallback:
+            return symbol
+    return fallback
