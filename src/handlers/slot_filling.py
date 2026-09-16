@@ -12,11 +12,10 @@ src/handlers/slot_filling.py - 槽位填报与消歧生命周期处理器
 
 from __future__ import annotations
 
-import copy
 import logging
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, List, Optional
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
 from .equipment_cascade import EquipmentCascadeResolver
@@ -25,40 +24,21 @@ from .payload_mutation import PayloadMutationManager
 from .write_reply_grounder import WriteReplyGrounder
 from .oilfield_confirmation import OilfieldConfirmationHandler
 from .slot_transaction import SlotTransactionManager
-from .slot_extraction_pipeline import SlotExtractionPipeline, ExtractionPipelineResult
+from .slot_extraction_pipeline import SlotExtractionPipeline
 from ..model_profile import (
     ModelRole,
     is_normalization_contract_v2_enabled,
     is_task_patch_v2_enabled,
 )
 from ..normalization_contract import (
-    NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS,
     NormalizationApplyPlan,
-    normalize_task_patch,
-    normalized_task_patch_to_apply_plan,
     validate_normalization_runtime_flags,
 )
 from ..task_patch import build_task_patch, task_patch_to_legacy_updates
-from ..slot_store import Slot, reset_slot_to_missing, BASE_SLOT_TYPES
+from ..slot_store import Slot
 from ..simulated_time import get_current_datetime
 from ..id_sequence import next_daily_id, IdReservationError, validate_task_id_for_task_type
 from ..prompts import build_responder_messages
-from .. import coord_parser
-from ..coord_parser import parse_coordinate_updates
-from ..visible_selection_provenance import (
-    build_candidate_terms,
-    parse_ordinal_reference,
-    visible_ordinal_matches_candidate,
-)
-
-from ..constants import (
-    FIELD_LABELS,
-    RECOMMENDATION_FIELD_BY_SUBJECT,
-    ROBOT_CASCADE_FIELDS,
-    OILFIELD_CONTEXT_FIELDS,
-    TASK_TRANSITION_NON_INHERITED_FIELDS,
-    SOFT_IGNORE_KEYWORDS,
-)
 
 logger = logging.getLogger("src.dialogue_manager")
 
@@ -475,8 +455,8 @@ class SlotFillingHandler(BaseDialogueHandler):
                         new_slots["oilfield_coordinates"].value = ctx_res.default_coordinates
                         new_slots["oilfield_coordinates"].status = "valid"
                         new_slots["oilfield_coordinates"].source = "oilfield_default"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to populate oilfield default coordinates for %s: %s", of_id_slot.value, exc)
 
         # Compute proposed mode change without mutating manager.mode before commit
         proposed_mode = manager.mode

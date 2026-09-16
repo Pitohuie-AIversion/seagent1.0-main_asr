@@ -3,7 +3,6 @@ src/web/state.py - Web 后端全局状态管理与共享组件
 集中维护会话管理器、只读模型单例、锁、Token鉴权与全局辅助工具。
 """
 
-import json
 import logging
 import os
 import re
@@ -14,7 +13,6 @@ from typing import Any
 
 from flask import current_app, jsonify, request
 
-from session import Session
 from src.dialogue_manager import DialogueManager
 
 logger = logging.getLogger(__name__)

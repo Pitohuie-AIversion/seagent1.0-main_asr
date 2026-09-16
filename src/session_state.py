@@ -9,6 +9,7 @@ Does NOT alter runtime behavior or DialogueManager state transition logic.
 from __future__ import annotations
 
 import copy
+import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -386,3 +387,25 @@ def session_state_to_legacy_fields(state: SessionState) -> dict[str, Any]:
         "control_state": state.execution.control_state,
         "last_control_request": last_ctrl,
     }
+
+
+logger = logging.getLogger(__name__)
+
+
+def is_session_state_v2_active(explicit: bool | None = None) -> bool:
+    """检查当前会话状态 v2 契约是否激活。
+
+    优先尊重显式参数，其次兼容针对 src.dialogue_manager.is_session_state_v2_enabled 的动态 Mock，
+    最后回退至 src.model_profile.is_session_state_v2_enabled 的全局配置开关。
+    """
+    if explicit is not None:
+        return bool(explicit)
+    import sys
+    dm_mod = sys.modules.get("src.dialogue_manager")
+    if dm_mod and hasattr(dm_mod, "is_session_state_v2_enabled"):
+        try:
+            return bool(dm_mod.is_session_state_v2_enabled())
+        except Exception as exc:
+            logger.debug("Failed to query dm_mod.is_session_state_v2_enabled: %s", exc)
+    from .model_profile import is_session_state_v2_enabled
+    return is_session_state_v2_enabled()

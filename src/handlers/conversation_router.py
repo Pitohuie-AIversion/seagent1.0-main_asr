@@ -14,50 +14,26 @@ from __future__ import annotations
 import copy
 import dataclasses
 import logging
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
 from .off_topic_gate import (
     check_off_topic_gate,
     is_off_topic_output,
-    _check_off_topic_gate,
-    _OFF_TOPIC_BLACKLIST_RE,
-    _STRONG_DOMAIN_WHITELIST_RE,
-    _OFF_TOPIC_WHITELIST_RE,
-    _OFF_TOPIC_OUTPUT_BLACKLIST_RE,
 )
-from .grounded_catalog import GroundedCatalogHandler, FIELD_LABELS
-from .telemetry_status import (
-    TelemetryStatusHandler,
-    _ENVIRONMENT_STATUS_SUBJECT_TERMS,
-    _REALTIME_STATUS_TERMS,
-)
+from .grounded_catalog import GroundedCatalogHandler
+from .telemetry_status import TelemetryStatusHandler
 from ..intent_router import IntentRouteResult
 from ..time_context import is_standalone_time_query, get_time_context
-from ..visible_selection_provenance import (
-    build_candidate_terms,
-    parse_ordinal_reference,
-    visible_ordinal_matches_candidate,
-)
-from ..knowledge_retriever import (
-    KnowledgeBase,
-    RobotSelectionDataError,
-    format_seabed_type,
-    format_telemetry_value,
-)
+from ..visible_selection_provenance import parse_ordinal_reference
+from ..knowledge_retriever import format_seabed_type
 from ..prompts import (
     OFF_TOPIC_REJECT_TEMPLATE,
     PUBLIC_IDENTITY_REPLY,
-    build_responder_messages,
     build_general_chat_messages,
     build_knowledge_responder_messages,
-    build_status_responder_messages,
 )
 from ..model_profile import ModelRole, _is_unsupported_role_keyword_error
-from ..constants import (
-    FIELD_LABELS as CORE_FIELD_LABELS,
-    RECOMMENDATION_FIELD_BY_SUBJECT,
-)
 
 logger = logging.getLogger(__name__)
 

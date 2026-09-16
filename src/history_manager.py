@@ -140,8 +140,8 @@ def save_conversation(
         if tmp_filepath.exists():
             try:
                 tmp_filepath.unlink()
-            except OSError:
-                pass
+            except OSError as unlink_err:
+                logger.debug("Failed to clean up history temp file %s: %s", tmp_filepath, unlink_err)
         raise
     return filename
 

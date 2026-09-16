@@ -17,21 +17,13 @@ from .base import BaseDialogueHandler, DialogueContext, HandlerResult
 from src.intent_router import IntentRouteResult
 from src.id_sequence import validate_intent_id
 from src.slot_store import SlotStore
-from src.session_state import ExecutionControlState, StateContractError
+from src.session_state import ExecutionControlState, StateContractError, is_session_state_v2_active
 
 logger = logging.getLogger("src.dialogue_manager")
 
 
 def _is_v2_active() -> bool:
-    import sys
-    dm_mod = sys.modules.get("src.dialogue_manager")
-    if dm_mod and hasattr(dm_mod, "is_session_state_v2_enabled"):
-        try:
-            return bool(dm_mod.is_session_state_v2_enabled())
-        except Exception:
-            pass
-    from src.model_profile import is_session_state_v2_enabled
-    return is_session_state_v2_enabled()
+    return is_session_state_v2_active()
 
 
 class ExecutionControlHandler(BaseDialogueHandler):

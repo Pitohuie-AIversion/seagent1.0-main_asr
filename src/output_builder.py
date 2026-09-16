@@ -158,8 +158,8 @@ class OutputBuilder:
                 selection = self.kb.resolve_robot_selection_from_task_state(task_state, task_type=task_type_key)
                 if selection and selection.get("variant"):
                     robot = selection.get("variant")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to resolve robot selection from task state: %s", exc)
 
         if not robot:
             return {}

@@ -4,17 +4,8 @@ knowledge_retriever.py — 知识库加载与按需检索
 知识总量在10000字以内，精准注入比全量注入更高效。
 """
 
-import yaml
-import math
-import networkx as nx
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
-import re
 from typing import Any
-from zoneinfo import ZoneInfo
 from .environment_info import EnvironmentInfo
-from .simulated_time import get_current_datetime
 from .state_info import RobotStateInfo
 
 from .knowledge.models import (

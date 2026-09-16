@@ -90,8 +90,8 @@ def _atomic_commit_noreplace(temp_file: Path, final_file: Path) -> None:
         os.link(temp_file, final_file)
         try:
             temp_file.unlink()
-        except Exception:
-            pass
+        except Exception as unlink_err:
+            logger.debug("Failed to unlink temp file %s after hardlink: %s", temp_file, unlink_err)
     except FileExistsError:
         raise
     except Exception as e:
@@ -665,8 +665,8 @@ class TaskIntentBuilder:
                                 os.unlink(tmp_file)
                         finally:
                             os.close(c_fd)
-                    except Exception:
-                        pass
+                    except Exception as clean_err:
+                        logger.debug("Failed to safely unlink staging temp file %s: %s", tmp_file, clean_err)
                 raise TaskPersistenceError(f"Failed to publish staging file for {intent_id}: {e}") from e
 
     def persist(self, intent: Dict[str, Any]) -> str:

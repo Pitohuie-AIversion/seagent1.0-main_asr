@@ -14,17 +14,17 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import math
-from typing import Any, Optional
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
-from ..slot_store import Slot, SnapshotValidationError, ValidationAcknowledgement
+from ..slot_store import Slot
 from ..task_intent_builder import TaskIntentBuilder
-from ..id_sequence import validate_intent_id, validate_task_id, validate_task_id_for_task_type, next_daily_id
-from ..exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError, TaskRollbackError
-from ..simulated_time import get_current_datetime
-from ..session_state import VALID_TASK_MODES, VALID_PHASES, session_state_from_legacy_snapshot
-from .. import task_intent_builder as _ti_builder_module
+from ..id_sequence import validate_intent_id
+from ..exceptions import (
+    IdReservationError,
+    IntentIdConflict,
+    TaskPersistenceError,
+    TaskRollbackError,
+)
 
 logger = logging.getLogger("src.dialogue_manager")
 

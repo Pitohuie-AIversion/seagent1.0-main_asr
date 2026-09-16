@@ -348,14 +348,14 @@ def build_task_patch(
                     p = json.loads(s)
                     if isinstance(p, list):
                         return p
-                except Exception:
+                except (json.JSONDecodeError, ValueError, TypeError):
                     pass
                 try:
                     import ast
                     p = ast.literal_eval(s)
                     if isinstance(p, (list, tuple, set)):
                         return list(p)
-                except Exception:
+                except (ValueError, SyntaxError, TypeError):
                     pass
                 cleaned = s.strip(" \t\n\r[]()")
                 if cleaned:

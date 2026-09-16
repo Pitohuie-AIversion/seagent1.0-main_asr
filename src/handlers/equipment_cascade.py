@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import copy
 import logging
-import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from .equipment_scoping import EquipmentScopingHandler
 from .equipment_collapse import EquipmentCollapseHandler
@@ -20,22 +19,10 @@ from ..slot_store import (
     Slot,
     reset_slot_to_missing,
     BASE_SLOT_TYPES,
-    ROBOT_CASCADE_DEPENDENCIES,
     invalidate_robot_cascade_dependents,
 )
 from ..knowledge_retriever import RobotSelectionDataError
-from ..constants import (
-    FIELD_LABELS,
-    RECOMMENDATION_FIELD_BY_SUBJECT,
-    ROBOT_CASCADE_FIELDS,
-    OILFIELD_CONTEXT_FIELDS,
-    TASK_TRANSITION_NON_INHERITED_FIELDS,
-)
-from ..visible_selection_provenance import (
-    build_candidate_terms,
-    parse_ordinal_reference,
-    visible_ordinal_matches_candidate,
-)
+from ..constants import ROBOT_CASCADE_FIELDS
 
 logger = logging.getLogger("src.dialogue_manager")
 

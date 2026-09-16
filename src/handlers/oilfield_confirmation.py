@@ -16,6 +16,9 @@ from typing import Any
 
 from ..slot_store import Slot
 
+logger = logging.getLogger(__name__)
+
+
 class OilfieldConfirmationHandler:
     """油田交互确认与指代回溯处理器"""
 
@@ -416,8 +419,8 @@ class OilfieldConfirmationHandler:
                         new_slots["oilfield_coordinates"].value = default_coord
                         new_slots["oilfield_coordinates"].status = "valid"
                         new_slots["oilfield_coordinates"].source = "oilfield_default"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to populate oilfield default coordinates for %s: %s", match.entity_id, exc)
         elif match.raw and not matched_entity_by_coords and not match.candidates:
             # 用户显式输入了自定义名称（如“自设A区”），且坐标不属于知识库任何油田：
             # 允许自定义名称作为 oilfield_name 生效（自定义名称占位），entity_id 为 None

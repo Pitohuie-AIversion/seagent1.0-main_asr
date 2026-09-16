@@ -25,6 +25,7 @@ from .session_state import (
     VALID_TASK_MODES,
     VALID_PHASES,
     session_state_from_legacy_snapshot,
+    is_session_state_v2_active,
 )
 from .slot_store import (
     Slot,
@@ -45,16 +46,7 @@ class DialogueSnapshotManager:
         self.manager = manager
 
     def _is_v2_active(self, explicit: Optional[bool] = None) -> bool:
-        if explicit is not None:
-            return bool(explicit)
-        import sys
-        dm_mod = sys.modules.get("src.dialogue_manager")
-        if dm_mod and hasattr(dm_mod, "is_session_state_v2_enabled"):
-            try:
-                return bool(dm_mod.is_session_state_v2_enabled())
-            except Exception:
-                pass
-        return is_session_state_v2_enabled()
+        return is_session_state_v2_active(explicit)
 
     def export_snapshot(self, session_state_v2_active: Optional[bool] = None) -> dict:
         """导出 Issue #10 会话状态快照。"""

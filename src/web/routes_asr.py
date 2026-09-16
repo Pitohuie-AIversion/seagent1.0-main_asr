@@ -31,8 +31,8 @@ def _load_asr_api_config() -> dict:
             data = yaml.safe_load(f) or {}
             if isinstance(data, dict):
                 return data.get("api", {}) or {}
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Failed to load asr.yaml configuration: %s", exc)
     return {}
 
 

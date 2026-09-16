@@ -95,8 +95,8 @@ def next_daily_id(
                 finally:
                     try:
                         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-                    except Exception:
-                        pass
+                    except Exception as unlock_exc:
+                        logger.debug("Failed to release flock for %s: %s", counter_key, unlock_exc)
             finally:
                 lock_handle.close()
         except IdReservationError:
@@ -168,8 +168,8 @@ def next_daily_task_id(
                 finally:
                     try:
                         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-                    except Exception:
-                        pass
+                    except Exception as unlock_exc:
+                        logger.debug("Failed to release flock on task ID lock: %s", unlock_exc)
             finally:
                 lock_handle.close()
         except IdReservationError:
@@ -283,8 +283,8 @@ def _persist_counters(counter_file: Path, counters: dict[str, int], counter_key:
     except Exception as exc:
         try:
             temporary_file.unlink(missing_ok=True)
-        except Exception:
-            pass
+        except Exception as clean_exc:
+            logger.debug("Failed to clean up temporary counter file %s: %s", temporary_file, clean_exc)
         logger.error(
             "Failed to persist ID sequence counter for %s: %s",
             counter_key,
