@@ -24,10 +24,10 @@
 
 ### 2.1 Python 语法与编译检查
 
-在运行单元测试前，首先使用 `compileall` 检查所有 `src/` 和 `tests/` 文件的 Python 语法正确性：
+在运行单元测试前，使用 `compileall` 检查核心代码和两个 MCP 子项目的 Python 语法：
 
 ```bash
-python -m compileall -q src tests
+python -m compileall -q src tests mcp/ros-mcp mcp/operation-time-window
 ```
 
 ### 2.2 核心单元测试
@@ -45,11 +45,26 @@ TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q
 TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -v
 ```
 
-默认 pytest 收集 `tests/` 和 `mcp/tests/`。CI 使用同一入口并保存原生 JUnit 报告：
+默认 pytest 收集 `tests/`、`mcp/ros-mcp/tests/`、
+`mcp/operation-time-window/tests_unit/` 和 `mcp/operation-time-window/tests_mcp/`。
+`requirements/test.txt` 包含海流服务及异步测试依赖。前端回归还需要 Node.js；CI 使用 Node.js 20。
+本地 MCP 兼容层使用 SDK 1.x，依赖限定为 `mcp>=1.27,<2`、`fastmcp>=2,<4`；
+升级到 MCP SDK 2.x 前需同步适配导出符号并运行协议回归。
+CI 使用同一入口并保存原生 JUnit 报告：
 
 ```bash
-python -m pytest -q tests mcp/tests --junitxml=pytest-results.xml
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q --junitxml=pytest-results.xml
 ```
+
+默认测试使用本地 mock/synthetic 数据，不访问真实海流服务。真实 Copernicus 测试需安装
+海流子项目的 `copernicus` 可选依赖、配置服务凭据，并设置 `RUN_COPERNICUS_LIVE_TEST=1`：
+
+```bash
+RUN_COPERNICUS_LIVE_TEST=1 python -m pytest -q mcp/operation-time-window/tests_mcp/test_live_copernicus.py
+```
+
+`outside/` 中的第三方 ROS 库未纳入版本控制。其比较测试默认跳过；准备好这些源码和依赖后，
+可设置 `SEAGENT_RUN_EXTERNAL_COMPARISON=1` 运行。仓库自身的适配器和模拟下发测试始终默认运行。
 
 ### 2.3 常用单测试模块运行
 
@@ -90,9 +105,9 @@ flowchart LR
 
 | CI 阶段步骤 | CI 执行命令 | 本地等效验证命令 |
 | :--- | :--- | :--- |
-| **语法编译检查** | `python -m compileall -q src tests` | `python -m compileall -q src tests` |
+| **语法编译检查** | `python -m compileall -q src tests mcp/ros-mcp mcp/operation-time-window` | 同 CI 命令 |
 | **环境与离线设置** | `export TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1` | `export TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1` |
-| **全量回归测试** | `python -m pytest -q tests mcp/tests --junitxml=pytest-results.xml` | `python -m pytest -q` |
+| **全量回归测试** | `python -m pytest -q --junitxml=pytest-results.xml` | `python -m pytest -q` |
 | **测试报告** | 上传 `pytest-results.xml` 和 `full_test.log` | 可添加 `--junitxml=pytest-results.xml` |
 
 ---
@@ -100,7 +115,7 @@ flowchart LR
 ## 4. 测试新增与命名规范
 
 ### 4.1 测试文件命名规范
-- 新增单元测试必须存放在 `tests/` 目录下。
+- 核心单元测试存放在 `tests/`，MCP 测试存放在对应子项目的测试目录下。
 - 测试文件名必须以 `test_` 开头，例如 `tests/test_new_feature.py`。
 - 测试类需继承自 `unittest.TestCase`，测试方法须以 `test_` 开头。
 
@@ -115,7 +130,7 @@ flowchart LR
 
 ### 5.1 排查方式
 1. **优先查看完整 Traceback**：单元测试失败时，避免仅根据 Assertion 报错诊断，应结合终端日志查看完整的异常调用栈。
-2. **检查输出日志**：CI 运行会保留并上传 `full_test.log` 和 `docs/regression_report.md`，可作为审计对比。
+2. **检查输出日志**：CI 运行会保留并上传 `full_test.log` 和 `pytest-results.xml`，可作为审计对比。
 
 ### 5.2 运行输出与持久化路径处理
 测试运行过程中生成的中间文件与任务 Intent 输出目录通过 [src/result_paths.py](file:///root/mzy/seagent1.0-main_asr/src/result_paths.py) 统一管理：

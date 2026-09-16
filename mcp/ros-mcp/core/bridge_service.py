@@ -37,6 +37,10 @@ from .runtime_config import (
 logger = logging.getLogger(__name__)
 
 
+class DispatchRecordsError(RuntimeError):
+    """Persistent idempotency evidence must be repaired before dispatch resumes."""
+
+
 class SEAgentMCPBridgeService:
     """Owns the live rosbridge connection, dispatch idempotency and telemetry."""
 
@@ -128,42 +132,42 @@ class SEAgentMCPBridgeService:
     @staticmethod
     def _is_safe_json_record(entry: dict) -> bool:
         return (
-            isinstance(entry.get("task_id"), int)
+            type(entry.get("task_id")) is int
+            and 0x80000 <= entry["task_id"] <= 0x8FFFF
             and isinstance(entry.get("intent_id"), str)
             and isinstance(entry.get("dispatch_state"), str)
+            and entry.get("dispatch_state") in {"SENDING", "SENT", "FAILED"}
         )
 
     def _load_dispatch_records(self) -> None:
         if self._dispatch_records_path is None:
             return
-        if self._dispatch_records_path.exists():
-            try:
-                raw_data = self._dispatch_records_path.read_text(encoding="utf-8")
-                loaded = json.loads(raw_data)
-            except (OSError, ValueError) as exc:
-                logger.error(
-                    "[MCPBridgeService] 读取任务下发记录文件失败: %s", exc
-                )
-                self._dispatch_records = {}
-                return
-        else:
+        try:
+            raw_data = self._dispatch_records_path.read_text(encoding="utf-8")
+            loaded = json.loads(raw_data)
+            if not isinstance(loaded, dict):
+                raise ValueError("记录必须是对象")
+            for identity, entry in loaded.items():
+                if (
+                    not isinstance(entry, dict)
+                    or not self._is_safe_json_record(entry)
+                    or identity != entry["intent_id"]
+                ):
+                    raise ValueError(f"无效下发记录: {identity}")
+        except FileNotFoundError as exc:
+            if self._dispatch_records:
+                raise DispatchRecordsError(
+                    f"任务下发记录文件丢失，恢复文件后重试: {self._dispatch_records_path}"
+                ) from exc
             loaded = {}
+        except (OSError, ValueError) as exc:
+            message = f"任务下发记录不可读取，修复文件后重试: {self._dispatch_records_path}"
+            logger.error("[MCPBridgeService] %s: %s", message, exc)
+            raise DispatchRecordsError(message) from exc
 
-        if not isinstance(loaded, dict):
-            logger.error(
-                "[MCPBridgeService] 下发记录文件格式错误：%s",
-                self._dispatch_records_path,
-            )
-            self._dispatch_records = {}
-            return
-
-        sanitized: Dict[str, Dict[str, Any]] = {}
-        for identity, entry in loaded.items():
-            if not isinstance(identity, str) or not isinstance(entry, dict):
-                continue
-            if self._is_safe_json_record(entry):
-                sanitized[identity] = dict(entry)
-        self._dispatch_records = sanitized
+        # Replace only after every record has been validated. Never discard
+        # existing evidence or rewrite a damaged file as an empty record set.
+        self._dispatch_records = loaded
 
     @contextmanager
     def _with_dispatch_file_lock(self):

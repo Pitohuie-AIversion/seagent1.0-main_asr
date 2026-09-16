@@ -378,6 +378,8 @@ class SlotListMutationEngine:
         elif op == "replace":
             targets = _flatten_items(mutation.get("target_items"))
             new_items_raw = _flatten_items(mutation.get("items"))
+            if not targets:
+                return _fail("replace", "替换操作必须指定待替换的目标载荷；全量配置请使用 set")
 
             target_indices = []
             for target_raw in targets:
@@ -395,10 +397,14 @@ class SlotListMutationEngine:
             for n_raw in new_items_raw:
                 cat_id, n_cname = _resolve(n_raw)
                 if n_cname is None:
+                    if _is_onboard(n_raw, cat_id):
+                        continue
                     raw_norm = normalize_payload_match_key(n_raw)
                     if raw_norm in onboard_payload_keys:
                         continue
                     return _fail("replace", f"替换的新载荷 '{n_raw}' 非法或不属于当前任务允许范围")
+                if _is_onboard(n_cname, cat_id) or _is_onboard(n_raw, cat_id):
+                    continue
                 new_canonicals.append(n_cname)
 
             for idx in sorted(set(target_indices), reverse=True):
@@ -414,13 +420,18 @@ class SlotListMutationEngine:
             for item_raw in items:
                 cat_id, c_name = _resolve(item_raw)
                 if c_name is None:
+                    if _is_onboard(item_raw, cat_id):
+                        continue
                     raw_norm = normalize_payload_match_key(item_raw)
                     if raw_norm in onboard_payload_keys:
                         continue
                     return _fail(str(op), f"设置的载荷 '{item_raw}' 非法或不属于当前任务允许范围")
+                if _is_onboard(c_name, cat_id) or _is_onboard(item_raw, cat_id):
+                    continue
                 if c_name not in new_canonicals:
                     new_canonicals.append(c_name)
             new_value = new_canonicals
+
 
         elif op == "clear":
             slot.value = []

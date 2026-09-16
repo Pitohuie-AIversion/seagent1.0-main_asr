@@ -250,15 +250,23 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
         if not entity_id:
             return new_violations
 
-        coords = self.task_state.get("oilfield_coordinates") or self.task_state.get("start_point")
-        water_depth = self.task_state.get("water_depth")
+        # Omit uncollected fields so the linker uses its own sentinel.  Keep
+        # explicit null/invalid values distinct from absent optional context.
+        context = {"entity_id": entity_id}
+        if "oilfield_coordinates" in self.task_state:
+            context["coordinates"] = self.task_state["oilfield_coordinates"]
+        elif "start_point" in self.task_state:
+            context["coordinates"] = self.task_state["start_point"]
+        if "water_depth" in self.task_state:
+            context["water_depth"] = self.task_state["water_depth"]
 
         try:
-            ctx_res = self.oilfield_linker.evaluate_context(
-                entity_id=entity_id,
-                coordinates=coords if coords is not None else _UNSET,
-                water_depth=water_depth if water_depth is not None else _UNSET,
-            )
+            ctx_res = self.oilfield_linker.evaluate_context(**context)
+            if ctx_res and (
+                ctx_res.coordinate_status == "invalid"
+                or ctx_res.depth_status == "invalid"
+            ):
+                raise ValueError("已提供的油田坐标或水深无效")
             if ctx_res and ctx_res.issues:
                 merged = list(new_violations)
                 existing_ids = {v.constraint_id for v in merged}

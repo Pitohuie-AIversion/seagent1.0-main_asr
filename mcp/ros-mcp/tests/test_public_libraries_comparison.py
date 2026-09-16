@@ -4,6 +4,7 @@ test_public_libraries_comparison.py
 无需真实 ROS 2 环境，测试可导入性、接口契约与 SEAgent 对接能力。
 """
 import json
+import os
 import subprocess
 import sys
 import importlib
@@ -14,8 +15,14 @@ TESTS_DIR = Path(__file__).resolve().parent
 MCP_DIR = TESTS_DIR.parent
 CORE_DIR = MCP_DIR / "core"
 MOCK_DIR = MCP_DIR / "mock"
-SEAGENT_ROOT = MCP_DIR.parent
+SEAGENT_ROOT = MCP_DIR.parent.parent
 OUTSIDE_DIR = SEAGENT_ROOT / "outside"
+
+# outside/ is an optional, untracked checkout; local adapter tests still run by default.
+external_comparison = pytest.mark.skipif(
+    os.environ.get("SEAGENT_RUN_EXTERNAL_COMPARISON") != "1",
+    reason="External ROS comparison requires SEAGENT_RUN_EXTERNAL_COMPARISON=1 and outside/ dependencies",
+)
 
 for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, SEAGENT_ROOT]:
     if str(p) not in sys.path:
@@ -65,6 +72,8 @@ def _sample_task_intent() -> dict:
 # ========== [库A] amazing-ros2-mcp ==========
 
 class TestAmazingROS2MCP:
+    @pytest.mark.external_comparison
+    @external_comparison
     def test_A1_package_importable(self):
         """[A1] amazing_ros2_mcp 包应可正常导入"""
         ok, err = _check_import("amazing_ros2_mcp")
@@ -138,6 +147,8 @@ class TestAmazingROS2MCP:
 
 # ========== [库B] wise-vision/ros2_mcp ==========
 
+@pytest.mark.external_comparison
+@external_comparison
 class TestWiseVisionROS2MCP:
     def test_B1_server_directory_exists(self):
         """[B1] wise-vision 的 server/ 核心目录应存在"""
@@ -184,6 +195,8 @@ class TestWiseVisionROS2MCP:
 
 # ========== [库C] robotmcp/ros-mcp-server ==========
 
+@pytest.mark.external_comparison
+@external_comparison
 class TestRobotMCPRosMCPServer:
     def test_C1_package_directory_exists(self):
         """[C1] robotmcp ros_mcp 包目录应存在"""

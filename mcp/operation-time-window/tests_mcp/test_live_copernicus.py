@@ -15,6 +15,10 @@ from seagent_marine_current.provider import CopernicusProvider, ProviderError
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(
+    os.environ.get("RUN_COPERNICUS_LIVE_TEST") != "1",
+    reason="Live Copernicus access requires RUN_COPERNICUS_LIVE_TEST=1",
+)
 def test_live_copernicus_remote_forecast():
     """Real live test querying Copernicus Marine Toolbox if credentials provided."""
     username = os.environ.get("COPERNICUSMARINE_SERVICE_USERNAME")

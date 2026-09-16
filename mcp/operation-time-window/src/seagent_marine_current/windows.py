@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import math
 import os
 from typing import List, Literal, Optional
 
@@ -62,6 +63,8 @@ class WindowSearchResult:
 
 class OperationWindowService:
     """SEAgent-side business service to evaluate and search operational time windows."""
+
+    MAX_SEARCH_CANDIDATES = 10_000
 
     @staticmethod
     def _is_covered(forecast: CurrentForecastData, start_time: datetime, end_time: datetime) -> bool:
@@ -189,7 +192,32 @@ class OperationWindowService:
                 message="Synthetic test data cannot be used for operational window authorization outside explicit test profile.",
             )
 
-        if duration_hours <= 0:
+        try:
+            if not math.isfinite(candidate_step_seconds) or candidate_step_seconds <= 0:
+                raise ValueError("step must be finite and positive")
+            step_td = timedelta(seconds=candidate_step_seconds)
+            if step_td <= timedelta(0):
+                raise ValueError("step rounds to zero")
+        except (TypeError, ValueError, OverflowError):
+            return WindowSearchResult(
+                status="NOT_EVALUABLE",
+                search_start=search_start,
+                search_end=search_end,
+                duration_hours=duration_hours,
+                current_limit_mps=current_limit_mps,
+                candidate_step_seconds=candidate_step_seconds,
+                total_checked_candidates=0,
+                reason_code="INVALID_CANDIDATE_STEP",
+                message="candidate_step_seconds must be finite, positive, and representable as a nonzero timedelta.",
+            )
+
+        try:
+            if not math.isfinite(duration_hours) or duration_hours <= 0:
+                raise ValueError("duration must be finite and positive")
+            duration_td = timedelta(hours=duration_hours)
+            if duration_td <= timedelta(0):
+                raise ValueError("duration rounds to zero")
+        except (TypeError, ValueError, OverflowError):
             return WindowSearchResult(
                 status="NOT_EVALUABLE",
                 search_start=search_start,
@@ -202,7 +230,6 @@ class OperationWindowService:
                 message=f"duration_hours ({duration_hours}) must be positive",
             )
 
-        duration_td = timedelta(hours=duration_hours)
         if search_end - search_start < duration_td:
             return WindowSearchResult(
                 status="NOT_EVALUABLE",
@@ -231,22 +258,33 @@ class OperationWindowService:
                 message=f"Search range [{search_start.isoformat()}, {search_end.isoformat()}] exceeds available forecast [{f_s}, {f_e}]",
             )
 
-        step_td = timedelta(seconds=candidate_step_seconds)
         curr_start = search_start.astimezone(timezone.utc)
         end_bound = search_end.astimezone(timezone.utc)
+        last_possible = end_bound - duration_td
+        span = last_possible - curr_start
+        regular_count = span // step_td + 1
+        include_boundary = span % step_td != timedelta(0)
+        total_checked = regular_count + int(include_boundary)
+        if total_checked > cls.MAX_SEARCH_CANDIDATES:
+            return WindowSearchResult(
+                status="NOT_EVALUABLE",
+                search_start=search_start,
+                search_end=search_end,
+                duration_hours=duration_hours,
+                current_limit_mps=current_limit_mps,
+                candidate_step_seconds=candidate_step_seconds,
+                total_checked_candidates=0,
+                reason_code="TOO_MANY_CANDIDATES",
+                message=f"Search requires {total_checked} candidates; increase the step or reduce the range (maximum {cls.MAX_SEARCH_CANDIDATES}).",
+            )
 
-        candidate_starts = []
-        while curr_start + duration_td <= end_bound:
-            candidate_starts.append(curr_start)
-            curr_start += step_td
+        candidate_starts = [curr_start + i * step_td for i in range(regular_count)]
 
         # Ensure last boundary candidate (search_end - duration) is included if not already present
-        last_possible = end_bound - duration_td
-        if candidate_starts and candidate_starts[-1] < last_possible:
+        if include_boundary:
             candidate_starts.append(last_possible)
 
         available_candidates: List[CandidateWindow] = []
-        total_checked = len(candidate_starts)
 
         for c_start in candidate_starts:
             c_end = c_start + duration_td

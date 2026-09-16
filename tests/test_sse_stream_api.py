@@ -210,3 +210,53 @@ def test_disconnect_after_delta_completes_dispatch_and_releases_session_lock(mon
             assert acquired == [True]
         finally:
             response.close()
+
+
+@pytest.mark.parametrize("legacy_signature", [False, True])
+def test_stream_internal_type_error_never_reprocesses(monkeypatch, legacy_signature):
+    manager = DialogueManager()
+    sid = "sse-internal-type-error"
+    mutations = []
+
+    def fail(message, request_id=None, event_sink=None):
+        mutations.append(message)
+        raise TypeError("business error after state mutation")
+
+    def legacy_fail(message, request_id=None):
+        return fail(message, request_id=request_id)
+
+    monkeypatch.setattr(manager, "process", legacy_fail if legacy_signature else fail)
+    monkeypatch.setitem(web_backend._sessions_manager, sid, manager)
+    monkeypatch.setattr(web_backend, "get_or_create_manager", lambda _: manager)
+    dispatch = Mock()
+    monkeypatch.setattr(web_backend, "_dispatch_ros2_on_done_transition", dispatch)
+    with app.test_client() as client:
+        response = client.post("/api/chat/stream", json={"session_id": sid, "message": "确认"})
+        payload = response.get_data(as_text=True)
+    assert mutations == ["确认"]
+    assert "event: error" in payload
+    assert "InternalServerError" in payload
+    assert "event: result" not in payload
+    dispatch.assert_not_called()
+
+
+def test_stream_supports_legacy_process_signature_without_retry(monkeypatch):
+    manager = DialogueManager()
+    sid = "sse-legacy-signature"
+    calls = []
+
+    def legacy_process(message, request_id=None):
+        calls.append((message, request_id))
+        return "旧接口仍可使用"
+
+    monkeypatch.setattr(manager, "process", legacy_process)
+    monkeypatch.setitem(web_backend._sessions_manager, sid, manager)
+    monkeypatch.setattr(web_backend, "get_or_create_manager", lambda _: manager)
+    with app.test_client() as client:
+        response = client.post("/api/chat/stream", json={
+            "session_id": sid, "message": "你好", "request_id": "legacy-request",
+        })
+        payload = response.get_data(as_text=True)
+    assert calls == [("你好", "legacy-request")]
+    assert "event: result" in payload
+    assert "旧接口仍可使用" in payload

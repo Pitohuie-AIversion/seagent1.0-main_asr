@@ -84,13 +84,17 @@ class ASRService:
             return
 
         if self.config.device == "auto":
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            if torch.cuda.is_available():
+                self.device = "cuda:1" if torch.cuda.device_count() > 1 else "cuda:0"
+            else:
+                self.device = "cpu"
         else:
             self.device = self.config.device
 
-        if self.device == "cuda":
-            self.dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-            device_map = "cuda:0"
+        if self.device.startswith("cuda"):
+            with torch.cuda.device(self.device):
+                self.dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            device_map = self.device
         else:
             self.dtype = torch.float32
             device_map = "cpu"

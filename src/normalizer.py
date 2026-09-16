@@ -286,8 +286,22 @@ class FieldNormalizer:
         else:
             items = [str(raw)]
 
+        # 统一展平列表中可能包含分隔符的子项（如 ["item1、item2", "item3"]）
+        flattened_items = []
+        for it in items:
+            it_str = str(it).strip(" \t\n\r[]()")
+            if not it_str:
+                continue
+            parts = [p.strip(" \t\n\r'\"") for p in re.split(r"[,，、\n]+", it_str) if p.strip(" \t\n\r'\"")]
+            if parts:
+                flattened_items.extend(parts)
+            else:
+                flattened_items.append(it_str)
+        items = flattened_items
+
         if not items:
             return [] if isinstance(raw, list) else None
+
 
         result = []
         for item in items:

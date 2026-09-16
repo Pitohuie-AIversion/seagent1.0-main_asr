@@ -1,6 +1,5 @@
 """Regression contracts for the SEAgent -> rosbridge -> dashboard runtime path."""
 
-import json
 from unittest.mock import Mock
 import pytest
 
@@ -133,23 +132,13 @@ def test_dispatch_record_is_reused_after_process_restart(tmp_path, monkeypatch):
     assert (tmp_path / ".mcp_dispatch_records.json").exists()
 
 
-def test_dispatch_recovers_from_corrupted_record_file(tmp_path, monkeypatch):
+def test_dispatch_blocks_until_corrupted_record_file_is_repaired(tmp_path, monkeypatch):
     monkeypatch.setenv("SEAGENT_MCP_DISPATCH_DIR", str(tmp_path))
     (tmp_path / ".mcp_dispatch_records.json").write_text("{ not json", encoding="utf-8")
 
-    bridge = SEAgentMCPBridgeService()
-    bridge._running = True
-    bridge.client.is_connected = Mock(return_value=True)
-    bridge.client.publish_task_cmd = Mock()
-
-    task_id = bridge.dispatch_intent(_intent("PI-20260828-005"))
-
-    assert isinstance(task_id, int)
-    assert bridge.client.publish_task_cmd.call_count == 1
-    assert bridge._dispatch_records["PI-20260828-005"]["dispatch_state"] == "SENT"
-    assert json.loads((tmp_path / ".mcp_dispatch_records.json").read_text())[
-        "PI-20260828-005"
-    ]["dispatch_state"] == "SENT"
+    with pytest.raises(RuntimeError, match="下发记录"):
+        SEAgentMCPBridgeService()
+    assert (tmp_path / ".mcp_dispatch_records.json").read_text() == "{ not json"
 
 
 def test_dispatch_record_failure_is_retryable_after_process_restart(tmp_path, monkeypatch):

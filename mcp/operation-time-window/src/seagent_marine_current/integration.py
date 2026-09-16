@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 
@@ -68,29 +69,8 @@ def get_deterministic_current_limit(task_state: Dict[str, Any]) -> Optional[floa
     return None
 
 
-def extract_current_query(
-    task_state: Dict[str, Any],
-    oilfield_kb: Optional[Dict[str, Any]] = None,
-    is_task_intent: bool = True,
-) -> Optional[CurrentQuery]:
-    """Construct CurrentQuery if position, depth, and time bounds are present.
-
-    Strict rules:
-    - Never triggers for non-task intent (e.g. ordinary chat).
-    - operation_depth and water_depth are strictly separated.
-    - water_depth may only derive operation_depth for explicit seabed tasks.
-    - Returns None if essential fields are incomplete or invalid.
-    """
-    if not is_task_intent:
-        return None
-
-    start_time = parse_datetime_safe(task_state.get("start_time"))
-    end_time = parse_datetime_safe(task_state.get("end_time"))
-
-    if not start_time or not end_time or end_time <= start_time:
-        return None
-
-    # Resolve depth: operation_depth vs water_depth
+def _operation_depth(task_state: Dict[str, Any]) -> Optional[float]:
+    """Preserve explicit surface depth; derive seabed depth only when permitted."""
     depth_m = task_state.get("operation_depth")
     if depth_m is None:
         # Only allow deriving from water_depth if explicitly permitted for seabed operations
@@ -113,9 +93,35 @@ def extract_current_query(
 
     try:
         depth_val = float(depth_m)
-        if depth_val < 0:
+        if not math.isfinite(depth_val) or depth_val < 0:
             return None
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return depth_val
+
+
+def extract_current_query(
+    task_state: Dict[str, Any],
+    oilfield_kb: Optional[Dict[str, Any]] = None,
+    is_task_intent: bool = True,
+) -> Optional[CurrentQuery]:
+    """Construct CurrentQuery if position, depth, and time bounds are present.
+
+    Strict rules:
+    - Never triggers for non-task intent (e.g. ordinary chat).
+    - operation_depth and water_depth are strictly separated.
+    - water_depth may only derive operation_depth for explicit seabed tasks.
+    - Returns None if essential fields are incomplete or invalid.
+    """
+    if not is_task_intent:
+        return None
+
+    start_time = parse_datetime_safe(task_state.get("start_time"))
+    end_time = parse_datetime_safe(task_state.get("end_time"))
+    if not start_time or not end_time or end_time <= start_time:
+        return None
+    depth_val = _operation_depth(task_state)
+    if depth_val is None:
         return None
 
     # Resolve latitude and longitude
@@ -200,11 +206,11 @@ class MarineCurrentBridge:
 
         st = parse_datetime_safe(task_state.get("start_time"))
         et = parse_datetime_safe(task_state.get("end_time"))
-        depth = task_state.get("operation_depth") or task_state.get("water_depth")
+        depth = _operation_depth(task_state)
         if not st or not et or depth is None:
             return None
 
-        limit = current_limit_mps or self.default_current_limit_mps
+        limit = self.default_current_limit_mps if current_limit_mps is None else current_limit_mps
         return OperationWindowService.check_window(
             forecast=self._cached_forecast,
             operation_depth_m=float(depth),
@@ -231,11 +237,11 @@ class MarineCurrentBridge:
             st = self._cached_forecast.native_time_steps[0]
 
         et = st + timedelta(hours=search_range_hours)
-        depth = task_state.get("operation_depth") or task_state.get("water_depth")
+        depth = _operation_depth(task_state)
         if depth is None:
             return None
 
-        limit = current_limit_mps or self.default_current_limit_mps
+        limit = self.default_current_limit_mps if current_limit_mps is None else current_limit_mps
         return OperationWindowService.search_windows(
             forecast=self._cached_forecast,
             operation_depth_m=float(depth),

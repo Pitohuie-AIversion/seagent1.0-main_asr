@@ -28,13 +28,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements/test.txt
 
+      - name: Set up Node.js for Frontend Regression Tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: 1. Python Syntax & Compilation Check
-        run: python -m compileall -q src tests mcp/core mcp/tests
+        run: python -m compileall -q src tests mcp/ros-mcp mcp/operation-time-window
 
       - name: 2. Run Full Test Suite & Enforce Audit Gate
         run: |
           set +e
-          TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q tests mcp/tests --junitxml=pytest-results.xml 2>&1 | tee full_test.log
+          TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q --junitxml=pytest-results.xml 2>&1 | tee full_test.log
           test_exit=${PIPESTATUS[0]}
           set -e
           

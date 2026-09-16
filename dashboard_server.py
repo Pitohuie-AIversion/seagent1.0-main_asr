@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, render_template, request, url_for
 
 
 SEAGENT_ROOT = Path(__file__).resolve().parent
@@ -19,7 +19,7 @@ SEAGENT_BACKEND_URL = os.environ.get(
     "SEAGENT_BACKEND_URL", "http://127.0.0.1:6006"
 ).rstrip("/")
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder=str(FRONTEND_FILE.parent))
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 
@@ -58,7 +58,10 @@ def _proxy_backend(path: str, method: str = "GET", payload: dict | None = None):
 @app.route("/", methods=["GET"])
 def index():
     if FRONTEND_FILE.exists():
-        return send_file(FRONTEND_FILE)
+        return render_template(FRONTEND_FILE.name, dashboard_api={
+            "status": url_for("bridge_status"),
+            "gateway": url_for("gateway_config"),
+        })
     return "<h1>Dashboard UI Not Found</h1>", 404
 
 

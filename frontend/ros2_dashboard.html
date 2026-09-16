@@ -429,9 +429,11 @@
       errorBox.style.display = error ? 'block' : 'none';
     }
 
+    const dashboardApi = {{ dashboard_api | tojson }};
+
     async function refreshStatus() {
       try {
-        const response = await fetch('/api/bridge/status', {cache: 'no-store'});
+        const response = await fetch(dashboardApi.status, {cache: 'no-store'});
         const data = await response.json();
         renderStatus(data);
       } catch (error) {
@@ -440,7 +442,7 @@
     }
 
     async function loadGateway() {
-      const response = await fetch('/api/config/gateway', {cache: 'no-store'});
+      const response = await fetch(dashboardApi.gateway, {cache: 'no-store'});
       const data = await response.json();
       if (!response.ok) throw new Error(data.msg || '读取网关失败');
       const gateway = data.gateway || {};
@@ -463,7 +465,7 @@
         port: Number(document.getElementById('gatewayPort').value),
         mode: document.getElementById('gatewayMode').value
       };
-      const response = await fetch('/api/config/gateway', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+      const response = await fetch(dashboardApi.gateway, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
       const data = await response.json();
       if (!response.ok) { window.alert(data.msg || '网关切换失败'); return; }
       document.getElementById('gatewayDialog').close();

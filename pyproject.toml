@@ -45,7 +45,17 @@ known-first-party = ["src"]
 section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "mcp/tests"]
+testpaths = [
+    "tests",
+    "mcp/ros-mcp/tests",
+    "mcp/operation-time-window/tests_unit",
+    "mcp/operation-time-window/tests_mcp",
+]
+asyncio_mode = "auto"
+markers = [
+    "integration: live remote tests (RUN_COPERNICUS_LIVE_TEST=1 required)",
+    "external_comparison: optional external ROS libraries (SEAGENT_RUN_EXTERNAL_COMPARISON=1 required)",
+]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

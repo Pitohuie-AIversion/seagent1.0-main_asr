@@ -41,6 +41,7 @@ from .sealien_protocol import (
     LocalOrigin,
     ProtocolValidationError,
     geodetic_to_odom_position,
+    validate_finite_number,
     validate_priority,
     validate_task_id,
     validate_uint32,
@@ -308,10 +309,7 @@ def _water_depth(intent: Dict[str, Any]) -> float:
     depth_value = location.get("water_depth_m")
     if depth_value is None:
         raise ProtocolValidationError("TaskIntent 缺少有效 water_depth_m")
-    try:
-        depth = float(depth_value)
-    except (TypeError, ValueError) as exc:
-        raise ProtocolValidationError("TaskIntent 缺少有效 water_depth_m") from exc
+    depth = validate_finite_number(depth_value, "water_depth_m")
     if depth < 0:
         raise ProtocolValidationError("water_depth_m 必须是非负数")
     return depth
@@ -328,12 +326,9 @@ def _coordinate_pose(
     longitude = coordinate.get("longitude")
     if latitude is None or longitude is None:
         raise ProtocolValidationError(f"{field_name} 必须包含 latitude/longitude")
-    try:
-        depth = float(coordinate.get("depth", default_depth))
-        latitude_value = float(latitude)
-        longitude_value = float(longitude)
-    except (TypeError, ValueError) as exc:
-        raise ProtocolValidationError(f"{field_name} 坐标或水深不是有效数值") from exc
+    depth = validate_finite_number(coordinate.get("depth", default_depth), f"{field_name}.depth")
+    latitude_value = validate_finite_number(latitude, f"{field_name}.latitude")
+    longitude_value = validate_finite_number(longitude, f"{field_name}.longitude")
     if depth < 0:
         raise ProtocolValidationError(f"{field_name}.depth 必须是非负数")
     if use_geodetic:
@@ -358,6 +353,16 @@ def validate_sys_task_cmd(cmd: SysTaskCmd) -> SysTaskCmd:
     cmd.priority = validate_priority(cmd.priority)
     if not isinstance(cmd.fail_stop, bool):
         raise ProtocolValidationError("fail_stop 必须是布尔值")
+    for index, target in enumerate(cmd.pos_target):
+        for field_name in ("x", "y", "z", "qx", "qy", "qz", "qw"):
+            value = validate_finite_number(
+                getattr(target, field_name), f"pos_target[{index}].{field_name}"
+            )
+            setattr(target, field_name, value)
+    cmd.params = [
+        validate_finite_number(value, f"params[{index}]")
+        for index, value in enumerate(cmd.params)
+    ]
 
     if task_type == TaskType.TASK_MANAGE:
         if cmd.frame_id or cmd.pos_target or cmd.priority != 0:
@@ -673,7 +678,7 @@ class RosbridgeClient:
         with self._lock:
             if not self._ws or not self._ws.connected:
                 raise ConnectionError(f"rosbridge 未连接: {self._url}")
-            self._ws.send(json.dumps(message))
+            self._ws.send(json.dumps(message, allow_nan=False))
 
     def call_service(
         self,

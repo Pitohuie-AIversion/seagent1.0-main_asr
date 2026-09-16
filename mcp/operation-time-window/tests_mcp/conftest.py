@@ -13,8 +13,11 @@ if str(SRC_DIR) not in sys.path:
 
 
 @pytest.fixture(autouse=True)
-def clean_copernicus_env():
+def clean_copernicus_env(request):
     """Ensure environment credentials do not leak into unconfigured tests."""
+    if request.node.get_closest_marker("integration") is not None:
+        yield
+        return
     old_user = os.environ.pop("COPERNICUSMARINE_SERVICE_USERNAME", None)
     old_pwd = os.environ.pop("COPERNICUSMARINE_SERVICE_PASSWORD", None)
     old_synth = os.environ.pop("SEAGENT_CURRENT_USE_SYNTHETIC", None)

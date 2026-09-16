@@ -2,6 +2,7 @@
 src/web/routes_chat.py - 核心对话流、SSE 打字机事件推流、会话重置与状态查询路由
 """
 
+import inspect
 import json
 import logging
 import uuid
@@ -280,11 +281,13 @@ def api_chat_stream():
             if session_error is None:
                 try:
                     phase_before = mgr.phase
+                    process_kwargs = {"request_id": request_id, "event_sink": event_sink}
                     try:
-                        reply = mgr.process(msg, request_id=request_id, event_sink=event_sink)
+                        inspect.signature(mgr.process).bind(msg, **process_kwargs)
                     except TypeError:
-                        # 兼容外部只接受旧参数签名的 mock/stub process
-                        reply = mgr.process(msg, request_id=request_id)
+                        # Inspect compatibility before execution: an internal TypeError may follow a mutation.
+                        process_kwargs.pop("event_sink")
+                    reply = mgr.process(msg, **process_kwargs)
 
                     ros2_dispatch = _persist_and_dispatch_done_transition(mgr, phase_before)
                     ui_builder = _get_backend_symbol("build_frontend_ui_state", build_frontend_ui_state)

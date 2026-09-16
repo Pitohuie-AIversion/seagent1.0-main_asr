@@ -35,6 +35,17 @@ class DuplicateRequestError(ProtocolValidationError):
     """当相同请求被重复提交时抛出"""
 
 
+def validate_finite_number(value: Any, field_name: str) -> float:
+    """Normalize a protocol float while rejecting NaN and infinity."""
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ProtocolValidationError(f"{field_name} 必须是有限数值") from exc
+    if not math.isfinite(normalized):
+        raise ProtocolValidationError(f"{field_name} 必须是有限数值")
+    return normalized
+
+
 @dataclass(frozen=True)
 class LocalOrigin:
     """WGS-84 局部坐标原点 (缺省为南海某油田作业参考原点)"""
@@ -88,9 +99,14 @@ def geodetic_to_enu(
     if origin is None:
         origin = LocalOrigin()
 
-    lat = float(latitude)
-    lon = float(longitude)
-    alt = float(altitude)
+    lat = validate_finite_number(latitude, "latitude")
+    lon = validate_finite_number(longitude, "longitude")
+    alt = validate_finite_number(altitude, "altitude")
+    origin = LocalOrigin(
+        validate_finite_number(origin.latitude, "origin.latitude"),
+        validate_finite_number(origin.longitude, "origin.longitude"),
+        validate_finite_number(origin.altitude, "origin.altitude"),
+    )
     if not -90.0 <= lat <= 90.0:
         raise ProtocolValidationError("latitude 必须在 -90 到 90 度之间")
     if not -180.0 <= lon <= 180.0:
@@ -139,10 +155,7 @@ def geodetic_to_odom_position(
     origin: Optional[LocalOrigin] = None,
 ) -> Tuple[float, float, float]:
     """将经纬度和水深转换为 odom 局部坐标 (east, north, -water_depth_m)"""
-    try:
-        depth = float(water_depth_m)
-    except (TypeError, ValueError) as exc:
-        raise ProtocolValidationError("water_depth_m 必须为数值") from exc
+    depth = validate_finite_number(water_depth_m, "water_depth_m")
     if depth < 0:
         raise ProtocolValidationError("water_depth_m 必须是非负数")
 

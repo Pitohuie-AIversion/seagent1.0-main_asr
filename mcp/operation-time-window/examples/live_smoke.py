@@ -35,7 +35,7 @@ def parse_args():
 
 async def main_async(args):
     env_overrides = {}
-    if args.prompt-credentials if hasattr(args, "prompt-credentials") else args.prompt_credentials:
+    if args.prompt_credentials:
         user = input("Copernicus Marine Username: ").strip()
         pwd = getpass.getpass("Copernicus Marine Password: ").strip()
         env_overrides["COPERNICUSMARINE_SERVICE_USERNAME"] = user

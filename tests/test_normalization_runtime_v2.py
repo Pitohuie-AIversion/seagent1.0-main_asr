@@ -10,6 +10,7 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from src.dialogue_manager import DialogueManager

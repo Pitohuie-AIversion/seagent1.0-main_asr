@@ -94,10 +94,7 @@ def cleanup_port(port: int) -> None:
             pass
 
 
-cleanup_port(PORT)
 
-if not (os.environ.get("OFFLINE_MOCK") == "1" or os.environ.get("SEAGENT_OFFLINE_MOCK") == "1"):
-    os.system("pkill -f VLLM::EngineCore 2>/dev/null")
 
 
 
@@ -160,14 +157,16 @@ def startup():
     )
 
     print("Loading vLLM model...")
-    vllm_gpu_util = float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.95"))
+    vllm_gpu_util = float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.80"))
     vllm_max_seqs = int(os.getenv("VLLM_MAX_NUM_SEQS", "64"))
+    vllm_max_model_len = int(os.getenv("VLLM_MAX_MODEL_LEN", "16384"))
     llm_engine = LLM(
         model=LOCAL_MODEL_PATH,
         trust_remote_code=True,
         dtype="bfloat16" if torch.cuda.is_bf16_supported() else "float16",
         gpu_memory_utilization=vllm_gpu_util,
         max_num_seqs=vllm_max_seqs,
+        max_model_len=vllm_max_model_len,
         enable_prefix_caching=True,
     )
 
@@ -279,6 +278,9 @@ def _init_mcp_service_if_requested(kb, is_mock: bool = False):
 
 
 if __name__ == "__main__":
+    cleanup_port(PORT)
+    if not (os.environ.get("OFFLINE_MOCK") == "1" or os.environ.get("SEAGENT_OFFLINE_MOCK") == "1"):
+        os.system("pkill -f VLLM::EngineCore 2>/dev/null")
     startup()
     print(f"🌐 Server running at http://localhost:{PORT}")
     app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)

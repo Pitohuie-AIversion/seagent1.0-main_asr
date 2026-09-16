@@ -2,8 +2,9 @@ import sys
 import tempfile
 import types
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 try:
     import torch
@@ -13,6 +14,54 @@ except ImportError:
     HAS_TORCH = False
 
 from src.asr_service import ASRConfig, ASRService
+
+
+class TestASRDeviceSelection(unittest.TestCase):
+    def test_dtype_matches_selected_device_and_restores_current_device(self):
+        cases = [
+            ("auto", [], "cpu", "float32"),
+            ("auto", [True], "cuda:0", "bfloat16"),
+            ("auto", [True, False], "cuda:1", "float16"),
+            ("auto", [False, True], "cuda:1", "bfloat16"),
+            ("cuda:0", [True, False], "cuda:0", "bfloat16"),
+            ("cuda:1", [True, False], "cuda:1", "float16"),
+        ]
+        for configured, capabilities, expected_device, expected_dtype in cases:
+            with self.subTest(configured=configured, capabilities=capabilities):
+                state = {"current": 0}
+
+                @contextmanager
+                def select_device(device):
+                    previous = state["current"]
+                    state["current"] = int(device.split(":")[1]) if ":" in device else previous
+                    try:
+                        yield
+                    finally:
+                        state["current"] = previous
+
+                fake_torch = types.SimpleNamespace(
+                    bfloat16="bfloat16", float16="float16", float32="float32",
+                    cuda=types.SimpleNamespace(
+                        is_available=lambda: bool(capabilities),
+                        device_count=lambda: len(capabilities),
+                        device=select_device,
+                        is_bf16_supported=lambda: capabilities[state["current"]],
+                    ),
+                )
+                model_type = MagicMock()
+                fake_asr = types.SimpleNamespace(Qwen3ASRModel=model_type)
+                with tempfile.TemporaryDirectory() as model_dir, \
+                     patch.dict("os.environ", {"OFFLINE_MOCK": "0", "SEAGENT_OFFLINE_MOCK": "0"}), \
+                     patch.dict(sys.modules, {"torch": fake_torch, "qwen_asr": fake_asr}):
+                    service = ASRService(ASRConfig(model_path=Path(model_dir), device=configured))
+                    service.load()
+
+                self.assertIs(service.model, model_type.from_pretrained.return_value)
+                self.assertEqual(service.device, expected_device)
+                self.assertEqual(service.dtype, expected_dtype)
+                self.assertEqual(model_type.from_pretrained.call_args.kwargs["dtype"], expected_dtype)
+                self.assertEqual(model_type.from_pretrained.call_args.kwargs["device_map"], expected_device)
+                self.assertEqual(state["current"], 0)
 
 
 class TestASRServiceFallback(unittest.TestCase):

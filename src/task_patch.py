@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import math
+import re
 from typing import Any, Literal
 
 
@@ -97,8 +99,10 @@ class SlotPatch:
 
 @dataclass(frozen=True)
 class ListMutationPatch:
+    """set assigns the complete list; replace changes only explicit targets."""
+
     field: str
-    operation: Literal["add", "remove", "replace", "clear"]
+    operation: Literal["add", "remove", "replace", "clear", "set"]
     items: tuple[Any, ...]
     target_items: tuple[Any, ...]
     raw_text: str
@@ -110,7 +114,7 @@ class ListMutationPatch:
             raise TaskPatchValidationError(
                 f"ListMutationPatch field 必须为 'payload'，收到 {self.field!r}"
             )
-        valid_ops = ("add", "remove", "replace", "clear")
+        valid_ops = ("add", "remove", "replace", "clear", "set")
         if self.operation not in valid_ops:
             raise TaskPatchValidationError(
                 f"ListMutationPatch operation 必须为 {valid_ops} 之一，收到 {self.operation!r}"
@@ -149,6 +153,9 @@ class ListMutationPatch:
                 raise TaskPatchValidationError("ListMutationPatch(replace) items 不得为空")
             if len(self.target_items) == 0:
                 raise TaskPatchValidationError("ListMutationPatch(replace) target_items 不得为空")
+        elif self.operation == "set":
+            if len(self.target_items) > 0:
+                raise TaskPatchValidationError("ListMutationPatch(set) target_items 必须为空")
         elif self.operation == "clear":
             if len(self.items) > 0:
                 raise TaskPatchValidationError("ListMutationPatch(clear) items 必须为空")

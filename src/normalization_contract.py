@@ -385,6 +385,8 @@ def normalize_task_patch(
         schema_version=1,
         slot_outcomes=tuple(outcomes),
         passthrough_slot_updates=tuple(passthrough_updates),
+        # Preserve set (full assignment) versus replace (explicit targets).
+        # The list engine validates items against the effective task/robot.
         list_mutations=patch.list_mutations,
         unresolved=patch.unresolved,
     )

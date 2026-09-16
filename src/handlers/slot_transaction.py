@@ -15,6 +15,7 @@ import logging
 import re
 from typing import Any
 
+from ..normalization_contract import NormalizationApplyPlan
 from ..slot_store import Slot
 
 class SlotTransactionManager:

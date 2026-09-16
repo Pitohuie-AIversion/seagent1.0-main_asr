@@ -124,3 +124,45 @@ def test_marine_current_bridge_caching_and_evaluation(base_time):
     # Invalidate cache
     bridge.invalidate_cache()
     assert bridge.cached_forecast is None
+
+
+@pytest.fixture
+def depth_sensitive_bridge(base_time):
+    from seagent_marine_current.contracts import CurrentForecastData
+    bridge = MarineCurrentBridge(default_current_limit_mps=0.5)
+    bridge.update_cache(CurrentForecastData(
+        request_fingerprint="depth-test", snapshot_id="depth-test", retrieved_at=base_time,
+        actual_grid_latitude=20, actual_grid_longitude=115, grid_distance_km=0,
+        native_time_steps=[base_time, base_time + timedelta(hours=6)],
+        native_depth_layers_m=[0, 100], uo=[[1, 0.1], [1, 0.1]], vo=[[0, 0], [0, 0]],
+    ))
+    return bridge
+
+
+@pytest.mark.parametrize("search", [False, True])
+@pytest.mark.parametrize("depth,limit,expected", [(0, 0.5, "UNAVAILABLE"), (100, 0, "UNAVAILABLE"), (100, None, "AVAILABLE")])
+def test_bridge_preserves_zero_depth_and_current_limit(depth_sensitive_bridge, base_time, search, depth, limit, expected):
+    state = {"start_time": base_time, "end_time": base_time + timedelta(hours=6),
+             "operation_depth": depth, "water_depth": 100}
+    if search:
+        result = depth_sensitive_bridge.search_task_windows(state, 1, 6, current_limit_mps=limit)
+    else:
+        result = depth_sensitive_bridge.evaluate_task_window(state, current_limit_mps=limit)
+    assert result.status == expected
+    assert result.current_limit_mps == (0.5 if limit is None else limit)
+
+
+@pytest.mark.parametrize("search", [False, True])
+@pytest.mark.parametrize("seabed", [False, True])
+def test_bridge_derives_water_depth_only_for_seabed_tasks(depth_sensitive_bridge, base_time, search, seabed):
+    state = {"start_time": base_time, "end_time": base_time + timedelta(hours=6),
+             "water_depth": 100, "is_seabed_task": seabed}
+    if search:
+        result = depth_sensitive_bridge.search_task_windows(state, 1, 6)
+    else:
+        result = depth_sensitive_bridge.evaluate_task_window(state)
+    if seabed:
+        assert result.status == "AVAILABLE"
+        assert state["operation_depth_source"] == "derived_from_water_depth"
+    else:
+        assert result is None

@@ -158,3 +158,47 @@ def test_search_windows_boundary_candidate_inclusion(window_forecast, base_time)
     # Check that candidate ending exactly at et is present
     end_times = [w.end_time for w in res.available_windows]
     assert et.astimezone(timezone.utc) in end_times
+
+
+@pytest.mark.parametrize("step", [0, -1, float("nan"), float("inf"), float("-inf"), 1e100, 1e-12, 1e-6])
+def test_search_rejects_invalid_or_excessive_candidate_steps(window_forecast, base_time, step):
+    # A short alarm bounds the old infinite loop during red/green verification.
+    import signal
+    previous = signal.getsignal(signal.SIGALRM)
+    def timeout(*_):
+        raise AssertionError("candidate generation failed to terminate")
+    signal.signal(signal.SIGALRM, timeout)
+    signal.setitimer(signal.ITIMER_REAL, 0.1)
+    try:
+        res = OperationWindowService.search_windows(
+            window_forecast, 100.0, base_time, base_time + timedelta(hours=6),
+            duration_hours=1.0, current_limit_mps=0.5, candidate_step_seconds=step,
+        )
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+    assert res.status == "NOT_EVALUABLE"
+    assert res.reason_code in {"INVALID_CANDIDATE_STEP", "TOO_MANY_CANDIDATES"}
+    assert res.total_checked_candidates == 0
+
+
+def test_search_candidate_limit_counts_extra_boundary(window_forecast, base_time, monkeypatch):
+    monkeypatch.setattr(OperationWindowService, "MAX_SEARCH_CANDIDATES", 3)
+    args = (window_forecast, 100.0, base_time, base_time + timedelta(hours=3))
+    exact = OperationWindowService.search_windows(*args, duration_hours=1, current_limit_mps=1)
+    assert exact.status == "AVAILABLE"
+    assert exact.total_checked_candidates == 3
+    bounded = OperationWindowService.search_windows(*args, duration_hours=0.5, current_limit_mps=1)
+    assert bounded.status == "NOT_EVALUABLE"
+    assert bounded.reason_code == "TOO_MANY_CANDIDATES"
+    assert bounded.total_checked_candidates == 0
+
+
+@pytest.mark.parametrize("duration", [float("nan"), float("inf"), 1e100, 1e-15])
+def test_search_nonrepresentable_duration_returns_failure(window_forecast, base_time, duration):
+    result = OperationWindowService.search_windows(
+        window_forecast, 100, base_time, base_time + timedelta(hours=6),
+        duration_hours=duration, current_limit_mps=0.5,
+    )
+    assert result.status == "NOT_EVALUABLE"
+    assert result.reason_code == "INVALID_DURATION"

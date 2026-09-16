@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from typing import Any
+
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
 from ..slot_store import Slot
@@ -121,8 +123,8 @@ class PayloadMutationManager(BaseDialogueHandler):
         current_slots: dict,
     ) -> None:
         """兜底防护：当 LLM 抽取的 extraction_res 将 payload 误放入 slot_candidates 时，
-        基于用户增量/减量意图或现有槽位，自动转换为 list_mutations（op: add/remove），
-        防止列表字段被整体覆盖。
+        增减请求保留列表增量语义，首次配置及全量改选使用 set，
+        明确提及旧载荷的替换使用带 target_items 的 replace。
         """
         mutations = extraction_res.get("list_mutations")
         if not isinstance(mutations, list):
@@ -158,6 +160,20 @@ class PayloadMutationManager(BaseDialogueHandler):
                         items.append(item)
             elif val and val not in items:
                 items.append(val)
+
+        # 展平顿号、逗号分隔的内部工具项
+        flattened_items = []
+        for it in items:
+            if isinstance(it, str):
+                cleaned = it.strip(" \t\n\r'\"[]()")
+                parts = [p.strip(" \t\n\r'\"") for p in re.split(r"[,，、\n]+", cleaned) if p.strip(" \t\n\r'\"")]
+                for p in parts:
+                    if p and p not in flattened_items:
+                        flattened_items.append(p)
+            elif it and it not in flattened_items:
+                flattened_items.append(it)
+        items = flattened_items
+
         if not items:
             return
 
@@ -180,31 +196,35 @@ class PayloadMutationManager(BaseDialogueHandler):
 
         max_confidence = max((c.get("confidence", 0.95) for c in payload_cands if isinstance(c, dict)), default=0.95)
 
-        if is_add or (has_existing_payload and not is_replace and not is_remove):
-            extraction_res["slot_candidates"] = [
-                c for c in candidates
-                if isinstance(c, dict) and c.get("canonical_key") != "payload"
-            ]
-            mutations.append({
-                "field": "payload",
-                "operation": "add",
-                "items": items,
-                "target_items": [],
-                "raw_text": msg,
-                "confidence": max_confidence,
-                "source": "user_input",
-            })
-        elif is_remove:
-            extraction_res["slot_candidates"] = [
-                c for c in candidates
-                if isinstance(c, dict) and c.get("canonical_key") != "payload"
-            ]
-            mutations.append({
-                "field": "payload",
-                "operation": "remove",
-                "items": items,
-                "target_items": [],
-                "raw_text": msg,
-                "confidence": max_confidence,
-                "source": "user_input",
-            })
+        target_items = []
+        if is_remove:
+            op = "remove"
+        elif is_replace:
+            # A direct candidate only contains the new list.  A full-list
+            # reassignment must not become a targetless replace (an append).
+            prefix = re.split("|".join(replace_kws), msg, maxsplit=1)[0]
+            if has_existing_payload:
+                target_items = [
+                    item for item in payload_slot.value
+                    if isinstance(item, str) and item and item in prefix
+                ]
+            op = "replace" if target_items else "set"
+        elif is_add or has_existing_payload:
+            op = "add"
+        else:
+            # 首次配置或直接输入载荷列表时，全量设置新载荷集合
+            op = "set"
+
+        extraction_res["slot_candidates"] = [
+            c for c in candidates
+            if isinstance(c, dict) and c.get("canonical_key") != "payload"
+        ]
+        mutations.append({
+            "field": "payload",
+            "operation": op,
+            "items": items,
+            "target_items": target_items,
+            "raw_text": msg,
+            "confidence": max_confidence,
+            "source": "user_input",
+        })

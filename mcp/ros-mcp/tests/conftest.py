@@ -1,8 +1,8 @@
 """
-mcp/tests/conftest.py
+mcp/ros-mcp/tests/conftest.py
 ======================
 Pytest 配置与环境初始化文件：
-自动将 mcp/core、mcp/mock 及项目根目录添加至 sys.path，
+自动将 ROS 子项目的 core、mock 及项目根目录添加至 sys.path，
 确保重构到物理子目录后所有测试无需变动导入即可 100% 运行。
 """
 
@@ -13,7 +13,7 @@ MCP_TESTS_DIR = Path(__file__).resolve().parent
 MCP_ROOT = MCP_TESTS_DIR.parent
 CORE_DIR = MCP_ROOT / "core"
 MOCK_DIR = MCP_ROOT / "mock"
-SEAGENT_ROOT = MCP_ROOT.parent
+SEAGENT_ROOT = MCP_ROOT.parent.parent
 
 for p in [CORE_DIR, MOCK_DIR, MCP_TESTS_DIR, SEAGENT_ROOT]:
     if str(p) not in sys.path:

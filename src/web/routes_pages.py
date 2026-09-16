@@ -2,7 +2,7 @@
 src/web/routes_pages.py - 静态页面与基础前端路由
 """
 
-from flask import Blueprint, render_template, request
+from flask import Blueprint, render_template, request, url_for
 
 pages_bp = Blueprint("pages", __name__)
 
@@ -24,7 +24,10 @@ def index():
 
 @pages_bp.route("/dashboard")
 def dashboard():
-    return render_template("ros2_dashboard.html")
+    return render_template("ros2_dashboard.html", dashboard_api={
+        "status": url_for("mcp.get_mcp_status"),
+        "gateway": url_for("mcp.mcp_gateway"),
+    })
 
 
 @pages_bp.route("/favicon.ico")

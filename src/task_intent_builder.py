@@ -1,6 +1,7 @@
 """
 task_intent_builder.py — 生成符合 TaskIntent 规范的 JSON 文件
 """
+import copy
 import fcntl
 import json
 import logging
@@ -345,16 +346,8 @@ class TaskIntentBuilder:
         else:
             priority = 7
 
-        start_time = built_json.get("start_time")
-        end_time = built_json.get("end_time")
-        def ensure_tz(ts: Optional[str]) -> Optional[str]:
-            if not ts:
-                return None
-            if "+" not in ts and ts.endswith("Z") is False:
-                ts += "+08:00"
-            return ts
-        start_time = ensure_tz(start_time)
-        end_time = ensure_tz(end_time)
+        start_time = self._normalize_task_time(built_json.get("start_time"))
+        end_time = self._normalize_task_time(built_json.get("end_time"))
 
         oilfield_name = None
         water_depth = built_json.get("water_depth")
@@ -701,7 +694,7 @@ class TaskIntentBuilder:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=BEIJING_TZ)
 
-        return parsed.isoformat(timespec="seconds")
+        return parsed.isoformat()
 
     def _resolve_output_task_type(self, task_type_key: str) -> str:
         mapping = {

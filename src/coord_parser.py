@@ -80,10 +80,51 @@ def is_coord_value(value: Any) -> bool:
 def parse_coord_value(value: Any) -> dict[str, float] | None:
     """Parse one coordinate value from a dict or a short string."""
     if isinstance(value, dict):
-        return _normalize_coord(value.get("lat"), value.get("lon"))
+        lat = value.get("lat") if "lat" in value else value.get("latitude")
+        lon = value.get("lon") if "lon" in value else value.get("longitude")
+        return _normalize_coord(lat, lon)
     if not isinstance(value, str):
         return None
-    return _extract_first_coord(value)
+
+    text = value.strip()
+    if not text:
+        return None
+
+    # 1. 尝试 JSON 与 Python dict 字符串反序列化
+    if (text.startswith("{") and text.endswith("}")) or ("'lat'" in text or '"lat"' in text):
+        try:
+            import json
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                lat = parsed.get("lat") if "lat" in parsed else parsed.get("latitude")
+                lon = parsed.get("lon") if "lon" in parsed else parsed.get("longitude")
+                coord = _normalize_coord(lat, lon)
+                if coord:
+                    return coord
+        except Exception:
+            pass
+
+        try:
+            import ast
+            parsed = ast.literal_eval(text)
+            if isinstance(parsed, dict):
+                lat = parsed.get("lat") if "lat" in parsed else parsed.get("latitude")
+                lon = parsed.get("lon") if "lon" in parsed else parsed.get("longitude")
+                coord = _normalize_coord(lat, lon)
+                if coord:
+                    return coord
+        except Exception:
+            pass
+
+    # 2. 独立坐标字符串空格分隔裸值容错（如 "11.2 113.4"）
+    bare_match = re.match(rf"^\s*({_VALUE})\s+({_VALUE})\s*$", text)
+    if bare_match:
+        coord = _normalize_coord(bare_match.group(1), bare_match.group(2))
+        if coord:
+            return coord
+
+    return _extract_first_coord(text)
+
 
 
 def parse_coordinate_updates(

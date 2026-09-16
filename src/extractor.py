@@ -115,10 +115,12 @@ EXTRACTION_SYSTEM = """\
 5. 针对 required 声明的字段，只允许提取 required 中存在的 canonical_key 以及任务类型选择器（task_type, task_type_key）。
 6. 如果用户的输入不是修改已有字段，而是提问、闲聊或确认，slot_candidates 返回空列表 []。
 7. 【列表字段特别规则】对于 payload 字段：
-   - 用户明确表达"增加/还要/再带/装载/搭载/配备/加装/添加 [工具]"时，输出 list_mutations: [{{"field": "payload", "action": "append", "items": ["工具名称"]}}]
-   - 用户明确表达"删除/不要/卸下/去掉/移除/取消 [工具]"时，输出 list_mutations: [{{"field": "payload", "action": "remove", "items": ["工具名称"]}}]
-   - 用户明确表达"清空/全不要/什么都不带/不带任何工具/全部卸下/清空工具"时，输出 list_mutations: [{{"field": "payload", "action": "clear", "items": []}}]
-   - 用户明确列出完整工具清单且意图是全量替换时（如"只要A和B"、"改成带A和B"、"载荷设置为A、B"），输出 list_mutations: [{{"field": "payload", "action": "replace", "items": ["A", "B"]}}]
+   - 用户明确表达"增加/还要/再带/装载/搭载/配备/加装/添加 [工具]"时，输出 list_mutations: [{{"field": "payload", "operation": "add", "items": ["工具名称"], "target_items": [], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]
+   - 用户明确表达"删除/不要/卸下/去掉/移除/取消 [工具]"时，输出 list_mutations: [{{"field": "payload", "operation": "remove", "items": ["工具名称"], "target_items": [], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]
+   - 用户明确表达"清空/全不要/什么都不带/不带任何工具/全部卸下/清空工具"时，输出 list_mutations: [{{"field": "payload", "operation": "clear", "items": [], "target_items": [], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]
+   - 首次配置完整工具清单或明确全量替换时（如"只要A和B"、"改成带A和B"、"载荷设置为A、B"），输出 list_mutations: [{{"field": "payload", "operation": "set", "items": ["A", "B"], "target_items": [], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]
+   - 只替换指定旧工具而保留其他工具时（如"把A换成B"），输出 list_mutations: [{{"field": "payload", "operation": "replace", "items": ["B"], "target_items": ["A"], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]；replace 必须提供非空 target_items。
+   - raw_text 必须填写本轮用户原句，confidence 为 0 到 1 的数值，source 固定为 user_input。
    - 产生 list_mutations 时，slot_candidates 中不要再输出 payload 候选。
 8. 【时间区间与时长规则】对于 start_time / end_time / 持续时长：
    - 用户表达"两小时后开始"、"明天上午九点"等相对时间时，尝试根据今天日期 {today} 换算为绝对 ISO 时间 "YYYY-MM-DDTHH:MM:SS"。
@@ -487,10 +489,33 @@ class ParameterExtractor:
             is_list_field = (field_def and field_def.get("type") == "list") or canonical_k == "payload"
 
             if is_list_field:
+                def _split_list_items(source: Any) -> list[Any]:
+                    if isinstance(source, str):
+                        s = source.strip(" \t\n\r[]()")
+                        parts = [p.strip(" \t\n\r'\"") for p in re.split(r"[,，、\n]+", s) if p.strip(" \t\n\r'\"")]
+                        return parts if parts else ([source] if source else [])
+                    elif isinstance(source, (list, tuple, set)):
+                        res = []
+                        for x in source:
+                            if isinstance(x, str):
+                                s = x.strip(" \t\n\r[]()")
+                                parts = [p.strip(" \t\n\r'\"") for p in re.split(r"[,，、\n]+", s) if p.strip(" \t\n\r'\"")]
+                                if parts:
+                                    res.extend(parts)
+                                else:
+                                    res.append(x)
+                            else:
+                                res.append(x)
+                        return res
+                    elif source is not None:
+                        return [source]
+                    return []
+
                 val = resolved_candidate["normalized_value"]
-                val_list = val if isinstance(val, list) else ([val] if val is not None else [])
+                val_list = _split_list_items(val)
                 raw_v = resolved_candidate["raw_value"]
-                raw_list = raw_v if isinstance(raw_v, list) else ([raw_v] if raw_v is not None else [])
+                raw_list = _split_list_items(raw_v)
+
 
                 if canonical_k in normalized_by_key:
                     existing = normalized_by_key[canonical_k]

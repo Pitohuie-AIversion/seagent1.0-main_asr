@@ -27,6 +27,7 @@
     let lastReloadEventId = 0;
     let reloadPollTimer = null;
     let isReloadPollInFlight = false;
+    let reloadStateRequestSeq = 0;
 
 
     const messageContainer = document.getElementById('messages');
@@ -692,11 +693,17 @@ Please describe your operational requirements directly, or ask the question you 
     }
 
     async function refreshSessionStateAfterReload() {
-      if (!sessionId) return;
+      if (!sessionId || isSending) return;
+      const refreshSid = sessionId;
+      const refreshGen = sessionGeneration;
+      const requestSeq = currentRequestSeq;
+      const refreshSeq = ++reloadStateRequestSeq;
       try {
-        const res = await fetch(API_BASE + '/api/session/state?session_id=' + encodeURIComponent(sessionId) + '&refresh_constraints=1');
+        const res = await fetch(API_BASE + '/api/session/state?session_id=' + encodeURIComponent(refreshSid) + '&refresh_constraints=1');
         const data = await res.json();
-        if (data.ok && data.exists && data.ui_state) {
+        if (refreshSid !== sessionId || refreshGen !== sessionGeneration ||
+            requestSeq !== currentRequestSeq || refreshSeq !== reloadStateRequestSeq) return;
+        if (res.ok && data.ok && data.exists && data.ui_state) {
           updateSidebar(data);
         }
       } catch (err) {
@@ -1451,7 +1458,7 @@ Please describe your operational requirements directly, or ask the question you 
       const allowedSet = new Set(Array.isArray(slot.allowed_values) ? slot.allowed_values : []);
 
       const currentTaskType = (
-        (typeof latestUiState !== 'undefined' && latestUiState && (latestUiState.task_type_key || (latestUiState.task_state && latestUiState.task_state.task_type_key) || (latestUiState.built_json && latestUiState.built_json.task_type_key))) ||
+        lastResponseData?.ui_state?.task_type_key ||
         (slot && slot.task_type_key) ||
         ''
       );
@@ -2434,214 +2441,240 @@ Please describe your operational requirements directly, or ask the question you 
 
       let data = {};
       let streamHandled = false;
+      let accumulatedReply = '';
+      let botMsgDiv = null;
+      let streamReader = null;
 
-      // 优先尝试基于 Server-Sent Events (SSE) 的流式交互
       try {
-        if (window.ReadableStream && typeof TextDecoder !== 'undefined') {
-          const streamRes = await fetch(API_BASE + '/api/chat/stream', {
+        // 优先尝试基于 Server-Sent Events (SSE) 的流式交互
+        try {
+          if (window.ReadableStream && typeof TextDecoder !== 'undefined') {
+            const streamRes = await fetch(API_BASE + '/api/chat/stream', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ session_id: sessionId, message: msg, source }),
+              signal: currentAbortController.signal,
+            });
+            if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
+
+            if (streamRes.ok && (streamRes.headers.get('content-type') || '').includes('text/event-stream')) {
+              const reader = streamRes.body.getReader();
+              streamReader = reader;
+              const decoder = new TextDecoder();
+              let streamBuffer = '';
+
+              while (true) {
+                const { done, value } = await reader.read();
+                if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) {
+                  return;
+                }
+                if (done) break;
+                streamBuffer += decoder.decode(value, { stream: true });
+                const lines = streamBuffer.split('\n');
+                streamBuffer = lines.pop() || '';
+
+                for (const rawLine of lines) {
+                  const line = rawLine.trim();
+                  if (line.startsWith('data: ')) {
+                    const payloadStr = line.slice(6);
+                    if (payloadStr === '[DONE]') continue;
+                    try {
+                      const parsed = JSON.parse(payloadStr);
+                      if (parsed.status === 'connected' && parsed.session_id) {
+                        sessionId = parsed.session_id;
+                        try { localStorage.setItem('seagent_session_id', sessionId); } catch(e){}
+                      } else if (parsed.step && !accumulatedReply) {
+                        const stepMsg = parsed.message || '正在分析与处理...';
+                        const displayText = `⚡ ${stepMsg}`;
+                        if (!botMsgDiv) {
+                          botMsgDiv = addMessage('bot', displayText, { kind: 'streaming-status' });
+                        } else if (botMsgDiv.dataset.messageKind === 'streaming-status') {
+                          const bubble = botMsgDiv.querySelector('.bubble');
+                          if (bubble) bubble.textContent = displayText;
+                          botMsgDiv.setAttribute('data-original', displayText);
+                        }
+                        messageContainer.scrollTop = messageContainer.scrollHeight;
+                      } else if (parsed.slot) {
+                        if (!botMsgDiv) {
+                          botMsgDiv = addMessage('bot', '', { kind: 'streaming' });
+                        }
+                        let slotContainer = botMsgDiv.querySelector('.bubble-slot-tags-container');
+                        if (!slotContainer) {
+                          slotContainer = document.createElement('div');
+                          slotContainer.className = 'bubble-slot-tags-container';
+                          const wrapper = botMsgDiv.querySelector('.bubble-wrapper') || botMsgDiv;
+                          wrapper.appendChild(slotContainer);
+                        }
+                        const tagId = `slot-tag-${parsed.key}`;
+                        let tagEl = slotContainer.querySelector(`#${tagId}`);
+                        if (!tagEl) {
+                          tagEl = document.createElement('span');
+                          tagEl.id = tagId;
+                          tagEl.className = 'bubble-slot-tag';
+                          slotContainer.appendChild(tagEl);
+                        }
+                        const valStr = (parsed.value !== null && parsed.value !== undefined) ? parsed.value : (parsed.raw_value || '');
+                        tagEl.innerHTML = `⚡ ${getFieldLabel(parsed.key)}: <strong>${escapeHtml(String(valStr))}</strong>`;
+                        highlightSidebarSlot(parsed.key);
+                      } else if (parsed.delta) {
+                        if (botMsgDiv && botMsgDiv.dataset.messageKind === 'streaming-status') {
+                          delete botMsgDiv.dataset.messageKind;
+                        }
+                        accumulatedReply += parsed.delta;
+                        if (!botMsgDiv) {
+                          botMsgDiv = addMessage('bot', accumulatedReply);
+                        } else {
+                          const bubble = botMsgDiv.querySelector('.bubble');
+                          if (bubble) {
+                            bubble.innerHTML = renderMessageContent(accumulatedReply, 'bot') + '<span class="streaming-cursor"></span>';
+                          }
+                          botMsgDiv.setAttribute('data-original', accumulatedReply);
+                        }
+                        messageContainer.scrollTop = messageContainer.scrollHeight;
+                      } else if (parsed.code === 200 && parsed.ui_state) {
+                        data = parsed;
+                        streamHandled = true;
+                      } else if (parsed.error) {
+                        const errMsg = parsed.msg || parsed.message || '请求处理异常';
+                        const reqId = parsed.request_id ? ` [request_id: ${parsed.request_id}]` : '';
+                        const retryHint = parsed.retryable ? ' (可尝试重试)' : '';
+                        addMessage('bot', `⛔ 错误 (${parsed.error}): ${errMsg}${reqId}${retryHint}`);
+                        streamHandled = true;
+                        return;
+                      }
+                    } catch (e) {}
+                  }
+                }
+                if (streamHandled) break;
+              }
+
+              if (streamHandled && data.code === 200) {
+                if (botMsgDiv) {
+                  if (botMsgDiv.dataset.messageKind === 'streaming-status') {
+                    delete botMsgDiv.dataset.messageKind;
+                  }
+                  const bubble = botMsgDiv.querySelector('.bubble');
+                  if (bubble) {
+                    bubble.innerHTML = renderMessageContent(data.reply || accumulatedReply, 'bot');
+                  }
+                  botMsgDiv.setAttribute('data-original', data.reply || accumulatedReply);
+                }
+                if (data.session_id) {
+                  sessionId = data.session_id;
+                  try { localStorage.setItem('seagent_session_id', sessionId); } catch(e){}
+                }
+                const phase = data.ui_state ? data.ui_state.phase : (data.done ? 'done' : null);
+                if (phase === 'done' && !data.rejected) {
+                  if (data.final_json) {
+                    addMessage('bot', I18N[currentLang].taskSuccessMsg);
+                    addMessage('bot', '```json\n' + JSON.stringify(data.final_json, null, 2) + '\n```');
+                  }
+                } else if (data.rejected || phase === 'rejected') {
+                  addMessage('bot', I18N[currentLang].taskRejectedMsg);
+                }
+                updateSidebar(data);
+                if (data.ui_state && botMsgDiv) {
+                  renderDecisionCardInBubble(botMsgDiv, data.ui_state);
+                }
+                return;
+              }
+              throw new Error('SSE response ended before the result arrived');
+            }
+            // Only a missing/unsupported endpoint proves the message was not processed.
+            if (streamRes.status !== 404 && streamRes.status !== 405) {
+              throw new Error(`Unexpected stream response (HTTP ${streamRes.status})`);
+            }
+          }
+        } catch (streamErr) {
+          if (streamErr.name === 'AbortError' || mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
+          console.warn('SSE response failed; message will not be resent:', streamErr);
+          if (botMsgDiv) {
+            const partialReply = accumulatedReply || (currentLang === 'zh' ? '响应中断' : 'Response interrupted');
+            const bubble = botMsgDiv.querySelector('.bubble');
+            if (bubble) bubble.innerHTML = renderMessageContent(partialReply, 'bot');
+            botMsgDiv.setAttribute('data-original', partialReply);
+            delete botMsgDiv.dataset.messageKind;
+          }
+          addMessage('bot', currentLang === 'zh'
+            ? '响应中断，服务器可能已处理此消息；为避免重复执行，未自动重发。请先核对会话状态。'
+            : 'The response was interrupted and the server may have processed this message. It was not resent automatically to avoid duplicate execution. Check the session state first.');
+          return;
+        }
+
+        // 同步请求仅用于浏览器不支持流式或服务端明确没有流式端点。
+        try {
+          const res = await fetch(API_BASE + '/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ session_id: sessionId, message: msg, source }),
             signal: currentAbortController.signal,
           });
 
-          if (streamRes.ok && (streamRes.headers.get('content-type') || '').includes('text/event-stream')) {
-            const reader = streamRes.body.getReader();
-            const decoder = new TextDecoder();
-            let accumulatedReply = '';
-            let botMsgDiv = null;
-            let streamBuffer = '';
+          if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
 
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) {
-                reader.cancel();
-                return;
-              }
-              streamBuffer += decoder.decode(value, { stream: true });
-              const lines = streamBuffer.split('\n');
-              streamBuffer = lines.pop() || '';
-
-              for (const rawLine of lines) {
-                const line = rawLine.trim();
-                if (line.startsWith('data: ')) {
-                  const payloadStr = line.slice(6);
-                  if (payloadStr === '[DONE]') continue;
-                  try {
-                    const parsed = JSON.parse(payloadStr);
-                    if (parsed.step && !accumulatedReply) {
-                      const stepMsg = parsed.message || '正在分析与处理...';
-                      const displayText = `⚡ ${stepMsg}`;
-                      if (!botMsgDiv) {
-                        botMsgDiv = addMessage('bot', displayText, { kind: 'streaming-status' });
-                      } else if (botMsgDiv.dataset.messageKind === 'streaming-status') {
-                        const bubble = botMsgDiv.querySelector('.bubble');
-                        if (bubble) bubble.textContent = displayText;
-                        botMsgDiv.setAttribute('data-original', displayText);
-                      }
-                      messageContainer.scrollTop = messageContainer.scrollHeight;
-                    } else if (parsed.slot) {
-                      if (!botMsgDiv) {
-                        botMsgDiv = addMessage('bot', '', { kind: 'streaming' });
-                      }
-                      let slotContainer = botMsgDiv.querySelector('.bubble-slot-tags-container');
-                      if (!slotContainer) {
-                        slotContainer = document.createElement('div');
-                        slotContainer.className = 'bubble-slot-tags-container';
-                        const wrapper = botMsgDiv.querySelector('.bubble-wrapper') || botMsgDiv;
-                        wrapper.appendChild(slotContainer);
-                      }
-                      const tagId = `slot-tag-${parsed.key}`;
-                      let tagEl = slotContainer.querySelector(`#${tagId}`);
-                      if (!tagEl) {
-                        tagEl = document.createElement('span');
-                        tagEl.id = tagId;
-                        tagEl.className = 'bubble-slot-tag';
-                        slotContainer.appendChild(tagEl);
-                      }
-                      const valStr = (parsed.value !== null && parsed.value !== undefined) ? parsed.value : (parsed.raw_value || '');
-                      tagEl.innerHTML = `⚡ ${getFieldLabel(parsed.key)}: <strong>${escapeHtml(String(valStr))}</strong>`;
-                      highlightSidebarSlot(parsed.key);
-                    } else if (parsed.delta) {
-                      if (botMsgDiv && botMsgDiv.dataset.messageKind === 'streaming-status') {
-                        delete botMsgDiv.dataset.messageKind;
-                      }
-                      accumulatedReply += parsed.delta;
-                      if (!botMsgDiv) {
-                        botMsgDiv = addMessage('bot', accumulatedReply);
-                      } else {
-                        const bubble = botMsgDiv.querySelector('.bubble');
-                        if (bubble) {
-                          bubble.innerHTML = renderMessageContent(accumulatedReply, 'bot') + '<span class="streaming-cursor"></span>';
-                        }
-                        botMsgDiv.setAttribute('data-original', accumulatedReply);
-                      }
-                      messageContainer.scrollTop = messageContainer.scrollHeight;
-                    } else if (parsed.code === 200 && parsed.ui_state) {
-                      data = parsed;
-                      streamHandled = true;
-                    } else if (parsed.error) {
-                      const errMsg = parsed.msg || parsed.message || '请求处理异常';
-                      const reqId = parsed.request_id ? ` [request_id: ${parsed.request_id}]` : '';
-                      const retryHint = parsed.retryable ? ' (可尝试重试)' : '';
-                      addMessage('bot', `⛔ 错误 (${parsed.error}): ${errMsg}${reqId}${retryHint}`);
-                      streamHandled = true;
-                      return;
-                    }
-                  } catch (e) {}
-                }
-              }
-            }
-
-            if (streamHandled && data.code === 200) {
-              if (botMsgDiv) {
-                if (botMsgDiv.dataset.messageKind === 'streaming-status') {
-                  delete botMsgDiv.dataset.messageKind;
-                }
-                const bubble = botMsgDiv.querySelector('.bubble');
-                if (bubble) {
-                  bubble.innerHTML = renderMessageContent(data.reply || accumulatedReply, 'bot');
-                }
-                botMsgDiv.setAttribute('data-original', data.reply || accumulatedReply);
-              }
-              if (data.session_id) {
-                sessionId = data.session_id;
-                try { localStorage.setItem('seagent_session_id', sessionId); } catch(e){}
-              }
-              const phase = data.ui_state ? data.ui_state.phase : (data.done ? 'done' : null);
-              if (phase === 'done' && !data.rejected) {
-                if (data.final_json) {
-                  addMessage('bot', I18N[currentLang].taskSuccessMsg);
-                  addMessage('bot', '```json\n' + JSON.stringify(data.final_json, null, 2) + '\n```');
-                }
-              } else if (data.rejected || phase === 'rejected') {
-                addMessage('bot', I18N[currentLang].taskRejectedMsg);
-              }
-              updateSidebar(data);
-              if (data.ui_state && botMsgDiv) {
-                renderDecisionCardInBubble(botMsgDiv, data.ui_state);
-              }
-              return;
-            }
+          let rawText = '';
+          try {
+            rawText = await res.text();
+          } catch (e) {
+            addMessage('bot', `响应读取失败 (HTTP ${res.status})`);
+            return;
           }
-        }
-      } catch (streamErr) {
-        if (streamErr.name === 'AbortError') return;
-        console.warn('SSE stream encountered error, falling back to sync fetch:', streamErr);
-      }
 
-      // 同步回退：若未走流式则执行标准 /api/chat
-      try {
-        const res = await fetch(API_BASE + '/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sessionId, message: msg, source }),
-          signal: currentAbortController.signal,
-        });
+          if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
 
-        if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
-
-        let rawText = '';
-        try {
-          rawText = await res.text();
-        } catch (e) {
-          addMessage('bot', `响应读取失败 (HTTP ${res.status})`);
-          return;
-        }
-
-        if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
-
-        try {
-          data = JSON.parse(rawText);
-        } catch (e) {
-          addMessage('bot', `服务响应非标准格式 (HTTP ${res.status})`);
-          return;
-        }
-
-        if (!res.ok || data.ok === false || (data.code && data.code !== 200)) {
-          const errMsg = data.msg || data.message || '请求处理异常';
-          const reqId = data.request_id ? ` [request_id: ${data.request_id}]` : '';
-          const retryHint = data.retryable ? ' (可尝试重试)' : '';
-          addMessage('bot', `⛔ 错误 (${data.error || 'ServerErr'}): ${errMsg}${reqId}${retryHint}`);
-          return;
-        }
-
-        if (data.session_id) {
-          sessionId = data.session_id;
-          try { localStorage.setItem('seagent_session_id', sessionId); } catch(e){}
-        }
-
-        let syncBotDiv = null;
-        if (data.reply) {
-          syncBotDiv = addMessage('bot', data.reply);
-        }
-
-        const phase = data.ui_state ? data.ui_state.phase : (data.done ? 'done' : null);
-        if (phase === 'done' && !data.rejected) {
-          if (data.final_json) {
-            addMessage('bot', I18N[currentLang].taskSuccessMsg);
-            addMessage('bot', '```json\n' + JSON.stringify(data.final_json, null, 2) + '\n```');
+          try {
+            data = JSON.parse(rawText);
+          } catch (e) {
+            addMessage('bot', `服务响应非标准格式 (HTTP ${res.status})`);
+            return;
           }
-        } else if (data.rejected || phase === 'rejected') {
-          addMessage('bot', I18N[currentLang].taskRejectedMsg);
-        }
 
-        updateSidebar(data);
-        if (data.ui_state && syncBotDiv) {
-          renderDecisionCardInBubble(syncBotDiv, data.ui_state);
+          if (!res.ok || data.ok === false || (data.code && data.code !== 200)) {
+            const errMsg = data.msg || data.message || '请求处理异常';
+            const reqId = data.request_id ? ` [request_id: ${data.request_id}]` : '';
+            const retryHint = data.retryable ? ' (可尝试重试)' : '';
+            addMessage('bot', `⛔ 错误 (${data.error || 'ServerErr'}): ${errMsg}${reqId}${retryHint}`);
+            return;
+          }
+
+          if (data.session_id) {
+            sessionId = data.session_id;
+            try { localStorage.setItem('seagent_session_id', sessionId); } catch(e){}
+          }
+
+          let syncBotDiv = null;
+          if (data.reply) {
+            syncBotDiv = addMessage('bot', data.reply);
+          }
+
+          const phase = data.ui_state ? data.ui_state.phase : (data.done ? 'done' : null);
+          if (phase === 'done' && !data.rejected) {
+            if (data.final_json) {
+              addMessage('bot', I18N[currentLang].taskSuccessMsg);
+              addMessage('bot', '```json\n' + JSON.stringify(data.final_json, null, 2) + '\n```');
+            }
+          } else if (data.rejected || phase === 'rejected') {
+            addMessage('bot', I18N[currentLang].taskRejectedMsg);
+          }
+
+          updateSidebar(data);
+          if (data.ui_state && syncBotDiv) {
+            renderDecisionCardInBubble(syncBotDiv, data.ui_state);
+          }
+        } catch (err) {
+          if (err.name === 'AbortError') return;
+          addMessage('bot', I18N[currentLang].networkError);
         }
-      } catch (err) {
-        if (err.name === 'AbortError') return;
-        addMessage('bot', I18N[currentLang].networkError);
       } finally {
+        if (streamReader) {
+          try { await streamReader.cancel(); }
+          catch (err) { console.warn('SSE reader cleanup failed:', err); }
+        }
         if (mySeq === currentRequestSeq && myGen === sessionGeneration) {
           isSending = false;
           currentAbortController = null;
           applyInteractionState(currentActions, currentReadOnly);
           messageInput.focus();
-        } else {
-          isSending = false;
         }
       }
     }
