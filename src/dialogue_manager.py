@@ -740,6 +740,21 @@ class DialogueManager:
             plan=plan,
             has_acknowledge_action=has_acknowledge_action,
         )
+        if hasattr(self, "slot_store") and hasattr(self.slot_store, "slots"):
+            for k, slot in self.slot_store.slots.items():
+                if slot.status in ("valid", "candidate", "conflict") and (slot.value is not None or slot.candidate_value is not None):
+                    self.emit_event(event_sink, "slot", {
+                        "key": k,
+                        "status": slot.status,
+                        "value": slot.value if slot.status == "valid" else (slot.candidate_value if slot.candidate_value is not None else slot.value),
+                        "raw_value": slot.raw_value,
+                    })
+        if self.phase in ("blocked_soft", "blocked_hard"):
+            self.emit_event(event_sink, "warning", {
+                "phase": self.phase,
+                "can_ignore": self.phase == "blocked_soft",
+                "message": "检测到环境与作业安全风险限制",
+            })
         self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在组织任务反馈与状态卡片...", "phase": self.phase})
         return reply
 

@@ -261,10 +261,18 @@ def api_chat_stream():
         reply = ""
         result_json = ""
         step_events: list[dict] = []
+        slot_events: list[dict] = []
+        warning_events: list[dict] = []
 
         def event_sink(event_type: str, ev_data: dict) -> None:
-            if event_type == "step" and isinstance(ev_data, dict):
+            if not isinstance(ev_data, dict):
+                return
+            if event_type == "step":
                 step_events.append(ev_data)
+            elif event_type == "slot":
+                slot_events.append(ev_data)
+            elif event_type == "warning":
+                warning_events.append(ev_data)
 
         with mgr._session_lock:
             with state._sessions_lock:
@@ -363,8 +371,15 @@ def api_chat_stream():
             else:
                 yield f"event: step\ndata: {json.dumps({'step': 'processing', 'message': '正在分析指令与状态...', 'phase': mgr.phase})}\n\n"
 
-            for i in range(0, len(reply), 12):
-                delta_text = reply[i:i + 12]
+            for slot_ev in slot_events:
+                yield f"event: slot\ndata: {json.dumps(slot_ev, ensure_ascii=False)}\n\n"
+
+            for warn_ev in warning_events:
+                yield f"event: warning\ndata: {json.dumps(warn_ev, ensure_ascii=False)}\n\n"
+
+            chunk_size = 4
+            for i in range(0, len(reply), chunk_size):
+                delta_text = reply[i:i + chunk_size]
                 yield f"event: delta\ndata: {json.dumps({'delta': delta_text, 'request_id': request_id}, ensure_ascii=False)}\n\n"
             yield f"event: result\ndata: {result_json}\n\n"
             yield "event: end\ndata: [DONE]\n\n"

@@ -83,6 +83,89 @@ class TestSSEStreamAPI:
         assert "guard_check" in step_names
         assert any(s in step_names for s in ["intent_routing", "slot_filling", "synthesizing"])
 
+    def test_sse_stream_emits_slot_events_on_task_input(self, client):
+        sid = "test_sse_slots_01"
+        from web_backend import get_or_create_manager
+        from tests.interaction_plan_support import ScriptedLLM, make_plan
+        mgr = get_or_create_manager(sid)
+        scripted_llm = ScriptedLLM()
+        scripted_llm.queue_plan(make_plan("WRITE"))
+        task_extraction = {
+            "slot_candidates": [
+                {
+                    "raw_key": "任务类型",
+                    "canonical_key": "task_type",
+                    "raw_value": "管缆巡检",
+                    "normalized_value": "管缆巡检",
+                    "confidence": 1.0,
+                },
+                {
+                    "raw_key": "任务类型标识",
+                    "canonical_key": "task_type_key",
+                    "raw_value": "管缆巡检",
+                    "normalized_value": "pipeline_inspection",
+                    "confidence": 1.0,
+                },
+                {
+                    "raw_key": "水深",
+                    "canonical_key": "water_depth",
+                    "raw_value": "150米",
+                    "normalized_value": 150,
+                    "confidence": 1.0,
+                },
+            ],
+            "list_mutations": [],
+            "unresolved": [],
+        }
+        scripted_llm.queue_extraction(task_extraction)
+        scripted_llm.queue_extraction(task_extraction)
+        mgr.llm = scripted_llm
+        mgr.intent_router.llm = scripted_llm
+        mgr.extractor.llm = scripted_llm
+
+        resp = client.post(
+            "/api/chat/stream",
+            json={"session_id": sid, "message": "安排水下管道巡检任务，作业水深150米"},
+        )
+        assert resp.status_code == 200
+        raw_stream = resp.get_data(as_text=True)
+
+        slot_payloads = []
+        lines = raw_stream.split("\n")
+        for i, line in enumerate(lines):
+            if line == "event: slot" and i + 1 < len(lines):
+                data_line = lines[i + 1]
+                if data_line.startswith("data: "):
+                    slot_payloads.append(json.loads(data_line[6:]))
+
+        assert len(slot_payloads) >= 1, f"Expected at least one slot event, got: {raw_stream}"
+        slot_keys = [s.get("key") for s in slot_payloads]
+        assert any(k in slot_keys for k in ["water_depth", "task_type"])
+
+    def test_sse_soft_warning_flow_and_ignore_contract(self, client):
+        sid = "test_sse_soft_warn_01"
+        from web_backend import get_or_create_manager
+        mgr = get_or_create_manager(sid)
+        mgr.phase = "blocked_soft"
+
+        resp = client.post(
+            "/api/chat/stream",
+            json={"session_id": sid, "message": "安排任务"},
+        )
+        assert resp.status_code == 200
+        raw_stream = resp.get_data(as_text=True)
+
+        assert "event: ping" in raw_stream
+        assert "event: delta" in raw_stream
+        assert "event: result" in raw_stream
+        result_payload = None
+        for line in raw_stream.split("\n"):
+            if line.startswith("data: ") and '"ui_state"' in line:
+                result_payload = json.loads(line[6:])
+                break
+        assert result_payload is not None
+        assert "ui_state" in result_payload
+
     def test_reload_events_stream(self, client):
         resp = client.get("/api/dev/reload-events/stream?after=0")
         assert resp.status_code == 200

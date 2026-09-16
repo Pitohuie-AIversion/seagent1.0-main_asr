@@ -1646,3 +1646,246 @@
         box-shadow: 0 0 10px rgba(0, 229, 255, 0.15);
       }
     }
+
+    /* ==================== SSE 细粒度打字机与光标 ==================== */
+    .streaming-cursor {
+      display: inline-block;
+      width: 2px;
+      height: 1.1em;
+      vertical-align: -0.15em;
+      background: var(--accent-cyan, #00f0ff);
+      box-shadow: 0 0 8px var(--accent-cyan, #00f0ff);
+      margin-left: 2px;
+      animation: blinkCursor 0.8s infinite cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    @keyframes blinkCursor {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.15; }
+    }
+
+    /* 气泡内实时动态提取槽位指示条 */
+    .bubble-slot-tags-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+      padding-top: 6px;
+      border-top: 1px dashed rgba(0, 240, 255, 0.2);
+    }
+
+    .bubble-slot-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.78rem;
+      background: rgba(0, 240, 255, 0.1);
+      border: 1px solid rgba(0, 240, 255, 0.35);
+      color: var(--accent-cyan, #00f0ff);
+      font-family: var(--font-mono, monospace);
+      animation: slotTagSlideIn 0.3s ease-out;
+    }
+
+    @keyframes slotTagSlideIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* 侧边栏槽位填报高亮脉冲动画 */
+    .slot-fill-highlight {
+      animation: slotFillPulse 1.4s ease-out !important;
+    }
+
+    @keyframes slotFillPulse {
+      0% {
+        box-shadow: 0 0 0 rgba(0, 240, 255, 0);
+        background-color: rgba(0, 240, 255, 0.35);
+      }
+      30% {
+        box-shadow: 0 0 16px rgba(0, 255, 196, 0.6);
+        background-color: rgba(0, 255, 196, 0.25);
+        border-color: rgba(0, 255, 196, 0.9);
+      }
+      100% {
+        box-shadow: 0 0 0 rgba(0, 240, 255, 0);
+      }
+    }
+
+    /* ==================== 软警告即时确认卡片 ==================== */
+    .warning-decision-card {
+      margin-top: 10px;
+      border-radius: 8px;
+      padding: 12px 16px;
+      background: linear-gradient(135deg, rgba(255, 157, 0, 0.12) 0%, rgba(15, 23, 42, 0.92) 100%);
+      border: 1px solid rgba(255, 157, 0, 0.45);
+      box-shadow: 0 4px 20px rgba(255, 157, 0, 0.15), inset 0 0 12px rgba(255, 157, 0, 0.05);
+      backdrop-filter: blur(12px);
+      width: 100%;
+      max-width: 580px;
+      animation: cardFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes cardFadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .warning-card-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .warning-card-badge {
+      font-size: 0.75rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(255, 157, 0, 0.2);
+      border: 1px solid var(--accent-amber, #ff9d00);
+      color: var(--accent-amber, #ff9d00);
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+
+    .warning-card-title {
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: #ffe6b0;
+      letter-spacing: 0.3px;
+    }
+
+    .warning-items-list {
+      list-style: none;
+      margin: 8px 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .warning-item-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      font-size: 0.84rem;
+      line-height: 1.4;
+      color: #fce8cc;
+      background: rgba(0, 0, 0, 0.2);
+      padding: 6px 10px;
+      border-radius: 4px;
+      border-left: 3px solid var(--accent-amber, #ff9d00);
+    }
+
+    .warning-item-code {
+      font-family: var(--font-mono, monospace);
+      font-weight: 700;
+      color: var(--accent-amber, #ff9d00);
+      font-size: 0.8rem;
+    }
+
+    .warning-card-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(255, 157, 0, 0.2);
+    }
+
+    .btn-ignore-warning-confirm {
+      background: linear-gradient(135deg, rgba(255, 157, 0, 0.25) 0%, rgba(255, 157, 0, 0.45) 100%);
+      border: 1px solid var(--accent-amber, #ff9d00);
+      color: #fff;
+      font-weight: 600;
+      padding: 7px 16px;
+      border-radius: 6px;
+      font-size: 0.84rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 0 10px rgba(255, 157, 0, 0.3);
+      transition: all 0.25s ease;
+    }
+
+    .btn-ignore-warning-confirm:hover:not(:disabled) {
+      background: linear-gradient(135deg, rgba(255, 157, 0, 0.4) 0%, rgba(255, 157, 0, 0.65) 100%);
+      box-shadow: 0 0 18px rgba(255, 157, 0, 0.6);
+      transform: translateY(-1px);
+    }
+
+    .btn-ignore-warning-confirm:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      transform: none !important;
+      box-shadow: none !important;
+    }
+
+    .btn-modify-warning-task {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: var(--text-secondary, #7b89b6);
+      padding: 7px 14px;
+      border-radius: 6px;
+      font-size: 0.84rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .btn-modify-warning-task:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: var(--text-primary, #eef2ff);
+      border-color: rgba(255, 255, 255, 0.4);
+    }
+
+    .warning-card-resolved {
+      background: linear-gradient(135deg, rgba(0, 255, 196, 0.08) 0%, rgba(15, 23, 42, 0.85) 100%) !important;
+      border-color: rgba(0, 255, 196, 0.35) !important;
+      box-shadow: 0 2px 10px rgba(0, 255, 196, 0.1) !important;
+    }
+
+    /* ==================== 硬约束严重阻断卡片 ==================== */
+    .hard-blocked-card {
+      margin-top: 10px;
+      border-radius: 8px;
+      padding: 12px 16px;
+      background: linear-gradient(135deg, rgba(255, 0, 60, 0.15) 0%, rgba(20, 10, 15, 0.95) 100%);
+      border: 1px solid rgba(255, 0, 60, 0.5);
+      box-shadow: 0 4px 25px rgba(255, 0, 60, 0.2);
+      backdrop-filter: blur(12px);
+      width: 100%;
+      max-width: 580px;
+      animation: cardFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .hard-card-badge {
+      font-size: 0.75rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(255, 0, 60, 0.25);
+      border: 1px solid var(--accent-red, #ff003c);
+      color: #ff4d73;
+      font-weight: 700;
+    }
+
+    .hard-card-title {
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: #ff99aa;
+    }
+
+    .hard-item-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      font-size: 0.84rem;
+      line-height: 1.4;
+      color: #ffd6dc;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 6px 10px;
+      border-radius: 4px;
+      border-left: 3px solid var(--accent-red, #ff003c);
+    }

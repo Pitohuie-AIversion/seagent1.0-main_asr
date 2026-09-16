@@ -1295,6 +1295,148 @@ Please describe your operational requirements directly, or ask the question you 
       renderOptionChips(uiState);
     }
 
+    function highlightSidebarSlot(slotKey) {
+      if (!slotKey) return;
+      const collectedDiv = document.getElementById('collectedFields');
+      if (!collectedDiv) return;
+      const rows = collectedDiv.querySelectorAll('.field-row');
+      const targetLabel = getFieldLabel(slotKey);
+      for (const row of rows) {
+        if (row.textContent.includes(targetLabel) || row.textContent.includes(slotKey)) {
+          row.classList.remove('slot-fill-highlight');
+          void row.offsetWidth;
+          row.classList.add('slot-fill-highlight');
+          setTimeout(() => row.classList.remove('slot-fill-highlight'), 1400);
+          break;
+        }
+      }
+    }
+
+    function renderDecisionCardInBubble(botMsgDiv, uiState) {
+      if (!botMsgDiv || !uiState) return;
+      const wrapper = botMsgDiv.querySelector('.bubble-wrapper');
+      if (!wrapper) return;
+
+      const phase = uiState.workflow_phase || uiState.phase;
+      const cs = uiState.constraint_state || {};
+
+      // 如果当前阶段已离开 blocked_soft，将历史卡片全部标记为已解决
+      if (phase !== 'blocked_soft') {
+        const allPrevWarningCards = document.querySelectorAll('.warning-decision-card:not(.warning-card-resolved)');
+        allPrevWarningCards.forEach(prevCard => {
+          prevCard.classList.add('warning-card-resolved');
+          const actions = prevCard.querySelector('.warning-card-actions');
+          if (actions) {
+            actions.innerHTML = `<div style="display:flex; align-items:center; gap:6px; color:#00ffc4; font-size:0.84rem; font-weight:600;"><span>✅</span><span>${currentLang === 'zh' ? '软警告已人工确认忽略，流程已继续' : 'Warning acknowledged & proceeding'}</span></div>`;
+          }
+        });
+      }
+
+      const existingCard = wrapper.querySelector('.warning-decision-card, .hard-blocked-card');
+      if (existingCard) existingCard.remove();
+
+      if (phase === 'blocked_soft' && uiState.actions && uiState.actions.can_ignore_soft_warning) {
+        const card = document.createElement('div');
+        card.className = 'warning-decision-card';
+
+        const header = document.createElement('div');
+        header.className = 'warning-card-header';
+        header.innerHTML = `<span class="warning-card-badge">SOFT WARNING</span><span class="warning-card-title">${currentLang === 'zh' ? '⚠️ 环境与作业安全风险提示 (可人工确认)' : '⚠️ Safety & Environment Warning (Review Required)'}</span>`;
+        card.appendChild(header);
+
+        const list = document.createElement('div');
+        list.className = 'warning-items-list';
+        const warnings = cs.soft_warnings || [];
+        for (const w of warnings) {
+          const item = document.createElement('div');
+          item.className = 'warning-item-row';
+          const codeStr = w.code ? `[${escapeHtml(w.code)}] ` : '';
+          item.innerHTML = `<span class="warning-item-code">${codeStr}</span><span>${escapeHtml(w.message || '')}</span>`;
+          list.appendChild(item);
+        }
+        card.appendChild(list);
+
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'warning-card-actions';
+
+        const ignoreBtn = document.createElement('button');
+        ignoreBtn.type = 'button';
+        ignoreBtn.className = 'btn-ignore-warning-confirm';
+        ignoreBtn.innerHTML = `<span>⚡</span><span>${currentLang === 'zh' ? '忽略警告并继续发布' : 'Ignore Warning & Proceed'}</span>`;
+        ignoreBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          ignoreBtn.disabled = true;
+          ignoreBtn.innerHTML = `<span>⏳</span><span>${currentLang === 'zh' ? '正在提交确认...' : 'Submitting...'}</span>`;
+          if (typeof window.sendMessage === 'function') {
+            window.sendMessage('忽略警告');
+          }
+        });
+
+        const modifyBtn = document.createElement('button');
+        modifyBtn.type = 'button';
+        modifyBtn.className = 'btn-modify-warning-task';
+        modifyBtn.textContent = currentLang === 'zh' ? '修改任务参数' : 'Modify Parameters';
+        modifyBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const input = document.getElementById('messageInput');
+          if (input) {
+            input.value = currentLang === 'zh' ? '修改任务：' : 'Modify task: ';
+            input.focus();
+          }
+        });
+
+        actionsDiv.appendChild(ignoreBtn);
+        actionsDiv.appendChild(modifyBtn);
+        card.appendChild(actionsDiv);
+
+        wrapper.appendChild(card);
+        messageContainer.scrollTop = messageContainer.scrollHeight;
+      } else if (phase === 'blocked_hard') {
+        const card = document.createElement('div');
+        card.className = 'hard-blocked-card';
+
+        const header = document.createElement('div');
+        header.className = 'warning-card-header';
+        header.innerHTML = `<span class="hard-card-badge">HARD BLOCKED</span><span class="hard-card-title">${currentLang === 'zh' ? '⛔ 硬约束严重违规 (必须修改参数)' : '⛔ Hard Constraint Violation (Correction Required)'}</span>`;
+        card.appendChild(header);
+
+        const list = document.createElement('div');
+        list.className = 'warning-items-list';
+        const violations = cs.hard_violations || [];
+        for (const v of violations) {
+          const item = document.createElement('div');
+          item.className = 'hard-item-row';
+          const codeStr = v.code ? `[${escapeHtml(v.code)}] ` : '';
+          item.innerHTML = `<span style="font-weight:700; color:#ff4d73;">${codeStr}</span><span>${escapeHtml(v.message || '')}</span>`;
+          list.appendChild(item);
+        }
+        card.appendChild(list);
+
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'warning-card-actions';
+
+        const modifyBtn = document.createElement('button');
+        modifyBtn.type = 'button';
+        modifyBtn.className = 'btn-modify-warning-task';
+        modifyBtn.style.cssText = 'background: rgba(255, 0, 60, 0.2); border-color: #ff003c; color: #fff;';
+        modifyBtn.textContent = currentLang === 'zh' ? '立即修改违规参数' : 'Modify Parameters Now';
+        modifyBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const input = document.getElementById('messageInput');
+          if (input) {
+            input.value = currentLang === 'zh' ? '修改参数：' : 'Modify parameter: ';
+            input.focus();
+          }
+        });
+
+        actionsDiv.appendChild(modifyBtn);
+        card.appendChild(actionsDiv);
+
+        wrapper.appendChild(card);
+        messageContainer.scrollTop = messageContainer.scrollHeight;
+      }
+    }
+
     function getSlotUiLabel(slot) {
       if (slot && slot.key === 'payload') {
         return currentLang === 'zh' ? '载荷' : 'Payload';
@@ -2339,6 +2481,28 @@ Please describe your operational requirements directly, or ask the question you 
                         botMsgDiv.setAttribute('data-original', displayText);
                       }
                       messageContainer.scrollTop = messageContainer.scrollHeight;
+                    } else if (parsed.slot) {
+                      if (!botMsgDiv) {
+                        botMsgDiv = addMessage('bot', '', { kind: 'streaming' });
+                      }
+                      let slotContainer = botMsgDiv.querySelector('.bubble-slot-tags-container');
+                      if (!slotContainer) {
+                        slotContainer = document.createElement('div');
+                        slotContainer.className = 'bubble-slot-tags-container';
+                        const wrapper = botMsgDiv.querySelector('.bubble-wrapper') || botMsgDiv;
+                        wrapper.appendChild(slotContainer);
+                      }
+                      const tagId = `slot-tag-${parsed.key}`;
+                      let tagEl = slotContainer.querySelector(`#${tagId}`);
+                      if (!tagEl) {
+                        tagEl = document.createElement('span');
+                        tagEl.id = tagId;
+                        tagEl.className = 'bubble-slot-tag';
+                        slotContainer.appendChild(tagEl);
+                      }
+                      const valStr = (parsed.value !== null && parsed.value !== undefined) ? parsed.value : (parsed.raw_value || '');
+                      tagEl.innerHTML = `⚡ ${getFieldLabel(parsed.key)}: <strong>${escapeHtml(String(valStr))}</strong>`;
+                      highlightSidebarSlot(parsed.key);
                     } else if (parsed.delta) {
                       if (botMsgDiv && botMsgDiv.dataset.messageKind === 'streaming-status') {
                         delete botMsgDiv.dataset.messageKind;
@@ -2348,7 +2512,9 @@ Please describe your operational requirements directly, or ask the question you 
                         botMsgDiv = addMessage('bot', accumulatedReply);
                       } else {
                         const bubble = botMsgDiv.querySelector('.bubble');
-                        if (bubble) bubble.textContent = accumulatedReply;
+                        if (bubble) {
+                          bubble.innerHTML = renderMessageContent(accumulatedReply, 'bot') + '<span class="streaming-cursor"></span>';
+                        }
                         botMsgDiv.setAttribute('data-original', accumulatedReply);
                       }
                       messageContainer.scrollTop = messageContainer.scrollHeight;
@@ -2369,10 +2535,15 @@ Please describe your operational requirements directly, or ask the question you 
             }
 
             if (streamHandled && data.code === 200) {
-              if (botMsgDiv && botMsgDiv.dataset.messageKind === 'streaming-status') {
-                delete botMsgDiv.dataset.messageKind;
+              if (botMsgDiv) {
+                if (botMsgDiv.dataset.messageKind === 'streaming-status') {
+                  delete botMsgDiv.dataset.messageKind;
+                }
                 const bubble = botMsgDiv.querySelector('.bubble');
-                if (bubble && data.reply) bubble.textContent = data.reply;
+                if (bubble) {
+                  bubble.innerHTML = renderMessageContent(data.reply || accumulatedReply, 'bot');
+                }
+                botMsgDiv.setAttribute('data-original', data.reply || accumulatedReply);
               }
               if (data.session_id) {
                 sessionId = data.session_id;
@@ -2388,6 +2559,9 @@ Please describe your operational requirements directly, or ask the question you 
                 addMessage('bot', I18N[currentLang].taskRejectedMsg);
               }
               updateSidebar(data);
+              if (data.ui_state && botMsgDiv) {
+                renderDecisionCardInBubble(botMsgDiv, data.ui_state);
+              }
               return;
             }
           }
@@ -2438,8 +2612,9 @@ Please describe your operational requirements directly, or ask the question you 
           try { localStorage.setItem('seagent_session_id', sessionId); } catch(e){}
         }
 
+        let syncBotDiv = null;
         if (data.reply) {
-          addMessage('bot', data.reply);
+          syncBotDiv = addMessage('bot', data.reply);
         }
 
         const phase = data.ui_state ? data.ui_state.phase : (data.done ? 'done' : null);
@@ -2453,6 +2628,9 @@ Please describe your operational requirements directly, or ask the question you 
         }
 
         updateSidebar(data);
+        if (data.ui_state && syncBotDiv) {
+          renderDecisionCardInBubble(syncBotDiv, data.ui_state);
+        }
       } catch (err) {
         if (err.name === 'AbortError') return;
         addMessage('bot', I18N[currentLang].networkError);
