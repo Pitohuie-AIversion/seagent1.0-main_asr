@@ -13,6 +13,8 @@ SEAgent 对话流 ──> TaskIntent ──> MCP ROS 2 闭环测试
 import time
 import pytest
 import sys
+from types import SimpleNamespace
+from unittest.mock import Mock
 from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -74,6 +76,11 @@ class MockDialogueManager:
         self.phase = phase
         self.final_result = final_result
         self.dispatched_ros2_task_id = None
+        self.task_state = {}
+        self.slot_store = SimpleNamespace(version=1)
+        self.validator = SimpleNamespace(validate_task=Mock(return_value=SimpleNamespace(
+            overall_status="valid", violations=[], state_snapshot=None)))
+        self._get_valid_acknowledgements = Mock(return_value=[])
 
 
 # ============================================================================

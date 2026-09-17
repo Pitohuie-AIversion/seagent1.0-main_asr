@@ -94,6 +94,8 @@ def save_conversation(
     mode_transition_history: Optional[List[Dict[str, Any]]] = None,
     control_state: Optional[str] = None,
     last_control_request: Optional[Dict[str, Any]] = None,
+    ros2_dispatch: Optional[Dict[str, Any]] = None,
+    pending_published_intent: Optional[Dict[str, Any]] = None,
 ) -> str:
     """保存 v2 对话快照，并返回不含路径的文件名。"""
     history_dir = _ensure_dir()
@@ -125,6 +127,8 @@ def save_conversation(
         "mode_transition_history": mode_transition_history or [],
         "control_state": control_state or "idle",
         "last_control_request": last_control_request,
+        "ros2_dispatch": copy.deepcopy(ros2_dispatch),
+        "_pending_published_intent": copy.deepcopy(pending_published_intent),
         "task_id": built_json.get("task_id") or task_state.get("task_id") or "unknown",
         "task_type": task_state.get("task_type_key", "unknown"),
         "intent_id": intent_id,

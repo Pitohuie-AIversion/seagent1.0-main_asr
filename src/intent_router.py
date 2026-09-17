@@ -349,16 +349,14 @@ class IntentRouter:
                 expected_slot_options,
             )
 
-            is_task_start_intent = any(
-                kw in user_msg_strip
-                for kw in [
+            task_start_text = re.sub(r"[\s，,。.!！?？、；;：:]+", "", user_msg_strip)
+            is_task_start_intent = task_start_text in {
                     "开始这个任务", "那开始这个任务", "就做这个任务", "就安排这个", "开始创建",
                     "就这个吧", "安排这个任务", "创建这个任务", "就按这个做", "开始做这个",
                     "开启这个任务", "按这个开始", "就选这个任务", "那就这个", "开始这个",
                     "开始该任务", "就做这个", "安排这个", "创建这个", "选这个任务", "那开始这个",
                     "开始吧", "开始该作业", "就按这个", "开始任务",
-                ]
-            ) or (context.get("has_task") and "开始" in user_msg_strip)
+                }
 
             if explicit_selection or bare_expected_alias or expected_list_selection or is_task_start_intent:
                 logger.info(

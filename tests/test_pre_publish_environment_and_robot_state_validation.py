@@ -411,7 +411,8 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
             # 3. 用户确认发布
             confirm_reply = self.dm.process("确认发布")
             self.assertEqual(self.dm.phase, "done", f"确认发布应成功进入 done，实际回复: {confirm_reply}")
-            self.assertIn("任务已生成并下发", confirm_reply)
+            self.assertIn("任务已生成并归档", confirm_reply)
+            self.assertNotIn("已生成并下发", confirm_reply)
 
 
 if __name__ == "__main__":

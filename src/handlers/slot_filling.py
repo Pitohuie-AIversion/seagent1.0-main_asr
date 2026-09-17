@@ -12,6 +12,7 @@ src/handlers/slot_filling.py - 槽位填报与消歧生命周期处理器
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 import uuid
@@ -296,6 +297,14 @@ class SlotFillingHandler(BaseDialogueHandler):
         had_task_type_key_at_turn_start = task_type_key is not None
         current_state = manager.slot_store.get_task_state()
         state_before_turn = dict(current_state)
+        reference_candidates = {
+            item["canonical_key"]: item
+            for item in [
+                *getattr(manager, "_pending_referential_candidates", []),
+                *ctx.metadata.get("referential_candidates", []),
+            ]
+        }
+        ctx.metadata["referential_candidates"] = list(reference_candidates.values())
 
         if task_type_key:
             schema = manager.builder.get_schema(task_type_key, manager.mode)
@@ -322,6 +331,9 @@ class SlotFillingHandler(BaseDialogueHandler):
                     new_unresolved.append(item)
 
         def reply_write_without_candidates() -> str:
+            if task_type_key is None and reference_candidates:
+                manager._pending_referential_candidates = copy.deepcopy(list(reference_candidates.values()))
+                turn_unresolved.append("已暂存所选对象，尚未写入任务参数；请先选择任务类型，再按该任务校验这些选择。")
             return self.reply_write_without_candidates(
                 user_message=user_message,
                 request_id=request_id,
@@ -340,6 +352,11 @@ class SlotFillingHandler(BaseDialogueHandler):
                 required=None,
                 conversation_history=manager.conversation_history,
                 allow_empty_for_side_effect=has_acknowledge_action,
+            )
+            extraction_res = self.merge_referential_candidates(
+                extraction_res,
+                [item for item in reference_candidates.values()
+                 if item["canonical_key"] in {"task_type", "task_type_key"}],
             )
 
             if getattr(_dm_mod, "is_task_patch_v2_enabled", is_task_patch_v2_enabled)():
@@ -595,9 +612,12 @@ class SlotFillingHandler(BaseDialogueHandler):
             request_id=request_id,
             expected_version=expected_version,
         )
+        manager._pending_referential_candidates = []
 
         if old_phase == "done":
             manager.final_result = None
+            manager.ros2_dispatch = None
+            manager._pending_published_intent = None
 
         # Apply proposed instance state AFTER successful commit
         manager.mode = proposed_mode

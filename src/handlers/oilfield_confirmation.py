@@ -10,6 +10,7 @@ src/handlers/oilfield_confirmation.py - 油田交互确认与指代回溯处理�
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 from typing import Any
@@ -154,7 +155,8 @@ class OilfieldConfirmationHandler:
         keywords = ["不是", "不对", "否", "错了", "重新", "取消油田", "不要此油田", "这个油田不对", "不要"]
         return any(kw in msg for kw in keywords) or msg in ("不要", "取消", "不对", "不是")
 
-    def process_referential_carryover(self, user_message: str) -> str:
+    def remember_discussed_entities(self, user_message: str) -> None:
+        """Remember query context without changing the task or its lifecycle."""
         manager = self.manager
         # 四大实体 (Task, Robot, Oilfield, Payload) 全量上下文提取与暂存
         r_ent = manager._extract_robot_entity_from_text(user_message)
@@ -168,6 +170,25 @@ class OilfieldConfirmationHandler:
         p_ent = manager._extract_payload_entity_from_text(user_message)
         if p_ent:
             manager._last_discussed_payload = p_ent
+
+    def process_referential_carryover(self, user_message: str) -> list[dict]:
+        """Resolve WRITE references into candidates for the ordinary transaction.
+
+        This helper never writes slots, rewrites user text, or changes phase.
+        The caller must first route the original message and enforce done guards.
+        """
+        manager = self.manager
+        candidates: list[dict] = []
+        if re.search(r"不要|不用|不选|不去|不带|别|取消|如果|假如|是否|能否", user_message):
+            return candidates
+
+        def add(key: str, value: Any) -> None:
+            candidates.append({
+                "canonical_key": key, "raw_key": key,
+                "raw_value": copy.deepcopy(value),
+                "normalized_value": copy.deepcopy(value),
+                "confidence": 1.0, "resolution_method": "reference_context",
+            })
 
         # 1. 任务类型指代继承
         REFERENTIAL_START_TRIGGERS = (
@@ -183,18 +204,7 @@ class OilfieldConfirmationHandler:
             and "不" not in user_message and "别" not in user_message and "取消" not in user_message
         )
         if is_referential_start and not manager.task_state.get("task_type_key") and manager._last_discussed_task_type:
-            schema = manager.builder.get_schema(manager._last_discussed_task_type, manager.mode)
-            manager.slot_store.init_task_slots(schema)
-            manager.slot_store.slots["task_type_key"] = Slot(
-                slot_name="task_type_key",
-                value=manager._last_discussed_task_type,
-                value_type="string",
-                status="valid",
-                source="user",
-            )
-            manager._transition_phase("collecting", reason="referential_carryover")
-            manager._switch_dialogue_mode("task_collection", source="referential_carryover", reason="继承上一轮讨论的任务类型")
-            user_message = f"开启{manager._last_discussed_task_type}任务"
+            add("task_type_key", manager._last_discussed_task_type)
 
         # 2. 机器人实体指代继承
         ROBOT_TRIGGERS = ("就用这个机器人", "选这个机器人", "用这个设备", "就用这款", "选这个型", "安排这个机", "就用它", "用它", "选这个设备", "用这个机器人", "就这个机器人")
@@ -204,15 +214,16 @@ class OilfieldConfirmationHandler:
         )
         if is_robot_ref and manager._last_discussed_robot:
             r_val = manager._last_discussed_robot
-            if any(f in r_val for f in ["座", "天鹰", "金牛", "御夫", "奇点", "双子", "凤凰"]):
-                manager.slot_store.slots["robot_family"] = Slot(slot_name="robot_family", value=r_val, value_type="string", status="valid", source="user")
-            elif any(c in r_val for c in ["观察级", "工作级", "履带式"]):
-                manager.slot_store.slots["robot_class"] = Slot(slot_name="robot_class", value=r_val, value_type="string", status="valid", source="user")
+            if manager.kb._resolve_robot_variant_exact(r_val):
+                add("equipment_type", r_val)
+            elif manager.kb.resolve_robot_family(r_val):
+                add("equipment_family", r_val)
+            elif manager.kb._resolve_robot_class_key(r_val) in manager.kb.robot_fleet.get("robot_classes", {}):
+                add("equipment_class", manager.kb._resolve_robot_class_key(r_val))
             else:
-                manager.slot_store.slots["specific_robot_id"] = Slot(slot_name="specific_robot_id", value=r_val, value_type="string", status="valid", source="user")
-            if manager.phase not in ("collecting", "confirming"):
-                manager._transition_phase("collecting", reason="robot_referential_carryover")
-            manager._switch_dialogue_mode("task_collection", source="referential_carryover", reason="继承上一轮讨论的机器人")
+                # Unit aliases are resolved by the normal equipment cascade;
+                # unknown or ambiguous names must remain uncommitted.
+                add("equipment_name", r_val)
 
         # 3. 油田海域实体指代继承
         OILFIELD_TRIGGERS = ("就去这个油田", "选这个油田", "去这个海域", "选这个区域", "就在这做", "去这里", "就选这个油田", "去这个油田", "在这做")
@@ -221,11 +232,7 @@ class OilfieldConfirmationHandler:
             and ("这个油田" in user_message or "该海域" in user_message or "这个区域" in user_message or "这里" in user_message)
         )
         if is_oilfield_ref and manager._last_discussed_oilfield:
-            manager.slot_store.slots["raw_oilfield_name"] = Slot(slot_name="raw_oilfield_name", value=manager._last_discussed_oilfield, value_type="string", status="valid", source="user")
-            manager.slot_store.slots["oilfield_name"] = Slot(slot_name="oilfield_name", value=manager._last_discussed_oilfield, value_type="string", status="valid", source="user")
-            if manager.phase not in ("collecting", "confirming"):
-                manager._transition_phase("collecting", reason="oilfield_referential_carryover")
-            manager._switch_dialogue_mode("task_collection", source="referential_carryover", reason="继承上一轮讨论的油田")
+            add("oilfield_name", manager._last_discussed_oilfield)
 
         # 4. 载荷工具实体指代继承
         PAYLOAD_TRIGGERS = ("就用这个工具", "带上这个", "选这个载荷", "挂载这个", "就带这个", "就用这个载荷", "装上这个", "用这个工具", "带这个")
@@ -234,17 +241,28 @@ class OilfieldConfirmationHandler:
             and ("这个工具" in user_message or "该载荷" in user_message or "这个传感器" in user_message)
         )
         if is_payload_ref and manager._last_discussed_payload:
-            current_payloads = manager.slot_store.slots.get("onboard_payloads").value if manager.slot_store.slots.get("onboard_payloads") else []
-            if not isinstance(current_payloads, list):
-                current_payloads = [current_payloads] if current_payloads else []
-            if manager._last_discussed_payload not in current_payloads:
-                current_payloads.append(manager._last_discussed_payload)
-            manager.slot_store.slots["onboard_payloads"] = Slot(slot_name="onboard_payloads", value=current_payloads, value_type="list", status="valid", source="user")
-            if manager.phase not in ("collecting", "confirming"):
-                manager._transition_phase("collecting", reason="payload_referential_carryover")
-            manager._switch_dialogue_mode("task_collection", source="referential_carryover", reason="继承上一轮讨论的载荷工具")
+            add("payload", [manager._last_discussed_payload])
 
-        return user_message
+        return candidates
+
+    @staticmethod
+    def merge_referential_candidates(extraction: dict, candidates: list[dict]) -> dict:
+        """Fill absent model candidates; explicit values in this turn take priority."""
+        result = copy.deepcopy(extraction)
+        existing = result.setdefault("slot_candidates", [])
+        keys = {item.get("canonical_key") for item in existing if isinstance(item, dict)}
+        selector_groups = (
+            {"task_type", "task_type_key"},
+            {"equipment_class", "equipment_family", "equipment_type", "equipment_unit_id", "equipment_name"},
+        )
+        for candidate in candidates:
+            key = candidate["canonical_key"]
+            if any(key in group and keys.intersection(group) for group in selector_groups):
+                continue
+            if key not in keys:
+                existing.append(copy.deepcopy(candidate))
+                keys.add(key)
+        return result
 
     def link_oilfield_update_in_transaction(
         self,

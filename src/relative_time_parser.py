@@ -56,6 +56,7 @@ class AmbiguityCode(str, Enum):
     DATE_WEEKDAY_CONFLICT = "DATE_WEEKDAY_CONFLICT"        # 日期与星期对不上
     LEAP_YEAR_EXPECTED = "LEAP_YEAR_EXPECTED"              # 2月29日但不是闰年
     DAY_OUT_OF_RANGE_FOR_MONTH = "DAY_OUT_OF_RANGE"        # 某月没有那一天（如4月31日）
+    TIME_OUT_OF_RANGE = "TIME_OUT_OF_RANGE"               # 非法小时、分钟或秒
     DST_GAP_NONEXISTENT = "DST_GAP_NONEXISTENT"            # 本地时间落在 DST 跳过区间
     DST_FOLD_AMBIGUOUS = "DST_FOLD_AMBIGUOUS"              # 本地时间对应两个真实时刻
     MULTIPLE_PARSE_INTERPRETATIONS = "MULTIPLE_INTERPRET"  # 多种可能解析且无法消歧
@@ -314,7 +315,7 @@ def _extract_explicit_date_ira(text: str, base_dt: datetime, ira: TemporalIR) ->
 
     # ---- 3. 强相对日期词（只在没通过绝对路径匹配时使用，防止覆盖） ----
     if ira.day is None:
-        if "大后天" in norm or "3天后" in norm or "三天后" in norm:
+        if "大后天" in norm:
             ira.day_offset = 3 if ira.day_offset is None else ira.day_offset
             ira.resolution_method = ira.resolution_method or "strong_relative_3d"
         if "后天" in norm or "后晚" in norm or "后早" in norm:
@@ -408,15 +409,21 @@ def _extract_explicit_time_ira(text: str, base_dt: datetime, ira: TemporalIR) ->
     meridiem = _detect_meridiem(norm)
     ira.meridiem_explicit = meridiem
 
-    _H_NUM = r"(?:[0-2]?[0-9]|[零一二两三四五六七八九十]{1,3})"
-    _M_NUM = r"(?:[0-5]?[0-9]|[零一二三四五六七八九十]{1,3})"
+    # Consume the entire number before validating it; range-limited patterns
+    # can silently accept a prefix of e.g. 12:99 or a suffix of 125点.
+    _H_NUM = r"(?:[0-9]+|[零一二两三四五六七八九十百千万]+)"
+    _M_NUM = _H_NUM
 
     # ISO 格式 HH:MM[:SS]（小时/分钟/秒仍优先用阿拉伯数字，ISO 不常混用中文）
     m_hms = re.search(
-        rf"(?<![0-9])({_H_NUM})[:：]({_M_NUM})(?:[:：]({_M_NUM}))?",
+        rf"(?<![0-9:：])({_H_NUM})[:：]({_M_NUM})(?:[:：]({_M_NUM}))?(?![0-9:：])",
         norm,
     )
     if m_hms:
+        if any(part and part.isascii() and len(part) > 2 for part in m_hms.groups()):
+            ira.kind = TemporalKind.CONFLICT
+            ira.add_ambiguity(AmbiguityCode.TIME_OUT_OF_RANGE, "时分秒最多使用两位数字")
+            return
         h = parse_cn_number_str(m_hms.group(1))
         mi = parse_cn_number_str(m_hms.group(2))
         se_raw = m_hms.group(3)
@@ -444,19 +451,23 @@ def _extract_explicit_time_ira(text: str, base_dt: datetime, ira: TemporalIR) ->
                 h = 0
             ira.hour = h
 
-            # 附加分钟（已被预处理替换为"点30分"等形式，这里再做一次兜底）
-            if re.search(r"(?:点|时)\s*(?:半|30分)", norm):
+            # Minutes belong to this clock, not another clock in the sentence.
+            tail = norm[m_clock.end():]
+            if re.match(r"\s*半", tail):
                 ira.minute = 30
-            elif re.search(r"(?:点|时)\s*(?:三刻|3刻|45分)", norm):
+            elif re.match(r"\s*(?:三刻|3刻)", tail):
                 ira.minute = 45
-            elif re.search(r"(?:点|时)\s*(?:一刻|1刻|15分)", norm):
+            elif re.match(r"\s*(?:一刻|1刻)", tail):
                 ira.minute = 15
             else:
-                m_min = re.search(rf"(?:点|时)\s*({_M_NUM})\s*(?:分|分钟)?", norm)
-                if m_min and m_min.group(1) and m_min.start(1) > m_clock.end(1):
+                m_min = re.match(rf"\s*({_M_NUM})\s*(?:分钟|分)?", tail)
+                if m_min:
                     mn = parse_cn_number_str(m_min.group(1))
                     if mn is not None:
                         ira.minute = mn
+                    m_sec = re.match(rf"\s*({_M_NUM})\s*秒", tail[m_min.end():])
+                    if m_sec:
+                        ira.second = parse_cn_number_str(m_sec.group(1))
 
             ira.resolution_method = ira.resolution_method or "explicit_hms_colloquial"
             return
@@ -489,6 +500,8 @@ def _extract_explicit_time_ira(text: str, base_dt: datetime, ira: TemporalIR) ->
 
 def _materialize_ira(ira: TemporalIR, base_dt: datetime) -> tuple[Optional[date], Optional[dtime]]:
     """从 IR 计算具体的 local date 和 local time，同时登记歧义/冲突。"""
+    if ira.kind == TemporalKind.CONFLICT:
+        return None, None
     ref_date = base_dt.date()
     ref_year = base_dt.year
 
@@ -505,17 +518,12 @@ def _materialize_ira(ira: TemporalIR, base_dt: datetime) -> tuple[Optional[date]
             return None, None
         target_date = date(year, ira.month, ira.day)
 
-        # 显式星期 vs 日期 冲突检测
-        if ira.weekday is not None and target_date.weekday() != ira.weekday:
-            # 中文用户可能误说星期几 -> 标记 AMBIGUOUS 并给出原因，最终仍使用日期字段
-            ira.add_ambiguity(
-                AmbiguityCode.DATE_WEEKDAY_CONFLICT,
-                f"日期 {target_date.isoformat()} 是 {['周一','周二','周三','周四','周五','周六','周日'][target_date.weekday()]}，"
-                f"但用户给出的是 {['周一','周二','周三','周四','周五','周六','周日'][ira.weekday]}",
-                date_weekday=target_date.weekday(),
-                stated_weekday=ira.weekday,
-            )
-            # 保留 target_date，歧义仅用于上层询问或日志
+    # A relative date and a weekday describe the same date. Resolve the date
+    # first and use the weekday only to check consistency.
+    if target_date is None and any(offset is not None for offset in (
+        ira.day_offset, ira.week_offset, ira.month_offset,
+    )):
+        target_date = ref_date
 
     # B. 周锚 + 星期
     if target_date is None and ira.weekday is not None:
@@ -553,22 +561,24 @@ def _materialize_ira(ira: TemporalIR, base_dt: datetime) -> tuple[Optional[date]
         if ira.month_offset is not None:
             target_date = _add_months_safe(target_date, ira.month_offset)
 
+    if target_date is not None and ira.weekday is not None and target_date.weekday() != ira.weekday:
+        ira.add_ambiguity(
+            AmbiguityCode.DATE_WEEKDAY_CONFLICT,
+            f"日期 {target_date.isoformat()} 与给出的星期不一致",
+            date_weekday=target_date.weekday(), stated_weekday=ira.weekday,
+        )
+
     # ---- 时间维度 ----
     target_time: Optional[dtime] = None
-    if ira.is_now:
-        # 日期也跟随 base_dt（以防日期偏移没有设置）
-        if target_date is None:
-            target_date = ref_date
-        target_time = dtime(
-            min(23, max(0, ira.hour or 0)),
-            min(59, max(0, ira.minute)),
-            min(59, max(0, ira.second)),
-        )
-    elif ira.hour is not None:
-        h = min(23, max(0, ira.hour))
-        mi = min(59, max(0, ira.minute))
-        se = min(59, max(0, ira.second))
-        target_time = dtime(h, mi, se)
+    if ira.hour is not None:
+        if not (0 <= ira.hour <= 23 and 0 <= ira.minute <= 59 and 0 <= ira.second <= 59):
+            ira.kind = TemporalKind.CONFLICT
+            ira.add_ambiguity(
+                AmbiguityCode.TIME_OUT_OF_RANGE, "小时须为0–23，分钟和秒须为0–59",
+                hour=ira.hour, minute=ira.minute, second=ira.second,
+            )
+            return None, None
+        target_time = dtime(ira.hour, ira.minute, ira.second)
     elif ira.hour_offset is not None or ira.minute_offset is not None:
         # 以 base_dt 的当前时刻为基准加偏移
         tmp = datetime.combine(target_date or ref_date, base_dt.timetz().replace(tzinfo=None))
@@ -576,8 +586,7 @@ def _materialize_ira(ira: TemporalIR, base_dt: datetime) -> tuple[Optional[date]
             tmp += timedelta(hours=ira.hour_offset)
         if ira.minute_offset:
             tmp += timedelta(minutes=ira.minute_offset)
-        if target_date is None:
-            target_date = tmp.date()
+        target_date = tmp.date()
         target_time = tmp.time()
         # 防止重复再加偏移：已经应用过了
 
@@ -610,6 +619,8 @@ def _classify_ambiguities(ira: TemporalIR, hour: Optional[int]) -> None:
     """
     if (
         hour is not None
+        and ira.hour is not None
+        and not ira.is_now
         and ira.meridiem_explicit is None
         and (1 <= hour <= 11)
     ):

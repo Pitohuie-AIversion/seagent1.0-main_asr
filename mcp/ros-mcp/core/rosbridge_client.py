@@ -50,6 +50,11 @@ from .sealien_protocol import (
 logger = logging.getLogger(__name__)
 
 
+if "PublishOutcomeUnknown" not in globals():
+    class PublishOutcomeUnknown(ConnectionError):
+        """A task publish write started but did not return a reliable outcome."""
+
+
 # ============================================================================
 # ROS 组协议常量
 # ============================================================================
@@ -678,7 +683,13 @@ class RosbridgeClient:
         with self._lock:
             if not self._ws or not self._ws.connected:
                 raise ConnectionError(f"rosbridge 未连接: {self._url}")
-            self._ws.send(json.dumps(message, allow_nan=False))
+            encoded = json.dumps(message, allow_nan=False)
+            try:
+                self._ws.send(encoded)
+            except Exception as exc:
+                if message.get("op") == "publish" and message.get("topic") == TASK_TOPIC:
+                    raise PublishOutcomeUnknown("ROS 2 任务发送已开始，但无法确认网关是否接收。") from exc
+                raise
 
     def call_service(
         self,

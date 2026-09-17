@@ -134,7 +134,7 @@ def test_referential_task_initiation_carryover():
 
 
 def test_referential_all_entities_carryover():
-    """测试四大实体（任务类型、机器人、油田海域、载荷工具）的上下文暂存与口语指代继承。"""
+    """未选任务时保留指代候选，不能跳过任务 schema 写成有效槽位。"""
     llm = DummyLLM()
     kb = KnowledgeBase()
 
@@ -143,20 +143,23 @@ def test_referential_all_entities_carryover():
     dm_robot.process("系统支持金牛座机器人吗")
     assert dm_robot._last_discussed_robot is not None
     dm_robot.process("就用这个机器人")
-    assert dm_robot.slot_store.get_task_state().get("robot_class") is not None or dm_robot.slot_store.get_task_state().get("robot_family") is not None
+    assert dm_robot._pending_referential_candidates[0]["canonical_key"] == "equipment_family"
+    assert not dm_robot.slot_store.get_task_state()
 
     # 2. 油田海域指代继承
     dm_oil = DialogueManager(llm=llm, kb=kb)
     dm_oil.process("介绍一下流花11-1油田")
     assert dm_oil._last_discussed_oilfield == "流花11-1油田"
     dm_oil.process("就去这个油田")
-    assert dm_oil.slot_store.get_task_state().get("raw_oilfield_name") == "流花11-1油田" or dm_oil.slot_store.get_task_state().get("oilfield_name") == "流花11-1油田"
+    assert dm_oil._pending_referential_candidates[0]["normalized_value"] == "流花11-1油田"
+    assert not dm_oil.slot_store.get_task_state()
 
     # 3. 载荷工具指代继承
     dm_payload = DialogueManager(llm=llm, kb=kb)
     dm_payload.process("系统支持水下摄像机载荷吗")
     assert dm_payload._last_discussed_payload == "高清水下摄像机"
     dm_payload.process("就带这个工具")
-    assert "高清水下摄像机" in dm_payload.slot_store.get_task_state().get("onboard_payloads", [])
-
+    assert dm_payload._pending_referential_candidates[0]["canonical_key"] == "payload"
+    assert dm_payload._pending_referential_candidates[0]["normalized_value"] == ["高清水下摄像机"]
+    assert not dm_payload.slot_store.get_task_state()
 

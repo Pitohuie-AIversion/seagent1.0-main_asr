@@ -1,11 +1,10 @@
 """
-hot_reload.py - 业务逻辑与配置热重载管理器
+hot_reload.py - 配置热重载管理器
 
-支持在 vLLM/ASR 模型常驻显存的情况下，动态重载 src/ 业务代码和 config/ 配置，
-无需重启 Python 进程或重新加载大模型权重。
+在 vLLM/ASR 模型常驻显存时刷新配置与会话。
+Python 源码变动必须重启：处理器的缓存导入绑定无法通过局部 reload 安全更新。
 """
 
-import importlib
 import logging
 import os
 import sys
@@ -22,32 +21,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SRC_DIR = BASE_DIR / "src"
 CONFIG_DIR = BASE_DIR / "config"
 
-# 需要热重载的模块列表（按依赖拓扑顺序排序）
-RELOAD_MODULE_ORDER = [
-    "src.exceptions",
-    "src.result_paths",
-    "src.simulated_time",
-    "src.environment_info",
-    "src.state_info",
-    "src.asr_normalizer",
-    "src.coord_parser",
-    "src.prompts",
-    "src.oilfield_linker",
-    "src.model_profile",
-    "src.session_state",
-    "src.session_state_shadow",
-    "src.knowledge_retriever",
-    "src.normalizer",
-    "src.validator",
-    "src.extractor",
-    "src.slot_store",
-    "src.constraint_checker",
-    "src.task_intent_builder",
-    "src.dialogue_manager",
-    "src.ui_state_builder",
-    "src.history_manager",
-    "src.asr_service",
-]
+# These files are reread by KnowledgeBase and its state readers. Other
+# configuration (models, transports, ASR) has a separate startup lifecycle.
+RELOADABLE_CONFIG_FILES = {
+    "task_schemas.yaml", "robot_fleet.yaml", "assets.yaml",
+    "constraints.yaml", "oilfield.yaml", "state.yaml",
+}
 
 _reload_lock = threading.Lock()
 _file_mtimes: Dict[str, float] = {}
@@ -165,25 +144,24 @@ def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str
     refreshed_sessions: List[Dict[str, Any]] = []
 
     with _reload_lock:
+        # Manual reload must observe unsupported changes too. Validate the
+        # entire change set before touching any module or migrating sessions.
+        if changed_files is None:
+            changed_files = check_changed_files()
+        unsupported = [str(Path(filename).resolve()) for filename in changed_files
+                       if Path(filename).suffix == ".py"
+                       or Path(filename).name not in RELOADABLE_CONFIG_FILES]
+        if unsupported:
+            msg = "以下文件变更不支持热重载，需要重启服务：" + ", ".join(unsupported)
+            _record_reload_event(
+                ok=False, message=msg, changed_files=changed_files,
+                reloaded_modules=[], refreshed_sessions=[],
+            )
+            logger.warning("[Hot-Reload] %s", msg)
+            return False, msg, []
         try:
-            # 1. 按顺序 reload 模块
-            for mod_name in RELOAD_MODULE_ORDER:
-                if mod_name in sys.modules:
-                    mod = sys.modules[mod_name]
-                    importlib.reload(mod)
-                    reloaded_mods.append(mod_name)
-                else:
-                    try:
-                        mod = importlib.import_module(mod_name)
-                        reloaded_mods.append(mod_name)
-                    except Exception as exc:
-                        logger.warning(
-                            "[Hot-Reload] 首次导入模块失败: %s, error=%s",
-                            mod_name,
-                            exc,
-                        )
-
-            # 2. 刷新 web_backend 模块内的引用
+            # Rebuild configuration-backed instances using the existing class
+            # identities. Reloading Python here would split cached imports.
             if "web_backend" in sys.modules:
                 web_mod = sys.modules["web_backend"]
                 
@@ -249,7 +227,7 @@ def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str
             # 更新记录的文件时间戳
             _file_mtimes = _scan_monitored_files()
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-            msg = f"热重载成功，耗时 {elapsed_ms:.1f}ms，重载模块: {len(reloaded_mods)} 个"
+            msg = f"配置刷新成功，耗时 {elapsed_ms:.1f}ms"
             _record_reload_event(
                 ok=True,
                 message=msg,
@@ -262,7 +240,7 @@ def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str
 
         except Exception as exc:
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-            err_msg = f"热重载失败 (保留上一稳定版本): {exc}"
+            err_msg = f"配置刷新失败，可能已有部分实例更新，请重启服务: {exc}"
             logger.error("[Hot-Reload] %s", err_msg, exc_info=True)
             _record_reload_event(
                 ok=False,
@@ -306,7 +284,7 @@ def maybe_auto_reload() -> Optional[Tuple[bool, str]]:
 
 
 def force_reload() -> Dict[str, Any]:
-    """手动强制重载所有业务模块"""
+    """手动刷新支持的配置；源码变动必须重启。"""
     success, msg, reloaded = perform_reload()
     return {
         "ok": success,

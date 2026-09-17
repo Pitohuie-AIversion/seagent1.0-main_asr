@@ -17,6 +17,7 @@ from src.llm_client import LLMClient
 from src.slot_store import Slot
 from src.task_intent_builder import TaskIntentBuilder
 from src.exceptions import TaskPersistenceError, IntentIdConflict
+from tests.interaction_plan_support import ScriptedLLM, make_plan
 from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 
 
@@ -218,7 +219,9 @@ class IntentIdValidationTest(unittest.TestCase):
 class ControlledOilfieldAbbreviationRejectionTest(unittest.TestCase):
     def setUp(self):
         self.kb = KnowledgeBase()
-        self.llm = DummyLLM()
+        # 显式授权 WRITE，同时保留 pending_action=None 来测试受控简称匹配。
+        # 默认 CLARIFY 会在只读路由返回，无法覆盖这些拒绝与保留候选的边界。
+        self.llm = ScriptedLLM(default_plan=make_plan("WRITE"))
         self.dm = DialogueManager(self.llm, self.kb)
 
     def _setup_pending_oilfield(self, candidate_name="流花11-1油田"):

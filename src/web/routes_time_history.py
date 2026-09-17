@@ -10,6 +10,7 @@ from flask import Blueprint, jsonify, request
 from src.history_manager import list_history, load_history
 from src.simulated_time import get_simulated_time
 from src.ui_state_builder import build_frontend_ui_state
+import src.web.state as state
 from src.web.state import _require_api_token, get_or_create_manager
 
 logger = logging.getLogger(__name__)
@@ -84,8 +85,17 @@ def api_history_load():
 
     mgr = get_or_create_manager(sid)
     with mgr._session_lock:
+        with state._sessions_lock:
+            if state._sessions_manager.get(sid) is not mgr:
+                return jsonify({
+                    "ok": False, "code": 409, "error": "SessionReset",
+                    "msg": "当前会话已重新开始，请在新会话中重试。",
+                    "retryable": True,
+                }), 409
         try:
-            mgr.load_snapshot(snapshot)
+            # The historical session is the source, not the identity of the
+            # active session registered under sid.
+            mgr.load_snapshot({**snapshot, "session_id": sid})
         except (TypeError, ValueError) as exc:
             logging.warning("历史快照结构校验失败: history_id=%r, error=%s", history_id, exc)
             return jsonify({"code": 400, "msg": f"历史快照结构非法: {exc}"}), 400
@@ -100,6 +110,7 @@ def api_history_load():
             "conversation_history": mgr.conversation_history,
             # ui_state: 统一前端状态契约（Issue #31）
             "ui_state": ui_state,
+            "ros2_dispatch": getattr(mgr, "ros2_dispatch", None),
             # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
             "built_json": mgr._last_built_json,
             "missing": [miss["key"] for miss in mgr._last_missing],

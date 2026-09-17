@@ -209,6 +209,7 @@
       th:nth-child(5), td:nth-child(5) { display: none; }
     }
   </style>
+  <link rel="stylesheet" href="static/css/api-auth.css">
 </head>
 <body>
   <header class="topbar">
@@ -217,6 +218,7 @@
       <p>Task transport and robot execution telemetry</p>
     </div>
     <div class="top-actions">
+      {% include 'auth_controls.html' %}
       <button class="btn" id="refreshButton" type="button">刷新</button>
       <button class="btn primary" id="gatewayButton" type="button">网关设置</button>
     </div>
@@ -293,7 +295,9 @@
     </form>
   </dialog>
 
+  <script src="static/js/api-auth.js"></script>
   <script>
+    const fetch = (...args) => window.SEAgentAuth.fetch(...args);
     const taskTypeNames = {0: 'TASK_MANAGE', 1: 'CLAMP_CABLE', 2: 'SEARCH_CABLE', 3: 'CLAMP_PIN', 4: 'INSERT_PLUG', 5: 'MOVE_TASK', 6: 'CTRL_TASK', 10: 'AUV_TASK'};
     const statusClasses = {READY: '', PLAN: 'active', ENTER: 'active', ONGOING: 'active', EXIT: 'active', FINISH: 'success', PAUSE: 'warn', FAIL: 'fail', FAILED: 'fail', SENT: ''};
     let pollTimer = null;
@@ -493,6 +497,7 @@
 
     refreshStatus();
     schedulePolling(1000);
+    window.addEventListener('seagent-auth-change', refreshStatus);
   </script>
 </body>
 </html>

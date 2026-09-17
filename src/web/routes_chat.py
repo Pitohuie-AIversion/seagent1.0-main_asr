@@ -16,6 +16,7 @@ from src.exceptions import (
     TaskRollbackError,
 )
 from src.history_manager import save_conversation
+from src.task_dispatch import dispatch_completed_task, save_dispatch_history
 from src.slot_store import SlotVersionConflict
 from src.ui_state_builder import build_frontend_ui_state
 from src.web.state import (
@@ -39,45 +40,23 @@ def _dispatch_ros2_on_done_transition(mgr, phase_before):
     task_intent = getattr(mgr, "final_result", None)
     if phase_before == "done" or mgr.phase != "done" or not task_intent:
         return None
-    bridge = get_mcp_bridge()
-    if bridge is None or not bridge.is_healthy():
-        return {"state": "FAILED", "error": "ROS 2 MCP 桥接服务未连接"}
-    try:
-        sent_id = bridge.dispatch_intent(task_intent)
-        logging.info("TaskIntent 已写入 ROS 2 传输 (task_id=0x%X)", sent_id)
-        return {
-            "state": "SENT",
-            "task_id": sent_id,
-            "task_id_hex": f"0x{sent_id:X}",
-        }
-    except Exception as bridge_err:
-        logging.error("自动下发至 ROS 2 失败: %s", bridge_err, exc_info=True)
-        return {"state": "FAILED", "error": str(bridge_err)}
+    return dispatch_completed_task(mgr, get_mcp_bridge())
 
 
 def _persist_and_dispatch_done_transition(mgr, phase_before):
     """当会话首次到达 done 阶段时，先保存会话快照再尝试下发 ROS 2。"""
-    ros2_dispatch = None
-    if phase_before == "done" or mgr.phase != "done":
-        return ros2_dispatch
-
     save_fn = _get_backend_symbol("save_conversation", save_conversation)
+    if getattr(mgr, "_pending_published_intent", None) is not None:
+        try:
+            save_dispatch_history(mgr, save_fn)
+        except Exception as exc:
+            logging.error("保存待核对发布记录失败: %s", exc, exc_info=True)
+        return getattr(mgr, "ros2_dispatch", None)
+    if phase_before == "done" or mgr.phase != "done":
+        return getattr(mgr, "ros2_dispatch", None)
+
     try:
-        save_fn(
-            session_id=mgr.session_id,
-            conversation_history=mgr.conversation_history,
-            task_state=mgr.task_state,
-            built_json=mgr._last_built_json,
-            mode=mgr.mode,
-            phase=mgr.phase,
-            intent_id=mgr.task_state.get("intent_id"),
-            slot_store=mgr.slot_store,
-            dialogue_mode=mgr.dialogue_mode,
-            last_mode_transition=mgr.last_mode_transition,
-            mode_transition_history=mgr.mode_transition_history,
-            control_state=mgr.control_state,
-            last_control_request=mgr.last_control_request,
-        )
+        save_dispatch_history(mgr, save_fn)
     except Exception as exc:
         logging.error("保存历史快照失败: %s", exc, exc_info=True)
 
@@ -85,6 +64,12 @@ def _persist_and_dispatch_done_transition(mgr, phase_before):
         "_dispatch_ros2_on_done_transition", _dispatch_ros2_on_done_transition
     )
     ros2_dispatch = dispatch_fn(mgr, phase_before)
+    if isinstance(ros2_dispatch, dict):
+        mgr.ros2_dispatch = ros2_dispatch
+    try:
+        save_dispatch_history(mgr, save_fn)
+    except Exception as exc:
+        logging.error("保存下发结果失败: %s", exc, exc_info=True)
     return ros2_dispatch
 
 
@@ -126,33 +111,7 @@ def api_chat():
                 request_id=request_id,
             )
             print_status(mgr)
-            ros2_dispatch = None
-            if mgr.phase == "done":
-                save_fn = _get_backend_symbol("save_conversation", save_conversation)
-                try:
-                    save_fn(
-                        session_id=sid,
-                        conversation_history=mgr.conversation_history,
-                        task_state=mgr.task_state,
-                        built_json=mgr._last_built_json,
-                        mode=mgr.mode,
-                        phase=mgr.phase,
-                        intent_id=mgr.task_state.get('intent_id'),
-                        slot_store=mgr.slot_store,
-                        dialogue_mode=mgr.dialogue_mode,
-                        last_mode_transition=mgr.last_mode_transition,
-                        mode_transition_history=mgr.mode_transition_history,
-                        control_state=mgr.control_state,
-                        last_control_request=mgr.last_control_request,
-                    )
-                except Exception as e:
-                    logging.error("保存历史快照失败: %s", e, exc_info=True)
-
-                # 只有首次进入 done 才触发自动下发；重复确认不会再次发布。
-                dispatch_fn = _get_backend_symbol(
-                    "_dispatch_ros2_on_done_transition", _dispatch_ros2_on_done_transition
-                )
-                ros2_dispatch = dispatch_fn(mgr, phase_before)
+            ros2_dispatch = _persist_and_dispatch_done_transition(mgr, phase_before)
 
             ui_builder = _get_backend_symbol("build_frontend_ui_state", build_frontend_ui_state)
             ui_state = ui_builder(mgr)
@@ -483,4 +442,5 @@ def get_session_state():
             "emergency": mgr.mode == "emergency",
             "history": mgr.conversation_history,
             "final_json": mgr._last_built_json if mgr.phase == "done" else None,
+            "ros2_dispatch": getattr(mgr, "ros2_dispatch", None),
         })

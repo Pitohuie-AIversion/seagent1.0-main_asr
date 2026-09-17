@@ -61,9 +61,20 @@ def dispatch_dialogue_result(
     if dialogue_manager.phase != "done" or not dialogue_manager.final_result:
         raise ValueError(f"DialogueManager 尚未处于 done 阶段（当前阶段: {dialogue_manager.phase}），无法下发。")
 
-    task_intent = dialogue_manager.final_result
-    task_id = service.dispatch_intent(task_intent)
-    dialogue_manager.dispatched_ros2_task_id = task_id
+    from contextlib import nullcontext
+    from src.task_dispatch import dispatch_completed_task, save_dispatch_history
+    with getattr(dialogue_manager, "_session_lock", nullcontext()):
+        dispatch = dispatch_completed_task(dialogue_manager, service)
+        if hasattr(dialogue_manager, "session_id"):
+            try:
+                save_dispatch_history(dialogue_manager)
+            except Exception:
+                logger.exception("保存 ROS 2 下发结果失败")
+    if dispatch["state"] != "SENT":
+        return {"status": "pending" if dispatch["state"] in {"SCHEDULED", "UNKNOWN"} else "error",
+                "task_id": dispatch.get("task_id"), "final_status_item": None,
+                "message": dispatch["message"], "ros2_dispatch": dispatch}
+    task_id = dispatch["task_id"]
 
     final_item = None
     if wait_finish:
@@ -74,4 +85,5 @@ def dispatch_dialogue_result(
         "task_id": task_id,
         "final_status_item": final_item,
         "message": f"TaskIntent 成功下发至 ROS 2 (task_id=0x{task_id:X})",
+        "ros2_dispatch": dispatch,
     }

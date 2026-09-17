@@ -36,6 +36,15 @@ TASK_ALLOWED_ROBOT_TYPES = {
 VALID_ROBOT_TYPES = {"observation_rov", "work_class_rov", "auv"}
 
 
+if "TaskCommitUncertainError" not in globals():
+    class TaskCommitUncertainError(TaskPersistenceError):
+        """The official file is visible, but its durability was not confirmed."""
+
+        def __init__(self, message: str, intent: dict):
+            super().__init__(message)
+            self.intent = copy.deepcopy(intent)
+
+
 class TaskPublishLock:
     """进程间与线程间任务发布排他锁"""
     def __init__(self, task_dir: Path):
@@ -593,6 +602,7 @@ class TaskIntentBuilder:
             # 5. 从受信任内存 intent 原子创建私有 0600 临时文件并写入
             tmp_file = task_dir / f".tmp_publish_{intent_id}_{txid}"
             tmp_stat = None
+            committed = False
             try:
                 tmp_flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0)
                 tmp_fd = os.open(tmp_file, tmp_flags, 0o600)
@@ -619,6 +629,7 @@ class TaskIntentBuilder:
 
                 # 6. 原子 no-overwrite 提交正式文件
                 _atomic_commit_noreplace(tmp_file, final_file)
+                committed = True
 
                 # 7. 强制执行文件与目录 fsync，异常时 fail closed 抛出 TaskPersistenceError
                 try:
@@ -647,6 +658,10 @@ class TaskIntentBuilder:
             except IntentIdConflict:
                 raise
             except Exception as e:
+                if committed:
+                    raise TaskCommitUncertainError(
+                        f"任务文件已生成，持久化结果待核对: {e}", intent
+                    ) from e
                 if tmp_file and tmp_file.exists() and tmp_stat:
                     try:
                         c_fd = os.open(tmp_file, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
@@ -661,6 +676,44 @@ class TaskIntentBuilder:
                     except Exception as clean_err:
                         logger.debug("Failed to safely unlink staging temp file %s: %s", tmp_file, clean_err)
                 raise TaskPersistenceError(f"Failed to publish staging file for {intent_id}: {e}") from e
+
+    def recover_committed(self, intent: Dict[str, Any]) -> str:
+        """Confirm an uncertain commit without replacing or deleting any file.
+
+        Only an exact validated artifact may recover its existing regular file.
+        Normal publish_staging keeps its strict no-overwrite contract.
+        """
+        self._validate_intent(intent)
+        task_dir = get_task_dir(create=True)
+        final_file = task_dir / f"task_intent_{intent['intent_id']}.json"
+        with TaskPublishLock(task_dir):
+            try:
+                fd = os.open(final_file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                try:
+                    file_stat = os.fstat(fd)
+                    if not stat.S_ISREG(file_stat.st_mode):
+                        raise TaskPersistenceError("Committed artifact must be a regular file")
+                    with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as source:
+                        actual = json.load(source)
+                    if actual != intent:
+                        raise IntentIdConflict("Existing committed artifact differs from the pending intent")
+                    os.fsync(fd)
+                    # Keep the verified inode bound until durability checks end.
+                    current_stat = final_file.lstat()
+                    if (current_stat.st_dev, current_stat.st_ino) != (file_stat.st_dev, file_stat.st_ino):
+                        raise IntentIdConflict("Committed artifact changed during recovery")
+                    directory_fd = os.open(task_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+                finally:
+                    os.close(fd)
+            except IntentIdConflict:
+                raise
+            except Exception as exc:
+                raise TaskCommitUncertainError(f"已生成任务文件尚无法完成核对: {exc}", intent) from exc
+        return final_file.name
 
     def persist(self, intent: Dict[str, Any]) -> str:
         """从 dict 生成 staging 临时文件并原子发布为 TaskIntent 文件"""

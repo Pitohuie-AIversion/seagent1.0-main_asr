@@ -34,6 +34,7 @@ function createClient() {
     const localStorage = {setItem() {}};
     const requests = [], messages = [], renders = [], updates = [], interactionStates = [];
     function applyInteractionState() { interactionStates.push({sending: isSending}); }
+    async function cancelVoiceActivity() {}
     function renderDecisionCardInBubble() {}
     function updateSidebar(data) { updates.push(data); }
     function renderMessageContent(text, role) { renders.push({text, role}); return text; }
@@ -57,6 +58,7 @@ function createClient() {
       setSession(id, generation = sessionGeneration) { sessionId = id; sessionGeneration = generation; },
       disableStreams() { window.ReadableStream = false; },
       session() { return sessionId; },
+      draft() { return messageInput.value; },
       payloadSections(taskType, slot) {
         lastResponseData = {ui_state: {task_type_key: taskType}};
         return buildPayloadSections(slot);
@@ -179,6 +181,17 @@ async function unsupportedEndpointCanFallback() {
   }
 }
 
+async function unauthorizedRequestPreservesDraftWithoutReplay() {
+  const client = createClient();
+  const request = client.sendMessage('需要凭据的指令');
+  client.requests[0].resolve({ok: false, status: 401});
+  await request;
+  assert.equal(client.requests.length, 1);
+  assert.equal(client.draft(), '需要凭据的指令');
+  assert(client.messages.some(message => message.text.includes('连接凭据无效')));
+  assert(!client.messages.some(message => message.text.includes('服务器可能已处理')));
+}
+
 async function clientWithoutStreamsUsesSyncOnce() {
   const client = createClient();
   client.disableStreams();
@@ -240,6 +253,7 @@ function payloadToolsFollowActualTaskState() {
   await streamErrorReleasesLock();
   await interruptedStreamDoesNotResend();
   await unsupportedEndpointCanFallback();
+  await unauthorizedRequestPreservesDraftWithoutReplay();
   await clientWithoutStreamsUsesSyncOnce();
   await reloadRefreshRespectsSessionAndRequest();
   payloadToolsFollowActualTaskState();

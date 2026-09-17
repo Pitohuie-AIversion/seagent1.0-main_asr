@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
   <link rel="stylesheet" href="static/css/index.css">
+  <link rel="stylesheet" href="static/css/api-auth.css">
 </head>
 
 <body>
@@ -24,6 +25,7 @@
         </div>
       </div>
       <div class="header-right">
+        {% include 'auth_controls.html' %}
         <div class="lang-selector">
           <select id="langSelect">
             <option value="zh">中文 (ZH)</option>
@@ -136,6 +138,14 @@
           <div id="missingFields">-</div>
         </div>
 
+        <div class="info-card" id="dispatchCard" hidden>
+          <div class="info-title" id="dispatchTitle">任务发送状态</div>
+          <div id="dispatchStatus" role="status" aria-live="polite"></div>
+          <div id="dispatchDetail"></div>
+          <button id="dispatchRetryBtn" type="button" hidden>重新检查并下发</button>
+          <button id="dispatchRefreshBtn" type="button">刷新发送状态</button>
+        </div>
+
         <div class="info-card" id="resultCard" style="display:none;">
           <div class="info-title">
             <!-- File code brackets SVG -->
@@ -170,6 +180,7 @@
     </div>
   </div>
 
+  <script src="static/js/api-auth.js" defer></script>
   <script src="static/vendor/marked/marked.umd.js" defer></script>
   <script src="static/vendor/dompurify/purify.min.js" defer></script>
   <script src="static/js/markdown-renderer.js" defer></script>

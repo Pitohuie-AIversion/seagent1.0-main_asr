@@ -132,7 +132,11 @@ def test_unavailable_gateway_remains_manageable_and_can_reconnect(isolated_mcp_s
         assert response.status_code == 200
         assert response.get_json()["mcp_connected"] is False
         assert response.get_json()["port"] == unavailable_port
-        assert client.post("/api/mcp/dispatch", json={}).status_code == 503
+        # A missing confirmed session is an invalid request regardless of
+        # gateway health; the execution gate must not accept an empty intent.
+        invalid_dispatch = client.post("/api/mcp/dispatch", json={})
+        assert invalid_dispatch.status_code == 400
+        assert "session_id" in invalid_dispatch.get_json()["msg"]
         with pytest.raises(RuntimeError, match="未连接"):
             bridge.dispatch_intent({"intent_id": "offline-startup"})
 

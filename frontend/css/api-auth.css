@@ -1,0 +1,9 @@
+.api-credentials-button { padding: 6px 10px; cursor: pointer; }
+.api-credentials-dialog { color: #172a3b; background: #fff; border: 1px solid #627d91; border-radius: 8px; padding: 24px; max-width: min(420px, 85vw); }
+.api-credentials-dialog::backdrop { background: rgb(0 0 0 / 45%); }
+.api-credentials-dialog h2 { font-size: 1.1rem; margin: 0 0 12px; }
+.api-credentials-dialog p { font-size: .9rem; line-height: 1.5; }
+.api-credentials-dialog label { display: block; margin: 12px 0 6px; }
+.api-credentials-dialog input { box-sizing: border-box; width: 100%; padding: 8px; color: #172a3b; background: #fff; }
+.api-credentials-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.api-credentials-actions button { padding: 7px 10px; cursor: pointer; }

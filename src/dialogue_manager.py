@@ -110,10 +110,13 @@ class DialogueManager:
         self.mode: str = "normal"
         self.phase: str = "collecting"
         self.final_result: dict | None = None
+        self.ros2_dispatch: dict | None = None
+        self._pending_published_intent: dict | None = None
         self.awaiting_final_confirm = False
         self.editing_slot: str | None = None
         self.task_start_now = False
         self._last_visible_catalog_items: list[dict] = []
+        self._pending_referential_candidates: list[dict] = []
 
         # 约束管理状态
         self._blocking_violations: list[Violation] = []
@@ -416,6 +419,7 @@ class DialogueManager:
             request_phase = self.phase
             request_soft_whitelist = copy.deepcopy(self._soft_whitelist)
             request_pending_rov = copy.deepcopy(self._pending_rov_candidates)
+            request_pending_references = copy.deepcopy(self._pending_referential_candidates)
             request_blocking_violations = copy.deepcopy(self._blocking_violations)
             request_history = list(self.conversation_history)
             request_task_start_now = self.task_start_now
@@ -437,6 +441,7 @@ class DialogueManager:
                     self._transition_phase(request_phase, reason="request_rollback")
                     self._soft_whitelist = request_soft_whitelist
                     self._pending_rov_candidates = request_pending_rov
+                    self._pending_referential_candidates = request_pending_references
                     self._blocking_violations = request_blocking_violations
                     self.conversation_history = request_history
                     self.task_start_now = request_task_start_now
@@ -629,8 +634,9 @@ class DialogueManager:
                 self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在生成约束审查反馈...", "phase": self.phase})
                 return res.reply
 
-        # 指代消解与继承（委托至 SlotFillingHandler）
-        user_message = self.slot_handler.process_referential_carryover(user_message)
+        # Query context may remember entities, but routing always sees the
+        # original message and no task fields have been written by carryover.
+        self.slot_handler.remember_discussed_entities(user_message)
 
         # ── 独立意图路由分流阶段 ──
         expected_slots = [m["key"] for m in self._last_missing if isinstance(m, dict) and "key" in m]
@@ -674,6 +680,14 @@ class DialogueManager:
         })
 
         plan = route.interaction_plan
+        if route.dialogue_mode == "emergency_intervention":
+            self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在组织紧急干预响应...", "phase": self.phase})
+            return self._handle_emergency_intervention(user_message, route, request_id)
+
+        if route.interaction_type == "QUERY":
+            self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在组织知识库检索反馈...", "phase": self.phase})
+            return self._handle_non_task_route(user_message, route, request_id)
+
         is_ignore_warning_cmd = self._is_ignore_warning(user_message)
         has_acknowledge_action = bool(
             (plan and plan.warning_action == "acknowledge")
@@ -687,12 +701,14 @@ class DialogueManager:
             # 真实模型可能把“补充参数后继续”同时误标成 acknowledge；执行器必须
             # 先尝试提取并校验字段，只有没有任何任务候选时才执行警告确认。
 
-        pending_reply = self._resolve_pending_oilfield_confirmation(
-            user_message,
-            request_id=request_id,
-            pending_action=plan.pending_action if plan else None,
-            subject_text=plan.subject_text if plan else None,
-        )
+        pending_reply = None
+        if self.phase != "done":
+            pending_reply = self._resolve_pending_oilfield_confirmation(
+                user_message,
+                request_id=request_id,
+                pending_action=plan.pending_action if plan else None,
+                subject_text=plan.subject_text if plan else None,
+            )
         if pending_reply is not None:
             self._switch_dialogue_mode(
                 "task_collection",
@@ -703,14 +719,6 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": pending_reply})
             self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在组织待确认反馈...", "phase": self.phase})
             return pending_reply
-
-        if route.dialogue_mode == "emergency_intervention":
-            self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在组织紧急干预响应...", "phase": self.phase})
-            return self._handle_emergency_intervention(user_message, route, request_id)
-
-        if route.interaction_type == "QUERY":
-            self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在组织知识库检索反馈...", "phase": self.phase})
-            return self._handle_non_task_route(user_message, route, request_id)
 
         if self.phase == "done":
             is_new_task = any(kw in user_message for kw in ["重新", "新任务", "创建", "新建", "重置"]) or any(user_message.startswith(kw) for kw in ["安排", "派", "我想做", "开始做"])
@@ -734,6 +742,11 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在生成复合任务提示...", "phase": self.phase})
             return reply
+
+        if self.phase != "done":
+            ctx.metadata["referential_candidates"] = (
+                self.slot_handler.process_referential_carryover(user_message)
+            )
 
         # 3. 委托至 Level 3 SlotFillingHandler 执行槽位抽取、消歧、原子事务提交与事实锚点落地
         self.emit_event(event_sink, "step", {"step": "slot_filling", "message": "正在抽取并归一化作业参数...", "phase": self.phase})
@@ -1085,9 +1098,17 @@ class DialogueManager:
             self.mode = "normal"
             self.phase = "collecting"
             self.final_result = None
+            self.ros2_dispatch = None
+            self._pending_published_intent = None
             self.awaiting_final_confirm = False
             self.editing_slot = None
             self.task_start_now = False
+            self._last_visible_catalog_items = []
+            self._last_discussed_task_type = None
+            self._last_discussed_robot = None
+            self._last_discussed_oilfield = None
+            self._last_discussed_payload = None
+            self._pending_referential_candidates = []
             self._blocking_violations = []
             self._soft_whitelist = set()
             self._hard_refusal_counts = {}

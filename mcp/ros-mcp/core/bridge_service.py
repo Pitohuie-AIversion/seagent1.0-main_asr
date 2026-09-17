@@ -42,6 +42,14 @@ class DispatchRecordsError(RuntimeError):
     """Persistent idempotency evidence must be repaired before dispatch resumes."""
 
 
+class DispatchOutcomeUnknown(RuntimeError):
+    """A previous send may have reached ROS; retry must not send it again."""
+
+    def __init__(self, task_id: int):
+        self.task_id = task_id
+        super().__init__(f"任务 0x{task_id:X} 的发送结果待核对，尚无机器人接收证据，未重复发送。")
+
+
 class SEAgentMCPBridgeService:
     """Owns the live rosbridge connection, dispatch idempotency and telemetry."""
 
@@ -481,6 +489,25 @@ class SEAgentMCPBridgeService:
             raise ValueError(f"不支持的 SEAgent task_type: {key}")
         return int(mapped)
 
+    def _reconcile_record(self, identity: str, record: Dict[str, Any]) -> Dict[str, Any]:
+        """Only positive ROS receipt evidence may resolve an interrupted send."""
+        if record["dispatch_state"] != "SENDING":
+            return dict(record)
+        item = self.tracker.get_task_status(int(record["task_id"]))
+        if item is None or item.task_type != record.get("task_type"):
+            raise DispatchOutcomeUnknown(int(record["task_id"]))
+        reconciled = dict(record, dispatch_state="SENT", error=None, receipt_confirmed=True)
+        self._record_dispatch(identity, reconciled)
+        return reconciled
+
+    def get_dispatch_record(self, task_intent: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Read/reconcile durable send evidence without publishing any command."""
+        identity = self._intent_identity(task_intent)
+        with self._dispatch_lock, self._with_dispatch_file_lock():
+            self._load_dispatch_records()
+            record = self._dispatch_records.get(identity)
+            return self._reconcile_record(identity, record) if record else None
+
     def dispatch_intent(
         self,
         task_intent: Dict[str, Any],
@@ -507,7 +534,7 @@ class SEAgentMCPBridgeService:
                     self._load_dispatch_records()
                     existing = self._dispatch_records.get(identity)
                     if existing and existing["dispatch_state"] != "FAILED":
-                        return int(existing["task_id"])
+                        return int(self._reconcile_record(identity, existing)["task_id"])
 
                     assigned_task_id = (
                         int(existing["task_id"])
@@ -533,6 +560,10 @@ class SEAgentMCPBridgeService:
                             origin=origin,
                         )
                     except Exception as exc:
+                        from .rosbridge_client import PublishOutcomeUnknown
+                        if isinstance(exc, PublishOutcomeUnknown):
+                            self._last_error = str(exc)
+                            raise DispatchOutcomeUnknown(assigned_task_id) from exc
                         record["dispatch_state"] = "FAILED"
                         record["error"] = str(exc)
                         self._last_error = str(exc)
@@ -549,7 +580,11 @@ class SEAgentMCPBridgeService:
                         timespec="milliseconds"
                     )
                     self._last_error = None
-                    self._record_dispatch(identity, record)
+                    try:
+                        self._record_dispatch(identity, record)
+                    except Exception as exc:
+                        self._dispatch_records[identity] = dict(record, dispatch_state="SENDING")
+                        raise DispatchOutcomeUnknown(assigned_task_id) from exc
                     self._pending_dispatches[assigned_task_id] = pending_since
 
                 logger.info(
@@ -560,7 +595,7 @@ class SEAgentMCPBridgeService:
                 return assigned_task_id
 
             if existing and existing["dispatch_state"] != "FAILED":
-                return int(existing["task_id"])
+                return int(self._reconcile_record(identity, existing)["task_id"])
 
             assigned_task_id = (
                 int(existing["task_id"])
@@ -586,6 +621,10 @@ class SEAgentMCPBridgeService:
                     origin=origin,
                 )
             except Exception as exc:
+                from .rosbridge_client import PublishOutcomeUnknown
+                if isinstance(exc, PublishOutcomeUnknown):
+                    self._last_error = str(exc)
+                    raise DispatchOutcomeUnknown(assigned_task_id) from exc
                 record["dispatch_state"] = "FAILED"
                 record["error"] = str(exc)
                 self._last_error = str(exc)

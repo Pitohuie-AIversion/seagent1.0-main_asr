@@ -8,6 +8,7 @@ tests/test_p0_final_closeout.py - P0 最终小范围收口测试套件
 import json
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -236,7 +237,11 @@ class PendingOilfieldRejectionTest(unittest.TestCase):
 
     def setUp(self):
         self.kb = KnowledgeBase()
-        self.llm = ScriptedLLM(default_reply="默认LLM测试回复")
+        # 这些用例覆盖 WRITE 路由内的候选名称匹配；READ/CLARIFY 不得修改候选。
+        # 不预设 pending_action，确保肯定和否定用例仍经过原句匹配器。
+        self.llm = ScriptedLLM(
+            default_plan=make_plan("WRITE"), default_reply="默认LLM测试回复"
+        )
         self.dm = DialogueManager(self.llm, self.kb)
 
     def _setup_pending(self, candidate_name="流花11-1油田"):
@@ -324,6 +329,28 @@ class PendingOilfieldRejectionTest(unittest.TestCase):
         self.assertNotEqual(oil_slot.status, "pending_confirmation")
         self.assertEqual(oil_slot.value, "流花11-1油田")
         self.assertNotEqual(self.dm.phase, "done")
+
+    def test_o6_non_write_negation_preserves_pending_candidate(self):
+        """相同拒绝措辞仅在 WRITE 路由中有权改变待确认候选。"""
+        for operation in ("READ", "CLARIFY"):
+            for message in ("不是流花11-1油田", "流花11-1不对"):
+                with self.subTest(operation=operation, message=message):
+                    self._setup_pending("流花11-1油田")
+                    self.llm.queue_plan(make_plan(operation))
+                    before = deepcopy((
+                        self.dm.slot_store.export_snapshot(),
+                        self.dm.task_state,
+                        self.dm.phase,
+                    ))
+
+                    self.dm.process(message)
+
+                    self.assertEqual((
+                        self.dm.slot_store.export_snapshot(),
+                        self.dm.task_state,
+                        self.dm.phase,
+                    ), before)
+                    self.assertFalse(self.llm.extract_calls)
 
 
 if __name__ == "__main__":

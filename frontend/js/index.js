@@ -3,6 +3,7 @@
   window.__seagentFrontendInitialized = true;
 
   function initFrontend() {
+    const fetch = (...args) => window.SEAgentAuth.fetch(...args);
     // 动态检测 API 基础路径（兼容 Jupyter Proxy 代理访问）
     const API_BASE = (() => {
       const path = window.location.pathname;
@@ -746,7 +747,7 @@ Please describe your operational requirements directly, or ask the question you 
         try { reloadEventSource.close(); } catch (e) {}
         reloadEventSource = null;
       }
-      if (window.EventSource) {
+      if (window.EventSource && !window.SEAgentAuth.hasToken()) {
         try {
           reloadEventSource = new EventSource(API_BASE + '/api/dev/reload-events/stream?after=' + encodeURIComponent(lastReloadEventId));
           reloadEventSource.addEventListener('reload', async (e) => {
@@ -764,8 +765,17 @@ Please describe your operational requirements directly, or ask the question you 
               console.warn('Process reload event failed', err);
             }
           });
+          const activeSource = reloadEventSource;
           reloadEventSource.onerror = () => {
-            // EventSource 会自动重试连接
+            // Native EventSource cannot attach authorization headers. Fall
+            // back to authenticated polling on an unavailable stream.
+            if (reloadEventSource !== activeSource) return;
+            activeSource.close();
+            reloadEventSource = null;
+            if (!reloadPollTimer) {
+              pollReloadEvents();
+              reloadPollTimer = setInterval(pollReloadEvents, 2000);
+            }
           };
           return;
         } catch (err) {
@@ -804,6 +814,10 @@ Please describe your operational requirements directly, or ask the question you 
       sendBtn.disabled = !canSend;
       voiceBtn.disabled = !canSend;
       isDone = !currentActions.can_send;
+      for (const id of ['dispatchRetryBtn', 'dispatchRefreshBtn']) {
+        const button = document.getElementById(id);
+        if (button) button.disabled = isSending;
+      }
     }
 
     function cancelActiveRequest() {
@@ -857,6 +871,73 @@ Please describe your operational requirements directly, or ask the question you 
       return null;
     }
 
+    function renderDispatchStatus(data) {
+      const card = document.getElementById('dispatchCard');
+      if (!card) return;
+      const phase = data.ui_state?.phase || (data.done ? 'done' : data.phase);
+      card.hidden = phase !== 'done';
+      if (card.hidden) return;
+      const dispatch = data.ros2_dispatch || {state: 'UNKNOWN', retry_allowed: false};
+      const zh = currentLang === 'zh';
+      const labels = {
+        SENT: zh ? '已发送，等待机器人遥测确认。' : 'Sent; awaiting robot telemetry confirmation.',
+        FAILED: zh ? '任务已保存，发送失败。' : 'Task saved; dispatch failed.',
+        UNKNOWN: zh ? '任务已保存，发送结果待核对。' : 'Task saved; dispatch outcome is unknown.',
+        SCHEDULED: zh ? '任务已保存，等待计划时间与执行条件。' : 'Task saved; waiting for its start time and execution checks.',
+        BLOCKED: zh ? '任务已保存，执行条件未满足。' : 'Task saved; execution conditions are not met.',
+        NOT_SENT: zh ? '任务已保存，尚未发送。' : 'Task saved; not sent.',
+      };
+      document.getElementById('dispatchTitle').textContent = zh ? '任务发送状态' : 'Task dispatch';
+      document.getElementById('dispatchStatus').textContent = labels[dispatch.state] || labels.UNKNOWN;
+      document.getElementById('dispatchDetail').textContent = dispatch.error || dispatch.message || '';
+      const retry = document.getElementById('dispatchRetryBtn');
+      retry.hidden = dispatch.retry_allowed !== true;
+      retry.disabled = isSending;
+      retry.textContent = dispatch.state === 'UNKNOWN'
+        ? (zh ? '核对发送结果' : 'Check dispatch outcome')
+        : dispatch.state === 'SCHEDULED'
+          ? (zh ? '检查执行条件并下发' : 'Check conditions and dispatch')
+          : (zh ? '重新检查并下发' : 'Recheck and dispatch');
+      const refresh = document.getElementById('dispatchRefreshBtn');
+      refresh.textContent = zh ? '刷新发送状态' : 'Refresh dispatch status';
+      refresh.disabled = isSending;
+    }
+
+    async function retryDispatch() {
+      if (isSending || !sessionId || lastResponseData?.ros2_dispatch?.retry_allowed !== true) return;
+      const sid = sessionId, generation = sessionGeneration, seq = ++currentRequestSeq;
+      isSending = true;
+      applyInteractionState(currentActions, currentReadOnly);
+      const controller = new AbortController();
+      currentAbortController = controller;
+      try {
+        const response = await fetch(API_BASE + '/api/mcp/dispatch', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({session_id: sid}), signal: controller.signal,
+        });
+        const result = await response.json();
+        if (sid !== sessionId || generation !== sessionGeneration || seq !== currentRequestSeq) return;
+        if (result.ros2_dispatch) {
+          updateSidebar({...lastResponseData, ros2_dispatch: result.ros2_dispatch});
+        } else if (!response.ok) {
+          addMessage('bot', result.msg || (currentLang === 'zh' ? '发送检查失败，请刷新发送状态。' : 'Dispatch check failed. Refresh its status.'));
+        }
+      } catch (error) {
+        if (error.name === 'AbortError' || generation !== sessionGeneration || seq !== currentRequestSeq) return;
+        // Do not infer that a transport error means the robot did not receive it.
+        updateSidebar({...lastResponseData, ros2_dispatch: {
+          state: 'UNKNOWN', retry_allowed: false,
+          message: currentLang === 'zh' ? '响应中断，请刷新发送状态后核对。' : 'Response interrupted. Refresh the dispatch status to check.',
+        }});
+      } finally {
+        if (generation === sessionGeneration && seq === currentRequestSeq) {
+          isSending = false;
+          currentAbortController = null;
+          applyInteractionState(currentActions, currentReadOnly);
+        }
+      }
+    }
+
     /**
      * updateSidebar - 渲染任务字段面板。
      * Issue #31: 优先使用 data.ui_state（新路径），降级到旧 collected/missing 字段（compat 路径）。
@@ -864,6 +945,7 @@ Please describe your operational requirements directly, or ask the question you 
     function updateSidebar(data) {
       window.updateSidebar = updateSidebar;
       lastResponseData = data;
+      renderDispatchStatus(data);
 
       const uiState = data.ui_state;
 
@@ -2357,10 +2439,14 @@ Please describe your operational requirements directly, or ask the question you 
 
     async function restoreHistory(historyId) {
       cancelActiveRequest();
+      sessionGeneration++;
+      window.sessionGeneration = sessionGeneration;
       isSending = true;
       applyInteractionState(currentActions, currentReadOnly);
       const restoreSeq = ++currentRequestSeq;
       const restoreGen = sessionGeneration;
+      await cancelVoiceActivity();
+      if (restoreSeq !== currentRequestSeq || restoreGen !== sessionGeneration) return;
       currentAbortController = new AbortController();
       let effectiveSessionId = sessionId;
       if (!effectiveSessionId) {
@@ -2463,6 +2549,13 @@ Please describe your operational requirements directly, or ask the question you 
               signal: currentAbortController.signal,
             });
             if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
+            if (streamRes.status === 401) {
+              messageInput.value = msg;
+              addMessage('bot', currentLang === 'zh'
+                ? '连接凭据无效，请填写有效凭据后重新发送。'
+                : 'Access credentials are required. Enter valid credentials and send again.');
+              return;
+            }
 
             if (streamRes.ok && (streamRes.headers.get('content-type') || '').includes('text/event-stream')) {
               const reader = streamRes.body.getReader();
@@ -2637,6 +2730,7 @@ Please describe your operational requirements directly, or ask the question you 
           }
 
           if (!res.ok || data.ok === false || (data.code && data.code !== 200)) {
+            if (res.status === 401) messageInput.value = msg;
             const errMsg = data.msg || data.message || '请求处理异常';
             const reqId = data.request_id ? ` [request_id: ${data.request_id}]` : '';
             const retryHint = data.retryable ? ' (可尝试重试)' : '';
@@ -2763,6 +2857,7 @@ Please describe your operational requirements directly, or ask the question you 
       document.getElementById('collectedFields').innerHTML = I18N[currentLang].none;
       document.getElementById('missingFields').innerHTML = '-';
       document.getElementById('resultCard').style.display = 'none';
+      document.getElementById('dispatchCard').hidden = true;
       document.getElementById('historyList').style.display = 'none';
       messageInput.value = '';
 
@@ -2800,6 +2895,8 @@ Please describe your operational requirements directly, or ask the question you 
     });
     setTimeBtn.addEventListener('click', setSimulatedTime);
     document.getElementById('historyBtn').addEventListener('click', loadHistoryList);
+    document.getElementById('dispatchRetryBtn').addEventListener('click', retryDispatch);
+    document.getElementById('dispatchRefreshBtn').addEventListener('click', refreshSessionStateAfterReload);
 
 
 
@@ -2818,6 +2915,12 @@ Please describe your operational requirements directly, or ask the question you 
     if (timeUpdateInterval) clearInterval(timeUpdateInterval);
     timeUpdateInterval = setInterval(() => updateSimulatedTime(false), 1000);
     startReloadEventPolling();
+    window.addEventListener('seagent-auth-change', () => {
+      if (reloadPollTimer) clearInterval(reloadPollTimer);
+      reloadPollTimer = null;
+      startReloadEventPolling();
+      refreshSessionStateAfterReload();
+    });
   }
 
   if (document.readyState === 'loading') {

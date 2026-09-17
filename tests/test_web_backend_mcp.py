@@ -153,6 +153,11 @@ class WebBackendMCPTestCase(unittest.TestCase):
                 "task_type": "pipeline_inspection",
             },
             final_result=published_intent,
+            task_state={},
+            slot_store=SimpleNamespace(version=1),
+            validator=SimpleNamespace(validate_task=Mock(return_value=SimpleNamespace(
+                overall_status="valid", violations=[], state_snapshot=None))),
+            _get_valid_acknowledgements=Mock(return_value=[]),
         )
         bridge = Mock()
         bridge.is_healthy.return_value = True

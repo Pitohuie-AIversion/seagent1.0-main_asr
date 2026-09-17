@@ -114,6 +114,12 @@ class SlotExtractionPipeline(BaseDialogueHandler):
             allow_empty_for_side_effect=has_acknowledge_action,
             allow_task_type_transition=True,
         )
+        if ctx.metadata.get("referential_candidates"):
+            extraction_res = sf.merge_referential_candidates(
+                extraction_res,
+                [item for item in ctx.metadata["referential_candidates"]
+                 if item["canonical_key"] not in {"task_type", "task_type_key"}],
+            )
         if task_patch_v2_active:
             build_task_patch(extraction_res, allowed_keys=None)
 
@@ -608,6 +614,7 @@ class SlotExtractionPipeline(BaseDialogueHandler):
         has_successful_mutation = any(m.get("field") == "payload" for m in list_mutations)
         if (
             not stage2_updates
+            and not merged_updates
             and not _has_conflict
             and not turn_unresolved
             and not has_successful_mutation

@@ -17,7 +17,7 @@ import logging
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
 from ..slot_store import Slot
-from ..task_intent_builder import TaskIntentBuilder
+from ..task_intent_builder import TaskIntentBuilder, TaskCommitUncertainError
 from ..id_sequence import validate_intent_id
 from ..exceptions import (
     IdReservationError,
@@ -62,6 +62,9 @@ class TaskCommitHandler(BaseDialogueHandler):
         phase = self.manager.phase
         user_message = ctx.user_message
 
+        if getattr(self.manager, "_pending_published_intent", None) is not None:
+            return True
+
         if phase == "done":
             if (
                 self.manager._is_confirmation_only(user_message)
@@ -84,6 +87,14 @@ class TaskCommitHandler(BaseDialogueHandler):
         phase = self.manager.phase
         user_message = ctx.user_message
         request_id = ctx.request_id
+
+        if (getattr(self.manager, "_pending_published_intent", None) is not None
+                and not self.manager._is_final_publish_confirmation(user_message)):
+            reply = "任务文件已生成且发布结果待核对，暂不能修改参数。请回复‘确认发布’核对原任务，或重新开始创建新任务。"
+            self.manager.conversation_history.extend([
+                {"role": "user", "content": user_message}, {"role": "assistant", "content": reply}
+            ])
+            return HandlerResult.success(reply=reply)
 
         # 1. phase == "done" 防护
         if phase == "done":
@@ -147,6 +158,28 @@ class TaskCommitHandler(BaseDialogueHandler):
             dm.conversation_history.append({"role": "user", "content": user_message})
             dm.conversation_history.append({"role": "assistant", "content": reply})
             return reply
+
+        pending = getattr(dm, "_pending_published_intent", None)
+        if pending is not None:
+            try:
+                ti_builder = TaskIntentBuilder(dm.kb)
+                expected = ti_builder.prepare(
+                    task_state=dm.task_state, built_json=dm._last_built_json,
+                    mode=dm.mode, task_type_key=dm.task_state.get("task_type_key"),
+                    intent_id=pending.get("intent_id"),
+                    validation_result=pending.get("conditions", {}).get("validation", {}),
+                )
+                if expected != pending:
+                    raise IntentIdConflict("当前任务参数与待核对的正式文件不一致")
+                ti_builder.recover_committed(pending)
+            except Exception as exc:
+                reply = f"任务文件的发布结果仍待核对，未重复创建或下发任务：{exc}"
+                dm.conversation_history.extend([
+                    {"role": "user", "content": user_message}, {"role": "assistant", "content": reply}
+                ])
+                return reply
+            dm._pending_published_intent = None
+            return self._complete_publication(pending, user_message)
 
         prev_phase = dm.phase
         prev_snap = dm.slot_store.export_snapshot()
@@ -305,6 +338,16 @@ class TaskCommitHandler(BaseDialogueHandler):
                     ti_builder.publish_staging(staging_file, ti_json_artifact)
             else:
                 ti_builder.publish_staging(staging_file, ti_json_artifact)
+        except TaskCommitUncertainError as exc:
+            # The visible official file already owns this exact reserved ID.
+            # Restoring the draft here would make every later retry conflict.
+            dm._pending_published_intent = copy.deepcopy(exc.intent)
+            dm.final_result = None
+            reply = "任务文件已生成，但持久化结果尚待核对，暂未下发。请再次回复‘确认发布’以核对原任务文件。"
+            dm.conversation_history.extend([
+                {"role": "user", "content": user_message}, {"role": "assistant", "content": reply}
+            ])
+            return reply
         except Exception as exc:
             # 回滚：包含 reserve, commit_transaction, prepare, create_staging, publish_staging 在内的全流程失败保护
             target_phase = dm.phase if dm.phase == "blocked_soft" else prev_phase
@@ -349,19 +392,24 @@ class TaskCommitHandler(BaseDialogueHandler):
             else:
                 raise TaskPersistenceError(f"TaskIntent publish failed: {exc}") from exc
 
-        # 发布成功
+        return self._complete_publication(ti_json_artifact, user_message)
+
+    def _complete_publication(self, artifact: dict, user_message: str) -> str:
+        """Finish durable publication; dispatch is a separate application step."""
+        dm = self.manager
         dm._transition_phase("done", reason="publish_success")
         dm.task_state = dm.slot_store.get_task_state()
         dm._last_built_json = dm.slot_store.get_built_json()
-        dm.final_result = ti_json_artifact
+        dm.final_result = artifact
+        dm._pending_published_intent = None
         dm.task_start_now = dm.is_start_time_near_now()
 
-        user_facing_built = sanitize_user_facing_json(cand_built)
+        user_facing_built = sanitize_user_facing_json(dm._last_built_json)
         if dm.task_start_now:
-            reply = (f"✅ 信息收集完成，当前为【立即执行任务】，任务已生成并下发。\n"
+            reply = (f"✅ 信息收集完成，任务已生成并归档；执行检查与下发结果请查看任务发送状态。\n"
                      f"{json.dumps(user_facing_built, ensure_ascii=False, indent=2)}")
         else:
-            reply = (f"✅ 信息收集完成，当前为【未来规划任务】，已加入计划池。\n"
+            reply = (f"✅ 信息收集完成，当前为【未来规划任务】，已加入计划池；到期后请检查执行条件并下发。\n"
                      f"{json.dumps(user_facing_built, ensure_ascii=False, indent=2)}")
         dm.conversation_history.append({"role": "user", "content": user_message})
         dm.conversation_history.append({"role": "assistant", "content": reply})

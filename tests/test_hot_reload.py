@@ -20,12 +20,12 @@ from src.hot_reload import (
 
 
 def test_force_reload_success():
-    """测试强制热重载能够成功执行并返回重载模块列表"""
-    with patch("importlib.reload", side_effect=lambda m: m):
+    """配置刷新不创建与处理器缓存绑定冲突的新模块类型。"""
+    with patch("importlib.reload", side_effect=AssertionError("must not replace code")):
         res = force_reload()
         assert res["ok"] is True
-        assert "src.prompts" in res["reloaded_modules"]
-        assert "src.dialogue_manager" in res["reloaded_modules"]
+        assert res["reloaded_modules"] == []
+        assert "配置刷新" in res["msg"]
 
 
 def test_maybe_auto_reload_without_changes():
@@ -85,7 +85,7 @@ def test_api_dev_reload_endpoint(monkeypatch):
             assert resp.status_code == 200
             data = resp.get_json()
             assert data["ok"] is True
-            assert "src.dialogue_manager" in data["reloaded_modules"]
+            assert data["reloaded_modules"] == []
 
 
 def test_perform_reload_records_frontend_event():
@@ -172,6 +172,21 @@ def test_model_profile_reload_preserves_error_handlers():
     importlib.reload(profiles)
     for name, old_type in error_types.items():
         assert getattr(profiles, name) is old_type
+
+
+def test_builder_reload_preserves_commit_uncertain_handler():
+    # Keep this direct module-reload probe isolated: production configuration
+    # refresh no longer reloads code, and other tests patch cached builder types.
+    import subprocess
+
+    result = subprocess.run([sys.executable, "-c", """
+import importlib
+import src.task_intent_builder as builder
+from src.handlers.task_commit import TaskCommitUncertainError as handler_error
+importlib.reload(builder)
+assert builder.TaskCommitUncertainError is handler_error
+"""], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_code_reload_requires_explicit_opt_in(monkeypatch):

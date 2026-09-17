@@ -67,6 +67,8 @@ class DialogueSnapshotManager:
             "last_control_request": copy.deepcopy(dm.last_control_request),
             "slot_store": dm.slot_store.export_snapshot(),
             "task_state": copy.deepcopy(dm.task_state),
+            "ros2_dispatch": copy.deepcopy(dm.ros2_dispatch),
+            "_pending_published_intent": copy.deepcopy(dm._pending_published_intent),
         }
 
     def load_snapshot(self, snapshot: dict, session_state_v2_active: Optional[bool] = None) -> None:
@@ -102,6 +104,8 @@ class DialogueSnapshotManager:
             "mode",
             "phase",
             "final_result",
+            "ros2_dispatch",
+            "_pending_published_intent",
             "awaiting_final_confirm",
             "editing_slot",
             "task_start_now",
@@ -109,6 +113,12 @@ class DialogueSnapshotManager:
             "_soft_whitelist",
             "_hard_refusal_counts",
             "_pending_rov_candidates",
+            "_pending_referential_candidates",
+            "_last_discussed_task_type",
+            "_last_discussed_robot",
+            "_last_discussed_oilfield",
+            "_last_discussed_payload",
+            "_last_visible_catalog_items",
             "_last_built_json",
             "_last_missing",
             "control_state",
@@ -150,6 +160,18 @@ class DialogueSnapshotManager:
             raise ValueError(f"Invalid task mode in snapshot: {mode}")
         if type(phase) is not str or phase not in VALID_PHASES:
             raise ValueError(f"Invalid task phase in snapshot: {phase}")
+
+        # Dispatch data is a display snapshot only. The execution service must
+        # reconcile transport outcomes with its persistent dispatch records.
+        ros2_dispatch = snapshot.get("ros2_dispatch")
+        if ros2_dispatch is not None and not isinstance(ros2_dispatch, dict):
+            raise ValueError("ros2_dispatch must be a dictionary or null")
+        pending_published = snapshot.get("_pending_published_intent")
+        if pending_published is not None:
+            if not isinstance(pending_published, dict) or phase != "confirming":
+                raise ValueError("_pending_published_intent requires a confirming snapshot and a dictionary")
+        candidate.ros2_dispatch = copy.deepcopy(ros2_dispatch)
+        candidate._pending_published_intent = copy.deepcopy(pending_published)
 
         # 校验模式与控制快照字段（原子校验，失败则不更改内存状态）
         valid_modes = {"task_collection", "knowledge_qa", "emergency_intervention", "uncertain"}
@@ -401,6 +423,13 @@ class DialogueSnapshotManager:
                     reason="validated published task file",
                 )
                 candidate.final_result = _loaded_intent
+                if candidate.ros2_dispatch is None:
+                    candidate.ros2_dispatch = {
+                        "state": "UNKNOWN",
+                        "message": "历史任务缺少发送结果，请核对发送记录。",
+                        "retry_allowed": True,
+                        "reason": "legacy_history",
+                    }
             else:
                 candidate._transition_phase(
                     "collecting",
@@ -440,6 +469,11 @@ class DialogueSnapshotManager:
                 candidate.slot_store.commit_transaction(new_slots, candidate.slot_store.unresolved)
                 candidate.task_state = candidate.slot_store.get_task_state()
                 candidate._last_built_json = candidate.slot_store.get_built_json()
+
+        if candidate.phase != "done":
+            candidate.ros2_dispatch = None
+        if candidate.phase != "confirming":
+            candidate._pending_published_intent = None
 
         if session_state_v2_active:
             _ = candidate._build_session_state_contract()

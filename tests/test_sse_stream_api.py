@@ -196,7 +196,11 @@ def test_disconnect_after_delta_completes_dispatch_and_releases_session_lock(mon
             for chunk in response.response:
                 if b"event: delta" in chunk:
                     break
-            save.assert_called_once()
+            # Archive first, then persist the actual dispatch outcome before
+            # yielding any response bytes that may trigger a disconnect.
+            assert save.call_count == 2
+            assert save.call_args_list[0].kwargs["ros2_dispatch"] is None
+            assert save.call_args_list[1].kwargs["ros2_dispatch"] == {"state": "SENT"}
             dispatch.assert_called_once()
             acquired = []
             def try_lock():

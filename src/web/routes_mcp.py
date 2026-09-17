@@ -7,6 +7,8 @@ import os
 import threading
 import yaml
 from flask import Blueprint, current_app, jsonify, request
+import src.web.state as state
+from src.task_dispatch import dispatch_completed_task, save_dispatch_history
 
 from src.web.state import (
     CONFIG_DIR,
@@ -84,41 +86,38 @@ def get_mcp_status():
 def dispatch_mcp_task():
     """下发指定 TaskIntent 或当前会话完成的任务到 ROS 2 控制系统"""
     bridge = get_mcp_bridge()
-    if bridge is None or not bridge.is_healthy():
-        return jsonify({"code": 503, "msg": "MCP 桥接服务未初始化或连接断开"}), 503
-
     data = request.get_json(silent=True) or {}
     sid = data.get("session_id")
     custom_intent = data.get("task_intent")
 
     allow_custom = bool(current_app.config.get("ALLOW_MCP_CUSTOM_INTENT", False))
-    if custom_intent and isinstance(custom_intent, dict) and allow_custom:
-        intent_to_send = custom_intent
-    elif custom_intent:
+    if custom_intent and not allow_custom:
         return jsonify({
             "code": 403,
             "msg": "禁止绕过 SEAgent 会话确认与约束校验直接下发 task_intent",
         }), 403
-    elif sid:
-        mgr = get_or_create_manager(sid)
+    if not isinstance(sid, str) or not sid:
+        return jsonify({"code": 400, "msg": "请提供已完成确认的 session_id"}), 400
+    with state._sessions_lock:
+        mgr = state._sessions_manager.get(sid)
+    if mgr is None:
+        return jsonify({"code": 400, "msg": "会话不存在，请先恢复已确认任务。"}), 400
+    with mgr._session_lock:
+        with state._sessions_lock:
+            if state._sessions_manager.get(sid) is not mgr:
+                return jsonify({"code": 409, "msg": "会话已重置，请刷新后重试。"}), 409
         if mgr.phase != "done" or not mgr.final_result:
             return jsonify({"code": 400, "msg": f"当前会话 {sid} 尚未处于 done 阶段，无可下发的任务"}), 400
-        intent_to_send = mgr.final_result
-    else:
-        return jsonify({"code": 400, "msg": "请提供已完成确认的 session_id"}), 400
-
-    try:
-        task_id = bridge.dispatch_intent(intent_to_send)
-        return jsonify({
-            "code": 200,
-            "msg": f"任务已写入 ROS 2 传输 (task_id=0x{task_id:X})，等待机器人遥测确认",
-            "dispatch_state": "SENT",
-            "task_id": task_id,
-            "task_id_hex": f"0x{task_id:X}",
-        })
-    except Exception as exc:
-        logging.error("MCP 下发任务失败: %s", exc, exc_info=True)
-        return jsonify({"code": 500, "msg": f"MCP 下发失败: {exc}"}), 500
+        if custom_intent and custom_intent != mgr.final_result:
+            return jsonify({"code": 403, "msg": "task_intent 必须与会话已确认归档的任务完全一致。"}), 403
+        result = dispatch_completed_task(mgr, bridge)
+        try:
+            save_dispatch_history(mgr)
+        except Exception as exc:
+            logger.error("保存下发结果失败: %s", exc, exc_info=True)
+        return jsonify({"code": 200, "msg": result["message"], "ros2_dispatch": result,
+                        "dispatch_state": result["state"], "task_id": result.get("task_id"),
+                        "task_id_hex": result.get("task_id_hex")})
 
 
 @mcp_bp.route("/api/mcp/gateway", methods=["GET", "POST"])

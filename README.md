@@ -92,9 +92,11 @@ pip install -r requirements/gpu.txt
 TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python run.py
 ```
 
-代码热重载默认关闭。仅在本机开发时，可添加 `SEAGENT_ENABLE_CODE_RELOAD=1`
-启用自动检测和 `/api/dev/reload`；`DISABLE_HOT_RELOAD=1` 始终优先禁用自动重载。
-启用后仍需避免在任务发布期间修改代码。ROS 2 运行配置的独立重载不受此开关影响。
+开发配置刷新默认关闭。仅在本机开发时，可添加 `SEAGENT_ENABLE_CODE_RELOAD=1`
+启用自动检测和 `/api/dev/reload`；`DISABLE_HOT_RELOAD=1` 始终优先禁用自动刷新。
+该入口支持 task_schemas、robot_fleet、assets、constraints、oilfield、state 的 YAML 配置。
+Python 源码、模型和 ASR 等启动期配置变化会提示重启，不再局部替换 Python 模块。
+ROS 2 运行配置的独立重载不受此开关影响。
 
 服务启动后，可以通过浏览器访问 [frontend/index.html](file:///root/mzy/seagent1.0-main_asr/frontend/index.html) 或通过 API 接口进行交互。
 
