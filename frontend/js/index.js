@@ -820,8 +820,14 @@ Please describe your operational requirements directly, or ask the question you 
       }
     }
 
+    let activeTypewriter = null;
+
     function cancelActiveRequest() {
       currentRequestSeq += 1;
+      if (typeof activeTypewriter !== 'undefined' && activeTypewriter) {
+        try { activeTypewriter.cancel(); } catch (e) {}
+        activeTypewriter = null;
+      }
       if (currentAbortController) {
         try { currentAbortController.abort(); } catch (e) {}
       }
@@ -1384,6 +1390,169 @@ Please describe your operational requirements directly, or ask the question you 
       renderOptionChips(uiState);
     }
 
+    function createTypewriterEngine(onChunk, onComplete) {
+      let buffer = '';
+      let displayed = '';
+      let isRunning = false;
+      let isDone = false;
+      let timerId = null;
+
+      const requestFrame = (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function')
+        ? window.requestAnimationFrame.bind(window)
+        : (cb) => setTimeout(cb, 16);
+      const cancelFrame = (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function')
+        ? window.cancelAnimationFrame.bind(window)
+        : clearTimeout;
+
+      function flushAll() {
+        if (timerId) cancelFrame(timerId);
+        timerId = null;
+        displayed += buffer;
+        buffer = '';
+        isRunning = false;
+        isDone = true;
+        if (onChunk) onChunk(displayed, true);
+        if (onComplete) onComplete(displayed);
+      }
+
+      function tick() {
+        if (!isRunning) return;
+        const remaining = buffer.length;
+        let step = 1;
+        if (remaining > 80) step = 8;
+        else if (remaining > 40) step = 4;
+        else if (remaining > 15) step = 2;
+        else step = 1;
+
+        if (isDone && remaining <= step) {
+          flushAll();
+          return;
+        }
+
+        if (remaining > 0) {
+          const take = buffer.slice(0, step);
+          buffer = buffer.slice(step);
+          displayed += take;
+          if (onChunk) onChunk(displayed, false);
+        }
+
+        if (buffer.length > 0 || !isDone) {
+          timerId = requestFrame(tick);
+        } else {
+          flushAll();
+        }
+      }
+
+      return {
+        enqueue(text) {
+          buffer += text;
+          if (!isRunning) {
+            isRunning = true;
+            timerId = requestFrame(tick);
+          }
+        },
+        finish() {
+          isDone = true;
+          if (!isRunning || buffer.length === 0) {
+            flushAll();
+          }
+        },
+        flush() {
+          flushAll();
+        },
+        cancel() {
+          isRunning = false;
+          if (timerId) cancelFrame(timerId);
+          timerId = null;
+          buffer = '';
+        },
+        getDisplayed() {
+          return displayed;
+        }
+      };
+    }
+
+    function patchSidebarSlot(slotEvent) {
+      if (!slotEvent || !slotEvent.key) return;
+      const key = slotEvent.key;
+      const val = (slotEvent.value !== null && slotEvent.value !== undefined)
+        ? slotEvent.value
+        : (slotEvent.raw_value || '');
+      const collectedDiv = document.getElementById('collectedFields');
+      if (!collectedDiv) return;
+
+      const targetLabel = getFieldLabel(key);
+      let foundRow = null;
+      for (const row of collectedDiv.querySelectorAll('.field-row')) {
+        if (row.dataset.slotKey === key || row.textContent.includes(targetLabel) || row.textContent.includes(key)) {
+          foundRow = row;
+          break;
+        }
+      }
+
+      if (foundRow) {
+        const valSpan = foundRow.querySelector('.field-value');
+        if (valSpan) {
+          valSpan.textContent = String(val);
+        }
+        foundRow.classList.remove('slot-fill-highlight');
+        void foundRow.offsetWidth;
+        foundRow.classList.add('slot-fill-highlight');
+        setTimeout(() => foundRow.classList.remove('slot-fill-highlight'), 1400);
+      } else {
+        const currentText = collectedDiv.textContent.trim();
+        if (currentText === I18N[currentLang].none || currentText === 'None' || currentText === '暂无') {
+          collectedDiv.replaceChildren();
+        }
+        const newRow = document.createElement('div');
+        newRow.className = 'field-row valid slot-fill-highlight';
+        newRow.dataset.slotKey = key;
+
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'field-label';
+        labelSpan.textContent = `⚡ ${targetLabel}`;
+        newRow.appendChild(labelSpan);
+
+        const valSpan = document.createElement('span');
+        valSpan.className = 'field-value';
+        valSpan.textContent = String(val);
+        newRow.appendChild(valSpan);
+
+        collectedDiv.appendChild(newRow);
+        setTimeout(() => newRow.classList.remove('slot-fill-highlight'), 1400);
+      }
+
+      const missingDiv = document.getElementById('missingFields');
+      if (missingDiv) {
+        for (const badge of missingDiv.querySelectorAll('.badge')) {
+          if (badge.textContent.includes(targetLabel) || badge.textContent.includes(key)) {
+            badge.style.opacity = '0.35';
+            badge.style.textDecoration = 'line-through';
+          }
+        }
+      }
+    }
+
+    function renderStreamingWarningNotice(botMsgDiv, warnings) {
+      if (!botMsgDiv || !Array.isArray(warnings) || warnings.length === 0) return;
+      const wrapper = botMsgDiv.querySelector('.bubble-wrapper') || botMsgDiv;
+      let noticeContainer = wrapper.querySelector('.bubble-warning-notice-container');
+      if (!noticeContainer) {
+        noticeContainer = document.createElement('div');
+        noticeContainer.className = 'bubble-warning-notice-container';
+        wrapper.appendChild(noticeContainer);
+      }
+      noticeContainer.replaceChildren();
+      for (const w of warnings) {
+        const noticeEl = document.createElement('div');
+        noticeEl.className = 'bubble-warning-notice';
+        const msg = typeof w === 'object' ? (w.message || w.id || JSON.stringify(w)) : String(w);
+        noticeEl.innerHTML = `<span class="bubble-warning-notice-badge">WARN</span><span>${escapeHtml(msg)}</span>`;
+        noticeContainer.appendChild(noticeEl);
+      }
+      messageContainer.scrollTop = messageContainer.scrollHeight;
+    }
+
     function highlightSidebarSlot(slotKey) {
       if (!slotKey) return;
       const collectedDiv = document.getElementById('collectedFields');
@@ -1455,6 +1624,7 @@ Please describe your operational requirements directly, or ask the question you 
         ignoreBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           ignoreBtn.disabled = true;
+          card.classList.add('warning-card-resolving');
           ignoreBtn.innerHTML = `<span>⏳</span><span>${currentLang === 'zh' ? '正在提交确认...' : 'Submitting...'}</span>`;
           if (typeof window.sendMessage === 'function') {
             window.sendMessage('忽略警告');
@@ -2562,10 +2732,43 @@ Please describe your operational requirements directly, or ask the question you 
               streamReader = reader;
               const decoder = new TextDecoder();
               let streamBuffer = '';
+              const engineFactory = typeof createTypewriterEngine === 'function'
+                ? createTypewriterEngine
+                : function(onChunk, onComplete) {
+                    let cur = '';
+                    return {
+                      enqueue(t) { cur += t; if (onChunk) onChunk(cur, false); },
+                      finish() { if (onChunk) onChunk(cur, true); if (onComplete) onComplete(cur); },
+                      flush() { if (onChunk) onChunk(cur, true); if (onComplete) onComplete(cur); },
+                      cancel() {},
+                      getDisplayed() { return cur; }
+                    };
+                  };
+              const typewriter = engineFactory((currentText, isFinal) => {
+                if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
+                if (!botMsgDiv) {
+                  botMsgDiv = addMessage('bot', currentText, { kind: 'streaming' });
+                } else {
+                  if (botMsgDiv.dataset.messageKind === 'streaming-status') {
+                    delete botMsgDiv.dataset.messageKind;
+                  }
+                  const bubble = botMsgDiv.querySelector('.bubble');
+                  if (bubble) {
+                    bubble.innerHTML = renderMessageContent(currentText, 'bot') + (isFinal ? '' : '<span class="streaming-cursor"></span>');
+                  }
+                  botMsgDiv.setAttribute('data-original', currentText);
+                }
+                messageContainer.scrollTop = messageContainer.scrollHeight;
+              });
+              if (typeof activeTypewriter !== 'undefined') {
+                activeTypewriter = typewriter;
+              }
 
               while (true) {
                 const { done, value } = await reader.read();
                 if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) {
+                  typewriter.cancel();
+                  if (typeof activeTypewriter !== 'undefined' && activeTypewriter === typewriter) activeTypewriter = null;
                   return;
                 }
                 if (done) break;
@@ -2614,27 +2817,31 @@ Please describe your operational requirements directly, or ask the question you 
                           slotContainer.appendChild(tagEl);
                         }
                         const valStr = (parsed.value !== null && parsed.value !== undefined) ? parsed.value : (parsed.raw_value || '');
-                        tagEl.innerHTML = `⚡ ${getFieldLabel(parsed.key)}: <strong>${escapeHtml(String(valStr))}</strong>`;
-                        highlightSidebarSlot(parsed.key);
+                        const fieldLabel = typeof getFieldLabel === 'function' ? getFieldLabel(parsed.key) : parsed.key;
+                        tagEl.innerHTML = `⚡ ${fieldLabel}: <strong>${escapeHtml(String(valStr))}</strong>`;
+                        if (typeof patchSidebarSlot === 'function') patchSidebarSlot(parsed);
+                        if (typeof highlightSidebarSlot === 'function') highlightSidebarSlot(parsed.key);
+                      } else if (parsed.warnings || parsed.warning) {
+                        const warnList = parsed.warnings || (parsed.warning ? [parsed.warning] : []);
+                        if (!botMsgDiv) {
+                          botMsgDiv = addMessage('bot', '', { kind: 'streaming' });
+                        }
+                        if (typeof renderStreamingWarningNotice === 'function') {
+                          renderStreamingWarningNotice(botMsgDiv, warnList);
+                        }
                       } else if (parsed.delta) {
                         if (botMsgDiv && botMsgDiv.dataset.messageKind === 'streaming-status') {
                           delete botMsgDiv.dataset.messageKind;
                         }
                         accumulatedReply += parsed.delta;
-                        if (!botMsgDiv) {
-                          botMsgDiv = addMessage('bot', accumulatedReply);
-                        } else {
-                          const bubble = botMsgDiv.querySelector('.bubble');
-                          if (bubble) {
-                            bubble.innerHTML = renderMessageContent(accumulatedReply, 'bot') + '<span class="streaming-cursor"></span>';
-                          }
-                          botMsgDiv.setAttribute('data-original', accumulatedReply);
-                        }
-                        messageContainer.scrollTop = messageContainer.scrollHeight;
+                        typewriter.enqueue(parsed.delta);
                       } else if (parsed.code === 200 && parsed.ui_state) {
                         data = parsed;
                         streamHandled = true;
+                        typewriter.finish();
                       } else if (parsed.error) {
+                        typewriter.cancel();
+                        if (typeof activeTypewriter !== 'undefined' && activeTypewriter === typewriter) activeTypewriter = null;
                         const errMsg = parsed.msg || parsed.message || '请求处理异常';
                         const reqId = parsed.request_id ? ` [request_id: ${parsed.request_id}]` : '';
                         const retryHint = parsed.retryable ? ' (可尝试重试)' : '';
@@ -2649,6 +2856,8 @@ Please describe your operational requirements directly, or ask the question you 
               }
 
               if (streamHandled && data.code === 200) {
+                typewriter.flush();
+                if (typeof activeTypewriter !== 'undefined' && activeTypewriter === typewriter) activeTypewriter = null;
                 if (botMsgDiv) {
                   if (botMsgDiv.dataset.messageKind === 'streaming-status') {
                     delete botMsgDiv.dataset.messageKind;
@@ -2686,6 +2895,10 @@ Please describe your operational requirements directly, or ask the question you 
             }
           }
         } catch (streamErr) {
+          if (typeof activeTypewriter !== 'undefined' && activeTypewriter) {
+            try { activeTypewriter.cancel(); } catch (e) {}
+            activeTypewriter = null;
+          }
           if (streamErr.name === 'AbortError' || mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
           console.warn('SSE response failed; message will not be resent:', streamErr);
           if (botMsgDiv) {

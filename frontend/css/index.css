@@ -1713,6 +1713,30 @@
       }
     }
 
+    /* 气泡内流式即时警告指示条 */
+    .bubble-warning-notice {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      background: rgba(255, 157, 0, 0.12);
+      border: 1px solid rgba(255, 157, 0, 0.4);
+      color: #ffe6b0;
+      animation: slotTagSlideIn 0.3s ease-out;
+    }
+
+    .bubble-warning-notice-badge {
+      font-size: 0.72rem;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: rgba(255, 157, 0, 0.25);
+      color: var(--accent-amber, #ff9d00);
+      font-weight: 700;
+    }
+
     /* ==================== 软警告即时确认卡片 ==================== */
     .warning-decision-card {
       margin-top: 10px;
@@ -1725,6 +1749,13 @@
       width: 100%;
       max-width: 580px;
       animation: cardFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: all 0.3s ease;
+    }
+
+    .warning-card-resolving {
+      border-color: rgba(0, 240, 255, 0.6) !important;
+      box-shadow: 0 0 20px rgba(0, 240, 255, 0.25) !important;
+      opacity: 0.9;
     }
 
     @keyframes cardFadeIn {

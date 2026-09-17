@@ -166,6 +166,29 @@ class TestSSEStreamAPI:
         assert result_payload is not None
         assert "ui_state" in result_payload
 
+    def test_sse_stream_emits_warning_event(self, client, monkeypatch):
+        sid = "test_sse_warning_contract_01"
+        from web_backend import get_or_create_manager
+        mgr = get_or_create_manager(sid)
+        def mock_process(msg, request_id=None, event_sink=None):
+            if event_sink:
+                event_sink("warning", {
+                    "warnings": [{"id": "WARN_WEATHER", "message": "风浪接近阈值", "severity": "soft"}],
+                    "phase": "blocked_soft",
+                })
+            return "注意作业风险。"
+
+        monkeypatch.setattr(mgr, "process", mock_process)
+        resp = client.post(
+            "/api/chat/stream",
+            json={"session_id": sid, "message": "确认发布"},
+        )
+        assert resp.status_code == 200
+        raw_stream = resp.get_data(as_text=True)
+        assert "event: warning" in raw_stream
+        assert "WARN_WEATHER" in raw_stream
+        assert "风浪接近阈值" in raw_stream
+
     def test_reload_events_stream(self, client):
         resp = client.get("/api/dev/reload-events/stream?after=0")
         assert resp.status_code == 200
