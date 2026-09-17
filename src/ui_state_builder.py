@@ -625,6 +625,7 @@ def _build_frontend_ui_state_locked(manager: "DialogueManager") -> dict:
             "task_id_preview": task_id_preview,
             "slot_version": slot_version,
             "read_only": read_only,
+            "editing_slot": getattr(manager, "editing_slot", None) if not read_only else None,
             "slots": slots,
             "constraint_state": constraint_state,
             "actions": actions,
@@ -644,6 +645,7 @@ def _build_frontend_ui_state_locked(manager: "DialogueManager") -> dict:
             "task_id_preview": None,
             "slot_version": 0,
             "read_only": True,
+            "editing_slot": None,
             "slots": [],
             "constraint_state": {
                 "status": "none",

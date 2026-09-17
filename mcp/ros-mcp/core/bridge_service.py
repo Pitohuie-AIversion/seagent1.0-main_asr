@@ -12,6 +12,7 @@ import json
 import logging
 from contextlib import contextmanager
 import threading
+import time
 import os
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -86,6 +87,10 @@ class SEAgentMCPBridgeService:
         self._dispatch_lock = threading.Lock()
         self._dynamic_lock = threading.Lock()
         self._dispatch_records: Dict[str, Dict[str, Any]] = {}
+        # Sending is transport evidence, not evidence of ongoing execution.
+        # Only new sends in this process may briefly await their first telemetry.
+        self._pending_dispatches: Dict[int, tuple[int, float]] = {}
+        self._control_requests: Dict[int, Dict[str, Any]] = {}
         self._dynamic_callbacks: Dict[str, Any] = {}
         self._dynamic_messages: Dict[str, Dict[str, Any]] = {}
         self._last_error: Optional[str] = None
@@ -110,6 +115,8 @@ class SEAgentMCPBridgeService:
         """Clear in-memory and persistent dispatch records."""
         with self._dispatch_lock:
             self._dispatch_records.clear()
+            self._pending_dispatches.clear()
+            self._control_requests.clear()
             if self._dispatch_records_path is not None and self._dispatch_records_path.exists():
                 try:
                     self._dispatch_records_path.unlink()
@@ -389,6 +396,8 @@ class SEAgentMCPBridgeService:
             )
             config = replace(config, gateway=gateway)
         self._replace_connection(host, port, config)
+        # Initial startup may have failed before the config watcher could start.
+        self._start_watcher()
         logger.info("[MCPBridgeService] 已切换网关至 ws://%s:%s", host, port)
 
     @property
@@ -515,6 +524,7 @@ class SEAgentMCPBridgeService:
                     }
                     self._record_dispatch(identity, record)
 
+                    pending_since = (self.tracker.message_count, time.monotonic())
                     try:
                         self.client.publish_task_cmd(
                             task_intent,
@@ -540,6 +550,7 @@ class SEAgentMCPBridgeService:
                     )
                     self._last_error = None
                     self._record_dispatch(identity, record)
+                    self._pending_dispatches[assigned_task_id] = pending_since
 
                 logger.info(
                     "[MCPBridgeService] TaskIntent 已写入 ROS 2 传输: intent_id=%s task_id=0x%X",
@@ -566,6 +577,7 @@ class SEAgentMCPBridgeService:
             }
             self._dispatch_records[identity] = record
 
+            pending_since = (self.tracker.message_count, time.monotonic())
             try:
                 self.client.publish_task_cmd(
                     task_intent,
@@ -590,6 +602,7 @@ class SEAgentMCPBridgeService:
                 timespec="milliseconds"
             )
             self._dispatch_records[identity] = record
+            self._pending_dispatches[assigned_task_id] = pending_since
             self._last_error = None
         logger.info(
             "[MCPBridgeService] TaskIntent 已写入 ROS 2 传输: intent_id=%s task_id=0x%X",
@@ -605,7 +618,20 @@ class SEAgentMCPBridgeService:
         return self.client.resume_task(task_id)
 
     def delete_task(self, task_id: int) -> int:
-        return self.client.delete_task(task_id)
+        requested_at = self._now()
+        command_id = self.client.delete_task(task_id)
+        control = {"control_state": "DELETE_REQUESTED", "delete_requested_at": requested_at,
+                   "delete_command_id": command_id}
+        with self._dispatch_lock:
+            self._control_requests[task_id] = control
+            self._pending_dispatches.pop(task_id, None)
+            with self._with_dispatch_file_lock():
+                self._load_dispatch_records()
+                for record in self._dispatch_records.values():
+                    if int(record["task_id"]) == task_id:
+                        record.update(control)
+                self._persist_dispatch_records()
+        return command_id
 
     def emergency_clear_block(self) -> int:
         return self.client.clear_block()
@@ -654,37 +680,68 @@ class SEAgentMCPBridgeService:
             return False
 
     def runtime_snapshot(self) -> Dict[str, Any]:
-        """Build the dashboard view solely from dispatch memory and ROS telemetry."""
+        """Separate current ROS observations from durable dispatch evidence.
+
+        Missing telemetry never proves deletion. A delete command records only
+        that a request was sent; protocol TaskStatus has no DELETED state.
+        """
         telemetry = self.tracker.latest_telemetry()
+        telemetry_count = self.tracker.message_count
+        fresh = self._telemetry_is_fresh(telemetry)
         with self._dispatch_lock:
             records = [dict(record) for record in self._dispatch_records.values()]
+            controls = {key: dict(value) for key, value in self._control_requests.items()}
+            pending = dict(self._pending_dispatches)
 
         by_task_id = {int(record["task_id"]): record for record in records}
         tasks = []
+        history = []
         if telemetry is not None:
             for item in telemetry.task_list:
                 record = by_task_id.pop(item.task_id, {})
+                control = controls.get(item.task_id, record)
                 status_name = item.status_name or f"UNKNOWN({item.status})"
-                tasks.append({
+                requested_at = control.get("delete_requested_at")
+                # The task list cached before DELETE is not a deletion response.
+                before_delete = bool(requested_at and telemetry.received_at <= requested_at)
+                view = {
                     "task_id": f"0x{item.task_id:X}",
                     "intent_id": record.get("intent_id", ""),
                     "task_type": item.task_type,
-                    "status": status_name,
+                    "status": ("DELETE_REQUESTED" if before_delete else status_name) if fresh else "UNKNOWN",
                     "status_code": item.status,
                     "progress": self._status_progress(status_name),
                     "error": record.get("error"),
-                })
+                    "dispatch_state": record.get("dispatch_state"),
+                    "control_state": control.get("control_state"),
+                    "last_observed_status": status_name,
+                    "observed_in_latest": True,
+                    "observation_precedes_control": before_delete,
+                }
+                known_active = item.status in (0, 1, 2, 3, 4, 6)
+                (tasks if fresh and not before_delete and known_active else history).append(view)
         for record in by_task_id.values():
             state = record["dispatch_state"]
-            tasks.append({
+            task_id = int(record["task_id"])
+            control = controls.get(task_id, record)
+            sent = pending.get(task_id)
+            waiting = bool(sent and telemetry_count == sent[0]
+                           and time.monotonic() - sent[1] <= self.TELEMETRY_MAX_AGE_SECONDS
+                           and state == "SENT" and not control.get("control_state"))
+            status = control.get("control_state") or (state if waiting or state == "FAILED" else "UNKNOWN")
+            view = {
                 "task_id": f"0x{int(record['task_id']):X}",
                 "intent_id": record["intent_id"],
                 "task_type": record["task_type"],
-                "status": state,
+                "status": status,
                 "status_code": None,
-                "progress": self._status_progress(state),
+                "progress": self._status_progress(status),
                 "error": record.get("error"),
-            })
+                "dispatch_state": state,
+                "control_state": control.get("control_state"),
+                "observed_in_latest": False,
+            }
+            (tasks if waiting else history).append(view)
 
         return {
             "last_update": telemetry.received_at if telemetry else None,
@@ -700,6 +757,7 @@ class SEAgentMCPBridgeService:
             } if telemetry else None,
             "active_tasks_count": len(tasks),
             "active_tasks": tasks,
+            "task_history": history,
             "dynamic_subscriptions": self._dynamic_subscription_views(telemetry),
         }
 

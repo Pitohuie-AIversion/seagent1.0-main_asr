@@ -647,6 +647,22 @@ class EquipmentCascadeResolver:
                     )
                     return
 
+                # Selecting a unit may change its parent variant even when the
+                # user did not submit an explicit equipment_type candidate.
+                # Apply the same payload dependency invalidation as a direct
+                # variant change; never carry old confirmed tooling silently.
+                previous_type = equipment_before.get("equipment_type")
+                previous_variant = (
+                    self.kb.get_rov(str(previous_type.value))
+                    if previous_type and previous_type.value else None
+                )
+                if (
+                    previous_variant
+                    and previous_variant.get("variant_id") != unit_vid
+                    and "equipment_type" not in changed_parents
+                ):
+                    changed_parents.append("equipment_type")
+
                 # 四级校验通过，更新 sandbox
                 self._apply_slot_update_in_transaction(
                     "equipment_class",
@@ -694,6 +710,10 @@ class EquipmentCascadeResolver:
 
         # 执行层级依赖失效
         robot_cascade_preserve_keys = set(equipment_updates.keys())
+        if unit_update and resolved_unit:
+            # The authoritative unit already resolved every parent and its
+            # display name. Preserve that validated chain, not the old payload.
+            robot_cascade_preserve_keys.update(EQUIPMENT_KEYS)
         if "payload" in updates:
             robot_cascade_preserve_keys.add("payload")
         if changed_parents:

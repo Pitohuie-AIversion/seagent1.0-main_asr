@@ -103,6 +103,7 @@ class DialogueSnapshotManager:
             "phase",
             "final_result",
             "awaiting_final_confirm",
+            "editing_slot",
             "task_start_now",
             "_blocking_violations",
             "_soft_whitelist",

@@ -109,6 +109,16 @@ class TestBidirectionalClosedLoop:
 
     def test_S2_interactive_suspend_and_resume_loop(self, bridge, rosbridge_server):
         """[S2] 交互式中途挂起与恢复闭环：下发 → SUSPEND(变为PAUSE=6) → RESUME(恢复ONGOING=3) → FINISH"""
+        def wait_for_status(task_id, expected, timeout=3.0):
+            deadline = time.monotonic() + timeout
+            last_item = None
+            while time.monotonic() < deadline:
+                last_item = bridge.get_task_status(task_id)
+                if last_item is not None and last_item.status in expected:
+                    return last_item
+                time.sleep(0.01)
+            pytest.fail(f"task {task_id} did not reach {expected}; last status: {last_item}")
+
         intent = {
             "schema_version": 2, "task_type": "pipeline_inspection",
             "priority": 10, "location": {"water_depth_m": 80.0},
@@ -120,26 +130,30 @@ class TestBidirectionalClosedLoop:
 
         # 1. 下发巡缆任务
         tid = bridge.dispatch_intent(intent)
-        time.sleep(0.1)
+        # This is a mid-execution pause. An earlier pause correctly restores
+        # READY/PLAN on resume and must not skip the remaining planning stages.
+        wait_for_status(tid, {3})
 
         # 2. 发送挂起指令
         bridge.suspend_task(tid)
-        time.sleep(0.2)
 
         # 验证机器人侧状态变为 PAUSE(6)
-        status_item = bridge.get_task_status(tid)
-        assert status_item is not None
-        assert status_item.status == 6  # PAUSE
+        status_item = wait_for_status(tid, {6})
         assert status_item.status_name == "PAUSE"
+        # Longer than the remaining normal progression: the runner must stay
+        # paused instead of advancing to FINISH in the background.
+        time.sleep(0.7)
+        assert bridge.get_task_status(tid).status == 6
+        assert rosbridge_server.get_active_tasks()[tid]["status"] == 6
 
         # 3. 发送恢复指令
         bridge.resume_task(tid)
-        time.sleep(0.2)
 
-        # 验证状态恢复为 ONGOING(3)
-        status_after_resume = bridge.get_task_status(tid)
-        assert status_after_resume is not None
-        assert status_after_resume.status in (3, 5)  # ONGOING 或 已完成
+        # 验证恢复并最终完成，而不只检查一次中间状态。
+        wait_for_status(tid, {3, 5})
+        final_item = wait_for_status(tid, {5})
+        assert final_item.status_name == "FINISH"
+        assert rosbridge_server.get_active_tasks()[tid]["status"] == 5
 
     def test_S3_emergency_clear_block_loop(self, bridge):
         """[S3] 应急清除阻断闭环：任务挂起后发送 CLEAR_BLOCK(7) → 重置为 READY(0)"""

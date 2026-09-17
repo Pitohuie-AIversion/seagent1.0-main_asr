@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import logging
+import re
 from typing import Any
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
@@ -222,11 +223,14 @@ class ConversationRouterHandler(BaseDialogueHandler):
             plan
             and (
                 plan.relation in ("recommend", "compare")
-                or plan.subject_type in ("device_class", "device_model", "equipment_family")
+                or plan.subject_type in ("device", "device_class", "device_family", "device_model", "equipment_family")
             )
         )
 
-        if (
+        task_fit_answer = self.grounded_catalog.build_grounded_task_fit_answer(user_message, route)
+        if task_fit_answer is not None:
+            reply = task_fit_answer
+        elif (
             not is_targeted_device_query
             and any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
             and any(q in user_message for q in ("介绍", "哪些", "支持", "包含", "列表", "清单", "所有", "有哪些", "有什么"))
@@ -235,8 +239,7 @@ class ConversationRouterHandler(BaseDialogueHandler):
             reply = self._build_grounded_fleet_introduction()
         elif (
             not is_targeted_device_query
-            and any(t in user_message for t in ("任务", "作业类型", "活", "工作"))
-            and any(q in user_message for q in ("介绍", "哪些", "什么", "支持", "包含", "列表", "清单", "能做", "干什么", "能干", "有什么"))
+            and self._is_task_catalog_query(user_message)
         ):
             spec_task = self._extract_task_type_from_text(user_message)
             if spec_task:
@@ -308,6 +311,19 @@ class ConversationRouterHandler(BaseDialogueHandler):
             raise RuntimeError(f"State invariance violation in non-task route {route.query_intent}")
 
         return reply
+
+    @staticmethod
+    def _is_task_catalog_query(user_message: str) -> bool:
+        """Only explicit task enumeration/introduction requests belong in the catalog."""
+        if re.search(r"为什么|为何|原因|适合|适配|适用|胜任", user_message):
+            return False
+        return bool(re.search(
+            r"(?:哪些|什么|哪几种)(?:样的)?(?:任务|作业|工作|活)"
+            r"|(?:任务|作业类型)(?:列表|清单|类型|有哪些|有哪几种)"
+            r"|介绍.*(?:任务|作业)"
+            r"|(?:支持|包含).*(?:任务|作业)",
+            user_message,
+        ))
 
     def _build_knowledge_fallback(self, kb_evidence: dict) -> str:
         query_type = kb_evidence.get("query_type")

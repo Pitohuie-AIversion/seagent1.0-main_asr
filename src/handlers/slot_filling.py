@@ -94,7 +94,7 @@ class SlotFillingHandler(BaseDialogueHandler):
         return PayloadMutationManager.is_payload_modification_request(user_message)
 
     def handle_payload_modification(self, user_message: str) -> str | None:
-        """用户请求重新选择/修改/配置载荷时，重置 payload 槽位为 missing 并调整阶段供前端调出卡片。"""
+        """打开载荷编辑卡片，保留已提交配置。"""
         return self.payload_mutation.handle_payload_modification(user_message)
 
     def normalize_payload_list_mutations(
@@ -158,6 +158,8 @@ class SlotFillingHandler(BaseDialogueHandler):
         unresolved_inputs: list,
         missing_fields: list[dict] | None = None,
         display_updates: dict | None = None,
+        task_state: dict | None = None,
+        constraint_context: dict | None = None,
     ) -> str:
         """在 LLM 自然语言回复后追加事实锚点摘要，防止回复内容与实际写入状态不一致。"""
         return WriteReplyGrounder.ground_write_reply(
@@ -167,6 +169,8 @@ class SlotFillingHandler(BaseDialogueHandler):
             unresolved_inputs=unresolved_inputs,
             missing_fields=missing_fields,
             display_updates=display_updates,
+            task_state=task_state,
+            constraint_context=constraint_context,
         )
 
 
@@ -241,6 +245,8 @@ class SlotFillingHandler(BaseDialogueHandler):
             accepted_updates={},
             unresolved_inputs=unresolved,
             missing_fields=missing if missing else None,
+            task_state=manager.task_state,
+            constraint_context=constraint_context,
         )
         if task_type_key is None:
             supported = manager.kb.get_all_task_type_values()
@@ -601,6 +607,18 @@ class SlotFillingHandler(BaseDialogueHandler):
 
         # Re-derive from slot_store (SSOT)
         manager.task_state = manager.slot_store.get_task_state()
+        if getattr(manager, "editing_slot", None) == "payload":
+            context_changed = any(
+                state_before_turn.get(key) != manager.task_state.get(key)
+                for key in ("task_type_key", "equipment_type")
+            )
+            payload = manager.slot_store.slots.get("payload")
+            payload_committed = (
+                "payload" in merged_updates and not payload_mutation_failed
+                and payload is not None and payload.status == "valid"
+            )
+            if context_changed or payload_committed:
+                manager.editing_slot = None
         if curr_task_type_key:
             required_schema = manager.builder.get_schema(curr_task_type_key, manager.mode)
             user_req_schema = [f for f in required_schema if f.get("type") not in ("auto", "fixed")]
@@ -689,6 +707,8 @@ class SlotFillingHandler(BaseDialogueHandler):
             display_updates=self.get_committed_update_display_values(
                 accepted_updates
             ),
+            task_state=manager.task_state,
+            constraint_context=constraint_context,
         )
         reply = manager._ensure_constraint_details(reply, constraint_context)
 

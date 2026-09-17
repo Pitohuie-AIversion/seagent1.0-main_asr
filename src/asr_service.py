@@ -20,6 +20,10 @@ class ASRUnavailableError(RuntimeError):
     """Raised when real ASR initialization failed and inference is unavailable."""
 
 
+class ASRInputError(ValueError):
+    """An uploaded file has no valid, decodable audio samples."""
+
+
 @dataclass(frozen=True)
 class ASRConfig:
     model_path: Path
@@ -146,10 +150,22 @@ class ASRService:
             language_hint = None
 
         started = time.perf_counter()
-        with self._lock:
-            results = self.model.transcribe(audio=str(audio_path), language=language_hint)
-        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        waveform, sample_rate = self._decode_audio(audio_path)
+        # Qwen can hallucinate text even for digital silence. Keep this gate
+        # below one PCM16 quantization step so short/quiet speech is preserved.
+        import numpy as np
+        if float(np.max(np.abs(waveform))) <= np.finfo(np.float32).eps:
+            return {
+                "text": "",
+                "language_hint": language_hint,
+                "device": self.device,
+                "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                "segments": [],
+            }
 
+        with self._lock:
+            results = self.model.transcribe(audio=(waveform, sample_rate), language=language_hint)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
 
         segments = [self._result_to_dict(item) for item in results]
         transcript = "".join(item.get("text", "") for item in segments).strip()
@@ -161,6 +177,31 @@ class ASRService:
             "elapsed_ms": elapsed_ms,
             "segments": segments,
         }
+
+    @staticmethod
+    def _decode_audio(audio_path: Path):
+        """Use Qwen's existing librosa decoder, including its WebM fallback.
+
+        Decode errors are user input errors; dependency and inference failures
+        remain service errors. Passing the resulting tuple avoids a second file
+        decode inside Qwen3-ASR.
+        """
+        if audio_path.stat().st_size == 0:
+            raise ASRInputError("音频文件为空，请重新录音或上传有效音频。")
+
+        import librosa
+        import numpy as np
+        from audioread.exceptions import DecodeError
+        from soundfile import SoundFileRuntimeError
+
+        try:
+            waveform, sample_rate = librosa.load(str(audio_path), sr=16000, mono=True)
+        except (DecodeError, SoundFileRuntimeError, EOFError, ValueError) as exc:
+            raise ASRInputError("无法解码音频，请重新录音或上传有效音频。") from exc
+
+        if waveform.size == 0 or not np.isfinite(waveform).all():
+            raise ASRInputError("音频中没有有效采样，请重新录音或上传有效音频。")
+        return waveform, sample_rate
 
     @staticmethod
     def _result_to_dict(result: Any) -> dict[str, Any]:

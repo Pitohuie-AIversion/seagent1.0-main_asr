@@ -85,6 +85,7 @@ class ValidationResult:
     state_snapshot: dict | None
     violations: list[Violation] = field(default_factory=list)
     error: dict | None = None
+    purpose: str = "preview"
 
     def to_dict(self) -> dict:
         return {
@@ -96,6 +97,7 @@ class ValidationResult:
             "state_snapshot": copy.deepcopy(self.state_snapshot),
             "violations": [v.to_dict() if hasattr(v, "to_dict") else copy.deepcopy(v) for v in self.violations],
             "error": copy.deepcopy(self.error),
+            "purpose": self.purpose,
         }
 
     @classmethod
@@ -117,6 +119,7 @@ class ValidationResult:
             state_snapshot=copy.deepcopy(data.get("state_snapshot")),
             violations=violations,
             error=copy.deepcopy(data.get("error")),
+            purpose=str(data.get("purpose") or "preview"),
         )
 
 
@@ -445,6 +448,7 @@ class TaskValidator:
                 state_snapshot=state_snapshot,
                 violations=violations,
                 error=error_dict,
+                purpose=purpose,
             )
 
         except Exception as e:
@@ -466,6 +470,7 @@ class TaskValidator:
                 state_snapshot=None,
                 violations=[err_v],
                 error=err_dict,
+                purpose=purpose,
             )
 
     def validate(self, task_state: dict) -> list[Violation]:

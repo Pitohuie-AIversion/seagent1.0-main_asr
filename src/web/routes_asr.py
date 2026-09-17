@@ -13,7 +13,7 @@ import yaml
 
 import src.web.state as state
 from src.asr_normalizer import normalize_terminology
-from src.asr_service import ASRUnavailableError
+from src.asr_service import ASRInputError, ASRUnavailableError
 from src.web.routes_translate import _translate_text_internal
 from src.web.state import CONFIG_DIR, _require_api_token
 
@@ -21,16 +21,24 @@ logger = logging.getLogger(__name__)
 
 asr_bp = Blueprint("asr", __name__)
 
+_ASR_API_KEYS = ("language", "direct_to_llm", "allowed_extensions", "max_upload_mb")
+
 
 def _load_asr_api_config() -> dict:
+    """Read API settings from the flat config, with ``api`` overrides."""
     cfg_path = CONFIG_DIR / "asr.yaml"
     if not cfg_path.exists():
         return {}
     try:
         with open(cfg_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-            if isinstance(data, dict):
-                return data.get("api", {}) or {}
+        if not isinstance(data, dict):
+            return {}
+        config = {key: data[key] for key in _ASR_API_KEYS if key in data}
+        api = data.get("api")
+        if isinstance(api, dict):
+            config.update({key: api[key] for key in _ASR_API_KEYS if key in api})
+        return config
     except Exception as exc:
         logger.warning("Failed to load asr.yaml configuration: %s", exc)
     return {}
@@ -144,6 +152,16 @@ def api_asr():
             "elapsed_ms": result["elapsed_ms"],
             "segments": result["segments"],
         })
+    except ASRInputError as e:
+        logger.info("Invalid ASR audio upload: %s request_id=%s", e, req_id)
+        return jsonify({
+            "ok": False,
+            "code": 422,
+            "error": "invalid_audio",
+            "msg": str(e),
+            "request_id": req_id,
+            "retryable": False
+        }), 422
     except ASRUnavailableError as e:
         logging.error("ASR service unavailable: %s", e)
         return jsonify({

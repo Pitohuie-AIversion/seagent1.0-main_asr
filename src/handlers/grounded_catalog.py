@@ -568,6 +568,90 @@ class GroundedCatalogHandler(BaseDialogueHandler):
 
     _build_grounded_rule_catalog_introduction = build_grounded_rule_catalog_introduction
 
+    def build_grounded_task_fit_answer(
+        self, user_message: str, route: IntentRouteResult,
+    ) -> str | None:
+        """Explain a READ suitability question using unfiltered device capabilities.
+
+        Resolve explicit devices before a selected-device reference. In particular,
+        an unsuitable device must not disappear through task-specific filtering.
+        """
+        plan = route.interaction_plan
+        if plan is not None and plan.operation != "READ":
+            return None
+        if route.query_intent not in {"DEVICE_CAPABILITY", "KNOWLEDGE_QA", "GENERAL_CHAT"}:
+            return None
+        if re.search(
+            r"(?:哪些|什么|哪几种)(?:样的)?(?:任务|作业|工作)"
+            r"|(?:任务|作业)(?:列表|清单|有哪些|有哪几种)",
+            user_message,
+        ):
+            return None
+        explicit_task = self.extract_task_type_from_text(user_message)
+        task_reference = explicit_task or re.search(r"任务|(?:当前|本次|这项|这次|该)(?:作业|工作)", user_message)
+        if not task_reference:
+            return None
+        task_key = explicit_task or self.task_state.get("task_type_key")
+        template = self.kb.task_schemas.get("task_templates", {}).get(task_key)
+        if not template:
+            return None
+        fit_question = re.search(
+            r"适合|适用|适配|胜任|合适|能做|能否|能不能|可以吗|行不行"
+            r"|可以.*(?:做|执行|完成)|为什么.*推荐|推荐.*(?:原因|依据)",
+            user_message,
+        )
+        if not fit_question:
+            return None
+        _, targets = self.kb._find_query_entity_targets(user_message)
+        has_device_reference = bool(re.search(
+            r"机器人|设备|装备|ROV|AUV|这台|那台", user_message, re.IGNORECASE,
+        ))
+        if not targets and not has_device_reference:
+            return None
+        if not targets:
+            selected_reference = bool(re.search(
+                r"这台|那台|该机器人|该设备|所选|选定|当前的(?:设备|机器人)",
+                user_message,
+            ))
+            if not selected_reference:
+                return "项目知识库中未找到该设备，请说明具体机器人型号或名称，以便核对任务适配。"
+            selector = (
+                self.task_state.get("equipment_unit_id")
+                or self.task_state.get("equipment_type")
+                or self.task_state.get("equipment_family")
+            )
+            if not selector:
+                return "当前任务尚未选定机器人，请说明要比较的设备型号或名称。"
+            targets = self.kb._resolve_context_entity_targets(str(selector), None)
+
+        robots = {}
+        for target in targets:
+            _, candidates = self.kb._robots_for_entity_target(target, None)
+            for robot in candidates:
+                robots[(robot.get("variant_id"), robot.get("unit_id"))] = robot
+        if not robots:
+            return "项目知识库中未找到该设备的型号能力，请说明具体机器人型号或名称。"
+
+        task_name = template.get("display_name", task_key)
+        lines = [f"依据项目设备与任务配置，针对【{task_name}】："]
+        for robot in robots.values():
+            name = robot.get("full_name") or robot.get("variant_id")
+            if not self.kb.robot_matches_task(robot, task_key):
+                lines.append(f"- 【{name}】的已配置作业能力不覆盖该任务，不能用于【{task_name}】。")
+                continue
+            lines.append(f"- 【{name}】具备该任务要求的作业能力，任务类型匹配。")
+            max_depth = robot.get("max_depth_m")
+            depth = self.task_state.get("water_depth")
+            if isinstance(max_depth, (int, float)) and isinstance(depth, (int, float)):
+                depth_result = "超出额定范围，当前水深不适用" if depth > max_depth else "在额定范围内"
+                lines.append(f"  型号最大作业水深 {max_depth:g} 米，草稿水深 {depth:g} 米，{depth_result}。")
+        if not any(self.kb.robot_matches_task(robot, task_key) for robot in robots.values()):
+            families = self.kb.get_task_allowed_robot_family_names(task_key)
+            if families:
+                lines.append(f"该任务已配置的适用机器人系列为：{'、'.join(families)}。")
+        lines.append("以上是静态能力适配说明；实际执行仍需通过载荷、海况和机器人状态校验。本轮未修改任务。")
+        return "\n".join(lines)
+
     def build_grounded_device_class_answer(
         self,
         user_message: str,

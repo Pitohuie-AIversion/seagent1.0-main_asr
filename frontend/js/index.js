@@ -1516,10 +1516,6 @@ Please describe your operational requirements directly, or ask the question you 
         const rawOptions = Array.isArray(supportedGroups[def.key]) ? supportedGroups[def.key] : [];
         const options = rawOptions.filter(item => {
           if (allowedSet.size > 0 && !allowedSet.has(item)) return false;
-          // 云台摄像机属于固有的常驻硬件，不作为“可替换设备”选项卡展现
-          if (def.key === 'Visual_sensor' && typeof item === 'string' && (item.includes('云台') || (item.includes('摄像机') && !item.includes('成像系统')))) {
-            return false;
-          }
           // 已搭载的硬件本身不作为“可扩展/可替换”选项 Chip 展示，统一显示在“已搭载/原装”区域
           if (onboard.includes(item)) {
             return false;
@@ -1547,7 +1543,7 @@ Please describe your operational requirements directly, or ask the question you 
       const labelText = getSlotUiLabel(slot);
       // 状态反显 (State Hydration)
       const existingValues = new Set();
-      const rawSlotVal = slot.candidate_value ?? slot.value;
+      const rawSlotVal = slot.value ?? slot.candidate_value;
       if (Array.isArray(rawSlotVal)) {
         rawSlotVal.forEach(v => { if (typeof v === 'string') existingValues.add(v); });
       } else if (typeof rawSlotVal === 'string' && rawSlotVal) {
@@ -1894,6 +1890,16 @@ Please describe your operational requirements directly, or ask the question you 
         }
       });
       panel.appendChild(confirmBtn);
+      if (slot.editing) {
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'payload-selector-cancel';
+        cancelBtn.textContent = currentLang === 'zh' ? '取消修改' : 'Cancel Changes';
+        cancelBtn.addEventListener('click', () => {
+          if (!isSending) sendMessage('取消载荷修改');
+        });
+        panel.appendChild(cancelBtn);
+      }
       updateStyles();
       bar.appendChild(panel);
       return true;
@@ -1963,7 +1969,8 @@ Please describe your operational requirements directly, or ask the question you 
 
       const slots = Array.isArray(uiState.slots) ? uiState.slots : [];
       const missingSlots = slots.filter(s => s.status !== 'valid');
-      const currentlyAskedSlots = missingSlots.slice(0, 3);
+      const editingSlot = slots.find(s => s.key === uiState.editing_slot);
+      const currentlyAskedSlots = editingSlot ? [editingSlot] : missingSlots.slice(0, 3);
 
       const listSlotsWithAllowed = currentlyAskedSlots.filter(s => {
         const schemaType = s.schema_type || s.type;
@@ -1973,7 +1980,7 @@ Please describe your operational requirements directly, or ask the question you 
           s.value.length > 0
         );
         return schemaType === 'list' &&
-               !listSelectionCompleted &&
+               (!listSelectionCompleted || s === editingSlot) &&
                Array.isArray(s.allowed_values) &&
                s.allowed_values.length > 0;
       });
@@ -1985,7 +1992,7 @@ Please describe your operational requirements directly, or ask the question you 
       bar.className = 'option-chips-bar';
 
       listSlotsWithAllowed.forEach(slot => {
-        if (slot.key === 'payload' && renderPayloadSelector(slot, bar)) {
+        if (slot.key === 'payload' && renderPayloadSelector({...slot, editing: slot === editingSlot}, bar)) {
           return;
         }
         renderGenericListSelector(slot, bar);

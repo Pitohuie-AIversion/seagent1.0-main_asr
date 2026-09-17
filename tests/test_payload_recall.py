@@ -44,32 +44,35 @@ class TestPayloadCardRecall(unittest.TestCase):
         self.kb = KnowledgeBase()
         self.dm = DialogueManager(MagicMock(), self.kb)
 
-    def test_user_payload_modification_request_resets_slot_to_missing_and_returns_card_prompt(self):
-        """When payload is valid, typing '修改载荷' resets payload to missing, transitions phase to collecting, and yields card metadata."""
+    def test_user_payload_modification_preserves_committed_slot_and_opens_editor(self):
+        """Opening the editor must not erase the configured task payload."""
         seed_valid_task_with_payload(self.dm, self.kb)
+        before = self.dm.slot_store.export_snapshot()
 
         reply = self.dm.process("修改载荷")
 
         self.assertIn("重新调出载荷配置卡片", reply)
         payload_slot = self.dm.slot_store.slots["payload"]
-        self.assertEqual(payload_slot.status, "missing")
-        self.assertIsNone(payload_slot.value)
-        self.assertEqual(payload_slot.candidate_value, ["高清水下摄像机"])
+        self.assertEqual(payload_slot.status, "valid")
+        self.assertEqual(payload_slot.value, ["高清水下摄像机"])
+        self.assertEqual(self.dm.slot_store.export_snapshot(), before)
         self.assertEqual(self.dm.phase, "collecting")
 
         ui_state = build_frontend_ui_state(self.dm)
         self.assertIn("slots", ui_state)
         payload_ui = next((s for s in ui_state["slots"] if s["key"] == "payload"), None)
         self.assertIsNotNone(payload_ui)
-        self.assertEqual(payload_ui["status"], "missing")
-        self.assertEqual(payload_ui["candidate_value"], ["高清水下摄像机"])
+        self.assertEqual(payload_ui["status"], "valid")
+        self.assertEqual(payload_ui["value"], ["高清水下摄像机"])
+        self.assertEqual(ui_state["editing_slot"], "payload")
 
     def test_reselect_payload_synonym_triggers_recall(self):
         """Synonyms such as '重新选择载荷' or '修改payload' also trigger payload card recall."""
         seed_valid_task_with_payload(self.dm, self.kb)
         reply = self.dm.process("重新选择载荷")
         self.assertIn("重新调出载荷配置卡片", reply)
-        self.assertEqual(self.dm.slot_store.slots["payload"].status, "missing")
+        self.assertEqual(self.dm.slot_store.slots["payload"].status, "valid")
+        self.assertEqual(build_frontend_ui_state(self.dm)["editing_slot"], "payload")
 
     def test_targeted_cancellation_does_not_trigger_recall(self):
         """Input containing negation like '取消载荷修改' should not be misidentified as a card recall request."""

@@ -26,6 +26,15 @@ logger = logging.getLogger("src.dialogue_manager")
 class ConstraintDecisionHandler(BaseDialogueHandler):
     """约束决策与阻断处理生命周期处理器"""
 
+    def _blocked_validation_purpose(self, user_message: str = "") -> str:
+        previous = getattr(self.manager.slot_store, "validation_result", None)
+        previous_purpose = getattr(previous, "purpose", "preview")
+        if previous_purpose == "runtime_execution":
+            return "runtime_execution"
+        if previous_purpose == "publish" or self.manager._is_final_publish_confirmation(user_message):
+            return "publish"
+        return "preview"
+
     def can_handle(self, ctx: DialogueContext) -> bool:
         """
         判断是否处于约束决策阶段：
@@ -66,11 +75,13 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
                 or (self.manager._blocking_violations and any(getattr(v, "severity", "") == "hard" for v in self.manager._blocking_violations))
             )
 
-            val_res = self.manager._refresh_validation(purpose="interactive")
+            # Reconfirming a blocked task cannot weaken the checks that blocked
+            # it. Interactive collection deliberately skips runtime availability.
+            purpose = self._blocked_validation_purpose(user_message)
+            val_res = self.manager._refresh_validation(purpose=purpose)
             current_hard = [
                 v for v in val_res.violations
                 if v.severity == "hard"
-                and (getattr(self.manager, "mode", "") != "interactive" or getattr(v, "constraint_id", "") not in ("CLASS_NOT_ALLOWED_FOR_TASK", "FAMILY_CLASS_MISMATCH"))
             ]
             if current_hard:
                 self.manager._blocking_violations = current_hard
@@ -215,7 +226,7 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
             if violation.severity == "hard"
         ]
         if not violations:
-            val_res = dm._refresh_validation(purpose="interactive")
+            val_res = dm._refresh_validation(purpose=self._blocked_validation_purpose(user_message))
             violations = [
                 v for v in val_res.violations
                 if v.severity == "hard"
@@ -749,6 +760,8 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
             missing = dm._last_missing
 
         purpose = "preview" if task_type_key and not missing else "interactive"
+        if dm.phase == "blocked_hard":
+            purpose = self._blocked_validation_purpose()
         val_res = dm._refresh_validation(purpose=purpose)
         violations = self._merge_oilfield_context_violations(val_res.violations)
         hard = [v for v in violations if v.severity == "hard"]

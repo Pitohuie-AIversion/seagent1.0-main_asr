@@ -157,6 +157,8 @@ def _point_has_explicit_date(ira: TemporalIR) -> bool:
             ira.month_offset is not None,
             ira.boundary is not None,
             ira.is_now,
+            ira.hour_offset is not None,
+            ira.minute_offset is not None,
         ]
     )
 
@@ -200,17 +202,20 @@ def _parse_time_point_spec(
             has_explicit_time=True,
         )
 
-    point_base = base_dt
-    if date_context is not None:
-        base_time = base_dt.timetz().replace(tzinfo=None)
-        point_base = datetime.combine(date_context, base_time)
-
     detail = parse_relative_datetime_detail(
         text=raw,
-        base_dt=point_base,
+        base_dt=base_dt,
         full_user_message=None,
         timezone_id=timezone_id,
     )
+    # Only a clock-only endpoint inherits the start date. A relative date such
+    # as "tomorrow" is already anchored to the current date, not the start date.
+    if date_context is not None and not _point_has_explicit_date(detail.ir):
+        point_base = datetime.combine(date_context, base_dt.timetz().replace(tzinfo=None))
+        detail = parse_relative_datetime_detail(
+            text=raw, base_dt=point_base, full_user_message=None,
+            timezone_id=timezone_id,
+        )
 
     if not detail.success or _has_fatal_ambiguity(detail.ambiguities):
         return TimePointSpec(
@@ -311,7 +316,7 @@ def parse_time_range(
     if base_dt is None:
         from .simulated_time import get_current_datetime
         base_dt = get_current_datetime()
-    base_naive = base_dt.replace(tzinfo=None) if base_dt.tzinfo else base_dt
+    base_naive = base_dt.replace(tzinfo=None, microsecond=0)
 
     result = TimeRangeParseResult()
     if not _normalize_missing_text(start_text) and previous_start is not None:

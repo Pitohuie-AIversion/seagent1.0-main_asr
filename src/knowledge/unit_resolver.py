@@ -368,14 +368,29 @@ class UnitResolver:
         text_norm = _norm(text)
         alias_index = self.kb.get_device_alias_index()
         unit_matches = []
+        matched_spans: list[tuple[int, int]] = []
         for alias, targets in sorted(alias_index.items(), key=lambda x: len(_norm(x[0])), reverse=True):
-            if len(_norm(alias)) >= 2 and _norm(alias) in text_norm:
-                for target in targets:
-                    if target.startswith("unit:"):
-                        uid = target.split(":", 1)[1]
-                        unit = self.resolve_robot_unit(uid, task_type_key)
-                        if unit and not any(u.get("unit_id") == unit.get("unit_id") for u in unit_matches):
-                            unit_matches.append(unit)
+            normalized_alias = _norm(alias)
+            unit_targets = [target for target in targets if target.startswith("unit:")]
+            if len(normalized_alias) < 2 or not unit_targets:
+                continue
+            for match in re.finditer(re.escape(normalized_alias), text_norm):
+                start, end = match.span()
+                # A generic suffix ("001", "一号机") inside a more specific
+                # configured selector must not introduce unrelated units.
+                if any(left <= start and end <= right for left, right in matched_spans):
+                    continue
+                if normalized_alias.isascii() and (
+                    (start and re.match(r"[a-z0-9_-]", text_norm[start - 1]))
+                    or (end < len(text_norm) and re.match(r"[a-z0-9_-]", text_norm[end]))
+                ):
+                    continue
+                matched_spans.append((start, end))
+                for target in unit_targets:
+                    uid = target.split(":", 1)[1]
+                    unit = self.resolve_robot_unit(uid, task_type_key)
+                    if unit and not any(u.get("unit_id") == unit.get("unit_id") for u in unit_matches):
+                        unit_matches.append(unit)
         if len(unit_matches) == 1:
             return unit_matches[0]
         return None

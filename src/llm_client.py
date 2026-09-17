@@ -77,11 +77,22 @@ TEMPORAL_RELATION_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "has_duration": {"type": "boolean"},
+        "target": {
+            "type": ["string", "null"],
+            "enum": ["start_time", "end_time", "duration", None],
+            "description": "增减量修饰的字段；开始时间平移不是任务持续时长。",
+        },
+        "action": {
+            "type": ["string", "null"],
+            "enum": ["SET", "ADD", "SUB", "KEEP", None],
+        },
+        "keep_existing_duration": {"type": ["boolean", "null"]},
         "duration_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
         "raw_text": {"type": ["string", "null"]},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
     },
-    "required": ["has_duration", "duration_seconds", "raw_text", "confidence"],
+    "required": ["has_duration", "target", "action", "keep_existing_duration",
+                 "duration_seconds", "raw_text", "confidence"],
     "additionalProperties": False,
 }
 
@@ -116,7 +127,7 @@ SLOT_EXTRACTION_JSON_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "properties": {
                     "field": {"type": "string"},
-                    "operation": {"type": "string", "enum": ["add", "remove", "replace", "clear"]},
+                    "operation": {"type": "string", "enum": ["add", "remove", "replace", "set", "clear"]},
                     "items": {"type": "array"},
                     "target_items": {"type": "array"},
                     "raw_text": {"type": "string"},
@@ -137,11 +148,7 @@ SLOT_EXTRACTION_JSON_SCHEMA: dict[str, Any] = {
         },
         "time_relation": {
             "type": ["object", "null"],
-            "properties": {
-                "duration_seconds": {"type": "number", "exclusiveMinimum": 0},
-                "raw_text": {"type": "string"},
-                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-            },
+            "properties": TEMPORAL_RELATION_JSON_SCHEMA["properties"],
             "required": ["duration_seconds", "raw_text", "confidence"],
             "additionalProperties": False,
         },

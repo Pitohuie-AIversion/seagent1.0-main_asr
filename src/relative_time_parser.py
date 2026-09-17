@@ -678,11 +678,18 @@ def parse_relative_datetime_detail(
 
     # ---- 构建 TemporalIR ----
     ira = TemporalIR(source_text=norm, timezone_id=timezone_id)
-    _extract_explicit_date_ira(combined, base_naive, ira)
-    _extract_explicit_time_ira(combined, base_naive, ira)
+    # A field's explicit date/clock must not absorb another field's afternoon,
+    # date or "now" from the full sentence. Context may only supply a date below.
+    _extract_explicit_date_ira(norm, base_naive, ira)
+    _extract_explicit_time_ira(norm, base_naive, ira)
 
     # 如果局部文本没有解析到日期，但 full_user_message 里明确提到月日/相对日，允许从 full_msg 补日期
-    if ira.day is None and ira.weekday is None and ira.day_offset is None and ira.boundary is None:
+    if not any((
+        ira.day is not None, ira.weekday is not None, ira.day_offset is not None,
+        ira.week_offset is not None, ira.month_offset is not None,
+        ira.boundary is not None, ira.is_now,
+        ira.hour_offset is not None, ira.minute_offset is not None,
+    )):
         ira2 = TemporalIR(source_text=full_msg_norm, timezone_id=timezone_id)
         _extract_explicit_date_ira(full_msg_norm, base_naive, ira2)
         if ira2.resolution_method is not None:

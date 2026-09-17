@@ -270,8 +270,14 @@ def _init_mcp_service_if_requested(kb, is_mock: bool = False):
             runtime_config_path=runtime_file,
             protocol_config_path=protocol_file,
         )
-        mcp_bridge.start()
+        # Keep a validated offline bridge available to the dashboard so operators
+        # can reconnect or change gateways even when the first connection fails.
         web_backend.init_mcp_bridge_service(mcp_bridge)
+        try:
+            mcp_bridge.start()
+        except Exception as exc:
+            print(f"⚠️ MCP 网关暂不可达，桥接服务已保留，可在监控页重新连接: {exc}")
+            return
         print(f"📡 MCP 桥接服务启动成功 (ws://{mcp_host}:{mcp_port})")
     except Exception as exc:
         print(f"⚠️ MCP 桥接服务初始化跳过: {exc}")

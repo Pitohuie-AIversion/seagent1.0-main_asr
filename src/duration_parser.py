@@ -353,11 +353,47 @@ def parse_duration_to_seconds(text: Optional[str]) -> Optional[float]:
     return detail.total_seconds if detail.success else None
 
 
+def parse_duration_evidence(text: Optional[str]) -> DurationParseResult:
+    """Parse spoken duration evidence while excluding calendar dates and clocks.
+
+    This uses the same number/unit rules as the public duration parser. A full
+    extraction sentence may contain both a date (18日) and a duration (4小时);
+    the date must not become an extra eighteen-day task duration.
+    """
+    cleaned = unicodedata.normalize("NFKC", str(text or ""))
+    number = r"[0-9零〇一二两三四五六七八九十百千万亿壹贰叁肆伍陆柒捌玖佰仟]+"
+    cleaned = re.sub(
+        rf"(?:{number}年)?{number}月{number}[日号]?", " ", cleaned,
+    )
+    # "点" can also be a decimal separator: 二点五小时 is a duration, not 2:00.
+    decimal_unit = r"(?:小时|钟头|天|日|分钟|秒钟|秒|hours?|hrs?|h|days?|minutes?|mins?|seconds?|secs?)"
+    cleaned = re.sub(
+        rf"{number}(?:点(?!{number}\s*(?:个)?\s*{decimal_unit})|时)"
+        rf"(?:{number}分(?:{number}秒)?|半|一刻|三刻)?", " ", cleaned,
+        flags=re.IGNORECASE,
+    )
+    detail = parse_duration_with_detail(cleaned)
+    if detail.success:
+        return detail
+    # Short forms such as "半时" are deliberately full-match branches in the
+    # existing parser; preserve them when embedded in a separate user clause.
+    for clause in re.split(r"[，,。；;\n]", cleaned):
+        clause_detail = parse_duration_with_detail(clause)
+        if clause_detail.success:
+            return clause_detail
+        # Reuse the delta parser's filler-word handling, e.g. "再增加半小时".
+        clause_detail = parse_duration_with_detail(_strip_duration_delta_words(clause))
+        if clause_detail.success:
+            return clause_detail
+    return detail
+
+
 # ============================================================================
 # 保持时长不变的意图识别
 # ============================================================================
 
 KEEP_DURATION_PATTERNS = [
+    r"(?:持续时间|持续时长|时长)\s*(?:保持|维持)?\s*不变",
     r"持续时间不变",
     r"时长不变",
     r"保持持续时间",
@@ -379,8 +415,12 @@ def is_keep_duration_expression(text: Optional[str]) -> bool:
     if not text or not isinstance(text, str):
         return False
     norm = unicodedata.normalize("NFKC", text).strip()
-    if re.search(r"(?:开始|起始|结束|终止|截止|完工|收工)\s*时间\s*不变", norm):
-        return False
+    # A fixed endpoint is not a fixed duration. Remove only that clause so a
+    # separate explicit duration-keep instruction remains visible.
+    norm = re.sub(
+        r"(?:开始|起始|结束|终止|截止|完工|收工)\s*时间\s*(?:保持)?\s*不变",
+        "", norm,
+    )
     for pattern in KEEP_DURATION_PATTERNS:
         if re.search(pattern, norm):
             return True
@@ -436,6 +476,8 @@ def parse_duration_spec(text: Optional[str]) -> DurationSpec:
     cleaned_text = re.sub(r"^(?:任务|作业|持续|时长|时间|开始时间|结束时间|开始|结束|比原来|比原本|原来|原本|增加|缩短|延长|减少|提前|推迟|延后|多干|少干|正向|负向|修改|调整|追加|加|多|减|少)+", "", raw).strip()
 
     detail = parse_duration_with_detail(cleaned_text or raw)
+    if is_delta and not detail.success:
+        detail = parse_duration_with_detail(_strip_duration_delta_words(raw))
     if detail.success:
         state = DurationState.DELTA if is_delta else DurationState.EXPLICIT
         delta_val = None

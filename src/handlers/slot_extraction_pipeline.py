@@ -32,6 +32,7 @@ from ..normalization_contract import (
 from ..task_patch import build_task_patch, task_patch_to_legacy_updates
 from ..slot_store import Slot
 from ..constants import FIELD_LABELS
+from .explicit_value_grounding import ground_explicit_values
 
 logger = logging.getLogger("src.dialogue_manager")
 
@@ -313,6 +314,10 @@ class SlotExtractionPipeline(BaseDialogueHandler):
             for field in field_defs
             if field.get("key")
         }
+        extraction_res = ground_explicit_values(
+            extraction_res, user_message, kb=manager.kb, fields=field_defs,
+            current_state=transition_state, task_type=effective_task_type_key,
+        )
         # Pre-filter equipment_class candidates compatibility promotion
         raw_candidates = extraction_res.get("slot_candidates", [])
         filtered_candidates = []
@@ -552,18 +557,6 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                     }
                     break
 
-        raw_stage2 = manager._merge_coordinate_updates(
-            user_message,
-            {k: v.get("value") if isinstance(v, dict) else v for k, v in stage2_updates.items()},
-            required_field_defs,
-        )
-        for k, v in raw_stage2.items():
-            if k not in stage2_updates:
-                c_info = {"value": v, "raw_value": user_message, "confidence": 1.0, "source": "rule_parser"}
-                stage2_updates[k] = c_info
-                merged_updates_meta[k] = c_info
-            merged_updates[k] = v
-
         if transition_state_active:
             manager._clear_non_inherited_transition_slots(new_slots)
         extracted_oilfield = next(
@@ -640,6 +633,9 @@ class SlotExtractionPipeline(BaseDialogueHandler):
         }
         has_negation_confirm = any(nc in user_message for nc in ["不确认", "不修改", "不要修改", "先不确认"])
         has_explicit_upd = bool(stage2_updates)
+        explicit_update_keys = set(stage2_updates)
+        if apply_plan is not None:
+            explicit_update_keys.update(failure.key for failure in apply_plan.failures)
 
         conflict_slots = [k for k, s in new_slots.items() if s.status == "conflict" and s.candidate_value is not None]
         is_ambiguous_global_confirm = (
@@ -651,13 +647,9 @@ class SlotExtractionPipeline(BaseDialogueHandler):
         if not is_ambiguous_global_confirm:
             for k, slot in list(new_slots.items()):
                 if slot.status == "conflict" and slot.candidate_value is not None:
-                    raw_ext = stage2_updates.get(k)
-                    extracted_cand_v = raw_ext.get("value") if isinstance(raw_ext, dict) else raw_ext
-                    if extracted_cand_v is not None and extracted_cand_v == slot.candidate_value:
-                        slot.value = slot.candidate_value
-                        slot.status = "valid"
-                        slot.candidate_value = None
-                        slot.validation_error = None
+                    # A new explicit value must go through the normal update and
+                    # validation path, not confirm a candidate from an older turn.
+                    if k in explicit_update_keys:
                         continue
 
                     if has_explicit_upd and k not in stage2_updates and not any(alias in user_message for alias in slot_name_aliases.get(k, [k])):
@@ -670,7 +662,7 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                         is_cancel_k = any(c_kw in user_message for c_kw in ["取消", "放弃", "不要", "不修改", "不用"])
                         is_confirm_k = any(c_kw in user_message for c_kw in ["确认", "确定", "好的", "可以", "使用", "改为"]) and not is_cancel_k
 
-                        if is_confirm_k and not has_negation_confirm:
+                        if is_confirm_k and not has_negation_confirm and not slot.validation_error:
                             slot.value = slot.candidate_value
                             slot.status = "valid"
                             slot.candidate_value = None

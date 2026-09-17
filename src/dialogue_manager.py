@@ -111,6 +111,7 @@ class DialogueManager:
         self.phase: str = "collecting"
         self.final_result: dict | None = None
         self.awaiting_final_confirm = False
+        self.editing_slot: str | None = None
         self.task_start_now = False
         self._last_visible_catalog_items: list[dict] = []
 
@@ -418,6 +419,7 @@ class DialogueManager:
             request_blocking_violations = copy.deepcopy(self._blocking_violations)
             request_history = list(self.conversation_history)
             request_task_start_now = self.task_start_now
+            request_editing_slot = self.editing_slot
 
             try:
                 reply = self._process_internal(user_message, request_id, event_sink=event_sink)
@@ -438,6 +440,7 @@ class DialogueManager:
                     self._blocking_violations = request_blocking_violations
                     self.conversation_history = request_history
                     self.task_start_now = request_task_start_now
+                    self.editing_slot = request_editing_slot
                     self.final_result = None
                 except Exception as rb_exc:
                     raise TaskRollbackError(
@@ -1083,6 +1086,7 @@ class DialogueManager:
             self.phase = "collecting"
             self.final_result = None
             self.awaiting_final_confirm = False
+            self.editing_slot = None
             self.task_start_now = False
             self._blocking_violations = []
             self._soft_whitelist = set()

@@ -2153,16 +2153,22 @@ def test_incremental_duration_add_sub() -> None:
         get_simulated_time().reset()
 
 
-def test_no_candidates_invokes_llm_model_for_natural_response() -> None:
-    """无有效任务候选时，系统应通过 LLM 模型生成自然语言回复告诉用户，而不是直接输出硬编码静态字符串。"""
+def test_no_candidates_reply_reports_actual_result_despite_model_success_claim() -> None:
+    """WRITE 回执由真实结果生成，未验证的模型主体不能宣称成功。"""
     llm = ScriptedLLM(
         plans=[make_plan("WRITE")],
         extractions=[empty_extraction()],
-        replies=["抱歉，我没有识别到具体的任务类型候选。请问您需要执行管缆巡检还是采油树控制面板插入？"],
+        replies=["任务已创建，指令已下发。"],
     )
     dm = DialogueManager(llm, KnowledgeBase())
+    before = dm.slot_store.get_task_state()
+    version = dm.slot_store.version
     reply = dm.process("随便看看")
 
-    assert "抱歉，我没有识别到具体的任务类型候选" in reply
-    assert not reply.startswith("本轮没有任务字段通过验证，因此未写入任务状态。")
-
+    assert llm.chat_calls
+    assert dm.slot_store.get_task_state() == before
+    assert dm.slot_store.version == version
+    assert "任务已创建" not in reply and "指令已下发" not in reply
+    assert "未写入任务状态" in reply
+    assert "当前支持的任务类型" in reply
+    assert "管缆巡检" in reply and "采油树控制面板插入" in reply

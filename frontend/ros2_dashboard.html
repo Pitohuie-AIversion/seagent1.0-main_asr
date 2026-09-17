@@ -237,12 +237,12 @@
       <div class="metric"><div class="label">Water depth</div><div class="metric-number"><span id="depthValue">--</span><span class="metric-unit">m</span></div></div>
       <div class="metric"><div class="label">Altitude</div><div class="metric-number"><span id="altitudeValue">--</span><span class="metric-unit">m</span></div></div>
       <div class="metric"><div class="label">Control mode</div><div class="metric-number" id="controlMode">--</div></div>
-      <div class="metric"><div class="label">Tracked tasks</div><div class="metric-number" id="taskCount">0</div></div>
+      <div class="metric"><div class="label">Active tasks</div><div class="metric-number" id="taskCount">0</div></div>
     </section>
 
     <section class="workspace">
       <div class="panel">
-        <div class="panel-head"><h2>任务执行状态</h2><span class="counter" id="taskCounter">0 records</span></div>
+        <div class="panel-head"><h2>当前活动任务</h2><span class="counter" id="taskCounter">0 records</span></div>
         <div class="table-wrap">
           <table>
             <thead><tr><th style="width:18%">ROS task ID</th><th style="width:24%">Intent ID</th><th style="width:18%">Type</th><th style="width:16%">Status</th><th style="width:24%">Progress</th></tr></thead>
@@ -263,6 +263,15 @@
         </dl>
         <div class="error-box" id="errorBox"></div>
       </aside>
+    </section>
+
+    <section class="panel dynamic-panel" aria-label="历史与待确认任务">
+      <div class="panel-head"><h2>历史与待确认任务</h2><span class="counter" id="historyCounter">0 records</span></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>ROS task ID</th><th>Intent ID</th><th>Type</th><th>Status</th><th>Progress</th></tr></thead>
+        <tbody id="historyRows"></tbody>
+      </table><div class="empty" id="emptyHistory">暂无历史或待确认任务</div></div>
+      <p style="padding:0 16px;color:var(--muted)">DELETE_REQUESTED 表示已发送删除请求，尚未确认删除；UNKNOWN 表示当前没有有效执行状态。</p>
     </section>
 
     <section class="panel dynamic-panel" aria-label="配置驱动的ROS订阅">
@@ -294,12 +303,12 @@
     const number = value => value === null || value === undefined || Number.isNaN(Number(value)) ? '--' : Number(value).toFixed(1);
     const formatTime = value => value ? new Date(value).toLocaleString('zh-CN', {hour12: false}) : '--';
 
-    function renderTasks(tasks) {
-      const rows = document.getElementById('taskRows');
+    function renderTasks(tasks, history = false) {
+      const rows = document.getElementById(history ? 'historyRows' : 'taskRows');
       rows.replaceChildren();
-      document.getElementById('emptyTasks').style.display = tasks.length ? 'none' : 'block';
-      text('taskCount', tasks.length);
-      text('taskCounter', `${tasks.length} records`);
+      document.getElementById(history ? 'emptyHistory' : 'emptyTasks').style.display = tasks.length ? 'none' : 'block';
+      if (!history) text('taskCount', tasks.length);
+      text(history ? 'historyCounter' : 'taskCounter', `${tasks.length} records`);
       tasks.forEach(task => {
         const row = document.createElement('tr');
         const values = [task.task_id, task.intent_id || '--', taskTypeNames[task.task_type] || String(task.task_type), task.status];
@@ -311,6 +320,15 @@
             badge.className = `status ${statusClasses[String(value).toUpperCase()] || ''}`;
             badge.textContent = value;
             cell.appendChild(badge);
+            if (task.control_state && task.control_state !== value) {
+              const request = document.createElement('span');
+              request.className = 'status warn';
+              request.textContent = task.control_state;
+              cell.appendChild(request);
+            }
+            if (task.last_observed_status && task.last_observed_status !== value) {
+              cell.title = `上次观测：${task.last_observed_status}`;
+            }
           } else {
             cell.textContent = value;
           }
@@ -421,6 +439,7 @@
       text('poseZ', `${number(pose.z_m)} m`);
       text('systemHealth', snapshot.health === 0 ? 'HEALTHY' : snapshot.health ?? '--');
       renderTasks(Array.isArray(snapshot.active_tasks) ? snapshot.active_tasks : []);
+      renderTasks(Array.isArray(snapshot.task_history) ? snapshot.task_history : [], true);
       renderDynamicSubscriptions(Array.isArray(snapshot.dynamic_subscriptions) ? snapshot.dynamic_subscriptions : []);
       schedulePolling(data.runtime_config?.dashboard?.refresh_interval_ms);
       const errorBox = document.getElementById('errorBox');

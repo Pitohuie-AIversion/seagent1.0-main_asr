@@ -270,6 +270,7 @@ class SlotListMutationEngine:
             }
 
         onboard_payload_keys = set()
+        supported_payload_keys = set()
         onboard_catalog_ids = set()
         onboard_alias_keys = set()
         eq_slot = new_slots.get("equipment_type")
@@ -277,6 +278,11 @@ class SlotListMutationEngine:
         if eq_type and self.kb:
             robot = self.kb.get_rov(eq_type)
             if robot:
+                supported_payload_keys = {
+                    normalize_payload_match_key(item)
+                    for item in robot.get("supported_payloads", [])
+                    if isinstance(item, str)
+                }
                 for ob in robot.get("onboard_payloads", []):
                     if isinstance(ob, str):
                         ob_norm = normalize_payload_match_key(ob)
@@ -295,6 +301,10 @@ class SlotListMutationEngine:
             raw_norm = normalize_payload_match_key(item_raw)
             if raw_norm in onboard_payload_keys:
                 return True
+            # Explicit optional models (e.g. stereo/turbid-water imaging) are
+            # distinct from installed hardware even when a broad alias overlaps.
+            if raw_norm in supported_payload_keys:
+                return False
             if cat_id and cat_id in onboard_catalog_ids:
                 return True
             if raw_norm in onboard_alias_keys:
@@ -308,7 +318,15 @@ class SlotListMutationEngine:
                 return True
             for targets, keywords in DOMAIN_SYNONYMS:
                 if any(normalize_payload_match_key(t) in onboard_payload_keys for t in targets):
-                    if any(kw.lower() in item_raw.lower() for kw in keywords):
+                    # A broad word inside an unknown name is not proof that
+                    # the requested tool is already installed. Keep exact
+                    # generic aliases and configured catalog names, but reject
+                    # invented replacements rather than deleting their target.
+                    if any(
+                        normalize_payload_match_key(kw) == raw_norm
+                        or (cat_id and kw.lower() in item_raw.lower())
+                        for kw in keywords
+                    ):
                         return True
             return False
 
