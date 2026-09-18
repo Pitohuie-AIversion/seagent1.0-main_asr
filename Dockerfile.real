@@ -2,11 +2,19 @@ FROM lmxxf/vllm-deepseek-v4-dgx-spark:latest
 WORKDIR /app
 COPY requirements/base.txt /tmp/requirements-base.txt
 RUN python3 -m pip install --no-cache-dir -r /tmp/requirements-base.txt
+# Keep ros-mcp-server in its own import tree: it is a separate MCP process and
+# its FastMCP dependency must not replace SEAgent's pinned MCP client SDK. The
+# base image has no ensurepip, so use an isolated --target tree instead of venv.
+RUN python3 -m pip install --no-cache-dir \
+       --target /opt/ros-mcp-server/site-packages fastmcp==2.14.5 \
+    && python3 -m pip install --no-cache-dir --no-deps \
+       --target /opt/ros-mcp-server/site-packages ros-mcp==3.1.0
 RUN python3 -m pip install --no-cache-dir --no-deps qwen-asr==0.0.6 \
     nagisa==0.2.11 soynlp==0.0.493 qwen-omni-utils==0.0.9 \
     librosa soundfile sox lazy_loader scipy scikit-learn pandas pooch soxr joblib narwhals threadpoolctl
 RUN python3 -m pip install --no-cache-dir websocket-client
 COPY . /app
+RUN chmod 0555 /app/scripts/ros_mcp_isolated.sh
 ENV TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8890
@@ -15,7 +23,9 @@ ENV SEAGENT_MAX_NUM_SEQS=2
 ENV SEAGENT_GPU_MEMORY_UTILIZATION=0.93
 ENV SEAGENT_MAX_NUM_BATCHED_TOKENS=8192
 ENV SEAGENT_ROS2_COMPAT=msgmanagement
+ENV ROS_MCP_COMMAND=/app/scripts/ros_mcp_isolated.sh
+ENV ROS_MCP_ARGS=--transport=stdio
 # Container readiness probe: requires both the HTTP server and live MCP link.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
   CMD python3 -c "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8890/health', timeout=4); d=json.load(r); raise SystemExit(0 if d.get('status') == 'ok' else 1)"
-CMD ["python3", "run.py"]
+CMD ["python3", "run.py", "--mcp"]

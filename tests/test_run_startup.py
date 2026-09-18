@@ -12,6 +12,8 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -72,6 +74,28 @@ class TestRunStartupMCP(unittest.TestCase):
             if bridge is not None:
                 bridge.stop()
             external_rosbridge.stop()
+            web_backend.init_mcp_bridge_service(None)
+
+    def test_failed_initial_connection_keeps_bridge_available_for_reconnect(self):
+        """机器人离线不应丢弃桥接对象，否则网关 API 无法恢复连接。"""
+        import run
+        import web_backend
+
+        bridge = Mock()
+        bridge.start.side_effect = ConnectionError("robot offline")
+        os.environ["MCP_EMBEDDED_MOCK"] = "0"
+        try:
+            with patch(
+                "mcp.shim.bridge_service.SEAgentMCPBridgeService",
+                return_value=bridge,
+            ):
+                run._init_mcp_service_if_requested(
+                    SimpleNamespace(state_info=None), is_mock=True
+                )
+
+            self.assertIs(web_backend.get_mcp_bridge(), bridge)
+            bridge.start.assert_called_once_with()
+        finally:
             web_backend.init_mcp_bridge_service(None)
 
 

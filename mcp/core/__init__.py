@@ -41,6 +41,10 @@ from .task_status_tracker import (
 from .bridge_service import (
     SEAgentMCPBridgeService,
 )
+from .ros_mcp_client import (
+    RosMCPClient,
+    RosMCPProtocolError,
+)
 from .dialogue_mcp_integration import (
     attach_mcp_bridge,
     dispatch_dialogue_result,
@@ -69,6 +73,8 @@ __all__ = [
     "TaskStatusTracker",
     "ROVTelemetry",
     "SEAgentMCPBridgeService",
+    "RosMCPClient",
+    "RosMCPProtocolError",
     "attach_mcp_bridge",
     "dispatch_dialogue_result",
 ]

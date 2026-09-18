@@ -12,9 +12,13 @@
 [ 云端 SEAgent 服务器 ]
          │ (基于 TaskIntent v2 生成任务)
          ▼
-[ SeagentROS2MCPAdapter ]
+[ RosMCPClient / MCP ClientSession ]
          │
-         │  WebSocket 协议 (ws://topside-ip:9090) ─── 穿透公网/NAT
+         │  MCP STDIO 或 Streamable HTTP
+         ▼
+[ ros-mcp-server (FastMCP) ]
+         │
+         │  rosbridge WebSocket (ws://topside-ip:9090)
          ▼
 [ 支持船 Topside 网关 (rosbridge_server / sealien_ctrlpilot_llmbridge) ]
          │
@@ -31,8 +35,9 @@
 |:---|:---:|:---|
 | **`run_mcp_bridge.py`** | **CLI 启动脚本** | **MCP 服务独立运行入口**。支持 `--host`, `--port`, `--mock` 参数，提供后台自动化桥接与控制台实时遥测面板。 |
 | **`dialogue_mcp_integration.py`** | **对话闭环集成** | **DialogueManager ↔ MCP 桥接器**。提供 `attach_mcp_bridge` 与 `dispatch_dialogue_result`，将自然语言对话收集、落盘与 ROS 2 下发完全连通。 |
-| **`bridge_service.py`** | **生产服务** | **SEAgent 云端 MCP 自动化桥接服务**。整合 WebSocket 客户端与 TaskStatusTracker，实现自动意图下发、遥测同步与任务生命周期追踪。 |
-| **`rosbridge_client.py`** | **生产客户端** | **核心生产级 WebSocket 客户端**。实现完整内部协议（`UI接口协议.md`）：TaskType 枚举、`intent_to_syscmd` 转换、任务管理（TASK_MANAGE）、设备控制（CTRL_TASK）、AUV 任务、系统配置、遥测订阅，及无死锁后台监听线程。 |
+| **`bridge_service.py`** | **生产服务** | **SEAgent 云端 MCP 自动化桥接服务**。接收可注入的传输客户端并整合 TaskStatusTracker，实现自动意图下发、遥测同步与任务生命周期追踪。 |
+| **`ros_mcp_client.py`** | **生产 MCP 客户端** | 维护长生命周期 MCP 会话，通过 `connect_to_robot`、`publish_once`、`subscribe_once` 调用真正的 `ros-mcp-server`。支持 STDIO 与 Streamable HTTP。 |
+| **`rosbridge_client.py`** | 兼容客户端 | 直接连接 rosbridge 的兼容/Mock 传输，同时保留 TaskIntent → ROS 消息转换、校验和数据结构。生产默认不直接使用该 WebSocket 客户端。 |
 | **`sealien_protocol.py`** | **高精度算法** | **水下协议与姿态算法组件**。实现 WGS-84 大地坐标系高精度投影 (`geodetic_to_odom_position`)、切线偏航角与四元数推算 (`yaw_between`/`pose`) 及 Payload 去重守护器 (`TaskMessageGuard`/`RequestIdGuard`)。 |
 | **`task_status_tracker.py`** | **状态追踪器** | **任务执行状态实时追踪**。订阅 `/task/system_status`，解析 `SysStatus.msg` 中的 `TaskStatus[]` 任务队列，提供 `wait_for_finish()` 阻塞等待与状态变化回调机制。 |
 | **`seagent_mcp_adapter.py`** | stdio 适配器 | 通过 FastMCP stdio 协议与 Mock MCP 服务器交互（用于本地测试验证）。 |
@@ -109,7 +114,39 @@
 python mcp/test_real_llm_to_ros2_pipeline.py
 ```
 
-### 3.3 代码调用示例
+### 3.3 启动生产 MCP 链路
+
+SEAgent 默认启动 `ros-mcp-server` STDIO 子进程，并让该 Server 连接到机器人侧
+rosbridge。`MCP_HOST`/`MCP_PORT` 表示机器人 rosbridge 地址，不是 MCP 地址。
+`Dockerfile.real` 已把 Server 安装在独立 Python 导入目录中，避免其 FastMCP 依赖覆盖
+SEAgent 使用的 MCP Client SDK。若直接在宿主机运行，请先将 `ros-mcp` 安装到
+独立环境，并用 `ROS_MCP_COMMAND` 指向该环境中的可执行文件。
+
+```bash
+export MCP_HOST="192.168.1.100"
+export MCP_PORT="9090"
+export ROS_MCP_COMMAND="/path/to/ros-mcp-venv/bin/ros-mcp"
+export ROS_MCP_ARGS="--transport=stdio"
+python run.py --mcp
+```
+
+如果 MCP Server 已独立以 Streamable HTTP 运行：
+
+```bash
+export ROS_MCP_URL="http://127.0.0.1:9000/mcp"
+export MCP_HOST="192.168.1.100"
+export MCP_PORT="9090"
+python run.py --mcp
+```
+
+仅在兼容或诊断场景中直接连接 rosbridge：
+
+```bash
+export SEAGENT_MCP_BACKEND="rosbridge"
+python run.py --mcp
+```
+
+### 3.4 代码调用示例
 
 在 SEAgent 业务代码中使用适配器发送任务：
 

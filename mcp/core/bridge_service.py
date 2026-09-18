@@ -1,4 +1,4 @@
-"""Runtime bridge between finalized SEAgent tasks and a rosbridge gateway.
+"""Runtime bridge between finalized SEAgent tasks and a ROS transport client.
 
 本服务的任务闭环严格使用 `sealien_ctrlpilot_llmbridge` 的主协议：
 `/task_cmd`（SysTaskCmd）/`/task/sys_config`（SysConfig）/`/task/system_status`（SysStatus）。
@@ -14,7 +14,7 @@ import logging
 import math
 import threading
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from .rosbridge_client import (
     PilotMode,
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class SEAgentMCPBridgeService:
-    """Owns the live rosbridge connection, dispatch idempotency and telemetry."""
+    """Owns the live MCP/compatibility connection, idempotency and telemetry."""
 
     TELEMETRY_MAX_AGE_SECONDS = 5.0
 
@@ -39,12 +39,16 @@ class SEAgentMCPBridgeService:
         port: int = 9090,
         state_info: Optional[Any] = None,
         connect_timeout: float = 5.0,
+        client_factory: Optional[Callable[..., Any]] = None,
     ):
         self.host = host
         self.port = port
         self.state_info = state_info
         self.connect_timeout = connect_timeout
-        self.client = RosbridgeClient(host=host, port=port, connect_timeout=connect_timeout)
+        self._client_factory = client_factory or RosbridgeClient
+        self.client = self._client_factory(
+            host=host, port=port, connect_timeout=connect_timeout
+        )
         self.tracker = TaskStatusTracker(self.client)
         self._running = False
         self._lock = threading.RLock()
@@ -71,7 +75,11 @@ class SEAgentMCPBridgeService:
                 raise
             self._running = True
             self._last_error = None
-        logger.info("[MCPBridgeService] 服务已启动 (ws://%s:%s)", self.host, self.port)
+        logger.info(
+            "[MCPBridgeService] 服务已启动 (机器人 rosbridge 目标 %s:%s)",
+            self.host,
+            self.port,
+        )
 
     def stop(self) -> None:
         """Stop telemetry tracking and disconnect."""
@@ -85,7 +93,7 @@ class SEAgentMCPBridgeService:
 
     def reconnect(self, host: str, port: int) -> None:
         """Switch gateways only after the replacement connection is ready."""
-        replacement_client = RosbridgeClient(
+        replacement_client = self._client_factory(
             host=host, port=port, connect_timeout=self.connect_timeout
         )
         replacement_tracker = TaskStatusTracker(replacement_client)
@@ -108,7 +116,9 @@ class SEAgentMCPBridgeService:
             self._last_error = None
         old_tracker.stop()
         old_client.disconnect()
-        logger.info("[MCPBridgeService] 已切换网关至 ws://%s:%s", host, port)
+        logger.info(
+            "[MCPBridgeService] 已切换机器人 rosbridge 目标至 %s:%s", host, port
+        )
 
     def is_healthy(self) -> bool:
         """Return transport health; telemetry freshness is reported separately."""

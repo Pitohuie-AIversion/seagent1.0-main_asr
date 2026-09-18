@@ -18,6 +18,7 @@ def _ensure_positive_int_env(name: str, default: str) -> None:
 _ensure_positive_int_env("OMP_NUM_THREADS", "1")
 _ensure_positive_int_env("MKL_NUM_THREADS", "1")
 
+import shlex
 import sys
 import time
 import yaml
@@ -272,15 +273,58 @@ def _init_mcp_service_if_requested(kb, is_mock: bool = False):
             from mcp.shim.bridge_service import SEAgentMCPBridgeService
         except ImportError:
             from mcp.core.bridge_service import SEAgentMCPBridgeService
+
+        backend = os.environ.get("SEAGENT_MCP_BACKEND", "protocol").strip().lower()
+        client_factory = None
+        # Offline/mock mode keeps the deterministic in-process rosbridge test
+        # double. Real SEAgent runs use MCP unless compatibility is explicit.
+        if not is_mock and backend != "rosbridge":
+            try:
+                from mcp.shim.ros_mcp_client import RosMCPClient
+            except ImportError:
+                from mcp.core.ros_mcp_client import RosMCPClient
+
+            server_url = os.environ.get("ROS_MCP_URL") or None
+            server_command = os.environ.get("ROS_MCP_COMMAND", "ros-mcp")
+            server_args = shlex.split(
+                os.environ.get(
+                    "ROS_MCP_ARGS", "--transport=stdio"
+                )
+            )
+
+            def client_factory(*, host, port, connect_timeout):
+                return RosMCPClient(
+                    host=host,
+                    port=port,
+                    connect_timeout=connect_timeout,
+                    server_command=server_command,
+                    server_args=server_args,
+                    server_url=server_url,
+                    tool_timeout=float(os.environ.get("ROS_MCP_TOOL_TIMEOUT", "15")),
+                    startup_timeout=float(os.environ.get("ROS_MCP_STARTUP_TIMEOUT", "30")),
+                    telemetry_poll_interval=float(
+                        os.environ.get("ROS_MCP_TELEMETRY_INTERVAL", "1")
+                    ),
+                )
+
         mcp_bridge = SEAgentMCPBridgeService(
             host=mcp_host,
             port=mcp_port,
             state_info=getattr(kb, "state_info", None),
             connect_timeout=3.0,
+            client_factory=client_factory,
         )
-        mcp_bridge.start()
+        # Register the bridge before the first connection attempt.  A robot may
+        # legitimately be offline while SEAgent starts; keeping the disconnected
+        # bridge available lets the gateway API reconnect it later without
+        # restarting the model service.
         web_backend.init_mcp_bridge_service(mcp_bridge)
-        print(f"📡 MCP 桥接服务启动成功 (ws://{mcp_host}:{mcp_port})")
+        mcp_bridge.start()
+        transport_label = "rosbridge compatibility" if client_factory is None else "MCP protocol"
+        print(
+            f"📡 MCP 桥接服务启动成功 ({transport_label} -> "
+            f"rosbridge {mcp_host}:{mcp_port})"
+        )
     except Exception as exc:
         print(f"⚠️ MCP 桥接服务初始化跳过: {exc}")
 
