@@ -10,9 +10,9 @@ import unittest
 from unittest.mock import MagicMock
 
 from src.dialogue_manager import DialogueManager
-from src.interaction_plan import InteractionPlan
+from src.session.interaction_plan import InteractionPlan
 from src.knowledge_retriever import KnowledgeBase
-from src.validator import TaskValidator
+from src.validation.validator import TaskValidator
 
 
 class TestInteractiveRobotSelectionNoHardViolation(unittest.TestCase):

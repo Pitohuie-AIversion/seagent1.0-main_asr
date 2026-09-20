@@ -5,7 +5,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from src.knowledge_retriever import KnowledgeBase
-from src.validator import TaskValidator
+from src.validation.validator import TaskValidator
 
 
 NOW = datetime(2026, 7, 28, 12, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -154,12 +154,12 @@ class ConstraintCoverageMatrixTest(unittest.TestCase):
         with (
             patch.object(self.kb, "get_robot_state_dict", return_value=robot_state),
             patch.object(self.kb, "get_unit_state_snapshot", return_value=fake_snapshot),
-            patch("src.validator.get_current_datetime", return_value=NOW),
+            patch("src.validation.validator.get_current_datetime", return_value=NOW),
         ):
             res = self.validator.validate(candidate)
 
             if candidate.get("oilfield_name"):
-                from src.oilfield_linker import OilfieldEntityLinker
+                from src.extraction.oilfield_linker import OilfieldEntityLinker
                 linker = OilfieldEntityLinker(self.kb.environment, self.kb.constraints)
                 match = linker.link(candidate.get("oilfield_name"))
                 if match and match.entity_id:
@@ -169,7 +169,7 @@ class ConstraintCoverageMatrixTest(unittest.TestCase):
                         water_depth=candidate.get("water_depth"),
                     )
                     if context_res and context_res.issues:
-                        from src.validator import Violation
+                        from src.validation.validator import Violation
                         for issue in context_res.issues:
                             res.append(
                                 Violation(

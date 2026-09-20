@@ -24,8 +24,8 @@ from unittest.mock import patch, MagicMock
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
-from src.model_profile import is_session_state_v2_enabled, is_shadow_compare_enabled
-from src.session_state_shadow import (
+from src.extraction.model_profile import is_session_state_v2_enabled, is_shadow_compare_enabled
+from src.session.session_state_shadow import (
     get_shadow_metrics_snapshot,
     reset_shadow_metrics,
     should_run_session_state_shadow,
@@ -106,8 +106,8 @@ class TestSessionStateShadowRolloutV2(unittest.TestCase):
         _write_features_yaml(self.features_yaml, shadow_enabled=True, allow_ids=["sess_metrics_1"])
         dm = _make_dm(self.tmp_path / "t05", session_id="sess_metrics_1")
 
-        with patch("src.session_state_shadow.CONFIG_DIR", self.tmp_path), \
-             patch("src.model_profile.CONFIG_DIR", self.tmp_path):
+        with patch("src.session.session_state_shadow.CONFIG_DIR", self.tmp_path), \
+             patch("src.extraction.model_profile.CONFIG_DIR", self.tmp_path):
             dm.process("什么是DVL？", request_id="req_m1")
             m = get_shadow_metrics_snapshot()
             self.assertEqual(m["total"], 1)
@@ -120,8 +120,8 @@ class TestSessionStateShadowRolloutV2(unittest.TestCase):
     def test_06_session_isolation(self):
         _write_features_yaml(self.features_yaml, shadow_enabled=True, allow_ids=["sess_A"])
 
-        with patch("src.session_state_shadow.CONFIG_DIR", self.tmp_path), \
-             patch("src.model_profile.CONFIG_DIR", self.tmp_path):
+        with patch("src.session.session_state_shadow.CONFIG_DIR", self.tmp_path), \
+             patch("src.extraction.model_profile.CONFIG_DIR", self.tmp_path):
             dm_a = get_or_create_manager("sess_A")
             dm_b = get_or_create_manager("sess_B")
 
@@ -142,8 +142,8 @@ class TestSessionStateShadowRolloutV2(unittest.TestCase):
         _write_features_yaml(self.features_yaml, shadow_enabled=True, allow_ids=["sess_se_1"])
         dm = _make_dm(self.tmp_path / "t07", session_id="sess_se_1")
 
-        with patch("src.session_state_shadow.CONFIG_DIR", self.tmp_path), \
-             patch("src.model_profile.CONFIG_DIR", self.tmp_path):
+        with patch("src.session.session_state_shadow.CONFIG_DIR", self.tmp_path), \
+             patch("src.extraction.model_profile.CONFIG_DIR", self.tmp_path):
             v_before = dm.slot_store.version
             reply = dm.process("什么是DVL？", request_id="req_se_1")
             v_after = dm.slot_store.version
@@ -156,8 +156,8 @@ class TestSessionStateShadowRolloutV2(unittest.TestCase):
     def test_08_session_state_v2_remains_false(self):
         self.assertFalse(is_session_state_v2_enabled())
         _write_features_yaml(self.features_yaml, shadow_enabled=True, allow_ids=["sess_v2_test"])
-        with patch("src.session_state_shadow.CONFIG_DIR", self.tmp_path), \
-             patch("src.model_profile.CONFIG_DIR", self.tmp_path):
+        with patch("src.session.session_state_shadow.CONFIG_DIR", self.tmp_path), \
+             patch("src.extraction.model_profile.CONFIG_DIR", self.tmp_path):
             dm = _make_dm(self.tmp_path / "t08", session_id="sess_v2_test")
             dm.process("什么是DVL？", request_id="req_v2")
             self.assertFalse(is_session_state_v2_enabled())

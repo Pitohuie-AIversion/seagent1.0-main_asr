@@ -14,13 +14,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import src.id_sequence as _id_sequence
+import src.dispatch.id_sequence as _id_sequence
 from src.llm_client import LLMClient
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
-from src.slot_store import SlotStore, SnapshotValidationError, ValidationAcknowledgement
-from src.validator import ValidationResult
-from src.simulated_time import get_current_datetime
+from src.slots.slot_store import SlotStore, SnapshotValidationError, ValidationAcknowledgement
+from src.validation.validator import ValidationResult
+from src.temporal.simulated_time import get_current_datetime
 
 
 def _make_dm(tmp_dir: Path) -> DialogueManager:
@@ -37,7 +37,7 @@ class TestDialogueValidationGate(unittest.TestCase):
         self._tmp = tempfile.mkdtemp()
         # 隔离 id_sequence counter 文件到临时目录，防止每次调用 reserve_task_id() 污染生产 counter
         self._patcher_result = patch(
-            "src.id_sequence.get_result_dir",
+            "src.dispatch.id_sequence.get_result_dir",
             return_value=Path(self._tmp),
         )
         self._patcher_result.start()

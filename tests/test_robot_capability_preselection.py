@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 from src.knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from src.dialogue_manager import DialogueManager
 from src.llm_client import LLMClient
-from src.simulated_time import get_current_datetime
+from src.temporal.simulated_time import get_current_datetime
 from tests.interaction_plan_support import (
     ScriptedLLM,
     extraction_result,
@@ -579,7 +579,7 @@ class TestRobotCapabilityPreselection(unittest.TestCase):
         self.assertEqual(slots["equipment_unit_id"].source, "auto")
 
         snap = self.dm.slot_store.export_snapshot()
-        from src.slot_store import SlotStore
+        from src.slots.slot_store import SlotStore
         new_store = SlotStore(kb=self.kb)
         new_store.restore_snapshot(snap)
         restored_unit = new_store.slots.get("equipment_unit_id")

@@ -24,14 +24,14 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from src.ui_state_builder import (
+from src.session.ui_state_builder import (
     build_frontend_ui_state,
     _compute_actions,
     _compute_read_only,
     _build_constraint_state,
     _build_slots,
 )
-from src.validator import Violation, ValidationResult
+from src.validation.validator import Violation, ValidationResult
 
 
 def make_mock_manager(

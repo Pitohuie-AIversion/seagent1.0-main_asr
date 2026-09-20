@@ -16,7 +16,7 @@ from typing import Any
 
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
-from ..slot_store import Slot
+from src.slots.slot_store import Slot
 
 logger = logging.getLogger("src.dialogue_manager")
 

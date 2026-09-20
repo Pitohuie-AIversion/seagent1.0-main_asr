@@ -15,8 +15,8 @@ from unittest.mock import patch
 from src.llm_client import LLMClient
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
-from src.task_intent_builder import TaskIntentBuilder
-from src.simulated_time import get_current_datetime
+from src.dispatch.task_intent_builder import TaskIntentBuilder
+from src.temporal.simulated_time import get_current_datetime
 
 
 def _make_dm(tmp_dir: Path) -> DialogueManager:
@@ -41,7 +41,7 @@ class TestPersistencePublish(unittest.TestCase):
     def test_publish_saves_validation_traceability(self):
         """测试最终发布的 TaskIntent 包含完整校验证据。"""
         task_dir = self.task_dir
-        with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+        with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
             now_str = get_current_datetime().strftime("%Y-%m-%d %H:%M:%S")
             task_state = {
                 "task_id": "PI-20260810-001",
@@ -162,8 +162,8 @@ class TestPersistencePublish(unittest.TestCase):
         self.dm.awaiting_final_confirm = True
 
         with (
-            patch("src.task_intent_builder.get_task_dir", return_value=self.task_dir),
-            patch("src.result_paths.get_task_dir", return_value=self.task_dir),
+            patch("src.dispatch.task_intent_builder.get_task_dir", return_value=self.task_dir),
+            patch("src.dispatch.result_paths.get_task_dir", return_value=self.task_dir),
         ):
             soft_reply = self.dm.process("确认发布")
             self.assertEqual(self.dm.phase, "blocked_soft")

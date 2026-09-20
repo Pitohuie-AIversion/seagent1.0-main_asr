@@ -10,8 +10,8 @@ from src.dialogue_manager import DialogueManager
 from src.handlers.write_reply_grounder import WriteReplyGrounder
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import SLOT_EXTRACTION_JSON_SCHEMA
-from src.slot_store import Slot
-from src.ui_state_builder import build_frontend_ui_state
+from src.slots.slot_store import Slot
+from src.session.ui_state_builder import build_frontend_ui_state
 from tests.interaction_plan_support import ScriptedLLM, make_plan, slot_candidate
 
 TORQUE = '阀门扭矩工具'
@@ -39,7 +39,7 @@ def valve(request, monkeypatch):
     patch,norm=request.param
     monkeypatch.setattr('src.dialogue_manager.is_task_patch_v2_enabled', lambda:patch)
     monkeypatch.setattr('src.dialogue_manager.is_normalization_contract_v2_enabled', lambda:norm)
-    monkeypatch.setattr('src.simulated_time.get_current_datetime', lambda:datetime(2026,9,16,18,40))
+    monkeypatch.setattr('src.temporal.simulated_time.get_current_datetime', lambda:datetime(2026,9,16,18,40))
     llm=ScriptedLLM(default_reply='已删除阀门扭矩工具，结束时间已更新为13:00。请确认清空。')
     dm=DialogueManager(llm, KnowledgeBase())
     dm.slot_store.init_task_slots(dm.builder.get_schema('tree_valve_operation','normal'))

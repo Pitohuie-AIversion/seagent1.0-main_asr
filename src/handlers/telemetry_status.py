@@ -15,10 +15,10 @@ import re
 from typing import Any, Dict, List, Optional
 
 from .base import BaseDialogueHandler
-from ..intent_router import IntentRouteResult
+from src.session.intent_router import IntentRouteResult
 from ..knowledge_retriever import format_telemetry_value
-from ..prompts import build_status_responder_messages
-from ..model_profile import ModelRole
+from src.extraction.prompts import build_status_responder_messages
+from src.extraction.model_profile import ModelRole
 
 logger = logging.getLogger(__name__)
 

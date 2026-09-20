@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.knowledge_retriever import KnowledgeBase
-from src.task_intent_builder import validate_task_intent
+from src.dispatch.task_intent_builder import validate_task_intent
 
 
 BASE_URL = "http://localhost:8890"

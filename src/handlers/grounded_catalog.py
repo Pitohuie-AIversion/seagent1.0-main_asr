@@ -15,15 +15,15 @@ import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .base import BaseDialogueHandler
-from ..intent_router import IntentRouteResult
+from src.session.intent_router import IntentRouteResult
 from ..knowledge_retriever import (
     KnowledgeBase,
     format_seabed_type,
     format_telemetry_value,
 )
-from ..prompts import build_knowledge_responder_messages
-from ..model_profile import ModelRole
-from ..extractor import ParameterExtractor
+from src.extraction.prompts import build_knowledge_responder_messages
+from src.extraction.model_profile import ModelRole
+from src.extraction.extractor import ParameterExtractor
 from ..constants import (
     FIELD_LABELS as CORE_FIELD_LABELS,
     RECOMMENDATION_FIELD_BY_SUBJECT,

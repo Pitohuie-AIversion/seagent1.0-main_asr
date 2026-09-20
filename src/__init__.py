@@ -15,7 +15,7 @@ from .constants import (
     SOFT_IGNORE_KEYWORDS,
     TASK_TRANSITION_NON_INHERITED_FIELDS,
 )
-from .simulated_time import (
+from .temporal.simulated_time import (
     get_current_date,
     get_current_datetime,
     get_current_timestamp,
@@ -24,32 +24,32 @@ from .simulated_time import (
 
 if TYPE_CHECKING:
     from .dialogue_manager import DialogueManager
-    from .dialogue_snapshot import DialogueSnapshotManager
-    from .intent_router import IntentRouter
+    from src.session.dialogue_snapshot import DialogueSnapshotManager
+    from src.session.intent_router import IntentRouter
     from .knowledge_retriever import KnowledgeBase
     from .llm_client import LLMClient
-    from .normalizer import FieldNormalizer
-    from .output_builder import OutputBuilder
-    from .slot_store import Slot, SlotStore
-    from .task_intent_builder import TaskIntentBuilder, TaskPublishLock
-    from .validator import TaskValidator, ValidationResult, Violation
+    from src.extraction.normalizer import FieldNormalizer
+    from src.dispatch.output_builder import OutputBuilder
+    from src.slots.slot_store import Slot, SlotStore
+    from src.dispatch.task_intent_builder import TaskIntentBuilder, TaskPublishLock
+    from src.validation.validator import TaskValidator, ValidationResult, Violation
 
 
 _LAZY_EXPORTS = {
     "DialogueManager": ".dialogue_manager",
-    "DialogueSnapshotManager": ".dialogue_snapshot",
-    "IntentRouter": ".intent_router",
+    "DialogueSnapshotManager": ".session.dialogue_snapshot",
+    "IntentRouter": ".session.intent_router",
     "KnowledgeBase": ".knowledge_retriever",
     "LLMClient": ".llm_client",
-    "FieldNormalizer": ".normalizer",
-    "OutputBuilder": ".output_builder",
-    "Slot": ".slot_store",
-    "SlotStore": ".slot_store",
-    "TaskIntentBuilder": ".task_intent_builder",
-    "TaskPublishLock": ".task_intent_builder",
-    "TaskValidator": ".validator",
-    "ValidationResult": ".validator",
-    "Violation": ".validator",
+    "FieldNormalizer": ".extraction.normalizer",
+    "OutputBuilder": ".dispatch.output_builder",
+    "Slot": ".slots.slot_store",
+    "SlotStore": ".slots.slot_store",
+    "TaskIntentBuilder": ".dispatch.task_intent_builder",
+    "TaskPublishLock": ".dispatch.task_intent_builder",
+    "TaskValidator": ".validation.validator",
+    "ValidationResult": ".validation.validator",
+    "Violation": ".validation.validator",
 }
 
 

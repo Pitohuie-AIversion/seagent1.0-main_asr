@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.knowledge_retriever import KnowledgeBase
-from src.validator import TaskValidator
+from src.validation.validator import TaskValidator
 
 
 class TestValidatorInteractiveTelemetryAudit(unittest.TestCase):
@@ -24,7 +24,7 @@ class TestValidatorInteractiveTelemetryAudit(unittest.TestCase):
 
     def test_interactive_mode_immediate_task_ignores_dynamic_checks(self):
         """即时任务在 purpose="interactive" 模式下不产生动态遥测/环境违规"""
-        from src.simulated_time import get_current_datetime
+        from src.temporal.simulated_time import get_current_datetime
         now_str = get_current_datetime().isoformat(timespec="seconds")
         task_state = {
             "task_type_key": "pipeline_burial",

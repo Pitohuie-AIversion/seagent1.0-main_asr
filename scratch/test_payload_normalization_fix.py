@@ -1,5 +1,5 @@
 from src.knowledge_retriever import KnowledgeBase
-from src.output_builder import OutputBuilder
+from src.dispatch.output_builder import OutputBuilder
 
 kb = KnowledgeBase()
 builder = OutputBuilder(kb)

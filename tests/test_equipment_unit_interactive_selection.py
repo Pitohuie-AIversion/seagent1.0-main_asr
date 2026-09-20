@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from src.knowledge_retriever import KnowledgeBase
-from src.validator import TaskValidator
+from src.validation.validator import TaskValidator
 
 
 def _make_kb(tmp_dir: Path) -> KnowledgeBase:
@@ -112,7 +112,7 @@ class TestEquipmentUnitInteractiveSelection(unittest.TestCase):
             "start_time": "2099-08-14T14:51:00",
             "end_time": "2099-08-14T16:31:00",
         }
-        from src.slot_store import Slot
+        from src.slots.slot_store import Slot
         dm.phase = "collecting"
         dm.slot_store.slots["equipment_type"] = Slot(slot_name="equipment_type", value="轻型工作级深海机器人 150HP", status="confirmed")
 

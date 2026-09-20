@@ -13,7 +13,7 @@ def test_lightweight_imports_do_not_load_dialogue_or_model_dependencies():
 import importlib
 import sys
 
-for name in ('src', 'src.result_paths', 'src.state_info'):
+for name in ('src', 'src.dispatch.result_paths', 'src.state_info'):
     importlib.import_module(name)
     unexpected = set(sys.modules) & {
         'src.dialogue_manager', 'src.llm_client', 'torch', 'vllm', 'transformers',
@@ -44,14 +44,14 @@ else:
     ("module", "names"),
     [
         ("dialogue_manager", ("DialogueManager",)),
-        ("intent_router", ("IntentRouter",)),
+        ("session.intent_router", ("IntentRouter",)),
         ("knowledge_retriever", ("KnowledgeBase",)),
         ("llm_client", ("LLMClient",)),
-        ("normalizer", ("FieldNormalizer",)),
-        ("output_builder", ("OutputBuilder",)),
-        ("slot_store", ("Slot", "SlotStore")),
-        ("task_intent_builder", ("TaskIntentBuilder", "TaskPublishLock")),
-        ("validator", ("TaskValidator", "ValidationResult", "Violation")),
+        ("extraction.normalizer", ("FieldNormalizer",)),
+        ("dispatch.output_builder", ("OutputBuilder",)),
+        ("slots.slot_store", ("Slot", "SlotStore")),
+        ("dispatch.task_intent_builder", ("TaskIntentBuilder", "TaskPublishLock")),
+        ("validation.validator", ("TaskValidator", "ValidationResult", "Violation")),
     ],
 )
 def test_public_exports_are_the_original_objects(module, names):

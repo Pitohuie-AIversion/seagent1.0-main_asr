@@ -7,8 +7,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.task_dispatch import dispatch_completed_task
-from src.validator import ValidationResult, Violation
+from src.dispatch.task_dispatch import dispatch_completed_task
+from src.validation.validator import ValidationResult, Violation
 from mcp.core.bridge_service import SEAgentMCPBridgeService, DispatchOutcomeUnknown
 from mcp.core.dialogue_mcp_integration import dispatch_dialogue_result
 
@@ -16,7 +16,7 @@ from mcp.core.dialogue_mcp_integration import dispatch_dialogue_result
 @pytest.fixture
 def execution(monkeypatch):
     now = datetime(2026, 9, 17, 12, tzinfo=timezone.utc)
-    monkeypatch.setattr("src.task_dispatch.get_current_datetime", lambda: now)
+    monkeypatch.setattr("src.dispatch.task_dispatch.get_current_datetime", lambda: now)
     validation = ValidationResult(overall_status="valid", validated_at=now.isoformat(),
         task_version=1, validation_version=1, validation_fingerprint="current", state_snapshot=None, violations=[])
     intent = {"intent_id": "TI2026091701", "task_type": "pipeline_inspection",
@@ -176,7 +176,7 @@ def test_sent_record_write_failure_is_unknown_not_retryable_failed(tmp_path, exe
 
 def test_real_runtime_validator_rejects_expired_robot_telemetry(tmp_path, monkeypatch):
     from tests.test_failure_recovery_benchmark import FailureRecoveryBenchmarkTest
-    from src.simulated_time import get_current_datetime
+    from src.temporal.simulated_time import get_current_datetime
     monkeypatch.setenv("SEAGENT_RESULT_DIR", str(tmp_path))
     case = FailureRecoveryBenchmarkTest()
     case.setUp()

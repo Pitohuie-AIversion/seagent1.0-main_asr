@@ -1,7 +1,7 @@
 import unittest
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
-from src.slot_store import Slot
+from src.slots.slot_store import Slot
 
 class TestFamilyToClassAutoPromotion(unittest.TestCase):
     def setUp(self):

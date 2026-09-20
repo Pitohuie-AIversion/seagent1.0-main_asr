@@ -7,9 +7,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from flask import Blueprint, jsonify, request
 
-from src.history_manager import list_history, load_history
-from src.simulated_time import get_simulated_time
-from src.ui_state_builder import build_frontend_ui_state
+from src.session.history_manager import list_history, load_history
+from src.temporal.simulated_time import get_simulated_time
+from src.session.ui_state_builder import build_frontend_ui_state
 import src.web.state as state
 from src.web.state import _require_api_token, get_or_create_manager
 

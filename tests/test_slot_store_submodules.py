@@ -5,7 +5,7 @@ tests/test_slot_store_submodules.py - 槽位存储子模块（列表变异引擎
 import copy
 import pytest
 
-from src.slot_store import (
+from src.slots.slot_store import (
     Slot,
     SlotStore,
     SnapshotValidationError,
@@ -14,8 +14,8 @@ from src.slot_store import (
     normalize_payload_match_key,
     normalize_slot_value_type,
 )
-from src.slot_list_mutation import SlotListMutationEngine
-from src.slot_snapshot_codec import SlotSnapshotCodec
+from src.slots.slot_list_mutation import SlotListMutationEngine
+from src.slots.slot_snapshot_codec import SlotSnapshotCodec
 
 
 class TestSlotStoreSubmodules:

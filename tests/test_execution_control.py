@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
 from src.handlers.execution_control import ExecutionControlHandler
-from src.intent_router import IntentRouteResult
-from src.session_state import StateContractError
+from src.session.intent_router import IntentRouteResult
+from src.session.session_state import StateContractError
 
 
 class TestExecutionControlHandler(unittest.TestCase):

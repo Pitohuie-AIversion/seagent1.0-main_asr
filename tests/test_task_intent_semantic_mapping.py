@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from src.exceptions import IntentIdConflict, TaskPersistenceError
 from src.knowledge_retriever import KnowledgeBase
-from src.task_intent_builder import TaskIntentBuilder, validate_task_intent
+from src.dispatch.task_intent_builder import TaskIntentBuilder, validate_task_intent
 
 
 class TestTaskIntentSemanticMapping(unittest.TestCase):
@@ -22,7 +22,7 @@ class TestTaskIntentSemanticMapping(unittest.TestCase):
         self.test_dir = tempfile.mkdtemp()
         self.task_dir = Path(self.test_dir) / "task"
         self.task_dir.mkdir(parents=True, exist_ok=True)
-        self.patcher = patch("src.task_intent_builder.get_task_dir", return_value=self.task_dir)
+        self.patcher = patch("src.dispatch.task_intent_builder.get_task_dir", return_value=self.task_dir)
         self.patcher.start()
         self.builder = TaskIntentBuilder(self.kb)
 

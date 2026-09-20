@@ -15,7 +15,7 @@ import logging
 import re
 from typing import Any
 
-from ..slot_store import Slot
+from src.slots.slot_store import Slot
 
 logger = logging.getLogger(__name__)
 

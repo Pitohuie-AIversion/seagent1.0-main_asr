@@ -145,10 +145,10 @@ class TestIsExactInt:
 
 class TestBackwardsCompatibility:
     def test_id_sequence_reexports_validate_uuid4(self):
-        from src.id_sequence import validate_uuid4 as id_validate
+        from src.dispatch.id_sequence import validate_uuid4 as id_validate
         # 同一函数对象或行为一致即可
         assert id_validate("a1b2c3d4-1234-4567-89ab-cdef01234567") is True
 
     def test_task_intent_builder_reexports_validate_uuid4(self):
-        from src.task_intent_builder import validate_uuid4 as tib_validate
+        from src.dispatch.task_intent_builder import validate_uuid4 as tib_validate
         assert tib_validate("a1b2c3d4-1234-4567-89ab-cdef01234567") is True

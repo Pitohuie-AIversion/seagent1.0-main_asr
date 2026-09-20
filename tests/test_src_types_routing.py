@@ -265,14 +265,14 @@ class TestIntentRouteResultToDict:
 class TestNoCircularImports:
     def test_intent_router_reimports_from_types(self):
         """types 中定义的类可被 intent_router 重新导出，不触发循环。"""
-        from src.intent_router import IntentRouteResult as IRR_Router, IntentRoutingError as IRE_Router
+        from src.session.intent_router import IntentRouteResult as IRR_Router, IntentRoutingError as IRE_Router
         # 必须是同一对象
         assert IRR_Router is IntentRouteResult
         assert IRE_Router is IntentRoutingError
 
     def test_interaction_plan_can_import(self):
         """interaction_plan 从 types 导入 IntentRouteResult，而不再从 intent_router 延迟导入。"""
-        from src.interaction_plan import InteractionPlan, IntentRouteResult as IRR_IP
+        from src.session.interaction_plan import InteractionPlan, IntentRouteResult as IRR_IP
         assert IRR_IP is IntentRouteResult
         # InteractionPlan.to_intent_route_result() 能正确构造 IntentRouteResult
         plan = InteractionPlan(

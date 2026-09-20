@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.slot_store import Slot
+from src.slots.slot_store import Slot
 from src.handlers.equipment_scoping import EquipmentScopingHandler
 from src.handlers.equipment_collapse import EquipmentCollapseHandler
 from src.handlers.equipment_cascade import EquipmentCascadeResolver

@@ -9,8 +9,8 @@ import subprocess
 import sys
 import unittest
 
-from src.id_sequence import next_daily_task_id
-from src.result_paths import DEFAULT_RESULT_DIR, get_history_dir, get_result_dir, get_task_dir
+from src.dispatch.id_sequence import next_daily_task_id
+from src.dispatch.result_paths import DEFAULT_RESULT_DIR, get_history_dir, get_result_dir, get_task_dir
 from src.state_info import RobotStateInfo
 from web_backend import TRANSLATION_CACHE_FILE
 
@@ -40,7 +40,7 @@ class TestRuntimeArtifactIsolation(unittest.TestCase):
         root = _test_root()
         command = (
             "import json; "
-            "from src.result_paths import get_result_dir, get_task_dir, get_history_dir; "
+            "from src.dispatch.result_paths import get_result_dir, get_task_dir, get_history_dir; "
             "from src.state_info import RobotStateInfo; "
             "print(json.dumps([str(get_result_dir()), str(get_task_dir()), str(get_history_dir()), str(RobotStateInfo().state_file.resolve())]))"
         )

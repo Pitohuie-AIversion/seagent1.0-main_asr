@@ -8,7 +8,7 @@ import unittest
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.prompts import build_responder_messages
+from src.extraction.prompts import build_responder_messages
 from tests.interaction_plan_support import ScriptedLLM, make_plan
 
 

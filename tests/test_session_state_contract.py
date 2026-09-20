@@ -12,7 +12,7 @@ import unittest
 from datetime import datetime, timezone
 from types import MappingProxyType
 
-from src.session_state import (
+from src.session.session_state import (
     ConversationState,
     ExecutionControlState,
     SessionState,
@@ -251,7 +251,7 @@ class TestSessionStateContract(unittest.TestCase):
     # 13. Contract does not depend on SlotStore or DialogueManager
     def test_13_contract_module_independence(self) -> None:
         import sys
-        import src.session_state as ss_mod
+        import src.session.session_state as ss_mod
 
         mod_globals = dir(ss_mod)
         self.assertNotIn("SlotStore", mod_globals)

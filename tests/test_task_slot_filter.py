@@ -6,7 +6,7 @@ TestTaskSlotFilter Unit Tests
 """
 
 import unittest
-from src.task_slot_filter import TaskSlotFilter
+from src.slots.task_slot_filter import TaskSlotFilter
 
 
 class TestTaskSlotFilter(unittest.TestCase):

@@ -18,8 +18,8 @@ from ..constants import (
     RECOMMENDATION_FIELD_BY_SUBJECT,
     ROBOT_CASCADE_FIELDS,
 )
-from ..extractor import ParameterExtractor
-from ..visible_selection_provenance import (
+from src.extraction.extractor import ParameterExtractor
+from src.slots.visible_selection_provenance import (
     build_candidate_terms,
     parse_ordinal_reference,
     visible_ordinal_matches_candidate,

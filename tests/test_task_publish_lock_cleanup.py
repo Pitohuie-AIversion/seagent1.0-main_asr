@@ -7,7 +7,7 @@ import os
 import pytest
 
 from src.exceptions import TaskPersistenceError
-from src.task_intent_builder import TaskPublishLock
+from src.dispatch.task_intent_builder import TaskPublishLock
 
 
 @pytest.mark.parametrize("body_fails", [False, True])

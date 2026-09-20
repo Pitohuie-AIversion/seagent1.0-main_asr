@@ -4,9 +4,9 @@ from unittest.mock import MagicMock
 
 import src.llm_client as llm_client_module
 from src.dialogue_manager import DialogueManager
-from src.extractor import EXTRACTION_SYSTEM, ParameterExtractor
-from src.intent_router import INTENT_ROUTER_SYSTEM, IntentRouteResult, IntentRouter
-from src.interaction_plan import (
+from src.extraction.extractor import EXTRACTION_SYSTEM, ParameterExtractor
+from src.session.intent_router import INTENT_ROUTER_SYSTEM, IntentRouteResult, IntentRouter
+from src.session.interaction_plan import (
     VALID_EMERGENCY_ACTIONS,
     VALID_PENDING_ACTIONS,
     VALID_RELATIONS,
@@ -15,8 +15,8 @@ from src.interaction_plan import (
 )
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
-from src.prompts import build_responder_messages
-from src.validator import Violation
+from src.extraction.prompts import build_responder_messages
+from src.validation.validator import Violation
 from tests.interaction_plan_support import (
     ScriptedLLM,
     empty_extraction,
@@ -229,8 +229,8 @@ def test_blocked_hard_rejects_ignore_warning() -> None:
 
 def test_state_timestamp_whitelist_preserved_across_slot_updates() -> None:
     """验证 check_type='state_timestamp' (如 C019) 警告在同一环境观察值下，跨槽位补充时不会因 task_version 跳变而再次跳出。"""
-    from src.validator import Violation
-    from src.slot_store import ValidationAcknowledgement
+    from src.validation.validator import Violation
+    from src.slots.slot_store import ValidationAcknowledgement
 
     llm = ScriptedLLM()
     dm = DialogueManager(llm, KnowledgeBase())
@@ -1374,7 +1374,7 @@ def test_ensure_constraint_details_deduplicates_paraphrased_warning() -> None:
 def test_duration_relation_corrects_chinese_two_and_half_hours() -> None:
     # 模拟大模型将“两个半小时”误换算为 5400 秒 (1.5小时)
     from datetime import datetime
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     get_simulated_time().set_current_time(datetime(2026, 8, 14, 10, 0, 0))
     try:
         llm = ScriptedLLM(
@@ -1431,7 +1431,7 @@ def test_duration_relation_corrects_chinese_two_and_half_hours() -> None:
 
 
 def test_cross_day_end_time_auto_correction() -> None:
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     from datetime import datetime
     from zoneinfo import ZoneInfo
     get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
@@ -1485,7 +1485,7 @@ def test_cross_day_end_time_auto_correction() -> None:
 
 
 def test_change_start_time_inherits_duration() -> None:
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     from datetime import datetime
     from zoneinfo import ZoneInfo
     get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
@@ -1545,7 +1545,7 @@ def test_change_start_time_inherits_duration() -> None:
 
 
 def test_change_start_time_inherits_duration_after_many_turns() -> None:
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     from datetime import datetime
     from zoneinfo import ZoneInfo
     get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
@@ -1605,7 +1605,7 @@ def test_change_start_time_inherits_duration_after_many_turns() -> None:
 
 
 def test_change_start_time_with_end_time_unchanged_preserves_previous_end() -> None:
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     from datetime import datetime
     from zoneinfo import ZoneInfo
     get_simulated_time().set_current_time(datetime(2026, 8, 26, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
@@ -1657,7 +1657,7 @@ def test_change_start_time_with_end_time_unchanged_preserves_previous_end() -> N
 
 
 def test_duration_delta_from_user_text_overrides_misclassified_end_time_candidate() -> None:
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
@@ -1711,7 +1711,7 @@ def test_august_31_explicit_date_and_duration() -> None:
     # 场景：用户说“任务从8月31号早上6点开始，任务持续8个小时”
     # 模拟大模型在 start_time 误选了当前日期 (2026-08-18)，但 raw_value 保留了 "8月31号早上6点"
     from datetime import datetime
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0))
     try:
         llm = ScriptedLLM(
@@ -1765,7 +1765,7 @@ def test_august_31_explicit_date_and_duration() -> None:
 def test_august_31_truncated_raw_value_recovers_from_full_user_message() -> None:
     # 场景：大模型 LLM 将 raw_value 截断为 "早上6点"（丢失了 8月31号），但用户原话为 "任务从8月31号早上6点开始，任务持续12个小时"
     from datetime import datetime
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0))
     try:
         llm = ScriptedLLM(
@@ -1818,7 +1818,7 @@ def test_today_am_11_and_three_hours() -> None:
     # 场景：用户原话为 "起始于今天上午十一点 持续三个小时"
     # 模拟大模型 LLM 在 start_time 误算归零输出 00:00:00
     from datetime import datetime
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     get_simulated_time().set_current_time(datetime(2026, 8, 19, 10, 39, 44))
     try:
         llm = ScriptedLLM(
@@ -1870,7 +1870,7 @@ def test_today_am_11_and_three_hours() -> None:
 def test_today_pm_one_quarter_and_four_quarter() -> None:
     # 场景：用户原话为 "任务从今天下午一点一刻开始，持续 12 小时"
     from datetime import datetime
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     get_simulated_time().set_current_time(datetime(2026, 8, 19, 15, 43, 35))
     try:
         llm = ScriptedLLM(
@@ -1996,7 +1996,7 @@ def test_incremental_duration_add_sub() -> None:
     # 场景：测试图片中的案例 "任务开始时间为明天早上8点开始，任务持续时间增加半个小时"
     # 原任务起始时间为 2026-08-27T08:00:00，结束时间为 2026-08-27T16:00:00 (8小时)
     from datetime import datetime
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     get_simulated_time().set_current_time(datetime(2026, 8, 26, 10, 0, 0))
     try:
         llm = ScriptedLLM(

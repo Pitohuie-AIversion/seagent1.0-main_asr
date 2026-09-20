@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from flask import Flask
 
-from src.asr_service import ASRConfig, ASRService
+from src.asr.asr_service import ASRConfig, ASRService
 from src.web import routes_asr
 
 

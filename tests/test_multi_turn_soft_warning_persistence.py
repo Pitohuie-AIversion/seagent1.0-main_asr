@@ -16,9 +16,9 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from src.dialogue_manager import DialogueManager
-from src.slot_store import SlotStore, ValidationAcknowledgement
-from src.validator import ValidationResult, Violation
-from src.ui_state_builder import build_frontend_ui_state
+from src.slots.slot_store import SlotStore, ValidationAcknowledgement
+from src.validation.validator import ValidationResult, Violation
+from src.session.ui_state_builder import build_frontend_ui_state
 
 
 class TestMultiTurnSoftWarningPersistence(unittest.TestCase):

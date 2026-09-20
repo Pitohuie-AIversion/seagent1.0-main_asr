@@ -14,7 +14,7 @@ import logging
 import re
 from typing import Any
 
-from .. import coord_parser
+from src.extraction import coord_parser
 from ..constants import FIELD_LABELS
 
 class WriteReplyGrounder:

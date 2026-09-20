@@ -66,12 +66,14 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+# The runtime imports the package as ``src.*``. Keep that package name in the
+# distribution instead of flattening its children into top-level packages.
+package-dir = {"" = "."}
 zip-safe = false
 
 [tool.setuptools.packages.find]
-where = ["src"]
-include = ["*"]
+where = ["."]
+include = ["src*"]
 exclude = [
     "scratch*",
     ".agents*",

@@ -19,8 +19,8 @@ from pathlib import Path
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.result_paths import get_task_dir
-from src.simulated_time import get_current_datetime
+from src.dispatch.result_paths import get_task_dir
+from src.temporal.simulated_time import get_current_datetime
 from tests.interaction_plan_support import ScriptedLLM
 from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import yaml
 
-from src.slot_store import Slot
+from src.slots.slot_store import Slot
 from seagent_marine_current.contracts import CurrentQuery
 from seagent_marine_current.integration import (
     MarineCurrentBridge,

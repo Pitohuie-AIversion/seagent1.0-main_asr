@@ -153,7 +153,7 @@ class TestGlobalParadigmAlignment(unittest.TestCase):
 
     def test_oilfield_name_spatial_linking(self):
         """5. oilfield_name 油田名称同音/别名吸附 (硫化11-1油田 -> 流花11-1油田)。"""
-        from src.oilfield_linker import OilfieldEntityLinker
+        from src.extraction.oilfield_linker import OilfieldEntityLinker
         import yaml
         from pathlib import Path
 

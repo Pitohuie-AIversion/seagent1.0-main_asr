@@ -113,7 +113,7 @@ def test_both_dashboard_hosts_serve_shared_authentication_assets():
 
 @pytest.mark.parametrize("dispatch_state", ["FAILED", "UNKNOWN", "SCHEDULED", "SENT"])
 def test_dispatch_outcome_survives_history_restore_and_session_refresh(monkeypatch, tmp_path, dispatch_state):
-    from src.task_dispatch import save_dispatch_history
+    from src.dispatch.task_dispatch import save_dispatch_history
     from tests.interaction_plan_support import ScriptedLLM, make_plan
     from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 

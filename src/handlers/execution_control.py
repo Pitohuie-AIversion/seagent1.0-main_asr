@@ -14,10 +14,10 @@ import logging
 from typing import Any, Optional, Dict
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
-from src.intent_router import IntentRouteResult
-from src.id_sequence import validate_intent_id
-from src.slot_store import SlotStore
-from src.session_state import ExecutionControlState, StateContractError, is_session_state_v2_active
+from src.session.intent_router import IntentRouteResult
+from src.dispatch.id_sequence import validate_intent_id
+from src.slots.slot_store import SlotStore
+from src.session.session_state import ExecutionControlState, StateContractError, is_session_state_v2_active
 
 logger = logging.getLogger("src.dialogue_manager")
 

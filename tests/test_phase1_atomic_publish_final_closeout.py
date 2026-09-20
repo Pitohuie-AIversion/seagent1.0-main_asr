@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.knowledge_retriever import KnowledgeBase
-from src.task_intent_builder import TaskIntentBuilder
+from src.dispatch.task_intent_builder import TaskIntentBuilder
 from src.exceptions import TaskPersistenceError, IntentIdConflict
 
 
@@ -58,7 +58,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(IntentIdConflict):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -78,7 +78,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 try:
                     self.builder.publish_staging(staging_file, intent)
                 except Exception:
@@ -93,7 +93,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
         intent = self._make_valid_intent("TI2026072101")
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st_file = self.builder.create_staging(intent)
                 pub_name = self.builder.publish_staging(st_file, intent)
                 final_file = task_dir / pub_name
@@ -106,7 +106,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
         intent = self._make_valid_intent("TI2026072101")
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st_file = self.builder.create_staging(intent)
                 self.builder.publish_staging(st_file, intent)
                 self.assertFalse(st_file.exists())
@@ -123,7 +123,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 pub_name = self.builder.publish_staging(staging_file, intent)
                 final_file = task_dir / pub_name
                 with open(final_file, "r", encoding="utf-8") as f:
@@ -154,7 +154,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
                     ))
                 return original_stat(path, *args, **kwargs)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.stat", side_effect=fake_stat_on_claim):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
@@ -178,7 +178,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
                 with open(staging_file, "w", encoding="utf-8") as f:
                     json.dump(forged_intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.rename", side_effect=race_replace_rename):
                 try:
                     self.builder.publish_staging(staging_file, intent)
@@ -210,7 +210,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
                     ))
                 return original_stat(path, *args, **kwargs)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.stat", side_effect=fake_stat_on_claim):
                 try:
                     self.builder.publish_staging(staging_file, intent)
@@ -229,8 +229,8 @@ class AtomicPublishTransactionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("src.task_intent_builder._atomic_commit_noreplace", side_effect=RuntimeError("Commit failed")):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
+                 patch("src.dispatch.task_intent_builder._atomic_commit_noreplace", side_effect=RuntimeError("Commit failed")):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -257,8 +257,8 @@ class AtomicPublishTransactionTest(unittest.TestCase):
                     json.dump(other_intent, f)
                 raise TaskPersistenceError("Mock commit fail after external creation")
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("src.task_intent_builder._atomic_commit_noreplace", side_effect=mock_failed_commit):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
+                 patch("src.dispatch.task_intent_builder._atomic_commit_noreplace", side_effect=mock_failed_commit):
                 try:
                     self.builder.publish_staging(staging_file, intent)
                 except TaskPersistenceError:
@@ -281,7 +281,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st_file = self.builder.create_staging(intent)
                 st_file.unlink()
                 with open(st_file, "w", encoding="utf-8") as f:
@@ -299,7 +299,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
         intent = self._make_valid_intent("TI2026072101")
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st1 = self.builder.create_staging(intent)
                 st2 = self.builder.create_staging(intent)
 
@@ -319,7 +319,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st1 = self.builder.create_staging(intent1)
                 st2 = self.builder.create_staging(intent2)
 
@@ -333,8 +333,8 @@ class AtomicPublishTransactionTest(unittest.TestCase):
         """14. 发布锁能跨线程与跨进程安全加锁"""
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
-                from src.task_intent_builder import TaskPublishLock
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
+                from src.dispatch.task_intent_builder import TaskPublishLock
                 lock = TaskPublishLock(task_dir)
                 with lock:
                     lock_file = task_dir / ".task_intent_publish.lock"
@@ -346,7 +346,7 @@ class AtomicPublishTransactionTest(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st = self.builder.create_staging(intent)
                 self.builder.publish_staging(st, intent)
 
@@ -362,8 +362,8 @@ class AtomicPublishTransactionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("src.task_intent_builder._atomic_commit_noreplace", side_effect=OSError("Disk write error")):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
+                 patch("src.dispatch.task_intent_builder._atomic_commit_noreplace", side_effect=OSError("Disk write error")):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 

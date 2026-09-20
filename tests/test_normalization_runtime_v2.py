@@ -14,13 +14,13 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from src.dialogue_manager import DialogueManager
-from src.intent_router import IntentRouteResult
-from src.model_profile import (
+from src.session.intent_router import IntentRouteResult
+from src.extraction.model_profile import (
     ModelProfileConfigError,
     is_normalization_contract_v2_enabled,
     is_task_patch_v2_enabled,
 )
-from src.normalization_contract import (
+from src.slots.normalization_contract import (
     NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS,
     NormalizationApplyPlan,
     NormalizationContractError,
@@ -31,9 +31,9 @@ from src.normalization_contract import (
     normalized_task_patch_to_apply_plan,
     validate_normalization_runtime_flags,
 )
-from src.normalizer import FieldNormalizer
-from src.slot_store import Slot, SlotStore
-from src.task_patch import ListMutationPatch, SlotPatch, TaskPatch
+from src.extraction.normalizer import FieldNormalizer
+from src.slots.slot_store import Slot, SlotStore
+from src.slots.task_patch import ListMutationPatch, SlotPatch, TaskPatch
 from tests.interaction_plan_support import (
     ScriptedLLM,
     extraction_result,
@@ -940,7 +940,7 @@ class TestRuntimeV2Integration(unittest.TestCase):
 
     def test_all_tools_natural_language_phrases_select_all_allowed(self):
         """测试'携带全部工具'/'带上全部工具'/'选择所有载荷'等自然口语，可精确触发全选所有候选。"""
-        from src.normalizer import FieldNormalizer
+        from src.extraction.normalizer import FieldNormalizer
         normalizer = FieldNormalizer()
         allowed = ["高清水下摄像机", "LED水下照明灯", "前视声呐", "成像声呐", "TSS管缆跟踪传感器"]
 

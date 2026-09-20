@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.dialogue_manager import DialogueManager
-from src.intent_router import IntentRouteResult
+from src.session.intent_router import IntentRouteResult
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
 from src.exceptions import TaskPersistenceError
@@ -156,7 +156,7 @@ class AdversarialP0SecurityTest(unittest.TestCase):
             ti_slot_val = self.dm.slot_store.slots["intent_id"].value
 
             real_commit = self.dm.slot_store.commit_transaction
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path), \
                  patch.object(self.dm.extractor, 'extract_updates') as mock_ext, \
                  patch.object(self.dm.slot_store, 'commit_transaction', wraps=real_commit) as mock_commit:
                 reply = self.dm.process("确认发布")
@@ -204,7 +204,7 @@ class AdversarialP0SecurityTest(unittest.TestCase):
 
             snap_before = copy.deepcopy(self.dm.slot_store.export_snapshot())
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path), \
                  patch("src.dialogue_manager.TaskIntentBuilder.publish_staging", side_effect=TaskPersistenceError("Disk error")):
                 with self.assertRaises(TaskPersistenceError):
                     self.dm.process("确认发布")

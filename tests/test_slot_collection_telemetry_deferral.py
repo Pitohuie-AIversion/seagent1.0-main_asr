@@ -20,7 +20,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
-from src.simulated_time import get_current_datetime
+from src.temporal.simulated_time import get_current_datetime
 from tests.interaction_plan_support import (
     ScriptedLLM,
     extraction_result,

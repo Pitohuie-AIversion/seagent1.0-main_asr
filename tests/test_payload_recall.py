@@ -4,8 +4,8 @@ import unittest
 from unittest.mock import MagicMock
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.slot_store import Slot
-from src.ui_state_builder import build_frontend_ui_state
+from src.slots.slot_store import Slot
+from src.session.ui_state_builder import build_frontend_ui_state
 
 
 def seed_valid_task_with_payload(dm: DialogueManager, kb: KnowledgeBase):

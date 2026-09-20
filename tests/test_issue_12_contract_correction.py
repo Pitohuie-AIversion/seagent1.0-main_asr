@@ -7,7 +7,7 @@ and restoring class -> family -> model_variant -> unit 4-level hierarchy.
 import unittest
 import yaml
 from src.knowledge_retriever import KnowledgeBase, RobotSelectionDataError
-from src.slot_store import (
+from src.slots.slot_store import (
     SlotStore,
     Slot,
     BASE_SLOT_TYPES,
@@ -15,9 +15,9 @@ from src.slot_store import (
     SnapshotValidationError,
 )
 from src.dialogue_manager import DialogueManager
-from src.output_builder import OutputBuilder
-from src.normalization_contract import NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS
-from src.prompts import build_responder_messages
+from src.dispatch.output_builder import OutputBuilder
+from src.slots.normalization_contract import NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS
+from src.extraction.prompts import build_responder_messages
 
 
 class TestIssue12ContractCorrection(unittest.TestCase):

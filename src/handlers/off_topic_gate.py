@@ -13,7 +13,7 @@ import logging
 import re
 from typing import Optional
 
-from ..prompts import OFF_TOPIC_REJECT_TEMPLATE
+from src.extraction.prompts import OFF_TOPIC_REJECT_TEMPLATE
 
 logger = logging.getLogger(__name__)
 

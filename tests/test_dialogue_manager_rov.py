@@ -11,15 +11,15 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
 from src.llm_client import LLMClient
-from src.output_builder import OutputBuilder
-from src.prompts import (
+from src.dispatch.output_builder import OutputBuilder
+from src.extraction.prompts import (
     build_general_chat_messages,
     build_knowledge_responder_messages,
     build_responder_messages,
     build_status_responder_messages,
 )
-from src.task_intent_builder import TaskIntentBuilder
-from src.simulated_time import get_current_datetime
+from src.dispatch.task_intent_builder import TaskIntentBuilder
+from src.temporal.simulated_time import get_current_datetime
 from tests.interaction_plan_support import (
     ScriptedLLM,
     empty_extraction,
@@ -846,7 +846,7 @@ class DialogueManagerROVTest(unittest.TestCase):
 
 
     def test_preflight_check_candidates(self):
-        from src.validator import TaskValidator
+        from src.validation.validator import TaskValidator
         validator = TaskValidator(self.kb)
         violations = validator.preflight_check_candidates(
             {"task_type_key": "pipeline_inspection", "equipment_class": "观察级深海机器人"},

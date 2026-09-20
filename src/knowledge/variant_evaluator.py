@@ -16,7 +16,7 @@ from .models import (
     normalize_payload_groups,
     normalize_supported_payloads,
 )
-from ..simulated_time import get_current_datetime
+from ..temporal.simulated_time import get_current_datetime
 
 if TYPE_CHECKING:
     from .selection_engine import RobotSelectionEngine

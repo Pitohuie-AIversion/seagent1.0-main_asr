@@ -11,12 +11,12 @@ import pytest
 
 from src.exceptions import TaskPersistenceError
 from src.knowledge_retriever import KnowledgeBase
-from src.task_intent_builder import TaskIntentBuilder
+from src.dispatch.task_intent_builder import TaskIntentBuilder
 
 
 @pytest.fixture
 def persistence(tmp_path, monkeypatch):
-    monkeypatch.setattr("src.task_intent_builder.get_task_dir", lambda **kwargs: tmp_path)
+    monkeypatch.setattr("src.dispatch.task_intent_builder.get_task_dir", lambda **kwargs: tmp_path)
     intent = {
         "schema_version": 2,
         "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",

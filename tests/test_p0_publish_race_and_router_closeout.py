@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.knowledge_retriever import KnowledgeBase
-from src.task_intent_builder import TaskIntentBuilder
+from src.dispatch.task_intent_builder import TaskIntentBuilder
 from src.exceptions import TaskPersistenceError
 
 
@@ -55,7 +55,7 @@ class StagingRaceConditionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(forged_intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -68,7 +68,7 @@ class StagingRaceConditionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -94,7 +94,7 @@ class StagingRaceConditionTest(unittest.TestCase):
                 with open(staging_file, "w", encoding="utf-8") as f:
                     json.dump(forged_intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.rename", side_effect=race_replace_rename):
                 try:
                     self.builder.publish_staging(staging_file, intent)
@@ -122,7 +122,7 @@ class StagingRaceConditionTest(unittest.TestCase):
                 with open(staging_file, "w", encoding="utf-8") as f:
                     json.dump(forged_intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.rename", side_effect=race_replace_rename):
                 try:
                     self.builder.publish_staging(staging_file, intent)
@@ -145,7 +145,7 @@ class StagingRaceConditionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(forged_intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -161,7 +161,7 @@ class StagingRaceConditionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -177,8 +177,8 @@ class StagingRaceConditionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("src.task_intent_builder._atomic_commit_noreplace", side_effect=TaskPersistenceError("Mock commit failed")):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
+                 patch("src.dispatch.task_intent_builder._atomic_commit_noreplace", side_effect=TaskPersistenceError("Mock commit failed")):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -201,7 +201,7 @@ class StagingRaceConditionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 from src.exceptions import IntentIdConflict
                 with self.assertRaises((TaskPersistenceError, IntentIdConflict)):
                     self.builder.publish_staging(staging_file, intent)
@@ -215,7 +215,7 @@ class StagingRaceConditionTest(unittest.TestCase):
         intent = self._make_valid_intent("TI2026072101")
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 staging_file = self.builder.create_staging(intent)
                 pub_name = self.builder.publish_staging(staging_file, intent)
                 final_file = task_dir / pub_name
@@ -246,7 +246,7 @@ class StagingRaceConditionTest(unittest.TestCase):
                     json.dump(forged_intent, f)
                 real_link(src, dst)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link", side_effect=race_link):
                 try:
                     self.builder.publish_staging(staging_file, intent)
@@ -278,7 +278,7 @@ class StagingRaceConditionTest(unittest.TestCase):
                 with open(staging_file, "w", encoding="utf-8") as f:
                     json.dump(forged_intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.rename", side_effect=race_replace_rename):
                 try:
                     self.builder.publish_staging(staging_file, intent)
@@ -296,7 +296,7 @@ class StagingRaceConditionTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link", side_effect=PermissionError("Mock disk error")):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)

@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import yaml
 
-from src.task_patch import (
+from src.slots.task_patch import (
     SlotPatch,
     ListMutationPatch,
     TaskPatch,
@@ -18,12 +18,12 @@ from src.task_patch import (
     build_task_patch,
     task_patch_to_legacy_updates,
 )
-from src.model_profile import (
+from src.extraction.model_profile import (
     is_task_patch_v2_enabled,
     ModelProfileConfigError,
 )
 from src.dialogue_manager import DialogueManager
-from src.slot_store import Slot
+from src.slots.slot_store import Slot
 from tests.interaction_plan_support import make_plan
 
 

@@ -172,14 +172,14 @@ def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str
                     web_mod._shared_kb = new_kb_cls()
                 if "src.dialogue_manager" in sys.modules:
                     web_mod.DialogueManager = sys.modules["src.dialogue_manager"].DialogueManager
-                if "src.asr_normalizer" in sys.modules:
-                    web_mod.normalize_terminology = sys.modules["src.asr_normalizer"].normalize_terminology
-                if "src.ui_state_builder" in sys.modules:
-                    web_mod.build_frontend_ui_state = sys.modules["src.ui_state_builder"].build_frontend_ui_state
-                if "src.history_manager" in sys.modules:
-                    web_mod.save_conversation = sys.modules["src.history_manager"].save_conversation
-                    web_mod.list_history = sys.modules["src.history_manager"].list_history
-                    web_mod.load_history = sys.modules["src.history_manager"].load_history
+                if "src.asr.asr_normalizer" in sys.modules:
+                    web_mod.normalize_terminology = sys.modules["src.asr.asr_normalizer"].normalize_terminology
+                if "src.session.ui_state_builder" in sys.modules:
+                    web_mod.build_frontend_ui_state = sys.modules["src.session.ui_state_builder"].build_frontend_ui_state
+                if "src.session.history_manager" in sys.modules:
+                    web_mod.save_conversation = sys.modules["src.session.history_manager"].save_conversation
+                    web_mod.list_history = sys.modules["src.session.history_manager"].list_history
+                    web_mod.load_history = sys.modules["src.session.history_manager"].load_history
 
                 # 3. 平滑迁移活跃会话的 DialogueManager 实例（保持会话状态）
                 if hasattr(web_mod, "_sessions_lock") and hasattr(web_mod, "_sessions_manager"):

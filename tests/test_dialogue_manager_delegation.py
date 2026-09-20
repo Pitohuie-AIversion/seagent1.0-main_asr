@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
-from src.validator import Violation
+from src.validation.validator import Violation
 
 
 @pytest.fixture

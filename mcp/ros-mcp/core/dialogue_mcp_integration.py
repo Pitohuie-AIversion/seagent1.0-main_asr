@@ -62,7 +62,7 @@ def dispatch_dialogue_result(
         raise ValueError(f"DialogueManager 尚未处于 done 阶段（当前阶段: {dialogue_manager.phase}），无法下发。")
 
     from contextlib import nullcontext
-    from src.task_dispatch import dispatch_completed_task, save_dispatch_history
+    from src.dispatch.task_dispatch import dispatch_completed_task, save_dispatch_history
     with getattr(dialogue_manager, "_session_lock", nullcontext()):
         dispatch = dispatch_completed_task(dialogue_manager, service)
         if hasattr(dialogue_manager, "session_id"):

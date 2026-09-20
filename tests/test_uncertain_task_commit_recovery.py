@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.task_intent_builder import TaskIntentBuilder, IntentIdConflict
+from src.dispatch.task_intent_builder import TaskIntentBuilder, IntentIdConflict
 
 
 @pytest.fixture
@@ -56,8 +56,8 @@ def test_real_confirmation_recovers_same_file_and_official_id_without_reserving_
 
 def test_pending_commit_survives_real_history_save_and_new_manager_restore(task):
     from src.dialogue_manager import DialogueManager
-    from src.history_manager import load_history
-    from src.task_dispatch import save_dispatch_history
+    from src.session.history_manager import load_history
+    from src.dispatch.task_dispatch import save_dispatch_history
     manager, path = task
     _publish_with_late_failure(manager)
     artifact = json.loads(path.read_text())

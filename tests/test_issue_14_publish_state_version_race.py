@@ -16,7 +16,7 @@ from src.exceptions import TaskPersistenceError, TaskRollbackError
 
 def _setup_dm(tmp_dir: Path, intent_suffix: str) -> DialogueManager:
     """公用辅助：建立隔离状态文件、初始化 DM 并填充有效 task_state。"""
-    from src.simulated_time import get_current_datetime
+    from src.temporal.simulated_time import get_current_datetime
     state_file = tmp_dir / "state.yaml"
     shutil.copy("config/state.yaml", state_file)
     kb = KnowledgeBase()
@@ -136,7 +136,7 @@ class TestPublishStateVersionRace(unittest.TestCase):
 
         kb.state_info.get_unit_state_snapshot = mock_broken_snapshot
         try:
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(TaskPersistenceError) as ctx:
                     dm._handle_final_publish_confirmation("确认发布", request_id="req-race-failclosed")
             self.assertTrue(
@@ -173,7 +173,7 @@ class TestPublishStateVersionRace(unittest.TestCase):
 
         kb.state_info.get_unit_state_snapshot = mock_soft_changed_snapshot
         try:
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(TaskPersistenceError):
                     dm._handle_final_publish_confirmation("确认发布", request_id="req-race-soft")
             self.assertEqual(dm.phase, "blocked_soft")

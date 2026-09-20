@@ -18,19 +18,19 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
-from ..model_profile import (
+from src.extraction.model_profile import (
     ModelRole,
     is_normalization_contract_v2_enabled,
     is_task_patch_v2_enabled,
 )
-from ..normalization_contract import (
+from src.slots.normalization_contract import (
     NORMALIZATION_RUNTIME_PASSTHROUGH_KEYS,
     NormalizationApplyPlan,
     normalize_task_patch,
     normalized_task_patch_to_apply_plan,
 )
-from ..task_patch import build_task_patch, task_patch_to_legacy_updates
-from ..slot_store import Slot
+from src.slots.task_patch import build_task_patch, task_patch_to_legacy_updates
+from src.slots.slot_store import Slot
 from ..constants import FIELD_LABELS
 from .explicit_value_grounding import ground_explicit_values
 

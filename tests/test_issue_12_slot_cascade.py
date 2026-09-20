@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase, RobotSelectionDataError
 from src.llm_client import LLMClient
-from src.slot_store import (
+from src.slots.slot_store import (
     ROBOT_CASCADE_DEPENDENCIES,
     Slot,
     SlotStore,
@@ -455,7 +455,7 @@ class TestIssue12SlotCascade(unittest.TestCase):
     def test_16_failed_restore_preserves_original_store_state(self):
         """16. 校验失败 (如带有合法 variant_id 的 malformed spec) 时，原 SlotStore 内存快照与版本完全不变。"""
         import copy
-        from src.slot_store import SnapshotValidationError
+        from src.slots.slot_store import SnapshotValidationError
         store = SlotStore(kb=self.kb)
         store.commit_transaction(
             {

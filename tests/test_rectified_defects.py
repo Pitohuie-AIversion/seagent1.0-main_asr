@@ -1,7 +1,7 @@
 import pytest
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.normalizer import FieldNormalizer
+from src.extraction.normalizer import FieldNormalizer
 
 @pytest.fixture
 def dm():

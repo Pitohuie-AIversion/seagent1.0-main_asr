@@ -2,7 +2,7 @@
 import pytest
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.slot_store import Slot
+from src.slots.slot_store import Slot
 from tests.interaction_plan_support import ScriptedLLM, extraction_result, make_plan, slot_candidate
 
 @pytest.fixture(params=[(False, False), (True, False), (True, True)])

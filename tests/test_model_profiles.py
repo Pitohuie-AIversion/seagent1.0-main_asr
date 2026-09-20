@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 import yaml
 
 from src.llm_client import LLMClient
-from src.model_profile import (
+from src.extraction.model_profile import (
     GenerationOptions,
     ModelProfile,
     ModelProfileConfigError,
@@ -639,7 +639,7 @@ class TestKnowledgeQAContextResolution(unittest.TestCase):
 
     def test_device_query_preserves_selected_equipment_context(self):
         from src.dialogue_manager import DialogueManager
-        from src.intent_router import IntentRouteResult
+        from src.session.intent_router import IntentRouteResult
 
         dm = DialogueManager()
         # 设置真实任务上下文：已有任务类型与设备名称

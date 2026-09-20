@@ -122,7 +122,7 @@ class Phase19RegressionGuardTest(unittest.TestCase):
 
             with (
                 patch(
-                    "src.task_intent_builder.get_task_dir",
+                    "src.dispatch.task_intent_builder.get_task_dir",
                     return_value=task_dir,
                 ),
                 patch(

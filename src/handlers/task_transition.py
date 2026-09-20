@@ -14,7 +14,7 @@ import copy
 import logging
 from typing import Any
 
-from ..slot_store import Slot, reset_slot_to_missing, BASE_SLOT_TYPES
+from src.slots.slot_store import Slot, reset_slot_to_missing, BASE_SLOT_TYPES
 from ..constants import (
     ROBOT_CASCADE_FIELDS,
     TASK_TRANSITION_NON_INHERITED_FIELDS,
@@ -525,7 +525,7 @@ class TaskTransitionManager:
             # the normal cross-task admission check; clear only the first
             # non-effective selector and its dependent suffix.
             if target_key != old_task_type_key:
-                from ..slot_store import (
+                from src.slots.slot_store import (
                     invalidate_robot_cascade_dependents,
                     reset_slot_to_missing,
                 )
@@ -562,7 +562,7 @@ class TaskTransitionManager:
                     break
 
             # Clean up old dynamic slots in new_slots that do not belong to BASE_SLOT_TYPES, schema_keys, or ALLOWED_INTERNAL_SLOTS
-            from ..slot_store import BASE_SLOT_TYPES, ALLOWED_INTERNAL_SLOTS
+            from src.slots.slot_store import BASE_SLOT_TYPES, ALLOWED_INTERNAL_SLOTS
             to_remove = [
                 k for k in list(new_slots.keys())
                 if k not in BASE_SLOT_TYPES and k not in schema_keys and k not in ALLOWED_INTERNAL_SLOTS

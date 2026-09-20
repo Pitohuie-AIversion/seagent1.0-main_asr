@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.task_intent_builder import TaskIntentBuilder, TaskPersistenceError
+from src.dispatch.task_intent_builder import TaskIntentBuilder, TaskPersistenceError
 from tests.interaction_plan_support import (
     ScriptedLLM,
     extraction_result,
@@ -141,10 +141,10 @@ class FailureRecoveryBenchmarkTest(unittest.TestCase):
             )
 
             with patch(
-                "src.task_intent_builder.get_task_dir",
+                "src.dispatch.task_intent_builder.get_task_dir",
                 return_value=task_dir,
             ), patch(
-                "src.id_sequence.get_result_dir",
+                "src.dispatch.id_sequence.get_result_dir",
                 return_value=result_dir,
             ), patch.object(
                 TaskIntentBuilder,

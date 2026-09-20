@@ -15,8 +15,8 @@ from flask import Flask
 import src.web.state as state
 from session import Session
 from src.dialogue_manager import DialogueManager
-from src.history_manager import save_conversation, list_history, load_history
-from src.ui_state_builder import build_frontend_ui_state
+from src.session.history_manager import save_conversation, list_history, load_history
+from src.session.ui_state_builder import build_frontend_ui_state
 from src.web import register_blueprints
 from src.web.routes_asr import (
     _allowed_audio_extensions,

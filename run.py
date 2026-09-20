@@ -32,9 +32,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from src.llm_client import LLMClient
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
-from src.result_paths import get_result_dir
-from src.simulated_time import get_simulated_time
-from src.asr_service import ASRConfig, ASRService
+from src.dispatch.result_paths import get_result_dir
+from src.temporal.simulated_time import get_simulated_time
+from src.asr.asr_service import ASRConfig, ASRService
 
 # 强制离线
 os.environ["TRANSFORMERS_OFFLINE"] = "1"

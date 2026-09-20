@@ -13,12 +13,12 @@ from src.dialogue_manager import DialogueManager
 from src.handlers.constraint_decision import ConstraintDecisionHandler
 from src.handlers.slot_transaction import SlotTransactionManager
 from src.knowledge_retriever import KnowledgeBase
-from src.normalization_contract import NormalizationApplyPlan
-from src.oilfield_linker import OilfieldEntityLinker
-from src.output_builder import OutputBuilder
-from src.slot_store import Slot, SlotStore
-from src.task_intent_builder import TaskIntentBuilder
-from src.task_patch import ListMutationPatch, TaskPatchValidationError, build_task_patch
+from src.slots.normalization_contract import NormalizationApplyPlan
+from src.extraction.oilfield_linker import OilfieldEntityLinker
+from src.dispatch.output_builder import OutputBuilder
+from src.slots.slot_store import Slot, SlotStore
+from src.dispatch.task_intent_builder import TaskIntentBuilder
+from src.slots.task_patch import ListMutationPatch, TaskPatchValidationError, build_task_patch
 from tests.interaction_plan_support import ScriptedLLM, extraction_result, make_plan, slot_candidate
 
 

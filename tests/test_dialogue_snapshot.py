@@ -9,8 +9,8 @@ import unittest
 from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
-from src.dialogue_snapshot import DialogueSnapshotManager
-from src.slot_store import Slot, SnapshotValidationError
+from src.session.dialogue_snapshot import DialogueSnapshotManager
+from src.slots.slot_store import Slot, SnapshotValidationError
 
 
 class TestDialogueSnapshotManager(unittest.TestCase):

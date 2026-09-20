@@ -2,8 +2,8 @@ import unittest
 
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
-from src.output_builder import OutputBuilder
-from src.ui_state_builder import build_frontend_ui_state
+from src.dispatch.output_builder import OutputBuilder
+from src.session.ui_state_builder import build_frontend_ui_state
 
 
 EXPECTED_PAYLOAD_GROUPS = [

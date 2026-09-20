@@ -7,10 +7,10 @@ from types import SimpleNamespace
 import jsonschema
 import pytest
 
-from src.duration_parser import DurationState, parse_duration_spec
-from src.extractor import ParameterExtractor
+from src.temporal.duration_parser import DurationState, parse_duration_spec
+from src.extraction.extractor import ParameterExtractor
 from src.llm_client import LLMClient, SLOT_EXTRACTION_JSON_SCHEMA, TEMPORAL_RELATION_JSON_SCHEMA
-from src.relative_time_parser import parse_time_range
+from src.temporal.relative_time_parser import parse_time_range
 
 STATE = {'start_time': '2026-09-18T09:00:00', 'end_time': '2026-09-18T13:00:00'}
 SHIFT = '开始时间推迟半小时，持续时间保持不变，其他参数保持不变。'

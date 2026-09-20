@@ -33,8 +33,8 @@ for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, PROJECT_ROOT]:
 from src.llm_client import LLMClient
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
-from src.slot_store import ValidationAcknowledgement
-from src.simulated_time import get_current_datetime, get_simulated_time
+from src.slots.slot_store import ValidationAcknowledgement
+from src.temporal.simulated_time import get_current_datetime, get_simulated_time
 from mcp.shim.seagent_mcp_adapter import SeagentROS2MCPAdapter
 
 LOCAL_MODEL_PATH = "/root/autodl-tmp/model/Qwen3.5-9B"

@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.validator import Violation, ValidationResult
+from src.validation.validator import Violation, ValidationResult
 
 
 class FakeLLM:

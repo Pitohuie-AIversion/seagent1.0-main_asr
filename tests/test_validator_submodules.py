@@ -16,19 +16,19 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from src.knowledge_retriever import KnowledgeBase
-from src.rule_engine import (
+from src.validation.rule_engine import (
     RuleEngine,
     START_TIME_PAST_GRACE_MINUTES,
     get_current_datetime as re_get_now,
 )
-from src.spatial_validator import SpatialValidator, SPATIAL_CHECKS
-from src.telemetry_gate import (
+from src.validation.spatial_validator import SpatialValidator, SPATIAL_CHECKS
+from src.validation.telemetry_gate import (
     TelemetryGate,
     matches_numeric_thresholds,
     display_threshold,
     get_current_datetime as tg_get_now,
 )
-from src.validator import (
+from src.validation.validator import (
     TaskValidator,
     Violation,
     ValidationResult,
@@ -233,7 +233,7 @@ class TestTelemetryGate(unittest.TestCase):
                 "overall_status": "available",
             },
         }
-        with patch("src.validator.get_current_datetime", return_value=NOW):
+        with patch("src.validation.validator.get_current_datetime", return_value=NOW):
             err = self.gate.validate_state_snapshot_content("OBSROV-75-001", normal_snapshot)
             self.assertIsNone(err)
 
@@ -250,13 +250,13 @@ class TestTelemetryGate(unittest.TestCase):
                 "update_timestamp": (NOW + timedelta(seconds=121)).isoformat(),
             },
         }
-        with patch("src.validator.get_current_datetime", return_value=NOW):
+        with patch("src.validation.validator.get_current_datetime", return_value=NOW):
             err = self.gate.validate_state_snapshot_content("OBSROV-75-001", skewed_snapshot)
             self.assertIsNotNone(err)
             self.assertEqual("INVALID_STATE_DATA", err["code"])
 
     def test_is_task_start_now(self):
-        with patch("src.validator.get_current_datetime", return_value=NOW):
+        with patch("src.validation.validator.get_current_datetime", return_value=NOW):
             # 未指定 start_time：默认判定为即时任务
             self.assertTrue(self.gate.is_task_start_now({}))
 

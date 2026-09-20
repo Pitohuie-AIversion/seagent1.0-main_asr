@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.slot_store import Slot
+from src.slots.slot_store import Slot
 from tests.interaction_plan_support import ScriptedLLM, make_plan
 from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 
@@ -76,9 +76,9 @@ class SnapshotIntentIdPreservationTest(unittest.TestCase):
             tmp_task_dir = Path(tmp_dir) / "task"
             tmp_task_dir.mkdir(parents=True, exist_ok=True)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)), \
-                 patch("src.id_sequence.next_daily_id") as mock_next_id:
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)), \
+                 patch("src.dispatch.id_sequence.next_daily_id") as mock_next_id:
                 self.dm.load_snapshot(snap)
                 mock_next_id.assert_not_called()
 
@@ -100,8 +100,8 @@ class SnapshotIntentIdPreservationTest(unittest.TestCase):
             tmp_task_dir = Path(tmp_dir) / "task"
             tmp_task_dir.mkdir(parents=True, exist_ok=True)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 self.dm.load_snapshot(snap)
 
         self.assertEqual(self.dm.phase, "confirming")
@@ -122,8 +122,8 @@ class SnapshotIntentIdPreservationTest(unittest.TestCase):
             tmp_task_dir = Path(tmp_dir) / "task"
             tmp_task_dir.mkdir(parents=True, exist_ok=True)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 self.dm.load_snapshot(snap)
 
         self.assertEqual(self.dm.phase, "confirming")
@@ -186,8 +186,8 @@ class SnapshotIntentIdPreservationTest(unittest.TestCase):
                 }
             }
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 self.dm.load_snapshot(snap)
 
         self.assertEqual(self.dm.phase, "done")
@@ -216,8 +216,8 @@ class SnapshotIntentIdPreservationTest(unittest.TestCase):
                 }
             }
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 self.dm.load_snapshot(snap)
 
         self.assertNotEqual(self.dm.phase, "done", "无效发布证据下不得保持 done 阶段")

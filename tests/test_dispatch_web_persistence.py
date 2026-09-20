@@ -59,7 +59,7 @@ def test_dispatch_failure_survives_state_history_and_explicit_same_intent_retry(
 
 
 def test_future_confirmation_and_early_manual_retry_never_send(web_task):
-    from src.simulated_time import get_current_datetime
+    from src.temporal.simulated_time import get_current_datetime
     client, manager, bridge, _ = web_task
     manager.slot_store.slots["start_time"].value = (get_current_datetime() + timedelta(hours=2)).isoformat()
     manager._rebuild_cache()

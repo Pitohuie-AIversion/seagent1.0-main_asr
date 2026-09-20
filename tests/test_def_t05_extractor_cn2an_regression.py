@@ -83,7 +83,7 @@ class TestRegexSafety:
 
 class TestParseChineseNumberSanity:
     def test_parse_pure_chinese(self):
-        from src.duration_parser import parse_chinese_number
+        from src.temporal.duration_parser import parse_chinese_number
 
         assert parse_chinese_number("三百") == 300
         assert parse_chinese_number("十") == 10
@@ -91,7 +91,7 @@ class TestParseChineseNumberSanity:
         assert parse_chinese_number("壹佰贰拾") == 120
 
     def test_parse_chinese_rejects_mixed_colon(self):
-        from src.duration_parser import parse_chinese_number
+        from src.temporal.duration_parser import parse_chinese_number
 
         # 即使传入混合串，parse_chinese_number 也应安全返回 None
         assert parse_chinese_number("周三15:00") is None
@@ -107,7 +107,7 @@ class TestParameterExtractorNumericSafe:
     @pytest.fixture
     def extractor(self):
         from src.llm_client import LLMClient
-        from src.extractor import ParameterExtractor
+        from src.extraction.extractor import ParameterExtractor
 
         mock_llm = MagicMock(spec=LLMClient)
         return ParameterExtractor(llm=mock_llm)
@@ -165,7 +165,7 @@ class TestParameterExtractorNumericSafe:
         required_by_key = {"start_time": {"type": "string"}}
         # 关闭相对时间解析，只测试 numeric 分支不破坏 raw_value
         # 用 monkey-patch 禁用 parse_relative_datetime
-        import src.extractor as ext_mod
+        import src.extraction.extractor as ext_mod
         orig = ext_mod.parse_relative_datetime
         try:
             ext_mod.parse_relative_datetime = lambda *a, **kw: None

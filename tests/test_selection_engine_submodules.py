@@ -9,7 +9,7 @@ from src.knowledge.selection_engine import RobotSelectionEngine
 from src.knowledge.variant_evaluator import VariantEvaluator
 from src.knowledge.unit_resolver import UnitResolver
 from src.knowledge.models import RobotSelectionDataError, RobotVariantFeasibility
-from src.simulated_time import get_simulated_time
+from src.temporal.simulated_time import get_simulated_time
 
 
 @pytest.fixture

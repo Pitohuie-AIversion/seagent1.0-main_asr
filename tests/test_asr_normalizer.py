@@ -4,7 +4,7 @@ import sys
 import unittest
 
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "asr_normalizer.py"
+MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "asr" / "asr_normalizer.py"
 spec = importlib.util.spec_from_file_location("asr_normalizer", MODULE_PATH)
 asr_normalizer = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = asr_normalizer

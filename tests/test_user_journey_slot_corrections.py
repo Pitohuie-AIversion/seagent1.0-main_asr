@@ -4,7 +4,7 @@ import pytest
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.slot_store import Slot, SlotStore
+from src.slots.slot_store import Slot, SlotStore
 from tests.interaction_plan_support import (
     ScriptedLLM,
     extraction_result,

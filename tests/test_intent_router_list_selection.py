@@ -1,4 +1,4 @@
-from src.intent_router import IntentRouter
+from src.session.intent_router import IntentRouter
 
 
 class _ClarifyLLM:

@@ -17,9 +17,9 @@ from zoneinfo import ZoneInfo
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
-from src.simulated_time import get_simulated_time
-from src.ui_state_builder import build_frontend_ui_state
-from src.validator import TaskValidator, Violation
+from src.temporal.simulated_time import get_simulated_time
+from src.session.ui_state_builder import build_frontend_ui_state
+from src.validation.validator import TaskValidator, Violation
 
 
 class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
@@ -180,7 +180,7 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
 
     def test_dialogue_process_keeps_soft_warnings_in_sidebar_only(self):
         """软约束触发后保留在右侧看板，左侧回复不重复提醒。"""
-        from src.intent_router import IntentRouteResult
+        from src.session.intent_router import IntentRouteResult
         task_state = {
             "task_type_key": "pipeline_inspection",
             "task_type": "管缆巡检",
@@ -201,7 +201,7 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
         self.dm.slot_store.init_task_slots(schema)
         schema_map = {f["key"]: f for f in schema}
         for k, v in task_state.items():
-            from src.slot_store import Slot
+            from src.slots.slot_store import Slot
             vtype = schema_map.get(k, {}).get("type", "string")
             self.dm.slot_store.slots[k] = Slot(k, value=v, raw_value=v, status="valid", value_type=vtype)
         self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", raw_value="pipeline_inspection", status="valid", value_type="string")
@@ -239,7 +239,7 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
 
     def test_dialogue_process_surfaces_hard_constraints_in_reply_and_sidebar(self):
         """硬约束触发后左侧回复和右侧看板都必须显示阻塞详情。"""
-        from src.intent_router import IntentRouteResult
+        from src.session.intent_router import IntentRouteResult
         task_state = {
             "task_type_key": "pipeline_inspection",
             "task_type": "管缆巡检",
@@ -260,7 +260,7 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
         self.dm.slot_store.init_task_slots(schema)
         schema_map = {f["key"]: f for f in schema}
         for k, v in task_state.items():
-            from src.slot_store import Slot
+            from src.slots.slot_store import Slot
             vtype = schema_map.get(k, {}).get("type", "string")
             self.dm.slot_store.slots[k] = Slot(k, value=v, raw_value=v, status="valid", value_type=vtype)
         self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", raw_value="pipeline_inspection", status="valid", value_type="string")
@@ -297,7 +297,7 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
     def test_future_task_requires_runtime_notice_ack_before_publish(self):
         """未来排期任务跳过 state.yaml 运行态检查，但 C032 仍需用户确认忽略。"""
         import uuid
-        from src.intent_router import IntentRouteResult
+        from src.session.intent_router import IntentRouteResult
         task_state = {
             "internal_id": str(uuid.uuid4()),
             "intent_id": "TI202608140001",
@@ -320,7 +320,7 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
         schema = self.dm.builder.get_schema("pipeline_inspection", "normal")
         self.dm.slot_store.init_task_slots(schema)
         for k, v in task_state.items():
-            from src.slot_store import Slot
+            from src.slots.slot_store import Slot
             self.dm.slot_store.slots[k] = Slot(k, value=v, status="valid")
         self.dm.task_state = self.dm.slot_store.get_task_state()
 
@@ -379,7 +379,7 @@ class TestPrePublishEnvironmentAndRobotStateValidation(unittest.TestCase):
         schema = self.dm.builder.get_schema("pipeline_inspection", "normal")
         self.dm.slot_store.init_task_slots(schema)
         for k, v in task_state.items():
-            from src.slot_store import Slot
+            from src.slots.slot_store import Slot
             self.dm.slot_store.slots[k] = Slot(k, value=v, status="valid")
         self.dm.task_state = self.dm.slot_store.get_task_state()
 

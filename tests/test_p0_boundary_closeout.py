@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.slot_store import Slot, SlotVersionConflict
+from src.slots.slot_store import Slot, SlotVersionConflict
 from tests.interaction_plan_support import (
     ScriptedLLM,
     extraction_result,
@@ -106,8 +106,8 @@ class P0BoundaryCloseoutTest(unittest.TestCase):
                         if val is not None:
                             self.dm._soft_whitelist.add((f, str(val), v.constraint_id))
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 self.dm.process("确认发布")
                 self.assertEqual(self.dm.phase, "done")
                 orig_intent_id = self.dm.final_result["intent_id"]
@@ -170,8 +170,8 @@ class P0BoundaryCloseoutTest(unittest.TestCase):
                         if val is not None:
                             self.dm._soft_whitelist.add((f, str(val), v.constraint_id))
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 self.dm.process("确认发布")
                 self.assertEqual(self.dm.phase, "done")
                 orig_result = copy.deepcopy(self.dm.final_result)
@@ -378,8 +378,8 @@ class P0BoundaryCloseoutTest(unittest.TestCase):
                 }
             }
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 self.dm.load_snapshot(snap)
 
             self.assertNotEqual(self.dm.phase, "done")
@@ -437,8 +437,8 @@ class P0BoundaryCloseoutTest(unittest.TestCase):
                 }
             }
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 self.dm.load_snapshot(snap)
 
             self.assertEqual(self.dm.phase, "done")

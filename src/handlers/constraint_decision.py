@@ -14,10 +14,10 @@ import logging
 from typing import Any, Optional
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
-from ..slot_store import ValidationAcknowledgement
-from ..validator import Violation
-from ..coord_parser import parse_coordinate_updates
-from ..simulated_time import get_current_datetime
+from src.slots.slot_store import ValidationAcknowledgement
+from src.validation.validator import Violation
+from src.extraction.coord_parser import parse_coordinate_updates
+from src.temporal.simulated_time import get_current_datetime
 from ..constants import HARD_REFUSAL_LIMIT
 
 logger = logging.getLogger("src.dialogue_manager")

@@ -5,8 +5,8 @@ import pytest
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.slot_store import Slot
-from src.ui_state_builder import build_frontend_ui_state
+from src.slots.slot_store import Slot
+from src.session.ui_state_builder import build_frontend_ui_state
 from tests.interaction_plan_support import ScriptedLLM, make_plan, extraction_result, slot_candidate
 
 

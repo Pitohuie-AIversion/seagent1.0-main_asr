@@ -17,7 +17,7 @@ except ImportError:
     StructuredOutputsParams = None
 
 
-from .model_profile import (
+from src.extraction.model_profile import (
     ModelRole,
     ModelProfileRegistry,
     GenerationOptions,

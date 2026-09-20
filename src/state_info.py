@@ -26,7 +26,7 @@ from .exceptions import (
     StateSnapshotValidationError,
     StateVersionConflict,
 )
-from .simulated_time import get_current_datetime
+from src.temporal.simulated_time import get_current_datetime
 
 
 _SYSTEM_OWNED_FIELDS = {

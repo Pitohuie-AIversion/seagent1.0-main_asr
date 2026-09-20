@@ -15,11 +15,11 @@ from unittest.mock import patch, MagicMock
 from web_backend import app, _sessions_manager, get_or_create_manager
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
-from src.slot_store import SlotStore, Slot
-from src.validator import ValidationResult
-from src.task_intent_builder import TaskIntentBuilder
+from src.slots.slot_store import SlotStore, Slot
+from src.validation.validator import ValidationResult
+from src.dispatch.task_intent_builder import TaskIntentBuilder
 from src.exceptions import IntentIdConflict, TaskPersistenceError
-from src.simulated_time import get_current_datetime
+from src.temporal.simulated_time import get_current_datetime
 from tests.interaction_plan_support import ScriptedLLM, make_plan
 
 
@@ -344,7 +344,7 @@ class TestGovernanceInvariants(unittest.TestCase):
             violations=[],
         )
 
-        with patch("src.task_intent_builder.get_task_dir", return_value=self.task_dir):
+        with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=self.task_dir):
             with patch.object(self.dm.kb.state_info, "check_runtime_availability", return_value={"available": True}):
                 with patch.object(self.dm.kb, "get_unit_state_snapshot", return_value=mock_snap):
                     with patch.object(self.dm, "_refresh_validation", return_value=mock_val_res):
@@ -391,7 +391,7 @@ class TestGovernanceInvariants(unittest.TestCase):
     def test_inv10_final_no_overwrite(self):
         """INV-10: 目标 final 文件已存在时，拒绝无条件覆盖并抛出 IntentIdConflict。"""
         task_dir = self.task_dir
-        with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+        with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
             ti_builder = TaskIntentBuilder(self.dm.kb)
             intent_id = "TI20260810001"
             final_file = task_dir / f"task_intent_{intent_id}.json"

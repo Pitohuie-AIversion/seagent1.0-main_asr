@@ -1,7 +1,7 @@
 import pytest
 from src.knowledge_retriever import KnowledgeBase
-from src.slot_store import SlotStore, Slot
-from src.output_builder import OutputBuilder
+from src.slots.slot_store import SlotStore, Slot
+from src.dispatch.output_builder import OutputBuilder
 
 
 def test_onboard_payloads_skipped_in_mutation_when_robot_selected():

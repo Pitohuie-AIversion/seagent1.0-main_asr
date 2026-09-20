@@ -28,18 +28,18 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 from .llm_client import LLMClient
-from .model_profile import (
+from src.extraction.model_profile import (
     is_normalization_contract_v2_enabled,
     is_session_state_v2_enabled,
     is_shadow_compare_enabled,
     is_task_patch_v2_enabled,
 )
-from .session_state_shadow import (
+from src.session.session_state_shadow import (
     compare_session_state_shadow,
     record_shadow_metric,
     should_run_session_state_shadow,
 )
-from .session_state import (
+from src.session.session_state import (
     ConversationState,
     ExecutionControlState,
     SessionState,
@@ -49,11 +49,11 @@ from .session_state import (
     session_state_to_legacy_fields,
     validate_task_phase_transition,
 )
-from .task_patch import build_task_patch
+from src.slots.task_patch import build_task_patch
 from .knowledge_retriever import KnowledgeBase
-from .extractor import ParameterExtractor
-from .task_slot_filter import TaskSlotFilter
-from .task_capability_adapter import TaskCapabilityAdapter
+from src.extraction.extractor import ParameterExtractor
+from src.slots.task_slot_filter import TaskSlotFilter
+from src.dispatch.task_capability_adapter import TaskCapabilityAdapter
 from .handlers import (
     DialogueContext,
     ConversationRouterHandler,
@@ -63,20 +63,20 @@ from .handlers import (
     ExecutionControlHandler,
 )
 from .handlers.task_commit import sanitize_user_facing_json
-from .dialogue_snapshot import DialogueSnapshotManager
+from src.session.dialogue_snapshot import DialogueSnapshotManager
 
-from .normalizer import FieldNormalizer
-from .output_builder import OutputBuilder
-from .validator import TaskValidator, Violation, ValidationResult
-from .task_intent_builder import TaskIntentBuilder
-from .oilfield_linker import OilfieldEntityLinker
+from src.extraction.normalizer import FieldNormalizer
+from src.dispatch.output_builder import OutputBuilder
+from src.validation.validator import TaskValidator, Violation, ValidationResult
+from src.dispatch.task_intent_builder import TaskIntentBuilder
+from src.extraction.oilfield_linker import OilfieldEntityLinker
 from .constants import FIELD_LABELS
-from .slot_store import Slot, SlotStore, ValidationAcknowledgement
+from src.slots.slot_store import Slot, SlotStore, ValidationAcknowledgement
 
 from .exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError, TaskRollbackError
-from .intent_router import IntentRouter, IntentRouteResult
-from .task_request_guard import analyze_task_request
-from .result_paths import get_task_dir
+from src.session.intent_router import IntentRouter, IntentRouteResult
+from src.validation.task_request_guard import analyze_task_request
+from src.dispatch.result_paths import get_task_dir
 
 
 class DialogueManager:

@@ -20,14 +20,14 @@ import builtins
 import multiprocessing
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
-from src.extractor import ParameterExtractor
+from src.extraction.extractor import ParameterExtractor
 from src.llm_client import LLMClient
-from src.output_builder import OutputBuilder
-from src.slot_store import SlotStore, Slot, SlotVersionConflict, SnapshotValidationError, VALID_VALUE_TYPES
-from src.task_intent_builder import TaskIntentBuilder
-from src.simulated_time import get_simulated_time
-from src.history_manager import save_conversation
-from src.result_paths import get_task_dir, get_history_dir
+from src.dispatch.output_builder import OutputBuilder
+from src.slots.slot_store import SlotStore, Slot, SlotVersionConflict, SnapshotValidationError, VALID_VALUE_TYPES
+from src.dispatch.task_intent_builder import TaskIntentBuilder
+from src.temporal.simulated_time import get_simulated_time
+from src.session.history_manager import save_conversation
+from src.dispatch.result_paths import get_task_dir, get_history_dir
 from tests.interaction_plan_support import empty_extraction, make_plan
 
 
@@ -39,7 +39,7 @@ from src.exceptions import (
     IdReservationError,
 )
 
-import src.id_sequence as id_sequence
+import src.dispatch.id_sequence as id_sequence
 
 import web_backend
 from web_backend import app
@@ -56,7 +56,7 @@ def seed_complete_valid_pipeline_task(dm, kb):
     cable_types = [t["label"] for t in kb.assets.get("cable_types", [])]
     cable_type = cable_types[0] if cable_types else "电力电缆"
 
-    from src.simulated_time import get_current_datetime
+    from src.temporal.simulated_time import get_current_datetime
     from datetime import timedelta
     now_dt = get_current_datetime()
     water_depth = 300.0
@@ -1102,7 +1102,7 @@ class SlotConsistencyTest(unittest.TestCase):
     def test_31_frontend_refresh_and_history_load_consistency(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
-            with patch("src.history_manager.get_history_dir", return_value=tmp_path):
+            with patch("src.session.history_manager.get_history_dir", return_value=tmp_path):
                 self.dm.reset()
                 self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
                 self.dm.slot_store.slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
@@ -1132,7 +1132,7 @@ class SlotConsistencyTest(unittest.TestCase):
             tmp_path.mkdir(parents=True, exist_ok=True)
             seed_complete_valid_pipeline_task(self.dm, self.kb)
             self.dm.intent_router.route = self._orig_route
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path), \
                  patch("src.dialogue_manager.TaskIntentBuilder.publish_staging", side_effect=TaskPersistenceError("Simulated disk error")):
                 with self.assertRaises(TaskPersistenceError):
                     self.dm.process("确认发布")
@@ -1147,7 +1147,7 @@ class SlotConsistencyTest(unittest.TestCase):
             tmp_path.mkdir(parents=True, exist_ok=True)
             seed_complete_valid_pipeline_task(self.dm, self.kb)
             self.dm.intent_router.route = self._orig_route
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path), \
                  patch("src.dialogue_manager.TaskIntentBuilder.publish_staging", side_effect=TaskPersistenceError("Simulated disk error")):
                 with self.assertRaises(TaskPersistenceError):
                     self.dm.process("确认发布")
@@ -1159,7 +1159,7 @@ class SlotConsistencyTest(unittest.TestCase):
     def test_34_task_intent_prepare_no_disk_write(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
                     task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},
@@ -1175,7 +1175,7 @@ class SlotConsistencyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
             tmp_path.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
                     task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},
@@ -1214,7 +1214,7 @@ class SlotConsistencyTest(unittest.TestCase):
             pre_built_json = copy.deepcopy(self.dm._last_built_json)
             pre_missing = copy.deepcopy(self.dm._last_missing)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path), \
                  patch("src.dialogue_manager.TaskIntentBuilder.publish_staging", side_effect=TaskPersistenceError("Simulated disk error")) as mock_pub, \
                  self.assertLogs("src.dialogue_manager", level="ERROR") as cm:
                 with self.assertRaises(TaskPersistenceError):
@@ -1261,8 +1261,8 @@ class SlotConsistencyTest(unittest.TestCase):
             self.assertEqual(len(missing), 0)
             self.assertEqual(self.dm.phase, "confirming")
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 reply = self.dm.process("确认开始", request_id="req_test_36b")
 
                 self.assertEqual(self.dm.phase, "done")
@@ -1293,7 +1293,7 @@ class SlotConsistencyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
             tmp_path.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
                     task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},
@@ -1437,7 +1437,7 @@ class SlotConsistencyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
             tmp_path.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent1 = builder.prepare(
                     task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},
@@ -1463,7 +1463,7 @@ class SlotConsistencyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
             tmp_path.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent1 = builder.prepare(
                     task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},

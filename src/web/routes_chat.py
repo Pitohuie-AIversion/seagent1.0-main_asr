@@ -15,10 +15,10 @@ from src.exceptions import (
     TaskPersistenceError,
     TaskRollbackError,
 )
-from src.history_manager import save_conversation
-from src.task_dispatch import dispatch_completed_task, save_dispatch_history
-from src.slot_store import SlotVersionConflict
-from src.ui_state_builder import build_frontend_ui_state
+from src.session.history_manager import save_conversation
+from src.dispatch.task_dispatch import dispatch_completed_task, save_dispatch_history
+from src.slots.slot_store import SlotVersionConflict
+from src.session.ui_state_builder import build_frontend_ui_state
 from src.web.state import (
     _require_api_token,
     get_mcp_bridge,

@@ -12,8 +12,8 @@ from werkzeug.utils import secure_filename
 import yaml
 
 import src.web.state as state
-from src.asr_normalizer import normalize_terminology
-from src.asr_service import ASRInputError, ASRUnavailableError
+from src.asr.asr_normalizer import normalize_terminology
+from src.asr.asr_service import ASRInputError, ASRUnavailableError
 from src.web.routes_translate import _translate_text_internal
 from src.web.state import CONFIG_DIR, _require_api_token
 

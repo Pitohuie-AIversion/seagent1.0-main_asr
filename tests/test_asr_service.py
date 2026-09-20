@@ -13,7 +13,7 @@ except ImportError:
     torch = None
     HAS_TORCH = False
 
-from src.asr_service import ASRConfig, ASRService
+from src.asr.asr_service import ASRConfig, ASRService
 
 
 class TestASRDeviceSelection(unittest.TestCase):

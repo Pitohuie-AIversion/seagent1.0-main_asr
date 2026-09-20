@@ -6,14 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.extractor import ParameterExtractor
-from src.relative_time_parser import parse_relative_datetime, parse_time_range
+from src.extraction.extractor import ParameterExtractor
+from src.temporal.relative_time_parser import parse_relative_datetime, parse_time_range
 
 
 @pytest.fixture
 def now(monkeypatch):
     value = datetime(2026, 9, 16, 17, 37, 30, 456789)
-    monkeypatch.setattr("src.simulated_time.get_current_datetime", lambda: value)
+    monkeypatch.setattr("src.temporal.simulated_time.get_current_datetime", lambda: value)
     return value
 
 

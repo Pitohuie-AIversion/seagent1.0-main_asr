@@ -12,7 +12,7 @@ from src.handlers import (
     SlotExtractionPipeline,
     ExtractionPipelineResult,
 )
-from src.slot_store import Slot
+from src.slots.slot_store import Slot
 
 
 class TestSlotExtractionPipeline:

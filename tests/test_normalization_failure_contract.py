@@ -22,8 +22,8 @@ from unittest.mock import patch, MagicMock
 from src.llm_client import LLMClient
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
-from src.slot_store import Slot, SlotStore
-from src.normalizer import FieldNormalizer
+from src.slots.slot_store import Slot, SlotStore
+from src.extraction.normalizer import FieldNormalizer
 from tests.interaction_plan_support import make_plan
 
 

@@ -8,11 +8,11 @@ test_coord_and_payload_normalization_fix.py
 """
 
 import pytest
-from src.coord_parser import parse_coord_value
-from src.normalizer import FieldNormalizer
+from src.extraction.coord_parser import parse_coord_value
+from src.extraction.normalizer import FieldNormalizer
 from src.knowledge_retriever import KnowledgeBase
-from src.slot_store import SlotStore, Slot
-from src.output_builder import OutputBuilder
+from src.slots.slot_store import SlotStore, Slot
+from src.dispatch.output_builder import OutputBuilder
 from src.dialogue_manager import DialogueManager
 
 

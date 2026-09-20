@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.visible_selection_provenance import parse_ordinal_reference
+from src.slots.visible_selection_provenance import parse_ordinal_reference
 from tests.interaction_plan_support import (
     ScriptedLLM,
     extraction_result,

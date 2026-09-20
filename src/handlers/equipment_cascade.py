@@ -15,7 +15,7 @@ from typing import Any
 
 from .equipment_scoping import EquipmentScopingHandler
 from .equipment_collapse import EquipmentCollapseHandler
-from ..slot_store import (
+from src.slots.slot_store import (
     Slot,
     reset_slot_to_missing,
     BASE_SLOT_TYPES,
@@ -81,7 +81,7 @@ class EquipmentCascadeResolver:
     ) -> None:
         """统一处理机器人类别、系列、型号和单机编号的四级层级联动与依赖失效。"""
         import copy
-        from src.slot_store import (
+        from src.slots.slot_store import (
             ROBOT_CASCADE_DEPENDENCIES,
             reset_slot_to_missing,
             invalidate_robot_cascade_dependents,

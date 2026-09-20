@@ -8,7 +8,7 @@ import threading
 import yaml
 from flask import Blueprint, current_app, jsonify, request
 import src.web.state as state
-from src.task_dispatch import dispatch_completed_task, save_dispatch_history
+from src.dispatch.task_dispatch import dispatch_completed_task, save_dispatch_history
 
 from src.web.state import (
     CONFIG_DIR,

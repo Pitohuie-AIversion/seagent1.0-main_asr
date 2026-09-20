@@ -16,9 +16,9 @@ import json
 import logging
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
-from ..slot_store import Slot
-from ..task_intent_builder import TaskIntentBuilder, TaskCommitUncertainError
-from ..id_sequence import validate_intent_id
+from src.slots.slot_store import Slot
+from src.dispatch.task_intent_builder import TaskIntentBuilder, TaskCommitUncertainError
+from src.dispatch.id_sequence import validate_intent_id
 from ..exceptions import (
     IdReservationError,
     IntentIdConflict,

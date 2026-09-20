@@ -15,8 +15,8 @@ import logging
 import re
 from typing import Any
 
-from ..normalization_contract import NormalizationApplyPlan
-from ..slot_store import Slot
+from src.slots.normalization_contract import NormalizationApplyPlan
+from src.slots.slot_store import Slot
 
 class SlotTransactionManager:
     """槽位事务应用与规范化执行管理器"""

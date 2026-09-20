@@ -4,8 +4,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.dialogue_manager import DialogueManager
-from src.intent_router import IntentRouteResult
-from src.interaction_plan import InteractionPlan
+from src.session.intent_router import IntentRouteResult
+from src.session.interaction_plan import InteractionPlan
 from src.knowledge_retriever import KnowledgeBase
 
 

@@ -3,8 +3,8 @@ import pytest
 from src.dialogue_manager import DialogueManager
 from src.handlers.base import DialogueContext
 from src.knowledge_retriever import KnowledgeBase
-from src.simulated_time import get_current_datetime
-from src.validator import ValidationResult
+from src.temporal.simulated_time import get_current_datetime
+from src.validation.validator import ValidationResult
 from tests.interaction_plan_support import ScriptedLLM
 from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 

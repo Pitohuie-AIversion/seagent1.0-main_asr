@@ -13,7 +13,7 @@ import copy
 import logging
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ..slot_store import (
+from src.slots.slot_store import (
     Slot,
     reset_slot_to_missing,
     BASE_SLOT_TYPES,

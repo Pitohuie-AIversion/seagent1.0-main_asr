@@ -6,7 +6,7 @@ All resulting candidates still pass the ordinary transaction and constraints.
 from __future__ import annotations
 
 import re
-from ..coord_parser import parse_coordinate_updates
+from src.extraction.coord_parser import parse_coordinate_updates
 from ..knowledge_retriever import RobotSelectionDataError
 
 EQUIPMENT_KEYS = frozenset({'equipment_class', 'equipment_family', 'equipment_type',

@@ -14,10 +14,10 @@ import unittest
 from unittest.mock import MagicMock
 
 from src.dialogue_manager import DialogueManager
-from src.interaction_plan import validate_interaction_plan
+from src.session.interaction_plan import validate_interaction_plan
 from src.knowledge_retriever import KnowledgeBase
-from src.slot_store import Slot
-from src.validator import TaskValidator
+from src.slots.slot_store import Slot
+from src.validation.validator import TaskValidator
 from tests.interaction_plan_support import make_plan
 
 

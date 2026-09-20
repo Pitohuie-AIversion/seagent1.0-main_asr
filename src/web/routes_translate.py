@@ -10,7 +10,7 @@ import uuid
 from flask import Blueprint, jsonify, request
 
 import src.web.state as state
-from src.result_paths import get_result_dir
+from src.dispatch.result_paths import get_result_dir
 from src.web.state import _require_api_token
 
 logger = logging.getLogger(__name__)
@@ -119,7 +119,7 @@ def _split_into_chunks(text: str, chunk_size: int) -> list[str]:
 
 def _translate_single_chunk(text: str, target_lang: str) -> str:
     """翻译单个文本块，不做缓存，直接走 LLM。"""
-    from src.model_profile import ModelRole
+    from src.extraction.model_profile import ModelRole
     system_instruction = _TRANSLATE_SYSTEM_PROMPT.format(target_lang=target_lang)
     messages = [
         {"role": "system", "content": system_instruction},

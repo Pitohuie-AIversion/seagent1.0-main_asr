@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from src.knowledge_retriever import KnowledgeBase
-from src.validator import TaskValidator
+from src.validation.validator import TaskValidator
 
 
 class TestFutureTaskMissingTelemetry(unittest.TestCase):
@@ -32,7 +32,7 @@ class TestFutureTaskMissingTelemetry(unittest.TestCase):
         validator = TaskValidator(self.kb)
 
         # 提交一个未来两周的任务
-        from src.simulated_time import get_current_datetime
+        from src.temporal.simulated_time import get_current_datetime
         from datetime import timedelta
         future_start = get_current_datetime() + timedelta(days=14)
         future_end = future_start + timedelta(hours=8)

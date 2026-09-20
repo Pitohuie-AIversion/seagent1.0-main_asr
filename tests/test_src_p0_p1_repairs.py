@@ -13,18 +13,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from src.extractor import ParameterExtractor
+from src.extraction.extractor import ParameterExtractor
 from src.knowledge_retriever import KnowledgeBase
 from src.state_info import RobotStateInfo
-from src.task_intent_builder import TaskIntentBuilder, validate_task_intent
-from src.validator import TaskValidator
+from src.dispatch.task_intent_builder import TaskIntentBuilder, validate_task_intent
+from src.validation.validator import TaskValidator
 
 
 class SourceAuditP0P1RegressionTest(unittest.TestCase):
     def test_unanchored_coordinate_pairs_keep_start_then_end_order(self):
         code = (
             "import json; "
-            "from src.coord_parser import parse_coordinate_updates as parse; "
+            "from src.extraction.coord_parser import parse_coordinate_updates as parse; "
             "print(json.dumps(parse('19.8,113.5 20.8,114.5', "
             "{'start_point', 'end_point'}), sort_keys=True))"
         )
@@ -107,7 +107,7 @@ class SourceAuditP0P1RegressionTest(unittest.TestCase):
         with (
             patch.object(kb, "get_unit_state_snapshot", return_value=snapshot),
             patch.object(validator, "_is_task_start_now", return_value=True),
-            patch("src.validator.get_current_datetime", return_value=now),
+            patch("src.validation.validator.get_current_datetime", return_value=now),
         ):
             result = validator.validate_task(
                 {
@@ -144,7 +144,7 @@ class SourceAuditP0P1RegressionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             task_dir = Path(temp_dir)
             builder = TaskIntentBuilder(kb)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(Exception):
                     builder.persist(malformed)
             self.assertEqual([], list(task_dir.glob("task_intent_*.json")))

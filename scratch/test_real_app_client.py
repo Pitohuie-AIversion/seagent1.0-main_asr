@@ -1,7 +1,7 @@
 import uuid
 import sys
 from web_backend import app, get_or_create_manager
-from src.intent_router import IntentRouteResult
+from src.session.intent_router import IntentRouteResult
 
 def test_real_llm_formatting():
     session_id = f"real_llm_fmt_{uuid.uuid4().hex[:8]}"
@@ -40,7 +40,7 @@ def test_real_llm_formatting():
     print("\n--- DialogueManager 输出回复 ---")
     print(reply)
 
-    from src.ui_state_builder import build_frontend_ui_state
+    from src.session.ui_state_builder import build_frontend_ui_state
     ui_state = build_frontend_ui_state(dm)
     slots = ui_state.get("slots", [])
     print("\n--- UI State 槽位 display_value ---")

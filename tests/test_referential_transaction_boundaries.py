@@ -4,7 +4,7 @@ from copy import deepcopy
 import pytest
 
 from src.dialogue_manager import DialogueManager
-from src.slot_store import Slot
+from src.slots.slot_store import Slot
 from tests.interaction_plan_support import ScriptedLLM, make_plan
 from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 

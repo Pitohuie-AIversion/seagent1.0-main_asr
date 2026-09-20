@@ -1,5 +1,5 @@
 import pytest
-from src.duration_parser import (
+from src.temporal.duration_parser import (
     DurationState,
     parse_duration_spec,
     parse_duration_to_seconds,
@@ -60,7 +60,7 @@ def test_parse_duration_to_seconds():
 
 
 def test_is_keep_duration_expression():
-    from src.duration_parser import is_keep_duration_expression
+    from src.temporal.duration_parser import is_keep_duration_expression
     assert is_keep_duration_expression("持续时间不变") is True
     assert is_keep_duration_expression("时长不变") is True
     assert is_keep_duration_expression("保持时长") is True

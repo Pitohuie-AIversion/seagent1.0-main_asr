@@ -9,8 +9,8 @@ End-to-End Real Dialogue Flow Integration Tests
 import unittest
 from unittest.mock import MagicMock
 from src.dialogue_manager import DialogueManager
-from src.slot_store import Slot
-from src.intent_router import IntentRouteResult
+from src.slots.slot_store import Slot
+from src.session.intent_router import IntentRouteResult
 from web_backend import app, init_manager, get_or_create_manager
 
 

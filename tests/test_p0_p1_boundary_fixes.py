@@ -14,8 +14,8 @@ from unittest.mock import patch
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
-from src.slot_store import Slot
-from src.task_intent_builder import TaskIntentBuilder
+from src.slots.slot_store import Slot
+from src.dispatch.task_intent_builder import TaskIntentBuilder
 from src.exceptions import TaskPersistenceError, IntentIdConflict
 from tests.interaction_plan_support import ScriptedLLM, make_plan
 from tests.test_slot_consistency import seed_complete_valid_pipeline_task
@@ -85,9 +85,9 @@ class IntentIdValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_task_dir = Path(tmp_dir) / "task"
             tmp_task_dir.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)), \
-                 patch("src.id_sequence.next_daily_id") as mock_next_id:
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)), \
+                 patch("src.dispatch.id_sequence.next_daily_id") as mock_next_id:
                 self.dm.load_snapshot(snap)
                 mock_next_id.assert_not_called()
 
@@ -102,8 +102,8 @@ class IntentIdValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_task_dir = Path(tmp_dir) / "task"
             tmp_task_dir.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 self.dm.load_snapshot(snap)
 
         intent_val = self.dm.slot_store.slots["intent_id"].value
@@ -116,8 +116,8 @@ class IntentIdValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_task_dir = Path(tmp_dir) / "task"
             tmp_task_dir.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 self.dm.load_snapshot(snap)
 
         intent_val = self.dm.slot_store.slots["intent_id"].value
@@ -133,8 +133,8 @@ class IntentIdValidationTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     tmp_task_dir = Path(tmp_dir) / "task"
                     tmp_task_dir.mkdir(parents=True, exist_ok=True)
-                    with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                         patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+                    with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                         patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                         self.dm.load_snapshot(snap)
 
                 intent_val = self.dm.slot_store.slots["intent_id"].value
@@ -162,8 +162,8 @@ class IntentIdValidationTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     tmp_task_dir = Path(tmp_dir) / "task"
                     tmp_task_dir.mkdir(parents=True, exist_ok=True)
-                    with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                         patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+                    with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                         patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                         self.dm.load_snapshot(snap)
 
                 self.assertNotEqual(self.dm.phase, "done")
@@ -189,7 +189,7 @@ class IntentIdValidationTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     tmp_task_dir = Path(tmp_dir) / "task"
                     tmp_task_dir.mkdir(parents=True, exist_ok=True)
-                    with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir):
+                    with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir):
                         # prepare 不接受非法 intent_id
                         with self.assertRaises((TaskPersistenceError, ValueError)):
                             self.builder.prepare({}, {"intent_id": bad_id}, "normal", "pipeline_inspection", intent_id=bad_id)

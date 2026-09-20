@@ -201,7 +201,7 @@ class TestIssue12DialogueCascade(unittest.TestCase):
     # ── Test 10: Registry 错误 fail closed 并提示用户 ──────────────────────────
     def test_10_registry_error_fails_closed(self):
         """10. Registry 抛出 RobotSelectionDataError 时 fail closed，不产生虚假候选且提示用户候选暂不可用。"""
-        from src.prompts import build_responder_messages
+        from src.extraction.prompts import build_responder_messages
 
         self._init_task("pipeline_inspection")
 
@@ -284,7 +284,7 @@ class TestIssue12DialogueCascade(unittest.TestCase):
     # ── Test 15 (P1-2): Prompts 明确按 equipment_type 追问 ────────────────────────
     def test_15_prompt_instructions_for_auv_and_non_auv_specifications(self):
         """15 (P1-2). prompts 按 equipment_type 追问设备型号。"""
-        from src.prompts import build_responder_messages
+        from src.extraction.prompts import build_responder_messages
 
         missing_type = [
             {"key": "equipment_type", "label": "作业设备型号", "type": "string", "allowed_values": ["水下无人自主航行器 324CC"]},
@@ -300,7 +300,7 @@ class TestIssue12DialogueCascade(unittest.TestCase):
 
     def test_equipment_type_missing_alone_does_not_trigger_spec_prompt(self):
         """equipment_type 缺失时生成 equipment_type 专属提示。"""
-        from src.prompts import build_responder_messages
+        from src.extraction.prompts import build_responder_messages
 
         missing_fields = [
             {

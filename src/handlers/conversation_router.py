@@ -24,17 +24,17 @@ from .off_topic_gate import (
 )
 from .grounded_catalog import GroundedCatalogHandler
 from .telemetry_status import TelemetryStatusHandler
-from ..intent_router import IntentRouteResult
-from ..time_context import is_standalone_time_query, get_time_context
-from ..visible_selection_provenance import parse_ordinal_reference
+from src.session.intent_router import IntentRouteResult
+from src.temporal.time_context import is_standalone_time_query, get_time_context
+from src.slots.visible_selection_provenance import parse_ordinal_reference
 from ..knowledge_retriever import format_seabed_type
-from ..prompts import (
+from src.extraction.prompts import (
     OFF_TOPIC_REJECT_TEMPLATE,
     PUBLIC_IDENTITY_REPLY,
     build_general_chat_messages,
     build_knowledge_responder_messages,
 )
-from ..model_profile import ModelRole, _is_unsupported_role_keyword_error
+from src.extraction.model_profile import ModelRole, _is_unsupported_role_keyword_error
 
 logger = logging.getLogger(__name__)
 

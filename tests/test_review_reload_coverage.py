@@ -12,9 +12,9 @@ from src import hot_reload
 
 
 @pytest.mark.parametrize("relative", [
-    "handlers/slot_extraction_pipeline.py", "relative_time_parser.py",
+    "handlers/slot_extraction_pipeline.py", "temporal/relative_time_parser.py",
     "web/routes_chat.py", "knowledge/base.py",
-    "task_intent_builder.py", "normalizer.py", "dialogue_manager.py",
+    "dispatch/task_intent_builder.py", "extraction/normalizer.py", "dialogue_manager.py",
 ])
 def test_unsupported_changes_fail_before_mutating_modules(monkeypatch, relative):
     reloads = []

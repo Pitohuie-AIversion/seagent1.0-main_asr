@@ -12,12 +12,12 @@ from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
-from src.candidate_resolver import CandidateResolver
-from src.extractor import (
+from src.slots.candidate_resolver import CandidateResolver
+from src.extraction.extractor import (
     ParameterExtractor,
     _build_task_type_rules,
 )
-from src.temporal_parser import TemporalParser
+from src.temporal.temporal_parser import TemporalParser
 
 NOW = datetime(2026, 7, 28, 12, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 

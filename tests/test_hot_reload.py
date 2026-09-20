@@ -124,8 +124,8 @@ def test_api_dev_reload_events_endpoint_returns_new_events():
 def test_reload_preserves_state_contract_exception_identity():
     """Reload must not break already-imported contract exception handlers."""
     import src.exceptions as exc_mod
-    import src.session_state as session_mod
-    import src.slot_store as slot_mod
+    import src.session.session_state as session_mod
+    import src.slots.slot_store as slot_mod
 
     old_slot_conflict = slot_mod.SlotVersionConflict
     old_snapshot_error = slot_mod.SnapshotValidationError
@@ -165,7 +165,7 @@ def test_reload_preserves_state_contract_exception_identity():
 
 
 def test_model_profile_reload_preserves_error_handlers():
-    import src.model_profile as profiles
+    import src.extraction.model_profile as profiles
     error_types = {name: getattr(profiles, name) for name in (
         "ModelProfileError", "ModelProfileConfigError", "ModelProfileNotFoundError",
     )}
@@ -181,7 +181,7 @@ def test_builder_reload_preserves_commit_uncertain_handler():
 
     result = subprocess.run([sys.executable, "-c", """
 import importlib
-import src.task_intent_builder as builder
+import src.dispatch.task_intent_builder as builder
 from src.handlers.task_commit import TaskCommitUncertainError as handler_error
 importlib.reload(builder)
 assert builder.TaskCommitUncertainError is handler_error

@@ -3,7 +3,7 @@ import math
 import unittest
 from typing import Any, Dict
 
-from src.slot_store import (
+from src.slots.slot_store import (
     SLOT_SNAPSHOT_SCHEMA_VERSION,
     Slot,
     SlotStore,

@@ -26,20 +26,20 @@ from .write_reply_grounder import WriteReplyGrounder
 from .oilfield_confirmation import OilfieldConfirmationHandler
 from .slot_transaction import SlotTransactionManager
 from .slot_extraction_pipeline import SlotExtractionPipeline
-from ..model_profile import (
+from src.extraction.model_profile import (
     ModelRole,
     is_normalization_contract_v2_enabled,
     is_task_patch_v2_enabled,
 )
-from ..normalization_contract import (
+from src.slots.normalization_contract import (
     NormalizationApplyPlan,
     validate_normalization_runtime_flags,
 )
-from ..task_patch import build_task_patch, task_patch_to_legacy_updates
-from ..slot_store import Slot
-from ..simulated_time import get_current_datetime
-from ..id_sequence import next_daily_id, IdReservationError, validate_task_id_for_task_type
-from ..prompts import build_responder_messages
+from src.slots.task_patch import build_task_patch, task_patch_to_legacy_updates
+from src.slots.slot_store import Slot
+from src.temporal.simulated_time import get_current_datetime
+from src.dispatch.id_sequence import next_daily_id, IdReservationError, validate_task_id_for_task_type
+from src.extraction.prompts import build_responder_messages
 
 logger = logging.getLogger("src.dialogue_manager")
 
@@ -589,9 +589,9 @@ class SlotFillingHandler(BaseDialogueHandler):
             intent_id_slot = new_slots.get("intent_id")
             if old_phase == "done" or not intent_id_slot or intent_id_slot.status != "valid" or not intent_id_slot.value:
                 today = get_current_datetime().strftime("%Y%m%d")
-                from ..task_intent_builder import get_task_dir
+                from src.dispatch.task_intent_builder import get_task_dir
                 task_dir = get_task_dir(create=False)
-                from ..id_sequence import next_daily_id
+                from src.dispatch.id_sequence import next_daily_id
                 ti_intent_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
                 if "intent_id" not in new_slots:
                     new_slots["intent_id"] = Slot("intent_id")

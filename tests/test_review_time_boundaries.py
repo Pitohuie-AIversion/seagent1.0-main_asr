@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from src.relative_time_parser import (
+from src.temporal.relative_time_parser import (
     AmbiguityCode, parse_relative_datetime_detail, parse_time_range,
 )
 
