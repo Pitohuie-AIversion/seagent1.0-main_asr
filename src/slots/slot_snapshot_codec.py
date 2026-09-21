@@ -1,5 +1,5 @@
 """
-src/slot_snapshot_codec.py - 槽位快照编解码、结构验证与多版本迁移恢复器
+src/slots/slot_snapshot_codec.py - 槽位快照编解码、结构验证与多版本迁移恢复器
 
 职责：
 1. 规范化槽位类型（normalize_slot_value_type）与规格参数校验（validate_specification_object）；

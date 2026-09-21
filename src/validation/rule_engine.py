@@ -1,5 +1,5 @@
 """
-src/rule_engine.py — 静态规则与选型约束校验引擎
+src/validation/rule_engine.py — 静态规则与选型约束校验引擎
 
 职责：
 1. 基础字段值与时间、水深格式合法性校验（Fail-Closed）；

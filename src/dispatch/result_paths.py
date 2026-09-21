@@ -1,5 +1,5 @@
 """
-src/result_paths.py — 统一结果与历史输出路径配置模块
+src/dispatch/result_paths.py — 统一结果与历史输出路径配置模块
 """
 
 import os

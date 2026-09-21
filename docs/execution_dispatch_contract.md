@@ -2,7 +2,7 @@
 
 任务确认成功表示 TaskIntent 已生成并归档。机器人是否接收、是否执行，以 `ros2_dispatch` 和机器人遥测分别表示。确认回复不提前承诺已经下发。
 
-`src/task_dispatch.py` 是 Web 自动下发、`POST /api/mcp/dispatch` 和 `dispatch_dialogue_result()` 的统一执行入口。入口使用原已归档 intent，不重新生成任务编号。
+`src/dispatch/task_dispatch.py` 是 Web 自动下发、`POST /api/mcp/dispatch` 和 `dispatch_dialogue_result()` 的统一执行入口。入口使用原已归档 intent，不重新生成任务编号。
 
 | state | 含义 | 显式操作 |
 | --- | --- | --- |

@@ -1,4 +1,4 @@
-"""src/session_state.py
+"""src/session/session_state.py
 
 SEAgent G3.1 State Contract Definition (Hardened).
 Establishes explicit, deeply immutable, serializable, and fail-closed data contracts

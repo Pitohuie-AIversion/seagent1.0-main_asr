@@ -1,5 +1,5 @@
 """
-src/dialogue_snapshot.py - 会话历史快照导出、反序列化校验与状态恢复管理器
+src/session/dialogue_snapshot.py - 会话历史快照导出、反序列化校验与状态恢复管理器
 
 职责：
 1. 导出会话状态快照 (export_snapshot)；

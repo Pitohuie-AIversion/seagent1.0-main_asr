@@ -1,5 +1,5 @@
 """
-src/spatial_validator.py — 空间坐标与地理环境安全校验器
+src/validation/spatial_validator.py — 空间坐标与地理环境安全校验器
 
 职责：
 1. 空间禁入区 / 禁航区判定 (forbidden_area)；

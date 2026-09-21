@@ -1,5 +1,5 @@
 """
-src/telemetry_gate.py — 动态遥测状态与单机健康度门禁
+src/validation/telemetry_gate.py — 动态遥测状态与单机健康度门禁
 
 职责：
 1. 单机遥测快照动态解析与提取 (_resolve_single_unit_snapshot)；

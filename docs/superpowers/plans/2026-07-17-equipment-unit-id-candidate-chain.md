@@ -35,7 +35,7 @@
 ### Task 2: Preserve dynamic candidates through SlotStore
 
 **Files:**
-- Modify: `src/slot_store.py:121`
+- Modify: `src/slots/slot_store.py:121`
 - Test: `tests/test_equipment_unit_candidates.py`
 
 **Interfaces:**
@@ -50,7 +50,7 @@
 ### Task 3: Bind current task state to candidate resolution
 
 **Files:**
-- Modify: `src/output_builder.py:36`
+- Modify: `src/dispatch/output_builder.py:36`
 - Modify: `src/dialogue_manager.py:156`
 - Modify: `src/dialogue_manager.py:240`
 - Test: `tests/test_equipment_unit_candidates.py`
@@ -68,7 +68,7 @@
 ### Task 4: Add deterministic equipment-unit prompt behavior
 
 **Files:**
-- Modify: `src/prompts.py:177`
+- Modify: `src/extraction/prompts.py:177`
 - Test: `tests/test_equipment_unit_candidates.py`
 
 **Interfaces:**
@@ -83,10 +83,10 @@
 ### Task 5: Verify the repair
 
 **Files:**
-- Verify: `src/slot_store.py`
-- Verify: `src/output_builder.py`
+- Verify: `src/slots/slot_store.py`
+- Verify: `src/dispatch/output_builder.py`
 - Verify: `src/dialogue_manager.py`
-- Verify: `src/prompts.py`
+- Verify: `src/extraction/prompts.py`
 - Verify: `tests/test_equipment_unit_candidates.py`
 
 - [ ] Run the focused test module.

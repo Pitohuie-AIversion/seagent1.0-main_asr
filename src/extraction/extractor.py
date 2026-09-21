@@ -3,8 +3,8 @@ extractor.py — 参数提取器主调度门面 (解耦重构版)
 
 职责：
 1. 每轮对话后，用 LLM 从最新用户消息中提取或更新任务参数结构；
-2. 调度 TemporalParser (src/temporal_parser.py) 进行相对时间、区间物化与时长算术推导；
-3. 调度 CandidateResolver (src/candidate_resolver.py) 进行实体候选消歧、口语清洗与语义匹配；
+2. 调度 TemporalParser (src/temporal/temporal_parser.py) 进行相对时间、区间物化与时长算术推导；
+3. 调度 CandidateResolver (src/slots/candidate_resolver.py) 进行实体候选消歧、口语清洗与语义匹配；
 4. 维持全套向后兼容公共 API 契约与方法代理。
 """
 

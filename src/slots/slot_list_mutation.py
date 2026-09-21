@@ -1,5 +1,5 @@
 """
-src/slot_list_mutation.py - 槽位列表增量修改与载荷变异引擎
+src/slots/slot_list_mutation.py - 槽位列表增量修改与载荷变异引擎
 
 职责：
 1. 载荷规范化键解析与展示后缀（如“（可选）”）消除；

@@ -7,16 +7,16 @@ Accepted
 在早期实现中，系统任务状态同时散落在 `DialogueManager` 的临时字典 `task_state`、`last_built_json`、对话历史以及各个逻辑模块的局部变量中。这种多源状态设计极易导致“槽位状态不一致”问题：例如，提取器更新了临时字典，但构建器导出的 JSON 缺失字段，或者验证器校验的状态与下游生成的 TaskIntent 内容不一致。
 
 ## 决策
-采用 [src/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slot_store.py) 中的 `SlotStore` 作为全系统唯一的任务状态真理源 (Single Source of Truth)：
+采用 [src/slots/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slots/slot_store.py) 中的 `SlotStore` 作为全系统唯一的任务状态真理源 (Single Source of Truth)：
 1. 统一管理所有基本槽位、任务 Schema 槽位与内部状态槽位。
 2. 规定仅状态为 `valid` 且值非 `None` 的 Slot 才能作为当前确认生效的任务状态（通过 `SlotStore.get_task_state()` 导出）。
 3. 引入全局 `version` 版本号自增与快照导出/恢复 (`export_snapshot` / `import_snapshot`) 机制，支持严格的状态回滚与不变性校验。
 4. 下游 JSON 导出与物理校验必须统一从 `SlotStore` 派生，禁止使用绕过 `SlotStore` 的临时变量。
 
 ## 修改位置
-- [src/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slot_store.py) (`SlotStore`, `Slot`, `SlotVersionConflict`, `SnapshotValidationError`)
+- [src/slots/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slots/slot_store.py) (`SlotStore`, `Slot`, `SlotVersionConflict`, `SnapshotValidationError`)
 - [src/dialogue_manager.py](file:///root/mzy/seagent1.0-main_asr/src/dialogue_manager.py) (`DialogueManager.slot_store`)
-- [src/output_builder.py](file:///root/mzy/seagent1.0-main_asr/src/output_builder.py) (`OutputBuilder.build_flat_json`)
+- [src/dispatch/output_builder.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/output_builder.py) (`OutputBuilder.build_flat_json`)
 
 ## 核心逻辑
 ```python

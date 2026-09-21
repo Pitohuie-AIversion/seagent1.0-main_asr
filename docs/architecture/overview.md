@@ -42,22 +42,22 @@ graph TD
 
 | 模块 | 关键类 / 文件 | 主要职责 |
 | :--- | :--- | :--- |
-| **ASR 服务与纠错** | [src/asr_service.py](file:///root/mzy/seagent1.0-main_asr/src/asr_service.py)<br>[src/asr_normalizer.py](file:///root/mzy/seagent1.0-main_asr/src/asr_normalizer.py)<br>[src/oilfield_linker.py](file:///root/mzy/seagent1.0-main_asr/src/oilfield_linker.py) | 语音转文本、ASR 候选词+上下文纠错、油田实体 Link 评分与标准化。 |
-| **交互计划** | [src/interaction_plan.py](file:///root/mzy/seagent1.0-main_asr/src/interaction_plan.py)<br>`InteractionPlan` | LLM 每轮输出的结构化语义计划；`operation` 字段（READ / WRITE / CONTROL / CLARIFY）为唯一路由权威；后端不根据关键词覆盖此决策。 |
-| **意图路由器** | [src/intent_router.py](file:///root/mzy/seagent1.0-main_asr/src/intent_router.py)<br>`IntentRouter`, `IntentRouteResult` | 消费 `InteractionPlan.operation`，将输入严格划分为 `WRITE`（写任务状态）或 `QUERY`（读知识与状态）。 |
+| **ASR 服务与纠错** | [src/asr/asr_service.py](file:///root/mzy/seagent1.0-main_asr/src/asr/asr_service.py)<br>[src/asr/asr_normalizer.py](file:///root/mzy/seagent1.0-main_asr/src/asr/asr_normalizer.py)<br>[src/extraction/oilfield_linker.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/oilfield_linker.py) | 语音转文本、ASR 候选词+上下文纠错、油田实体 Link 评分与标准化。 |
+| **交互计划** | [src/session/interaction_plan.py](file:///root/mzy/seagent1.0-main_asr/src/session/interaction_plan.py)<br>`InteractionPlan` | LLM 每轮输出的结构化语义计划；`operation` 字段（READ / WRITE / CONTROL / CLARIFY）为唯一路由权威；后端不根据关键词覆盖此决策。 |
+| **意图路由器** | [src/session/intent_router.py](file:///root/mzy/seagent1.0-main_asr/src/session/intent_router.py)<br>`IntentRouter`, `IntentRouteResult` | 消费 `InteractionPlan.operation`，将输入严格划分为 `WRITE`（写任务状态）或 `QUERY`（读知识与状态）。 |
 | **对话状态管理** | [src/dialogue_manager.py](file:///root/mzy/seagent1.0-main_asr/src/dialogue_manager.py)<br>`DialogueManager` | 主控状态机，调度路由、只读保护、追问生成与确认发布流程；`load_snapshot()` 采用隔离候选管理器原子恢复。 |
-| **候选提取与解析** | [src/extractor.py](file:///root/mzy/seagent1.0-main_asr/src/extractor.py)<br>`Extractor` | 提取参数候选，采用 `canonical_exact` -> `alias_exact` -> `llm_semantic` 递进解析。 |
-| **状态中心** | [src/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slot_store.py)<br>`SlotStore`, `Slot` | Single Source of Truth，管理所有任务槽位状态、版本自增与事务管理；任务类型切换时自动过滤无效机器人 candidate。 |
+| **候选提取与解析** | [src/extraction/extractor.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/extractor.py)<br>`Extractor` | 提取参数候选，采用 `canonical_exact` -> `alias_exact` -> `llm_semantic` 递进解析。 |
+| **状态中心** | [src/slots/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slots/slot_store.py)<br>`SlotStore`, `Slot` | Single Source of Truth，管理所有任务槽位状态、版本自增与事务管理；任务类型切换时自动过滤无效机器人 candidate。 |
 | **知识、遥测与候选域** | [src/knowledge_retriever.py](file:///root/mzy/seagent1.0-main_asr/src/knowledge_retriever.py)<br>[src/state_info.py](file:///root/mzy/seagent1.0-main_asr/src/state_info.py) | 提供设备静态能力查询与实时遥测状态读取；`get_feasible_robot_selection_domain()` 为机器人候选计算的唯一权威入口（water_depth + payload + 即时运行状态三层过滤）。 |
-| **物理约束校验** | [src/validator.py](file:///root/mzy/seagent1.0-main_asr/src/validator.py)<br>`TaskValidator` | 执行水深、载荷、海况、时间有效性及机器人物理约束 Hard/Soft 校验；复用 KnowledgeBase 四级静态关系校验。 |
-| **可见来源追踪** | [src/visible_selection_provenance.py](file:///root/mzy/seagent1.0-main_asr/src/visible_selection_provenance.py)<br>`VisibleSelectionProvenance` | 校验编号候选选择的可见来源，确保写入的枚举值在紧邻 assistant 回复中明确展示，阻止基于隐藏顺序的误写。 |
-| **任务字段补丁** | [src/task_patch.py](file:///root/mzy/seagent1.0-main_asr/src/task_patch.py)<br>`TaskPatch` | 支持任务参数的字段级补丁操作，不覆盖整体 SlotStore 事务边界。 |
-| **任务请求守卫** | [src/task_request_guard.py](file:///root/mzy/seagent1.0-main_asr/src/task_request_guard.py)<br>`TaskRequestGuard` | 防止同轮内多任务意图的误触发，确保复合请求的确定性分句与路由。 |
-| **坐标解析** | [src/coord_parser.py](file:///root/mzy/seagent1.0-main_asr/src/coord_parser.py) | 将各类格式的地理坐标表达确定性解析为标准经纬度，与输入格式无关。 |
-| **TaskIntent 持久化** | [src/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/task_intent_builder.py)<br>`TaskIntentBuilder`, `TaskPublishLock` | Staging 暂存、排他锁控制与 `_atomic_commit_noreplace` 无覆盖原子落盘。 |
+| **物理约束校验** | [src/validation/validator.py](file:///root/mzy/seagent1.0-main_asr/src/validation/validator.py)<br>`TaskValidator` | 执行水深、载荷、海况、时间有效性及机器人物理约束 Hard/Soft 校验；复用 KnowledgeBase 四级静态关系校验。 |
+| **可见来源追踪** | [src/slots/visible_selection_provenance.py](file:///root/mzy/seagent1.0-main_asr/src/slots/visible_selection_provenance.py)<br>`VisibleSelectionProvenance` | 校验编号候选选择的可见来源，确保写入的枚举值在紧邻 assistant 回复中明确展示，阻止基于隐藏顺序的误写。 |
+| **任务字段补丁** | [src/slots/task_patch.py](file:///root/mzy/seagent1.0-main_asr/src/slots/task_patch.py)<br>`TaskPatch` | 支持任务参数的字段级补丁操作，不覆盖整体 SlotStore 事务边界。 |
+| **任务请求守卫** | [src/validation/task_request_guard.py](file:///root/mzy/seagent1.0-main_asr/src/validation/task_request_guard.py)<br>`TaskRequestGuard` | 防止同轮内多任务意图的误触发，确保复合请求的确定性分句与路由。 |
+| **坐标解析** | [src/extraction/coord_parser.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/coord_parser.py) | 将各类格式的地理坐标表达确定性解析为标准经纬度，与输入格式无关。 |
+| **TaskIntent 持久化** | [src/dispatch/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/task_intent_builder.py)<br>`TaskIntentBuilder`, `TaskPublishLock` | Staging 暂存、排他锁控制与 `_atomic_commit_noreplace` 无覆盖原子落盘。 |
 
 > [!NOTE]
-> 以下模块已在 `src/` 中存在但属于计划/实验阶段，尚未完整接入主流程：`src/model_profile.py`（模型 Profile 封装）、`src/normalization_contract.py`（规范化契约形式化）、`src/session_state.py` / `src/session_state_shadow.py`（SessionState 契约验证）、`src/simulated_time.py`（模拟时钟）、`src/time_context.py`（时间上下文）。
+> 以下模块已在 `src/` 中存在但属于计划/实验阶段，尚未完整接入主流程：`src/extraction/model_profile.py`（模型 Profile 封装）、`src/slots/normalization_contract.py`（规范化契约形式化）、`src/session/session_state.py` / `src/session/session_state_shadow.py`（SessionState 契约验证）、`src/temporal/simulated_time.py`（模拟时钟）、`src/temporal/time_context.py`（时间上下文）。
 
 ---
 
@@ -123,11 +123,11 @@ sequenceDiagram
 
 > [!IMPORTANT]
 > **3. WRITE 路径为唯一槽位修改入口**
-> - 仅当 `IntentRouter` 判断为 `WRITE` 路由时，用户输入才允许送入 [src/extractor.py](file:///root/mzy/seagent1.0-main_asr/src/extractor.py) 进行提炼，并更新 [src/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slot_store.py) 中的 `Slot` 状态。
+> - 仅当 `IntentRouter` 判断为 `WRITE` 路由时，用户输入才允许送入 [src/extraction/extractor.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/extractor.py) 进行提炼，并更新 [src/slots/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slots/slot_store.py) 中的 `Slot` 状态。
 
 > [!IMPORTANT]
 > **4. SlotStore 作为 Single Source of Truth**
-> - 系统中所有任务导出的 JSON 结构及下游校验输入，必须直接从 [src/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slot_store.py) 导出 (`get_task_state`)，禁止绕过 `SlotStore` 直接使用临时上下文拼装任务状态。
+> - 系统中所有任务导出的 JSON 结构及下游校验输入，必须直接从 [src/slots/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slots/slot_store.py) 导出 (`get_task_state`)，禁止绕过 `SlotStore` 直接使用临时上下文拼装任务状态。
 
 > [!IMPORTANT]
 > **5. 机器人候选域为唯一权威入口**
@@ -140,7 +140,7 @@ sequenceDiagram
 
 > [!CAUTION]
 > **7. TaskIntent 文件原子持久化**
-> - [src/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/task_intent_builder.py) 中的"原子持久化"（`_atomic_commit_noreplace` + `TaskPublishLock`）指 **TaskIntent JSON 文件在文件系统上的原子落盘与无覆盖安全保障**（文件要么完整生成，要么不生成，杜绝中间态与覆盖风险）。
+> - [src/dispatch/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/task_intent_builder.py) 中的"原子持久化"（`_atomic_commit_noreplace` + `TaskPublishLock`）指 **TaskIntent JSON 文件在文件系统上的原子落盘与无覆盖安全保障**（文件要么完整生成，要么不生成，杜绝中间态与覆盖风险）。
 > - 该概念**绝非** Task Graph 任务拆解中的"不可分割原子任务"概念，二者在架构上位于不同层级。
 
 > [!CAUTION]
@@ -213,14 +213,14 @@ graph TD
 
 | 模块 | 关键类 / 文件 | 主要职责 |
 | :--- | :--- | :--- |
-| **ASR 服务与纠错** | [src/asr_service.py](file:///root/mzy/seagent1.0-main_asr/src/asr_service.py)<br>[src/asr_normalizer.py](file:///root/mzy/seagent1.0-main_asr/src/asr_normalizer.py)<br>[src/oilfield_linker.py](file:///root/mzy/seagent1.0-main_asr/src/oilfield_linker.py) | 语音转转文本、ASR 候选词+上下文纠错、油田实体 Link 评分与标准化。 |
-| **意图路由器** | [src/intent_router.py](file:///root/mzy/seagent1.0-main_asr/src/intent_router.py)<br>`IntentRouter`, `IntentRouteResult` | 将输入严格划分为 `WRITE`（写任务状态）或 `QUERY`（读知识与状态）。 |
+| **ASR 服务与纠错** | [src/asr/asr_service.py](file:///root/mzy/seagent1.0-main_asr/src/asr/asr_service.py)<br>[src/asr/asr_normalizer.py](file:///root/mzy/seagent1.0-main_asr/src/asr/asr_normalizer.py)<br>[src/extraction/oilfield_linker.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/oilfield_linker.py) | 语音转转文本、ASR 候选词+上下文纠错、油田实体 Link 评分与标准化。 |
+| **意图路由器** | [src/session/intent_router.py](file:///root/mzy/seagent1.0-main_asr/src/session/intent_router.py)<br>`IntentRouter`, `IntentRouteResult` | 将输入严格划分为 `WRITE`（写任务状态）或 `QUERY`（读知识与状态）。 |
 | **对话状态管理** | [src/dialogue_manager.py](file:///root/mzy/seagent1.0-main_asr/src/dialogue_manager.py)<br>`DialogueManager` | 主控状态机，调度路由、只读保护、追问生成与确认发布流程。 |
-| **候选提取与解析** | [src/extractor.py](file:///root/mzy/seagent1.0-main_asr/src/extractor.py)<br>`Extractor` | 提取参数候选，采用 `canonical_exact` -> `alias_exact` -> `llm_semantic` 递进解析。 |
-| **状态中心** | [src/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slot_store.py)<br>`SlotStore`, `Slot` | Single Source of Truth，管理所有任务槽位状态、版本自增与事务管理。 |
+| **候选提取与解析** | [src/extraction/extractor.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/extractor.py)<br>`Extractor` | 提取参数候选，采用 `canonical_exact` -> `alias_exact` -> `llm_semantic` 递进解析。 |
+| **状态中心** | [src/slots/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slots/slot_store.py)<br>`SlotStore`, `Slot` | Single Source of Truth，管理所有任务槽位状态、版本自增与事务管理。 |
 | **知识与遥测** | [src/knowledge_retriever.py](file:///root/mzy/seagent1.0-main_asr/src/knowledge_retriever.py)<br>[src/state_info.py](file:///root/mzy/seagent1.0-main_asr/src/state_info.py) | 提供设备静态能力查询，并读取 `config/state.yaml` 中的实时遥测状态。 |
-| **物理约束校验** | [src/validator.py](file:///root/mzy/seagent1.0-main_asr/src/validator.py)<br>`TaskValidator` | 执行水深、载荷、海况、时间有效性及机器人物理约束 Hard/Soft 校验。 |
-| **TaskIntent 持久化** | [src/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/task_intent_builder.py)<br>`TaskIntentBuilder`, `TaskPublishLock` | Staging 暂存、排他锁控制与 `_atomic_commit_noreplace` 无覆盖原子落盘。 |
+| **物理约束校验** | [src/validation/validator.py](file:///root/mzy/seagent1.0-main_asr/src/validation/validator.py)<br>`TaskValidator` | 执行水深、载荷、海况、时间有效性及机器人物理约束 Hard/Soft 校验。 |
+| **TaskIntent 持久化** | [src/dispatch/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/task_intent_builder.py)<br>`TaskIntentBuilder`, `TaskPublishLock` | Staging 暂存、排他锁控制与 `_atomic_commit_noreplace` 无覆盖原子落盘。 |
 
 ---
 
@@ -275,11 +275,11 @@ sequenceDiagram
 
 > [!IMPORTANT]
 > **2. WRITE 路径为唯一槽位修改入口**
-> - 仅当 `IntentRouter` 判断为 `WRITE` 路由时，用户输入才允许送入 [src/extractor.py](file:///root/mzy/seagent1.0-main_asr/src/extractor.py) 进行提炼，并更新 [src/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slot_store.py) 中的 `Slot` 状态。
+> - 仅当 `IntentRouter` 判断为 `WRITE` 路由时，用户输入才允许送入 [src/extraction/extractor.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/extractor.py) 进行提炼，并更新 [src/slots/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slots/slot_store.py) 中的 `Slot` 状态。
 
 > [!IMPORTANT]
 > **3. SlotStore 作为 Single Source of Truth**
-> - 系统中所有任务导出的 JSON 结构及下游校验输入，必须直接从 [src/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slot_store.py) 导出 (`get_task_state`)，禁止绕过 `SlotStore` 直接使用临时上下文拼装任务状态。
+> - 系统中所有任务导出的 JSON 结构及下游校验输入，必须直接从 [src/slots/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slots/slot_store.py) 导出 (`get_task_state`)，禁止绕过 `SlotStore` 直接使用临时上下文拼装任务状态。
 
 > [!WARNING]
 > **4. 动态机器人遥测状态隔离**
@@ -287,7 +287,7 @@ sequenceDiagram
 
 > [!CAUTION]
 > **5. TaskIntent 文件原子持久化概念澄清**
-> - [src/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/task_intent_builder.py) 中提供的“原子持久化”（`_atomic_commit_noreplace` + `TaskPublishLock`）指 **TaskIntent JSON 文件在文件系统上的原子落盘与无覆盖安全保障**（即文件要么完整生成，要么不生成，杜绝中间态与覆盖风险）。
+> - [src/dispatch/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/task_intent_builder.py) 中提供的“原子持久化”（`_atomic_commit_noreplace` + `TaskPublishLock`）指 **TaskIntent JSON 文件在文件系统上的原子落盘与无覆盖安全保障**（即文件要么完整生成，要么不生成，杜绝中间态与覆盖风险）。
 > - 该概念**绝非** Task Graph 任务拆解中的“不可分割原子任务 (Atomic Task)”概念，二者在架构上位于不同层级。
 
 ---

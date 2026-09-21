@@ -1,5 +1,5 @@
 """
-src/candidate_resolver.py — 实体候选消歧、口语化清洗与语义匹配器
+src/slots/candidate_resolver.py — 实体候选消歧、口语化清洗与语义匹配器
 
 职责：
 1. 口语化前缀与后缀清洗 (strip_colloquial_prefixes, strip_colloquial_suffixes)；

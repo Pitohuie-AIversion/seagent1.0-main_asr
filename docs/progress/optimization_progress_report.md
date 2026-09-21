@@ -71,8 +71,8 @@
 - 修复方案：将测试环境对齐为 `tree_valve_operation` 并配置工作级深海机器人（`work_class_rov`），使 C028 能够在 `preview` 阶段精准触发软性告警并使状态转移至 `blocked_soft`。
 - 验证结果：测试用例 14 项子测试全部执行通过。
 
-### 4.3 动态遥测与环境强约束校验门禁逻辑修复 (src/validator.py)
-- 问题根因：历史提交在 `src/validator.py` 中过宽地拦截了 `purpose == "interactive"` 时的动态检查，导致即时巡检任务中单机遥测流速超限（C015/C016/C017）及水体浑浊度高（C013/C014）未能在交互门禁中正常阻断/告警，造成多项状态快照测试断言失败。
+### 4.3 动态遥测与环境强约束校验门禁逻辑修复 (src/validation/validator.py)
+- 问题根因：历史提交在 `src/validation/validator.py` 中过宽地拦截了 `purpose == "interactive"` 时的动态检查，导致即时巡检任务中单机遥测流速超限（C015/C016/C017）及水体浑浊度高（C013/C014）未能在交互门禁中正常阻断/告警，造成多项状态快照测试断言失败。
 - 修复方案：恢复即时任务严格执行环境与单机遥测强校验的规则，仅对未来排期且处于非执行窗口的任务延后检查。
 - 验证结果：`tests/test_issue_14_validator_snapshot.py` 与 `tests/test_issue_14_dialogue_validation_gate.py` 22 项测试全部一次性通过。
 

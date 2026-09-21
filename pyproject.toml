@@ -11,6 +11,16 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
+dependencies = [
+    "PyYAML>=6.0.1",
+    "Flask>=3.0.0",
+    "Werkzeug>=3.0.0",
+    "pydantic>=2.0.0",
+    "numpy>=1.24.0",
+    "networkx>=3.2",
+    "cn2an>=0.5.22",
+    "dateparser>=1.2",
+]
 
 [tool.black]
 line-length = 120
@@ -93,6 +103,21 @@ cn2an = [
 ]
 chinese-numbers = [
     "cn2an>=0.5.22",
+]
+test = [
+    "requests>=2.28.0",
+    "pytest>=9.0",
+    "pytest-asyncio>=0.21.0",
+    "mcp>=1.27.0,<2",
+    "fastmcp>=2.0.0,<4",
+    "websocket-client>=1.6",
+    "websockets>=14.0",
+]
+gpu = [
+    "torch",
+    "transformers",
+    "accelerate",
+    "vllm",
 ]
 dev = [
     "pytest>=8.0",

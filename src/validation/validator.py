@@ -6,9 +6,9 @@ validator.py — 结构化约束验证服务主入口与门面调度器 (Issue #
 2. 约束字段映射与动态检查类型元数据 (_CHECK_FIELDS, _DYNAMIC_CHECKS)；
 3. 校验状态优先级判定、指纹计算 (_compute_fingerprint) 与版本管理；
 4. 调度子模块执行：
-   - RuleEngine (src/rule_engine.py)：静态字段合法性、时限与机器人选型可行域校验；
-   - SpatialValidator (src/spatial_validator.py)：空间坐标、禁入区与底质安全检查；
-   - TelemetryGate (src/telemetry_gate.py)：单机遥测快照解析与运行健康度门禁。
+   - RuleEngine (src/validation/rule_engine.py)：静态字段合法性、时限与机器人选型可行域校验；
+   - SpatialValidator (src/validation/spatial_validator.py)：空间坐标、禁入区与底质安全检查；
+   - TelemetryGate (src/validation/telemetry_gate.py)：单机遥测快照解析与运行健康度门禁。
 """
 
 from __future__ import annotations

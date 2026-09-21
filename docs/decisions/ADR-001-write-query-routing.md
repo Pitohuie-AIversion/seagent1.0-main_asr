@@ -7,14 +7,14 @@ Accepted
 在早期对话系统设计中，用户的文本/语音输入混合进入唯一的抽取与状态更新流程。这导致当用户在对话中提问系统能力、查询机器人状态、索取环境信息或进行澄清性提问时，提取器误将查询语句中的词汇（如“水深能达到多少米？”中的“水深”）提炼为任务槽位并尝试更新 `SlotStore`，造成任务槽位污染、覆盖与无预期的状态机变更。
 
 ## 决策
-引入双通道意图路由机制 [src/intent_router.py](file:///root/mzy/seagent1.0-main_asr/src/intent_router.py)，在提取前将用户输入划分为：
+引入双通道意图路由机制 [src/session/intent_router.py](file:///root/mzy/seagent1.0-main_asr/src/session/intent_router.py)，在提取前将用户输入划分为：
 1. `WRITE`：用户提交、修改或回答任务参数，允许进入抽取器更新 `SlotStore`。
 2. `QUERY`：用户询问信息、状态、能力或普通对话，进入只读查询处理流程。
 
 在 [src/dialogue_manager.py](file:///root/mzy/seagent1.0-main_asr/src/dialogue_manager.py) 中，针对 `QUERY` 路由增加严格的快照记录与状态不变性断言，确保查询路径绝对不修改任何任务槽位。
 
 ## 修改位置
-- [src/intent_router.py](file:///root/mzy/seagent1.0-main_asr/src/intent_router.py) (`IntentRouter`, `IntentRouteResult`)
+- [src/session/intent_router.py](file:///root/mzy/seagent1.0-main_asr/src/session/intent_router.py) (`IntentRouter`, `IntentRouteResult`)
 - [src/dialogue_manager.py](file:///root/mzy/seagent1.0-main_asr/src/dialogue_manager.py) (`DialogueManager._handle_non_task_route`, `_handle_knowledge_query`, `_handle_status_query`)
 
 ## 核心逻辑

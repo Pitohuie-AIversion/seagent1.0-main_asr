@@ -64,7 +64,7 @@
 ## 四、v2.0 新增能力与架构升级
 
 ### 4.1 Temporal IR 中间表示层
-[relative_time_parser.py:L76-L110](file:///root/mzy/seagent1.0-main_asr/src/relative_time_parser.py#L76-L110) 统一承载 18 个语义字段（year/month/day/weekday/boundary/day_offset/hour_offset 等）。解析先结构化再 materialize，审计链完整。
+[relative_time_parser.py:L76-L110](file:///root/mzy/seagent1.0-main_asr/src/temporal/relative_time_parser.py#L76-L110) 统一承载 18 个语义字段（year/month/day/weekday/boundary/day_offset/hour_offset 等）。解析先结构化再 materialize，审计链完整。
 
 ### 4.2 时区 & DST 基础架构
 引入 IANA ZoneInfo（Asia/Shanghai 默认），AmbiguityCode 预置 DST_GAP_NONEXISTENT / DST_FOLD_AMBIGUOUS 两种检测代码，后续接入真实 DST 无需改解析层接口。
@@ -79,7 +79,7 @@
 月底(eom)、月初(bom)、年底(eoy)、年初(boy)、本周末、下周末。
 
 ### 4.5 中文数字零依赖 fallback
-[duration_parser.py:L46-L92](file:///root/mzy/seagent1.0-main_asr/src/duration_parser.py#L46-L92) 纯内置实现，支持：
+[duration_parser.py:L46-L92](file:///root/mzy/seagent1.0-main_asr/src/temporal/duration_parser.py#L46-L92) 纯内置实现，支持：
 - 个位-千位-万-亿进位（三十一、两百、九百九十九、一亿三千万）
 - 口语变体：两/俩=2、仨=3、幺=1、勾=9
 - 半 = 0.5；X点Y / X.Y 的小数拆分
@@ -138,8 +138,8 @@
 
 | 文件 | 说明 |
 |------|------|
-| [src/duration_parser.py](file:///root/mzy/seagent1.0-main_asr/src/duration_parser.py) | 重写: 零依赖中文数字 + DurationParseResult + 负数/零 Fail-Fast |
-| [src/relative_time_parser.py](file:///root/mzy/seagent1.0-main_asr/src/relative_time_parser.py) | 重写: Temporal IR + 12 项根因修复 + 7 类歧义检测 |
+| [src/temporal/duration_parser.py](file:///root/mzy/seagent1.0-main_asr/src/temporal/duration_parser.py) | 重写: 零依赖中文数字 + DurationParseResult + 负数/零 Fail-Fast |
+| [src/temporal/relative_time_parser.py](file:///root/mzy/seagent1.0-main_asr/src/temporal/relative_time_parser.py) | 重写: Temporal IR + 12 项根因修复 + 7 类歧义检测 |
 | [tests/test_time_module_v2_upgrade.py](file:///root/mzy/seagent1.0-main_asr/tests/test_time_module_v2_upgrade.py) | 新建: 126 用例 x 13 大类 |
 | /tmp/time_module_v2_test_report.xml | JUnit XML，可接入 Jenkins / GitLab CI |
 

@@ -1,5 +1,5 @@
 """
-src/time_range_engine.py — 时间区间业务模型与三元推导互算引擎
+src/temporal/time_range_engine.py — 时间区间业务模型与三元推导互算引擎
 
 负责处理任务作业时间的三要素（开始时间 start_time、持续时间 duration、结束时间 end_time）之间的：
 1. 确定性计算与互算（S + D -> E, E - S -> D, S + D == E 一致性校验）；

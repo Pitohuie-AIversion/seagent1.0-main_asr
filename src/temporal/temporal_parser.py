@@ -1,5 +1,5 @@
 """
-src/temporal_parser.py — 时间关系抽取、区间推导与相对时间物化引擎
+src/temporal/temporal_parser.py — 时间关系抽取、区间推导与相对时间物化引擎
 
 职责：
 1. 相对时间、口语化日期与时序语义探测 (has_date_semantics, looks_like_iso_datetime)；

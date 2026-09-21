@@ -1,4 +1,4 @@
-"""src/session_state_shadow.py
+"""src/session/session_state_shadow.py
 
 SEAgent G4.2 SessionState V2 Runtime Shadow Instrumentation Module.
 

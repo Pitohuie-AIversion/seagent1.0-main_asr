@@ -133,7 +133,7 @@ flowchart LR
 2. **检查输出日志**：CI 运行会保留并上传 `full_test.log` 和 `pytest-results.xml`，可作为审计对比。
 
 ### 5.2 运行输出与持久化路径处理
-测试运行过程中生成的中间文件与任务 Intent 输出目录通过 [src/result_paths.py](file:///root/mzy/seagent1.0-main_asr/src/result_paths.py) 统一管理：
+测试运行过程中生成的中间文件与任务 Intent 输出目录通过 [src/dispatch/result_paths.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/result_paths.py) 统一管理：
 - 用户运行优先读取 `SEAGENT_RESULT_DIR`，未配置时使用 `/root/autodl-tmp/result`。
 - pytest 和包级 unittest 在导入业务模块前统一覆盖 result/task/history 为测试专用目录。
 - 子进程继承同一测试目录；未设置 `SEAGENT_TEST_RESULT_DIR` 时，测试结束自动清理。

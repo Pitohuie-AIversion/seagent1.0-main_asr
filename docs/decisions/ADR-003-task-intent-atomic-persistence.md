@@ -7,7 +7,7 @@ Accepted
 在任务规划确认阶段，需要将构建好的 `TaskIntent` JSON 文件持久化到磁盘目录。在多进程并发或重试场景下，如果直接以写模式打开目标文件写入，极易发生“半写入（Half-write/Partial file）”、“并发覆写（Race Condition）”或“符号链接替换攻击（Symlink Attack）”。此外，已生成的正式 `intent_id` 文件若被非法覆盖，会导致历史任务轨迹破坏与审计失效。
 
 ## 决策
-在 [src/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/task_intent_builder.py) 中设计三阶段原子落盘机制：
+在 [src/dispatch/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/task_intent_builder.py) 中设计三阶段原子落盘机制：
 1. **纯内存构建**：`TaskIntentBuilder.prepare()` 仅在内存中生成 JSON 对象，不产生磁盘副作用。
 2. **Staging 暂存区创建**：`create_staging()` 在任务目录下生成具有独占 PID、线程 ID 和随机 UUID 尾缀的临时文件（如 `task_intent_TI2026071801.staging_1234_5678_abcd1234`），使用 `O_CREAT | O_EXCL | O_NOFOLLOW` 模式写入并强制 `fsync`。
 3. **安全原子发布与无覆盖锁定**：`publish_staging()` 获取跨进程排他锁 `TaskPublishLock`。使用 `_atomic_commit_noreplace()`（基于 `os.link` 硬链接原子提交）将 staging 文件转存为正式 `task_intent_TIxxxx.json`。若目标文件已存在，无条件拒绝发布并抛出 `IntentIdConflict` 异常，禁用强制覆盖与删除。
@@ -18,7 +18,7 @@ Accepted
 > **它绝不表示** Task Graph 任务分解理论中的“不可分割原子任务 (Atomic Sub-Task)”。
 
 ## 修改位置
-- [src/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/task_intent_builder.py) (`TaskPublishLock`, `TaskIntentBuilder.prepare`, `create_staging`, `publish_staging`, `_atomic_commit_noreplace`)
+- [src/dispatch/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/task_intent_builder.py) (`TaskPublishLock`, `TaskIntentBuilder.prepare`, `create_staging`, `publish_staging`, `_atomic_commit_noreplace`)
 - [src/exceptions.py](file:///root/mzy/seagent1.0-main_asr/src/exceptions.py) (`IntentIdConflict`, `TaskPersistenceError`)
 
 ## 核心逻辑

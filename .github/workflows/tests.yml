@@ -3,8 +3,32 @@ name: SEAgent CI & Regression Verification
 on:
   push:
     branches: [ main, "phase*", "fix/*" ]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'LICENSE'
+      - '.agents/**'
+      - 'artifacts/**'
+      - 'record/**'
+      - 'scratch/**'
+      - '.vscode/**'
+      - '.gitignore'
   pull_request:
     branches: [ main ]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'LICENSE'
+      - '.agents/**'
+      - 'artifacts/**'
+      - 'record/**'
+      - 'scratch/**'
+      - '.vscode/**'
+      - '.gitignore'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   full-suite-tests:
@@ -23,10 +47,16 @@ jobs:
         with:
           python-version: "3.10"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
       - name: Install CPU Test Dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements/test.txt
+          uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install --system -e ".[test]"
 
       - name: Set up Node.js for Frontend Regression Tests
         uses: actions/setup-node@v4
@@ -39,7 +69,7 @@ jobs:
       - name: 2. Run Full Test Suite & Enforce Audit Gate
         run: |
           set +e
-          TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q --junitxml=pytest-results.xml 2>&1 | tee full_test.log
+          TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q --durations=10 --junitxml=pytest-results.xml 2>&1 | tee full_test.log
           test_exit=${PIPESTATUS[0]}
           set -e
           

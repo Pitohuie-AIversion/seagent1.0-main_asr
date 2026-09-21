@@ -1,7 +1,7 @@
 # SEAgent Core Source Architecture (`src/`)
 
 本目录包含 SEAgent（水下机器人任务智能交互与编排层）的核心源码。
-代码已完成系统的领域驱动（DDD）父子层级结构治理与物理子包划分，同时在根目录保留向前兼容别名导出（Forwarding Shims），实现 100% 平滑零破坏调用。
+代码已完成系统的领域驱动（DDD）父子层级结构治理与物理子包划分。领域模块通过 `asr/`、`dispatch/`、`extraction/`、`session/`、`slots/`、`temporal/` 和 `validation/` 包提供。
 
 ---
 
@@ -93,8 +93,8 @@ src/
 
 ## 2. 核心架构约束与工程原则
 
-1. **零破坏门面兼容（Zero-breakage Forwarding Shims）**：
-   - 40 个被下沉到各领域子包的文件在 `src/` 根目录均保留了轻量代理门面（Forwarding Shim），利用 `sys.modules[__name__] = _target_mod` 保证历史外部导入与单元测试百分百兼容。
+1. **领域包为唯一入口**：
+   - 领域模块从对应子包导入，例如 `src.slots.slot_store`、`src.validation.validator` 和 `src.temporal.simulated_time`。旧的 `src/*.py` 平铺入口已移除，调用方需要更新导入路径。
 2. **单点真实源 (SSOT)**：
    - 字段标签与保留集合统一在 `src/constants.py` 维护；
    - 槽位状态以 `src/slots/slot_store.py` 为唯一权威事实；

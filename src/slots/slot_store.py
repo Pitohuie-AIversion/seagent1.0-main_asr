@@ -1,5 +1,5 @@
 """
-src/slot_store.py - 槽位状态存储、乐观并发控制与事务提交流程
+src/slots/slot_store.py - 槽位状态存储、乐观并发控制与事务提交流程
 
 职责：
 1. 槽位状态核心数据模型（Slot, SlotVersionConflict）；
@@ -7,8 +7,8 @@ src/slot_store.py - 槽位状态存储、乐观并发控制与事务提交流程
 3. 线程安全 RLock 与读视图快照（snapshot, clone_slots）；
 4. 乐观并发版本控制与原子事务提交（commit_transaction）；
 5. 委托子模块：
-   - SlotListMutationEngine (src/slot_list_mutation.py)：载荷列表增量变异；
-   - SlotSnapshotCodec (src/slot_snapshot_codec.py)：快照校验、反序列化与多版本迁移。
+   - SlotListMutationEngine (src/slots/slot_list_mutation.py)：载荷列表增量变异；
+   - SlotSnapshotCodec (src/slots/slot_snapshot_codec.py)：快照校验、反序列化与多版本迁移。
 """
 
 from __future__ import annotations

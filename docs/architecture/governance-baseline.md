@@ -88,10 +88,10 @@ Knowledge / StateInfo           Extractor / OilfieldLinker (候选提取)
 ### C. 已知缺陷 (KNOWN_DEFECT)
 当前代码中已知存在、需在后续治理阶段专门修复的缺陷。**严禁将 Known Defect 写入 Golden Behavior 或降级测试使其通过**。
 
-- **KD-01**：`src/ui_state_builder.py` 在 `phase in ("done", "rejected")` 时返回 `can_send=False`，导致任务终态与会话交互终态过紧耦合。
+- **KD-01**：`src/session/ui_state_builder.py` 在 `phase in ("done", "rejected")` 时返回 `can_send=False`，导致任务终态与会话交互终态过紧耦合。
 - **KD-02**：`src/dialogue_manager.py` 在知识问答 `kb_evidence` 未找到（`found=false`）时直接返回预设拒绝文案，未调用底座模型 General Reasoning。
 - **KD-03**：`src/llm_client.py` 在 `apply_chat_template` 中硬编码 `enable_thinking=False`。
-- **KD-04 (RESOLVED)**：`src/normalizer.py` 规范化失败覆盖旧 valid 槽位缺陷已在 Commit `c50a60a` 修复，并通过双路 Normalization Failure 状态契约验证。
+- **KD-04 (RESOLVED)**：`src/extraction/normalizer.py` 规范化失败覆盖旧 valid 槽位缺陷已在 Commit `c50a60a` 修复，并通过双路 Normalization Failure 状态契约验证。
 
 ---
 
@@ -101,9 +101,9 @@ Knowledge / StateInfo           Extractor / OilfieldLinker (候选提取)
 
 | 模块 | 文件路径 | 冻结原因与安全语义 |
 | :--- | :--- | :--- |
-| **SlotStore** | `src/slot_store.py` | 状态单源真理 (SSOT)、版本控制与事务回滚的核心逻辑。 |
-| **Validator** | `src/validator.py` | 多层级物理/环境/水深 Hard 与 Soft 约束校验核心逻辑。 |
-| **TaskIntentBuilder** | `src/task_intent_builder.py` | Staging、`TaskPublishLock` 硬链接与防覆盖写盘逻辑。 |
+| **SlotStore** | `src/slots/slot_store.py` | 状态单源真理 (SSOT)、版本控制与事务回滚的核心逻辑。 |
+| **Validator** | `src/validation/validator.py` | 多层级物理/环境/水深 Hard 与 Soft 约束校验核心逻辑。 |
+| **TaskIntentBuilder** | `src/dispatch/task_intent_builder.py` | Staging、`TaskPublishLock` 硬链接与防覆盖写盘逻辑。 |
 | **StateInfo** | `src/state_info.py` | 现有遥测事实与 `guard_unit_state_version` 隔离语义。 |
 | **TaskIntent Schema** | `schema_version=2` | 现有的 TaskIntent JSON 数据契约结构。 |
 | **Persistence Directory** | `staging / snapshot / final / quarantine` | 现有文件系统目录结构与隔离清理语义。 |
@@ -115,10 +115,10 @@ Knowledge / StateInfo           Extractor / OilfieldLinker (候选提取)
 以下模块属于后续治理与重构的目标范围（G1 ~ G4 阶段），在 G0.1 阶段**仅进行测量与不变量测试建立，不修改其生产逻辑**：
 
 - `src/llm_client.py`（模型 Profile 与能力封装）
-- `src/prompts.py`（Prompt 模版与提示工程）
-- `src/intent_router.py`（意图路由器与语义匹配）
+- `src/extraction/prompts.py`（Prompt 模版与提示工程）
+- `src/session/intent_router.py`（意图路由器与语义匹配）
 - `src/dialogue_manager.py`（主控状态机拆解与重构）
-- `src/extractor.py`（参数抽取器）
-- `src/normalizer.py`（规范化契约）
+- `src/extraction/extractor.py`（参数抽取器）
+- `src/extraction/normalizer.py`（规范化契约）
 - `src/knowledge_retriever.py`（知识检索与融合）
-- `src/ui_state_builder.py`（UI 状态构建与解耦）
+- `src/session/ui_state_builder.py`（UI 状态构建与解耦）
