@@ -259,7 +259,7 @@ A validation failure must not be converted into success merely to allow publicat
 
 ## 10. Persistence and File Safety
 
-Changes involving `src/task_intent_builder.py` or task persistence require special care.
+Changes involving `src/dispatch/task_intent_builder.py` or task persistence require special care.
 
 Relevant artifacts may include:
 

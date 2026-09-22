@@ -19,8 +19,8 @@ Environmental features checks are queryable via [environment_info.py](file:///ro
 - **Oilfield Depth Semantics**: `water_depth` is the default representative depth used to prefill a task. `maximum_reference_water_depth` is the separately sourced upper bound used by hard constraint C029. Never use an average/default depth as the hard upper bound.
 - **DVL Failure Areas**: Under `dvl_bottom_lock_failure_areas` in `environment.yaml`. Triggers a soft warning.
 
-## 3. Telemetry State Parameters & Validation (`config/state.yaml`, `src/state_info.py`, `src/validator.py`)
-Dynamic robot health metrics are handled in [state_info.py](file:///root/mzy/seagent1.0-main_asr/src/state_info.py) and evaluated in [validator.py](file:///root/mzy/seagent1.0-main_asr/src/validator.py).
+## 3. Telemetry State Parameters & Validation (`config/state.yaml`, `src/state_info.py`, `src/validation/validator.py`)
+Dynamic robot health metrics are handled in [state_info.py](file:///root/mzy/seagent1.0-main_asr/src/state_info.py) and evaluated in [validator.py](file:///root/mzy/seagent1.0-main_asr/src/validation/validator.py).
 
 ### Telemetry / Dynamic checks detail:
 - **Survival and Availability**:
@@ -44,8 +44,8 @@ Dynamic robot health metrics are handled in [state_info.py](file:///root/mzy/sea
   - `confidence`: If `< 0.5`, triggers low-confidence warning (**C018**).
   - `update_timestamp`: If older than 1 hour relative to simulated time, triggers expiration warning (**C019**).
 
-## 4. Main Validator Logic (`src/validator.py`)
-[validator.py](file:///root/mzy/seagent1.0-main_asr/src/validator.py) handles the execution loop of all constraints:
+## 4. Main Validator Logic (`src/validation/validator.py`)
+[validator.py](file:///root/mzy/seagent1.0-main_asr/src/validation/validator.py) handles the execution loop of all constraints:
 - **Immediate vs Future Task check**:
   - Immediate task (starts within 10 minutes of simulated time): The validator executes full checks (hard parameters + static environment + dynamic robot states).
   - Future task (starts > 10 minutes from simulated time): The validator only checks static hard parameters and static environment limits; it bypasses active robot state checks.
@@ -59,7 +59,7 @@ Dialogue states track consecutive hard validation failures:
 - **Warning Threshold**: At 3 consecutive turns, the system transitions to a final warning state (`hard_final_warning`) to notify the user.
 - **Counter Reset**: Once a hard violation is successfully corrected (the user changes parameters to satisfy the constraint), the refusal counter for that constraint ID is cleared.
 
-## 6. Constraint-Aware Robot Selection (`src/output_builder.py`)
+## 6. Constraint-Aware Robot Selection (`src/dispatch/output_builder.py`)
 The output builder implements constraint-aware robot selection when multiple candidate ROVs are available:
 - Filters the candidate list by comparing each robot's capability profile against the active hard and soft constraints.
 - Robots that would immediately trigger a hard constraint violation (e.g. forbidden seabed type, depth out of range) are excluded from the recommended set.

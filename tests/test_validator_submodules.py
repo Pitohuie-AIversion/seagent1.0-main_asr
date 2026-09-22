@@ -2,10 +2,10 @@
 tests/test_validator_submodules.py — 约束与规则治理子模块专有测试套件
 
 测试对象：
-1. RuleEngine (src/rule_engine.py): 静态字段合法性、时限规则与四级选型可行域
-2. SpatialValidator (src/spatial_validator.py): 空间坐标、禁入区与底质安全检查
-3. TelemetryGate (src/telemetry_gate.py): 动态遥测快照解析、时钟偏斜与单机健康度门禁
-4. TaskValidator (src/validator.py): 门面调度一致性、指纹计算与向后兼容契约
+1. RuleEngine (src/validation/rule_engine.py): 静态字段合法性、时限规则与四级选型可行域
+2. SpatialValidator (src/validation/spatial_validator.py): 空间坐标、禁入区与底质安全检查
+3. TelemetryGate (src/validation/telemetry_gate.py): 动态遥测快照解析、时钟偏斜与单机健康度门禁
+4. TaskValidator (src/validation/validator.py): 门面调度一致性、指纹计算与向后兼容契约
 """
 
 import copy

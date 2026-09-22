@@ -76,7 +76,7 @@ src/
 │   └── ...
 ├── types/                     # 路由与交互核心数据类型定义
 ├── utils/                     # 通用工具函数集合
-├── web/                       # FastAPI 路由与服务端点
+├── web/                       # Flask 蓝图 (Blueprint) 路由与 SSE 服务端点
 │
 └── 顶层核心门面与基础设施
     ├── dialogue_manager.py    # 对话总协调器门面 (HSM Facade)

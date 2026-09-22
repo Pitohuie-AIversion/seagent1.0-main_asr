@@ -1,6 +1,6 @@
 """tests/test_session_state_contract.py
 
-Unit tests for SEAgent G3.1 State Contract (src/session_state.py).
+Unit tests for SEAgent G3.1 State Contract (src/session/session_state.py).
 Validates immutability, deep immutability of nested mappings, fail-closed type/value checking,
 schema_version fail-closed rules, legacy snapshot adapter, and isolation from runtime components.
 """

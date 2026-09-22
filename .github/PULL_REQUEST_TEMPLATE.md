@@ -8,7 +8,7 @@
 <!-- 列出受影响的模块、配置文件或测试脚本 -->
 
 ## 关键代码位置
-<!-- 列出本次修改的关键文件与类/函数，格式示例：src/intent_router.py (IntentRouter) -->
+<!-- 列出本次修改的关键文件与类/函数，格式示例：src/session/intent_router.py (IntentRouter) -->
 
 ## 核心逻辑变化
 <!-- 简述本次修改的核心逻辑调整与实现方式 -->

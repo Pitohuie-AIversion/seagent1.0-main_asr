@@ -19,9 +19,9 @@ Task templates are defined in [task_schemas.yaml](file:///root/mzy/seagent1.0-ma
     - `auto`/`fixed`: fields that are calculated automatically (e.g. `task_id`) or static, and should not be asked to the user.
     - `allowed_values` or `allowed_values_ref`: lists of standard values or references to asset lists (vessels, ROVs, etc.).
 
-## 2. Maintaining Extraction Prompts & Logic (`src/extractor.py`)
-[extractor.py](file:///root/mzy/seagent1.0-main_asr/src/extractor.py) is responsible for calling LLM to extract task fields from natural language conversation.
-- **Adjusting extraction prompt**: Modify the prompt inside `src/extractor.py` to refine how dates, coordinates, and lists are formatted by the LLM.
+## 2. Maintaining Extraction Prompts & Logic (`src/extraction/extractor.py`)
+[extractor.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/extractor.py) is responsible for calling LLM to extract task fields from natural language conversation.
+- **Adjusting extraction prompt**: Modify the prompt inside `src/extraction/extractor.py` to refine how dates, coordinates, and lists are formatted by the LLM.
 - **Workflow Steps**:
   1. **Task Type Identification**: Check if the task type has been determined. If not, prompt and identify task type first.
   2. **JSON diff logic**: Only return the diff (new or updated parameters) of the current turn, avoiding repeating existing fields.
@@ -30,23 +30,23 @@ Task templates are defined in [task_schemas.yaml](file:///root/mzy/seagent1.0-ma
   5. **ROV model recommendations**: Recommend up to 3 candidate ROVs from `robot_fleet.yaml` based on task type and equipment metadata.
   6. **Numbered Option Selection**: If the assistant lists numbered choices (e.g. "1.", "2.", "3.") for a parameter in the previous message, and the user replies with a digit (e.g. "1", "2"), the extractor must map the digit back to the corresponding standard option.
 
-## 3. Customizing Parameter Normalization (`src/normalizer.py`)
-[normalizer.py](file:///root/mzy/seagent1.0-main_asr/src/normalizer.py) maps raw natural language inputs to their corresponding standard enum options.
+## 3. Customizing Parameter Normalization (`src/extraction/normalizer.py`)
+[normalizer.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/normalizer.py) maps raw natural language inputs to their corresponding standard enum options.
 - **Mapping mechanism**:
   1. Exact matching: checks if the value matches any allowed value.
   2. Fallback to LLM: asks LLM to choose the closest standard value.
   3. Discards invalid options: if LLM returns a value not in the options, normalizer returns `None`.
 - **List fields**: Splitting string by delimiters (e.g. comma, space) and normalizing each item individually.
 
-## 4. Troubleshooting JSON output building (`src/output_builder.py`)
-[output_builder.py](file:///root/mzy/seagent1.0-main_asr/src/output_builder.py) compiles extracted and normalized values into the final flat JSON output.
+## 4. Troubleshooting JSON output building (`src/dispatch/output_builder.py`)
+[output_builder.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/output_builder.py) compiles extracted and normalized values into the final flat JSON output.
 - **Schema Routing**: Route validation and field construction based on selected task types and execution mode (emergency vs. normal).
 - **Filtering System Fields**: Exclude fields marked `auto` or `fixed` from the user-facing prompts.
 - **Missing fields detection**: Compiles a list of required fields that have not yet been successfully filled, which the dialogue manager uses to generate follow-up questions.
-- **ID Generation**: Interfaces with [id_sequence.py](file:///root/mzy/seagent1.0-main_asr/src/id_sequence.py) to build incremental `task_id` tags (e.g. based on date and serial sequence) while scanning existing files to prevent duplicates.
+- **ID Generation**: Interfaces with [id_sequence.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/id_sequence.py) to build incremental `task_id` tags (e.g. based on date and serial sequence) while scanning existing files to prevent duplicates.
 - **Data Type Validation**: Verify that coordinates, numeric values, datetimes, and lists adhere to correct schemas, and references (vessels, payloads) are matched correctly in assets. Caches lookup results to improve normalization efficiency.
 
-## 5. Pending Action & Confirm/Reject Flow (`src/interaction_plan.py`, `src/intent_router.py`)
+## 5. Pending Action & Confirm/Reject Flow (`src/session/interaction_plan.py`, `src/session/intent_router.py`)
 `InteractionPlan` carries a `pending_action` field (`"confirm"`, `"reject"`, or `None`) that signals whether the current LLM turn is closing a proposed action:
 - When `pending_action=confirm`, the dialogue manager treats the turn as the user accepting a suggested option (e.g. an assistant-recommended ROV).
 - When `pending_action=reject`, the suggestion is discarded and the dialogue continues to collect the field.

@@ -68,23 +68,27 @@ RUN_COPERNICUS_LIVE_TEST=1 python -m pytest -q mcp/operation-time-window/tests_m
 
 ### 2.3 常用单测试模块运行
 
-如果开发过程中只需要针对特定子模块进行调试，可直接指定模块文件：
+如果开发过程中只需要针对特定子模块进行调试，可直接通过 `pytest` 指定模块文件：
 
 - 意图路由测试：
   ```bash
-  python -m unittest tests/test_intent_routing.py
+  pytest tests/test_intent_routing_matrix.py -v
   ```
 - SlotStore 状态测试：
   ```bash
-  python -m unittest tests/test_slot_consistency.py
+  pytest tests/test_slot_consistency.py -v
   ```
 - TaskIntent 原子发布测试：
   ```bash
-  python -m unittest tests/test_phase1_atomic_publish_final_closeout.py
+  pytest tests/test_phase1_atomic_publish_final_closeout.py -v
   ```
 - ASR 规范化测试：
   ```bash
-  python -m unittest tests/test_asr_normalizer.py
+  pytest tests/test_asr_normalizer.py -v
+  ```
+- 领域子包按需加载测试：
+  ```bash
+  pytest tests/test_package_imports.py -v
   ```
 
 ---

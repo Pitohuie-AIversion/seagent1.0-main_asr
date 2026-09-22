@@ -2,9 +2,9 @@
 tests/test_extractor_submodules.py — 抽取层解耦子模块专有单元测试套件
 
 测试对象：
-1. TemporalParser (src/temporal_parser.py): 相对时间语义探测、区间物化与时长算术
-2. CandidateResolver (src/candidate_resolver.py): 序数匹配、口语清洗、别名模糊匹配与数值规范化
-3. ParameterExtractor (src/extractor.py): 门面调度、子模块协作与向后兼容代理契约
+1. TemporalParser (src/temporal/temporal_parser.py): 相对时间语义探测、区间物化与时长算术
+2. CandidateResolver (src/slots/candidate_resolver.py): 序数匹配、口语清洗、别名模糊匹配与数值规范化
+3. ParameterExtractor (src/extraction/extractor.py): 门面调度、子模块协作与向后兼容代理契约
 """
 
 import unittest

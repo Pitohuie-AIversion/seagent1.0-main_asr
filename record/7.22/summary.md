@@ -12,11 +12,11 @@
   - 修复确认函数参数不一致问题。
   - 将查询、控制、聊天、写入线路拆开，避免查询误写 SlotStore。
 
-- `src/extractor.py`
+- `src/extraction/extractor.py`
   - 明确职责为“槽位候选抽取器”。
   - 删除旧的意图分类职责，避免和 `IntentRouter` 重复判断。
 
-- `src/intent_router.py`
+- `src/session/intent_router.py`
   - 新增独立交互路由器。
   - 第一层判断 `QUERY / WRITE / CONTROL / CHAT / AMBIGUOUS`。
   - 新增 `RouteValidator`，LLM 判断后必须经过程序校验。
@@ -26,26 +26,26 @@
   - `extract_json()` 只服务字段抽取，不再混用旧意图分类。
   - 删除旧的 `classify_intent` 冗余逻辑。
 
-- `src/normalizer.py`
+- `src/extraction/normalizer.py`
   - 合并 allowed_values 规范化逻辑。
   - 保证字段值收敛到配置/知识库给出的合法候选。
 
-- `src/output_builder.py`
+- `src/dispatch/output_builder.py`
   - 合并动态缺失字段与 allowed_values 解析。
   - 支持机器人系列、型号、编号按依赖关系动态生成候选。
 
-- `src/slot_store.py`
+- `src/slots/slot_store.py`
   - 合并事务提交、版本控制、动态缺失字段、输出投影能力。
   - 支持查询线路前后 SlotStore version 不变的安全检查。
 
-- `src/task_intent_builder.py`
+- `src/dispatch/task_intent_builder.py`
   - 合并任务意图 JSON 构建与发布能力。
   - 增加 `intent_id` 校验、staging 文件、发布冲突保护。
 
-- `src/history_manager.py`
+- `src/session/history_manager.py`
   - 合并历史记录路径与 `intent_id` 关联保存。
 
-- `src/id_sequence.py`
+- `src/dispatch/id_sequence.py`
   - 合并每日递增 ID 生成逻辑。
   - 增加 `intent_id` 格式校验。
 
@@ -53,11 +53,11 @@
   - 合并机器人设备、别名、工具、能力等知识库检索接口。
   - 支持设备 full_name 候选读取。
 
-- `src/prompts.py`
+- `src/extraction/prompts.py`
   - 强化 allowed_values 展示约束。
   - 要求所有候选项逐字使用后端给出的 allowed_values，不允许 LLM 自行改写、简称或补充。
 
-- `src/validator.py`
+- `src/validation/validator.py`
   - 合并约束校验相关变更。
 
 - `web_backend.py`
@@ -66,7 +66,7 @@
 - 新增 `src/exceptions.py`
   - 统一任务发布、冲突、持久化等异常类型。
 
-- 新增 `src/result_paths.py`
+- 新增 `src/dispatch/result_paths.py`
   - 统一结果、历史、任务文件路径。
 
 - `tests/test_dialogue_manager_rov.py`
@@ -85,7 +85,7 @@
 已执行定向验证：
 
 ```text
-python -m py_compile src/intent_router.py src/llm_client.py src/extractor.py src/dialogue_manager.py tests/test_dialogue_manager_rov.py
+python -m py_compile src/session/intent_router.py src/llm_client.py src/extraction/extractor.py src/dialogue_manager.py tests/test_dialogue_manager_rov.py
 
 python -m unittest \
   tests.test_dialogue_manager_rov.DialogueManagerROVTest.test_interaction_router_prioritizes_write_over_entity_keyword_query \

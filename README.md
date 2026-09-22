@@ -56,12 +56,23 @@ graph TD
 │   ├── development/     # 开发与测试指南
 │   └── progress/        # 阶段验证与缺陷跟踪报表
 ├── requirements/        # Python 依赖管理 (base.txt, test.txt, gpu.txt)
-├── src/                 # 系统核心 Python 源码模块
-│   ├── intent_router.py # WRITE/QUERY 路由控制
-│   ├── slot_store.py    # 统一状态中心 SlotStore
-│   ├── extractor.py     # 候选值提炼与三级解析
-│   ├── validator.py     # 物理/海况限制校验
-│   └── task_intent_builder.py # TaskIntent 排他锁与原子落盘
+├── src/                 # 系统核心 Python 源码模块（已完成 DDD 领域分层与内聚治理）
+│   ├── asr/             # ASR 语音转写服务与领域专有名词纠偏
+│   ├── temporal/        # 时间语义抽取、相对时间计算与时间范围引擎
+│   ├── slots/           # 槽位存储 (SlotStore)、版本控制、候选仲裁与快照持久化
+│   ├── validation/      # 规则引擎、空间范围校验、综合约束门禁与遥测安全
+│   ├── dispatch/        # TaskIntent 构建、原子发布 (Staging/Lock)、派发与适配器
+│   ├── extraction/      # NLU 槽位抽取、语义规范化、Prompt 模板与油田实体对齐
+│   ├── session/         # 对话会话生命周期、影子跟踪、交互计划与意图路由
+│   ├── handlers/        # DialogueManager 状态机各业务处理子模块
+│   ├── knowledge/       # 油田知识图谱、设备层次图与本体查询引擎
+│   ├── types/           # 核心数据结构与路由类型定义
+│   ├── utils/           # 跨进程文件锁与通用辅助工具
+│   ├── web/             # Web API 蓝图路由与 SSE 打字机流服务
+│   ├── dialogue_manager.py # 对话总协调器门面 (HSM Facade)
+│   ├── llm_client.py    # 大模型统一接口客户端
+│   ├── knowledge_retriever.py # 知识库门面入口
+│   └── constants.py     # 全局业务字段标签与常量单点真实源 (SSOT)
 ├── frontend/            # 前端交互 Web 资源 (index.html, js/, css/)
 ├── tests/               # 自动化单元测试与回归测试套件
 ├── run.py               # 系统主入口服务

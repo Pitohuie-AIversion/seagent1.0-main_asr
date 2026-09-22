@@ -67,7 +67,7 @@ curl -X POST http://localhost:8890/api/robot/set-state-info \
   }'
 ```
 > [!IMPORTANT]
-> The `update_timestamp` must match the current simulated time (queried from `src/simulated_time.py`). If the data is more than 1 hour old relative to the simulated time, the validator will mark the state as stale and block task execution.
+> The `update_timestamp` must match the current simulated time (queried from `src/temporal/simulated_time.py`). If the data is more than 1 hour old relative to the simulated time, the validator will mark the state as stale and block task execution.
 
 ## 4. Verifying Saved Output Artifacts
 When a dialogue task is completed and confirmed by the user:

@@ -40,13 +40,13 @@ SEAgent 是一个面向水下 ROV 作业任务规划的对话系统。用户用�
 
 | 主要涉及的脚本 | 实现的功能 |
 | --- | --- |
-| `seagent/seagent/src/normalizer.py` | 把用户说出来的“非标准字段值”映射成系统配置里允许的“标准字段值”。<br>例如用户可能说工作型机器人，`normalizer`将它映射为存放在`config`/`task_schemas`里的`allowed_values`中的某一候选。<br>如果用户输入和允许值完全相等，直接返回标准值。<br>如果字段是列表，就把字符串拆成多个项，逐个归一化。<br>如果精确匹配失败，就调用 LLM，让模型从合法选项里选一个最接近的。<br>如果模型返回的结果不在合法选项里，则丢弃，返回 `None`。 |
-| `seagent/seagent/src/extractor.py` | 1. 调用 LLM 从自然语言中提取任务类型、紧急模式和任务参数。<br>2. 根据任务是否已确定，分别执行任务类型识别或按模板所需字段提取。<br>3. 每轮只返回新增或修改字段的 JSON diff，并限制字段和任务类型在系统支持范围内。<br>4. 以模拟当前时间为基准，将口语时间、水深和坐标按prompt要求归一化。<br>5. 结合对话上下文理解连续指令及用户对修改建议的确认。<br>6. 对模糊 ROV 描述提取 `rov_description`，避免直接填入不确定型号。<br>7. 根据任务类型和设备列表，通过 LLM 推荐最多 3 个 ROV 候选。 |
-| `seagent/seagent/src/output_builder.py` | 1. 根据 `task_type` 和运行模式读取对应的 `output_schema`。<br>2. 生成待收集字段，并过滤无需用户填写的 `auto`、`fixed` 字段。<br>3. 根据任务状态构建标准 flat JSON，同时返回缺失字段供对话继续追问。<br>4. 自动生成按任务类型、模拟日期和当日序号组成的 `task_id`，并扫描历史文件避免重复。<br>5. 校验任务类型、坐标、数值、时间、原始值、字符串和列表等字段类型。<br>6. 解析并校验内联 `allowed_values` 及 ROV、支持船、工具等 `allowed_values_ref`。<br>7. 缓存合法值解析结果，并提供字段合法值查询接口供规范化流程使用。 |
+| `src/extraction/normalizer.py` | 把用户说出来的“非标准字段值”映射成系统配置里允许的“标准字段值”。<br>例如用户可能说工作型机器人，`normalizer`将它映射为存放在`config`/`task_schemas`里的`allowed_values`中的某一候选。<br>如果用户输入和允许值完全相等，直接返回标准值。<br>如果字段是列表，就把字符串拆成多个项，逐个归一化。<br>如果精确匹配失败，就调用 LLM，让模型从合法选项里选一个最接近的。<br>如果模型返回的结果不在合法选项里，则丢弃，返回 `None`。 |
+| `src/extraction/extractor.py` | 1. 调用 LLM 从自然语言中提取任务类型、紧急模式和任务参数。<br>2. 根据任务是否已确定，分别执行任务类型识别或按模板所需字段提取。<br>3. 每轮只返回新增或修改字段的 JSON diff，并限制字段和任务类型在系统支持范围内。<br>4. 以模拟当前时间为基准，将口语时间、水深和坐标按prompt要求归一化。<br>5. 结合对话上下文理解连续指令及用户对修改建议的确认。<br>6. 对模糊 ROV 描述提取 `rov_description`，避免直接填入不确定型号。<br>7. 根据任务类型和设备列表，通过 LLM 推荐最多 3 个 ROV 候选。 |
+| `src/dispatch/output_builder.py` | 1. 根据 `task_type` 和运行模式读取对应的 `output_schema`。<br>2. 生成待收集字段，并过滤无需用户填写的 `auto`、`fixed` 字段。<br>3. 根据任务状态构建标准 flat JSON，同时返回缺失字段供对话继续追问。<br>4. 自动生成按任务类型、模拟日期和当日序号组成的 `task_id`，并扫描历史文件避免重复。<br>5. 校验任务类型、坐标、数值、时间、原始值、字符串和列表等字段类型。<br>6. 解析并校验内联 `allowed_values` 及 ROV、支持船、工具等 `allowed_values_ref`。<br>7. 缓存合法值解析结果，并提供字段合法值查询接口供规范化流程使用。 |
 
 ### 2. 任务准入
 
-任务准入负责判断任务参数是否满足作业要求。准入检查由 `src/validator.py` 执行，规则配置在 `config/constraints.yaml`。
+任务准入负责判断任务参数是否满足作业要求。准入检查由 `src/validation/validator.py` 执行，规则配置在 `config/constraints.yaml`。
 
 准入结果分两类：
 
@@ -107,7 +107,7 @@ SEAgent 是一个面向水下 ROV 作业任务规划的对话系统。用户用�
 
 - `src/environment_info.py`：按坐标查询禁入区、DVL 风险区、底质（静态）。
 - `web_backend.py` `/api/robot/set-state-info`：外部系统上报流速、浊度等信息（动态）。
-- `src/validator.py`：执行禁入区、DVL 风险、海床底质等环境类约束；同时读取机器人状态执行浑浊度、流速、障碍物、母船支援等状态类约束。
+- `src/validation/validator.py`：执行禁入区、DVL 风险、海床底质等环境类约束；同时读取机器人状态执行浑浊度、流速、障碍物、母船支援等状态类约束。
 
 #### 2.2 状态准入
 
@@ -152,7 +152,7 @@ SEAgent 是一个面向水下 ROV 作业任务规划的对话系统。用户用�
 
 - `src/state_info.py`：读写机器人实时状态。
 - `web_backend.py` `/api/robot/set-state-info`：外部系统上报机器人状态。
-- `src/validator.py`：执行设备状态类约束判断。
+- `src/validation/validator.py`：执行设备状态类约束判断。
 
 状态上报示例见四。
 
@@ -175,9 +175,9 @@ SEAgent 是一个面向水下 ROV 作业任务规划的对话系统。用户用�
 | 检查项 | 说明 | 主要配置/脚本 |
 | --- | --- | --- |
 | 任务类型范围 | 只接受当前支持的任务类型 | `config/task_schemas.yaml` |
-| 必填字段完整性 | 缺字段时不能进入最终确认 | `src/output_builder.py` |
+| 必填字段完整性 | 缺字段时不能进入最终确认 | `src/dispatch/output_builder.py` |
 | 枚举字段合法性 | 设备、工具、船舶等必须来自合法选项 | `config/assets.yaml`, `config/robot_fleet.yaml` |
-| 时间类型判断 | 根据开始时间判断立即任务/未来任务 | `src/dialogue_manager.py`, `src/simulated_time.py` |
+| 时间类型判断 | 根据开始时间判断立即任务/未来任务 | `src/dialogue_manager.py`, `src/temporal/simulated_time.py` |
 
 ## 二、config和src
 
@@ -186,21 +186,24 @@ SEAgent 是一个面向水下 ROV 作业任务规划的对话系统。用户用�
 | 脚本 | 功能说明 |
 | --- | --- |
 | `src/__init__.py` | `src` 包的统一导出入口。 |
-| `src/coord_parser.py` | 因prompt效果有限，用规则的形式把其他格式的坐标（例如：北纬xx度，东经xx度等类型）转化成（lat，lon）格式。 |
+| `src/asr/asr_service.py` | ASR 语音识别转写服务，支持多种音频格式与置信度过滤。 |
+| `src/session/intent_router.py` | 双通道路由器，区分读知识/状态 (QUERY) 与任务构建 (WRITE)。 |
+| `src/slots/slot_store.py` | 统一任务状态中心 (Single Source of Truth)，支持版本追踪与事务回滚。 |
+| `src/extraction/coord_parser.py` | 因prompt效果有限，用规则的形式把其他格式的坐标（例如：北纬xx度，东经xx度等类型）转化成（lat，lon）格式。 |
 | `src/dialogue_manager.py` | 对话主控制器，串联任务类型识别、字段提取、字段规范化、缺失字段判断、约束检查、回复生成、最终确认和任务输出。 |
 | `src/environment_info.py` | 环境信息查询模块，将任务中传入的作业坐标与 `config/environment.yaml` 配置的油田、禁入区和 DVL 风险区经纬度范围进行比较，返回是否禁入、海床底质和 DVL 风险信息。 |
-| `src/extractor.py` | 字段提取器，调用 LLM 从用户输入中提取任务类型和任务字段，只返回本轮新增/更新字段的 JSON diff。 |
-| `src/history_manager.py` | 对话历史快照管理，任务完成后把会话记录、任务状态、最终 JSON 等保存到 `/root/result/history`，并支持列表和读取。 |
-| `src/id_sequence.py` | 日期递增编号工具，供builder调用，并会扫描已有结果文件避免重复。 |
+| `src/extraction/extractor.py` | 字段提取器，调用 LLM 从用户输入中提取任务类型和任务字段，只返回本轮新增/更新字段的 JSON diff。 |
+| `src/session/history_manager.py` | 对话历史快照管理，任务完成后把会话记录、任务状态、最终 JSON 等保存到 `/root/result/history`，并支持列表和读取。 |
+| `src/dispatch/id_sequence.py` | 日期递增编号工具，供builder调用，并会扫描已有结果文件避免重复。 |
 | `src/knowledge_retriever.py` | 知识库加载与按需检索模块，统一读取任务 schema、设备库、资源库、约束、环境和状态信息，并按当前任务状态拼接相关知识。 |
 | `src/llm_client.py` | 模型调用底座。 |
-| `src/normalizer.py` | 字段值规范化器，把 LLM 提取出的原始字段映射到合法枚举值，优先精确/包含匹配，必要时再调用 LLM 辅助映射。 |
-| `src/output_builder.py` | 标准 JSON 构建器，根据 `task_schemas.yaml` 把 `task_state` 转成最终 flat JSON，同时判断缺失字段、解析 allowed_values_ref、生成 task_id。 |
-| `src/prompts.py` | 对话回复 prompt 构建模块，根据字段缺失、硬/软约束、任务阶段、知识上下文等生成给回复模型的 system/user messages。 |
-| `src/simulated_time.py` | 模拟时间管理模块，提供当前模拟时间、日期、时间戳设置和读取能力，用于任务时间判断和状态时间戳。 |
+| `src/extraction/normalizer.py` | 字段值规范化器，把 LLM 提取出的原始字段映射到合法枚举值，优先精确/包含匹配，必要时再调用 LLM 辅助映射。 |
+| `src/dispatch/output_builder.py` | 标准 JSON 构建器，根据 `task_schemas.yaml` 把 `task_state` 转成最终 flat JSON，同时判断缺失字段、解析 allowed_values_ref、生成 task_id。 |
+| `src/extraction/prompts.py` | 对话回复 prompt 构建模块，根据字段缺失、硬/软约束、任务阶段、知识上下文等生成给回复模型的 system/user messages。 |
+| `src/temporal/simulated_time.py` | 模拟时间管理模块，提供当前模拟时间、日期、时间戳设置和读取能力，用于任务时间判断和状态时间戳。 |
 | `src/state_info.py` | 机器人状态读写模块，将外部状态上报接口传入的状态更新覆盖到 `config/state.yaml` ，同时为 `validator.py` 提供最新状态数据用于约束判断。 |
-| `src/task_intent_builder.py` | TaskIntent 生成模块，用户最终确认后把任务转换为执行系统需要的 TaskIntent JSON，并写入 `/root/result/task`。 |
-| `src/validator.py` | 约束验证器，根据 `constraints.yaml` 和当前任务状态执行硬/软约束校验，支持按变化字段增量检查和违规信息格式化。 |
+| `src/dispatch/task_intent_builder.py` | TaskIntent 生成模块，用户最终确认后把任务转换为执行系统需要的 TaskIntent JSON，并写入 `/root/result/task`。 |
+| `src/validation/validator.py` | 约束验证器，根据 `constraints.yaml` 和当前任务状态执行硬/软约束校验，支持按变化字段增量检查和违规信息格式化。 |
 
 ### 2.`config` 脚本说明
 
@@ -382,8 +385,8 @@ python -c "import vllm; print('vllm ok')"
 
 | 输出 | 路径 | 脚本 |
 | --- | --- | --- |
-| TaskIntent JSON | `.../result/task/task_intent_{intent_id}.json` | `src/task_intent_builder.py` |
-| 对话历史快照 | `.../result/history/history_{intent_id}.json` | `src/history_manager.py` |
+| TaskIntent JSON | `.../result/task/task_intent_{intent_id}.json` | `src/dispatch/task_intent_builder.py` |
+| 对话历史快照 | `.../result/history/history_{intent_id}.json` | `src/session/history_manager.py` |
 
 ## 七、能力总结
 

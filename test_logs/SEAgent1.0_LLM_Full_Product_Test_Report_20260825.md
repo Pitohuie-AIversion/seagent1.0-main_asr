@@ -139,7 +139,7 @@ WARN  ███                                                   3 (5.0%)
 | **具体表现** | 同一条消息同时指定任务类型 + 水深 + 开始时间 → `collected.start_time`, `collected.end_time` 均为 null |
 | **影响范围** | 多轮合并回合时 UI 对已填写字段的高亮回显 |
 | **复现步骤** | 1. session=s 发送 `创建管缆巡检，开始时间2026-09-01 08:00，水深150米` <br> 2. 再发 `结束时间2026-09-01 18:00` <br> 3. 检查 `collected` 中时间字段 |
-| **根因初步定位** | 与 P-01 同源：Mock LLMClient 不输出 extractor JSON，导致 collected 填充链路未触发；另外时间解析依赖 [relative_time_parser.py](file:///root/mzy/seagent1.0-main_asr/src/relative_time_parser.py) + [duration_parser.py](file:///root/mzy/seagent1.0-main_asr/src/duration_parser.py)，仅在 Extractor 产出候选词后调用，Mock 下候选词为空直接跳过。 |
+| **根因初步定位** | 与 P-01 同源：Mock LLMClient 不输出 extractor JSON，导致 collected 填充链路未触发；另外时间解析依赖 [relative_time_parser.py](file:///root/mzy/seagent1.0-main_asr/src/temporal/relative_time_parser.py) + [duration_parser.py](file:///root/mzy/seagent1.0-main_asr/src/temporal/duration_parser.py)，仅在 Extractor 产出候选词后调用，Mock 下候选词为空直接跳过。 |
 | **验证方法** | 真实模型环境重跑；或在 Mock LLM 中对 `时间/日期` 正则命中后回填 ISO 字符串。 |
 | **修复建议** | 统一 P-01 / P-02 合并修复：在 Mock Extractor 层加入领域正则（水深/时间/坐标/管缆类型/载荷），让 OFFLINE_MOCK 模式也能产出完整 collected，保障前端联调。 |
 

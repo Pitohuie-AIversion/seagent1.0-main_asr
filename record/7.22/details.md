@@ -77,7 +77,7 @@ CONTROL
 
 ---
 
-### 2. `src/intent_router.py`
+### 2. `src/session/intent_router.py`
 
 #### 修改内容
 
@@ -156,7 +156,7 @@ LLM 先判断用户是在提交信息还是询问信息
 
 ---
 
-### 3. `src/extractor.py`
+### 3. `src/extraction/extractor.py`
 
 #### 修改内容
 
@@ -255,7 +255,7 @@ ParameterExtractor -> extract_json() -> extract_slots()
 
 ---
 
-### 5. `src/prompts.py`
+### 5. `src/extraction/prompts.py`
 
 #### 修改内容
 
@@ -283,7 +283,7 @@ equipment_unit_id -> 具体编号/实例候选
 
 ---
 
-### 6. `src/normalizer.py`
+### 6. `src/extraction/normalizer.py`
 
 #### 修改内容
 
@@ -299,7 +299,7 @@ equipment_unit_id -> 具体编号/实例候选
 
 ---
 
-### 7. `src/output_builder.py`
+### 7. `src/dispatch/output_builder.py`
 
 #### 修改内容
 
@@ -327,7 +327,7 @@ equipment_family
 
 ---
 
-### 8. `src/slot_store.py`
+### 8. `src/slots/slot_store.py`
 
 #### 修改内容
 
@@ -348,7 +348,7 @@ SlotStore 成为任务状态的权威来源。
 
 ---
 
-### 9. `src/task_intent_builder.py`
+### 9. `src/dispatch/task_intent_builder.py`
 
 #### 修改内容
 
@@ -373,7 +373,7 @@ prepare
 
 ---
 
-### 10. `src/history_manager.py`
+### 10. `src/session/history_manager.py`
 
 #### 修改内容
 
@@ -387,7 +387,7 @@ prepare
 
 ---
 
-### 11. `src/id_sequence.py`
+### 11. `src/dispatch/id_sequence.py`
 
 #### 修改内容
 
@@ -421,7 +421,7 @@ prepare
 
 ---
 
-### 13. `src/validator.py`
+### 13. `src/validation/validator.py`
 
 #### 修改内容
 
@@ -459,7 +459,7 @@ prepare
 
 ---
 
-### 16. 新增 `src/result_paths.py`
+### 16. 新增 `src/dispatch/result_paths.py`
 
 #### 修改内容
 
@@ -646,9 +646,9 @@ route.interaction_type == "WRITE"
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 /root/miniconda3/envs/seagent/bin/python -m py_compile \
-  src/intent_router.py \
+  src/session/intent_router.py \
   src/llm_client.py \
-  src/extractor.py \
+  src/extraction/extractor.py \
   src/dialogue_manager.py \
   tests/test_dialogue_manager_rov.py
 ```
