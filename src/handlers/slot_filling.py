@@ -700,6 +700,26 @@ class SlotFillingHandler(BaseDialogueHandler):
             state_before_turn,
         )
 
+        if payload_mutation_failed and mutation_failure_result:
+            # A failed write needs an authoritative result, not a second model
+            # summary which may describe the requested change as committed.
+            # Keep receipts for other fields successfully committed this turn.
+            error = mutation_failure_result.get("error") or "载荷修改操作失败。"
+            reply = self.ground_write_reply(
+                "",
+                accepted_updates=accepted_updates,
+                unresolved_inputs=[*turn_unresolved, f"载荷操作失败：{error}"],
+                missing_fields=missing,
+                display_updates=self.get_committed_update_display_values(accepted_updates),
+                task_state=manager.task_state,
+                constraint_context=constraint_context,
+            )
+            manager.conversation_history.extend([
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": reply},
+            ])
+            return reply
+
         # 生成回复
         messages = build_responder_messages(
             task_state=manager.task_state,
@@ -731,13 +751,6 @@ class SlotFillingHandler(BaseDialogueHandler):
             constraint_context=constraint_context,
         )
         reply = manager._ensure_constraint_details(reply, constraint_context)
-
-        if payload_mutation_failed and mutation_failure_result:
-            err_msg = mutation_failure_result.get("error") or "载荷修改操作失败。"
-            if accepted_updates:
-                reply = f"{reply}\n注意：载荷操作失败：{err_msg}"
-            else:
-                reply = f"操作失败：{err_msg}"
 
         manager.conversation_history.append({"role": "user", "content": user_message})
         manager.conversation_history.append({"role": "assistant", "content": reply})

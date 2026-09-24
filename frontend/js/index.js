@@ -2157,17 +2157,20 @@ Please describe your operational requirements directly, or ask the question you 
         grid.appendChild(card);
       });
 
-      confirmBtn.addEventListener('click', () => {
+      confirmBtn.addEventListener('click', async () => {
         const selectedList = getSelectedList();
         if (!isSending && selectedList.length > 0) {
           const fieldSelectionText = `确认选择${labelText}：${selectedList.join('、')}`;
           messageInput.value = fieldSelectionText;
-          if (typeof patchSidebarSlot === 'function') {
-            patchSidebarSlot({ key: 'payload', value: selectedList, status: 'valid' });
-          }
           confirmBtn.disabled = true;
           confirmBtn.textContent = currentLang === 'zh' ? '已选择，正在同步...' : 'Selected, syncing...';
-          sendMessage(fieldSelectionText);
+          try {
+            // The sidebar reflects backend results, never an unsaved selection.
+            await sendMessage(fieldSelectionText);
+          } finally {
+            confirmBtn.disabled = false;
+            updateStyles();
+          }
         }
       });
       panel.appendChild(confirmBtn);

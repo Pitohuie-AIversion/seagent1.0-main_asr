@@ -332,6 +332,7 @@ class TestIssue13PayloadMutations(unittest.TestCase):
 
     def test_failed_payload_mutation_does_not_discard_other_valid_update(self):
         dm, llm = self._seed_pipeline_dm([self.cam])
+        llm.default_reply = "已确认多功能液压机械臂作为搭载载荷，所有参数都已更新。"
         llm.queue_plan(make_plan("WRITE"))
         llm.queue_extraction(
             extraction_result(
@@ -363,6 +364,10 @@ class TestIssue13PayloadMutations(unittest.TestCase):
         self.assertEqual(payload_slot.status, "valid")
         self.assertIsNotNone(payload_slot.validation_error)
         self.assertIn("载荷操作失败", reply)
+        self.assertNotIn("已确认多功能液压机械臂", reply)
+        self.assertNotIn("所有参数都已更新", reply)
+        self.assertIn("350", reply)
+        self.assertIn(self.cam, reply)
 
 
 if __name__ == "__main__":

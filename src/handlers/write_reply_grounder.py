@@ -277,7 +277,17 @@ class WriteReplyGrounder:
 
         receipt = "\n".join(parts)
 
-        if not actual_model_reply or not str(actual_model_reply).strip():
+        # Clearing a list must not retain prose that claims a new payload was
+        # installed. The receipt already describes the committed empty value.
+        if (visible.get("payload") == [] or (not visible and not task_state)
+                or not actual_model_reply or not str(actual_model_reply).strip()):
+            return receipt
+
+        # A model may repeat an older payload from dialogue history during an
+        # unrelated edit. Only the retained-state receipt can describe a payload
+        # that was not committed this turn; regexes for "updated" miss "still is".
+        if ("payload" not in visible and (task_state or {}).get("payload")
+                and re.search(r"载荷|携带工具", str(actual_model_reply))):
             return receipt
 
         # 清洗 actual_model_reply 中的不实或越权声明

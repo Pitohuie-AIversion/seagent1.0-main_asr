@@ -105,7 +105,19 @@ class TelemetryStatusHandler(BaseDialogueHandler):
     ) -> str:
         """处理任务状态、设备运行状态或现场遥测环境状态查询。"""
         state_dict = None
-        if route.query_intent == "TASK_STATUS":
+        plan = route.interaction_plan
+        if route.query_intent == "TASK_STATUS" or (plan and plan.source_policy == "session_state"):
+            if plan and plan.subject_type == "payload":
+                payload = self.task_state.get("payload")
+                slot = self.manager.slot_store.slots.get("payload")
+                lines = [
+                    "当前已保存的携带工具：" + "、".join(payload) + "。"
+                    if payload else "当前尚未保存任何选配载荷。"
+                ]
+                if slot and slot.validation_error:
+                    lines.append(f"上一次载荷修改未生效：{slot.validation_error}")
+                lines.append("这里查询的是任务中的选配载荷；机器人标配机载设备不作为额外载荷记录。本轮未修改任务配置。")
+                return "\n".join(lines)
             status_evidence = {
                 "query_type": "TASK_STATUS",
                 "phase": self.phase,

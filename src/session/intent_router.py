@@ -53,6 +53,12 @@ allowed_values 或 alias_mappings 时，应按该待填字段候选处理为 WRI
 没有明确推荐，且用户本轮也未指明选择，必须 CLARIFY，不能替用户猜测。
 用户用“第三个/选2/最后一个”等序号选择时，只有紧邻上一条助手消息明确展示了
 有序候选才属于 WRITE；不得使用 expected_slot_options 的后台顺序替用户选择。
+查询已经选择、记录、保存的任务参数，或者追问上一轮修改是否成功，属于任务配置
+查询：READ、query_intent=TASK_STATUS、source_policy=session_state；根据被查询
+字段设置 subject_type（例如载荷用 payload）、relation=filled_fields 或 status。
+例如“摄像机到底保存了没有，先解释不要改配置”是在核对会话中的载荷，不是在
+询问摄像机的实时运行状态。只有设备健康、在线情况、实际运行读数或现场环境
+才使用 DEVICE_STATUS/ENVIRONMENT_QUERY 和 realtime_state。
 
 只强制输出 operation。其余字段是可选的语义增强信息：有把握时输出，没有把握可
 省略；代码会从 operation 推导 dialogue_mode 和 needs_clarification。推荐、项目

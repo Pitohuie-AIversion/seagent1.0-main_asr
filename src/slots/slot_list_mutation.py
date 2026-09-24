@@ -377,7 +377,7 @@ class SlotListMutationEngine:
                     continue
                 new_canonicals.append(c_name)
 
-            if items and not new_canonicals and onboard_skipped and not temp_list:
+            if items and not new_canonicals and onboard_skipped:
                 joined = "、".join(str(x) for x in onboard_skipped)
                 return _fail("add", f"'{joined}' 为当前机器人的标配机载设备，无需额外加装。请根据可选载荷进行选择")
 
@@ -405,6 +405,8 @@ class SlotListMutationEngine:
             new_items_raw = _flatten_items(mutation.get("items"))
             if not targets:
                 return _fail("replace", "替换操作必须指定待替换的目标载荷；全量配置请使用 set")
+            if not new_items_raw:
+                return _fail("replace", "替换操作必须指定新载荷；删除载荷请使用 remove")
 
             target_indices = []
             for target_raw in targets:
@@ -431,6 +433,13 @@ class SlotListMutationEngine:
                 if _is_onboard(n_cname, cat_id) or _is_onboard(n_raw, cat_id):
                     continue
                 new_canonicals.append(n_cname)
+
+            # Validate the effective replacement before removing any old items.
+            # Onboard hardware is not an optional payload and cannot turn a
+            # replacement request into an implicit delete.
+            if not new_canonicals:
+                joined = "、".join(str(item) for item in new_items_raw)
+                return _fail("replace", f"'{joined}' 为当前机器人的标配机载设备，无需额外加装。原有载荷配置保持不变，请根据可选载荷进行选择")
 
             for idx in sorted(set(target_indices), reverse=True):
                 temp_list.pop(idx)

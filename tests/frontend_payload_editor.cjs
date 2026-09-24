@@ -10,7 +10,7 @@ class Element {
   get childElementCount() { return this.children.length; }
   appendChild(child) { child.parent = this; this.children.push(child); return child; }
   addEventListener(name, fn) { this.listeners[name] = fn; }
-  click() { this.listeners.click?.({stopPropagation() {}}); }
+  click() { return this.listeners.click?.({stopPropagation() {}}); }
   remove() { this.parent.children = this.parent.children.filter(x => x !== this); }
   get classList() { return { toggle: (name, enabled) => { const c = new Set(this.className.split(' ')); if (enabled) c.add(name); else c.delete(name); this.className = [...c].join(' '); } }; }
 }
@@ -21,16 +21,19 @@ function harness() {
   vm.runInContext(`
     const currentLang='zh'; let isSending=false;
     let lastResponseData=null;
-    const messageInput={value:''}; const messageContainer=root; const sent=[];
+    const messageInput={value:''}; const messageContainer=root; const sent=[]; const sidebarPatches=[];
+    let finishRequest;
     const document={createElement: tag=>new Element(tag),getElementById: id=>all(root).find(e=>e.id===id)};
     function all(node) {return [node,...node.children.flatMap(all)];}
     function getSlotUiLabel(slot) {return slot.label.zh;}
-    function sendMessage(text) {sent.push(text);}
+    function sendMessage(text) {sent.push(text); return new Promise(resolve=>{finishRequest=resolve;});}
+    function patchSidebarSlot(slot) {sidebarPatches.push(slot);}
     ${source.slice(first,last)}
-    globalThis.app={sent, render(state) {lastResponseData={ui_state:state};renderOptionChips(state);}, sections: buildPayloadSections};
+    globalThis.app={sent, sidebarPatches, finish() {finishRequest();}, render(state) {lastResponseData={ui_state:state};renderOptionChips(state);}, sections: buildPayloadSections};
   `, context);
   return {root, app:context.app};
 }
+async function main() {
 const slot = {
   key:'payload',label:{zh:'携带工具'},schema_type:'list',status:'valid',value:['多波束声呐系统'],
   allowed_values:['高清水下摄像机','浑水水下成像系统','多波束声呐系统','机械扫描声呐','云台摄像机'],
@@ -51,10 +54,19 @@ assert(sonar,'Committed sonar must be preselected');
 camera.click(); sonar.click();
 assert.equal(app.sent.length,0,'Option clicks must only change the unsaved local selection');
 assert.deepEqual(slot.value,['多波束声呐系统'],'Option clicks must not mutate committed UI slot');
-nodes.find(e=>e.className==='payload-selector-confirm').click();
+const confirm=nodes.find(e=>e.className==='payload-selector-confirm');
+const submission=confirm.click();
 assert.equal(app.sent.length,1);
 assert(app.sent[0].includes('高清水下摄像机'));
 assert(!app.sent[0].includes('多波束声呐系统'),'Confirmation is the complete newly selected list');
+assert.equal(app.sidebarPatches.length,0,'An unsaved card selection must not update the authoritative sidebar');
+assert.equal(confirm.disabled,true,'Submission must lock its button until the request settles');
+// A handled network/server error settles sendMessage without a new UI state.
+app.finish();
+await submission;
+assert.equal(confirm.disabled,false,'Failed submission must allow a deliberate retry');
+assert(confirm.textContent.startsWith('确认配置'),'Failed submission must stop displaying syncing');
+assert.deepEqual(slot.value,['多波束声呐系统'],'Failed submission must preserve the saved selection');
 app.render(state);
 nodes=descendants(root);
 assert(nodes.some(e=>e.tag==='button' && e.textContent==='✓ 多波束声呐系统'),'Reload restores committed selection, not an unsubmitted choice');
@@ -67,3 +79,5 @@ assert(!descendants(root).some(e=>e.className==='payload-selector-panel'),'Valid
 app.render({...state,read_only:true});
 assert(!descendants(root).some(e=>e.className==='payload-selector-panel'),'Read-only task cannot be edited');
 console.log('Payload editor DOM regressions passed');
+}
+main().catch(error=>{console.error(error);process.exitCode=1;});

@@ -103,6 +103,9 @@ def test_invalid_named_replacement_keeps_confirmed_payload(valve):
     '如果删除阀门扭矩工具会怎么样？',
     '删除阀门扭矩工具会有什么影响？',
     '不要清空全部携带工具。',
+    '请不要替我更换载荷。',
+    '不要帮我删除阀门扭矩工具。',
+    '别擅自清空全部携带工具。',
 ])
 def test_negated_or_hypothetical_edit_cannot_apply_wrong_model_mutation(valve, message):
     dm,llm=valve
@@ -110,6 +113,68 @@ def test_negated_or_hypothetical_edit_cannot_apply_wrong_model_mutation(valve, m
     llm.queue_extraction(extraction([mutation('remove',[TORQUE])]))
     dm.process(message)
     assert dm.slot_store.slots['payload'].value==INITIAL
+    assert not dm.slot_store.slots['payload'].validation_error
+
+
+@pytest.mark.parametrize('prefix', ['我想', '我想要', '请你帮我', '麻烦你', '那我想', '那就请你'])
+def test_polite_replacement_uses_only_named_payload_operands(valve, prefix):
+    dm, llm = valve
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(extraction([mutation(items=[STEREO])]))
+    dm.process(f'{prefix}把浑水水下成像系统换成双目水下成像系统，其他不变。')
+    assert dm.slot_store.slots['payload'].value == [TORQUE, HYDRAULIC, STEREO]
+
+
+def test_clear_receipt_cannot_repeat_a_model_claim_that_payload_was_installed():
+    reply = WriteReplyGrounder.ground_write_reply(
+        '载荷配置：已更新为“高清水下摄像机”。',
+        accepted_updates={'payload': []}, unresolved_inputs=[], task_state={},
+        missing_fields=[{'key': 'payload', 'label': '携带工具'}],
+    )
+    assert '高清水下摄像机' not in reply
+    assert '已清空' in reply
+
+
+def test_empty_task_creation_cannot_claim_user_parameters_are_recorded():
+    reply = WriteReplyGrounder.ground_write_reply(
+        '收到您的构想，系统已记录：水深300米，任务类型为管缆巡检。',
+        accepted_updates={}, unresolved_inputs=['没有可验证的任务字段候选'], task_state={},
+    )
+    assert '系统已记录' not in reply
+    assert '水深300米' not in reply
+    assert '未写入任务状态' in reply
+
+
+def test_unrelated_depth_edit_cannot_repeat_an_older_payload_from_history():
+    reply = WriteReplyGrounder.ground_write_reply(
+        f'水深已修改为320米。当前载荷仍为“{TURBID}”。\n携带载荷：{TURBID}',
+        accepted_updates={'water_depth': 320}, unresolved_inputs=[],
+        task_state={'water_depth': 320, 'payload': [STEREO]},
+    )
+    assert TURBID not in reply
+    assert STEREO in reply
+    assert '320' in reply
+
+
+@pytest.mark.parametrize('query_intent', ['TASK_STATUS', 'DEVICE_STATUS', 'TOOL_QUERY'])
+@pytest.mark.parametrize('saved', [True, False])
+def test_saved_payload_query_uses_session_facts_without_telemetry(valve, query_intent, saved):
+    dm, llm = valve
+    if not saved:
+        dm.slot_store.slots['payload'].value = []
+        dm.slot_store.slots['payload'].status = 'missing'
+        dm._rebuild_cache()
+    dm.slot_store.slots['payload'].validation_error = '高清水下摄像机为标配机载设备'
+    before = copy.deepcopy(dm.slot_store.export_snapshot())
+    llm.queue_plan(make_plan('READ', query_intent=query_intent, subject_type='payload',
+                            relation='filled_fields', source_policy='session_state'))
+    reply = dm.process('你刚才说摄像机已经录入，到底保存了没有？先解释，不要改配置。')
+    assert dm.slot_store.export_snapshot() == before
+    assert not llm.extract_calls
+    assert '实时状态源' not in reply
+    assert '标配机载设备' in reply
+    assert '未修改任务配置' in reply
+    assert TURBID in reply if saved else '尚未保存任何选配载荷' in reply
 
 
 @pytest.mark.parametrize('message', [
@@ -123,6 +188,20 @@ def test_unknown_operand_is_not_silently_replaced_by_known_substring(valve, mess
     reply=dm.process(message)
     assert dm.slot_store.slots['payload'].value==INITIAL
     assert '失败' in reply or '未写入' in reply
+
+
+def test_payload_options_for_current_robot_are_not_routed_to_fleet_catalog(valve):
+    dm, llm = valve
+    before = copy.deepcopy(dm.slot_store.export_snapshot())
+    llm.queue_plan(make_plan('READ', query_intent='TOOL_QUERY', subject_type='payload',
+                            subject_text='成像载荷', relation='list', source_policy='session_state'))
+    llm.default_reply = '该设备可选浑水水下成像系统或双目水下成像系统。'
+    reply = dm.process('可能我叫错名字了。这个机器人能选哪些成像载荷？先告诉我，不修改。')
+    assert '本系统当前支持以下水下机器人' not in reply
+    assert TURBID in reply and STEREO in reply
+    assert llm.chat_calls
+    assert dm.slot_store.export_snapshot() == before
+    assert not llm.extract_calls
 
 
 def test_two_list_edits_preserve_other_tools(valve):

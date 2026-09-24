@@ -219,6 +219,7 @@ class ConversationRouterHandler(BaseDialogueHandler):
                 return reply
 
         plan = route.interaction_plan if route else None
+        is_payload_query = query_intent == "TOOL_QUERY" or bool(plan and plan.subject_type == "payload")
         is_targeted_device_query = bool(
             plan
             and (
@@ -228,10 +229,18 @@ class ConversationRouterHandler(BaseDialogueHandler):
         )
 
         task_fit_answer = self.grounded_catalog.build_grounded_task_fit_answer(user_message, route)
-        if task_fit_answer is not None:
+        if (
+            plan and plan.source_policy == "session_state"
+            and plan.relation in ("status", "filled_fields", "missing_fields")
+        ):
+            # Honor the plan's evidence source even if its legacy query_intent
+            # calls a saved device/payload selection DEVICE_STATUS or TOOL_QUERY.
+            reply = self._handle_status_query(user_message, route)
+        elif task_fit_answer is not None:
             reply = task_fit_answer
         elif (
             not is_targeted_device_query
+            and not is_payload_query
             and any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
             and any(q in user_message for q in ("介绍", "哪些", "支持", "包含", "列表", "清单", "所有", "有哪些", "有什么"))
             and not any(e in user_message for e in ("金牛座", "天鹰座", "凤凰座", "LROV", "WROV", "通用工作级", "轻型工作级", "特种工作级", "001", "002"))
@@ -441,13 +450,15 @@ class ConversationRouterHandler(BaseDialogueHandler):
         if grounded_class_answer is not None:
             return grounded_class_answer
 
+        plan = route.interaction_plan
+        is_payload_query = route.query_intent == "TOOL_QUERY" or bool(plan and plan.subject_type == "payload")
         if (
-            any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
+            not is_payload_query
+            and any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
             and any(q in user_message for q in ("介绍", "哪些", "支持", "包含", "列表", "清单", "所有", "有哪些", "有什么"))
         ):
             return self._build_grounded_fleet_introduction()
 
-        plan = route.interaction_plan
         if (
             plan is not None
             and plan.source_policy == "general_domain"
@@ -518,7 +529,8 @@ class ConversationRouterHandler(BaseDialogueHandler):
                 or any(kw in user_message for kw in ("你叫什么", "你是什么系统", "自我介绍", "系统功能介绍", "系统能力介绍", "你有什么能力"))
             )
             is_fleet_query = (
-                any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
+                not is_payload_query
+                and any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
                 and any(q in user_message for q in ("介绍", "哪些", "什么", "支持", "包含", "列表", "清单", "所有", "推荐", "有哪些", "有什么"))
             )
             if is_fleet_query:

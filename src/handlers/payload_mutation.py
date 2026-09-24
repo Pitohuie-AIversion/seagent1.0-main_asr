@@ -23,7 +23,11 @@ logger = logging.getLogger("src.dialogue_manager")
 _REMOVE = r"删除|移除|去掉|卸下|取消携带|别带|不要带|不要"
 _ADD = r"添加|增加|加装|再带|加上|补充"
 _REPLACE = r"替换成|替换为|换成|换为|改成|改为"
-_NEGATED_ACTION = re.compile(r"(?:不要|不用|无需|不能|别|不|勿)\s*(?:删除|移除|去掉|卸下|清空|清除|替换|更换|换成)")
+_NEGATED_ACTION = re.compile(
+    r"(?:不要|不用|无需|不能|别|不|勿)\s*"
+    r"(?:(?:替我|帮我|给我|为我|擅自|自动|随意|继续|再|去)\s*)*"
+    r"(?:删除|移除|去掉|卸下|清空|清除|替换|更换|换成)"
+)
 _CLEAR_PAYLOAD = re.compile(
     r"^(?:请|帮我|给我)?(?:清空|清除|删除|移除|卸下)(?:全部|所有)?(?:携带的?|选配的?|已选的?)?(?:工具|载荷|payload)$"
     r"|^(?:所有|全部)(?:工具|载荷)(?:都)?(?:不要|删除|移除|卸下)$"
@@ -336,7 +340,10 @@ class PayloadMutationManager(BaseDialogueHandler):
         commands = []
         guarded = False
         for clause in re.split(r"[，,。；;！!]", message or ""):
-            clause = re.sub(r"^(?:然后|并且|再|并|请|帮我|给我)\s*", "", clause.strip())
+            clause = re.sub(
+                r"^(?:(?:那就|那么|那|然后|并且|再|并|请你|请|帮我|给我|我想要|我想|我要|麻烦你)\s*)+",
+                "", clause.strip(),
+            )
             if not clause:
                 continue
             if _NEGATED_ACTION.search(clause) or re.search(r"如果|假如|能否|是否|吗|会怎样|会怎么样|会有什么|[?？]", clause):
