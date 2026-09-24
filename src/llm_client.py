@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import threading
+from copy import deepcopy
 from typing import Any, Literal
 
 try:
@@ -96,7 +97,31 @@ TEMPORAL_RELATION_JSON_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-SLOT_EXTRACTION_JSON_SCHEMA: dict[str, Any] = {
+def complete_extraction_schema_branches(schema: dict[str, Any]) -> dict[str, Any]:
+    """Give each extraction alternative its full object contract.
+
+    The deployed grammar compiler treats anyOf branches independently of the
+    sibling properties/required constraints. Each branch must therefore carry
+    those constraints itself, including candidate keys and required fields.
+    The extraction alternatives only add property restrictions (minItems/type).
+    """
+    result = deepcopy(schema)
+    common = deepcopy(schema)
+    alternatives = common.pop("anyOf")
+    branches = []
+    for alternative in alternatives:
+        branch = deepcopy(common)
+        for key, restrictions in alternative["properties"].items():
+            branch["properties"][key].update(restrictions)
+        branch["required"] = list(dict.fromkeys([
+            *common.get("required", []), *alternative.get("required", []),
+        ]))
+        branches.append(branch)
+    result["anyOf"] = branches
+    return result
+
+
+SLOT_EXTRACTION_JSON_SCHEMA: dict[str, Any] = complete_extraction_schema_branches({
     "type": "object",
     "properties": {
         "slot_candidates": {
@@ -174,7 +199,7 @@ SLOT_EXTRACTION_JSON_SCHEMA: dict[str, Any] = {
     ],
     "required": ["slot_candidates", "list_mutations", "time_relation", "unresolved"],
     "additionalProperties": False,
-}
+})
 
 
 class LLMClient:
@@ -471,11 +496,16 @@ class LLMClient:
         # 敏感 AI 底座与实现信息预检关键词
         sensitive_ai_patterns = [
             "qwen", "gpt", "claude", "llama", "deepseek", "chatgpt", "gemini", "openai",
+            "mistral", "internlm", "baichuan", "glm", "通义千问", "文心一言",
             "底座大模型", "大语言模型", "llm", "系统提示词", "system prompt", "内部prompt",
             "模型路径", "agent路由", "路由逻辑"
         ]
         text_lower = reply_text.lower()
         has_sensitive_ai_info = any(pat in text_lower for pat in sensitive_ai_patterns)
+
+        # 性能优化（方案A）：若原文本中无任何底座大模型或实现信息关键词，直接安全跳过大模型脱敏调用
+        if not has_sensitive_ai_info:
+            return reply_text
 
         messages = [
             {

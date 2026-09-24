@@ -11,7 +11,9 @@ extractor.py — 参数提取器主调度门面 (解耦重构版)
 from __future__ import annotations
 
 import json
+import inspect
 import re
+from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
@@ -24,13 +26,28 @@ from src.temporal.duration_parser import (
     parse_chinese_number,
     parse_duration_spec,
 )
-from src.llm_client import LLMClient
-from .model_profile import ModelRole, _is_unsupported_role_keyword_error
+from src.llm_client import LLMClient, SLOT_EXTRACTION_JSON_SCHEMA, complete_extraction_schema_branches
+from .model_profile import ModelRole, _is_unsupported_role_keyword_error, get_feature_flag
 from .normalizer import FieldNormalizer
 from src.temporal.relative_time_parser import parse_relative_datetime, parse_time_range
 from src.temporal.temporal_parser import TemporalParser
 
 FULL_TURN_EXTRACTION_MAX_TOKENS = 1600
+
+# Stage one chooses a task. Parameter candidates belong to stage two, where
+# their schema and the current date are available. Constrain generation rather
+# than silently dropping an otherwise nonempty model result after inference.
+TASK_SELECTION_JSON_SCHEMA = deepcopy(SLOT_EXTRACTION_JSON_SCHEMA)
+TASK_SELECTION_JSON_SCHEMA["properties"]["slot_candidates"]["items"]["properties"]["canonical_key"] = {
+    "type": "string", "enum": ["task_type", "task_type_key", "emergency_mode"],
+}
+TASK_SELECTION_JSON_SCHEMA["properties"]["list_mutations"] = {"type": "array", "maxItems": 0}
+TASK_SELECTION_JSON_SCHEMA["properties"]["time_relation"] = {"type": "null"}
+TASK_SELECTION_JSON_SCHEMA["anyOf"] = [
+    {"properties": {"slot_candidates": {"minItems": 1}}, "required": ["slot_candidates"]},
+    {"properties": {"unresolved": {"minItems": 1}}, "required": ["unresolved"]},
+]
+TASK_SELECTION_JSON_SCHEMA = complete_extraction_schema_branches(TASK_SELECTION_JSON_SCHEMA)
 
 EXTRACTION_TASK = """\
 你是一个严格的任务参数候选抽取器。
@@ -241,19 +258,45 @@ class ParameterExtractor:
             {"role": "user", "content": user_message},
         ]
 
-        try:
-            result = self.llm.extract_json(
-                messages,
-                max_tokens=FULL_TURN_EXTRACTION_MAX_TOKENS,
-                role=ModelRole.EXTRACTOR,
+        # 方案A性能优化：首轮无歧义任务类型快路径判断（跳过 Stage 1 同步 LLM 调用）
+        fast_result = None
+        if task_type_key is None and get_feature_flag("task_type_fast_path"):
+            fast_result = self._try_fast_extract_task_type(
+                user_message,
+                task_type_map or {},
             )
-        except TypeError as exc:
-            if not _is_unsupported_role_keyword_error(exc):
-                raise
-            result = self.llm.extract_json(
-                messages,
-                max_tokens=FULL_TURN_EXTRACTION_MAX_TOKENS,
-            )
+
+        if fast_result is not None:
+            result = fast_result
+        else:
+            schema_kwargs = {}
+            if task_type_key is None:
+                # Legacy clients may not expose a schema argument. Preserve their
+                # calling convention; production LLMClient supports constrained JSON.
+                try:
+                    parameters = inspect.signature(self.llm.extract_json).parameters
+                except (TypeError, ValueError):
+                    parameters = {}
+                if "json_schema" in parameters or any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+                ):
+                    schema_kwargs["json_schema"] = TASK_SELECTION_JSON_SCHEMA
+
+            try:
+                result = self.llm.extract_json(
+                    messages,
+                    max_tokens=FULL_TURN_EXTRACTION_MAX_TOKENS,
+                    role=ModelRole.EXTRACTOR,
+                    **schema_kwargs,
+                )
+            except TypeError as exc:
+                if not _is_unsupported_role_keyword_error(exc):
+                    raise
+                result = self.llm.extract_json(
+                    messages,
+                    max_tokens=FULL_TURN_EXTRACTION_MAX_TOKENS,
+                    **schema_kwargs,
+                )
 
         if not isinstance(result, dict):
             result = {}
@@ -348,6 +391,110 @@ class ParameterExtractor:
     # ──────────────────────────────────────────────────────────────────────────
     # 候选过滤与消歧装配
     # ──────────────────────────────────────────────────────────────────────────
+
+    def _try_fast_extract_task_type(
+        self,
+        user_message: str,
+        task_type_map: dict[str, str],
+    ) -> dict | None:
+        """方案A性能优化：尝试通过无歧义规则快速识别首轮任务类型，跳过 Stage 1 的 LLM 同步调用。
+
+        若用户输入模糊、包含冲突任务类型或不支持任务，返回 None 优雅回退到 LLM 抽取。
+        """
+        if not user_message or not task_type_map:
+            return None
+
+        # 检查是否包含明确的不支持任务类型，此时应让 LLM 抽取并显式输出 unresolved
+        unsupported_keywords = ["打捞", "拆除", "爆破", "焊接", "搜寻", "救援"]
+        for ukw in unsupported_keywords:
+            if ukw in user_message and "应急救援" not in user_message and "应急抢修" not in user_message:
+                return None
+
+        matched_keys: dict[str, str] = {}
+
+        # 1. 精确匹配 task_type_map 中的所有合法别名
+        for val, t_key in task_type_map.items():
+            if val in user_message:
+                matched_keys[t_key] = val
+
+        # 2. 规则关键词匹配与归一化
+        kw_mappings = [
+            ("巡检", "pipeline_inspection", "管缆巡检"),
+            ("管道巡检", "pipeline_inspection", "管缆巡检"),
+            ("管缆巡检", "pipeline_inspection", "管缆巡检"),
+            ("管线巡检", "pipeline_inspection", "管缆巡检"),
+            ("电缆巡检", "pipeline_inspection", "管缆巡检"),
+            ("埋设", "pipeline_burial", "管缆埋设"),
+            ("管缆埋设", "pipeline_burial", "管缆埋设"),
+            ("开沟埋设", "pipeline_burial", "管缆埋设"),
+            ("埋缆", "pipeline_burial", "管缆埋设"),
+            ("采油树", "tree_valve_operation", "采油树控制面板插入"),
+            ("阀门操作", "tree_valve_operation", "采油树控制面板插入"),
+            ("控制面板", "tree_valve_operation", "采油树控制面板插入"),
+        ]
+        for kw, t_key, disp_name in kw_mappings:
+            if kw in user_message:
+                if t_key not in matched_keys:
+                    matched_keys[t_key] = disp_name
+
+        # 若未命中或命中多于 1 个不同模板类型，说明存在任务类型冲突或歧义，回退到 LLM 处理
+        if len(matched_keys) != 1:
+            return None
+
+        t_key, disp_name = next(iter(matched_keys.items()))
+
+        # 采油树特殊拔出逻辑
+        if t_key == "tree_valve_operation":
+            if "拔出" in user_message:
+                disp_name = "采油树控制面板拔出"
+            elif "插入" in user_message:
+                disp_name = "采油树控制面板插入"
+
+        candidates = [
+            {
+                "raw_key": "作业类型",
+                "canonical_key": "task_type",
+                "raw_value": disp_name,
+                "normalized_value": disp_name,
+                "confidence": 1.0,
+                "resolution_method": "rule_exact",
+            },
+            {
+                "raw_key": "作业类型标识",
+                "canonical_key": "task_type_key",
+                "raw_value": t_key,
+                "normalized_value": t_key,
+                "confidence": 1.0,
+                "resolution_method": "rule_exact",
+            },
+        ]
+
+        # 检查是否包含明确的紧急模式词
+        if any(w in user_message for w in ["紧急", "加急", "应急救援", "应急抢修"]):
+            candidates.append({
+                "raw_key": "紧急模式",
+                "canonical_key": "emergency_mode",
+                "raw_value": "紧急",
+                "normalized_value": True,
+                "confidence": 1.0,
+                "resolution_method": "rule_exact",
+            })
+        elif any(w in user_message for w in ["取消紧急", "非紧急", "正常模式", "按普通模式", "不紧急"]):
+            candidates.append({
+                "raw_key": "紧急模式",
+                "canonical_key": "emergency_mode",
+                "raw_value": "普通",
+                "normalized_value": False,
+                "confidence": 1.0,
+                "resolution_method": "rule_exact",
+            })
+
+        return {
+            "slot_candidates": candidates,
+            "list_mutations": [],
+            "time_relation": None,
+            "unresolved": [],
+        }
 
     def _with_task_type_transition_values(
         self,
