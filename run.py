@@ -48,50 +48,38 @@ PORT = int(os.environ.get("PORT", "8890"))
 CONFIG_DIR = Path(__file__).parent / "config"
 # ======================================================================
 
-def cleanup_port(port: int) -> None:
-    """清理指定 TCP 端口的占用进程（纯 Python /proc fallback 兼容无 fuser 环境）"""
-    if os.system(f"fuser -k {port}/tcp 2>/dev/null") == 0:
-        return
+import socket
 
-    hex_port = f"{port:04X}"
-    inodes = set()
-    for net_file in ["/proc/net/tcp", "/proc/net/tcp6"]:
-        if not os.path.exists(net_file):
-            continue
+
+def check_port_available(port: int, host: str = "0.0.0.0") -> None:
+    """检查目标 TCP 端口是否可用。
+
+    安全原则（P1-3）：
+    端口被占用时默认报错退出（Fail-closed），严禁自动全局扫描 /proc 发送 SIGKILL 或
+    调用 pkill 杀掉外部进程，防止多实例或共享 GPU 主机上误杀其他服务。
+    """
+    target_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
+
+    # 1. 尝试建立连接（检测是否有活跃服务正监听该端口）
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as conn_sock:
+        conn_sock.settimeout(0.5)
+        if conn_sock.connect_ex((target_host, port)) == 0:
+            raise RuntimeError(
+                f"TCP 端口 {port} 已被占用，启动中止！\n"
+                f"为保障共享 GPU 环境与其他工作区实例安全，禁止自动终止外部进程。\n"
+                f"请手动关闭占用该端口的服务，或通过指定 PORT 环境变量（如 PORT=8891）更换端口。"
+            )
+
+    # 2. 尝试实际独占绑定（不设 SO_REUSEADDR 以确保强独占性）
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as bind_sock:
         try:
-            with open(net_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    parts = line.strip().split()
-                    if len(parts) > 9:
-                        local_addr = parts[1]
-                        state = parts[3]
-                        inode = parts[9]
-                        if local_addr.endswith(":" + hex_port) and state == "0A":
-                            inodes.add(inode)
-        except Exception:
-            pass
-
-    if not inodes:
-        return
-
-    import glob
-    import signal
-    current_pid = str(os.getpid())
-    for p in glob.glob("/proc/[0-9]*/fd/*"):
-        try:
-            link = os.readlink(p)
-            for inode in inodes:
-                if f"socket:[{inode}]" in link:
-                    pid_str = p.split("/")[2]
-                    if pid_str != current_pid:
-                        pid = int(pid_str)
-                        print(f"🧹 清理端口 {port} 占用进程 (PID: {pid})...")
-                        try:
-                            os.kill(pid, signal.SIGKILL)
-                        except OSError:
-                            pass
-        except Exception:
-            pass
+            bind_sock.bind((host, port))
+        except OSError as exc:
+            raise RuntimeError(
+                f"TCP 端口 {port} 无法绑定（已被占用或处于占用状态），启动中止！\n"
+                f"为保障共享 GPU 环境与其他工作区实例安全，禁止自动终止外部进程。\n"
+                f"请手动关闭占用该端口的服务，或通过指定 PORT 环境变量（如 PORT=8891）更换端口。"
+            ) from exc
 
 
 
@@ -284,9 +272,7 @@ def _init_mcp_service_if_requested(kb, is_mock: bool = False):
 
 
 if __name__ == "__main__":
-    cleanup_port(PORT)
-    if not (os.environ.get("OFFLINE_MOCK") == "1" or os.environ.get("SEAGENT_OFFLINE_MOCK") == "1"):
-        os.system("pkill -f VLLM::EngineCore 2>/dev/null")
+    check_port_available(PORT)
     startup()
     print(f"🌐 Server running at http://localhost:{PORT}")
     app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
