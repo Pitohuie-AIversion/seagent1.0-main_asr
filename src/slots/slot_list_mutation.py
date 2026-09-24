@@ -364,15 +364,22 @@ class SlotListMutationEngine:
         if op == "add":
             items = _flatten_items(mutation.get("items"))
             new_canonicals = []
+            onboard_skipped = []
             for item_raw in items:
                 cat_id, c_name = _resolve(item_raw)
                 if c_name is None:
                     if _is_onboard(item_raw, cat_id):
+                        onboard_skipped.append(item_raw)
                         continue
                     return _fail("add", f"添加的载荷 '{item_raw}' 非法或不属于当前任务允许范围")
                 if _is_onboard(c_name, cat_id) or _is_onboard(item_raw, cat_id):
+                    onboard_skipped.append(c_name or item_raw)
                     continue
                 new_canonicals.append(c_name)
+
+            if items and not new_canonicals and onboard_skipped and not temp_list:
+                joined = "、".join(str(x) for x in onboard_skipped)
+                return _fail("add", f"'{joined}' 为当前机器人的标配机载设备，无需额外加装。请根据可选载荷进行选择")
 
             for item_to_add in new_canonicals:
                 if item_to_add and not _contains(temp_list, item_to_add):
@@ -435,19 +442,28 @@ class SlotListMutationEngine:
         elif op in ("set", "override"):
             items = _flatten_items(mutation.get("items"))
             new_canonicals = []
+            onboard_skipped = []
             for item_raw in items:
                 cat_id, c_name = _resolve(item_raw)
                 if c_name is None:
                     if _is_onboard(item_raw, cat_id):
+                        onboard_skipped.append(item_raw)
                         continue
                     raw_norm = normalize_payload_match_key(item_raw)
                     if raw_norm in onboard_payload_keys:
+                        onboard_skipped.append(item_raw)
                         continue
                     return _fail(str(op), f"设置的载荷 '{item_raw}' 非法或不属于当前任务允许范围")
                 if _is_onboard(c_name, cat_id) or _is_onboard(item_raw, cat_id):
+                    onboard_skipped.append(c_name or item_raw)
                     continue
                 if c_name not in new_canonicals:
                     new_canonicals.append(c_name)
+
+            if items and not new_canonicals and onboard_skipped:
+                joined = "、".join(str(x) for x in onboard_skipped)
+                return _fail(str(op), f"'{joined}' 为当前机器人的标配机载设备，无需额外加装。请根据可选载荷进行选择")
+
             new_value = new_canonicals
 
 

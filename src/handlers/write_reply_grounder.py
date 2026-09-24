@@ -315,12 +315,38 @@ class WriteReplyGrounder:
             scrubbed = re.sub(r"[^\n。，]*结束时间[^\n。，]*[，。]?", "", scrubbed)
             scrubbed = re.sub(r"[^\n。，]*\d{1,2}:\d{2}[^\n。，]*[，。]?", "", scrubbed)
 
+        # 清洗内部提示词泄露
+        scrubbed = re.sub(r"[，。；\s]*对外可简写为[^\n。，]*[，。]?", "", scrubbed)
+
+        # 清洗臆造的时间窗口矛盾表述
+        scrubbed = re.sub(r"[^\n。，]*系统默认开始时间为[^\n。，]*[，。]?", "", scrubbed)
+        scrubbed = re.sub(r"[^\n。，]*默认[^\n。，]*\d+\s*小时窗口期[^\n。，]*[，。]?", "", scrubbed)
+
         scrubbed = re.sub(r"[^\n。，]*请确认清空[^\n。，]*[，。]?", "", scrubbed)
+
+        payload_val = task_state.get("payload") if task_state else None
+        payload_empty = not payload_val or payload_val == [] or payload_val == [""]
+        if "payload" not in visible or payload_empty:
+            scrubbed = re.sub(r"[^\n。，]*已(为您|自动)?(将|把)?载荷[^\n。，]*(更新|设置|添加|配置|写入|确认为)[^\n。，]*[，。]?", "", scrubbed)
+            scrubbed = re.sub(r"[^\n。，]*已(为您|自动)?(更新|设置|添加|配置|写入|确认为)[^\n。，]*载荷[^\n。，]*[，。]?", "", scrubbed)
+            scrubbed = re.sub(r"[^\n。，]*已(为您|自动)?更新为(高清水下摄像机|浑水水下成像系统|单目水下成像系统)[^\n。，]*[，。]?", "", scrubbed)
 
         if "payload" not in visible:
             scrubbed = re.sub(r"[^\n。，]*已(删除|移除|卸载|清空)[^\n。，]*[，。]?", "", scrubbed)
 
-        # 6. 去除多余标点与空行
+        # 严禁任何未经用户确认的自动配置或替换虚假声明
+        scrubbed = re.sub(r"[^\n。，]*系统已自动确认此配置[^\n。，]*[，。]?", "", scrubbed)
+        scrubbed = re.sub(r"[^\n。，]*已自动为您确认此配置[^\n。，]*[，。]?", "", scrubbed)
+
+        # 6. 去除多余标点、孤立括号与空行
+        scrubbed = re.sub(r"[（\(]\s*[）\)]", "", scrubbed)
+        scrubbed = re.sub(r"^[）\)]\s*", "", scrubbed)
+        scrubbed = re.sub(r"\s*[（\(]$", "", scrubbed)
+        if scrubbed.count("）") > scrubbed.count("（"):
+            scrubbed = re.sub(r"）([。，\s]*)$", r"\1", scrubbed)
+        if scrubbed.count(")") > scrubbed.count("("):
+            scrubbed = re.sub(r"\)([。，\s]*)$", r"\1", scrubbed)
+
         scrubbed = re.sub(r"^[，。；\s]+", "", scrubbed)
         scrubbed = re.sub(r"[，。；\s]+$", "。", scrubbed)
         scrubbed = re.sub(r"([。！？])\1+", r"\1", scrubbed)

@@ -1083,6 +1083,7 @@ Please describe your operational requirements directly, or ask the question you 
 
         const row = document.createElement('div');
         row.className = `field-row ${statusClass}`;
+        row.dataset.slotKey = slot.key;
 
         const labelSpan = document.createElement('span');
         labelSpan.className = 'field-label';
@@ -1324,6 +1325,7 @@ Please describe your operational requirements directly, or ask the question you 
               : ((typeof labelObj === 'string') ? labelObj : (labelObj[currentLang] || labelObj.zh || slot.key));
             const row = document.createElement('div');
             row.className = 'field-row missing';
+            row.dataset.slotKey = slot.key;
             row.innerHTML = svgWarning;
             const labelEl = document.createElement('span');
             labelEl.textContent = label;
@@ -1493,7 +1495,18 @@ Please describe your operational requirements directly, or ask the question you 
       if (foundRow) {
         const valSpan = foundRow.querySelector('.field-value');
         if (valSpan) {
-          valSpan.textContent = String(val);
+          if (Array.isArray(val)) {
+            valSpan.replaceChildren();
+            const ul = document.createElement('ul');
+            for (const item of val) {
+              const li = document.createElement('li');
+              li.textContent = String(item);
+              ul.appendChild(li);
+            }
+            valSpan.appendChild(ul);
+          } else {
+            valSpan.textContent = String(val);
+          }
         }
         foundRow.classList.remove('slot-fill-highlight');
         void foundRow.offsetWidth;
@@ -1515,7 +1528,17 @@ Please describe your operational requirements directly, or ask the question you 
 
         const valSpan = document.createElement('span');
         valSpan.className = 'field-value';
-        valSpan.textContent = String(val);
+        if (Array.isArray(val)) {
+          const ul = document.createElement('ul');
+          for (const item of val) {
+            const li = document.createElement('li');
+            li.textContent = String(item);
+            ul.appendChild(li);
+          }
+          valSpan.appendChild(ul);
+        } else {
+          valSpan.textContent = String(val);
+        }
         newRow.appendChild(valSpan);
 
         collectedDiv.appendChild(newRow);
@@ -1524,10 +1547,11 @@ Please describe your operational requirements directly, or ask the question you 
 
       const missingDiv = document.getElementById('missingFields');
       if (missingDiv) {
-        for (const badge of missingDiv.querySelectorAll('.badge')) {
-          if (badge.textContent.includes(targetLabel) || badge.textContent.includes(key)) {
-            badge.style.opacity = '0.35';
-            badge.style.textDecoration = 'line-through';
+        for (const missingEl of missingDiv.querySelectorAll('.field-row.missing, .badge')) {
+          if (missingEl.dataset.slotKey === key || missingEl.textContent.includes(targetLabel) || missingEl.textContent.includes(key)) {
+            missingEl.style.opacity = '0.35';
+            missingEl.style.textDecoration = 'line-through';
+            missingEl.style.transition = 'all 0.3s ease';
           }
         }
       }
@@ -2138,6 +2162,11 @@ Please describe your operational requirements directly, or ask the question you 
         if (!isSending && selectedList.length > 0) {
           const fieldSelectionText = `确认选择${labelText}：${selectedList.join('、')}`;
           messageInput.value = fieldSelectionText;
+          if (typeof patchSidebarSlot === 'function') {
+            patchSidebarSlot({ key: 'payload', value: selectedList, status: 'valid' });
+          }
+          confirmBtn.disabled = true;
+          confirmBtn.textContent = currentLang === 'zh' ? '已选择，正在同步...' : 'Selected, syncing...';
           sendMessage(fieldSelectionText);
         }
       });

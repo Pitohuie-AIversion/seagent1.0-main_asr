@@ -43,3 +43,34 @@ def test_onboard_payloads_skipped_in_mutation_when_robot_selected():
     assert "激光标尺" in val
     assert "腐蚀检测探头" in val
     assert "厚度检测传感器" in val
+
+
+def test_onboard_payload_only_mutation_fails_with_explanation():
+    kb = KnowledgeBase()
+    store = SlotStore(kb)
+
+    schema_field = {"key": "payload", "allowed_values_ref": "payload_options.pipeline_inspection"}
+    mutation = {
+        "field": "payload",
+        "operation": "set",
+        "items": ["高清水下摄像机"],
+        "raw_text": "载荷选高清水下摄像机",
+    }
+
+    new_slots = {
+        "task_type_key": Slot(slot_name="task_type_key", value="pipeline_inspection", value_type="string", status="valid"),
+        "equipment_type": Slot(slot_name="equipment_type", value="轻型工作级深海机器人 150HP", value_type="string", status="valid"),
+        "payload": Slot(slot_name="payload", value=[], value_type="list", status="missing"),
+    }
+
+    res = store.apply_list_mutation(
+        new_slots=new_slots,
+        mutation=mutation,
+        required_schema=[schema_field],
+    )
+
+    assert res.get("success") is False
+    assert "标配机载设备" in str(res.get("error"))
+    # Payload should remain untouched and not corrupted
+    assert new_slots["payload"].value == []
+    assert new_slots["payload"].status == "missing"
