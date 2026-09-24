@@ -40,8 +40,12 @@ def configure_test_artifact_paths() -> Path:
     user_result_env = os.environ.get("SEAGENT_RESULT_DIR")
     if user_result_env:
         resolved_user_dir = Path(user_result_env).expanduser().resolve()
-        # 若非本模块先前主动导出的测试沙箱本身，则属于外部运行态目录，必须严格禁止重叠
-        if resolved_user_dir != _isolated_runtime_dir:
+        # 若非本模块先前主动导出的测试沙箱本身（包括通过环境变量继承给子进程的同一沙箱），则属于外部运行态目录，必须严格禁止重叠
+        is_module_sandbox = (
+            resolved_user_dir == _isolated_runtime_dir
+            or os.environ.get("_SEAGENT_TEST_ISOLATED_RESULT_DIR") == str(resolved_user_dir)
+        )
+        if not is_module_sandbox:
             prohibited_dirs.append(resolved_user_dir)
 
     for prohibited in prohibited_dirs:
@@ -72,6 +76,7 @@ def configure_test_artifact_paths() -> Path:
     # 覆盖 SEAGENT_RESULT_DIR 时仍能获得完整、自洽的局部沙箱。
     os.environ["SEAGENT_RESULT_DIR"] = str(test_root)
     _isolated_runtime_dir = test_root
+    os.environ["_SEAGENT_TEST_ISOLATED_RESULT_DIR"] = str(test_root)
     os.environ.pop("SEAGENT_TASK_DIR", None)
     os.environ.pop("SEAGENT_HISTORY_DIR", None)
 
