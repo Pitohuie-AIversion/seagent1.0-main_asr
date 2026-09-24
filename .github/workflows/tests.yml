@@ -2,7 +2,7 @@ name: SEAgent CI & Regression Verification
 
 on:
   push:
-    branches: [ main, "phase*", "fix/*" ]
+    branches: [ main, "phase*", "fix/*", "feature/*" ]
     paths-ignore:
       - 'docs/**'
       - '*.md'
@@ -34,13 +34,19 @@ jobs:
   full-suite-tests:
     name: Mandatory Full Test Suite & Regression Audit Gate
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       PYTHONPATH: .
-      SEAGENT_TEST_RESULT_DIR: ${{ runner.temp }}/seagent-tests-${{ github.run_id }}
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Set up Test Artifact Isolation Directory
+        run: |
+          test_dir="${RUNNER_TEMP}/seagent-tests-${{ github.run_id }}"
+          mkdir -p "${test_dir}"
+          echo "SEAGENT_TEST_RESULT_DIR=${test_dir}" >> $GITHUB_ENV
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v5

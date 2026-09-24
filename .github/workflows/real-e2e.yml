@@ -27,7 +27,6 @@ jobs:
       PYTHONPATH: .
       TRANSFORMERS_OFFLINE: "1"
       HF_HUB_OFFLINE: "1"
-      SEAGENT_RESULT_DIR: ${{ runner.temp }}/seagent-real-e2e-${{ github.run_id }}
       SEAGENT_VERIFY_ARTIFACTS: "1"
       E2E_UI_TIMEOUT_SECONDS: "180"
       SEAGENT_ASR_AUDIO: ${{ inputs.asr_audio_path || vars.SEAGENT_ASR_TEST_AUDIO }}
@@ -36,6 +35,12 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Initialize Real E2E Isolation Environment
+        run: |
+          result_dir="${RUNNER_TEMP}/seagent-real-e2e-${{ github.run_id }}"
+          mkdir -p "${result_dir}"
+          echo "SEAGENT_RESULT_DIR=${result_dir}" >> $GITHUB_ENV
 
       - name: Verify GPU Runner Prerequisites
         run: |
