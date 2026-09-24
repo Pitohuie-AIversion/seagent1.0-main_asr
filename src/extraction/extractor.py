@@ -93,6 +93,7 @@ EXTRACTION_TASK = """\
 6. 仅当用户明确提及无歧义的紧急词汇（如"紧急"、"加急"、"应急救援"、"应急抢修"等）时，才提取 canonical_key: "emergency_mode" 且 normalized_value: true。严禁因语气词、标点符号（如感叹号）或"赶紧/优先"等泛化词语擅自判断为紧急模式。
 7. 若用户明确表示"取消紧急"、"非紧急"、"正常模式"、"按普通模式"、"不紧急"等，提取 canonical_key: "emergency_mode" 且 normalized_value: false。
 8. 本阶段只允许输出 task_type、task_type_key、emergency_mode。
+9. 本阶段仅用于确定任务类型。用户同时提到的作业时间、时长、水深、管缆类型、地点或设备等具体参数将在下一阶段自动抽取；本阶段严禁将时间、时长、水深等参数输出为 task_type 或 task_type_key。
 """
 
 EXTRACTION_SYSTEM = """\
@@ -103,13 +104,22 @@ EXTRACTION_SYSTEM = """\
 - 只允许输出一个 JSON object，不得输出任何自然语言解释。
 - 即使当前任务已确认、已发布、已锁定，只要用户本轮明确补充、修改或确认字段，也必须抽取为候选列表。
 - 如果用户本轮没有任何字段更新，返回 slot_candidates 为空列表的 JSON。
+- 当用户输入中提及具体作业对象（如海底油气管道、电力电缆、光纤通信缆）时，必须抽取其对应的 canonical_key（如 cable_type）并填入 slot_candidates。
 - 可能提供的最近历史消息用于理解上下文；编号选择只能引用紧邻上一条 assistant 消息中明确展示的有序候选，不能利用 required/allowed_values 的后台顺序；只有最新 user 消息能授权本轮字段更新。
 - 用户本轮明确接受上一轮助手给出的单一推荐时，可以从紧邻的上一条 assistant 消息复制被接受的推荐值；助手之前自行提到的值不能在没有本轮用户授权时写入。
+- 当本轮用户既配置了载荷（产生 list_mutations），又给出了其他常规字段（如具体机器人编号 equipment_unit_id、支持船 support_vessel 等）时，二者必须同时输出：载荷变更填入 list_mutations，其他字段必须填入 slot_candidates，严禁因为有 list_mutations 就遗漏或清空 slot_candidates 中的其他字段！
 - 上游计划已判定本轮包含任务状态变更；必须输出候选、列表变更、时长关系之一，无法落实时必须说明 unresolved，禁止四者同时为空。
 
 【输出格式】
 {{
   "slot_candidates": [
+    {{
+      "raw_key": "管缆类型",
+      "canonical_key": "cable_type",
+      "raw_value": "海底油气管道",
+      "normalized_value": "海底油气管道",
+      "confidence": 0.95
+    }},
     {{
       "raw_key": "水深",
       "canonical_key": "water_depth",
@@ -125,6 +135,8 @@ EXTRACTION_SYSTEM = """\
 
 【提取规则】
 1. 只抽取用户当前已明确表达的参数；如果用户未提及某字段，绝不要在 slot_candidates 中输出该字段。
+   【必须抽取复合短语中的具体作业对象】
+   当用户在复合任务短语或语句中提及具体的作业对象类型时（例如“海底油气管道巡检”中的“海底油气管道”、“电力电缆埋设”中的“电力电缆”、“光纤通信缆巡检”中的“光纤通信缆”），必须提取对应的对象参数（如 canonical_key: "cable_type", normalized_value: "海底油气管道"）！绝不能因为识别了任务大类（管缆巡检/埋设）就遗漏已被明示的具体作业对象类型。不得从任务常识推测用户未说的值。
 2. 对于任务类型，必须同时提取 task_type 与 task_type_key 两个字段：
 {task_type_rules}
 3. 如果当前状态中已有某字段值，但用户在本轮给出了新的值（包括修改、订正、补充），必须提取新值。
@@ -138,7 +150,7 @@ EXTRACTION_SYSTEM = """\
    - 首次配置完整工具清单或明确全量替换时（如"只要A和B"、"改成带A和B"、"载荷设置为A、B"），输出 list_mutations: [{{"field": "payload", "operation": "set", "items": ["A", "B"], "target_items": [], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]
    - 只替换指定旧工具而保留其他工具时（如"把A换成B"），输出 list_mutations: [{{"field": "payload", "operation": "replace", "items": ["B"], "target_items": ["A"], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]；replace 必须提供非空 target_items。
    - raw_text 必须填写本轮用户原句，confidence 为 0 到 1 的数值，source 固定为 user_input。
-   - 产生 list_mutations 时，slot_candidates 中不要再输出 payload 候选。
+   - 产生 list_mutations 时，仅针对 payload 字段不要在 slot_candidates 中重复输出；若用户在本轮同时给出了其他字段（如具体机器人编号 equipment_unit_id、支持船编号 support_vessel、水深、坐标等），必须正常抽取并输出到 slot_candidates 中！
 8. 【时间区间与时长规则】对于 start_time / end_time / 持续时长：
    - 用户表达"两小时后开始"、"明天上午九点"等相对时间时，尝试根据今天日期 {today} 换算为绝对 ISO 时间 "YYYY-MM-DDTHH:MM:SS"。
    - 用户明确表达持续时长或时长增量变动时（如"干2小时"、"作业持续3天"、"时长再延长1小时"、"提前半小时结束"、"结束时间保持不变"），除尽量换算 end_time 外，必须在 time_relation 中输出：
@@ -346,6 +358,7 @@ class ParameterExtractor:
             current_state,
             conversation_history or [],
             user_message=user_message,
+            task_type_map=task_type_map,
         )
 
         raw_mutations = result.get("list_mutations", [])
@@ -561,6 +574,7 @@ class ParameterExtractor:
         current_state: dict,
         conversation_history: list[dict],
         user_message: str = "",
+        task_type_map: dict[str, str] | None = None,
     ) -> tuple[list[dict], list[str]]:
         """校验候选结构；同一字段多次出现时保留最后一次修正。"""
         aliases = {

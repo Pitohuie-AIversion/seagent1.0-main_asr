@@ -953,7 +953,7 @@ class DialogueManager:
         negated = ["不忽略", "不要忽略", "不能忽略", "别忽略", "不无视", "不要无视", "不是忽略"]
         if any(neg in text for neg in negated):
             return False
-        return text in {
+        base_cmds = {
             "忽略警告",
             "忽略警告继续",
             "忽略软警告",
@@ -969,6 +969,19 @@ class DialogueManager:
             "忽略风险",
             "无视",
         }
+        if text in base_cmds:
+            return True
+        prefixes = ("忽略软警告", "忽略警告", "无视软警告", "无视警告", "接受风险", "忽略风险")
+        suffixes = (
+            "继续", "确认", "确认任务", "继续确认", "继续确认任务",
+            "继续发布", "确认发布", "并继续", "并确认", "并发布", "继续执行",
+        )
+        for p in prefixes:
+            if text.startswith(p):
+                rest = text[len(p):]
+                if rest in suffixes:
+                    return True
+        return False
 
 
 

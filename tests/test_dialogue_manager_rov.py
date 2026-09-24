@@ -3,7 +3,7 @@ from datetime import timedelta
 import sys
 import unittest
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -268,10 +268,11 @@ class DialogueManagerROVTest(unittest.TestCase):
         )
         dm = DialogueManager(llm, self.kb)
         version_before = dm.slot_store.version
-        dm.process(
-            "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆类型海底油气管道",
-            request_id="compound_create_test",
-        )
+        with patch("src.temporal.simulated_time.get_current_datetime", return_value=start_time):
+            dm.process(
+                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆类型海底油气管道",
+                request_id="compound_create_test",
+            )
 
         state = dm.slot_store.get_task_state()
         self.assertGreater(dm.slot_store.version, version_before)

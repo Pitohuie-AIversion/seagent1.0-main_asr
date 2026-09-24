@@ -570,6 +570,16 @@ class ConversationRouterHandler(BaseDialogueHandler):
                 max_d = dev.get("max_depth_m")
                 return f"已识别设备【{dev_name}】，其最大作业水深为 {max_d}米，无法满足您询问的 {target_depth}米 作业要求。"
 
+        if (
+            kb_evidence.get("query_type") == "TOOL_QUERY"
+            and plan and plan.subject_type == "payload" and plan.relation == "list"
+            and kb_evidence.get("selected_equipment_info")
+        ):
+            # The selected equipment already provides the authoritative onboard
+            # and optional lists. The global catalogue can overflow context and
+            # introduce tools belonging to other robots into this scoped answer.
+            kb_evidence = {**kb_evidence, "results": []}
+
         messages = build_knowledge_responder_messages(
             kb_evidence,
             self.conversation_history,

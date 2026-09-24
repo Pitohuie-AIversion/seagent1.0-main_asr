@@ -211,6 +211,11 @@ def test_blocked_soft_accepts_prompted_ignore_warning_continue_phrases() -> None
 
 def test_ignore_warning_continue_negation_is_not_acknowledgement() -> None:
     assert DialogueManager._is_ignore_warning("不忽略警告继续") is False
+    assert DialogueManager._is_ignore_warning("不要忽略软警告") is False
+    assert DialogueManager._is_ignore_warning("忽略软警告，继续确认任务。") is True
+    assert DialogueManager._is_ignore_warning("忽略警告确认任务") is True
+    assert DialogueManager._is_ignore_warning("忽略软警告修改水深300米") is False
+
 
 
 def test_blocked_hard_rejects_ignore_warning() -> None:

@@ -200,6 +200,11 @@ def test_payload_options_for_current_robot_are_not_routed_to_fleet_catalog(valve
     assert '本系统当前支持以下水下机器人' not in reply
     assert TURBID in reply and STEREO in reply
     assert llm.chat_calls
+    evidence_prompt = llm.chat_calls[-1][0]['content']
+    assert 'selected_equipment_info' in evidence_prompt
+    assert 'supported_payloads' in evidence_prompt
+    assert 'all_supported_tools' not in evidence_prompt
+    assert 'payload_catalog' not in evidence_prompt
     assert dm.slot_store.export_snapshot() == before
     assert not llm.extract_calls
 
