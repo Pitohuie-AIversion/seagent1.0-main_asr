@@ -41,7 +41,11 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
-LOCAL_MODEL_PATH = "/root/autodl-tmp/model/Qwen3.5-9B"
+LOCAL_MODEL_PATH = (
+    os.environ.get("LOCAL_MODEL_PATH")
+    or os.environ.get("SEAGENT_MODEL_DIR")
+    or "/root/autodl-tmp/model/Qwen3.5-9B"
+)
 PORT = int(os.environ.get("PORT", "8890"))
 
 # ====================== 配置路径（与你的代码一致）======================

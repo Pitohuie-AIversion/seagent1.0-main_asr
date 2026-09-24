@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 from datetime import datetime
 import logging
+import os
 from pathlib import Path
 import sys
 import threading
@@ -49,7 +50,7 @@ class TeeStream:
 
 
 def setup_backend_logging(
-    log_dir: str | Path = DEFAULT_LOG_DIR,
+    log_dir: str | Path | None = None,
     app_name: str = DEFAULT_APP_NAME,
 ) -> Path:
     """Write backend stdout/stderr and logging output to a timestamped log file.
@@ -58,9 +59,20 @@ def setup_backend_logging(
     directly to stdout. Mirroring stdout/stderr keeps those messages in the log
     file while preserving console output for interactive runs.
     """
+    env_dir = os.environ.get("SEAGENT_LOG_DIR")
+    if log_dir is not None:
+        target_dir = Path(log_dir).expanduser().resolve()
+    elif env_dir:
+        target_dir = Path(env_dir).expanduser().resolve()
+    else:
+        target_dir = DEFAULT_LOG_DIR.expanduser().resolve()
 
-    target_dir = Path(log_dir)
-    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError):
+        # 默认路径不可写时（如非 root 用户或非 AutoDL 环境），安全 fallback 到仓库根目录下的 log
+        target_dir = Path(__file__).resolve().parent / "log"
+        target_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = target_dir / f"{app_name}_{timestamp}.log"

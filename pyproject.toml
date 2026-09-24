@@ -5,7 +5,7 @@ description = "水下多智能体任务决策大模型与 ASR 融合接口系统
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    { name = "Google DeepMind Advanced Agentic Coding Team" }
+    { name = "SEAgent Team" }
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -128,5 +128,6 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/example/seagent-asr"
-Issues = "https://github.com/example/seagent-asr/issues"
+Homepage = "https://github.com/Pitohuie-AIversion/seagent1.0-main_asr"
+Issues = "https://github.com/Pitohuie-AIversion/seagent1.0-main_asr/issues"
+Repository = "https://github.com/Pitohuie-AIversion/seagent1.0-main_asr.git"
