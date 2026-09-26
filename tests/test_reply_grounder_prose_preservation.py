@@ -231,3 +231,11 @@ def test_write_response_discards_full_generic_welcome_but_retains_followup(suffi
 def test_write_response_keeps_short_greeting_and_task_specific_list():
     prose = '您好，系统已就绪。\n1. 请提供任务结束时间。\n2. 请提供支持船编号。'
     assert prose in ground(prose)
+
+
+@pytest.mark.parametrize('claim', ['您的任务参数已收集完整。', '所有信息已收集完成。'])
+def test_missing_fields_do_not_claim_complete_collection(claim):
+    result = ground(claim + '\n请补充任务开始时间。', missing=[{'key': 'start_time', 'label': '任务开始时间'}])
+    assert claim not in result
+    assert '请补充任务开始时间。' in result
+    assert '仍需补充：任务开始时间' in result

@@ -72,7 +72,8 @@ class TestKnowledgeGroundedEnhancements(unittest.TestCase):
         )
 
         sys_content = messages[0]["content"]
-        self.assertIn("知识库查找出的真实合规替代设备", sys_content)
+        self.assertIn("满足当前任务类型和水深的替代设备", sys_content)
+        self.assertIn("其他条件仍须校验", sys_content)
         self.assertIn("轻型工作级深海机器人 150HP", sys_content)
         self.assertIn("严禁编造非知识库型号", sys_content)
 

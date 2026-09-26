@@ -390,6 +390,40 @@ class QueryExecutor:
 
         return canonical_matches or alias_matches
 
+    def _payload_configuration_evidence(self) -> dict:
+        """Keep selection semantics with the actual onboard/optional mappings.
+
+        A tool catalogue describes capabilities, not an installation requirement.
+        Pin these compact facts outside the trimmable general catalogue so that
+        a large query cannot lose the distinction while retaining rule prose.
+        """
+        return {
+            "selection_semantics": {
+                "validation_scope": "本证据只说明任务能力与载荷配置，不是完整任务校验结果，不证明可以发布或执行。发布还需完整合法参数、软硬约束处理及明确确认；实际下发还需执行协议支持。",
+                "task_capability": "任务能力取自任务模板 required_capabilities 和机器人族 capabilities，不能由某件选配工具是否出现推断。",
+                "onboard_payloads": "已随机器人自带的机载设备，无需另行加装，不应重复列为必需选配工具。",
+                "supported_payloads": "机器人支持的可选扩展载荷，不表示必须携带。",
+                "task_payload_options": "任务载荷候选范围，不是必选清单；是否允许另带某项还须按所选机器人筛选。",
+                "required_payload": "携带工具字段需要填写不等于某件具体工具必选。只有模板或有效约束明确指定该工具必选时，才能声称不另带它会阻断发布。",
+            },
+            "task_required_capabilities": {
+                key: {
+                    "name": template.get("display_name", key),
+                    "required_capabilities": template.get("required_capabilities", []),
+                }
+                for key, template in self.task_schemas.get("task_templates", {}).items()
+            },
+            "robot_configurations": [
+                {
+                    "equipment_type": robot.get("full_name"),
+                    "capabilities": robot.get("capabilities", []),
+                    "onboard_payloads": robot.get("onboard_payloads", []),
+                    "supported_payloads": robot.get("supported_payloads", []),
+                }
+                for robot in self.kb.get_all_rovs()
+            ],
+        }
+
     def execute_typed_query(
         self,
         query_type: str,
@@ -411,6 +445,12 @@ class QueryExecutor:
             "version": "kb_1.1_hierarchical",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+
+        if query_type == "TOOL_QUERY" or (
+            query_type == "KNOWLEDGE_QA"
+            and re.search(r"载荷|携带|选配|加装|自带|机载|工具|机械臂|声呐", user_message)
+        ):
+            response["payload_configuration_evidence"] = self._payload_configuration_evidence()
 
         if query_type == "TOOL_QUERY":
             task_type_key = context.get("task_type_key")
@@ -544,6 +584,7 @@ class QueryExecutor:
                             "id": c.get("id"),
                             "name": c.get("name"),
                             "severity": c.get("severity"),
+                            "check_type": c.get("check_type"),
                             "message": c.get("violation_message", "").strip(),
                             "applies_to": c.get("applies_to", []),
                         }
@@ -577,6 +618,39 @@ class QueryExecutor:
                     "vessels": self.assets.get("vessels", []),
                 },
             ]
+            if "payload_configuration_evidence" in response and re.search(
+                r"(?:必须|必选|一定要|需要|需不需要|是否).{0,8}(?:携带|另带|带上|加装|选配)"
+                r"|(?:工具|载荷|机械臂|声呐).{0,8}(?:必须|必选|一定要)",
+                user_message,
+            ):
+                # Requirement questions need the selection contract, not oilfield
+                # descriptions or the entire tool catalogue. Excess unrelated
+                # evidence causes the model to conflate optional and onboard gear.
+                response["query_mode"] = "payload_requirements"
+                templates = self.task_schemas.get("task_templates", {})
+                response["results"] = [
+                    {
+                        "category": "task_templates",
+                        "templates": {
+                            key: {
+                                "display_name": template.get("display_name", key),
+                                "required_capabilities": template.get("required_capabilities", []),
+                                "payload_fields_by_mode": {
+                                    mode: [field for field in fields if field.get("key") == "payload"]
+                                    for mode, fields in template.get("output_schema", {}).items()
+                                },
+                            }
+                            for key, template in templates.items()
+                        },
+                    },
+                    next(item for item in response["results"] if item["category"] == "constraints_rules"),
+                    {
+                        "category": "payload_catalog",
+                        "matched_payloads": self._match_payload_catalog(
+                            self.assets.get("payload_catalog", {}), user_message,
+                        ),
+                    },
+                ]
             response["found"] = True
             return response
 

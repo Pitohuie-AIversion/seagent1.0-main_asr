@@ -359,6 +359,8 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
     def _run_constraint_check(self, changed_fields: set[str], purpose: str = "interactive") -> dict:
         """执行校验并传递是否延后运行时核验，避免把缓存遥测说成准入结论。"""
         context = self._evaluate_constraint_context(changed_fields, purpose)
+        if str(context.get("type", "")).startswith("hard"):
+            context["kb_alternatives"] = self._get_kb_alternatives_for_violations(context.get("violations", []))
         result = getattr(self.slot_store, "validation_result", None)
         context["runtime_validation_deferred"] = any(
             getattr(violation, "check_type", "") == "future_task_runtime_notice"

@@ -572,6 +572,35 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                     }
                     break
 
+        if has_acknowledge_action and manager.phase == "blocked_soft":
+            # A model may echo the warning identifier in unresolved even after
+            # the planner has accepted it. It is not a missing task parameter.
+            # Remove only exact references to displayed soft warnings; genuine
+            # unresolved fields and mixed parameter edits still block the action.
+            warning_refs = {
+                str(value).strip()
+                for violation in manager._blocking_violations
+                if violation.severity == "soft"
+                for value in (violation.constraint_id, violation.constraint_name, violation.message)
+                if value
+            }
+            turn_unresolved[:] = [item for item in turn_unresolved if str(item).strip() not in warning_refs]
+            new_unresolved[:] = [item for item in new_unresolved if str(item).strip() not in warning_refs]
+
+            if (
+                all(key in current_state and value == current_state[key]
+                    for key, value in merged_updates.items())
+                and all(key in current_state and isinstance(info, dict) and info.get("value") == current_state[key]
+                        for key, info in stage2_updates.items())
+                and not turn_unresolved and not payload_mutation_failed
+                and not any(slot.status == "conflict" for slot in new_slots.values())
+                and (apply_plan is None or not apply_plan.failures)
+            ):
+                # Do this before automatic entity linking: resolving an already
+                # selected oilfield must not fabricate a parameter edit and
+                # swallow a model-confirmed warning acknowledgement.
+                return ExtractionPipelineResult(early_return_reply=reply_write_without_candidates())
+
         if transition_state_active:
             manager._clear_non_inherited_transition_slots(new_slots)
         extracted_oilfield = next(
@@ -620,6 +649,19 @@ class SlotExtractionPipeline(BaseDialogueHandler):
             )
 
         _has_conflict = any(s.status == "conflict" for s in new_slots.values())
+        if (
+            has_acknowledge_action and manager.phase == "blocked_soft"
+            and not _has_conflict and not turn_unresolved and not payload_mutation_failed
+            and (apply_plan is None or not apply_plan.failures)
+            and all(key in current_state and value == current_state[key]
+                    for key, value in merged_updates.items())
+            and all(key in current_state and isinstance(info, dict) and info.get("value") == current_state[key]
+                    for key, info in stage2_updates.items())
+        ):
+            # Extraction may replay the preceding turn's already committed
+            # values. Validated no-ops do not invalidate the user's explicit
+            # acknowledgement or require another parameter transaction.
+            return ExtractionPipelineResult(early_return_reply=reply_write_without_candidates())
         has_successful_mutation = any(m.get("field") == "payload" for m in list_mutations)
         if (
             not stage2_updates

@@ -71,3 +71,30 @@ def test_real_burial_shift_commits_both_slots_in_supported_pipelines(monkeypatch
     assert manager.task_state["end_time"] == "2026-09-27T11:30:00"
     assert manager.task_state["water_depth"] == 100
     assert "09:30" in reply and "11:30" in reply
+
+
+@pytest.mark.parametrize('message,start,end', [
+    ('创建管缆埋设任务，埋设电力电缆，明天上午9点到11点，水深100米。', '09:00:00', '11:00:00'),
+    ('明天下午2点到5点，水深100米。', '14:00:00', '17:00:00'),
+    ('明天上午9点到12点，水深100米。', '09:00:00', '12:00:00'),
+])
+def test_explicit_time_range_survives_model_omitting_both_times(message, start, end, monkeypatch):
+    from datetime import datetime
+    monkeypatch.setattr('src.temporal.simulated_time.get_current_datetime', lambda: datetime(2026, 9, 27, 1, 0))
+    from src.temporal.temporal_parser import TemporalParser
+    candidates, unresolved = TemporalParser.materialize_time_relation([], None, {}, {'start_time', 'end_time'}, user_message=message)
+    actual = times({'slot_candidates': candidates, 'unresolved': unresolved})
+    assert actual['start_time'] == '2026-09-28T' + start
+    assert actual['end_time'] == '2026-09-28T' + end
+
+
+@pytest.mark.parametrize('message', [
+    '如果天气允许，明天上午9点到11点。',
+    '不要安排明天上午9点到11点。',
+    '明天上午9点到11点可以吗？',
+    '明天上午9点到11点，后天上午9点到11点。',
+])
+def test_range_recovery_does_not_guess_conditional_or_multiple_times(message):
+    from src.temporal.temporal_parser import TemporalParser
+    candidates, unresolved = TemporalParser.materialize_time_relation([], None, {}, {'start_time', 'end_time'}, user_message=message)
+    assert not candidates and not unresolved

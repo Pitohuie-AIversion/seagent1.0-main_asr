@@ -17,6 +17,7 @@ import logging
 import re
 from typing import Any
 
+from .knowledge_reply_grounder import ground_payload_requirement_reply
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
 from .off_topic_gate import (
     check_off_topic_gate,
@@ -239,6 +240,13 @@ class ConversationRouterHandler(BaseDialogueHandler):
         elif task_fit_answer is not None:
             reply = task_fit_answer
         elif (
+            query_intent in ("KNOWLEDGE_QA", "TOOL_QUERY", "DEVICE_CAPABILITY")
+            and re.search(r"解释|为什么|为何|原因|关系|影响|如何|怎样|怎么", user_message)
+        ):
+            # Explanations need evidence and a synthesized answer. Words such
+            # as 支持船 and a negated 修改任务 are not catalog requests.
+            reply = self._handle_knowledge_query(user_message, route, request_id)
+        elif (
             not is_targeted_device_query
             and not is_payload_query
             and any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
@@ -269,8 +277,11 @@ class ConversationRouterHandler(BaseDialogueHandler):
         ):
             reply = self._build_grounded_oilfield_catalog_introduction()
         elif (
-            any(r in user_message for r in ("约束", "规则", "准入", "限制", "硬约束", "安全条件", "风控"))
-            and any(q in user_message for q in ("介绍", "哪些", "什么", "说明", "要求", "有什么", "机制"))
+            re.search(
+                r"(?:列出|介绍|有哪些|有什么|什么|哪些).{0,12}(?:规则|约束|准入条件)"
+                r"|(?:规则|约束|准入条件).{0,5}(?:列表|清单|有哪些|有什么)",
+                user_message,
+            )
         ):
             reply = self._build_grounded_rule_catalog_introduction()
         elif self._is_environment_status_query(user_message, route):
@@ -330,7 +341,7 @@ class ConversationRouterHandler(BaseDialogueHandler):
             r"(?:哪些|什么|哪几种)(?:样的)?(?:任务|作业|工作|活)"
             r"|(?:任务|作业类型)(?:列表|清单|类型|有哪些|有哪几种)"
             r"|介绍.*(?:任务|作业)"
-            r"|(?:支持|包含).*(?:任务|作业)",
+            r"|(?:支持(?!船)|包含)[^。！？?\n]*(?:任务|作业)",
             user_message,
         ))
 
@@ -459,11 +470,17 @@ class ConversationRouterHandler(BaseDialogueHandler):
         ):
             return self._build_grounded_fleet_introduction()
 
+        asks_project_rules = bool(re.search(
+            r"(?:结合|根据|依据).{0,15}(?:系统|项目)"
+            r"|(?:本系统|本项目|当前系统|当前项目|系统中|项目中).{0,40}(?:规则|约束|准入|校验|配置)",
+            user_message,
+        ))
         if (
             plan is not None
             and plan.source_policy == "general_domain"
             and plan.subject_type in {"general_concept", "unknown"}
             and plan.relation != "status"
+            and not asks_project_rules
         ):
             return self._handle_general_chat(user_message, route)
 
@@ -496,6 +513,11 @@ class ConversationRouterHandler(BaseDialogueHandler):
             or (route.interaction_plan.query_intent if route.interaction_plan else None)
             or "KNOWLEDGE_QA"
         )
+        if asks_project_rules:
+            # A mixed concept/project question must not lose project evidence
+            # when the planner labels its first clause as general_domain.
+            effective_query_type = "KNOWLEDGE_QA"
+            context.update(subject_type="system_rule", source_policy="hybrid")
         kb_evidence = self.kb.execute_typed_query(effective_query_type, user_message, context=context)
         logger.info(
             "[KNOWLEDGE_QUERY] request_id=%s requested=%s effective=%s "
@@ -608,6 +630,8 @@ class ConversationRouterHandler(BaseDialogueHandler):
             logger.warning("[OFF_TOPIC_GATE_L3] knowledge_query output blocked, forcing reject template. preview=%r",
                            (filtered_reply or "")[:120])
             return OFF_TOPIC_REJECT_TEMPLATE
+        if kb_evidence.get("query_mode") == "payload_requirements":
+            filtered_reply = ground_payload_requirement_reply(filtered_reply)
         return filtered_reply
 
     def _handle_general_chat(self, user_message: str, route: IntentRouteResult) -> str:

@@ -556,15 +556,20 @@ class GroundedCatalogHandler(BaseDialogueHandler):
     _build_grounded_oilfield_catalog_introduction = build_grounded_oilfield_catalog_introduction
 
     def build_grounded_rule_catalog_introduction(self) -> str:
-        """返回系统安全准入与硬约束校验规则说明。"""
-        return (
-            "本系统在任务创建与发布前会自动执行以下四项严格的物理与物理安全约束校验：\n"
-            "1. **耐压水深与接地比压**：校验机器人额定最大深度是否满足目标油气田水深，履带式机器人额外校验海床硬度与接地比压；\n"
-            "2. **海流与水体能见度**：校验现场海流是否超过 3.0 节抗流上限，能见度是否低于 0.5 米；\n"
-            "3. **地理与禁航区限制**：校验作业起始点与终点坐标是否侵入生态敏感保护区或危险禁航区；\n"
-            "4. **DVL底锁与配载浮力**：校验海床泥沙高度是否引发DVL失锁风险，以及工具载荷配平与电力配额。\n\n"
-            "存在任何硬约束违规时系统将阻断任务发布并引导修正。"
-        )
+        """List configured rules without inventing thresholds or enforcement."""
+        rules = [rule for rule in self.kb.constraints
+                 if isinstance(rule, dict) and rule.get("enabled", True)]
+        if not rules:
+            return "当前知识库未提供已启用的准入规则目录。"
+        lines = ["以下为当前配置中已启用的准入规则；实际触发取决于任务参数、执行时间和设备状态。"]
+        for severity, label in (("hard", "硬约束：违规时必须修正，不能确认绕过"),
+                                ("soft", "软警告：需明确接受提示或修改参数后继续")):
+            entries = [rule for rule in rules if rule.get("severity") == severity]
+            if entries:
+                lines.append("\n" + label + "：")
+                lines.extend(f"- [{rule.get('id', '')}] {rule.get('name', '未命名规则')}" for rule in entries)
+        lines.append("\n具体阈值须结合对应规则和设备参数核对；此处是规则目录，不代表当前任务已完成校验。")
+        return "\n".join(lines)
 
     _build_grounded_rule_catalog_introduction = build_grounded_rule_catalog_introduction
 

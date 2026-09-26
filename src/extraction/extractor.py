@@ -259,6 +259,8 @@ class ParameterExtractor:
                 "仍须优先抽取最新用户消息中的全部任务字段；若确实没有任何任务字段，"
                 "允许返回空 slot_candidates、空 list_mutations、null time_relation 和空 unresolved，"
                 "由执行器随后处理该次级动作。不得为了满足非空要求伪造字段或 unresolved。"
+                "警告编号和名称（例如C032、未来任务环境与遥测延后校验提示）不是任务参数，"
+                "仅确认警告时不得把这些编号或名称写入 unresolved。"
             )
 
         extraction_context = self._select_extraction_history(

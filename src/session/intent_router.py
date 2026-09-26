@@ -50,6 +50,7 @@ operation 只能是：
 当当前待填字段不包含 equipment_class，而用户输入精确命中 expected_slot_options 中某个
 allowed_values 或 alias_mappings 时，应按该待填字段候选处理为 WRITE；不要因措辞
 像“ROV 类别”就退回 device_class 澄清。
+通用概念与项目规则混合的问题（例如“解释DVL失锁，并结合系统中的油田、载荷和支持船规则说明”）必须使用 READ、KNOWLEDGE_QA、source_policy=hybrid，不能仅按 general_domain 回答而跳过项目证据。
 询问推荐本身属于 READ，不得因为问题中出现任务字段或“选择”语义就修改任务；
 接受上一轮助手明确给出的单一推荐才属于 WRITE。若上一轮只是并列介绍多个候选、
 没有明确推荐，且用户本轮也未指明选择，必须 CLARIFY，不能替用户猜测。

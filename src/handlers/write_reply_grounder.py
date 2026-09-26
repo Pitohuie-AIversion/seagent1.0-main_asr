@@ -453,6 +453,12 @@ class WriteReplyGrounder:
         # 3. 部分提交时的“均已设置”清洗
         if "均已设置" in scrubbed:
             scrubbed = scrubbed.replace("均已设置", "已部分设置")
+        if labels:
+            scrubbed = re.sub(
+                r"[^。！？!?\n]*(?:参数|信息|字段)[^。！？!?\n]{0,12}"
+                r"(?:已(?:经)?(?:收集|填写|补充)?完整|已(?:全部)?收集(?:完成|齐全))[^。！？!?\n]*[。！？!?]?",
+                "", scrubbed,
+            )
         scrubbed = scrubbed.replace("任务参数已完整", "")
 
         # 4. 违规状态下的“所有设备正常”清洗

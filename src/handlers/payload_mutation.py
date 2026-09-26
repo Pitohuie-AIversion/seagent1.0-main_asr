@@ -325,7 +325,7 @@ class PayloadMutationManager(BaseDialogueHandler):
     def _payload_items(text: str) -> list[str]:
         result = []
         for part in re.split(r"[、,，+]|以及|和|及", text):
-            part = re.sub(r"^(?:请|把|将|原来的?|当前的?|已有的?|一套|一个|一件|携带的?)", "", part.strip())
+            part = re.sub(r"^(?:请|把|将|原来的?|当前的?|已有的?|一套|一个|一件|个|套|件|携带的?)", "", part.strip())
             part = part.strip(" ：:。.!！")
             if not part:
                 continue

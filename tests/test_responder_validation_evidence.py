@@ -71,3 +71,23 @@ def test_task_status_model_receives_warning_reason_without_health_assumptions(mo
     assert dm.phase == 'blocked_soft'
     assert not dm.slot_store.validation_acknowledgements
     assert reply
+
+
+
+def test_hard_constraint_context_includes_only_task_compatible_alternatives(monkeypatch):
+    dm = DialogueManager(ScriptedLLM(), KnowledgeBase())
+    dm.task_state = {'task_type_key': 'pipeline_inspection', 'water_depth': 2500,
+                     'equipment_type': '轻型工作级深海机器人 150HP'}
+    handler = dm.constraint_handler
+    monkeypatch.setattr(type(handler), '_evaluate_constraint_context', lambda *args: {'type': 'hard', 'violations': []})
+    context = dm._run_constraint_check({'water_depth'})
+    allowed = {r['full_name'] for r in dm.kb.get_task_allowed_robot_variants('pipeline_inspection') if float(r.get('max_depth_m', 0)) >= 2500}
+    assert {r['name'] for r in context['kb_alternatives']} <= allowed
+    assert not any('通用工作级' in r['name'] or '特种工作级' in r['name'] for r in context['kb_alternatives'])
+
+
+def test_no_valid_alternative_prompt_cannot_invent_other_task_robot():
+    messages = build_responder_messages(task_state={}, built_json={}, missing_fields=[], mode='normal',
+        phase='blocked_hard', knowledge_context='', constraint_context={'type': 'hard', 'kb_alternatives': []},
+        conversation_history=[], latest_user_message='水深改为2500米', ROV2type={}, support_task=[], accepted_updates={})
+    assert '不得推荐其他任务专用机器人' in messages[0]['content']

@@ -197,3 +197,67 @@ def test_explicit_unit_can_perform_question_stays_grounded(verb):
     assert "静态能力适配说明" in reply
     assert "实际执行仍需" in reply
     assert manager.llm.chat_calls == []
+
+
+@pytest.mark.parametrize('message', [
+    '请解释 DVL 定位失锁、浑浊度、海流与水下作业安全的关系，并结合系统中的油田环境、禁入区、载荷和支持船规则说明。只查询知识，不创建或修改任何任务。',
+    '请解释支持船和载荷如何影响作业安全，不修改任何任务。',
+])
+def test_explanations_use_knowledge_synthesis_instead_of_catalog(message):
+    manager = make_manager(plan=make_plan('READ', query_intent='KNOWLEDGE_QA',
+        subject_type='system_rule', relation='describe', source_policy='project_kb'))
+    manager.llm.default_reply = 'DVL 定位、海流、支持船和载荷需要一起校验。'
+    assert ask_read_only(manager, message) == manager.llm.default_reply
+    assert manager.llm.chat_calls
+
+
+
+def test_mixed_project_question_cannot_bypass_evidence_with_general_domain_plan(monkeypatch):
+    from unittest.mock import Mock
+    manager = make_manager(plan=make_plan('READ', query_intent='KNOWLEDGE_QA',
+        subject_type='general_concept', relation='describe', source_policy='general_domain'))
+    query = Mock(wraps=manager.kb.execute_typed_query)
+    monkeypatch.setattr(manager.kb, 'execute_typed_query', query)
+    manager.llm.default_reply = '项目 C010 是 DVL 风险软警告，不能据此声称自动上浮。'
+    reply = ask_read_only(manager, '请解释DVL失锁，并结合系统中的油田、载荷和支持船规则说明。')
+    assert reply == manager.llm.default_reply
+    query.assert_called_once()
+    assert query.call_args.args[0] == 'KNOWLEDGE_QA'
+    assert query.call_args.kwargs['context']['source_policy'] == 'hybrid'
+    prompt = manager.llm.chat_calls[-1][0]['content']
+    assert 'constraints_rules' in prompt and 'C010' in prompt
+    assert 'severity' in prompt and 'soft' in prompt
+
+
+
+def test_specific_payload_requirement_question_reaches_model_answer():
+    manager = make_manager(plan=make_plan('READ', query_intent='KNOWLEDGE_QA',
+        subject_type='system_rule', relation='describe', source_policy='hybrid'))
+    manager.llm.default_reply = '支持的载荷属于候选，不能据此断言任务必须另带电液机械臂。'
+    reply = ask_read_only(manager, '管缆巡检必须携带侧扫声呐或成像声呐吗？采油树阀门作业必须另带电液机械臂吗？请结合本系统的任务模板和载荷规则说明，不创建或修改任务。')
+    assert manager.llm.default_reply in reply
+    assert '不代表已通过全部准入检查' in reply
+    assert manager.llm.chat_calls
+
+
+def test_rule_catalog_uses_configured_names_and_severity_only():
+    manager = make_manager(plan=make_plan('READ', query_intent='KNOWLEDGE_QA',
+        subject_type='system_rule', relation='list', source_policy='project_kb'))
+    reply = ask_read_only(manager, '系统有哪些硬约束和软警告？')
+    for rule in manager.kb.constraints:
+        if rule.get('enabled', True):
+            assert rule['id'] in reply and rule['name'] in reply
+    assert reply.index('[C010]') > reply.index('软警告：')
+    assert '3.0 节' not in reply and '0.5 米' not in reply and '电力配额' not in reply
+
+
+def test_payload_requirement_answer_cannot_claim_admission_from_capability_only():
+    manager = make_manager(plan=make_plan('READ', query_intent='KNOWLEDGE_QA',
+        subject_type='system_rule', relation='describe', source_policy='hybrid'))
+    manager.llm.default_reply = '机器人自带多功能液压机械臂。只要具备该能力，即可满足任务准入。'
+    reply = ask_read_only(manager, '采油树阀门作业必须另带电液机械臂吗？请结合本系统的规则说明。')
+    assert '机器人自带多功能液压机械臂。' in reply
+    assert '即可满足任务准入' not in reply
+    assert '不代表已通过全部准入检查' in reply
+    assert '明确确认' in reply and '执行协议支持' in reply
+    assert manager.llm.chat_calls

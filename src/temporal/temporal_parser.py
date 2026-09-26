@@ -241,6 +241,46 @@ class TemporalParser:
         return relation if isinstance(relation, dict) else None
 
     @staticmethod
+    def explicit_range_candidates(user_message: str, base_dt: datetime) -> list[dict]:
+        """Recover one explicit dated clock range omitted by the extractor.
+
+        This only supplies candidates on a WRITE path. Ambiguous, conditional,
+        negated and multiple ranges remain with the ordinary clarification path.
+        """
+        date = r"(?:大后天|后天|明天|今天|\d{4}-\d{1,2}-\d{1,2})"
+        part = r"(?:凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜间)"
+        number = r"[0-9零一二两三四五六七八九十]{1,3}"
+        clock = rf"(?:{number}点(?:半|{number}分?)?|\d{{1,2}}[:：]\d{{2}})"
+        pattern = re.compile(rf"(?P<start>{date}\s*{part}?\s*{clock})\s*(?:到|至)\s*(?P<end>{date}?\s*{part}?\s*{clock})(?=$|[，,。；;！!\s])")
+        matches = []
+        for sentence in re.split(r"[。；;！!\n]", user_message):
+            if re.search(r"如果|假如|假设|不要|取消|暂不|是否|能否|[？?]", sentence):
+                continue
+            matches.extend(pattern.finditer(sentence))
+        if len(matches) != 1:
+            return []
+        match = matches[0]
+        start, end = match['start'].strip(), match['end'].strip()
+        result = parse_time_range(start, None, end, base_dt=base_dt)
+        # An unqualified 1..11 o'clock endpoint can share the stated meridiem.
+        # Noon parses without a prefix and must never become 上午十二点 (00:00).
+        if not result.success and result.error_code == "INVALID_END_TIME" and not re.search(part, end):
+            meridiem = re.search(part, start)
+            if meridiem and not re.search(date, end):
+                result = parse_time_range(start, None, meridiem[0] + end, base_dt=base_dt)
+        if not result.success:
+            return []
+        return [
+            {"canonical_key": key, "raw_key": key, "raw_value": raw,
+             "normalized_value": value, "confidence": 1.0,
+             "resolution_method": "explicit_time_range"}
+            for key, raw, value in (
+                ("start_time", start, result.start_time.iso_string),
+                ("end_time", end, result.end_time.iso_string),
+            )
+        ]
+
+    @staticmethod
     def materialize_time_relation(
         candidates: list,
         relation: object,
@@ -257,6 +297,8 @@ class TemporalParser:
 
         # Work on copies: a rejected adjustment must not mutate caller candidates.
         candidates = [dict(item) if isinstance(item, dict) else item for item in candidates]
+        if not any(isinstance(item, dict) and item.get("canonical_key") in ("start_time", "end_time") for item in candidates):
+            candidates.extend(TemporalParser.explicit_range_candidates(user_message, get_current_datetime().replace(microsecond=0)))
         previous_start = TemporalParser.parse_state_datetime(current_state.get("start_time"))
         previous_end = TemporalParser.parse_state_datetime(current_state.get("end_time"))
         adjustments = TemporalParser.extract_time_adjustments(user_message)
