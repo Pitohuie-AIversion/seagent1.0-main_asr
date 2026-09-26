@@ -525,6 +525,8 @@ class SEAgentMCPBridgeService:
             raise RuntimeError(
                 f"MCPBridgeService 未连接到支持船网关 (ws://{self.host}:{self.port})"
             )
+        from .sealien_protocol import validate_valve_operation
+        validate_valve_operation(task_intent)
         identity = self._intent_identity(task_intent)
 
         with self._dispatch_lock:

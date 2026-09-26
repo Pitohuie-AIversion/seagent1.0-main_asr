@@ -60,6 +60,7 @@ def _make_task_intent(task_type="tree_valve_operation", depth=300.0,
         "task": {
             "type": task_type,
             "details": {
+                **({"operation": "insert"} if task_type in {"tree_valve_operation", "valve_operation"} else {}),
                 "target": {"latitude": lat, "longitude": lon},
             },
         },

@@ -357,7 +357,17 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
         return False
 
     def _run_constraint_check(self, changed_fields: set[str], purpose: str = "interactive") -> dict:
-        """执行约束检查，返回上下文"""
+        """执行校验并传递是否延后运行时核验，避免把缓存遥测说成准入结论。"""
+        context = self._evaluate_constraint_context(changed_fields, purpose)
+        result = getattr(self.slot_store, "validation_result", None)
+        context["runtime_validation_deferred"] = any(
+            getattr(violation, "check_type", "") == "future_task_runtime_notice"
+            for violation in (getattr(result, "violations", None) or [])
+        )
+        return context
+
+    def _evaluate_constraint_context(self, changed_fields: set[str], purpose: str = "interactive") -> dict:
+        """执行约束检查，返回上下文。"""
         if not changed_fields and self.phase not in ("blocked_hard", "blocked_soft") and not self._is_state_snapshot_stale():
             state_snap = getattr(self.slot_store.validation_result, "state_snapshot", None)
             return {"type": "none", "violations": [], "hard_refusal_counts": {}, "state_snapshot": state_snap}

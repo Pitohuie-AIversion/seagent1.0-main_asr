@@ -10,7 +10,12 @@ class TestFrontendRequestLifecycle(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for frontend behavior tests")
     def test_context_dispatch_and_authentication(self):
         root = Path(__file__).resolve().parents[1]
-        for script in ("frontend_context_dispatch.cjs", "frontend_api_auth.cjs"):
+        for script in (
+            "frontend_context_dispatch.cjs",
+            "frontend_api_auth.cjs",
+            "frontend_session_recovery.cjs",
+            "frontend_warning_recovery.cjs",
+        ):
             with self.subTest(script=script):
                 result = subprocess.run(
                     ["node", str(root / "tests" / script)], cwd=root,

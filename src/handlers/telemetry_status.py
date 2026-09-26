@@ -125,6 +125,18 @@ class TelemetryStatusHandler(BaseDialogueHandler):
                 "task_type": self.task_state.get("task_type", "(未确定)"),
                 "collected_slots": self._last_built_json,
                 "missing_slots": [m.get("label") for m in self._last_missing if isinstance(m, dict)],
+                "validation_status": getattr(self.manager.slot_store.validation_result, "overall_status", "none"),
+                "validation_warnings": [
+                    {
+                        "code": violation.constraint_id,
+                        "name": violation.constraint_name,
+                        "message": violation.message,
+                        "severity": violation.severity,
+                        "check_type": violation.check_type,
+                        "acknowledged": violation.severity == "soft" and self.manager._is_whitelisted(violation),
+                    }
+                    for violation in (getattr(self.manager.slot_store.validation_result, "violations", None) or [])
+                ],
                 "found": True,
             }
         else:

@@ -147,6 +147,7 @@ SEAGENT_TO_ROS2_TASK_TYPE: Dict[str, TaskType] = {
     "常规阀门操作":         TaskType.INSERT_PLUG,
     "tree_valve_operation": TaskType.INSERT_PLUG,    # 采油树阀门
     "采油树阀门操作":       TaskType.INSERT_PLUG,
+    "采油树控制面板插入":   TaskType.INSERT_PLUG,
     "underwater_move":      TaskType.MOVE_TASK,      # 移动任务
     "水下移动任务":         TaskType.MOVE_TASK,
     "light_control":        TaskType.CTRL_TASK,      # 灯光/继电器控制
@@ -448,6 +449,8 @@ def intent_to_syscmd(
     """
     if not isinstance(intent, dict):
         raise ProtocolValidationError("TaskIntent 必须是对象")
+    from .sealien_protocol import validate_valve_operation
+    validate_valve_operation(intent)
     details = _intent_details(intent)
     task = intent.get("task") or {}
     candidates = (

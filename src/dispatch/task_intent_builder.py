@@ -181,6 +181,9 @@ def _task_intent_payload_error(intent: dict) -> str | None:
     details = task.get("details")
     if not isinstance(details, dict):
         return "task.details must be an object"
+    if intent.get("task_type") in {"valve_operation", "tree_valve_operation"}:
+        if details.get("operation") not in (None, "insert", "withdraw"):
+            return "task.details.operation must be insert or withdraw"
     for key in ("start_point", "end_point", "target"):
         error = _coordinate_error(details.get(key), f"task.details.{key}")
         if error:
@@ -861,10 +864,20 @@ class TaskIntentBuilder:
                 "longitude": oilfield_coords.get("lon"),
             }
 
+        operations = {
+            "采油树控制面板插入": "insert",
+            "采油树控制面板拔出": "withdraw",
+        }
+        selected = {operations[value] for value in (
+            built_json.get("task_type"), task_state.get("task_type")
+        ) if value in operations}
+        if len(selected) > 1:
+            raise TaskPersistenceError("采油树插入/拔出任务类型不一致")
         return {
             "wellhead_id": wellhead_id,
             "target": target,
             "hole_positions": [],
+            "operation": next(iter(selected), None),
         }
 
     def _validate_intent(self, intent: Dict[str, Any]) -> None:

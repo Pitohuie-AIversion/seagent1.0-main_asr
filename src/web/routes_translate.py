@@ -204,7 +204,16 @@ def _translate_text_internal(text: str, target_lang: str) -> str:
 @_require_api_token
 def api_translate():
     req_id = f"req_{uuid.uuid4().hex[:8]}"
-    data = request.json or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("text", ""), str):
+        return jsonify({
+            "ok": False,
+            "code": 400,
+            "error": "invalid_parameter",
+            "msg": "Request body must be a JSON object and text must be a string",
+            "request_id": req_id,
+            "retryable": False,
+        }), 400
     text = data.get("text", "").strip()
 
     if "target_lang" not in data or data.get("target_lang") is None:
@@ -219,9 +228,6 @@ def api_translate():
 
     target_lang = str(data.get("target_lang", "")).strip()
 
-    if not text:
-        return jsonify({"code": 200, "translated_text": ""})
-
     # 校验 target_lang
     allowed_langs = {"English", "Chinese"}
     if target_lang not in allowed_langs:
@@ -233,6 +239,9 @@ def api_translate():
             "request_id": req_id,
             "retryable": False
         }), 400
+
+    if not text:
+        return jsonify({"code": 200, "translated_text": ""})
 
     try:
         original_text = text

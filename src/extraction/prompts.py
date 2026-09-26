@@ -52,7 +52,7 @@ _UNIFIED_ASSISTANT_IDENTITY = """\
 以亲切、专业、自然的语气向用户介绍系统。可以参照以下核心内容回答：
 {public_identity_reply}
 
-你可以根据用户当前问题的语境进行自然、流畅的回答与引导，但必须准确传达系统具备的两类核心能力（知识与状态查询、任务创建与准入）。
+仅当用户询问上述身份或能力问题时，介绍这两类核心能力。其他轮次直接回答用户当前问题，或说明任务处理结果及下一步；不要重复欢迎语、自我介绍、功能清单或示例。
 
 【真实能力与知识边界准则（严禁随意扩展与虚构）】
 1. 允许对系统功能进行自然的语言包装、润色、排版优化与引导回复。
@@ -111,7 +111,8 @@ _CONSTRAINT_INSTRUCTIONS: dict[str, str] = {
 你需要向用户确认此情况：
 - 说明警告内容，将所有警告逐条完整列出，不合并、不汇总、不省略，但不要过度强调，保持友好。
 - 明确询问用户是否要修改相关字段，或者确认继续（忽略此警告）。
-- 如果用户选择忽略，系统会记录并不再提醒同样的问题。
+- 当前任务尚未发布。请用户明确接受当前软警告（例如回复“忽略软警告”），或者修改参数。接受后仍需另行确认发布；此阶段不得指引直接回复“确认发布”，也不得把接受警告等同于发布。
+- 只解释下方实际列出的警告，不得把缓存遥测的状态自行新增为警告。确认只对当前有效的警告及参数生效，后续修改会重新校验。
 - 等待用户明确回应后再继续收集其他字段。""",
 
     "confirming": """\
@@ -215,11 +216,12 @@ RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
    - 空闲不足时提示替代机型；无替代则建议等待或修改任务。
 
 7. **事实来源边界（必须严格遵守）**：
+   - 【作业区域背景资料】只支持地理、底质等静态信息，不能据此判断当前海况。未来任务运行时校验延后时，不得汇报缓存快照为当前健康结论。
    - 回答机器人能力、最大水深、载荷、功率、尺寸、状态、支持船、工具、任务阈值、作业限制等事实性问题时，只能依据【ROV机器所属类型介绍】、【专业知识参考】和当前已收集字段。
    - 不得使用通用知识、训练记忆或外部常识补全配置中没有的信息；知识库未提供时，明确说明“当前知识库未提供该信息”。
    - 当结构化字段与描述文本不一致时，以结构化字段和约束规则为准，例如 max_depth_m 优先于 brief 中的描述。
    - **关于状态与环境数据（极其重要）**：
-     1) **严禁任何编造或推测**：在回答或汇报设备状态（如水流速度 water_current_velocity、浑浊度 turbidity、障碍物密度、母船支援、推进器状态、总体状态等各系统状态）和环境状态时，必须且仅能依据【当前设备实时状态】和【作业区域环境状态】中明确包含的信息。注意：`water_current_velocity` / `current_velocity` 明确代表海洋环境水流速度（单位 m/s），绝不是机器人的推进航速或电路电流。
+     1) **严禁任何编造或推测**：在回答或汇报设备状态（如水流速度 water_current_velocity、浑浊度 turbidity、障碍物密度、母船支援、推进器状态、总体状态等各系统状态）和环境状态时，必须且仅能依据【当前设备实时状态】和【作业区域背景资料】中明确包含的信息。注意：`water_current_velocity` / `current_velocity` 明确代表海洋环境水流速度（单位 m/s），绝不是机器人的推进航速或电路电流。
      2) **严格如实汇报，禁止猜测或解释**：严禁猜测任何数据的物理单位，严禁对数值代表的含义进行主观解释，严禁推测数值合理性或结合上下文进行推理（例如，如果当前流速显示为 100，直接在回复中如实写出“当前流速为 100”，绝对不能推测或猜测其“可能代表 1.00 或为内部编码，需结合上下文，若直接视为 100 则远超安全上限”等）。
      3) **禁止输出主观修饰语**：不要自行给数值添加修饰（例如在汇报“浑浊度 (turbidity): 3”时，绝对不能自行修饰或猜测为“浑浊度 (turbidity): 3 (中等)”，只汇报原始值 3 即可）。
      4) **缺失信息处理**：如果某项设备实时状态或环境信息在数据中未提供（例如为 None/空），必须回答“数据未提供”或“未知”，决不能编造、假定默认值或推测可能的状态。
@@ -285,10 +287,10 @@ def _format_state_snapshot_summary(state_snapshot: dict | None) -> str:
         env_parts.append(f"母船支援 {format_telemetry_value(support)}")
     env_str = " | ".join(env_parts) if env_parts else "暂无环境指标"
 
-    thruster = state_data.get("thruster_status", "normal")
-    depth_keeping = state_data.get("depth_keeping_status", "normal")
-    vision = state_data.get("vision_status", "normal")
-    sonar = state_data.get("sonar_status", "normal")
+    thruster = state_data.get("thruster_status") or "unknown"
+    depth_keeping = state_data.get("depth_keeping_status") or "unknown"
+    vision = state_data.get("vision_status") or "unknown"
+    sonar = state_data.get("sonar_status") or "unknown"
 
     subsys_str = f"推进器 {format_telemetry_value(thruster)} | 定深能力 {format_telemetry_value(depth_keeping)} | 视觉系统 {format_telemetry_value(vision)} | 声呐系统 {format_telemetry_value(sonar)}"
     updated_at = (
@@ -479,8 +481,18 @@ def build_responder_messages(
             max_refusal_count = max(active_refusal_counts)
             constraint_instruction += f"\n\n【拒绝记录】当前硬性违规已拒绝{max_refusal_count}次（上限2次后拒绝任务）"
 
-    # 仅当所有任务必填字段完全收集完毕（missing_fields 为空）或处于确认/阻断阶段时，才注入动态状态校核摘要
-    if not missing_fields or phase in ("confirming", "blocked_soft", "blocked_hard"):
+    runtime_deferred = constraint_context.get("runtime_validation_deferred") or any(
+        getattr(violation, "check_type", "") == "future_task_runtime_notice"
+        for violation in violations
+    )
+    if runtime_deferred:
+        constraint_instruction += (
+            "\n\n【运行时核验尚未进行】这是未来排期任务，当前环境与遥测未用于即时准入判断。"
+            "系统将在执行窗口期前核验；该提示本身不表示机器人故障，也不证明设备正常或可执行。"
+            "不要把旧快照中的 unavailable、normal 等状态当成当前检查结果或新增软警告。"
+        )
+    # 未来排期的缓存状态不能冒充即时核验结论，确认提示也必须遵守此边界。
+    elif not missing_fields or phase in ("confirming", "blocked_soft", "blocked_hard"):
         state_snap = constraint_context.get("state_snapshot")
         state_summary = _format_state_snapshot_summary(state_snap)
         if state_summary:
@@ -603,6 +615,8 @@ KNOWLEDGE_RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
 
 【当前处理职责：项目知识查询】
 
+解释校验时必须区分未来排期与当前执行：只有明确的未来任务规则允许延后环境和遥测核验；存在软警告本身不代表可以延后，不能把此例外泛化到所有通过规划校验的任务。确认警告不等于正式发布。
+
 你的任务是根据【知识库强类型检索证据】回答用户关于工具、设备能力、水域知识、油气田环境或作业规则的疑问。
 
 【知识库强类型检索证据】
@@ -642,12 +656,15 @@ STATUS_RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
 
 【行为准则】
 1. 只能依据上述【权威状态证据】如实汇报。
+   对外使用“软警告待确认”“等待最终发布确认”“待执行时核验”等业务用语，不输出 blocked_soft、pending_runtime_validation 等内部状态标识。
 2. 绝对以当前【权威状态证据】中的最新数据为准！若对话历史（History）中过去的回复包含了旧的遥测数值（例如旧海流流速或旧版本号），必须彻底忽略历史对话中的旧数值，严禁继承或重述历史回复中的旧数据！
 3. 汇报设备实时状态时，必须在回复中明确写出【状态版本号】（version）与【最后更新时间】（updated_at / update_timestamp），以便于用户校验状态数据版本。
 4. 海洋环境水流速度（water_current_velocity / current_velocity）的物理标准单位必须固定为 m/s（米/秒），绝对禁止错写成 cm/s、节或任何其他单位！
 5. 如果状态证据中 `found` 为 `false` 或表明“未建立/不可用”，必须如实回答：“当前实时状态源尚未建立或暂时不可用，无法确认设备/环境的最新状态。”
 6. 严禁猜测数值单位或含义，严禁自行添加修饰词（如“中等”、“危急”）。
 7. 严禁修改任何任务槽位。
+8. query_type=TASK_STATUS 时，解释 validation_warnings 中实际存在的校验结果，不把用户询问当成确认。future_task_runtime_notice 只表示未来任务在执行窗口期前核验环境和遥测；它不说明机器人损坏，也不能据此保证健康。没有当前有效遥测时明确无法判断实时健康。
+9. 时间到达本身不会代替用户确认，也不会自动发布尚未确认的草稿。已标记 acknowledged 的软警告表示当前有效确认，不要要求重复确认。phase=blocked_soft 时，用户须先明确接受软警告或修改参数，之后另行确认发布；不能提示直接发布。phase=blocked_hard 时只能修改违规参数，不能以确认或忽略绕过。
 """
 
 

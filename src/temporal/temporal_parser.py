@@ -125,19 +125,21 @@ class TemporalParser:
         """
         adjustments = {}
         for match in re.finditer(
-            r"(?P<target>开始时间|起始时间|结束时间|终止时间|截止时间|持续时间|持续时长|时长)"
+            r"(?P<target>开始时间|起始时间|开工时间|结束时间|终止时间|截止时间|完工时间|收工时间|持续时间|持续时长|时长)"
             r"\s*(?:再|又|继续|比原来|比原本)?\s*"
             r"(?P<action>增加|减少|加长|缩短|延长|加上|减去|推迟|延后|提前|推后|后移|前移|加|减)"
             r"(?:了)?\s*(?P<amount>[^，,。；;\n]+)", str(text or ""),
         ):
             if re.match(r"(?:到|至|为)", match["amount"]):
                 continue
-            spec = parse_duration_spec(match[0])
+            # The target is already grounded above; parse only the action and
+            # amount so aliases such as 开工时间 cannot invalidate the duration.
+            spec = parse_duration_spec(match["action"] + match["amount"])
             if spec.state.value != "delta" or spec.delta_seconds is None:
                 continue
             target = match["target"]
-            key = ("start_time" if target in ("开始时间", "起始时间") else
-                   "end_time" if target in ("结束时间", "终止时间", "截止时间") else "duration")
+            key = ("start_time" if target in ("开始时间", "起始时间", "开工时间") else
+                   "end_time" if target in ("结束时间", "终止时间", "截止时间", "完工时间", "收工时间") else "duration")
             adjustments[key] = (match[0], spec.delta_seconds)
         return adjustments
 
@@ -259,7 +261,7 @@ class TemporalParser:
         previous_end = TemporalParser.parse_state_datetime(current_state.get("end_time"))
         adjustments = TemporalParser.extract_time_adjustments(user_message)
         keep_duration = is_keep_duration_expression(user_message)
-        keep_start = bool(re.search(r"(?:开始|起始)时间\s*(?:保持)?不变", user_message))
+        keep_start = bool(re.search(r"(?:开始|起始|开工)时间\s*(?:保持)?不变", user_message))
         keep_end = TemporalParser.mentions_end_time_keep(user_message)
 
         def without_times(items):
@@ -329,13 +331,18 @@ class TemporalParser:
         # Endpoint deltas are not changes to duration. Do not feed the same
         # half-hour into both endpoint shifting and duration arithmetic.
         if endpoint_adjustments and "duration" not in adjustments:
-            has_explicit_duration_value = any(
-                re.match(r"\s*(?:任务)?(?:持续时间|持续时长|时长|持续)", clause)
-                and parse_duration_spec(clause).state.value == "explicit"
-                for clause in re.split(r"[，,。；;\n]", user_message)
-            )
-            if not has_explicit_duration_value:
-                duration_text = None
+            duration_text = None
+            for clause in re.split(r"[，,。；;\n]", user_message):
+                if not re.match(r"\s*(?:任务|作业)?(?:持续时间|持续时长|时长|持续)", clause):
+                    continue
+                explicit_duration = parse_duration_spec(clause)
+                if explicit_duration.state.value == "explicit":
+                    # "开工推迟半小时，作业时长仍保持两小时" contains
+                    # two amounts. The half-hour is solely the endpoint shift.
+                    duration_text = f"{explicit_duration.total_seconds}秒"
+                    raw_text = clause.strip()
+                    target, model_increment = "duration", False
+                    break
 
         if keep_start:
             if previous_start is None:
@@ -397,6 +404,55 @@ class TemporalParser:
             end_text = end_cand["normalized_value"]
         range_result = parse_time_range(start_text, duration_text, end_text, base_dt=base_dt,
             previous_start=previous_start, previous_end=previous_end)
+        if (
+            not range_result.success
+            and range_result.error_code in {"INVALID_END_TIME", "END_NOT_AFTER_START"}
+            and not has_relation and not endpoint_adjustments and not keep_end
+            and start_cand is not None and end_cand is not None
+            and all(TemporalParser.looks_like_iso_datetime(item.get("normalized_value"))
+                    for item in (start_cand, end_cand))
+        ):
+            # Only repair a raw endpoint that lost shared context or contains
+            # the whole spoken range. A model ISO alone cannot override an
+            # explicit contradictory endpoint (e.g. 10:00 -> 09:00).
+            from .relative_time_parser import parse_relative_datetime_detail
+
+            raw_start = str(start_cand.get("raw_value") or "").strip()
+            raw_end = str(end_cand.get("raw_value") or "").strip()
+            # The model may expand 十二点 into raw 明天上午十二点, which
+            # is absent from the user sentence and parses as midnight. Anchor
+            # the real range to its stated start and read the actual endpoint.
+            spoken_range = re.search(
+                re.escape(raw_start) + r"\s*(?:到|至)\s*([^，,。；;\n]+)",
+                user_message,
+            ) if raw_start else None
+            range_tail = re.search(r"(?:到|至)\s*([^到至]+)$", raw_end)
+            endpoint = (spoken_range.group(1).strip() if spoken_range else
+                        range_tail.group(1).strip() if range_tail else raw_end)
+            if spoken_range or (raw_end and raw_end in user_message and (
+                range_tail or not TemporalParser.has_date_semantics(endpoint)
+            )):
+                meridiem_pattern = r"凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里|夜间"
+                shared_meridiem = re.search(meridiem_pattern, raw_start)
+                evidence = parse_relative_datetime_detail(
+                    endpoint, base_dt, full_user_message=user_message,
+                )
+                # Inherit meridiem only for an ambiguous clock (1..11).
+                # Bare noon already resolves to 12:00; adding 上午 makes it 00:00.
+                if (evidence.has_ambiguities and not re.search(meridiem_pattern, endpoint)
+                        and shared_meridiem and raw_start in user_message):
+                    evidence = parse_relative_datetime_detail(
+                        shared_meridiem.group(0) + endpoint, base_dt,
+                        full_user_message=user_message,
+                    )
+                if (evidence.success and not evidence.has_ambiguities
+                        and evidence.target_local_datetime == TemporalParser.parse_state_datetime(
+                            end_cand["normalized_value"])):
+                    normalized_range = parse_time_range(
+                        start_text, None, evidence.iso_string, base_dt=base_dt,
+                    )
+                    if normalized_range.success:
+                        range_result = normalized_range
         if not range_result.success:
             if endpoint_adjustments or "duration" in adjustments:
                 candidates = without_times(candidates)

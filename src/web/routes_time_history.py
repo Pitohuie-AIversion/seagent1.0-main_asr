@@ -32,14 +32,21 @@ def get_current_time():
 @time_history_bp.route("/api/time/set", methods=["POST"])
 @_require_api_token
 def set_current_time():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"code": 400, "msg": "请求体必须是 JSON 对象"}), 400
     time_str = data.get("time")
-    if not time_str:
-        return jsonify({"code": 400, "msg": "缺少 time 字段"}), 400
+    if not isinstance(time_str, str) or not time_str.strip():
+        return jsonify({"code": 400, "msg": "time 必须是非空时间字符串"}), 400
     try:
-        dt = datetime.fromisoformat(time_str)
+        dt = datetime.fromisoformat(time_str.strip())
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+        # Validate timezone conversion before changing the shared clock.
+        dt.astimezone(ZoneInfo("Asia/Shanghai"))
+    except (ValueError, OverflowError) as exc:
+        return jsonify({"code": 400, "msg": f"时间格式错误: {exc}"}), 400
+    try:
         sim = get_simulated_time()
         sim.set_current_time(dt)
         return jsonify({
@@ -47,8 +54,9 @@ def set_current_time():
             "msg": "时间设置成功",
             "current_time": sim.get_current_time().isoformat(),
         })
-    except Exception as e:
-        return jsonify({"code": 500, "msg": f"时间格式错误: {str(e)}"}), 500
+    except Exception:
+        logger.exception("设置模拟时间失败")
+        return jsonify({"code": 500, "msg": "时间设置失败，请稍后重试"}), 500
 
 
 @time_history_bp.route("/api/history/list", methods=["GET"])
@@ -65,11 +73,13 @@ def api_history_list():
 @_require_api_token
 def api_history_load():
     """加载指定的历史快照，并恢复到当前会话"""
-    data = request.get_json() or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"code": 400, "msg": "请求体必须是 JSON 对象"}), 400
     history_id = data.get("history_id")
     sid = data.get("session_id")
-    if not history_id or not sid:
-        return jsonify({"code": 400, "msg": "缺少 history_id 或 session_id"}), 400
+    if any(not isinstance(value, str) or not value.strip() for value in (history_id, sid)):
+        return jsonify({"code": 400, "msg": "history_id 和 session_id 必须是非空字符串"}), 400
 
     try:
         snapshot = load_history(history_id)

@@ -2130,7 +2130,28 @@ class TestIssue12P1AuthoritativeValidation(unittest.TestCase):
         self.assertEqual(unit_slot.value, "AUV-324cc-001")
         self.assertEqual(unit_slot.status, "conflict")
         self.assertEqual(unit_slot.candidate_value, "WROV-250-001")
-        self.assertEqual(unit_slot.validation_error, "Unknown fleet unit 'WROV-250-001'")
+        self.assertEqual(
+            unit_slot.validation_error,
+            "机器人“WROV-250-001”已收录，但不支持当前任务“管缆巡检”。请选择该任务允许的机器人。",
+        )
+
+    def test_known_incompatible_unit_alias_is_rejected_with_task_guidance(self):
+        self._apply_updates({"equipment_unit_id": "通用工作级001"}, task_type_key="pipeline_inspection")
+        unit_slot = self.dm.slot_store.slots["equipment_unit_id"]
+        self.assertEqual(unit_slot.status, "invalid")
+        self.assertIsNone(unit_slot.value)
+        self.assertEqual(unit_slot.candidate_value, "通用工作级001")
+        self.assertIn("已收录，但不支持当前任务“管缆巡检”", unit_slot.validation_error)
+        self.assertNotIn("Unknown fleet unit", unit_slot.validation_error)
+        self.assertNotIn("equipment_unit_id", self.dm.task_state)
+
+    def test_unknown_unit_remains_rejected_as_unknown(self):
+        self._apply_updates({"equipment_unit_id": "UNREGISTERED-ROBOT-999"}, task_type_key="pipeline_inspection")
+        unit_slot = self.dm.slot_store.slots["equipment_unit_id"]
+        self.assertEqual(unit_slot.status, "invalid")
+        self.assertIsNone(unit_slot.value)
+        self.assertEqual(unit_slot.validation_error, "Unknown fleet unit 'UNREGISTERED-ROBOT-999'")
+        self.assertNotIn("equipment_unit_id", self.dm.task_state)
 
     def test_58_changing_class_clears_orphan_equipment_name(self):
         """58. 已有 valid AUV 级联时，切换 class 为 work_class_rov (allow_overwrite=True) 清理旧 AUV name。"""

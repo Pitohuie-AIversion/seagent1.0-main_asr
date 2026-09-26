@@ -31,6 +31,48 @@ class ProtocolValidationError(ValueError):
     """当任务无法满足协议约束时抛出"""
 
 
+_VALVE_OPERATION_LABELS = {
+    "采油树控制面板插入": "insert",
+    "采油树控制面板拔出": "withdraw",
+}
+_VALVE_TASK_TYPES = {
+    "valve_operation", "tree_valve_operation", "常规阀门操作", "采油树阀门操作",
+    *_VALVE_OPERATION_LABELS,
+}
+
+
+def validate_valve_operation(intent: Dict[str, Any]) -> Optional[str]:
+    """Reject valve actions the documented SysTaskCmd cannot express.
+
+    INSERT_PLUG is the only valve opcode and its params must be empty; a
+    withdrawal cannot be represented by changing params or reusing that opcode.
+    Historical generic intents without an action require explicit clarification.
+    """
+    task = intent.get("task") or {}
+    task = task if isinstance(task, dict) else {}
+    labels = (intent.get("task_type_key"), intent.get("task_type"), task.get("type"))
+    if not any(isinstance(label, str) and label in _VALVE_TASK_TYPES for label in labels):
+        return None
+    details = task.get("details") or {}
+    if not isinstance(details, dict):
+        raise ProtocolValidationError("采油树任务缺少有效任务动作信息，未下发。")
+    operation = details.get("operation")
+    if operation is not None and operation not in ("insert", "withdraw"):
+        raise ProtocolValidationError(f"不支持的采油树任务动作 {operation!r}，未下发。")
+    actions = {_VALVE_OPERATION_LABELS[label] for label in labels
+               if isinstance(label, str) and label in _VALVE_OPERATION_LABELS}
+    if operation is not None:
+        actions.add(operation)
+    if len(actions) > 1:
+        raise ProtocolValidationError("采油树任务的插入/拔出动作不一致，未下发。")
+    if not actions:
+        raise ProtocolValidationError("采油树任务未明确插入或拔出动作，无法执行；请明确任务动作，未下发。")
+    operation = next(iter(actions))
+    if operation == "withdraw":
+        raise ProtocolValidationError("当前 ROS 2 协议未定义采油树控制面板拔出指令；拔出计划可保存，但不能下发执行。")
+    return operation
+
+
 class DuplicateRequestError(ProtocolValidationError):
     """当相同请求被重复提交时抛出"""
 

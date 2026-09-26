@@ -405,7 +405,16 @@ class TaskCommitHandler(BaseDialogueHandler):
         dm.task_start_now = dm.is_start_time_near_now()
 
         user_facing_built = sanitize_user_facing_json(dm._last_built_json)
-        if dm.task_start_now:
+        from mcp.core.sealien_protocol import ProtocolValidationError, validate_valve_operation
+        operation_error = None
+        try:
+            validate_valve_operation(artifact)
+        except ProtocolValidationError as exc:
+            operation_error = str(exc)
+        if operation_error:
+            reply = (f"任务计划已生成并归档，尚未下发。{operation_error}\n"
+                     f"{json.dumps(user_facing_built, ensure_ascii=False, indent=2)}")
+        elif dm.task_start_now:
             reply = (f"✅ 信息收集完成，任务已生成并归档；执行检查与下发结果请查看任务发送状态。\n"
                      f"{json.dumps(user_facing_built, ensure_ascii=False, indent=2)}")
         else:

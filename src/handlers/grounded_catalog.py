@@ -568,6 +568,36 @@ class GroundedCatalogHandler(BaseDialogueHandler):
 
     _build_grounded_rule_catalog_introduction = build_grounded_rule_catalog_introduction
 
+    def _build_task_device_options(self, task_key: str, template: dict) -> str:
+        """Render task-capable variants without changing the saved selection."""
+        depth = self.task_state.get("water_depth")
+        robots = self.kb.get_task_allowed_robot_variants(task_key)
+        if isinstance(depth, (int, float)):
+            robots = [
+                robot for robot in robots
+                if isinstance(robot.get("max_depth_m"), (int, float))
+                and robot["max_depth_m"] >= depth
+            ]
+        task_name = template.get("display_name", task_key)
+        depth_text = f"、作业水深 {depth:g} 米" if isinstance(depth, (int, float)) else ""
+        if not robots:
+            return (
+                f"根据项目配置，当前【{task_name}】{depth_text}没有满足静态能力条件的机器人。"
+                "请核对作业要求；本轮未修改任务。"
+            )
+        lines = [f"针对【{task_name}】{depth_text}，以下型号具备任务所需能力："]
+        for robot in robots:
+            name = robot.get("full_name") or robot.get("variant_id")
+            maximum = robot.get("max_depth_m")
+            depth_detail = f"，最大作业水深 {maximum:g} 米" if isinstance(maximum, (int, float)) else ""
+            lines.append(f"- 【{name}】{depth_detail}。")
+        if len(robots) == 1:
+            lines.append("该型号是当前任务与水深条件下唯一的配置候选，可据此核对具体单机。")
+        else:
+            lines.append("这些型号均满足当前任务能力与水深要求；进一步推荐具体单机还需结合海床条件和工具需求。")
+        lines.append("这是静态能力筛选，实际执行还需校验载荷、海况和设备状态。本轮未选择或修改机器人。")
+        return "\n".join(lines)
+
     def build_grounded_task_fit_answer(
         self, user_message: str, route: IntentRouteResult,
     ) -> str | None:
@@ -583,7 +613,7 @@ class GroundedCatalogHandler(BaseDialogueHandler):
             return None
         if re.search(
             r"(?:哪些|什么|哪几种)(?:样的)?(?:任务|作业|工作)"
-            r"|(?:任务|作业)(?:列表|清单|有哪些|有哪几种)",
+            r"|(?:任务|作业)(?:列表|清单|有哪些|有哪几种)(?!机器人|设备|装备|ROV|AUV)",
             user_message,
         ):
             return None
@@ -595,8 +625,14 @@ class GroundedCatalogHandler(BaseDialogueHandler):
         template = self.kb.task_schemas.get("task_templates", {}).get(task_key)
         if not template:
             return None
-        fit_question = re.search(
-            r"适合|适用|适配|胜任|合适|能做|能否|能不能|可以吗|行不行"
+        device_options_question = re.search(
+            r"(?:哪些|哪种|哪款|哪一台|哪台|什么).*?(?:机器人|设备|装备|ROV|AUV)"
+            r"|(?:推荐|建议).*?(?:机器人|设备|装备|选哪)"
+            r"|(?:机器人|设备|装备).*?(?:推荐|建议|选哪)",
+            user_message, re.IGNORECASE,
+        )
+        fit_question = device_options_question or re.search(
+            r"适合|适用|适配|胜任|合适|能(?:做|完成|执行)|能否|能不能|可以吗|行不行"
             r"|可以.*(?:做|执行|完成)|为什么.*推荐|推荐.*(?:原因|依据)",
             user_message,
         )
@@ -609,6 +645,11 @@ class GroundedCatalogHandler(BaseDialogueHandler):
         if not targets and not has_device_reference:
             return None
         if not targets:
+            if device_options_question:
+                recommendation = self.build_grounded_recommendation(route, user_message)
+                if recommendation is not None:
+                    return recommendation
+                return self._build_task_device_options(task_key, template)
             selected_reference = bool(re.search(
                 r"这台|那台|该机器人|该设备|所选|选定|当前的(?:设备|机器人)",
                 user_message,

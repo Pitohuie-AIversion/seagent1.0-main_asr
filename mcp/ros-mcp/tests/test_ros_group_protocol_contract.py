@@ -33,6 +33,7 @@ def _target_intent(task_type: str = "underwater_move") -> dict:
         "task": {
             "type": task_type,
             "details": {
+                **({"operation": "insert"} if task_type in {"tree_valve_operation", "valve_operation"} else {}),
                 "target": {"latitude": 20.0, "longitude": 115.0},
             },
         },

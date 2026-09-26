@@ -210,8 +210,11 @@ class SlotFillingHandler(BaseDialogueHandler):
 
         req_fields = manager.builder.get_required(task_type_key, manager.mode, manager.slot_store.get_task_state()) if task_type_key else []
         missing = manager.slot_store.get_missing_slots(req_fields) if task_type_key else []
-        knowledge_context = manager.kb.get_context_for_state(manager.task_state)
         constraint_context = manager._run_constraint_check(set(), purpose="interactive")
+        knowledge_context = manager.kb.get_context_for_state(
+            manager.task_state,
+            include_runtime_state=not constraint_context.get("runtime_validation_deferred", False),
+        )
 
         messages = build_responder_messages(
             task_state=manager.task_state,
@@ -694,7 +697,10 @@ class SlotFillingHandler(BaseDialogueHandler):
             )
 
         # 知识上下文
-        knowledge_context = manager.kb.get_context_for_state(manager.task_state)
+        knowledge_context = manager.kb.get_context_for_state(
+            manager.task_state,
+            include_runtime_state=not constraint_context.get("runtime_validation_deferred", False),
+        )
         accepted_updates = self.get_committed_turn_updates(
             merged_updates,
             state_before_turn,

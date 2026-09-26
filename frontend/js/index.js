@@ -1645,13 +1645,22 @@ Please describe your operational requirements directly, or ask the question you 
         ignoreBtn.type = 'button';
         ignoreBtn.className = 'btn-ignore-warning-confirm';
         ignoreBtn.innerHTML = `<span>⚡</span><span>${currentLang === 'zh' ? '忽略警告并继续发布' : 'Ignore Warning & Proceed'}</span>`;
-        ignoreBtn.addEventListener('click', (e) => {
+        ignoreBtn.addEventListener('click', async (e) => {
           e.stopPropagation();
+          if (isSending || !currentActions.can_ignore_soft_warning || typeof window.sendMessage !== 'function') return;
+          const submitGen = sessionGeneration;
+          const buttonLabel = ignoreBtn.innerHTML;
           ignoreBtn.disabled = true;
           card.classList.add('warning-card-resolving');
           ignoreBtn.innerHTML = `<span>⏳</span><span>${currentLang === 'zh' ? '正在提交确认...' : 'Submitting...'}</span>`;
-          if (typeof window.sendMessage === 'function') {
-            window.sendMessage('忽略警告');
+          try {
+            await window.sendMessage('忽略警告');
+          } finally {
+            if (submitGen === sessionGeneration && !card.classList.contains('warning-card-resolved')) {
+              ignoreBtn.disabled = !currentActions.can_ignore_soft_warning;
+              card.classList.remove('warning-card-resolving');
+              ignoreBtn.innerHTML = buttonLabel;
+            }
           }
         });
 
@@ -3029,9 +3038,20 @@ Please describe your operational requirements directly, or ask the question you 
       let savedSid = null;
       try { savedSid = localStorage.getItem('seagent_session_id'); } catch(e){}
       if (!savedSid) return false;
+      const restoreSeq = ++currentRequestSeq;
+      const restoreGen = sessionGeneration;
+      const controller = new AbortController();
+      currentAbortController = controller;
+      isSending = true;
+      applyInteractionState(currentActions, currentReadOnly);
       try {
-        const res = await fetch(API_BASE + '/api/session/state?session_id=' + encodeURIComponent(savedSid));
+        const res = await fetch(API_BASE + '/api/session/state?session_id=' + encodeURIComponent(savedSid), {
+          signal: controller.signal,
+        });
         const data = await res.json();
+        // A reset or history selection may have replaced the context while loading.
+        if (restoreSeq !== currentRequestSeq || restoreGen !== sessionGeneration) return true;
+        if (!res.ok || !data.ok) throw new Error(data.msg || `HTTP ${res.status}`);
         if (data.ok && data.exists) {
           sessionId = savedSid;
           messageContainer.innerHTML = '';
@@ -3054,7 +3074,20 @@ Please describe your operational requirements directly, or ask the question you 
           return true;
         }
       } catch (e) {
+        if (restoreSeq !== currentRequestSeq || restoreGen !== sessionGeneration) return true;
         console.error('Session restore failed', e);
+        // Keep the saved session recoverable after a network or authentication failure.
+        sessionId = savedSid;
+        addMessage('bot', currentLang === 'zh'
+          ? '会话恢复失败，已保留原会话。请检查连接或凭据后刷新页面重试。'
+          : 'Session restore failed. Your session was preserved. Check the connection or credentials, then reload to retry.');
+        return true;
+      } finally {
+        if (restoreSeq === currentRequestSeq && restoreGen === sessionGeneration) {
+          isSending = false;
+          currentAbortController = null;
+          applyInteractionState(currentActions, currentReadOnly);
+        }
       }
       return false;
     }
@@ -3066,23 +3099,32 @@ Please describe your operational requirements directly, or ask the question you 
       window.sessionGeneration = sessionGeneration;
       isSending = true;
       applyInteractionState(currentActions, currentReadOnly);
+      const resetSeq = ++currentRequestSeq;
+      const resetGen = sessionGeneration;
       await cancelVoiceActivity();
+      if (resetSeq !== currentRequestSeq || resetGen !== sessionGeneration) return false;
       const resetSessionId = sessionId;
+      const controller = new AbortController();
+      currentAbortController = controller;
 
       if (resetSessionId) {
         try {
           const res = await fetch(API_BASE + '/api/reset', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: resetSessionId })
+            body: JSON.stringify({ session_id: resetSessionId }),
+            signal: controller.signal,
           });
           const data = await res.json();
+          if (resetSeq !== currentRequestSeq || resetGen !== sessionGeneration) return false;
           if (!res.ok || data.ok !== true || data.reset !== true) {
             throw new Error(data.msg || `HTTP ${res.status}`);
           }
         } catch (err) {
+          if (resetSeq !== currentRequestSeq || resetGen !== sessionGeneration) return false;
           console.error('Reset failed', err);
           isSending = false;
+          currentAbortController = null;
           applyInteractionState(currentActions, currentReadOnly);
           addMessage('bot', I18N[currentLang].resetFailed);
           return false;
@@ -3107,6 +3149,7 @@ Please describe your operational requirements directly, or ask the question you 
       messageInput.value = '';
 
       isSending = false;
+      currentAbortController = null;
       applyInteractionState(RESET_ACTIONS, false);
       messageInput.focus();
       return true;

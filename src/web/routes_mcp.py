@@ -3,7 +3,9 @@ src/web/routes_mcp.py - ROS 2 MCP 任务下发、网关切换与设备控制路�
 """
 
 import logging
+import math
 import os
+import struct
 import threading
 import yaml
 from flask import Blueprint, current_app, jsonify, request
@@ -23,6 +25,26 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 mcp_bp = Blueprint("mcp", __name__)
+
+
+def _read_command():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return None, (jsonify({"code": 400, "msg": "请求体必须是 JSON 对象"}), 400)
+    return data, None
+
+
+def _command_integer(value, field, minimum=0, maximum=None):
+    # Never silently turn a fractional ID or a boolean into another device.
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError(f"{field} 必须是整数")
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{field} 必须是整数") from exc
+    if number < minimum or (maximum is not None and number > maximum):
+        raise ValueError(f"{field} 超出允许范围")
+    return number
 
 
 def _get_config_dir() -> Path:
@@ -86,7 +108,9 @@ def get_mcp_status():
 def dispatch_mcp_task():
     """下发指定 TaskIntent 或当前会话完成的任务到 ROS 2 控制系统"""
     bridge = get_mcp_bridge()
-    data = request.get_json(silent=True) or {}
+    data, error = _read_command()
+    if error is not None:
+        return error
     sid = data.get("session_id")
     custom_intent = data.get("task_intent")
 
@@ -139,17 +163,22 @@ def mcp_gateway():
             },
         })
 
-    data = request.get_json(silent=True) or {}
-    host = str(data.get("host", "")).strip()
+    data, error = _read_command()
+    if error is not None:
+        return error
+    host = data.get("host")
+    if not isinstance(host, str):
+        return jsonify({"code": 400, "msg": "host 格式非法"}), 400
+    host = host.strip()
     try:
-        port = int(data.get("port"))
-    except (TypeError, ValueError):
-        return jsonify({"code": 400, "msg": "port 必须是整数"}), 400
-    mode = str(data.get("mode") or ("real" if port == 9090 else "mock"))
+        port = _command_integer(data.get("port"), "port", 1, 65535)
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
+    mode = data.get("mode", "real" if port == 9090 else "mock")
+    if mode not in ("real", "mock"):
+        return jsonify({"code": 400, "msg": "mode 必须是 real 或 mock"}), 400
     if not host or len(host) > 253 or any(ch.isspace() for ch in host):
         return jsonify({"code": 400, "msg": "host 格式非法"}), 400
-    if not 1 <= port <= 65535:
-        return jsonify({"code": 400, "msg": "port 必须在 1..65535 范围内"}), 400
 
     old_host, old_port, old_mode = bridge.host, bridge.port, bridge.gateway_mode
     try:
@@ -182,23 +211,25 @@ def mcp_task_manage():
     if bridge is None or not bridge.is_healthy():
         return jsonify({"code": 503, "msg": "MCP 桥接服务未连接"}), 503
 
-    data = request.get_json(silent=True) or {}
+    data, error = _read_command()
+    if error is not None:
+        return error
     action_str = str(data.get("action", "")).lower()
     target_task_id = data.get("task_id")
 
+    if action_str in ("suspend", "resume", "delete"):
+        try:
+            target_task_id = _command_integer(target_task_id, "task_id", 1, 0xFFFFFFFF)
+        except ValueError as exc:
+            return jsonify({"code": 400, "msg": str(exc)}), 400
+
     try:
         if action_str == "suspend":
-            if not target_task_id:
-                return jsonify({"code": 400, "msg": "挂起任务需提供 task_id"}), 400
-            tid = bridge.suspend_task(int(target_task_id))
+            tid = bridge.suspend_task(target_task_id)
         elif action_str == "resume":
-            if not target_task_id:
-                return jsonify({"code": 400, "msg": "恢复任务需提供 task_id"}), 400
-            tid = bridge.resume_task(int(target_task_id))
+            tid = bridge.resume_task(target_task_id)
         elif action_str == "delete":
-            if not target_task_id:
-                return jsonify({"code": 400, "msg": "删除任务需提供 task_id"}), 400
-            tid = bridge.delete_task(int(target_task_id))
+            tid = bridge.delete_task(target_task_id)
         elif action_str in ("clear_block", "clear"):
             tid = bridge.emergency_clear_block()
         else:
@@ -222,7 +253,9 @@ def mcp_ctrl_task():
     if bridge is None or not bridge.is_healthy():
         return jsonify({"code": 503, "msg": "MCP 桥接服务未连接"}), 503
 
-    data = request.get_json(silent=True) or {}
+    data, error = _read_command()
+    if error is not None:
+        return error
     device_id = data.get("device_id")
     value = data.get("value", 0.0)
 
@@ -230,7 +263,19 @@ def mcp_ctrl_task():
         return jsonify({"code": 400, "msg": "缺少 device_id 参数"}), 400
 
     try:
-        tid = bridge.control_device(device_id=int(device_id), value=float(value))
+        device_id = _command_integer(device_id, "device_id")
+        if isinstance(value, bool):
+            raise ValueError("value 必须是有限数值")
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError("value 必须是有限数值")
+        # SysTaskCmd.params uses float32, not Python's wider float64 range.
+        struct.pack("!f", value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        return jsonify({"code": 400, "msg": f"控制参数非法: {exc}"}), 400
+
+    try:
+        tid = bridge.control_device(device_id=device_id, value=value)
         return jsonify({
             "code": 200,
             "msg": f"设备控制指令已发送 (device={device_id}, value={value})",

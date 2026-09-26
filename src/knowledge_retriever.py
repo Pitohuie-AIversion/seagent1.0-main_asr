@@ -300,8 +300,10 @@ class KnowledgeBase:
     def get_supported_task(self) -> list:
         return self._prompt_grounder.get_supported_task()
 
-    def get_context_for_state(self, task_state: dict) -> str:
-        return self._prompt_grounder.get_context_for_state(task_state)
+    def get_context_for_state(self, task_state: dict, *, include_runtime_state: bool = True) -> str:
+        return self._prompt_grounder.get_context_for_state(
+            task_state, include_runtime_state=include_runtime_state
+        )
 
     def _robot_category_overview(self) -> str:
         return self._prompt_grounder._robot_category_overview()

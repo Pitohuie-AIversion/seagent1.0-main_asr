@@ -10,6 +10,7 @@ from typing import Any
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 import src.web.state as state
 from src.exceptions import (
+    ContextBudgetError,
     IdReservationError,
     IntentIdConflict,
     TaskPersistenceError,
@@ -33,6 +34,52 @@ chat_bp = Blueprint("chat", __name__)
 
 def _get_backend_symbol(name: str, fallback: Any) -> Any:
     return state.get_service_symbol(name, fallback)
+
+
+def _request_error(error: str, message: str, request_id: str | None = None):
+    payload = {
+        "ok": False,
+        "code": 400,
+        "error": error,
+        "msg": message,
+        "retryable": False,
+    }
+    if request_id is not None:
+        payload["request_id"] = request_id
+    return jsonify(payload), 400
+
+
+def _read_json_object():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return None, _request_error("InvalidJSON", "请求体必须是有效的 JSON 对象。")
+    return data, None
+
+
+def _read_chat_request():
+    """Validate transport input before looking up or mutating a conversation."""
+    data, error = _read_json_object()
+    if error is not None:
+        return None, error
+
+    raw_request_id = data.get("request_id")
+    request_id = (
+        raw_request_id if isinstance(raw_request_id, str) and raw_request_id.strip()
+        else f"req_{uuid.uuid4().hex[:8]}"
+    )
+    for key in ("session_id", "request_id"):
+        value = data.get(key)
+        if value is not None and value != "" and (not isinstance(value, str) or not value.strip()):
+            return None, _request_error("InvalidRequest", f"{key} 必须是非空字符串。", request_id)
+
+    msg = data.get("message", "")
+    if not isinstance(msg, str):
+        return None, _request_error("InvalidRequest", "消息内容必须是字符串。", request_id)
+    msg = msg.strip()
+    if not msg:
+        return None, _request_error("EmptyMessage", "消息内容不能为空。", request_id)
+    sid = data.get("session_id") or str(uuid.uuid4())
+    return (sid, request_id, msg), None
 
 
 def _dispatch_ros2_on_done_transition(mgr, phase_before):
@@ -77,19 +124,10 @@ def _persist_and_dispatch_done_transition(mgr, phase_before):
 @_require_api_token
 def api_chat():
     try:
-        data = request.json or {}
-        sid = data.get("session_id") or str(uuid.uuid4())
-        request_id = data.get("request_id") or f"req_{uuid.uuid4().hex[:8]}"
-        msg = data.get("message", "").strip()
-        if not msg:
-            return jsonify({
-                "ok": False,
-                "code": 400,
-                "error": "EmptyMessage",
-                "msg": "消息内容不能为空。",
-                "request_id": request_id,
-                "retryable": False,
-            }), 400
+        parsed, error = _read_chat_request()
+        if error is not None:
+            return error
+        sid, request_id, msg = parsed
 
         manager_getter = _get_backend_symbol("get_or_create_manager", get_or_create_manager)
         mgr = manager_getter(sid)
@@ -171,6 +209,16 @@ def api_chat():
             "request_id": request_id if 'request_id' in locals() else "req_unknown",
             "retryable": True,
         }), 500
+    except ContextBudgetError as exc:
+        logger.warning("Model context budget exceeded in /api/chat: %s", exc)
+        return jsonify({
+            "ok": False,
+            "code": 503,
+            "error": "ContextBudgetError",
+            "msg": str(exc),
+            "request_id": request_id if 'request_id' in locals() else "req_unknown",
+            "retryable": False,
+        }), 503
     except ValueError as ve:
         logging.error(f"Validation error in /api/chat: {ve}", exc_info=True)
         return jsonify({
@@ -198,19 +246,10 @@ def api_chat():
 def api_chat_stream():
     """SSE 流式会话更新机制（Server-Sent Events），提供细粒度事件流与实时更新契约。"""
     try:
-        data = request.json or {}
-        sid = data.get("session_id") or str(uuid.uuid4())
-        request_id = data.get("request_id") or f"req_{uuid.uuid4().hex[:8]}"
-        msg = data.get("message", "").strip()
-        if not msg:
-            return jsonify({
-                "ok": False,
-                "code": 400,
-                "error": "EmptyMessage",
-                "msg": "消息内容不能为空。",
-                "request_id": request_id,
-                "retryable": False,
-            }), 400
+        parsed, error = _read_chat_request()
+        if error is not None:
+            return error
+        sid, request_id, msg = parsed
 
         manager_getter = _get_backend_symbol("get_or_create_manager", get_or_create_manager)
         mgr = manager_getter(sid)
@@ -300,6 +339,15 @@ def api_chat_stream():
                         "request_id": request_id,
                         "retryable": True,
                     }
+                except ContextBudgetError as exc:
+                    logger.warning("Model context budget exceeded in /api/chat/stream: %s", exc)
+                    session_error = {
+                        "code": 503,
+                        "error": "ContextBudgetError",
+                        "msg": str(exc),
+                        "request_id": request_id,
+                        "retryable": False,
+                    }
                 except ValueError as ve:
                     logging.error(f"Validation error in /api/chat/stream: {ve}", exc_info=True)
                     session_error = {
@@ -368,7 +416,10 @@ def api_chat_stream():
 @chat_bp.route("/api/reset", methods=["POST"])
 @_require_api_token
 def api_reset():
-    sid = (request.json or {}).get("session_id")
+    data, error = _read_json_object()
+    if error is not None:
+        return error
+    sid = data.get("session_id")
     if not isinstance(sid, str) or not sid.strip():
         return jsonify({
             "ok": False,

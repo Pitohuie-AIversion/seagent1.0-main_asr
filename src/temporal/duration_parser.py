@@ -406,7 +406,7 @@ KEEP_DURATION_PATTERNS = [
     r"按原时长",
     r"保持原?时长",
     r"沿用.*时长",
-    r"时长.*保持.*不变",
+    r"时长[^，,。；;\n]*保持[^，,。；;\n]*不变",
 ]
 
 
@@ -418,7 +418,7 @@ def is_keep_duration_expression(text: Optional[str]) -> bool:
     # A fixed endpoint is not a fixed duration. Remove only that clause so a
     # separate explicit duration-keep instruction remains visible.
     norm = re.sub(
-        r"(?:开始|起始|结束|终止|截止|完工|收工)\s*时间\s*(?:保持)?\s*不变",
+        r"(?:开始|起始|开工|结束|终止|截止|完工|收工)\s*时间\s*(?:保持)?\s*不变",
         "", norm,
     )
     for pattern in KEEP_DURATION_PATTERNS:

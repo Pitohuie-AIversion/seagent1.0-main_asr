@@ -276,3 +276,47 @@ def test_hard_details_are_visible_but_soft_details_remain_in_sidebar():
     assert 'C022' not in reply and '推进器状态' not in reply
     assert 'DEPTH_LIMIT' in reply and '超过设备最大工作水深' in reply
     assert '先修正' in reply and '尚未发布' in reply
+
+
+@pytest.mark.parametrize('candidate_kind', ['slot_candidate', 'list_mutation'])
+@pytest.mark.parametrize('verb', ['携带', '带上'])
+def test_named_onboard_tool_cannot_be_substituted_by_model(valve, candidate_kind, verb):
+    dm, llm = valve
+    dm.slot_store.slots['payload'].value = []
+    dm.slot_store.slots['payload'].status = 'missing'
+    dm._rebuild_cache()
+    bad = extraction([mutation(items=['电液机械臂', HYDRAULIC])])
+    if candidate_kind == 'slot_candidate':
+        bad['list_mutations'] = []
+        bad['slot_candidates'] = [slot_candidate('payload', ['电液机械臂', HYDRAULIC],
+            raw_value=['多功能液压机械臂', HYDRAULIC])]
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(bad)
+
+    dm.process(f'就用通用工作级001，支持船选择海洋石油681，{verb}多功能液压机械臂和液压飞线插拔工具，明天上午11点结束。')
+
+    assert dm.slot_store.slots['payload'].value == [HYDRAULIC]
+    assert '电液机械臂' not in dm.task_state['payload']
+
+
+@pytest.mark.parametrize('message', [
+    '如果携带多功能液压机械臂和液压飞线插拔工具会怎么样？',
+    '请不要帮我携带电液机械臂。',
+    '不要添加电液机械臂。',
+    '带上电液机械臂可以吗？',
+])
+def test_nonasserted_carry_request_does_not_accept_model_payload(valve, message):
+    dm, llm = valve
+    before = copy.deepcopy(dm.slot_store.slots['payload'].value)
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(extraction([mutation(items=['电液机械臂'])]))
+    dm.process(message)
+    assert dm.slot_store.slots['payload'].value == before
+
+
+def test_explicit_optional_arm_is_still_selectable(valve):
+    dm, llm = valve
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(extraction([mutation(items=['多功能液压机械臂'])]))
+    dm.process('携带电液机械臂。')
+    assert dm.slot_store.slots['payload'].value == INITIAL + ['电液机械臂']

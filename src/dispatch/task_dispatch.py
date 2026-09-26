@@ -70,6 +70,13 @@ def dispatch_completed_task(manager: Any, bridge: Any) -> dict:
             return _result(manager, "UNKNOWN", "历史任务缺少可核验的发送记录，未重复发送；请核对机器人任务记录。",
                            reason="legacy_history")
 
+        from mcp.core.sealien_protocol import ProtocolValidationError, validate_valve_operation
+        try:
+            validate_valve_operation(intent)
+        except ProtocolValidationError as exc:
+            return _result(manager, "BLOCKED", f"任务计划已保存。{exc}",
+                           reason="unsupported_task_operation", error=str(exc), retry_allowed=False)
+
         now = get_current_datetime()
         if now.tzinfo is None:
             now = now.replace(tzinfo=BEIJING_TZ)

@@ -73,7 +73,7 @@ from src.extraction.oilfield_linker import OilfieldEntityLinker
 from .constants import FIELD_LABELS
 from src.slots.slot_store import Slot, SlotStore, ValidationAcknowledgement
 
-from .exceptions import TaskPersistenceError, IntentIdConflict, IdReservationError, TaskRollbackError
+from .exceptions import ContextBudgetError, TaskPersistenceError, IntentIdConflict, IdReservationError, TaskRollbackError
 from src.session.intent_router import IntentRouter, IntentRouteResult
 from src.validation.task_request_guard import analyze_task_request
 from src.dispatch.result_paths import get_task_dir
@@ -424,13 +424,21 @@ class DialogueManager:
             request_history = list(self.conversation_history)
             request_task_start_now = self.task_start_now
             request_editing_slot = self.editing_slot
+            request_context_state = {
+                name: copy.deepcopy(getattr(self, name)) for name in (
+                    "mode", "dialogue_mode", "last_mode_transition", "mode_transition_history",
+                    "control_state", "last_control_request", "final_result", "awaiting_final_confirm",
+                    "_last_discussed_task_type", "_last_discussed_robot", "_last_discussed_oilfield",
+                    "_last_discussed_payload", "_last_visible_catalog_items",
+                )
+            }
 
             try:
                 reply = self._process_internal(user_message, request_id, event_sink=event_sink)
                 self._run_session_state_shadow_check(checkpoint="process", request_id=request_id)
                 return reply
-            except (TaskPersistenceError, IntentIdConflict, IdReservationError) as exc:
-                if self.phase == "blocked_soft":
+            except (TaskPersistenceError, IntentIdConflict, IdReservationError, ContextBudgetError) as exc:
+                if self.phase == "blocked_soft" and not isinstance(exc, ContextBudgetError):
                     raise
 
                 try:
@@ -446,7 +454,11 @@ class DialogueManager:
                     self.conversation_history = request_history
                     self.task_start_now = request_task_start_now
                     self.editing_slot = request_editing_slot
-                    self.final_result = None
+                    if isinstance(exc, ContextBudgetError):
+                        for name, value in request_context_state.items():
+                            setattr(self, name, value)
+                    else:
+                        self.final_result = None
                 except Exception as rb_exc:
                     raise TaskRollbackError(
                         f"Request failed ({exc}) and request rollback failed: {rb_exc}"
@@ -664,6 +676,15 @@ class DialogueManager:
             phase=self.phase,
             expected_slots=expected_slots,
             expected_slot_options=expected_slot_options,
+            active_warnings=[
+                {
+                    "code": violation.constraint_id,
+                    "name": violation.constraint_name,
+                    "message": violation.message,
+                    "severity": violation.severity,
+                }
+                for violation in self._blocking_violations
+            ] if self.phase in {"blocked_soft", "blocked_hard"} else [],
         )
 
         self._switch_dialogue_mode(

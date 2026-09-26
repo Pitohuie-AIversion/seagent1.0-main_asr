@@ -136,6 +136,7 @@ class TestSealienProtocolIntegration:
             "task": {
                 "type": "tree_valve_operation",
                 "details": {
+                    "operation": "insert",
                     "target": {"latitude": 20.815, "longitude": 115.735}
                 },
             },

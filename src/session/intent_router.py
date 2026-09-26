@@ -16,6 +16,7 @@ from .interaction_plan import (
     validate_interaction_plan,
 )
 from src.llm_client import LLMClient
+from src.exceptions import ContextBudgetError
 from src.extraction.model_profile import ModelRole, _is_unsupported_role_keyword_error
 from src.types import (  # noqa: F401  (re-export backwards compat)
     InteractionType,
@@ -41,6 +42,7 @@ operation 只能是：
 - CONTROL：请求停止、暂停、终止或取消运行控制；
 - CLARIFY：上下文仍不足以安全判断。
 
+以最新一条用户输入决定本轮动作；历史里“先不要确认/只解释”的限制不覆盖用户本轮明确接受警告的新决定。
 不要依赖固定句式。需要理解省略、指代、对上一轮建议的接受、任务中途闲聊，以及
 同一句中的问答和修改。已有任务或 expected_slots 不代表本轮一定要写入；反过来，
 自然表达没有出现字段名也不代表不能写入。
@@ -56,12 +58,16 @@ allowed_values 或 alias_mappings 时，应按该待填字段候选处理为 WRI
 查询已经选择、记录、保存的任务参数，或者追问上一轮修改是否成功，属于任务配置
 查询：READ、query_intent=TASK_STATUS、source_policy=session_state；根据被查询
 字段设置 subject_type（例如载荷用 payload）、relation=filled_fields 或 status。
+用户询问当前任务的校验提示、警告原因、是否能忽略或下一步如何处理时，也使用
+READ、TASK_STATUS、source_policy=session_state，依据 active_warnings 解释；
+例如“这条未来任务环境与遥测延后校验提示是什么意思，是不是机器人坏了？”是在
+询问当前校验提示，不要把整句话当成设备名称检索，也不能据此确认警告。
 例如“摄像机到底保存了没有，先解释不要改配置”是在核对会话中的载荷，不是在
 询问摄像机的实时运行状态。只有设备健康、在线情况、实际运行读数或现场环境
 才使用 DEVICE_STATUS/ENVIRONMENT_QUERY 和 realtime_state。
 
-只强制输出 operation。其余字段是可选的语义增强信息：有把握时输出，没有把握可
-省略；代码会从 operation 推导 dialogue_mode 和 needs_clarification。推荐、项目
+必须输出 operation 和 warning_action（明确接受当前软警告时为 acknowledge，否则为 null）。
+其余字段是可选的语义增强信息；代码会从 operation 推导 dialogue_mode 和 needs_clarification。推荐、项目
 知识检索或控制动作需要相应信息时，应尽量输出相关字段：
 {
   "schema_version": 1,
@@ -105,6 +111,12 @@ warning_action=null。同一轮只要还包含任何任务参数新增、修改�
 warning_action=null，先按普通 WRITE 抽取并校验修改；因为参数变化会使旧警告及
 其确认指纹失效。只有用户本轮唯一任务副作用是接受当前已展示的软警告时，才设置
 warning_action=acknowledge。
+active_warnings 给出本轮实际待处理的校验提示（含名称、说明和严重程度）。用户可以
+用提示名称、编号或“刚才的提醒”等指代接受软警告，不必照抄“忽略软警告”。
+例如仅有“未来任务环境与遥测延后校验提示”时，“确认忽略未来任务环境与遥测延后
+校验提示，继续”是在接受这条提示，WRITE、warning_action=acknowledge；没有修改
+开始时间、环境数据或遥测字段。相反，“这条提示是什么意思，能忽略吗？”是 READ
+解释请求；“把开始时间改成明天九点并忽略提醒”包含参数修改，warning_action=null。
 不处于 blocked_soft 或未明确接受风险时 warning_action 必须为 null。
 只能输出 JSON。
 """
@@ -222,6 +234,7 @@ class IntentRouter:
         phase: str = "collecting",
         expected_slots: list[str] | None = None,
         expected_slot_options: list[dict[str, Any]] | None = None,
+        active_warnings: list[dict[str, Any]] | None = None,
     ) -> IntentRouteResult:
         message = (user_message or "").strip()
         if not message:
@@ -235,6 +248,7 @@ class IntentRouter:
                 phase=phase,
                 expected_slots=expected_slots or [],
                 expected_slot_options=expected_slot_options or [],
+                active_warnings=active_warnings or [],
             )
         except IntentRoutingError as exc:
             logger.warning(
@@ -255,6 +269,7 @@ class IntentRouter:
         phase: str,
         expected_slots: list[str],
         expected_slot_options: list[dict[str, Any]],
+        active_warnings: list[dict[str, Any]] | None = None,
     ) -> IntentRouteResult:
         classify = getattr(self.llm, "classify_interaction", None)
         if not callable(classify):
@@ -262,6 +277,7 @@ class IntentRouter:
 
         context = {
             "phase": phase,
+            "active_warnings": active_warnings or [],
             "has_task": bool(task_state.get("task_type_key")),
             "task_type": task_state.get("task_type"),
             "task_type_key": task_state.get("task_type_key"),
@@ -313,6 +329,8 @@ class IntentRouter:
                 if not _is_unsupported_role_keyword_error(exc):
                     raise
                 candidate = classify(messages, max_tokens=480)
+        except ContextBudgetError:
+            raise
         except Exception as exc:
             raise IntentRoutingError(f"LLM 调用失败: {exc}") from exc
 
@@ -320,6 +338,8 @@ class IntentRouter:
             raise IntentRoutingError("LLM 路由结果不是合法 JSON object")
 
         plan = validate_interaction_plan(candidate)
+        logger.info("[TURN_PLAN] phase=%s operation=%s warning_action=%s reason=%s",
+                    phase, plan.operation, plan.warning_action, plan.reason_code)
 
         # 针对明确包含设备选择/使用意图（如“我要选择金牛座”、“选择金牛座001”）
         # 或短输入精确命中当前待填候选别名的口语修正，防止误判为 READ/CLARIFY。

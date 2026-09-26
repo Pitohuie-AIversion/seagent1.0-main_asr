@@ -109,7 +109,7 @@ TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python run.py
 Python 源码、模型和 ASR 等启动期配置变化会提示重启，不再局部替换 Python 模块。
 ROS 2 运行配置的独立重载不受此开关影响。
 
-服务启动后，可以通过浏览器访问 [frontend/index.html](file:///root/mzy/seagent1.0-main_asr/frontend/index.html) 或通过 API 接口进行交互。
+服务启动后，在浏览器打开 [http://localhost:8890](http://localhost:8890) 使用对话页面，或打开 [监控页面](http://localhost:8890/dashboard)。页面需要由后端渲染，请通过服务地址访问；若设置了 `PORT`，将地址中的端口替换为对应值。
 
 ---
 

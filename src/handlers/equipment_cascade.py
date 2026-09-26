@@ -701,10 +701,17 @@ class EquipmentCascadeResolver:
                     )
                     sandbox_slots["equipment_name"].status = "valid"
             else:
+                # Resolve without task filtering only to explain the rejection.
+                # Never use this diagnostic lookup to accept the selected unit.
+                known_unit = self.kb.resolve_robot_unit(str(unit_update), None)
+                message = f"Unknown fleet unit '{unit_update}'"
+                if known_unit and task_type and not self.kb.robot_matches_task(known_unit.get("robot"), task_type):
+                    task_name = self.kb.task_schemas.get("task_templates", {}).get(task_type, {}).get("display_name", task_type)
+                    message = f"机器人“{unit_update}”已收录，但不支持当前任务“{task_name}”。请选择该任务允许的机器人。"
                 _rollback_and_fail(
                     "equipment_unit_id",
                     unit_update,
-                    f"Unknown fleet unit '{unit_update}'",
+                    message,
                 )
                 return
 

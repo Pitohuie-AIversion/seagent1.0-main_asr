@@ -152,3 +152,80 @@ def test_duration_evidence_keeps_existing_formats_and_model_converted_units(now,
 ])
 def test_full_sentence_supplies_only_a_missing_date(now, raw, full, expected):
     assert parse_relative_datetime(raw, now, full_user_message=full) == expected
+
+
+@pytest.mark.parametrize("raw_start,raw_end,start,end", [
+    ("明天上午九点", "十一点", "09:00:00", "11:00:00"),
+    ("明天上午十点", "明天上午十点到十二点", "10:00:00", "12:00:00"),
+])
+def test_current_turn_normalized_interval_resolves_provisional_raw_errors(now, raw_start, raw_end, start, end):
+    spoken_range = raw_end if "到" in raw_end else f"{raw_start}到{raw_end}"
+    result = extract(f"安排任务，{spoken_range}。", [
+        candidate("start_time", raw_start, f"2026-09-17T{start}"),
+        candidate("end_time", raw_end, f"2026-09-17T{end}"),
+    ])
+    assert result["unresolved"] == []
+    assert times(result) == {"start_time": f"2026-09-17T{start}", "end_time": f"2026-09-17T{end}"}
+
+
+@pytest.mark.parametrize("state", [None, {
+    "start_time": "2026-09-17T08:00:00", "end_time": "2026-09-17T18:00:00",
+}])
+def test_invalid_new_interval_keeps_error_even_with_valid_saved_interval(now, state):
+    result = extract("明天上午十点开始，明天上午九点结束", [
+        candidate("start_time", "明天上午十点", "2026-09-17T10:00:00"),
+        candidate("end_time", "明天上午九点", "2026-09-17T09:00:00"),
+    ], state=state)
+    assert "结束时间必须晚于开始时间" in result["unresolved"]
+
+
+def test_invalid_end_only_edit_remains_available_for_final_validation(now):
+    from src.validation.validator import TaskValidator
+    from tests.test_task_time_validation import FakeKnowledgeBase
+
+    state = {"start_time": "2026-09-17T10:00:00", "end_time": "2026-09-17T12:00:00"}
+    result = extract("结束时间改成明天上午九点", [
+        candidate("end_time", "明天上午九点", "2026-09-17T09:00:00"),
+    ], state=state)
+    updated = {**state, **times(result)}
+    assert updated["end_time"] == "2026-09-17T09:00:00"
+    violations = TaskValidator(FakeKnowledgeBase()).validate(updated)
+    assert "C031" in {violation.constraint_id for violation in violations}
+
+
+@pytest.mark.parametrize("message,raw_end,normalized_end", [
+    ("明天上午十点开始，明天上午九点结束", "明天上午九点", "2026-09-17T12:00:00"),
+    ("明天上午十点到九点", "九点", "2026-09-17T12:00:00"),
+    ("明天上午十点到十二点", "明天上午十点到十二点", "2026-09-17T13:00:00"),
+    ("明天上午十点到十一点", "十一点", "2026-09-17T12:00:00"),
+])
+def test_model_iso_cannot_clear_an_error_without_matching_spoken_endpoint(now, message, raw_end, normalized_end):
+    result = extract(message, [
+        candidate("start_time", "明天上午十点", "2026-09-17T10:00:00"),
+        candidate("end_time", raw_end, normalized_end),
+    ])
+    assert result["unresolved"], "A valid model ISO must not override conflicting user time evidence"
+
+
+def test_real_valve_request_uses_spoken_endpoint_when_model_expands_raw(monkeypatch):
+    monkeypatch.setattr("src.temporal.simulated_time.get_current_datetime",
+                        lambda: datetime(2026, 9, 26, 17, 0, 7))
+    # Captured from GET /api/session/state for audit-final-time_remove.
+    message = "我要安排采油树控制面板拔出作业，明天上午十点到十二点，井口编号A03，水深300米。"
+    result = extract(message, [
+        candidate("start_time", "明天上午十点", "2026-09-27T10:00:00"),
+        candidate("end_time", "明天上午十二点", "2026-09-27T12:00:00"),
+    ])
+    assert result["unresolved"] == []
+    assert times(result) == {"start_time": "2026-09-27T10:00:00", "end_time": "2026-09-27T12:00:00"}
+
+
+def test_real_range_evidence_still_rejects_wrong_model_endpoint(monkeypatch):
+    monkeypatch.setattr("src.temporal.simulated_time.get_current_datetime",
+                        lambda: datetime(2026, 9, 26, 17, 0, 7))
+    message = "我要安排采油树控制面板拔出作业，明天上午十点到九点，井口编号A03，水深300米。"
+    result = extract(message, [
+        candidate("start_time", "明天上午十点", "2026-09-27T10:00:00"),
+        candidate("end_time", "明天上午十二点", "2026-09-27T12:00:00"),
+    ])
+    assert "结束时间必须晚于开始时间" in result["unresolved"]

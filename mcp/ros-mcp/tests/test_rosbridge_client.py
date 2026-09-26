@@ -77,6 +77,7 @@ def ws_client(rosbridge_server):
 def _intent(task_type="tree_valve_operation", depth=300.0, lat=20.815, lon=115.735,
             priority=15, fail_stop=True):
     details = {
+        **({"operation": "insert"} if task_type in {"tree_valve_operation", "valve_operation"} else {}),
         "target": {"latitude": lat, "longitude": lon},
         "speed_ms": 1.5,
     }

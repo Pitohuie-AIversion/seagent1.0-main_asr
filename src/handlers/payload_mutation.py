@@ -21,12 +21,12 @@ from src.slots.slot_store import Slot
 logger = logging.getLogger("src.dialogue_manager")
 
 _REMOVE = r"删除|移除|去掉|卸下|取消携带|别带|不要带|不要"
-_ADD = r"添加|增加|加装|再带|加上|补充"
+_ADD = r"添加|增加|加装|再带|加上|补充|携带|带上"
 _REPLACE = r"替换成|替换为|换成|换为|改成|改为"
 _NEGATED_ACTION = re.compile(
     r"(?:不要|不用|无需|不能|别|不|勿)\s*"
     r"(?:(?:替我|帮我|给我|为我|擅自|自动|随意|继续|再|去)\s*)*"
-    r"(?:删除|移除|去掉|卸下|清空|清除|替换|更换|换成)"
+    r"(?:删除|移除|去掉|卸下|清空|清除|替换|更换|换成|添加|增加|加装|再带|加上|补充|携带|带上)"
 )
 _CLEAR_PAYLOAD = re.compile(
     r"^(?:请|帮我|给我)?(?:清空|清除|删除|移除|卸下)(?:全部|所有)?(?:携带的?|选配的?|已选的?)?(?:工具|载荷|payload)$"
@@ -88,12 +88,17 @@ class PayloadMutationManager(BaseDialogueHandler):
             "清除载荷", "调出载荷卡片", "载荷卡片", "重配置载荷", "修改工具",
             "重新选择工具", "更换工具", "换工具"
         )
-        if any(kw in msg for kw in direct_keywords):
-            return True
-
-        has_target = any(t in msg for t in ["载荷", "payload", "工具"])
-        has_action = any(a in msg for a in ["修改", "重选", "重新选择", "更换", "重新配置", "重置", "清除"])
-        return bool(has_target and has_action)
+        # This pre-planner shortcut is only for standalone editor commands.
+        # Questions, negated requests and mixed instructions belong to the model
+        # planner; words like 载荷 and 修改 in separate clauses are not consent.
+        command = re.sub(r"[\s，,。.!！?？]+", "", msg)
+        actions = "|".join(re.escape(keyword) for keyword in direct_keywords)
+        return bool(re.fullmatch(
+            rf"(?:(?:请|麻烦|帮我|我想|我要|帮忙))*"
+            rf"(?:{actions}|(?:修改|更换|重新选择|重新配置)(?:一下)?(?:载荷|payload|携带工具|工具))"
+            r"(?:一下|吧|好吗)?",
+            command,
+        ))
 
     def handle_payload_modification(self, user_message: str) -> str | None:
         """Open an editor without changing the authoritative payload slot."""

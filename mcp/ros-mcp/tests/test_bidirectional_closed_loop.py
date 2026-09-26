@@ -86,7 +86,7 @@ class TestBidirectionalClosedLoop:
         intent = {
             "schema_version": 2, "task_type": "tree_valve_operation",
             "priority": 15, "location": {"water_depth_m": 300.0},
-            "task": {"details": {"target": {"latitude": 20.815, "longitude": 115.735}}}
+            "task": {"details": {"operation": "insert", "target": {"latitude": 20.815, "longitude": 115.735}}}
         }
 
         history_statuses = []
@@ -231,7 +231,7 @@ class TestBidirectionalClosedLoop:
             "schema_version": 2, "task_type": "tree_valve_operation",
             "equipment": {"robot_unit_id": "WROV-250-001"},
             "location": {"water_depth_m": 300.0},
-            "task": {"details": {"target": {"latitude": 20.815, "longitude": 115.735}}}
+            "task": {"details": {"operation": "insert", "target": {"latitude": 20.815, "longitude": 115.735}}}
         }
         intent_lrov = {
             "schema_version": 2, "task_type": "pipeline_inspection",

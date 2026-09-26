@@ -112,6 +112,7 @@ class TestDialogueMCPIntegration:
             "priority": 15,
             "location": {"oilfield": "流花11-1油田", "water_depth_m": 300.0},
             "task": {"type": "tree_valve_operation", "details": {
+                "operation": "insert",
                 "target": {"latitude": 20.815, "longitude": 115.735},
                 "speed_ms": 1.5,
             }},

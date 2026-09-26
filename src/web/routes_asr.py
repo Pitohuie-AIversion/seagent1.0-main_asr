@@ -92,7 +92,13 @@ def api_asr():
         }), 400
 
     original_filename = audio.filename
-    filename = secure_filename(original_filename)
+    sanitized_filename = secure_filename(original_filename)
+    filename = sanitized_filename
+    # Non-ASCII stems can disappear during sanitization (录音.wav -> wav).
+    # Check the original extension, then store under a generated safe basename.
+    suffix = Path(original_filename).suffix.lower()
+    if _is_allowed_audio(original_filename):
+        filename = f"audio_{uuid.uuid4().hex}{suffix}"
     content_length = request.content_length
     audit_ip = request.remote_addr or "UNKNOWN"
     audit_ua = (request.headers.get('User-Agent') or '')[:200]
@@ -102,17 +108,17 @@ def api_asr():
         "[SECURITY_ASR_AUDIT] sanitization orig_filename=%r safe_filename=%r size_bytes=%s remote_ip=%s user_agent=%r utc_time=%s request_id=%s",
         original_filename, filename, audit_size, audit_ip, audit_ua, audit_ts, req_id,
     )
-    if filename != original_filename:
+    if sanitized_filename != original_filename:
         logger.warning(
-            "[SECURITY_ASR_SANITIZED] Filename was changed by secure_filename(). orig=%r safe=%r ip=%s ua=%r time=%s request_id=%s",
+            "[SECURITY_ASR_SANITIZED] Using a safe upload filename. orig=%r safe=%r ip=%s ua=%r time=%s request_id=%s",
             original_filename, filename, audit_ip, audit_ua[:100], audit_ts, req_id,
         )
-    if not _is_allowed_audio(filename):
+    if not _is_allowed_audio(original_filename):
         return jsonify({
             "ok": False,
             "code": 400,
             "error": "unsupported_format",
-            "msg": f"unsupported audio format: {Path(filename).suffix}",
+            "msg": f"unsupported audio format: {suffix}",
             "allowed_extensions": sorted(_allowed_audio_extensions),
             "request_id": req_id,
             "retryable": False

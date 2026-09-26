@@ -56,3 +56,8 @@ if "StateSnapshotValidationError" not in globals():
 if "StateSelectorError" not in globals():
     class StateSelectorError(ValueError):
         """机器人选择器无法唯一解析为已配置的 status_ref。"""
+
+
+if "ContextBudgetError" not in globals():
+    class ContextBudgetError(RuntimeError):
+        """Required model context cannot fit without discarding authoritative input."""

@@ -167,8 +167,9 @@ def list_history() -> List[Dict[str, Any]]:
                 continue
             saved_at = data.get("saved_at", "")
             # 必须包含 conversation_history 或有效 saved_at 结构，排除非历史快照文件（如 session_head/rev 等）
-            if not saved_at or "conversation_history" not in data:
+            if not isinstance(saved_at, str) or not saved_at or "conversation_history" not in data:
                 continue
+            datetime.fromisoformat(saved_at)
             records.append(
                 {
                     "id": filepath.name,
@@ -178,7 +179,7 @@ def list_history() -> List[Dict[str, Any]]:
                     "session_id": data.get("session_id", ""),
                 }
             )
-        except (OSError, json.JSONDecodeError, TypeError, AttributeError) as exc:
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
             logger.warning("Skipping invalid history file %s: %s", filepath, exc)
 
     records.sort(key=lambda item: item["saved_at"], reverse=True)

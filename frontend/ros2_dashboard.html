@@ -291,7 +291,7 @@
         <div class="field"><label for="gatewayPort">Port</label><input id="gatewayPort" name="port" type="number" min="1" max="65535" required></div>
         <div class="field"><label for="gatewayMode">Mode</label><select id="gatewayMode" name="mode"><option value="real">Real</option><option value="mock">Mock</option></select></div>
       </div>
-      <div class="dialog-actions"><button class="btn" id="cancelDialog" type="button">取消</button><button class="btn primary" type="submit">连接并保存</button></div>
+      <div class="dialog-actions"><button class="btn" id="cancelDialog" type="button">取消</button><button class="btn primary" id="saveGatewayButton" type="submit">连接并保存</button></div>
     </form>
   </dialog>
 
@@ -302,6 +302,9 @@
     const statusClasses = {READY: '', PLAN: 'active', ENTER: 'active', ONGOING: 'active', EXIT: 'active', FINISH: 'success', PAUSE: 'warn', FAIL: 'fail', FAILED: 'fail', SENT: ''};
     let pollTimer = null;
     let pollIntervalMs = 1000;
+    let statusRequestSeq = 0;
+    let renderedStatusSeq = 0;
+    let isSavingGateway = false;
 
     const text = (id, value) => { document.getElementById(id).textContent = value ?? '--'; };
     const number = value => value === null || value === undefined || Number.isNaN(Number(value)) ? '--' : Number(value).toFixed(1);
@@ -455,11 +458,17 @@
     const dashboardApi = {{ dashboard_api | tojson }};
 
     async function refreshStatus() {
+      const requestSeq = ++statusRequestSeq;
       try {
         const response = await fetch(dashboardApi.status, {cache: 'no-store'});
         const data = await response.json();
+        if (requestSeq < renderedStatusSeq) return;
+        renderedStatusSeq = requestSeq;
+        if (!response.ok) throw new Error(data.msg || `HTTP ${response.status}`);
         renderStatus(data);
       } catch (error) {
+        if (requestSeq < renderedStatusSeq) return;
+        renderedStatusSeq = requestSeq;
         renderStatus({mcp_connected: false, telemetry_fresh: false, msg: String(error), snapshot: {}});
       }
     }
@@ -483,16 +492,27 @@
     document.getElementById('cancelDialog').addEventListener('click', () => document.getElementById('gatewayDialog').close());
     document.getElementById('gatewayForm').addEventListener('submit', async event => {
       event.preventDefault();
-      const payload = {
-        host: document.getElementById('gatewayHost').value.trim(),
-        port: Number(document.getElementById('gatewayPort').value),
-        mode: document.getElementById('gatewayMode').value
-      };
-      const response = await fetch(dashboardApi.gateway, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
-      const data = await response.json();
-      if (!response.ok) { window.alert(data.msg || '网关切换失败'); return; }
-      document.getElementById('gatewayDialog').close();
-      await refreshStatus();
+      if (isSavingGateway) return;
+      isSavingGateway = true;
+      const saveButton = document.getElementById('saveGatewayButton');
+      saveButton.disabled = true;
+      try {
+        const payload = {
+          host: document.getElementById('gatewayHost').value.trim(),
+          port: Number(document.getElementById('gatewayPort').value),
+          mode: document.getElementById('gatewayMode').value
+        };
+        const response = await fetch(dashboardApi.gateway, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.msg || '网关切换失败');
+        document.getElementById('gatewayDialog').close();
+        await refreshStatus();
+      } catch (error) {
+        window.alert(`网关保存失败：${error.message || error}。请核对当前连接状态后重试。`);
+      } finally {
+        isSavingGateway = false;
+        saveButton.disabled = false;
+      }
     });
 
     refreshStatus();

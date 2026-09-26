@@ -180,6 +180,145 @@ class WriteReplyGrounder:
         return accepted
 
     @staticmethod
+    def _scrub_uncommitted_slot_assertions(reply: str, visible: dict, task_state: dict) -> str:
+        """Remove unsupported state assertions, preserving questions and explanations.
+
+        A field mention or a clock value alone is not a claim that it was saved.
+        In particular, missing-field questions and committed start times must
+        survive when the end time has not been committed in this turn.
+        """
+        check_end = "end_time" not in visible
+        check_payload = "payload" not in visible and bool(task_state.get("payload"))
+        if not check_end and not check_payload:
+            return reply
+
+        if check_payload:
+            # A state heading and its bullet values form one assertion. Removing
+            # just the heading would leave unsupported payload names visible.
+            reply = re.sub(
+                r"(?m)^[ \t]*(?:[-*] |\d+\.\s*)?(?:\*\*)?"
+                r"(?:当前|已保存|已选|携带)?(?:载荷(?:配置)?|携带工具)(?:\*\*)?"
+                r"[：:][ \t]*\n(?:[ \t]*[-*+] +[^\n]+(?:\n|$))+",
+                "", reply,
+            )
+
+        def scrub_sentence(match: re.Match) -> str:
+            original = match.group(0)
+            text = re.sub(r"[*_`]", "", original)
+            clauses = re.split(r"[，,；;]", text)
+
+            def guidance_about(names: str) -> bool:
+                if re.search(r"示例|例如|比如", text):
+                    return True
+                named_clauses = [clause for clause in clauses if re.search(names, clause)]
+                return bool(named_clauses) and all(re.search(
+                    r"(?:请|需要|还需|仍需|待).{0,12}(?:提供|补充|确认|确定|选择|指定|设置|输入|参考|核对|查看|修改)"
+                    r"|是否|何时|几点|什么时候|是指|指的是|表示|定义"
+                    r"|(?:必须|应当|应该|需要|须|需).{0,8}(?:早于|晚于|大于|小于|一致|匹配)",
+                    clause,
+                ) for clause in named_clauses)
+
+            def completed_mutation_about(names: str) -> bool:
+                # A successful depth update in another clause does not turn a
+                # following time/payload question into a mutation claim.
+                return any(
+                    re.search(names, clause) and re.search(
+                        r"已(?:经|成功)?(?:为您|自动)?.{0,12}"
+                        r"(?:记录|写入|更新|修改|调整|设置|设定|添加|配置|安装|移除|卸载|删除|清空)",
+                        clause,
+                    )
+                    for clause in clauses
+                )
+
+            clocks = re.findall(r"\d{1,2}:\d{2}|[零一二三四五六七八九十\d]+[点时]", text)
+            has_clock = bool(clocks)
+            if check_end:
+                names_end = bool(re.search(r"结束时间|终止时间|截止时间|endtime", text))
+                states_end = bool(re.search(r"(?:结束|终止|截止)时间\s*(?:[：:]|(?:仍|当前|目前)?[为是])", text))
+                states_window = bool(re.search(r"(?:作业|任务|执行)时间|时间窗口", text)) and len(clocks) >= 2
+                if ((names_end and completed_mutation_about(r"结束时间|终止时间|截止时间|endtime"))
+                        or (not guidance_about(r"结束时间|终止时间|截止时间|endtime|(?:作业|任务|执行)时间|时间窗口")
+                            and (states_window or (names_end and (states_end or has_clock))))):
+                    return ""
+            if check_payload and re.search(r"载荷|携带工具", text):
+                states_payload = bool(re.search(
+                    r"(?:当前|目前|已保存|已选|携带).{0,8}(?:载荷|工具)"
+                    r"|(?:载荷|携带工具)(?:配置)?\s*(?:[：:]|为|是|包括|包含|仍|依旧|依然|保持|当前|目前)",
+                    text,
+                ))
+                if completed_mutation_about(r"载荷|携带工具") or (states_payload and not guidance_about(r"载荷|携带工具")):
+                    return ""
+            return original
+
+        return re.sub(r"[^。！？!?\n]+[。！？!?]?", scrub_sentence, reply)
+
+    @staticmethod
+    def _ground_blocked_publish_instructions(reply: str, *, hard: bool) -> str:
+        """Replace bypass instructions with the required action, retaining list numbering."""
+        next_step = (
+            "请先修正上述硬约束问题，再继续校验；当前不能确认发布。"
+            if hard else
+            "如接受这些软警告，请先明确回复“忽略软警告”，待系统重新校验后再确认发布。"
+        )
+
+        def correct_instruction(match: re.Match) -> str:
+            original = match.group(0)
+            text = re.sub(r"[*_`]", "", original)
+            false_publication = re.search(r"(?:任务|指令)已(?:经)?(?:发布|下发)|已(?:成功)?发布", text)
+            false_acknowledgement = re.search(
+                r"已(?:经|成功)?(?:为您)?(?:记录|接受|确认|忽略|处理)"
+                r"[^，,；;。]{0,120}(?:软(?:性约束)?警告|警告|风险|提示)"
+                r"|(?:软(?:性约束)?警告|警告|风险)(?:处理)?\s*[：:]?\s*已(?:经|成功)?(?:被)?"
+                r"(?:接受忽略|确认忽略|忽略|解除|消除|清除|取消|处理完成)"
+                r"|已(?:经|成功)?(?:接受|确认)(?:忽略|豁免)"
+                r"|(?:系统|警告|软警告|约束)[^，,；;。]{0,20}(?:不再|不会再)(?:阻塞|阻止|拦截)", text,
+            )
+            false_phase = re.search(
+                r"(?:(?:现)?已(?:经)?(?:进入|转入)|(?:任务|流程)[^，,；;。]{0,8}(?:进入|转入))"
+                r"(?:最终)?(?:发布确认|确认发布|confirming)", text,
+            )
+            if false_phase and re.search(r"尚未|还未|未曾|未能|不能|无法|不会|不应|不可", false_phase.group(0)):
+                false_phase = None
+            direct_action = re.search(
+                r"(?:请|可以|可|直接|回复|输入|发送|点击|选择).{0,20}"
+                r"(?:确认(?:并)?发布|发布(?:此)?任务|任务发布|发布(?=[。！？!?]|$))"
+                r"|(?:是否|能否)(?:现在|立即|正式|直接)?\s*(?:确认)?发布(?:该|此|任务|指令)", text,
+            )
+            if direct_action:
+                instruction = text[max(0, direct_action.start() - 6):direct_action.end()]
+                if re.search(r"请勿|不要|不能|无法|不得|不应|不可", instruction):
+                    direct_action = None
+            if not (false_publication or false_acknowledgement or false_phase or direct_action):
+                return original
+            prefix = re.match(r"(\s*(?:\d+[.)、]|[-*+])\s*)", original)
+            return (prefix.group(1) if prefix else "") + next_step
+
+        return re.sub(r"[^。！？!?\n]+[。！？!?]?", correct_instruction, reply)
+
+    @staticmethod
+    def _remove_write_welcome_template(reply: str) -> str:
+        """Discard the misplaced capability menu in a WRITE response only.
+
+        The task receipt and any following task-specific question remain useful;
+        a short greeting on its own is not this complete welcome template.
+        """
+        welcome = re.search(
+            r"(?:您好[，,！!]?\s*)?SEAgent[^。\n]{0,50}系统已就绪[。.]",
+            reply,
+        )
+        if not welcome:
+            return reply
+        closing = re.search(r"请直接描述您的(?:作业)?需求[^。\n]*[。.]", reply[welcome.end():])
+        if not closing:
+            return reply
+        end = welcome.end() + closing.end()
+        block = reply[welcome.start():end]
+        if (re.search(r"系统提供[^。\n]*两类[^。\n]*交互能力", block)
+                and "知识与状态查询" in block and "任务创建与准入" in block):
+            return (reply[:welcome.start()] + reply[end:]).strip()
+        return reply
+
+    @staticmethod
     def ground_write_reply(
         self_or_reply: object = "",
         model_reply: str = "",
@@ -204,6 +343,12 @@ class WriteReplyGrounder:
         else:
             actual_model_reply = model_reply if isinstance(model_reply, str) else ""
 
+        context = constraint_context or {}
+        violations = context.get("violations") or []
+        severities = {v.get("severity") if isinstance(v, dict) else getattr(v, "severity", None)
+                      for v in violations}
+        has_hard = "hard" in severities or str(context.get("type", "")).startswith("hard")
+        has_soft = "soft" in severities or str(context.get("type", "")).startswith("soft")
         visible = {key: value for key, value in accepted_updates.items() if key in FIELD_LABELS}
         resolved_labels = {FIELD_LABELS[key] for key in visible}
         unresolved = []
@@ -215,6 +360,10 @@ class WriteReplyGrounder:
                 "无法解析" in text or "Invalid datetime format" in text
             ):
                 continue
+            if has_hard or has_soft:
+                # Extractor "unresolved" prose is not authority to acknowledge
+                # warnings or advance workflow state either.
+                text = WriteReplyGrounder._ground_blocked_publish_instructions(text, hard=has_hard)
             if text not in unresolved:
                 unresolved.append(text)
 
@@ -241,10 +390,6 @@ class WriteReplyGrounder:
         if retained:
             parts.append("当前已保存：" + "；".join(retained) + "。")
 
-        context = constraint_context or {}
-        violations = context.get("violations") or []
-        has_hard = False
-        has_soft = False
         for violation in violations:
             def field(name: str, default: str = "") -> str:
                 return violation.get(name, default) if isinstance(violation, dict) else getattr(violation, name, default)
@@ -283,15 +428,17 @@ class WriteReplyGrounder:
                 or not actual_model_reply or not str(actual_model_reply).strip()):
             return receipt
 
-        # A model may repeat an older payload from dialogue history during an
-        # unrelated edit. Only the retained-state receipt can describe a payload
-        # that was not committed this turn; regexes for "updated" miss "still is".
-        if ("payload" not in visible and (task_state or {}).get("payload")
-                and re.search(r"载荷|携带工具", str(actual_model_reply))):
-            return receipt
+        # Retained facts belong to the receipt, but questions and unrelated
+        # explanation should not disappear merely because they mention a slot.
+        scrubbed = WriteReplyGrounder._scrub_uncommitted_slot_assertions(
+            WriteReplyGrounder._remove_write_welcome_template(str(actual_model_reply).strip()),
+            visible, task_state or {},
+        )
 
-        # 清洗 actual_model_reply 中的不实或越权声明
-        scrubbed = str(actual_model_reply).strip()
+        blocked_hard = has_hard or str(context.get("type", "")).startswith("hard")
+        blocked_soft = has_soft or str(context.get("type", "")).startswith("soft")
+        if blocked_hard or blocked_soft:
+            scrubbed = WriteReplyGrounder._ground_blocked_publish_instructions(scrubbed, hard=blocked_hard)
 
         # 1. 越权发布与下发清洗
         scrubbed = re.sub(r"(，|,)?(已成功发布任务?|可以立即发布|立即发布|任务已下发|指令已下发)", "", scrubbed)
@@ -319,11 +466,6 @@ class WriteReplyGrounder:
                     scrubbed = scrubbed.replace(code, "")
                 if msg:
                     scrubbed = scrubbed.replace(msg, "")
-
-        # 5. 未提交的载荷与时间篡改清洗
-        if "end_time" not in visible:
-            scrubbed = re.sub(r"[^\n。，]*结束时间[^\n。，]*[，。]?", "", scrubbed)
-            scrubbed = re.sub(r"[^\n。，]*\d{1,2}:\d{2}[^\n。，]*[，。]?", "", scrubbed)
 
         # 清洗内部提示词泄露
         scrubbed = re.sub(r"[，。；\s]*对外可简写为[^\n。，]*[，。]?", "", scrubbed)

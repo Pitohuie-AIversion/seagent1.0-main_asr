@@ -20,7 +20,8 @@ TASK_TYPE_MAPPING = {
     "pipeline_burial": 1,      # CLAMP_CABLE 管道/电缆埋设
     "cable_burial": 1,         # CLAMP_CABLE 夹缆/埋设
     "valve_operation": 4,      # INSERT_PLUG / 阀门操作
-    "tree_valve_operation": 4, # 插拔/采油树操作
+    "tree_valve_operation": 4, # 采油树插入；拔出在转换前拒绝
+    "采油树控制面板插入": 4,
     "underwater_move": 5,      # MOVE_TASK 移动任务
 }
 
@@ -60,6 +61,8 @@ class SeagentROS2MCPAdapter:
 
     async def dispatch_task_intent(self, task_intent: Dict[str, Any]) -> Dict[str, Any]:
         """将 TaskIntent v2 字典解析并作为 SysTaskCmd 发布到 ROS 2 /task_cmd。"""
+        from mcp.core.sealien_protocol import validate_valve_operation
+        validate_valve_operation(task_intent)
         task_type_str = task_intent.get("task_type", "")
         task_cmd_type = TASK_TYPE_MAPPING.get(task_type_str, 5)  # 默认 MOVE_TASK
 

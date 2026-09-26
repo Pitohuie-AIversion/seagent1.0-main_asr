@@ -151,3 +151,49 @@ def test_tool_question_about_current_task_keeps_tool_query_path():
     assert reply == manager.llm.default_reply
     assert manager.llm.chat_calls
     assert "阀门扭矩工具" in manager.llm.chat_calls[-1][0]["content"]
+
+
+@pytest.mark.parametrize("plan_relation", ["unknown", "recommend"])
+def test_tree_task_device_options_use_current_task_without_selecting(plan_relation):
+    manager = make_manager(plan=make_plan(
+        "READ", query_intent="KNOWLEDGE_QA", subject_type="unknown",
+        relation=plan_relation, source_policy="project_kb",
+    ))
+    reply = ask_read_only(manager, "这个插入任务适合用哪种机器人，为什么？先介绍一下，不要修改任务参数。")
+    assert "通用工作级深海机器人 250HP" in reply
+    assert "305" in reply and "3000" in reply
+    assert "未找到该设备" not in reply
+    assert "水下无人自主航行器" not in reply
+    assert "未选择或修改机器人" in reply
+
+
+@pytest.mark.parametrize("depth,excluded", [(100, []), (1000, ["履带式海底重载作业机器人 1600HP", "拖曳式海底重载作业机器人 1500HP"])])
+def test_burial_device_recommendation_filters_capability_and_depth(depth, excluded):
+    manager = make_manager(task="pipeline_burial", depth=depth, selected=False)
+    manager.task_state["task_type"] = "管缆埋设"
+    reply = ask_read_only(manager, f"目前有哪些机器人能完成这个{depth}米水深的管缆埋设任务？你建议选哪一台，为什么？先不要替我选。")
+    assert "特种工作级深海机器人" in reply
+    assert "通用工作级深海机器人" not in reply
+    assert "观察级深海机器人" not in reply
+    assert "水下无人自主航行器" not in reply
+    assert str(depth) in reply
+    for name in excluded:
+        assert name not in reply
+
+
+def test_task_device_options_report_no_candidate_when_depth_is_impossible():
+    manager = make_manager(depth=9000, selected=False)
+    reply = ask_read_only(manager, "这个任务有哪些机器人可以执行？")
+    assert "没有满足静态能力条件的机器人" in reply
+    assert "9000" in reply
+
+
+@pytest.mark.parametrize("verb", ["完成", "执行"])
+def test_explicit_unit_can_perform_question_stays_grounded(verb):
+    manager = make_manager()
+    reply = ask_read_only(manager, f"通用工作级001能{verb}这个拔出任务吗？先说明理由，不要修改任务。")
+    assert "通用工作级深海机器人 250HP" in reply
+    assert "3000" in reply and "305" in reply
+    assert "静态能力适配说明" in reply
+    assert "实际执行仍需" in reply
+    assert manager.llm.chat_calls == []

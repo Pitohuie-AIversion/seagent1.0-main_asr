@@ -33,7 +33,7 @@ class PromptGrounder:
     def get_supported_task(self) -> list:
         return self.kb.get_all_task_type_values()
 
-    def get_context_for_state(self, task_state: dict) -> str:
+    def get_context_for_state(self, task_state: dict, *, include_runtime_state: bool = True) -> str:
         """
         根据当前任务状态，返回最相关的专业知识文本（供注入 system prompt）。
         分段组装，只选取与当前阶段相关的内容。
@@ -85,7 +85,7 @@ class PromptGrounder:
                     if resolved_unit
                     else selected_robot.get("full_name")
                 )
-                state_dict = self.kb.get_robot_state_dict(state_selector)
+                state_dict = self.kb.get_robot_state_dict(state_selector) if include_runtime_state else None
                 if state_dict and isinstance(state_dict, dict):
                     state_lines = []
                     label_map = {
@@ -150,7 +150,7 @@ class PromptGrounder:
         if coords:
             env_info = self._get_environment(coords)
             if env_info:
-                sections.append(f"【作业区域环境状态】\n{env_info}")
+                sections.append(f"【作业区域背景资料】\n{env_info}")
 
         # 8. 适用约束规则摘要
         sections.append(self._relevant_constraints(task_type))

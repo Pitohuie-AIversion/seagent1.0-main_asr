@@ -141,7 +141,7 @@ EXTRACTION_SYSTEM = """\
 {task_type_rules}
 3. 如果当前状态中已有某字段值，但用户在本轮给出了新的值（包括修改、订正、补充），必须提取新值。
 4. 如果最新用户消息中对同一字段多次修正，以最后出现的候选为准。
-5. 针对 required 声明的字段，只允许提取 required 中存在的 canonical_key 以及任务类型选择器（task_type, task_type_key）。
+5. 常规字段只允许提取 required 中存在的 canonical_key；任务类型选择器（task_type, task_type_key）、emergency_mode、设备辅助选择器（equipment_class, equipment_model, equipment_name, rov_description）和油田名称（oilfield_name）可以额外输出。即使当前模板没有油田字段，也必须将明确的油田地点保留为 oilfield_name，由后端决定是否接受并给出坐标引导；不得将地点强行映射到其他字段。
 6. 如果用户的输入不是修改已有字段，而是提问、闲聊或确认，slot_candidates 返回空列表 []。
 7. 【列表字段特别规则】对于 payload 字段：
    - 用户明确表达"增加/还要/再带/装载/搭载/配备/加装/添加 [工具]"时，输出 list_mutations: [{{"field": "payload", "operation": "add", "items": ["工具名称"], "target_items": [], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]
@@ -155,10 +155,12 @@ EXTRACTION_SYSTEM = """\
    - 用户表达"两小时后开始"、"明天上午九点"等相对时间时，尝试根据今天日期 {today} 换算为绝对 ISO 时间 "YYYY-MM-DDTHH:MM:SS"。
    - 用户明确表达持续时长或时长增量变动时（如"干2小时"、"作业持续3天"、"时长再延长1小时"、"提前半小时结束"、"结束时间保持不变"），除尽量换算 end_time 外，必须在 time_relation 中输出：
      {{"has_duration": true, "raw_text": "用户时长原词", "duration_seconds": 换算秒数, "target": "duration/start_time/end_time", "action": "SET/ADD/SUB", "confidence": 0.95}}
-9. 【设备选择器特别规则】ROV设备可根据以下关联信息进行辅助推导：
+9. 【设备选择器特别规则】用户明确指定的机器人编号必须保留为 equipment_unit_id 候选；即使该设备不在当前任务允许列表中，也不得遗漏、替换成其他机器人或当作支持船。保留 raw_value，交由后端验证设备与任务是否兼容；无法确定具体编号时使用 rov_description。
+ROV设备可根据以下关联信息进行辅助推导：
 {ROV2type}
 10. 【选项编号与单一推荐】最新用户消息选择编号时，只能根据紧邻上一条 assistant 消息中明确编号展示的选项映射；即使 allowed_values 有固定顺序，只要该顺序未向用户展示就必须写入 unresolved。接受单一推荐时只能使用紧邻助手明确推荐的值；不得猜测。
 11. 【紧急模式识别】仅当用户明确提及"紧急"、"加急"、"应急"等词汇时提取 emergency_mode: true；明确取消时提取 emergency_mode: false。
+12. 【地点与支持船分别抽取】油田名称或油田简称表示作业地点，不是支持船名称。只有用户选择了船只时才提取 support_vessel。例如“到流花11-1执行巡检”中的“流花11-1”应提取为 oilfield_name，不能提取为 support_vessel，也不能猜测巡检起止坐标；“使用海洋石油681支持船”才提取 support_vessel。
 
 当前任务状态：
 {current_state}

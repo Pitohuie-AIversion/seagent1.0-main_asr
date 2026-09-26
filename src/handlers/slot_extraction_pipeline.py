@@ -320,8 +320,17 @@ class SlotExtractionPipeline(BaseDialogueHandler):
             for field in field_defs
             if field.get("key")
         }
+        grounding_fields = [
+            {
+                **field,
+                "allowed_values": manager.builder.resolve_allowed_values(
+                    field, effective_task_type_key, transition_state,
+                ),
+            } if field.get("key") == "support_vessel" else field
+            for field in field_defs
+        ]
         extraction_res = ground_explicit_values(
-            extraction_res, user_message, kb=manager.kb, fields=field_defs,
+            extraction_res, user_message, kb=manager.kb, fields=grounding_fields,
             current_state=transition_state, task_type=effective_task_type_key,
         )
         # Pre-filter equipment_class candidates compatibility promotion

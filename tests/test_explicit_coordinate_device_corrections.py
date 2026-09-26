@@ -1,5 +1,6 @@
 """Explicit user values must survive stale or incorrectly normalized model output."""
 import pytest
+from unittest.mock import Mock
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
 from src.slots.slot_store import Slot
@@ -88,3 +89,53 @@ def test_reselecting_same_unit_preserves_payload(dialogue):
     llm.queue_extraction(extraction_result(slot_candidate('equipment_unit_id','OBSROV-75-001')))
     dm.process('仍然使用观察级一号机。')
     assert dm.task_state.get('payload')==['激光标尺']
+
+
+@pytest.mark.parametrize('fresh_task', [False, True])
+@pytest.mark.parametrize('model_key', ['equipment_type', 'equipment_model'])
+def test_incompatible_explicit_unit_cannot_be_replaced_by_semantic_match(dialogue, fresh_task, model_key, monkeypatch):
+    dm, llm = dialogue
+    previous = dict(dm.task_state)
+    if fresh_task:
+        dm.reset()
+        llm.queue_extraction(extraction_result(
+            slot_candidate('task_type', '管缆巡检'),
+            slot_candidate('task_type_key', 'pipeline_inspection')))
+    llm.queue_extraction(extraction_result(
+        slot_candidate(model_key, '轻型工作级深海机器人 150HP',
+                       raw_value='通用工作级深海机器人 250HP'),
+        slot_candidate('rov_description', '轻型工作级深海机器人 150HP'),
+        slot_candidate('water_depth', 300)))
+    describe = Mock(side_effect=AssertionError('explicit unit must not open another selection'))
+    monkeypatch.setattr(dm.extractor, 'resolve_rov_description', describe)
+
+    reply = dm.process('我要安排通用工作级001明天上午8点到流花11-1执行管缆巡检，作业水深300米。')
+
+    unit = dm.slot_store.slots['equipment_unit_id']
+    assert unit.status in {'invalid', 'conflict'}
+    assert unit.candidate_value == 'WROV-250-001'
+    assert '不支持当前任务“管缆巡检”' in reply
+    describe.assert_not_called()
+    assert dm._pending_rov_candidates == []
+    assert dm.task_state.get('equipment_type') != '轻型工作级深海机器人 150HP'
+    if fresh_task:
+        assert unit.value is None
+        assert not dm.task_state.get('equipment_family')
+        assert not dm.task_state.get('equipment_type')
+    else:
+        assert unit.value == previous['equipment_unit_id']
+        assert dm.task_state['equipment_family'] == previous['equipment_family']
+        assert dm.task_state['equipment_type'] == previous['equipment_type']
+
+
+@pytest.mark.parametrize('message', [
+    '不要安排通用工作级001执行巡检。',
+    '如果安排通用工作级001执行巡检会怎样？',
+    '是否安排通用工作级001执行巡检？',
+    '安排UNREGISTERED-ROBOT-999执行巡检。',
+])
+def test_incompatible_device_mentions_and_unknown_units_are_not_grounded(message):
+    from src.handlers.explicit_value_grounding import ground_explicit_values
+    result = ground_explicit_values({'slot_candidates': []}, message, kb=KnowledgeBase(),
+                                   fields=[], current_state={}, task_type='pipeline_inspection')
+    assert result['slot_candidates'] == []

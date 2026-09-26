@@ -18,6 +18,8 @@ except ImportError:
     StructuredOutputsParams = None
 
 
+from src.exceptions import ContextBudgetError
+
 from src.extraction.model_profile import (
     ModelRole,
     ModelProfileRegistry,
@@ -68,9 +70,10 @@ INTERACTION_PLAN_JSON_SCHEMA: dict[str, Any] = {
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "reason_code": {"type": "string"},
     },
-    # operation 是唯一必须由模型表达的语义决策；其余字段都是可选的增强信息，
-    # 由 InteractionPlan 校验器推导或降级，避免安全 READ 被元数据瑕疵阻断。
-    "required": ["operation"],
+    # The planner must explicitly decide whether this turn acknowledges a warning.
+    # Omitting this side effect silently stalls otherwise understood confirmations.
+    # Other metadata remains optional; the validator supports legacy minimal plans.
+    "required": ["operation", "warning_action"],
     "additionalProperties": False,
 }
 
@@ -318,12 +321,7 @@ class LLMClient:
         if self.tok is None:
             raise RuntimeError("Tokenizer is not initialized")
 
-        prompt = self.tok.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=options.enable_thinking,
-        )
+        prompt = self._prepare_bounded_prompt(messages, options)
         sampling_kwargs: dict[str, Any] = {
             "temperature": options.temperature,
             "max_tokens": options.max_tokens,
@@ -346,6 +344,126 @@ class LLMClient:
         if not isinstance(text, str):
             raise RuntimeError("vLLM returned a non-text generation output")
         return text.strip()
+
+    def _prepare_bounded_prompt(self, messages: list[dict], options: GenerationOptions) -> str:
+        """Budget optional context without slicing instructions, input, or JSON."""
+        def render(items: list[dict]) -> str:
+            return self.tok.apply_chat_template(
+                items, tokenize=False, add_generation_prompt=True,
+                enable_thinking=options.enable_thinking,
+            )
+
+        prompt = render(messages)
+        engine = getattr(self.llm, "llm_engine", None)
+        config = getattr(engine, "model_config", None)
+        if config is None:
+            config = getattr(getattr(engine, "vllm_config", None), "model_config", None)
+        limit = getattr(config, "max_model_len", None)
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return prompt
+        budget = limit - options.max_tokens
+
+        def fits(text: str) -> bool:
+            return len(self.tok.encode(text, add_special_tokens=False)) <= budget
+
+        if fits(prompt):
+            return prompt
+        bounded = deepcopy(messages)
+        # Keep every system message and the latest user turn, including any
+        # following tool messages. Remove earlier dialogue in complete turns.
+        removed = 0
+        while True:
+            user_indices = [i for i, item in enumerate(bounded) if item.get("role") == "user"]
+            if not user_indices:
+                break
+            latest = user_indices[-1]
+            first = next((i for i, item in enumerate(bounded[:latest])
+                          if item.get("role") != "system"), None)
+            if first is None:
+                break
+            next_user = next((i for i in user_indices if i > first), latest)
+            drop = {i for i in range(first, next_user) if bounded[i].get("role") != "system"}
+            removed += len(drop)
+            bounded = [item for i, item in enumerate(bounded) if i not in drop]
+            prompt = render(bounded)
+            if fits(prompt):
+                logger.warning("LLM context budget: omitted %d old messages", removed)
+                return prompt
+
+        latest_text = next((str(item.get("content", "")) for item in reversed(bounded)
+                            if item.get("role") == "user"), "")
+        marker = "【知识库强类型检索证据】\n"
+        for item in bounded:
+            content = item.get("content")
+            if item.get("role") != "system" or not isinstance(content, str) or marker not in content:
+                continue
+            start = content.index(marker) + len(marker)
+            start += len(content[start:]) - len(content[start:].lstrip())
+            try:
+                evidence, length = json.JSONDecoder().raw_decode(content[start:])
+            except ValueError:
+                continue
+            if not isinstance(evidence, dict) or not isinstance(evidence.get("results"), list):
+                continue
+            prefix, suffix = content[:start], content[start + length:]
+
+            def set_evidence(value: dict) -> None:
+                item["content"] = prefix + json.dumps(value, ensure_ascii=False, separators=(",", ":")) + suffix
+
+            # Formatting can be compacted without losing any evidence.
+            set_evidence(evidence)
+            prompt = render(bounded)
+            if fits(prompt):
+                logger.warning("LLM context budget: compacted knowledge JSON; omitted %d old messages", removed)
+                return prompt
+            units = self._knowledge_evidence_records(evidence["results"])
+            terms = set(re.findall(r"[A-Za-z0-9_-]{2,}", latest_text.lower()))
+            for run in re.findall(r"[\u4e00-\u9fff]+", latest_text):
+                terms.update(run[i:i + 2] for i in range(len(run) - 1))
+            units.sort(key=lambda record: sum(
+                term in json.dumps(record, ensure_ascii=False).lower() for term in terms
+            ), reverse=True)
+            selected = {**evidence, "results": [], "context_budget": {
+                "partial": True,
+                "omitted_records": len(units),
+                "instruction": "证据仅展示与当前问题相关且可容纳的完整记录；不可将未展示项视为不存在。若信息不足或无法完整列举，应明确说明，禁止补造事实。",
+            }}
+            for record in units:
+                selected["results"].append(record)
+                selected["context_budget"]["omitted_records"] -= 1
+                set_evidence(selected)
+                candidate = render(bounded)
+                if not fits(candidate):
+                    selected["results"].pop()
+                    selected["context_budget"]["omitted_records"] += 1
+            set_evidence(selected)
+            prompt = render(bounded)
+            if fits(prompt):
+                logger.warning("LLM context budget: omitted %d old messages and %d knowledge records",
+                               removed, selected["context_budget"]["omitted_records"])
+                return prompt
+        raise ContextBudgetError("当前问题与必要上下文超过模型可处理长度，请缩小查询范围或新建会话后重试；本轮未生成回答。")
+
+    @staticmethod
+    def _knowledge_evidence_records(results: list) -> list:
+        """Split broad category containers into complete, independently named facts."""
+        records = []
+        for result in results:
+            if not isinstance(result, dict) or "category" not in result:
+                records.append(result)
+                continue
+            containers = {key: value for key, value in result.items()
+                          if key != "category" and isinstance(value, (list, dict)) and value}
+            if not containers:
+                records.append(result)
+                continue
+            metadata = {key: value for key, value in result.items() if key not in containers}
+            for key, value in containers.items():
+                if isinstance(value, list):
+                    records.extend({**metadata, key: [record]} for record in value)
+                else:
+                    records.extend({**metadata, key: {name: record}} for name, record in value.items())
+        return records
 
     def generate_json(
         self,

@@ -52,6 +52,7 @@ def _sample_task_intent() -> dict:
         "task": {
             "type": "tree_valve_operation",
             "details": {
+                "operation": "insert",
                 "wellhead_id": "LH-01井口",
                 "target": {"latitude": 20.815, "longitude": 115.735},
                 "hole_positions": [],

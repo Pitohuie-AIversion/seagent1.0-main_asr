@@ -95,6 +95,7 @@ class TestBridgeService:
             "priority": 15,
             "location": {"oilfield": "流花11-1油田", "water_depth_m": 300.0},
             "task": {"type": "tree_valve_operation", "details": {
+                "operation": "insert",
                 "target": {"latitude": 20.815, "longitude": 115.735},
                 "speed_ms": 1.5,
             }},
@@ -200,7 +201,7 @@ class TestBridgeService:
         intent = {
             "schema_version": 2, "task_type": "tree_valve_operation",
             "location": {"water_depth_m": 300.0},
-            "task": {"details": {"target": {"latitude": 20.815, "longitude": 115.735}}}
+            "task": {"details": {"operation": "insert", "target": {"latitude": 20.815, "longitude": 115.735}}}
         }
         tid = bridge.dispatch_intent(intent)
 
