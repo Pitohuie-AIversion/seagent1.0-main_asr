@@ -6,17 +6,19 @@
 
 ## 1. 项目解决的问题
 
-深海水下机器人（ROV/AUV）作业具有海况复杂、设备层级繁多、物理物理限制（水深、载荷、机械臂能力）严苛的特点。传统交互系统容易遇到：
+深海水下机器人（ROV/AUV）作业具有海况复杂、设备层级繁多、物理限制（水深、载荷、机械臂能力）严苛的特点。传统交互系统容易遇到：
 - **任务参数丢失与混淆**：多轮对话中用户补充或修改参数时容易导致已有槽位被误覆盖或混淆。
 - **查询与写入不分**：用户询问设备能力或状态时，提取器误将提问词更新至任务状态。
 - **静态历史替代动态遥测**：系统使用历史对话数据而非机器人实时遥测状态进行物理安全校验。
 - **任务文件并发安全隐患**：任务落盘过程中由于并发覆盖、半写入或重名导致任务 JSON 损坏。
 
-SEAgent 通过 **WRITE/QUERY 双通道路由**、**SlotStore 统一状态中心**、**实时遥测物理约束校验** 以及 **TaskIntent 排他锁原子持久化**，彻底解决上述痛点。
+SEAgent 通过 **WRITE/QUERY 双通道路由**、**SlotStore 统一状态中心**、**实时遥测物理约束校验** 以及 **TaskIntent 排他锁原子持久化**，为上述问题提供状态隔离与发布保护。
 
 ---
 
 ## 2. 当前核心能力
+
+当前支持管缆巡检、管缆埋设和采油树控制面板阀门插拔三类模板。拔出任务可归档，但当前 ROS 2 协议不支持拔出指令，执行派发会阻断；详见 [执行下发契约](docs/execution_dispatch_contract.md)。
 
 - **多模态自然语言交互**：支持文本输入与基于 Qwen ASR 的语音转写输入，结合领域词汇+上下文纠错与油田实体 Link 打分匹配。
 - **LLM 语义权威路由（ADR-005）**：以 `InteractionPlan.operation` 为每轮路由的唯一权威字段，后端不根据关键词覆盖路由决策；低置信度写操作降级 CLARIFY，模型失效 fail-safe 澄清。
@@ -88,20 +90,35 @@ graph TD
 ### 5.1 环境准备与依赖安装
 
 ```bash
-# 1. 安装 CPU 测试与基础依赖
-pip install -r requirements/test.txt
+# 1. 安装 CPU 测试依赖，与普通 CI 对齐
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e '.[test]'
 
-# 2. （可选）若需运行本地 ASR 语音模型，安装 GPU 依赖
-pip install -r requirements/gpu.txt
+# 2. 真实模型环境需要 GPU 推理依赖；请使用独立环境
+# python -m pip install -e '.[test,gpu]'
 ```
 
 ### 5.2 启动主服务
 
-推荐使用离线模式启动服务：
+先选择运行模式：
 
 ```bash
-TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python run.py
+# 无需下载或加载本地模型的接口/前端联调模式
+OFFLINE_MOCK=1 ENABLE_MCP=0 python run.py
+
+# 真实本地模型模式；需要 GPU extra 及本地 Qwen 模型目录
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 \
+LOCAL_MODEL_PATH=/path/to/Qwen3.5-9B \
+python run.py
 ```
+
+`run.py` 默认走真实模型模式，并从 `LOCAL_MODEL_PATH`、`SEAGENT_MODEL_DIR`
+或 `/root/autodl-tmp/model/Qwen3.5-9B` 读取模型。没有本地模型或 GPU 依赖时，
+请使用 `OFFLINE_MOCK=1`。
+
+真实 ASR 还需安装提供 `qwen_asr.Qwen3ASRModel` 的运行包，并在
+`config/asr.yaml` 中配置本地 ASR 模型路径。仓库的 GPU 依赖列表未包含该包；
+ASR 加载失败时语音接口返回不可用。Mock 模式只用于接口和页面联调，不代表真实模型效果。
 
 开发配置刷新默认关闭。仅在本机开发时，可添加 `SEAGENT_ENABLE_CODE_RELOAD=1`
 启用自动检测和 `/api/dev/reload`；`DISABLE_HOT_RELOAD=1` 始终优先禁用自动刷新。
@@ -119,53 +136,58 @@ ROS 2 运行配置的独立重载不受此开关影响。
 
 ```bash
 # 1. Python 语法与编译检查
-python -m compileall -q src tests
+python -m compileall -q src tests mcp/ros-mcp mcp/operation-time-window
 
 # 2. 全量测试套件（自动使用独立临时产物目录）
 TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q
 ```
 
-详细测试说明请参阅 [docs/development/testing.md](file:///root/mzy/seagent1.0-main_asr/docs/development/testing.md)。
+详细测试说明请参阅 [docs/development/testing.md](docs/development/testing.md)。
 
 ---
 
 ## 7. 配置入口说明
 
 所有核心参数定义集中在 `config/` 目录：
-- [config/asr.yaml](file:///root/mzy/seagent1.0-main_asr/config/asr.yaml)：ASR 模型路径、语言及 `direct_to_llm` 模型直送开关。
-- [config/robot_fleet.yaml](file:///root/mzy/seagent1.0-main_asr/config/robot_fleet.yaml)：ROV/AUV 舰队定义、物理参数、设备别名及 `status_ref` 映射。
-- [config/constraints.yaml](file:///root/mzy/seagent1.0-main_asr/config/constraints.yaml)：物理约束规则限值与硬/软违规阈值。
-- [config/oilfield.yaml](file:///root/mzy/seagent1.0-main_asr/config/oilfield.yaml)：海床地理边界、油田坐标定义及电子围栏。
-- [config/state.yaml](file:///root/mzy/seagent1.0-main_asr/config/state.yaml)：机器人实时遥测状态与传感器健康度节点。
+- [config/asr.yaml](config/asr.yaml)：ASR 模型路径、语言及 `direct_to_llm` 模型直送开关。
+- [config/robot_fleet.yaml](config/robot_fleet.yaml)：ROV/AUV 舰队定义、物理参数、设备别名及 `status_ref` 映射。
+- [config/constraints.yaml](config/constraints.yaml)：物理约束规则限值与硬/软违规阈值。
+- [config/oilfield.yaml](config/oilfield.yaml)：海床地理边界、油田坐标定义及电子围栏。
+- [config/state.yaml](config/state.yaml)：机器人实时遥测状态与传感器健康度节点。
 
 ---
 
 ## 8. 文档导航
 
-- 📘 **系统架构总览**：[docs/architecture/overview.md](file:///root/mzy/seagent1.0-main_asr/docs/architecture/overview.md)
-- 🏛️ **治理基线**：[docs/architecture/governance-baseline.md](file:///root/mzy/seagent1.0-main_asr/docs/architecture/governance-baseline.md)
-- 🛠️ **开发与测试指南**：[docs/development/testing.md](file:///root/mzy/seagent1.0-main_asr/docs/development/testing.md)
-- 🤝 **团队贡献指南**：[CONTRIBUTING.md](file:///root/mzy/seagent1.0-main_asr/CONTRIBUTING.md)
+- **完整文档索引与当前/历史边界**：[docs/README.md](docs/README.md)
+- **当前设计契约**：[docs/current_design_contract.md](docs/current_design_contract.md)
+- **任务归档与执行下发**：[docs/execution_dispatch_contract.md](docs/execution_dispatch_contract.md)
+
+- 📘 **系统架构总览**：[docs/architecture/overview.md](docs/architecture/overview.md)
+- 🏛️ **治理基线**：[docs/architecture/governance-baseline.md](docs/architecture/governance-baseline.md)
+- 🛠️ **开发与测试指南**：[docs/development/testing.md](docs/development/testing.md)
+- 🤝 **团队贡献指南**：[CONTRIBUTING.md](CONTRIBUTING.md)
 - 🏛️ **架构决策记录 (ADR)**：
-  - [ADR-001: WRITE/QUERY 双通道路由](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-001-write-query-routing.md)
-  - [ADR-002: SlotStore 作为统一状态中心](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-002-slotstore-source-of-truth.md)
-  - [ADR-003: TaskIntent 安全原子持久化](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-003-task-intent-atomic-persistence.md)
-  - [ADR-004: 确定性任务请求守卫](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-004-deterministic-task-request-guard.md)
-  - [ADR-005: LLM 语义权威](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-005-llm-semantic-authority.md)
-  - [ADR-006: 双能力欢迎消息](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-006-two-capability-welcome-message.md)
-  - [ADR-007: 快照恢复内存原子性](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-007-atomic-snapshot-restore.md)
-  - [ADR-008: 约束驱动机器人候选收敛](file:///root/mzy/seagent1.0-main_asr/docs/decisions/ADR-008-constraint-aware-robot-selection.md)
-- 📊 **阶段进展报表**：[docs/progress/phase-1-5-validation.md](file:///root/mzy/seagent1.0-main_asr/docs/progress/phase-1-5-validation.md)
-- 📜 **版本演进日志**：[CHANGELOG.md](file:///root/mzy/seagent1.0-main_asr/CHANGELOG.md)
+  - [ADR-001: WRITE/QUERY 双通道路由](docs/decisions/ADR-001-write-query-routing.md)
+  - [ADR-002: SlotStore 作为统一状态中心](docs/decisions/ADR-002-slotstore-source-of-truth.md)
+  - [ADR-003: TaskIntent 安全原子持久化](docs/decisions/ADR-003-task-intent-atomic-persistence.md)
+  - [ADR-004: 确定性任务请求守卫](docs/decisions/ADR-004-deterministic-task-request-guard.md)
+  - [ADR-005: LLM 语义权威](docs/decisions/ADR-005-llm-semantic-authority.md)
+  - [ADR-006: 双能力欢迎消息](docs/decisions/ADR-006-two-capability-welcome-message.md)
+  - [ADR-007: 快照恢复内存原子性](docs/decisions/ADR-007-atomic-snapshot-restore.md)
+  - [ADR-008: 约束驱动机器人候选收敛](docs/decisions/ADR-008-constraint-aware-robot-selection.md)
+  - [ADR-009: 测试与用户运行产物隔离](docs/decisions/ADR-009-test-runtime-artifact-isolation.md)
+- 📊 **阶段进展报表**：[docs/progress/phase-1-5-validation.md](docs/progress/phase-1-5-validation.md)
+- 📜 **版本演进日志**：[CHANGELOG.md](CHANGELOG.md)
 
 ---
 
 ## 9. 当前项目状态与已知限制
 
-- **状态**：Phase 2 阶段，LLM 语义权威路由（ADR-005）、约束驱动机器人候选收敛（ADR-008）与快照恢复内存原子性（ADR-007）已合并 main。核心架构闭环完成，CI 测试防线建立。
+- **状态**：当前主流程包含普通对话、ASR、任务槽位收集、约束校验、TaskIntent 原子归档，以及可选的 ROS 2 MCP 派发；架构演进记录以 `CHANGELOG.md` 和 `docs/progress/` 中的最新报告为准。
 - **已知限制**：
   - 极度冷门或未录入别名表的设备俗称仍需依赖 LLM 语义解析，可能带来微小延时。
-  - 遥测快照窗口为 24 小时；超时遥测数据阻断发布。
-  - TaskIntent 原子落盘依靠底层硬链接 `os.link` 保证，若在跨网络挂载盘（如 NFS）运行需确保跨文件系统链接支持。
+  - 遥测规则 C019 当前为超过 30 分钟产生软警告；运行可用性门禁另有时效检查，不能以单一“24 小时窗口”概括，详见架构总览。
+  - TaskIntent 原子落盘依靠 `os.link`；提交临时文件与正式文件必须位于同一支持硬链接的文件系统，网络挂载需单独验证。
   - `burial_depth`、航程、续航过滤暂未接入约束驱动候选域（当前 schema 无对应任务字段）。
-  - `ui_state_builder.py` 任务终态与会话交互终态过紧耦合（KD-01，待修复）。
+  - `done` / `rejected` 任务保持任务字段只读，但允许继续进行只读对话；该行为由 `tests/test_issue_31_ui_state_contract.py` 覆盖。

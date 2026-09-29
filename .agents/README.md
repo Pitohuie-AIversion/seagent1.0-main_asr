@@ -1,12 +1,17 @@
-# README_MAIN
+# SEAgent 项目维护说明
+
+> 本文件是维护参考。启动、测试和当前架构以仓库根目录 `README.md`、
+> `docs/architecture/`、`docs/development/` 以及最新进度报告为准。
 
 SEAgent 是一个面向水下 ROV 作业任务规划的对话系统。用户用自然语言描述任务，系统负责收集任务参数、规范化字段、检查任务准入条件，最后生成可下发的 TaskIntent JSON。
 
-当前主要支持两类业务：
+当前任务模板包括三类：
 
 **1、管缆巡检**
 
-**2、采油树控制面板阀门操作**
+**2、管缆埋设**
+
+**3、采油树控制面板阀门操作（插入 / 拔出）**
 
 ## 一、功能
 
@@ -70,8 +75,8 @@ SEAgent 是一个面向水下 ROV 作业任务规划的对话系统。用户用�
 
 | 检查项 | 说明 | 源 |
 | --- | --- | --- |
-| 禁入区 | 作业坐标落入禁入区时，任务禁止下发。判断坐标来源包括 `start_point`、`end_point`、`oilfield_coordinates`、`cable_position`。 | `config/environment.yaml`, `src/environment_info.py` |
-| 已知油田区域匹配 | 坐标落入 `oil_fields` 范围时，可查询油田名称、底质和备注，并用于后续底质约束或 TaskIntent 补充。 | `config/environment.yaml`, `src/environment_info.py` |
+| 禁入区 | 作业坐标落入禁入区时，任务禁止下发。判断坐标来源包括 `start_point`、`end_point`、`oilfield_coordinates`、`cable_position`。 | `config/oilfield.yaml`, `src/environment_info.py` |
+| 已知油田区域匹配 | 坐标落入 `oil_fields` 范围时，可查询油田名称、底质和备注，并用于后续底质约束或 TaskIntent 补充。 | `config/oilfield.yaml`, `src/environment_info.py` |
 
 后续向 任务目标区域 / 任务目标对象的空间位置、支援母船位置等外部基础地图对象 拓展迭代。
 
@@ -79,15 +84,15 @@ SEAgent 是一个面向水下 ROV 作业任务规划的对话系统。用户用�
 
 | 检查项 | 说明 | 源 |
 | --- | --- | --- |
-| 海床底质 | 根据作业坐标匹配油田区域的 `seabed_type`；当设备禁止该底质时触发硬约束。当前底质来源是静态环境配置。 | `config/environment.yaml`, `src/environment_info.py` |
-| 浑浊度 | 从机器人状态读取 `turbidity`；中等或高浑浊度触发软提示。该字段属于设备/作业状态，不属于 `environment.yaml` 的静态地图环境。 | `config/state.yaml`, `src/state_info.py` |
-| 流速 | 从机器人状态读取 `current_velocity`；超过阈值时触发软提示或硬约束。该字段属于设备/作业状态，不属于 `environment.yaml` 的静态地图环境。 | `config/state.yaml`, `src/state_info.py` |
+| 海床底质 | 根据作业坐标匹配油田区域的 `seabed_type`；当设备禁止该底质时触发硬约束。当前底质来源是静态环境配置。 | `config/oilfield.yaml`, `src/environment_info.py` |
+| 浑浊度 | 从机器人状态读取 `turbidity`；中等或高浑浊度触发软提示。该字段属于设备/作业状态，不属于 `oilfield.yaml` 的静态地图环境。 | `config/state.yaml`, `src/state_info.py` |
+| 流速 | 从机器人状态读取 `current_velocity`；超过阈值时触发软提示或硬约束。该字段属于设备/作业状态，不属于 `oilfield.yaml` 的静态地图环境。 | `config/state.yaml`, `src/state_info.py` |
 
 语义层：
 
 | 检查项 | 说明 | 源 |
 | --- | --- | --- |
-| DVL 底锁失效风险高区域 | 根据作业坐标匹配 `dvl_bottom_lock_failure_areas`；命中时触发软提示。 | `config/environment.yaml`, `src/environment_info.py` |
+| DVL 底锁失效风险高区域 | 根据作业坐标匹配 `dvl_bottom_lock_failure_areas`；命中时触发软提示。 | `config/oilfield.yaml`, `src/environment_info.py` |
 | 障碍物密集区 | 从机器人状态读取 `obstacle_density`，为 `high` 时触发软提示。当前不是基于地图区域判断。 | `config/state.yaml`, `src/state_info.py` |
 | 声学信号弱区 | 从机器人状态读取 `acoustic_comms_status`。当前不是基于地图区域判断。 | `config/state.yaml`, `src/state_info.py` |
 | 外部支援情况 | 从机器人状态读取 `mothership_support`。当前没有母船坐标、距离或覆盖范围计算。 | `config/state.yaml`, `src/state_info.py` |
@@ -100,7 +105,7 @@ SEAgent 是一个面向水下 ROV 作业任务规划的对话系统。用户用�
 
 | 属性 | 说明 |
 | --- | --- |
-| 更新时间 | 用于判断环境信息的新鲜程度。超过1 小时，就认为环境/状态信息已过期，需要更新。在validator里修改。 |
+| 更新时间 | C019 对立即任务在 30 分钟后产生软警告；运行可用性和派发还有独立的时效/完整性检查。 |
 | 置信度 | 用于表示当前环境信息可信程度。 |
 
 环境相关脚本：
@@ -164,7 +169,7 @@ SEAgent 是一个面向水下 ROV 作业任务规划的对话系统。用户用�
 | --- | --- | --- |
 | 设备类型匹配 | 管缆巡检要求观察级，采油树操作要求工作级。`validator.py` 会比较所选设备的 `category` 与约束要求，类型不符时产生硬性违规并阻止任务发布。 | `config/robot_fleet.yaml`, `config/constraints.yaml`, `config/task_schemas.yaml` |
 | 设备最大工作水深 | 已实现任务 `water_depth` 与设备 `max_depth_m` 的比较，超限时产生硬性违规。 | `config/robot_fleet.yaml`, `config/constraints.yaml` |
-| 海床/土质硬适配 | 当前根据任务坐标查询环境 `seabed_type`，并与设备的 `forbidden_seabed` 比较。 | `config/robot_fleet.yaml`, `config/environment.yaml`, `config/constraints.yaml` |
+| 海床/土质硬适配 | 当前根据任务坐标查询环境 `seabed_type`，并与设备的 `forbidden_seabed` 比较。 | `config/robot_fleet.yaml`, `config/oilfield.yaml`, `config/constraints.yaml` |
 
 未来可迭代方向：载荷能力边界、最大埋设边界、行走速度边界、转弯半径边界、续航边界、尺寸重量边界、功率边界等。
 
@@ -191,9 +196,9 @@ SEAgent 是一个面向水下 ROV 作业任务规划的对话系统。用户用�
 | `src/slots/slot_store.py` | 统一任务状态中心 (Single Source of Truth)，支持版本追踪与事务回滚。 |
 | `src/extraction/coord_parser.py` | 因prompt效果有限，用规则的形式把其他格式的坐标（例如：北纬xx度，东经xx度等类型）转化成（lat，lon）格式。 |
 | `src/dialogue_manager.py` | 对话主控制器，串联任务类型识别、字段提取、字段规范化、缺失字段判断、约束检查、回复生成、最终确认和任务输出。 |
-| `src/environment_info.py` | 环境信息查询模块，将任务中传入的作业坐标与 `config/environment.yaml` 配置的油田、禁入区和 DVL 风险区经纬度范围进行比较，返回是否禁入、海床底质和 DVL 风险信息。 |
+| `src/environment_info.py` | 环境信息查询模块，将任务中传入的作业坐标与 `config/oilfield.yaml` 配置的油田、禁入区和 DVL 风险区经纬度范围进行比较，返回是否禁入、海床底质和 DVL 风险信息。 |
 | `src/extraction/extractor.py` | 字段提取器，调用 LLM 从用户输入中提取任务类型和任务字段，只返回本轮新增/更新字段的 JSON diff。 |
-| `src/session/history_manager.py` | 对话历史快照管理，任务完成后把会话记录、任务状态、最终 JSON 等保存到 `/root/result/history`，并支持列表和读取。 |
+| `src/session/history_manager.py` | 对话历史快照管理，任务完成后把会话记录、任务状态、最终 JSON 等保存到 `SEAGENT_RESULT_DIR/history`（未设置时使用运行时默认目录），并支持列表和读取。 |
 | `src/dispatch/id_sequence.py` | 日期递增编号工具，供builder调用，并会扫描已有结果文件避免重复。 |
 | `src/knowledge_retriever.py` | 知识库加载与按需检索模块，统一读取任务 schema、设备库、资源库、约束、环境和状态信息，并按当前任务状态拼接相关知识。 |
 | `src/llm_client.py` | 模型调用底座。 |
@@ -202,7 +207,7 @@ SEAgent 是一个面向水下 ROV 作业任务规划的对话系统。用户用�
 | `src/extraction/prompts.py` | 对话回复 prompt 构建模块，根据字段缺失、硬/软约束、任务阶段、知识上下文等生成给回复模型的 system/user messages。 |
 | `src/temporal/simulated_time.py` | 模拟时间管理模块，提供当前模拟时间、日期、时间戳设置和读取能力，用于任务时间判断和状态时间戳。 |
 | `src/state_info.py` | 机器人状态读写模块，将外部状态上报接口传入的状态更新覆盖到 `config/state.yaml` ，同时为 `validator.py` 提供最新状态数据用于约束判断。 |
-| `src/dispatch/task_intent_builder.py` | TaskIntent 生成模块，用户最终确认后把任务转换为执行系统需要的 TaskIntent JSON，并写入 `/root/result/task`。 |
+| `src/dispatch/task_intent_builder.py` | TaskIntent 生成模块，用户最终确认后把任务转换为执行系统需要的 TaskIntent JSON，并写入 `SEAGENT_RESULT_DIR/task`（未设置时使用运行时默认目录）。 |
 | `src/validation/validator.py` | 约束验证器，根据 `constraints.yaml` 和当前任务状态执行硬/软约束校验，支持按变化字段增量检查和违规信息格式化。 |
 
 ### 2.`config` 脚本说明
@@ -211,7 +216,7 @@ SEAgent 是一个面向水下 ROV 作业任务规划的对话系统。用户用�
 | -------------------------- | ------------------------ | ----------------------------------------------- |
 | `config/assets.yaml`       | 工具、载荷、支持船等资源 | 新增 payload、vessel                            |
 | `config/constraints.yaml`  | 约束规则                 | 新增或调整软硬约束                              |
-| `config/environment.yaml`  | 环境和作业区信息         | 新增区域、禁入区、底质                          |
+| `config/oilfield.yaml`    | 环境和作业区信息         | 新增区域、禁入区、底质                          |
 | `config/robot_fleet.yaml`  | ROV/AUV 设备库           | 新增设备、设备类型、最大水深、别名              |
 | `config/state.yaml`        | 机器人状态初值           | 状态初值，每次实时端口更新并覆盖                |
 | `config/task_schemas.yaml` | 任务模板和输出字段       | 新增任务类型、调整必填字段、改普通/紧急模式字段 |
@@ -255,13 +260,17 @@ SEAgent 是一个面向水下 ROV 作业任务规划的对话系统。用户用�
 进入项目目录：
 
 ```bash
-cd /root/seagent/seagent
+cd /root/mzy/seagent1.0-main_asr
 ```
 
 启动网页演示服务：
 
 ```bash
-python run.py
+# 接口/页面联调
+OFFLINE_MOCK=1 ENABLE_MCP=0 python run.py
+
+# 真实本地模型（需准备本地 Qwen 和 ASR 模型）
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 LOCAL_MODEL_PATH=/path/to/Qwen3.5-9B python run.py
 ```
 
 启动后访问以交互：
@@ -283,20 +292,17 @@ curl -X POST http://localhost:8890/api/robot/set-state-info -H "Content-Type: ap
 
 | 项 | 当前值 |
 | --- | --- |
-| 模型 | Qwen3.5-9B |
-| 本地路径 | `.../model/Qwen3.5-9B` |
+| 模型 | 默认使用 `LOCAL_MODEL_PATH` 或 `SEAGENT_MODEL_DIR` 指定的本地 Qwen 模型 |
+| 本地路径 | 未设置时为 `/root/autodl-tmp/model/Qwen3.5-9B` |
 | 加载方式 | `vllm.LLM` |
 | 关键参数 | `trust_remote_code=True`, `max_num_seqs=1`, `dtype=bfloat16/float16` |
 | 调用封装 | `src/llm_client.py` |
 
 ### 2. 关键依赖
 
-完整依赖见 `requirements.txt`。重点依赖：
+完整依赖以 `pyproject.toml` 和 `requirements/` 目录为准：
 
-- `torch==2.10.0`
-- `torchaudio==2.10.0`
-- `transformers==4.57.6`
-- `vllm==0.18.1`
+- 依赖版本以 `pyproject.toml`、`requirements/base.txt` 和 GPU extra 为准，不在本维护说明中重复固定版本。
 
 ## 如何使用Conda将环境迁移到新服务器？
 
@@ -340,7 +346,7 @@ scp seagent_env.tar.gz name@新服务器IP:/root/your_target_dir
 
 | 内容 | 建议目标路径 |
 | --- | --- |
-| 项目代码 | `/root/seagent/seagent` |
+| 项目代码 | 当前仓库目录 |
 | 大模型 | `.../model/Qwen3.5-9B` |
 | 结果目录 | `.../result` |
 | 文档目录 | `.../doc` |
@@ -365,7 +371,7 @@ source .../envs/seagent/bin/activate
 conda-unpack
 ```
 
-注：本云服务器中模型文件、结果文件、文档均位于/root/autodl-tmp下。例如llm路径：/root/autodl-tmp/model/Qwen3.5-9B
+结果目录和模型目录可通过环境变量配置，不应假设固定的服务器路径。
 
 ### 4. 校验迁移是否成功
 

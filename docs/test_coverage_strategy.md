@@ -23,8 +23,9 @@
 
 ## 运行策略
 
-- PR 门禁：`python -m pytest -q`；CI 原生计数审计使用
-  `python -m unittest discover -s tests -t . -v`
+- PR 门禁与 CI 全量入口：`python -m pytest -q`。
+  `pytest` 按 `pyproject.toml` 同时收集核心测试和两个 MCP 子项目；不要用旧的
+  `unittest discover` 代替全量验证。
 - 真实对话：`python tests/run_accumulation_integration_tests.py`
 - 真实 ASR：`python tests/run_real_asr_integration.py`
 - Chrome：`python tests/run_chrome_e2e.py`

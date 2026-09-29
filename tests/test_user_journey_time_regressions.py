@@ -229,3 +229,20 @@ def test_real_range_evidence_still_rejects_wrong_model_endpoint(monkeypatch):
         candidate("end_time", "明天上午十二点", "2026-09-27T12:00:00"),
     ])
     assert "结束时间必须晚于开始时间" in result["unresolved"]
+
+
+def test_morning_to_twelve_resolves_to_noon_without_cross_day(monkeypatch):
+    """验证用户输入'上午10点到12点'时，结束时间被正确判定为当天正午12:00，严禁自动跨天至次日午夜。"""
+    monkeypatch.setattr("src.temporal.simulated_time.get_current_datetime",
+                        lambda: datetime(2026, 9, 30, 9, 0, 0))
+    message = "改成采油树控制面板拔出作业，时间调整为上午10点到12点。"
+    result = extract(message, [
+        candidate("start_time", "上午10点", "2026-09-30T10:00:00"),
+        candidate("end_time", "上午12点", "2026-09-30T12:00:00"),
+    ])
+    assert result["unresolved"] == []
+    assert times(result) == {
+        "start_time": "2026-09-30T10:00:00",
+        "end_time": "2026-09-30T12:00:00",
+    }
+

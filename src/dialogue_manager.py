@@ -933,29 +933,64 @@ class DialogueManager:
     def _is_final_publish_confirmation(message: str) -> bool:
         """仅识别明确具有‘发布/提交当前任务’语义的独立指令。"""
         text = re.sub(r"[\s，,。.!！?？、；;：:]+", "", message).lower()
-        return text in {
+        negated = ["不发布", "不要发布", "别发布", "取消发布", "暂不发布", "拒绝发布", "暂缓发布", "先不发布", "不提交", "不要提交", "先不提交", "暂不提交"]
+        if any(neg in text for neg in negated):
+            return False
+
+        base_cmds = {
             "确认发布",
             "确认并发布",
             "确认发布任务",
+            "确认发布当前任务",
+            "确认发布该任务",
+            "确认最终发布",
+            "最终确认发布",
+            "确认正式发布",
+            "正式确认发布",
+            "确认立即发布",
+            "立即确认发布",
+            "最终发布",
+            "正式发布",
             "发布任务",
+            "发布当前任务",
             "发布",
             "立即发布",
             "现在发布",
+            "直接发布",
             "确认提交",
             "确认并提交",
+            "确认提交任务",
+            "确认最终提交",
+            "最终确认提交",
+            "最终提交",
             "提交任务",
             "提交",
+            "立即提交",
+            "确认下发",
+            "确认下发任务",
+            "最终下发",
+            "下发任务",
+            "下发",
             "确认开始",
             "确认开始任务",
         }
+        if text in base_cmds:
+            return True
+        if len(text) <= 12 and re.fullmatch(r"(?:确认|最终|正式|直接|现在|立刻|立即)*(?:确认)*(?:发布|提交|下发)(?:任务|当前任务|该任务)?", text):
+            return True
+        return False
 
     @staticmethod
     def _is_confirmation_only(message: str) -> bool:
         """仅识别不携带参数更新的独立泛确认/认可指令。"""
         text = re.sub(r"[\s，,。.!！?？、；;：:]+", "", message).lower()
+        negated = ["不确认", "不要确认", "先不确认", "不确定", "不是", "不行", "不对"]
+        if any(neg in text for neg in negated):
+            return False
         return text in {
             "确认",
             "确认无误",
+            "最终确认",
             "确认开始",
             "开始",
             "开始任务",
@@ -965,15 +1000,23 @@ class DialogueManager:
             "可以",
             "ok",
             "继续",
+            "认可",
+            "同意",
+            "收到",
+            "清楚",
+            "明白",
         }
 
     @staticmethod
     def _is_ignore_warning(message: str) -> bool:
         """仅识别明确具有忽略/无视软警告语义的独立控制指令。"""
         text = re.sub(r"[\s，,。.!！?？、；;：:]+", "", message).lower()
-        negated = ["不忽略", "不要忽略", "不能忽略", "别忽略", "不无视", "不要无视", "不是忽略"]
+        negated = ["不忽略", "不要忽略", "不能忽略", "别忽略", "不无视", "不要无视", "不是忽略", "不接受", "不要接受", "不能接受"]
         if any(neg in text for neg in negated):
             return False
+        if any(kw in text for kw in ["修改", "改成", "更改", "调整", "设为", "设置为"]):
+            return False
+
         base_cmds = {
             "忽略警告",
             "忽略警告继续",
@@ -989,13 +1032,22 @@ class DialogueManager:
             "接受风险",
             "忽略风险",
             "无视",
+            "忽略继续",
+            "无视继续",
+            "接受软警告",
         }
         if text in base_cmds:
             return True
-        prefixes = ("忽略软警告", "忽略警告", "无视软警告", "无视警告", "接受风险", "忽略风险")
+
+        pattern = r"^(?:忽略|无视|接受|跳过)(?:(?!修改|更改|调整|取消|放弃).)*?(?:软警告|警告|软约束|风险|提示)(?:并)?(?:继续|确认|确认任务|继续确认|继续确认任务|发布|进入发布|直接发布|去发布|进行发布|继续发布|确认发布|并继续|并确认|并发布|继续执行|提交|下一步)?$"
+        if re.match(pattern, text):
+            return True
+
+        prefixes = ("忽略软警告", "忽略警告", "无视软警告", "无视警告", "接受风险", "忽略风险", "接受软警告")
         suffixes = (
             "继续", "确认", "确认任务", "继续确认", "继续确认任务",
             "继续发布", "确认发布", "并继续", "并确认", "并发布", "继续执行",
+            "进入发布", "直接发布", "进行发布", "去发布", "提交",
         )
         for p in prefixes:
             if text.startswith(p):

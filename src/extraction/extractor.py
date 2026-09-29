@@ -58,7 +58,7 @@ EXTRACTION_TASK = """\
 - 必须严格遵守以下输出 JSON 结构。
 - 可能提供的最近历史消息用于理解上下文；编号选择只能引用紧邻上一条 assistant 消息中明确展示的有序候选，不能利用 required/allowed_values 的后台顺序；只有最新 user 消息能授权本轮字段更新。
 - 用户本轮明确接受上一轮助手给出的单一推荐时，可以从紧邻的上一条 assistant 消息复制被接受的推荐值；助手之前自行提到的值不能在没有本轮用户授权时写入。
-- 上游计划已判定本轮包含任务状态变更；必须输出候选、列表变更、时长关系之一，无法落实时必须说明 unresolved，禁止四者同时为空。
+- 如果无法识别到支持的任务字段，严禁猜测候选；仅当用户明确提出了不支持的具体任务时才将任务描述写入 unresolved，严禁在 unresolved 中输出规则说明或思考过程。
 
 【输出格式】
 {{
@@ -103,12 +103,12 @@ EXTRACTION_SYSTEM = """\
 你当前不是对话助手，而是结构化候选抽取器。
 - 只允许输出一个 JSON object，不得输出任何自然语言解释。
 - 即使当前任务已确认、已发布、已锁定，只要用户本轮明确补充、修改或确认字段，也必须抽取为候选列表。
-- 如果用户本轮没有任何字段更新，返回 slot_candidates 为空列表的 JSON。
+- 如果用户本轮没有任何有效字段更新（如确认、取消、问候或闲聊），返回 slot_candidates 为空列表 []，且 unresolved 也必须保持为空列表 []。
 - 当用户输入中提及具体作业对象（如海底油气管道、电力电缆、光纤通信缆）时，必须抽取其对应的 canonical_key（如 cable_type）并填入 slot_candidates。
 - 可能提供的最近历史消息用于理解上下文；编号选择只能引用紧邻上一条 assistant 消息中明确展示的有序候选，不能利用 required/allowed_values 的后台顺序；只有最新 user 消息能授权本轮字段更新。
 - 用户本轮明确接受上一轮助手给出的单一推荐时，可以从紧邻的上一条 assistant 消息复制被接受的推荐值；助手之前自行提到的值不能在没有本轮用户授权时写入。
 - 当本轮用户既配置了载荷（产生 list_mutations），又给出了其他常规字段（如具体机器人编号 equipment_unit_id、支持船 support_vessel 等）时，二者必须同时输出：载荷变更填入 list_mutations，其他字段必须填入 slot_candidates，严禁因为有 list_mutations 就遗漏或清空 slot_candidates 中的其他字段！
-- 上游计划已判定本轮包含任务状态变更；必须输出候选、列表变更、时长关系之一，无法落实时必须说明 unresolved，禁止四者同时为空。
+- 【严禁在 unresolved 中输出元解释或推理】unresolved 严格仅用于记录用户实际提出、但系统不支持或无法识别的业务需求（例如不支持的任务类型、超出极限的深度等）；严禁在 unresolved 中填写任何规则引用（如“根据规则X”）、元解释说明（如“用户输入为确认”、“未包含参数修改”、“slot_candidates 应为空”）或思考过程。如果无法识别到任何有效变更，unresolved 必须保持为空列表 []。
 
 【输出格式】
 {{
@@ -143,6 +143,9 @@ EXTRACTION_SYSTEM = """\
 4. 如果最新用户消息中对同一字段多次修正，以最后出现的候选为准。
 5. 常规字段只允许提取 required 中存在的 canonical_key；任务类型选择器（task_type, task_type_key）、emergency_mode、设备辅助选择器（equipment_class, equipment_model, equipment_name, rov_description）和油田名称（oilfield_name）可以额外输出。即使当前模板没有油田字段，也必须将明确的油田地点保留为 oilfield_name，由后端决定是否接受并给出坐标引导；不得将地点强行映射到其他字段。
 6. 如果用户的输入不是修改已有字段，而是提问、闲聊或确认，slot_candidates 返回空列表 []。
+6.1 【水深（water_depth）特别规则】
+    - water_depth 严格指海洋作业海况水深（即海平面至海床底部的垂直水柱深度，例如“水深120米”、“作业水深300m”）。
+    - 严禁将管缆/管道施工中的“埋设深度”、“掩埋深度”、“开沟深度”、“埋深”（通常0.5~3米）提取为 water_depth！此类工程指标非海水水深槽位，当前模板未定义埋设深度槽位时必须放入 unresolved，严禁覆写或填入 water_depth。
 7. 【列表字段特别规则】对于 payload 字段：
    - 用户明确表达"增加/还要/再带/装载/搭载/配备/加装/添加 [工具]"时，输出 list_mutations: [{{"field": "payload", "operation": "add", "items": ["工具名称"], "target_items": [], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]
    - 用户明确表达"删除/不要/卸下/去掉/移除/取消 [工具]"时，输出 list_mutations: [{{"field": "payload", "operation": "remove", "items": ["工具名称"], "target_items": [], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]
@@ -394,16 +397,51 @@ class ParameterExtractor:
             *resolver_unresolved,
             *mutation_unresolved,
         ]
+        cleaned_unresolved = self._filter_meta_unresolved(all_unresolved)
 
         return {
             "slot_candidates": normalized_candidates,
             "unresolved": [
                 str(item).strip()
-                for item in all_unresolved
+                for item in cleaned_unresolved
                 if str(item).strip()
             ],
             "list_mutations": list_mutations,
         }
+
+    @staticmethod
+    def _filter_meta_unresolved(items: list[Any]) -> list[str]:
+        """过滤模型在 unresolved 中输出的元规则解释、COT思考与说明性免责文本。
+
+        真正的 unresolved 应为具体的工程字段解析异常、超限或不支持的业务项，
+        而非模型对'未抽取到槽位'、'本轮为确认'、'根据规则X'等规则解释。
+        系统生成的合法业务引导（如当前任务类型未包含油田槽位）绝不误伤。
+        """
+        meta_patterns = [
+            re.compile(r"根据规则"),
+            re.compile(r"根据第[0-9一二三四五六七八九十]+条"),
+            re.compile(r"slot_candidates"),
+            re.compile(r"(?:用户|本轮|输入|消息|当前轮次).*未(?:包含|提供|提及).*(?:参数|槽位|修改|新增|补充|更新|字段)"),
+            re.compile(r"未(?:包含|提供|提及)任何.*(?:参数|槽位|修改|新增|补充|更新|字段)"),
+            re.compile(r"未提取到.*(?:参数|槽位|字段)"),
+            re.compile(r"无.*(?:新参数|新槽位|参数修改|参数更新|字段变更)"),
+            re.compile(r"本轮(?:输入|消息).*(?:确认|发布|取消|指令)"),
+            re.compile(r"用户本轮.*(?:为|输入|仅|表达)"),
+            re.compile(r"无需更新"),
+            re.compile(r"无需修改"),
+        ]
+        cleaned = []
+        for item in items:
+            s = str(item).strip()
+            if not s:
+                continue
+            if "未包含油田槽位" in s or "当前任务类型" in s:
+                cleaned.append(s)
+                continue
+            if any(p.search(s) for p in meta_patterns):
+                continue
+            cleaned.append(s)
+        return cleaned
 
     # ──────────────────────────────────────────────────────────────────────────
     # 候选过滤与消歧装配

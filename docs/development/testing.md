@@ -12,9 +12,14 @@
 
 | 环境类型 | 适用场景 | 依赖配置文件 | 安装命令 |
 | :--- | :--- | :--- | :--- |
-| **CPU 测试依赖** | 本地单元测试、回归测试、CI 运行 | [requirements/test.txt](file:///root/mzy/seagent1.0-main_asr/requirements/test.txt) | `pip install -r requirements/test.txt` |
-| **基础运行依赖** | 系统核心推理与对话服务 | [requirements/base.txt](file:///root/mzy/seagent1.0-main_asr/requirements/base.txt) | `pip install -r requirements/base.txt` |
-| **GPU ASR 依赖** | 本地加载 Qwen ASR 语音模型运行 | [requirements/gpu.txt](file:///root/mzy/seagent1.0-main_asr/requirements/gpu.txt) | `pip install -r requirements/gpu.txt` |
+| **CPU 测试依赖** | 本地回归、CI | [pyproject.toml](../../pyproject.toml) 的 `test` extra | 先安装 CPU torch，再执行 `python -m pip install -e '.[test]'` |
+| **基础运行依赖** | 核心 Python 包，不含真实模型引擎 | [pyproject.toml](../../pyproject.toml) | `python -m pip install -e .` |
+| **GPU 推理依赖** | 真实本地 LLM | [pyproject.toml](../../pyproject.toml) 的 `gpu` extra | 在独立 GPU 环境执行 `python -m pip install -e '.[test,gpu]'` |
+
+普通 CI 先执行 `python -m pip install torch --index-url https://download.pytorch.org/whl/cpu`。
+`requirements/test.txt` 未包含完整音频测试依赖，`requirements/base.txt` 仅列出部分基础库；
+上表使用与 CI 对齐的安装入口。真实 ASR 还需要提供 `qwen_asr.Qwen3ASRModel` 的包及
+`config/asr.yaml` 指向的模型文件；这些不随 `gpu` extra 完整安装。
 
 ---
 
@@ -47,7 +52,7 @@ TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -v
 
 默认 pytest 收集 `tests/`、`mcp/ros-mcp/tests/`、
 `mcp/operation-time-window/tests_unit/` 和 `mcp/operation-time-window/tests_mcp/`。
-`requirements/test.txt` 包含海流服务及异步测试依赖。前端回归还需要 Node.js；CI 使用 Node.js 20。
+`test` extra 包含海流协议、音频及异步测试依赖。前端回归还需要 Node.js；CI 使用 Node.js 20。
 本地 MCP 兼容层使用 SDK 1.x，依赖限定为 `mcp>=1.27,<2`、`fastmcp>=2,<4`；
 升级到 MCP SDK 2.x 前需同步适配导出符号并运行协议回归。
 CI 使用同一入口并保存原生 JUnit 报告：
@@ -95,7 +100,7 @@ RUN_COPERNICUS_LIVE_TEST=1 python -m pytest -q mcp/operation-time-window/tests_m
 
 ## 3. GitHub Actions CI 测试阶段
 
-系统的 CI 流水线配置文件位于 [.github/workflows/tests.yml](file:///root/mzy/seagent1.0-main_asr/.github/workflows/tests.yml)，在代码 `push` 或提交 `pull_request` 时自动触发。
+系统的 CI 流水线配置文件位于 [.github/workflows/tests.yml](../../.github/workflows/tests.yml)，在代码 `push` 或提交 `pull_request` 时自动触发。
 
 ### 3.1 CI 阶段与本地命令对照表
 
@@ -121,7 +126,7 @@ flowchart LR
 ### 4.1 测试文件命名规范
 - 核心单元测试存放在 `tests/`，MCP 测试存放在对应子项目的测试目录下。
 - 测试文件名必须以 `test_` 开头，例如 `tests/test_new_feature.py`。
-- 测试类需继承自 `unittest.TestCase`，测试方法须以 `test_` 开头。
+- 支持 pytest 的 `test_*` 函数、`Test*` 类和 `unittest.TestCase`；测试方法以 `test_` 开头，不要求所有测试继承 unittest。
 
 ### 4.2 回归测试与边界闭环命名
 对于阶段性 P0/P1 问题修复与边界闭环，推荐遵循既有命名模式：
@@ -137,7 +142,7 @@ flowchart LR
 2. **检查输出日志**：CI 运行会保留并上传 `full_test.log` 和 `pytest-results.xml`，可作为审计对比。
 
 ### 5.2 运行输出与持久化路径处理
-测试运行过程中生成的中间文件与任务 Intent 输出目录通过 [src/dispatch/result_paths.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/result_paths.py) 统一管理：
+测试运行过程中生成的中间文件与任务 Intent 输出目录通过 [src/dispatch/result_paths.py](../../src/dispatch/result_paths.py) 统一管理：
 - 用户运行优先读取 `SEAGENT_RESULT_DIR`，未配置时使用 `/root/autodl-tmp/result`。
 - pytest 和包级 unittest 在导入业务模块前统一覆盖 result/task/history 为测试专用目录。
 - 子进程继承同一测试目录；未设置 `SEAGENT_TEST_RESULT_DIR` 时，测试结束自动清理。

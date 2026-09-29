@@ -31,6 +31,7 @@ from src.slots.normalization_contract import (
 )
 from src.slots.task_patch import build_task_patch, task_patch_to_legacy_updates
 from src.slots.slot_store import Slot
+from src.extraction.extractor import ParameterExtractor
 from ..constants import FIELD_LABELS
 from .explicit_value_grounding import ground_explicit_values
 
@@ -479,7 +480,8 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                 ]
             else:
                 stage2_updates, list_mutations, patch_unresolved = task_patch_to_legacy_updates(patch)
-                for u in patch_unresolved:
+                cleaned_patch_unresolved = ParameterExtractor._filter_meta_unresolved(patch_unresolved)
+                for u in cleaned_patch_unresolved:
                     if u not in turn_unresolved:
                         turn_unresolved.append(u)
                     if u not in new_unresolved:
@@ -488,7 +490,8 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                     merged_updates[k] = cand_info["value"]
                     merged_updates_meta[k] = cand_info
         else:
-            for item in extraction_res.get("unresolved", []):
+            cleaned_extraction_unresolved = ParameterExtractor._filter_meta_unresolved(extraction_res.get("unresolved", []))
+            for item in cleaned_extraction_unresolved:
                 if item not in turn_unresolved:
                     turn_unresolved.append(item)
                 if item not in new_unresolved:
@@ -684,7 +687,7 @@ class SlotExtractionPipeline(BaseDialogueHandler):
         slot_name_aliases = {
             "support_vessel": ["支持船", "船", "工作船", "母船"],
             "equipment_type": ["设备", "机器人", "rov", "auv"],
-            "water_depth": ["水深", "深度"],
+            "water_depth": ["水深", "作业水深", "海况水深", "海水深度"],
             "cable_type": ["管缆类型", "缆线", "电缆"],
             "payload": ["载荷", "工具", "传感器", "抓手", "配备"],
             "oilfield_name": ["油田", "油田名称"],

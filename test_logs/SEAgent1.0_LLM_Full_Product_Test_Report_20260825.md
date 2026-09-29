@@ -3,9 +3,9 @@
 > **目标产品**: SEAgent 1.0 深海多 Agent 任务规划与 ASR 交互系统  
 > **测试模型**: Qwen3.5-9B (vLLM + OFFLINE_MOCK 模式)  
 > **测试时间**: 2026-08-25 11:18:13 ~ 2026-08-25 11:18:15  
-> **测试执行工具**: [test_llm_full_product.py](file:///root/mzy/seagent1.0-main_asr/test_llm_full_product.py)  
+> **测试执行工具**: [test_llm_full_product.py](../scripts/e2e_suites/test_llm_full_product.py)
 > **原始日志归档**:
-> - 逐条 JSONL 日志: [llm_full_test_20260825_111813.jsonl](file:///root/mzy/seagent1.0-main_asr/test_logs/llm_full_test_20260825_111813.jsonl)
+> - 逐条 JSONL 日志: [llm_full_test_20260825_111813.jsonl](llm_full_test_20260825_111813.jsonl)
 > - 控制台输出: `test_logs/run_output.log`
 
 ---
@@ -21,8 +21,8 @@
 | Python 环境 | seagent conda env, Python 3.12, PyTorch 已安装 |
 | 核心框架 | Flask 3.x, pyyaml, requests, statistics, threading |
 | 服务端口 | HTTP 8890 (0.0.0.0), MCP Mock WS 9091 |
-| 业务配置 | [task_schemas.yaml](file:///root/mzy/seagent1.0-main_asr/config/task_schemas.yaml), [constraints.yaml](file:///root/mzy/seagent1.0-main_asr/config/constraints.yaml), [model_profiles.yaml](file:///root/mzy/seagent1.0-main_asr/config/model_profiles.yaml) |
-| 对话模型角色 | router / extractor / task_responder / knowledge_qa / general_reasoning / filter_reply / translation (见 [model_profiles.yaml](file:///root/mzy/seagent1.0-main_asr/config/model_profiles.yaml#L4-L59)) |
+| 业务配置 | [task_schemas.yaml](../config/task_schemas.yaml), [constraints.yaml](../config/constraints.yaml), [model_profiles.yaml](../config/model_profiles.yaml) |
+| 对话模型角色 | router / extractor / task_responder / knowledge_qa / general_reasoning / filter_reply / translation (见 [model_profiles.yaml](../config/model_profiles.yaml#L4-L59)) |
 | 关键依赖组件 | SlotStore 状态中心, IntentRouter (WRITE/QUERY 双路由), Validator 约束引擎, TaskIntentBuilder 原子落盘器, MCP ROS2 桥接 |
 
 > ⚠️ **环境声明**: 由于当前沙箱无可用 CUDA 驱动（`Can't initialize NVML`），本次采用 OFFLINE_MOCK=1 启动。该模式保留全部对话路由/SlotStore/Validator 业务逻辑，仅将 LLMClient.chat() 的模型推理替换为模板响应。**安全性、稳定性、合规性、接口契约、会话隔离 等与模型推理正交的维度结果完全有效**；功能正确性与输出准确性中与 LLM 语义提取相关的 FAIL/WARN 已在根因分析中特别标注。
@@ -126,7 +126,7 @@ WARN  ███                                                   3 (5.0%)
 | **影响范围** | 所有依赖槽位 `collected` 扁平字段做前端二次校验 / 报表导出的下游逻辑 |
 | **复现步骤** | 1. `POST /api/chat` body=`{session_id:"x", message:"创建管缆巡检水深150米"}` <br> 2. 读取响应 `collected` 字典 <br> 3. 断言 key 存在且值 ≈ 150 |
 | **根因初步定位** | **OFFLINE_MOCK 模式下 `LLMClient.extract_slots()` 返回空结果**，实际 `ui_state.actions` / `slot_store` 内部状态仍有版本变化。问题本质是 Mock 实现未同步填充兼容字段 `collected`（旧契约字段）。在 vLLM 加载真实模型后，由 extractor 角色返回的 JSON Schema 输出会正常驱动 SlotStore → collected 映射。**需在加载真实权重环境回归验证一次**。 |
-| **验证方法** | 将 `OFFLINE_MOCK=1` 去掉，真实加载 `/root/autodl-tmp/model/Qwen3.5-9B` 重跑 FC-04；或扩展 [mock LLMClient](file:///root/mzy/seagent1.0-main_asr/src/llm_client.py) 使其支持正则提取常见字段以匹配 Mock 语义。 |
+| **验证方法** | 将 `OFFLINE_MOCK=1` 去掉，真实加载 `/root/autodl-tmp/model/Qwen3.5-9B` 重跑 FC-04；或扩展 [mock LLMClient](../src/llm_client.py) 使其支持正则提取常见字段以匹配 Mock 语义。 |
 | **修复建议** | 短期：在 OFFLINE_MOCK 模式下补一层正则→slot fallback；长期：统一「collected 与 ui_state.slot_values」单一真相源，消除双写带来的漂移（参考 ADR-002）。 |
 
 ---
@@ -139,7 +139,7 @@ WARN  ███                                                   3 (5.0%)
 | **具体表现** | 同一条消息同时指定任务类型 + 水深 + 开始时间 → `collected.start_time`, `collected.end_time` 均为 null |
 | **影响范围** | 多轮合并回合时 UI 对已填写字段的高亮回显 |
 | **复现步骤** | 1. session=s 发送 `创建管缆巡检，开始时间2026-09-01 08:00，水深150米` <br> 2. 再发 `结束时间2026-09-01 18:00` <br> 3. 检查 `collected` 中时间字段 |
-| **根因初步定位** | 与 P-01 同源：Mock LLMClient 不输出 extractor JSON，导致 collected 填充链路未触发；另外时间解析依赖 [relative_time_parser.py](file:///root/mzy/seagent1.0-main_asr/src/temporal/relative_time_parser.py) + [duration_parser.py](file:///root/mzy/seagent1.0-main_asr/src/temporal/duration_parser.py)，仅在 Extractor 产出候选词后调用，Mock 下候选词为空直接跳过。 |
+| **根因初步定位** | 与 P-01 同源：Mock LLMClient 不输出 extractor JSON，导致 collected 填充链路未触发；另外时间解析依赖 [relative_time_parser.py](../src/temporal/relative_time_parser.py) + [duration_parser.py](../src/temporal/duration_parser.py)，仅在 Extractor 产出候选词后调用，Mock 下候选词为空直接跳过。 |
 | **验证方法** | 真实模型环境重跑；或在 Mock LLM 中对 `时间/日期` 正则命中后回填 ISO 字符串。 |
 | **修复建议** | 统一 P-01 / P-02 合并修复：在 Mock Extractor 层加入领域正则（水深/时间/坐标/管缆类型/载荷），让 OFFLINE_MOCK 模式也能产出完整 collected，保障前端联调。 |
 
@@ -153,9 +153,9 @@ WARN  ███                                                   3 (5.0%)
 | **具体表现** | 上传文件名 `../../etc/passwd.wav` → 返回 HTTP 200（而非预期 400/403）；虽响应无 passwd 内容泄漏，但返回码与「防御成功返回校验拒绝」的合规约定不符 |
 | **影响范围** | 等保三级 / ISO27001 审计中对「边界输入拒绝」的日志留痕 |
 | **复现步骤** | 1. 准备伪文件 `("../../etc/passwd.wav", b"fake", "audio/wav")` <br> 2. `POST /api/asr` multipart/form-data <br> 3. 观察 status_code |
-| **根因初步定位** | 查看 [web_backend.py api_asr](file:///root/mzy/seagent1.0-main_asr/web_backend.py#L445-L535) 代码：`filename = secure_filename(audio.filename)` 会 **先被 Werkzeug `secure_filename()` 清洗**（去掉路径分隔符和 `..`），再走扩展名检查，因此能进入正常处理流程；随后因 ASR 为 Mock/Degraded 返回 ASRUnavailable 但仍可能返回 200。整个流程无实际安全漏洞，但语义上「路径攻击 → 200」对审计不友好。 |
+| **根因初步定位** | 查看 [web_backend.py api_asr](../web_backend.py#L445-L535) 代码：`filename = secure_filename(audio.filename)` 会 **先被 Werkzeug `secure_filename()` 清洗**（去掉路径分隔符和 `..`），再走扩展名检查，因此能进入正常处理流程；随后因 ASR 为 Mock/Degraded 返回 ASRUnavailable 但仍可能返回 200。整个流程无实际安全漏洞，但语义上「路径攻击 → 200」对审计不友好。 |
 | **验证方法** | 在调用 secure_filename 之前，新增一次对原始 filename 的 `Path().is_absolute()` 或 `.. in filename` 检测，命中直接返回 400 `illegal_filename`。 |
-| **修复建议** | 低代码量防御深度策略。配合 [后端日志](file:///root/mzy/seagent1.0-main_asr/backend_logging.py) 额外打一条 SECURITY_WARN，便于 SIEM 汇总。 |
+| **修复建议** | 低代码量防御深度策略。配合 [后端日志](../backend_logging.py) 额外打一条 SECURITY_WARN，便于 SIEM 汇总。 |
 
 ---
 
@@ -178,9 +178,9 @@ WARN  ███                                                   3 (5.0%)
 |----|------|
 | **关联用例** | UX-02 |
 | **具体表现** | 在未填全字段时，顶层 `resp.missing` 为 `[]`（空数组），但 `resp.ui_state.constraint_state.soft/hard_violations` 与 slot 级缺失提示仍可呈现。用户和前端若依赖顶层 missing 字段会误以为「全填完了」。 |
-| **影响范围** | 前端 V1 旧兼容逻辑。当前 [index.js](file:///root/mzy/seagent1.0-main_asr/frontend/js/index.js) 若以 ui_state 为准则不受影响。 |
+| **影响范围** | 前端 V1 旧兼容逻辑。当前 [index.js](../frontend/js/index.js) 若以 ui_state 为准则不受影响。 |
 | **复现步骤** | 1. 只填一半字段（水深 + 开始时间）<br> 2. 读顶层 `missing` 字段长度 → 0 |
-| **根因初步定位** | 见 [web_backend.py L609](file:///root/mzy/seagent1.0-main_asr/web_backend.py#L609)：`missing = [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing]`。当前流程中 missing 信息已迁移到 ui_state 统一契约，`_last_missing` 被置空，但旧字段未同步 bridge 到 ui_state。 |
+| **根因初步定位** | 见 [web_backend.py L609](../web_backend.py#L609)：`missing = [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing]`。当前流程中 missing 信息已迁移到 ui_state 统一契约，`_last_missing` 被置空，但旧字段未同步 bridge 到 ui_state。 |
 | **修复建议** | 在 `api_chat` 返回前，从 `ui_state` 反推填充 `missing` 顶层兼容字段，或在下一个主版本直接 deprecated 顶层 missing 并改走 ui_state 单点（Issue 31 约定）。 |
 
 ---
@@ -233,7 +233,7 @@ WARN  ███                                                   3 (5.0%)
 
 **核心根因 3 条：**
 1. **CR-01**：Mock LLMClient 缺少领域级正则 fallback，导致 OFFLINE_MOCK 模式下 extracted slots 恒空（→ P-01/P-02）；该问题与 ADR-005「LLM 语义权威」约定在真实权重下自动消除，但在沙箱无 CUDA 环境需 Mock 补全以通过联调。
-2. **CR-02**：[api_asr](file:///root/mzy/seagent1.0-main_asr/web_backend.py#L445-L535) 在 secure_filename() 之前未做路径遍历前置检测，仅「防御成功但不告警」，审计深度不足。
+2. **CR-02**：[api_asr](../web_backend.py#L445-L535) 在 secure_filename() 之前未做路径遍历前置检测，仅「防御成功但不告警」，审计深度不足。
 3. **CR-03**：顶层兼容字段（`missing`, `collected.water_depth`）与 `ui_state` 单点真相源存在漂移，见 ADR-002 已要求单一来源。UX-02 / FC-04 的部分失败源于 UI 层双写不同步。
 
 ---
@@ -286,7 +286,7 @@ WARN  ███                                                   3 (5.0%)
 |------|--------|--------|---------|---------|
 | G1 | 真实模型（非 Mock）跑通 60 用例，FAIL=0 | 算法工程 | ⏳ 待执行 | 必须 PASS |
 | G2 | P1 级优化 2 项（api_asr 前置检测 + missing 派生）合入 | 后端 | ⏳ 待开发 | 建议 PASS |
-| G3 | ASR Degraded 的用户侧降级提示已上线（返回 503，UI 提示「语音功能暂不可用」） | 全栈 | ✅ [web_backend.py L515](file:///root/mzy/seagent1.0-main_asr/web_backend.py#L515-L524) 已实现 | PASS |
+| G3 | ASR Degraded 的用户侧降级提示已上线（返回 503，UI 提示「语音功能暂不可用」） | 全栈 | ✅ [web_backend.py L515](../web_backend.py#L515-L524) 已实现 | PASS |
 | G4 | MCP 桥接真实 ROS2 环境建连 + 下发一条巡检任务 | 集成 | ⏳ 待现场 | 如本次发布包含现场则必做 |
 | G5 | CI 中新增 `test_llm_full_product.py` 为 OFFLINE_MOCK 必跑项 | DevOps | ⏳ 待接入 | 建议 PASS |
 

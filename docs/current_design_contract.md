@@ -1,6 +1,6 @@
 # SEAgent Current Design Contract & Architecture Specification
 
-This document defines the authoritative system design contract for SEAgent (Phase 2, commit 8254b37, 2026-08-13). All dialogue management, intent routing, slot extraction, validation, snapshot persistence, and robot candidate selection logic must conform to these rules.
+This document defines the current design contract for SEAgent as of 2026-09-29. Code and tests are the final authority when this document conflicts with an implementation detail; update this contract when a public behavior changes.
 
 ---
 
@@ -23,8 +23,9 @@ The system classifies all natural language user inputs into two primary interact
 - `READ` interactions bypass `Extractor` field extraction and validation commits.
 
 ### 1.4 Write Pipeline
-- A `WRITE` / `CONTROL` interaction routes through `Extractor` for canonical slot extraction, followed by `Validator` constraint checking, `SlotStore` state commit, and optional `TaskIntentBuilder` atomic publication.
-- Model returning `WRITE` does not guarantee write success — the result still passes through Extractor → Validator → SlotStore.
+- `WRITE` produces candidates through extraction, grounding and normalization; schema-accepted values update SlotStore before task-level constraint validation. Violations preserve a correction context and prevent publication.
+- `CONTROL` is handled by the relevant phase handler for confirmation, cancellation or warning acknowledgement; not every control action runs the extractor.
+- A model returning `WRITE` does not guarantee a field commit or publication.
 
 ---
 
@@ -60,14 +61,17 @@ The system classifies all natural language user inputs into two primary interact
 ## 4. Snapshot Persistence & Rollback Rules
 
 ### 4.1 Atomic Publishing & Locking
-- Publishing requires acquiring an atomic process lock (`TaskPublishLock`).
-- Staging files (`TI*_staging.json`) are validated before atomic symlink/atomic rename publishing to final destination `/root/autodl-tmp/result/task`.
+- Publishing requires acquiring the cross-process lock (`TaskPublishLock`).
+- The builder writes and validates a temporary JSON file, then uses a no-overwrite hard-link commit (`os.link`) to create the final file. It does not publish through a symlink.
+- The task directory is resolved by `SEAGENT_TASK_DIR` when set, otherwise by `SEAGENT_RESULT_DIR/task`; the default result root may fall back to the repository `result/` directory when the production default is not writable.
 
-### 4.2 Failure Rollback Guarantee
-- If a persistence or symlink error occurs during publishing (`TaskPersistenceError`), the system MUST roll back `SlotStore`, `task_state`, and disk artifacts to their pre-transaction snapshot.
+### 4.2 Failure and Uncertain-Commit Semantics
+- Before the final file is committed, a `TaskPersistenceError` must restore the in-memory transaction and retain any uncertain staging evidence safely.
+- If the final file has already been linked but a later durability step fails, the system returns `TaskCommitUncertainError`, preserves the exact published intent, and requires a later confirmation/reconciliation. It must not report ordinary publication success or allocate a replacement ID.
 
-### 4.3 Intent ID Inheritance & Invalidation
-- Modifying a slot in `done` phase invalidates the published intent and generates a new daily sequence `intent_id`.
+### 4.3 Terminal Task Protection
+- A `done` task cannot be modified in place. Read-only conversation remains available; a new task must use the new-task/reset workflow, preserving the existing published file.
+- Repeated confirmation does not create a second file. An uncertain commit is reconciled against its original intent ID.
 
 ---
 
@@ -130,10 +134,10 @@ If **any** condition fails, the provenance check MUST delete the write candidate
 
 ### 8.2 Filtering Layers
 The candidate tree is pruned in the following order:
-1. `allowed_robot_classes` and `required_capabilities` (task type gate).
+1. Template `required_capabilities` matched against robot-family capabilities (task type gate); class is grouping metadata, and legacy `allowed_robot_classes` is not the hard task-compatibility authority.
 2. Confirmed `water_depth` vs. `Variant.hard_params.max_depth_m` (strict `<=` semantics).
 3. Confirmed `payload` vs. `onboard_payloads ∪ supported_payloads` of each Variant.
-4. For immediate tasks (confirmed `start_time` within current 10-minute window): filter Units by online, idle, and telemetry validity.
+4. Outside interactive collection, immediate tasks use online, idle and telemetry-validity filtering. The default immediate-task window is 60 minutes and also covers ongoing tasks; interactive collection defers runtime filtering.
 5. Prune empty Variants, Families, and Classes after filtering.
 
 ### 8.3 Three-Segment Decision Rule
@@ -152,3 +156,8 @@ After filtering:
 
 ### 8.6 Validation Fallback Prohibition
 - Constraint validation failures (`blocked_hard`, `blocked_soft`) MUST NOT fall back to `CLARIFY`. The system MUST return an explicit constraint reason and require the user to correct task parameters.
+
+### 8.7 Telemetry and Dispatch
+- C019 is currently a soft warning after 1800 seconds. Runtime availability has a separate age limit and invalid-state checks; see [the architecture overview](architecture/overview.md).
+- Future-task archival may defer dynamic telemetry validation. Dispatch uses `purpose="runtime_execution"` and fresh validation; archival alone is not execution authorization.
+- Sending, scheduling, uncertain results and unsupported valve withdrawal follow [the execution dispatch contract](execution_dispatch_contract.md).

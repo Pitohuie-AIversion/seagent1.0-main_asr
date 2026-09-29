@@ -27,10 +27,11 @@ To start the Flask dialogue server and local models:
    ```bash
    cd /root/mzy/seagent1.0-main_asr
    ```
-2. Launch the backend:
+2. Launch the backend. For interface-only work without local models, use explicit mock mode:
    ```bash
-   /root/miniconda3/envs/seagent/bin/python run.py
+   OFFLINE_MOCK=1 ENABLE_MCP=0 /root/miniconda3/envs/seagent/bin/python run.py
    ```
+   Real mode requires the local Qwen model, GPU dependencies, and the ASR model configured in `config/asr.yaml`.
 3. To forward the local port for external Web access, run:
    ```bash
    /root/miniconda3/envs/seagent/bin/python port_forward.py
@@ -67,11 +68,11 @@ curl -X POST http://localhost:8890/api/robot/set-state-info \
   }'
 ```
 > [!IMPORTANT]
-> The `update_timestamp` must match the current simulated time (queried from `src/temporal/simulated_time.py`). If the data is more than 1 hour old relative to the simulated time, the validator will mark the state as stale and block task execution.
+> The `update_timestamp` must match the current simulated time (queried from `src/temporal/simulated_time.py`). C019 currently warns when an immediate-task state timestamp is older than 30 minutes; runtime availability and dispatch perform separate validity checks.
 
 ## 4. Verifying Saved Output Artifacts
 When a dialogue task is completed and confirmed by the user:
-- Verify that the TaskIntent JSON has been successfully generated in:
-  `/root/autodl-tmp/result/task/task_intent_TI<YYYYMMDD><seq>.json`
+- Verify that the TaskIntent JSON has been successfully generated in the configured task directory:
+  `SEAGENT_TASK_DIR`, or `SEAGENT_RESULT_DIR/task` when the former is unset.
 - Verify that the chat session history is archived in:
-  `/root/autodl-tmp/result/history/history_<intent_id>.json`
+  `SEAGENT_HISTORY_DIR`, or `SEAGENT_RESULT_DIR/history` when the former is unset.

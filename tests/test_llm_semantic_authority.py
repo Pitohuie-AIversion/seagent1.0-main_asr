@@ -212,9 +212,14 @@ def test_blocked_soft_accepts_prompted_ignore_warning_continue_phrases() -> None
 def test_ignore_warning_continue_negation_is_not_acknowledgement() -> None:
     assert DialogueManager._is_ignore_warning("不忽略警告继续") is False
     assert DialogueManager._is_ignore_warning("不要忽略软警告") is False
+    assert DialogueManager._is_ignore_warning("不能接受软性警告") is False
     assert DialogueManager._is_ignore_warning("忽略软警告，继续确认任务。") is True
     assert DialogueManager._is_ignore_warning("忽略警告确认任务") is True
+    assert DialogueManager._is_ignore_warning("忽略排期软警告，进入发布。") is True
+    assert DialogueManager._is_ignore_warning("忽略未来任务环境与遥测延后校验提示") is True
+    assert DialogueManager._is_ignore_warning("接受软警告并发布") is True
     assert DialogueManager._is_ignore_warning("忽略软警告修改水深300米") is False
+    assert DialogueManager._is_ignore_warning("把水深修改为300米，忽略之前设置") is False
 
 
 

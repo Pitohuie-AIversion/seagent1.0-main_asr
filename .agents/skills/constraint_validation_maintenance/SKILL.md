@@ -8,19 +8,19 @@ description: Procedures for maintaining, updating, or troubleshooting task safet
 This skill explains how to modify, add, or troubleshoot the safety parameters, static maps, dynamic states, and validator code that determine if a task can be admitted.
 
 ## 1. Modifying Safety Limits (`config/constraints.yaml`)
-Validation rules are set in [constraints.yaml](file:///root/mzy/seagent1.0-main_asr/config/constraints.yaml).
+Validation rules are set in [constraints.yaml](../../../config/constraints.yaml).
 - **Hard Constraints**: Rules that must never be broken (e.g. coordinates entering a forbidden area, task depth exceeding ROV's max operating depth). Breaking these transitions the dialogue state to `blocked_hard` and blocks task finalization.
 - **Soft Constraints**: Rules that represent warnings or minor risks (e.g. high current velocity or medium turbidity). Breaking these transitions the dialogue state to `blocked_soft`, which prompts the user for acknowledgement before proceeding.
 
-## 2. Maintaining Geofences & Environment Map (`config/environment.yaml`, `src/environment_info.py`)
-Environmental features checks are queryable via [environment_info.py](file:///root/mzy/seagent1.0-main_asr/src/environment_info.py) based on coordinates:
-- **No-Go Zones**: Managed under `forbidden_areas` in [environment.yaml](file:///root/mzy/seagent1.0-main_asr/config/environment.yaml). If coordinates (`start_point`, `end_point`, `oilfield_coordinates`, or `cable_position`) fall within these bounds, a hard block is flagged.
-- **Oilfields & Seabed Types**: Under `oil_fields` in `environment.yaml`. Seabed types can be `soft` or `hard`. The validator compares these with the ROV's `forbidden_seabed` parameter in `robot_fleet.yaml`. If matched, a hard violation is raised.
+## 2. Maintaining Geofences & Environment Map (`config/oilfield.yaml`, `src/environment_info.py`)
+Environmental features checks are queryable via [environment_info.py](../../../src/environment_info.py) based on coordinates:
+- **No-Go Zones**: Managed under `forbidden_areas` in [oilfield.yaml](../../../config/oilfield.yaml). If coordinates (`start_point`, `end_point`, `oilfield_coordinates`, or `cable_position`) fall within these bounds, a hard block is flagged.
+- **Oilfields & Seabed Types**: Under `oil_fields` in `oilfield.yaml`. Seabed types can be `soft` or `hard`. The validator compares these with the ROV's `forbidden_seabed` parameter in `robot_fleet.yaml`. If matched, a hard violation is raised.
 - **Oilfield Depth Semantics**: `water_depth` is the default representative depth used to prefill a task. `maximum_reference_water_depth` is the separately sourced upper bound used by hard constraint C029. Never use an average/default depth as the hard upper bound.
-- **DVL Failure Areas**: Under `dvl_bottom_lock_failure_areas` in `environment.yaml`. Triggers a soft warning.
+- **DVL Failure Areas**: Under `dvl_bottom_lock_failure_areas` in `oilfield.yaml`. Triggers a soft warning.
 
 ## 3. Telemetry State Parameters & Validation (`config/state.yaml`, `src/state_info.py`, `src/validation/validator.py`)
-Dynamic robot health metrics are handled in [state_info.py](file:///root/mzy/seagent1.0-main_asr/src/state_info.py) and evaluated in [validator.py](file:///root/mzy/seagent1.0-main_asr/src/validation/validator.py).
+Dynamic robot health metrics are handled in [state_info.py](../../../src/state_info.py) and evaluated in [validator.py](../../../src/validation/validator.py).
 
 ### Telemetry / Dynamic checks detail:
 - **Survival and Availability**:
@@ -42,15 +42,15 @@ Dynamic robot health metrics are handled in [state_info.py](file:///root/mzy/sea
   - `obstacle_density`: If `high`, triggers soft alert (**C011**).
   - `mothership_support`: If `weak`, triggers warning (**C012**).
   - `confidence`: If `< 0.5`, triggers low-confidence warning (**C018**).
-  - `update_timestamp`: If older than 1 hour relative to simulated time, triggers expiration warning (**C019**).
+  - `update_timestamp`: C019 currently triggers a soft expiration warning after 1800 seconds (30 minutes) for immediate tasks. Runtime availability and dispatch checks have separate age/validity gates.
 
 ## 4. Main Validator Logic (`src/validation/validator.py`)
-[validator.py](file:///root/mzy/seagent1.0-main_asr/src/validation/validator.py) handles the execution loop of all constraints:
+[validator.py](../../../src/validation/validator.py) handles the execution loop of all constraints:
 - **Immediate vs Future Task check**:
   - Immediate task (starts within 10 minutes of simulated time): The validator executes full checks (hard parameters + static environment + dynamic robot states).
   - Future task (starts > 10 minutes from simulated time): The validator only checks static hard parameters and static environment limits; it bypasses active robot state checks.
 - **Data Freshness Threshold**:
-  - Environment/state updates must have an `update_timestamp` within 1 hour of the simulated time. If the data is older, the validator raises an expiration error and blocks the task.
+  - C019 checks immediate-task state timestamps against 1800 seconds. Separate runtime availability checks use their own age limit; do not describe all telemetry checks as a single one-hour or 24-hour window.
 
 ## 5. Hard Refusal Counter & Automatic Rejections (`src/dialogue_manager.py`)
 Dialogue states track consecutive hard validation failures:

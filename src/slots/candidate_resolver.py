@@ -408,6 +408,23 @@ class CandidateResolver:
                 resolved["resolution_method"] = "relative_date_parsed"
                 return resolved, None
 
+        # 1.1 水深物理语义排他守卫：防止施工工艺中的“埋设深度/开沟深度/掩埋深度”错误覆写海水水深
+        if key == "water_depth":
+            raw_k = str(candidate.get("raw_key") or "")
+            burial_keywords = ("埋设", "掩埋", "开沟", "埋深", "开槽", "入泥", "管沟")
+            if any(kw in raw_k for kw in burial_keywords):
+                val_text = candidate.get("raw_value") or candidate.get("normalized_value") or ""
+                return None, f"埋设深度/开沟深度（{val_text}）属于施工工艺参数，当前任务模板仅管理海水作业水深，未定义埋设深度槽位"
+            if user_message and any(f"{kw}深度" in user_message or f"{kw}深" in user_message for kw in burial_keywords):
+                raw_v = str(candidate.get("raw_value") or "").strip()
+                norm_v = str(candidate.get("normalized_value") or "").strip()
+                for kw in burial_keywords:
+                    pattern = rf"{kw}(?:深度|深)?(?:设为|为|达到|至|在)?\s*([0-9]+(?:\.[0-9]+)?)"
+                    m = re.search(pattern, user_message)
+                    if m and (m.group(1) == raw_v or m.group(1) == norm_v):
+                        if not re.search(rf"(?:海水水深|作业水深|水深)\s*(?:设为|为|达到|至|在)?\s*{re.escape(m.group(1))}", user_message):
+                            return None, f"用户输入的“{m.group(0)}”属于施工工艺参数，并非海水作业水深（water_depth）"
+
         # 1.5 数值型字段容错清洗
         field_def = required_by_key.get(key) or {}
         candidate = self.clean_numeric_candidate(candidate, key, field_def)

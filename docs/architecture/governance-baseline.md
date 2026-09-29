@@ -88,7 +88,7 @@ Knowledge / StateInfo           Extractor / OilfieldLinker (候选提取)
 ### C. 已知缺陷 (KNOWN_DEFECT)
 当前代码中已知存在、需在后续治理阶段专门修复的缺陷。**严禁将 Known Defect 写入 Golden Behavior 或降级测试使其通过**。
 
-- **KD-01**：`src/session/ui_state_builder.py` 在 `phase in ("done", "rejected")` 时返回 `can_send=False`，导致任务终态与会话交互终态过紧耦合。
+- **KD-01（已解决）**：`src/session/ui_state_builder.py` 已将 `done` / `rejected` 任务的任务字段保持为只读，同时允许 `can_send=True` 继续普通对话和只读查询；由 `tests/test_issue_31_ui_state_contract.py` 覆盖。
 - **KD-02**：`src/dialogue_manager.py` 在知识问答 `kb_evidence` 未找到（`found=false`）时直接返回预设拒绝文案，未调用底座模型 General Reasoning。
 - **KD-03**：`src/llm_client.py` 在 `apply_chat_template` 中硬编码 `enable_thinking=False`。
 - **KD-04 (RESOLVED)**：`src/extraction/normalizer.py` 规范化失败覆盖旧 valid 槽位缺陷已在 Commit `c50a60a` 修复，并通过双路 Normalization Failure 状态契约验证。

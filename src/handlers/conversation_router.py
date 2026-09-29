@@ -126,10 +126,11 @@ class ConversationRouterHandler(BaseDialogueHandler):
         if not user_message:
             return True
 
-        off_topic_reply = check_off_topic_gate(user_message)
-        if off_topic_reply is not None:
-            ctx.metadata["off_topic_reply"] = off_topic_reply
-            return True
+        if hasattr(self.manager, "_check_off_topic_gate"):
+            off_topic_reply = self.manager._check_off_topic_gate(user_message)
+            if off_topic_reply is not None:
+                ctx.metadata["off_topic_reply"] = off_topic_reply
+                return True
 
         if is_standalone_time_query(user_message):
             ctx.metadata["is_time_query"] = True

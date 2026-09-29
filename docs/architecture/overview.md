@@ -1,314 +1,141 @@
-# 系统架构总览 (System Architecture Overview)
+# 系统架构总览
 
-本文档阐述 SEAgent 深海多 Agent 任务规划与 ASR 交互系统的整体架构设计、模块协同机制、控制/数据流向以及核心系统契约与不变量。
+本文档描述 SEAgent 当前的运行架构和边界，基准日期为 2026-09-29。实现状态以代码、测试和运行配置为准；本页不替代 ADR、执行下发契约或历史验收报告。
 
-> [!NOTE]
-> 本文档反映 `8254b37`（2026-08-13）及以前的代码事实。规划中尚未实现的模块（Task Graph、多机器人分配、动态重规划、Robot Gateway）已在本文档中明确标注。
+## 1. 系统范围
 
----
+SEAgent 接收文本或 ASR 转写结果，将用户请求路由为普通对话、知识查询、任务参数写入或控制操作。任务路径收集并规范化槽位，执行环境、设备和遥测约束校验，在用户确认后生成不可覆盖的 TaskIntent 文件；可选的 ROS 2 MCP 桥接器负责后续派发和状态跟踪。
 
-## 1. 系统目标
+当前 `config/task_schemas.yaml` 中的任务模板为：
 
-SEAgent 旨在为深海水下机器人作业（包含巡检、清洗、阀门操作、故障排查等）提供强约束、多模态（语音与文本）、高可信的对话交互与 TaskIntent 任务构建能力。系统需在复杂海况、物理限制（水深、载荷、机械臂能力）与实时遥测状态下，确保任务参数的完整性、一致性与落盘安全性。
+- 管缆巡检（`pipeline_inspection`）；
+- 管缆埋设（`pipeline_burial`）；
+- 采油树控制面板阀门操作（`tree_valve_operation`，包含插入和拔出动作）。
 
----
+Task Graph、多机器人分配、动态重规划和通用 Robot Gateway 仍属于规划能力。现有 ROS 2 MCP 桥接器是可选的执行集成，不代表这些规划能力已经实现。
 
-## 2. 模块架构与关系
-
-系统由前端/ASR 接口层、意图路由层、抽取与状态管理层、知识与约束校验层以及持久化发布层构成。
-
-```mermaid
-graph TD
-    UI[用户输入 / ASR语音转写] --> IPlan[InteractionPlan 结构化语义计划]
-    IPlan --> Router[IntentRouter 双通道路由]
-
-    Router -->|READ / CLARIFY 路径| DM_Q[_handle_non_task_route 只读保护]
-    Router -->|WRITE / CONTROL 路径| Extractor[Extractor 候选值提取与解析]
-
-    DM_Q --> KB[KnowledgeBase 静态知识/动态遥测]
-    KB --> DM_Q
-
-    Extractor --> SlotStore[SlotStore 单源真理状态中心]
-    SlotStore --> Validator[Validator 多层级约束校验]
-
-    Validator -->|约束通过| DM_W[DialogueManager 确认/发布状态机]
-    DM_W --> TIBuilder[TaskIntentBuilder 安全持久化]
-    TIBuilder --> FileSystem[(TaskIntent JSON 落盘)]
-
-    KB -->|get_feasible_robot_selection_domain| SlotStore
-```
-
-### 核心模块职责映射
-
-| 模块 | 关键类 / 文件 | 主要职责 |
-| :--- | :--- | :--- |
-| **ASR 服务与纠错** | [src/asr/asr_service.py](file:///root/mzy/seagent1.0-main_asr/src/asr/asr_service.py)<br>[src/asr/asr_normalizer.py](file:///root/mzy/seagent1.0-main_asr/src/asr/asr_normalizer.py)<br>[src/extraction/oilfield_linker.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/oilfield_linker.py) | 语音转文本、ASR 候选词+上下文纠错、油田实体 Link 评分与标准化。 |
-| **交互计划** | [src/session/interaction_plan.py](file:///root/mzy/seagent1.0-main_asr/src/session/interaction_plan.py)<br>`InteractionPlan` | LLM 每轮输出的结构化语义计划；`operation` 字段（READ / WRITE / CONTROL / CLARIFY）为唯一路由权威；后端不根据关键词覆盖此决策。 |
-| **意图路由器** | [src/session/intent_router.py](file:///root/mzy/seagent1.0-main_asr/src/session/intent_router.py)<br>`IntentRouter`, `IntentRouteResult` | 消费 `InteractionPlan.operation`，将输入严格划分为 `WRITE`（写任务状态）或 `QUERY`（读知识与状态）。 |
-| **对话状态管理** | [src/dialogue_manager.py](file:///root/mzy/seagent1.0-main_asr/src/dialogue_manager.py)<br>`DialogueManager` | 主控状态机，调度路由、只读保护、追问生成与确认发布流程；`load_snapshot()` 采用隔离候选管理器原子恢复。 |
-| **候选提取与解析** | [src/extraction/extractor.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/extractor.py)<br>`Extractor` | 提取参数候选，采用 `canonical_exact` -> `alias_exact` -> `llm_semantic` 递进解析。 |
-| **状态中心** | [src/slots/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slots/slot_store.py)<br>`SlotStore`, `Slot` | Single Source of Truth，管理所有任务槽位状态、版本自增与事务管理；任务类型切换时自动过滤无效机器人 candidate。 |
-| **知识、遥测与候选域** | [src/knowledge_retriever.py](file:///root/mzy/seagent1.0-main_asr/src/knowledge_retriever.py)<br>[src/state_info.py](file:///root/mzy/seagent1.0-main_asr/src/state_info.py) | 提供设备静态能力查询与实时遥测状态读取；`get_feasible_robot_selection_domain()` 为机器人候选计算的唯一权威入口（water_depth + payload + 即时运行状态三层过滤）。 |
-| **物理约束校验** | [src/validation/validator.py](file:///root/mzy/seagent1.0-main_asr/src/validation/validator.py)<br>`TaskValidator` | 执行水深、载荷、海况、时间有效性及机器人物理约束 Hard/Soft 校验；复用 KnowledgeBase 四级静态关系校验。 |
-| **可见来源追踪** | [src/slots/visible_selection_provenance.py](file:///root/mzy/seagent1.0-main_asr/src/slots/visible_selection_provenance.py)<br>`VisibleSelectionProvenance` | 校验编号候选选择的可见来源，确保写入的枚举值在紧邻 assistant 回复中明确展示，阻止基于隐藏顺序的误写。 |
-| **任务字段补丁** | [src/slots/task_patch.py](file:///root/mzy/seagent1.0-main_asr/src/slots/task_patch.py)<br>`TaskPatch` | 支持任务参数的字段级补丁操作，不覆盖整体 SlotStore 事务边界。 |
-| **任务请求守卫** | [src/validation/task_request_guard.py](file:///root/mzy/seagent1.0-main_asr/src/validation/task_request_guard.py)<br>`TaskRequestGuard` | 防止同轮内多任务意图的误触发，确保复合请求的确定性分句与路由。 |
-| **坐标解析** | [src/extraction/coord_parser.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/coord_parser.py) | 将各类格式的地理坐标表达确定性解析为标准经纬度，与输入格式无关。 |
-| **TaskIntent 持久化** | [src/dispatch/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/task_intent_builder.py)<br>`TaskIntentBuilder`, `TaskPublishLock` | Staging 暂存、排他锁控制与 `_atomic_commit_noreplace` 无覆盖原子落盘。 |
-
-> [!NOTE]
-> 以下模块已在 `src/` 中存在但属于计划/实验阶段，尚未完整接入主流程：`src/extraction/model_profile.py`（模型 Profile 封装）、`src/slots/normalization_contract.py`（规范化契约形式化）、`src/session/session_state.py` / `src/session/session_state_shadow.py`（SessionState 契约验证）、`src/temporal/simulated_time.py`（模拟时钟）、`src/temporal/time_context.py`（时间上下文）。
-
----
-
-## 3. 控制流与状态流
-
-系统交互分为 QUERY（查询）和 WRITE（写入）两条互斥的路径。
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as 用户 / 客户端
-    participant LLM as LLM → InteractionPlan
-    participant Router as IntentRouter
-    participant DM as DialogueManager
-    participant Store as SlotStore
-    participant Ext as Extractor
-    participant KB as KnowledgeBase
-    participant Val as Validator
-    participant TIB as TaskIntentBuilder
-
-    User->>LLM: 发送自然语言消息
-    LLM-->>Router: InteractionPlan (operation: READ/WRITE/CONTROL/CLARIFY)
-    Router-->>DM: 返回 IntentRouteResult
-
-    alt READ / CLARIFY 路径 (只读)
-        DM->>DM: 记录 SlotStore 及系统状态快照镜像
-        DM->>DM: 执行 _handle_non_task_route (知识/状态查询)
-        DM->>DM: 断言状态不变性 (如状态受损则抛 RuntimeException)
-        DM-->>User: 返回查询回答 (不更新任务槽位)
-    else WRITE / CONTROL 路径 (状态更新)
-        DM->>KB: get_feasible_robot_selection_domain (water_depth/payload/状态过滤)
-        KB-->>Store: 注入约束驱动候选树 (0关闭/1自动绑定/多消歧)
-        DM->>Ext: 调用 normalize_and_resolve 提取候选
-        Ext->>Store: 更新 / 写入 Slot 候选值
-        DM->>Val: 执行物理与环境约束校验
-        alt 存在缺失或硬违规
-            DM-->>User: 追问缺失参数或提示 Hard 违规 (blocked_hard)
-        else 存在软违规
-            DM-->>User: 展示软警告 (blocked_soft, 可明确忽略)
-        else 满足发布条件
-            DM->>TIB: 调用 create_staging 创建暂存文件
-            DM->>TIB: 调用 publish_staging (获取 TaskPublishLock)
-            TIB-->>DM: 完成原子落盘并返回 TaskIntent
-            DM-->>User: 返回最终构建成功确认
-        end
-    end
-```
-
----
-
-## 4. 关键边界与系统不变量
-
-> [!IMPORTANT]
-> **1. QUERY 路径只读隔离**
-> - `READ` / `CLARIFY` 路由路径下**绝对不允许修改** `SlotStore` 中的任何槽位状态或对话阶段（Phase）。
-> - `_handle_non_task_route` 在处理前会捕获全量快照，并在处理后进行强制一致性断言。
-
-> [!IMPORTANT]
-> **2. LLM InteractionPlan 为唯一路由权威**
-> - `InteractionPlan.operation` 是路由的唯一不可缺少的语义字段；后端确定性代码不根据业务关键词覆盖此路由决策。
-> - 低置信度 WRITE / CONTROL 继续澄清，避免不确定语义产生状态副作用。
-> - LLM 路由失败或协议非法时统一退化为 CLARIFY，不猜测写入。
-
-> [!IMPORTANT]
-> **3. WRITE 路径为唯一槽位修改入口**
-> - 仅当 `IntentRouter` 判断为 `WRITE` 路由时，用户输入才允许送入 [src/extraction/extractor.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/extractor.py) 进行提炼，并更新 [src/slots/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slots/slot_store.py) 中的 `Slot` 状态。
-
-> [!IMPORTANT]
-> **4. SlotStore 作为 Single Source of Truth**
-> - 系统中所有任务导出的 JSON 结构及下游校验输入，必须直接从 [src/slots/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slots/slot_store.py) 导出 (`get_task_state`)，禁止绕过 `SlotStore` 直接使用临时上下文拼装任务状态。
-
-> [!IMPORTANT]
-> **5. 机器人候选域为唯一权威入口**
-> - `KnowledgeBase.get_feasible_robot_selection_domain()` 是机器人候选计算的唯一权威入口。Validator 和 Snapshot restore 复用同一四级关系校验，避免自动绑定结果与 UI 候选列表不一致。
-
-> [!WARNING]
-> **6. 动态机器人遥测状态隔离**
-> - 机器人的实时状态（如电池残量、推进器健康度、故障标志）必须通过 [src/state_info.py](file:///root/mzy/seagent1.0-main_asr/src/state_info.py) 动态查询 `config/state.yaml` 或底层遥测接口获取。**不得使用历史对话记忆替代实时遥测数据**。
-> - snapshot validity window 为 24 小时（commit c7b3289）；超时遥测数据阻断发布。
-
-> [!CAUTION]
-> **7. TaskIntent 文件原子持久化**
-> - [src/dispatch/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/task_intent_builder.py) 中的"原子持久化"（`_atomic_commit_noreplace` + `TaskPublishLock`）指 **TaskIntent JSON 文件在文件系统上的原子落盘与无覆盖安全保障**（文件要么完整生成，要么不生成，杜绝中间态与覆盖风险）。
-> - 该概念**绝非** Task Graph 任务拆解中的"不可分割原子任务"概念，二者在架构上位于不同层级。
-
-> [!CAUTION]
-> **8. Validation 不 fallback 到 Clarification**
-> - 约束校验失败（`blocked_hard` / `blocked_soft`）不退化为 CLARIFY 追问；约束阻断信息明确返回给用户，要求修正任务参数，而非以追问掩盖。
-
----
-
-## 5. TaskIntent 安全发布工作流
-
-TaskIntent 的文件落盘采用严格的三阶段发布机制，确保并发写操作安全与防篡改：
+## 2. 运行架构
 
 ```mermaid
 flowchart TD
-    Start[触发 TaskIntent 发布] --> Step1[TaskIntentBuilder.prepare 纯内存构建 JSON]
-    Step1 --> Step2[TaskIntentBuilder.create_staging 创建独占暂存文件 .staging_PID_TID_UUID]
-    Step2 --> Lock[获取跨进程排他锁 TaskPublishLock]
+    User[用户文本 / ASR 转写] --> API[Web API 与 SSE]
+    API --> DM[DialogueManager 状态机]
+    DM --> Plan[InteractionPlan]
+    Plan --> Router[IntentRouter]
 
-    Lock --> CheckExist{目标 task_intent_TIxxxx.json 是否已存在?}
-    CheckExist -- 已存在 --> ThrowConflict[抛出 IntentIdConflict 拒绝覆盖]
+    Router -->|READ / CLARIFY| Query[知识、状态与普通对话]
+    Query --> ReadGuard[只读快照与不变性断言]
 
-    CheckExist -- 不存在 --> InspectFD[打开 FD 并校验 fstat/Inode/PID 归属]
-    InspectFD --> AtomicCommit[os.link 硬链接原子提交至 final_file]
+    Router -->|WRITE| Extract[Extractor 与规范化]
+    Router -->|CONTROL| Control[阶段与控制动作处理器]
+    Control --> Commit
+    Extract --> Store[SlotStore 单一事实源]
+    Store --> Validate[Validator 约束门禁]
+    Validate -->|缺失或违规| Reply[追问 / 阻断 / 软警告]
+    Validate -->|可确认| Commit[确认与发布处理器]
+    Commit --> Builder[TaskIntentBuilder]
+    Builder --> Files[staging / final / history]
 
-    AtomicCommit --> CleanStaging[清除暂存文件并释放 TaskPublishLock]
-    CleanStaging --> End[发布成功]
-    ThrowConflict --> Rollback[保留或清理 staging 触发回滚]
+    Files -->|可选| Dispatch[ROS 2 MCP 派发与遥测跟踪]
 ```
 
----
+### 2.1 入口与模块职责
 
-## 6. 规划中（尚未实现）的模块
+| 层 | 主要模块 | 当前职责 | 状态 |
+| --- | --- | --- | --- |
+| Web/API | `src/web/`, `web_backend.py` | 聊天、SSE、ASR、时间、历史、MCP 和设备控制接口 | 已实现 |
+| 会话与路由 | `src/dialogue_manager.py`, `src/session/` | 会话生命周期、InteractionPlan、普通对话与任务路径分流 | 已实现；部分 v2 功能受开关控制 |
+| 抽取与规范化 | `src/extraction/`, `src/handlers/slot_extraction_pipeline.py` | 任务类型、字段、时间、坐标、设备和载荷候选处理 | 已实现 |
+| 状态中心 | `src/slots/` | SlotStore、候选值、字段补丁、快照和列表槽位事务 | 已实现 |
+| 知识与约束 | `src/knowledge/`, `src/validation/`, `src/state_info.py` | 项目事实、设备候选域、环境、遥测和硬/软约束 | 已实现 |
+| 持久化 | `src/dispatch/task_intent_builder.py`, `src/session/history_manager.py` | TaskIntent 原子归档、历史快照、回滚和不确定提交恢复 | 已实现 |
+| 执行集成 | `mcp/ros-mcp/core/`, `src/dispatch/task_dispatch.py` | 可选 ROS 2 WebSocket/MCP 桥接、任务状态和发送结果 | 已实现，需运行配置和桥接端 |
+| 规划扩展 | Task Graph、多机器人分配、动态重规划、通用 Robot Gateway | 未来执行编排能力 | 规划中 |
 
-以下能力在路线图中存在，但**当前代码中尚未实现**，不得将其描述为已有功能：
+### 2.2 功能开关
 
-| 能力 | 当前状态 | 预计阶段 |
-| :--- | :--- | :--- |
-| Robot Gateway（机器人执行适配层） | 规划中 | Later |
-| Task Graph（任务拆解与有向图） | 规划中 | Later |
-| 多机器人分配与协同 | 规划中 | Later |
-| 动态重规划与执行反馈闭环 | 规划中 | Later |
-| 弱通信下的多机协调 | 规划中 | Later |
+`config/features.yaml` 中的 `model_profiles_v2`、`normalization_contract_v2`、`session_state_v2` 等开关默认关闭。对应模块已经存在并被主流程引用，但 v2 契约只有在开关打开或显式测试时生效；文档不得将其描述为完全启用。
 
+## 3. 路由和状态不变量
 
----
+### 3.1 查询路径
 
-## 2. 模块架构与关系
+- `READ` 和 `CLARIFY` 路径不得修改 SlotStore、任务槽位、任务阶段或版本号。
+- 查询可以读取当前任务上下文，但不得将知识问答结果写入任务字段。
+- 查询处理前后执行快照一致性检查；检查失败时返回错误而不是静默继续。
 
-系统由前端/ASR 接口层、意图路由层、抽取与状态管理层、知识与约束校验层以及持久化发布层构成。
+### 3.2 写入路径
 
-```mermaid
-graph TD
-    UI[用户输入 / ASR语音转写] --> Router[IntentRouter 双通道路由]
-    
-    Router -->|QUERY 路径| DM_Q[_handle_non_task_route 只读保护]
-    Router -->|WRITE 路径| Extractor[Extractor 候选值提取与解析]
-    
-    DM_Q --> KB[KnowledgeBase 静态知识/动态遥测]
-    KB --> DM_Q
-    
-    Extractor --> SlotStore[SlotStore 单源真理状态中心]
-    SlotStore --> Validator[Validator 多层级约束校验]
-    
-    Validator -->|校验通过| DM_W[DialogueManager 确认/发布状态机]
-    DM_W --> TIBuilder[TaskIntentBuilder 安全持久化]
-    TIBuilder --> FileSystem[(TaskIntent JSON 落盘)]
+- `WRITE` 路径负责候选抽取与字段更新；`CONTROL` 由阶段处理器执行确认、取消、警告确认等动作，不要求每个控制操作经过抽取器。
+- InteractionPlan 的 `operation` 是语义路由权威；协议非法或置信度不足时进入澄清。
+- 字段写入经过允许值、来源和规范化检查；Validator 对已收集任务执行业务约束校验，违规任务保留可修正的上下文并阻断确认或发布。
+- 硬约束阻断不能通过“确认”“继续”或“忽略警告”绕过；软约束只能由明确的忽略动作继续。
+
+### 3.3 终态会话
+
+`done` 和 `rejected` 任务的任务字段保持只读，但会话仍可接收普通对话和只读查询。前端状态由 `src/session/ui_state_builder.py` 统一构建，相关行为由 `tests/test_issue_31_ui_state_contract.py` 覆盖。
+
+## 4. 约束与遥测
+
+约束来源包括：
+
+- `config/constraints.yaml`：规则、严重级别和阈值；
+- `config/oilfield.yaml`：油田、禁入区、海床和 DVL 风险区域；
+- `config/robot_fleet.yaml`：设备层级、能力和物理上限；
+- `config/state.yaml` 或底层遥测：机器人运行状态和更新时间。
+
+候选机器人域由 `KnowledgeBase.get_feasible_robot_selection_domain()` 统一计算。水深、载荷和即时任务的运行状态过滤后，系统执行零候选阻断、单候选自动绑定、多候选等待消歧的决策。
+
+交互收集阶段允许延后遥测检查。默认立即任务判定窗口为未来 60 分钟，并包含正在执行的任务；未来计划可延后动态状态校验。`purpose="runtime_execution"` 在派发前强制执行最新设备与环境检查，未来归档不表示已取得执行许可。
+
+当前时效规则需分别理解：
+
+| 检查 | 当前值与含义 | 来源 |
+| --- | --- | --- |
+| C019 | 超过 1800 秒产生软警告 | `config/constraints.yaml`、`TelemetryGate.check_rule` |
+| 候选域运行可用性 | `StateInfo.check_runtime_availability` 默认 1800 秒；过期单机不可用 | `src/state_info.py`、`src/knowledge/selection_engine.py` |
+| 知识库可用性查询 | `KnowledgeBase.check_runtime_availability` 默认传入 600 秒，可由调用者覆盖 | `src/knowledge_retriever.py` |
+| 未来时间偏斜 | 遥测时间超前系统时间超过 300 秒视为非法 | `src/state_info.py`、`src/validation/telemetry_gate.py` |
+
+这些检查不是统一的“24 小时快照窗口”。历史记录中的阈值不可直接用于当前运行判断。
+
+## 5. TaskIntent 发布
+
+发布过程如下：
+
+1. 在内存中构建并校验 TaskIntent；
+2. 在任务目录创建独占临时文件；
+3. 获取 `TaskPublishLock`；
+4. 读取回校验临时文件内容；
+5. 使用 `os.link` 将临时文件以 no-overwrite 方式提交为正式文件；
+6. 对正式文件和父目录执行必要的 `fsync`；
+7. 清理可证明属于本次提交的临时文件并记录历史。
+
+正式目录由 `SEAGENT_TASK_DIR` 或 `SEAGENT_RESULT_DIR` 决定；未设置时使用生产默认目录，在默认目录不可写时回退到仓库 `result/` 目录。流程不使用 symlink 覆盖正式文件。
+
+若正式文件尚未生成即发生错误，系统回滚内存事务并保留必要证据。若正式文件已经生成但后续持久化确认失败，系统返回不确定提交状态，保留原任务编号，等待再次核对，不重复发布或覆盖文件。详细契约见 [execution_dispatch_contract.md](../execution_dispatch_contract.md)。
+
+## 6. ROS 2 MCP 边界
+
+`mcp/ros-mcp/` 提供可选的 ROS 2 桥接、协议转换、遥测订阅和任务状态跟踪。`src/dispatch/task_dispatch.py` 统一处理 Web 自动派发、`POST /api/mcp/dispatch` 和对话结果派发。
+
+任务归档不等于机器人已经执行：
+
+- `SCHEDULED`：任务已保存但未到计划时间；
+- `SENT`：已有发送或接收证据；
+- `UNKNOWN`：发送结果尚未确认；
+- `FAILED`：校验异常、桥接离线或可确定尚未发送的错误；
+- `BLOCKED`：执行前校验未通过。
+
+真实机器人、Copernicus 海流服务和第三方 ROS 对比测试都需要额外运行环境，默认回归测试使用 mock/synthetic 数据。
+
+未来任务没有后台自动调度，到期后需要显式检查并下发。阀门拔出计划可归档，但当前协议不支持该动作，派发返回 `BLOCKED`。归档、传输接收和机器人执行完成是不同状态。
+
+## 7. 验证入口
+
+```bash
+python -m compileall -q src tests mcp/ros-mcp mcp/operation-time-window
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q
 ```
 
-### 核心模块职责映射
-
-| 模块 | 关键类 / 文件 | 主要职责 |
-| :--- | :--- | :--- |
-| **ASR 服务与纠错** | [src/asr/asr_service.py](file:///root/mzy/seagent1.0-main_asr/src/asr/asr_service.py)<br>[src/asr/asr_normalizer.py](file:///root/mzy/seagent1.0-main_asr/src/asr/asr_normalizer.py)<br>[src/extraction/oilfield_linker.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/oilfield_linker.py) | 语音转转文本、ASR 候选词+上下文纠错、油田实体 Link 评分与标准化。 |
-| **意图路由器** | [src/session/intent_router.py](file:///root/mzy/seagent1.0-main_asr/src/session/intent_router.py)<br>`IntentRouter`, `IntentRouteResult` | 将输入严格划分为 `WRITE`（写任务状态）或 `QUERY`（读知识与状态）。 |
-| **对话状态管理** | [src/dialogue_manager.py](file:///root/mzy/seagent1.0-main_asr/src/dialogue_manager.py)<br>`DialogueManager` | 主控状态机，调度路由、只读保护、追问生成与确认发布流程。 |
-| **候选提取与解析** | [src/extraction/extractor.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/extractor.py)<br>`Extractor` | 提取参数候选，采用 `canonical_exact` -> `alias_exact` -> `llm_semantic` 递进解析。 |
-| **状态中心** | [src/slots/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slots/slot_store.py)<br>`SlotStore`, `Slot` | Single Source of Truth，管理所有任务槽位状态、版本自增与事务管理。 |
-| **知识与遥测** | [src/knowledge_retriever.py](file:///root/mzy/seagent1.0-main_asr/src/knowledge_retriever.py)<br>[src/state_info.py](file:///root/mzy/seagent1.0-main_asr/src/state_info.py) | 提供设备静态能力查询，并读取 `config/state.yaml` 中的实时遥测状态。 |
-| **物理约束校验** | [src/validation/validator.py](file:///root/mzy/seagent1.0-main_asr/src/validation/validator.py)<br>`TaskValidator` | 执行水深、载荷、海况、时间有效性及机器人物理约束 Hard/Soft 校验。 |
-| **TaskIntent 持久化** | [src/dispatch/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/task_intent_builder.py)<br>`TaskIntentBuilder`, `TaskPublishLock` | Staging 暂存、排他锁控制与 `_atomic_commit_noreplace` 无覆盖原子落盘。 |
-
----
-
-## 3. 控制流与状态流
-
-系统交互分为 QUERY（查询）和 WRITE（写入）两条互斥的路径。
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as 用户 / 客户端
-    participant Router as IntentRouter
-    participant DM as DialogueManager
-    participant Store as SlotStore
-    participant Ext as Extractor
-    participant Val as Validator
-    participant TIB as TaskIntentBuilder
-
-    User->>Router: 发送自然语言消息
-    Router-->>DM: 返回 IntentRouteResult (WRITE 或 QUERY)
-
-    alt QUERY 路径 (只读)
-        DM->>DM: 记录 SlotStore 及系统状态快照镜像
-        DM->>DM: 执行 _handle_non_task_route (知识/状态查询)
-        DM->>DM: 断言状态不变性 (如状态受损则抛 RuntimeException)
-        DM-->>User: 返回查询回答 (不更新任务槽位)
-    else WRITE 路径 (状态更新)
-        DM->>Ext: 调用 normalize_and_resolve 提取候选
-        Ext->>Store: 更新 / 写入 Slot 候选值
-        DM->>Val: 执行物理与环境约束校验
-        alt 存在缺失或硬违规
-            DM-->>User: 追问缺失参数或提示 Hard 违规
-        else 满足发布条件
-            DM->>TIB: 调用 create_staging 创建暂存文件
-            DM->>TIB: 调用 publish_staging (获取 TaskPublishLock)
-            TIB-->>DM: 完成原子落盘并返回 TaskIntent
-            DM-->>User: 返回最终构建成功确认
-        end
-    end
-```
-
----
-
-## 4. 关键边界与系统不变量
-
-为确保系统运行的确定性与数据安全，系统设计中明确并强制执行以下边界与不变量：
-
-> [!IMPORTANT]
-> **1. QUERY 路径只读隔离**
-> - `QUERY` 路由路径下**绝对不允许修改** `SlotStore` 中的任何槽位状态或对话阶段（Phase）。
-> - [src/dialogue_manager.py](file:///root/mzy/seagent1.0-main_asr/src/dialogue_manager.py) 的 `_handle_non_task_route` 在处理前会捕获全量快照，并在处理后进行强制一致性断言。
-
-> [!IMPORTANT]
-> **2. WRITE 路径为唯一槽位修改入口**
-> - 仅当 `IntentRouter` 判断为 `WRITE` 路由时，用户输入才允许送入 [src/extraction/extractor.py](file:///root/mzy/seagent1.0-main_asr/src/extraction/extractor.py) 进行提炼，并更新 [src/slots/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slots/slot_store.py) 中的 `Slot` 状态。
-
-> [!IMPORTANT]
-> **3. SlotStore 作为 Single Source of Truth**
-> - 系统中所有任务导出的 JSON 结构及下游校验输入，必须直接从 [src/slots/slot_store.py](file:///root/mzy/seagent1.0-main_asr/src/slots/slot_store.py) 导出 (`get_task_state`)，禁止绕过 `SlotStore` 直接使用临时上下文拼装任务状态。
-
-> [!WARNING]
-> **4. 动态机器人遥测状态隔离**
-> - 机器人的实时状态（如电池残量、推进器健康度、故障标志）必须通过 [src/state_info.py](file:///root/mzy/seagent1.0-main_asr/src/state_info.py) 动态查询 `config/state.yaml` 或底层遥测接口获取。**不得使用历史对话记忆替代实时遥测数据**。
-
-> [!CAUTION]
-> **5. TaskIntent 文件原子持久化概念澄清**
-> - [src/dispatch/task_intent_builder.py](file:///root/mzy/seagent1.0-main_asr/src/dispatch/task_intent_builder.py) 中提供的“原子持久化”（`_atomic_commit_noreplace` + `TaskPublishLock`）指 **TaskIntent JSON 文件在文件系统上的原子落盘与无覆盖安全保障**（即文件要么完整生成，要么不生成，杜绝中间态与覆盖风险）。
-> - 该概念**绝非** Task Graph 任务拆解中的“不可分割原子任务 (Atomic Task)”概念，二者在架构上位于不同层级。
-
----
-
-## 5. TaskIntent 安全发布工作流
-
-TaskIntent 的文件落盘采用严格的三阶段发布机制，确保并发写操作安全与防篡改：
-
-```mermaid
-flowchart TD
-    Start[触发 TaskIntent 发布] --> Step1[TaskIntentBuilder.prepare 纯内存构建 JSON]
-    Step1 --> Step2[TaskIntentBuilder.create_staging 创建独占暂存文件 .staging_PID_TID_UUID]
-    Step2 --> Lock[获取跨进程排他锁 TaskPublishLock]
-    
-    Lock --> CheckExist{目标 task_intent_TIxxxx.json 是否已存在?}
-    CheckExist -- 已存在 --> ThrowConflict[抛出 IntentIdConflict 拒绝覆盖]
-    
-    CheckExist -- 不存在 --> InspectFD[打开 FD 并校验 fstat/Inode/PID 归属]
-    InspectFD --> AtomicCommit[os.link 硬链接原子提交至 final_file]
-    
-    AtomicCommit --> CleanStaging[清除暂存文件并释放 TaskPublishLock]
-    CleanStaging --> End[发布成功]
-    ThrowConflict --> Rollback[保留或清理 staging 触发回滚]
-```
+真实模型、ASR 和 Chrome 流程由 `.github/workflows/real-e2e.yml` 及 `tests/run_*.py` 独立执行，不应与普通离线 CI 的结果混为一谈。

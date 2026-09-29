@@ -239,3 +239,27 @@ def test_missing_fields_do_not_claim_complete_collection(claim):
     assert claim not in result
     assert '请补充任务开始时间。' in result
     assert '仍需补充：任务开始时间' in result
+
+
+def test_write_response_discards_misplaced_off_topic_reject_template():
+    """在任务编辑与写入响应中，模型若误吐出离题拒识模板，必须被彻底剥离清洗。"""
+    from src.extraction.prompts import OFF_TOPIC_REJECT_TEMPLATE
+    misplaced_reply = (
+        OFF_TOPIC_REJECT_TEMPLATE + "\n\n"
+        "任务参数已更新：\n- **管缆类型**：电力电缆\n"
+        "接下来，还需要您确认以下 2 个关键参数：\n"
+        "1. **作业区域**：请提供油田坐标。\n"
+        "2. **执行机器人**：开拓者号未在设备库登记，请选择合规型号。"
+    )
+    result = ground(
+        misplaced_reply,
+        updates={"cable_type": "电力电缆", "water_depth": 120.0},
+        missing=[{"key": "oilfield_coordinates", "label": "油田坐标"}],
+    )
+    assert "抱歉，本系统专注于" not in result
+    assert "请描述您的水下作业需求" not in result
+    assert "电力电缆" in result
+    assert "油田坐标" in result
+    assert "开拓者号未在设备库登记" in result
+    assert "✅ 已记录" in result
+

@@ -319,6 +319,23 @@ class WriteReplyGrounder:
         return reply
 
     @staticmethod
+    def _remove_write_off_topic_template(reply: str) -> str:
+        """Discard any misplaced off-topic reject template in a WRITE response.
+
+        A write response that commits task slots or tracks workflow must not
+        tell the user to describe their underwater requirements as if rejected.
+        """
+        pattern = (
+            r"抱歉[，,]?\s*本系统专注于[^\n。！？]*"
+            r"(?:水下设备能力与状态查询|任务创建与准入校验|任务状态查询与发布管理)[^\n。！？]*"
+            r"三类场景[。！？!?]?\s*"
+            r"(?:请描述您的水下作业需求[^\n。！？]*[。！？!?]?)?"
+        )
+        cleaned = re.sub(pattern, "", reply).strip()
+        cleaned = re.sub(r"请描述您的水下作业需求[，,]?或提出以上三类范围内的问题[。！？!?]?", "", cleaned).strip()
+        return cleaned
+
+    @staticmethod
     def ground_write_reply(
         self_or_reply: object = "",
         model_reply: str = "",
@@ -428,10 +445,11 @@ class WriteReplyGrounder:
                 or not actual_model_reply or not str(actual_model_reply).strip()):
             return receipt
 
-        # Retained facts belong to the receipt, but questions and unrelated
-        # explanation should not disappear merely because they mention a slot.
+        cleaned_reply = WriteReplyGrounder._remove_write_off_topic_template(
+            WriteReplyGrounder._remove_write_welcome_template(str(actual_model_reply).strip())
+        )
         scrubbed = WriteReplyGrounder._scrub_uncommitted_slot_assertions(
-            WriteReplyGrounder._remove_write_welcome_template(str(actual_model_reply).strip()),
+            cleaned_reply,
             visible, task_state or {},
         )
 

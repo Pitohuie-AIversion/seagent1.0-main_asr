@@ -411,6 +411,29 @@ def parse_time_range(
     start_dt = start.value
     end_dt = end.value
 
+    # 中文语境下，“上午X点到12点 / 上午12点”中的 12 点实际为正午 12:00（而非午夜 00:00 跨天）
+    if (
+        end.state == TimeFieldState.EXPLICIT
+        and end_dt is not None
+        and end_dt.hour == 0
+        and end_dt <= start_dt
+        and not end.has_explicit_date
+        and any(w in (end.raw_text or "") for w in ("12", "十二"))
+        and not any(w in (end.raw_text or "") for w in ("凌晨", "半夜", "夜里", "夜间", "午夜", "深夜", "晚上"))
+        and 6 <= start_dt.hour < 12
+    ):
+        end_dt = end_dt.replace(hour=12)
+        result.end_time = TimePointSpec(
+            state=TimeFieldState.EXPLICIT,
+            raw_text=end.raw_text,
+            value=end_dt,
+            iso_string=_isoformat_seconds(end_dt),
+            parse_method="noon_range_resolved",
+            ambiguities=end.ambiguities,
+            has_explicit_date=end.has_explicit_date,
+            has_explicit_time=end.has_explicit_time,
+        )
+
     if (
         end.state == TimeFieldState.EXPLICIT
         and end_dt is not None
