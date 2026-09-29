@@ -82,14 +82,20 @@ class TelemetryStatusHandler(BaseDialogueHandler):
 
     def is_environment_status_query(self, user_message: str, route: IntentRouteResult) -> bool:
         """判断是否为作业现场水文或环境遥测查询。"""
+        text = (user_message or "").strip()
+        if not text:
+            return False
+
+        # 油田/海域的静态地理属性（水深、深度、海床、底质、坐标等）归属于知识库实体检索，而非机器人现场实时遥测
+        if any(term in text for term in ("水深", "深度", "海床", "底质", "地质", "坐标", "位置", "经纬度")):
+            if any(term in text for term in ("油田", "油气田", "海区", "平台", "场址", "流花", "陆丰", "西江", "番禺", "惠州", "崖城", "东方", "陵水", "渤中", "锦州", "绥中")):
+                return False
+
         plan = route.interaction_plan
         if route.query_intent == "ENVIRONMENT_QUERY" and plan is not None:
             if plan.source_policy == "realtime_state" or plan.relation == "status":
                 return True
 
-        text = (user_message or "").strip()
-        if not text:
-            return False
         has_environment_subject = any(term in text for term in _ENVIRONMENT_STATUS_SUBJECT_TERMS)
         has_realtime_status_relation = any(term in text for term in _REALTIME_STATUS_TERMS)
         return has_environment_subject and has_realtime_status_relation

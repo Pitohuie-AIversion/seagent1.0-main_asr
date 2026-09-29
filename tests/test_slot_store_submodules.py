@@ -99,6 +99,50 @@ class TestSlotStoreSubmodules:
         assert res["success"] is False
         assert "不支持" in res["error"]
 
+    def test_list_mutation_engine_colloquial_prefix_stripping(self):
+        """测试口语化修饰前缀（如‘携带工具选配’、‘选配’）的智能剥离与规范名称对齐"""
+        class MockTreeKB:
+            assets = {
+                "payload_catalog": {
+                    "valve_torque_tool": {
+                        "name": "阀门扭矩工具",
+                        "aliases": ["扭矩工具", "扭矩扳手"],
+                    }
+                }
+            }
+            def get_rov(self, name):
+                return None
+
+        store = SlotStore(kb=MockTreeKB())
+        engine = SlotListMutationEngine(store)
+        schema = [{
+            "key": "payload",
+            "type": "list",
+            "allowed_values": ["阀门扭矩工具", "液压飞线插拔工具"]
+        }]
+
+        # 1. 验证“携带工具选配”前缀剥离
+        slots = {"payload": Slot("payload", value=[], value_type="list", status="valid")}
+        mutation1 = {
+            "field": "payload",
+            "operation": "add",
+            "items": ["携带工具选配阀门扭矩工具"],
+        }
+        res1 = engine.apply_list_mutation(slots, mutation1, required_schema=schema)
+        assert res1["success"] is True
+        assert res1["new_value"] == ["阀门扭矩工具"]
+
+        # 2. 验证“选配”前缀 + 别名“扭矩工具”
+        slots2 = {"payload": Slot("payload", value=[], value_type="list", status="valid")}
+        mutation2 = {
+            "field": "payload",
+            "operation": "add",
+            "items": ["选配扭矩工具"],
+        }
+        res2 = engine.apply_list_mutation(slots2, mutation2, required_schema=schema)
+        assert res2["success"] is True
+        assert res2["new_value"] == ["阀门扭矩工具"]
+
     def test_snapshot_codec_roundtrip(self):
         store = SlotStore()
         store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")

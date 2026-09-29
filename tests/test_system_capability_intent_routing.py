@@ -163,3 +163,35 @@ def test_referential_all_entities_carryover():
     assert dm_payload._pending_referential_candidates[0]["normalized_value"] == ["高清水下摄像机"]
     assert not dm_payload.slot_store.get_task_state()
 
+
+def test_concept_and_method_qa_not_intercepted_by_fleet_catalog(manager):
+    """测试询问水下机器人常用导航方式、作业风险等技术概念问题，绝不能被误拦截为机队列表。"""
+    queries = [
+        "水下机器人常用的导航方式有哪些？",
+        "ROV水下作业常见的风险有哪些？",
+    ]
+    for q in queries:
+        route = IntentRouteResult(
+            interaction_type="QUERY",
+            confidence=0.9,
+            reason="general_knowledge_query",
+            query_intent="KNOWLEDGE_QA",
+            interaction_plan=InteractionPlan(
+                schema_version=1,
+                operation="READ",
+                dialogue_mode="knowledge_qa",
+                query_intent="KNOWLEDGE_QA",
+                subject_type="general_concept",
+                subject_text="underwater navigation",
+                relation="list",
+                source_policy="project_kb",
+                needs_clarification=False,
+                clarification_reason=None,
+                emergency_action=None,
+                confidence=0.9,
+                reason_code="general_knowledge_query",
+            ),
+        )
+        reply = manager.router_handler._handle_non_task_route(q, route, request_id="test_qa_req")
+        assert "本系统当前支持以下水下机器人与作业装备阵列" not in reply, f"查询 '{q}' 被误拦截为机队列表！"
+

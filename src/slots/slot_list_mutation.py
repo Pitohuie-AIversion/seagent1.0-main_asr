@@ -22,7 +22,38 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("backend.slot_store")
 
-_OPTIONAL_SUFFIXES = ("（可选）", "(可选)")
+_OPTIONAL_SUFFIXES = ("（可选）", "(可选)", "（选配）", "(选配)", "（机载）", "(机载)")
+
+_COLLOQUIAL_PAYLOAD_PREFIXES = (
+    "携带工具选配",
+    "携带工具选用",
+    "携带工具配置",
+    "携带工具采用",
+    "携带工具使用",
+    "携带工具带上",
+    "携带工具加装",
+    "携带工具",
+    "工具选配",
+    "工具选用",
+    "工具配置",
+    "工具采用",
+    "工具使用",
+    "工具加装",
+    "选配",
+    "选用",
+    "加装",
+    "安装",
+    "搭载",
+    "配置",
+    "携带",
+    "带上",
+    "配备",
+    "装配",
+    "采用",
+    "使用",
+    "配",
+    "装",
+)
 
 DOMAIN_SYNONYMS = [
     (
@@ -40,8 +71,12 @@ DOMAIN_SYNONYMS = [
 
 
 def normalize_payload_match_key(value: str) -> str:
-    """消除首尾空格、小写化并去除“（可选）”等展示后缀，用于严格载荷等价判定。"""
+    """消除首尾空格、小写化并去除“（可选）”等展示后缀及口语修饰前缀，用于严格载荷等价判定。"""
     text = str(value or "").strip().lower().replace(" ", "")
+    for p in _COLLOQUIAL_PAYLOAD_PREFIXES:
+        if text.startswith(p) and len(text) > len(p):
+            text = text[len(p):].strip()
+            break
     for suffix in _OPTIONAL_SUFFIXES:
         if text.endswith(suffix):
             text = text[:-len(suffix)]

@@ -92,6 +92,23 @@ class TestExecutionControlHandler(unittest.TestCase):
         self.assertEqual(self.dm.control_state, "idle")
         self.assertIsNone(self.dm.last_control_request)
 
+    def test_handle_emergency_intervention_draft_cancel_with_abort_action(self):
+        """当模型识别的 action 为 abort 但用户意图为取消任务时，应正确取消任务草稿。"""
+        self.dm.phase = "collecting"
+        self.dm.task_state = {"task_type_key": "pipeline_inspection", "water_depth": 300.0}
+        route = IntentRouteResult(
+            interaction_type="QUERY",
+            confidence=0.95,
+            reason="[USER_CANCEL_TASK] 用户要求取消任务",
+            dialogue_mode="emergency_intervention",
+            emergency_action="abort",
+        )
+        reply = self.handler.handle_emergency_intervention("算了，取消这个任务吧", route)
+        self.assertIn("任务已取消", reply)
+        self.assertEqual(self.dm.phase, "rejected")
+        self.assertEqual(self.dm.control_state, "idle")
+        self.assertIsNone(self.dm.last_control_request)
+
     def test_handle_emergency_intervention_draft_stop_warns(self):
         """在草稿阶段接收 stop 指令，提示尚未发布并保留草稿。"""
         self.dm.phase = "collecting"

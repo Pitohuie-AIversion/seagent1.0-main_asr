@@ -155,7 +155,12 @@ class ExecutionControlHandler(BaseDialogueHandler):
         ) or bool(dm._last_built_json)
 
         if has_active_draft:
-            if action == "cancel":
+            is_cancel_intent = (
+                action == "cancel"
+                or any(k in user_message for k in ("取消", "放弃", "不要了", "算了", "重置"))
+                or "cancel" in str(route.reason).lower()
+            )
+            if is_cancel_intent:
                 self.clear_task_draft_preserving_dialogue_audit()
                 dm._transition_phase("rejected", reason="user_cancelled_draft")
                 dm.final_result = None

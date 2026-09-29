@@ -126,11 +126,10 @@ class ConversationRouterHandler(BaseDialogueHandler):
         if not user_message:
             return True
 
-        if hasattr(self.manager, "_check_off_topic_gate"):
-            off_topic_reply = self.manager._check_off_topic_gate(user_message)
-            if off_topic_reply is not None:
-                ctx.metadata["off_topic_reply"] = off_topic_reply
-                return True
+        off_topic_reply = check_off_topic_gate(user_message)
+        if off_topic_reply is not None:
+            ctx.metadata["off_topic_reply"] = off_topic_reply
+            return True
 
         if is_standalone_time_query(user_message):
             ctx.metadata["is_time_query"] = True
@@ -158,6 +157,12 @@ class ConversationRouterHandler(BaseDialogueHandler):
 
     # --- 完整的非任务处理集群（下沉实现） ---
     def _handle_non_task_route(self, user_message: str, route: IntentRouteResult, request_id: str) -> str:
+        off_topic_reply = check_off_topic_gate(user_message)
+        if off_topic_reply is not None:
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": off_topic_reply})
+            return off_topic_reply
+
         # 1. 记录前置快照镜像（用于严格的只读状态不变性断言）
         initial_version = self.slot_store.version
         initial_snapshot = copy.deepcopy(self.slot_store.export_snapshot())
@@ -239,16 +244,22 @@ class ConversationRouterHandler(BaseDialogueHandler):
             reply = self._handle_status_query(user_message, route)
         elif task_fit_answer is not None:
             reply = task_fit_answer
+        elif self._is_environment_status_query(user_message, route):
+            reply = self._handle_status_query(user_message, route, as_environment_status=True)
         elif (
             query_intent in ("KNOWLEDGE_QA", "TOOL_QUERY", "DEVICE_CAPABILITY")
-            and re.search(r"解释|为什么|为何|原因|关系|影响|如何|怎样|怎么", user_message)
+            and (
+                (plan and plan.subject_type == "general_concept")
+                or re.search(r"解释|为什么|为何|原因|关系|影响|如何|怎样|怎么|方式|方法|技术|算法|原理|区别|风险|步骤|流程|规范|标准|特点|优势|劣势|注意事项|导航|定位|通信|测速", user_message)
+            )
         ):
-            # Explanations need evidence and a synthesized answer. Words such
-            # as 支持船 and a negated 修改任务 are not catalog requests.
+            # Explanations, concepts and general technical queries need evidence and a synthesized answer.
             reply = self._handle_knowledge_query(user_message, route, request_id)
         elif (
             not is_targeted_device_query
             and not is_payload_query
+            and not (plan and plan.subject_type == "general_concept")
+            and not re.search(r"方式|方法|技术|算法|原理|区别|风险|步骤|流程|规范|标准|特点|优势|劣势|注意事项|导航|定位|通信|测速", user_message)
             and any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
             and any(q in user_message for q in ("介绍", "哪些", "支持", "包含", "列表", "清单", "所有", "有哪些", "有什么"))
             and not any(e in user_message for e in ("金牛座", "天鹰座", "凤凰座", "LROV", "WROV", "通用工作级", "轻型工作级", "特种工作级", "001", "002"))
@@ -284,8 +295,6 @@ class ConversationRouterHandler(BaseDialogueHandler):
             )
         ):
             reply = self._build_grounded_rule_catalog_introduction()
-        elif self._is_environment_status_query(user_message, route):
-            reply = self._handle_status_query(user_message, route, as_environment_status=True)
         elif query_intent in ("TOOL_QUERY", "DEVICE_CAPABILITY", "KNOWLEDGE_QA"):
             reply = self._handle_knowledge_query(user_message, route, request_id)
         elif query_intent == "ENVIRONMENT_QUERY":
@@ -463,10 +472,16 @@ class ConversationRouterHandler(BaseDialogueHandler):
 
         plan = route.interaction_plan
         is_payload_query = route.query_intent == "TOOL_QUERY" or bool(plan and plan.subject_type == "payload")
+        is_concept_query = bool(
+            (plan and plan.subject_type == "general_concept")
+            or re.search(r"解释|为什么|为何|原因|关系|影响|如何|怎样|怎么|方式|方法|技术|算法|原理|区别|风险|步骤|流程|规范|标准|特点|优势|劣势|注意事项|导航|定位|通信|测速", user_message)
+        )
         if (
             not is_payload_query
+            and not is_concept_query
             and any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
             and any(q in user_message for q in ("介绍", "哪些", "支持", "包含", "列表", "清单", "所有", "有哪些", "有什么"))
+            and not any(e in user_message for e in ("金牛座", "天鹰座", "凤凰座", "LROV", "WROV", "通用工作级", "轻型工作级", "特种工作级", "001", "002"))
         ):
             return self._build_grounded_fleet_introduction()
 
@@ -476,11 +491,19 @@ class ConversationRouterHandler(BaseDialogueHandler):
             user_message,
         ))
         if (
-            plan is not None
-            and plan.source_policy == "general_domain"
-            and plan.subject_type in {"general_concept", "unknown"}
-            and plan.relation != "status"
-            and not asks_project_rules
+            not asks_project_rules
+            and (
+                (
+                    plan is not None
+                    and plan.source_policy == "general_domain"
+                    and plan.subject_type in {"general_concept", "unknown"}
+                    and plan.relation != "status"
+                )
+                or (
+                    is_concept_query
+                    and not any(e in user_message for e in ("金牛座", "天鹰座", "凤凰座", "流花", "陆丰", "文昌", "陵水"))
+                )
+            )
         ):
             return self._handle_general_chat(user_message, route)
 
@@ -552,14 +575,19 @@ class ConversationRouterHandler(BaseDialogueHandler):
             )
             is_fleet_query = (
                 not is_payload_query
+                and not is_concept_query
                 and any(d in user_message for d in ("机器人", "设备", "装备", "ROV", "AUV"))
                 and any(q in user_message for q in ("介绍", "哪些", "什么", "支持", "包含", "列表", "清单", "所有", "推荐", "有哪些", "有什么"))
+                and not any(e in user_message for e in ("金牛座", "天鹰座", "凤凰座", "LROV", "WROV", "通用工作级", "轻型工作级", "特种工作级", "001", "002"))
             )
             if is_fleet_query:
                 return self._build_grounded_fleet_introduction()
 
             if is_system_query:
                 return PUBLIC_IDENTITY_REPLY
+
+            if is_concept_query and not asks_project_rules:
+                return self._handle_general_chat(user_message, route)
 
             if any(kw in user_message for kw in ("机器人", "所有", "支持", "哪些", "型号", "系列")):
                 class_ans = self._build_grounded_device_class_answer(user_message, route)
