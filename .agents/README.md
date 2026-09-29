@@ -391,8 +391,8 @@ python -c "import vllm; print('vllm ok')"
 
 | 输出 | 路径 | 脚本 |
 | --- | --- | --- |
-| TaskIntent JSON | `${SEAGENT_TASK_DIR}/task_intent_{intent_id}.json` | `src/dispatch/task_intent_builder.py` |
-| 对话历史快照 | `${SEAGENT_RESULT_DIR}/history/history_{intent_id}.json` | `src/session/history_manager.py` |
+| TaskIntent JSON | `get_task_dir()/task_intent_{intent_id}.json`；可用 `SEAGENT_TASK_DIR` 覆盖 | `src/dispatch/task_intent_builder.py` |
+| 对话历史快照 | `get_history_dir()/history_{intent_id}.json`；可用 `SEAGENT_HISTORY_DIR` 覆盖 | `src/session/history_manager.py` |
 
 ## 七、能力总结
 

@@ -38,31 +38,25 @@ _SYSTEM_OWNED_FIELDS = {
 
 logger = logging.getLogger(__name__)
 
-ROBOT_STATE_MAX_AGE_SECONDS = 30 * 60
-TELEMETRY_MAX_FUTURE_SKEW_SECONDS = 5 * 60
+from src.state import (
+    AVAILABLE_STATUSES,
+    BUSY_STATUSES,
+    OFFLINE_STATUSES,
+    ROBOT_STATE_MAX_AGE_SECONDS,
+    TELEMETRY_MAX_FUTURE_SKEW_SECONDS,
+    inspect_robot_availability,
+    load_fleet as _load_fleet_cfg,
+    matching_family_refs as _match_family_refs,
+    matching_unit_refs as _match_unit_refs,
+    matching_variant_refs as _match_variant_refs,
+    normalize_selector,
+    parse_bool,
+    resolve_status_ref_from_snapshot as _resolve_status_ref_impl,
+    unit_status_ref as _unit_status_ref_impl,
+)
 
-
-
-def _normalize_selector(value: object) -> str:
-    return str(value or "").strip().lower().replace(" ", "")
-
-
-def _parse_bool(val: Any) -> bool | None:
-    """严格解析布尔值或字符串形式的布尔标志 ("true"/"false"/"1"/"0" 等)，避免 Python 字符串 truthiness 错误。"""
-    if isinstance(val, bool):
-        return val
-    if isinstance(val, (int, float)):
-        if val in (1, 1.0):
-            return True
-        if val in (0, 0.0):
-            return False
-    if isinstance(val, str):
-        clean = val.strip().lower()
-        if clean in ("true", "1", "yes", "online"):
-            return True
-        if clean in ("false", "0", "no", "offline"):
-            return False
-    return None
+_normalize_selector = normalize_selector
+_parse_bool = parse_bool
 
 
 class RobotStateInfo:
@@ -310,17 +304,14 @@ class RobotStateInfo:
     ) -> Dict[str, Any]:
         """检查机器人的实时可用性 (设备精确存在、在线、空闲且状态快照未过期)。"""
         now_dt = get_current_datetime()
-        checked_at_str = now_dt.isoformat(timespec="seconds")
-
         if not isinstance(unit_id, str) or not unit_id.strip():
-            return {
-                "available": False,
-                "reason_code": "UNIT_NOT_FOUND",
-                "message": "无法发布任务：未指定有效的机器人编号。",
-                "unit_id": str(unit_id or ""),
-                "checked_at": checked_at_str,
-                "state_updated_at": None,
-            }
+            return inspect_robot_availability(
+                unit_id,
+                matched_unit=None,
+                state=None,
+                max_age_seconds=max_age_seconds,
+                now_dt=now_dt,
+            )
 
         clean_unit_id = unit_id.strip()
 
@@ -338,14 +329,13 @@ class RobotStateInfo:
             matched_unit = None
 
         if matched_unit is None:
-            return {
-                "available": False,
-                "reason_code": "UNIT_NOT_FOUND",
-                "message": f"无法发布任务：机器人 {clean_unit_id} 未在系统中注册。",
-                "unit_id": clean_unit_id,
-                "checked_at": checked_at_str,
-                "state_updated_at": None,
-            }
+            return inspect_robot_availability(
+                clean_unit_id,
+                matched_unit=None,
+                state=None,
+                max_age_seconds=max_age_seconds,
+                now_dt=now_dt,
+            )
 
         status_ref = str(matched_unit.get("status_ref") or matched_unit.get("unit_id") or clean_unit_id)
 
@@ -355,216 +345,13 @@ class RobotStateInfo:
             robots_map = snapshot.get("robots", {})
             state = robots_map.get(status_ref)
 
-        if not isinstance(state, dict):
-            return {
-                "available": False,
-                "reason_code": "STATE_NOT_FOUND",
-                "message": f"无法发布任务：机器人 {clean_unit_id} 状态记录不存在，无法确认当前可用性。\n请检查设备配置或刷新设备状态后重新确认发布。",
-                "unit_id": clean_unit_id,
-                "checked_at": checked_at_str,
-                "state_updated_at": None,
-            }
-
-        state_updated_at_str = state.get("updated_at") or state.get("update_timestamp")
-
-        # 3 & 4. 严格检查所有存在的状态指标 (Fail Closed: 任何负面/矛盾信号均阻断)
-        OFFLINE_STATUSES = {"offline", "disconnected"}
-        BUSY_STATUSES = {"busy", "working", "operating", "executing", "unavailable", "maintenance", "fault"}
-        AVAILABLE_STATUSES = {"available", "idle", "ready"}
-
-        # 校验 is_online 显式布尔字段
-        if "is_online" in state:
-            online_bool = _parse_bool(state["is_online"])
-            if online_bool is False:
-                return {
-                    "available": False,
-                    "reason_code": "OFFLINE",
-                    "message": f"无法发布任务：机器人 {clean_unit_id} 当前离线。\n请更换机器人，或在设备恢复在线后重新确认发布。",
-                    "unit_id": clean_unit_id,
-                    "checked_at": checked_at_str,
-                    "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-                }
-            elif online_bool is None:
-                return {
-                    "available": False,
-                    "reason_code": "INVALID_STATE_DATA",
-                    "message": f"无法发布任务：机器人 {clean_unit_id} is_online 指标无法解析为有效布尔值。\n请刷新设备状态后重新确认发布。",
-                    "unit_id": clean_unit_id,
-                    "checked_at": checked_at_str,
-                    "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-                }
-
-        # 校验 is_busy 显式布尔字段
-        if "is_busy" in state:
-            busy_bool = _parse_bool(state["is_busy"])
-            if busy_bool is True:
-                return {
-                    "available": False,
-                    "reason_code": "BUSY",
-                    "message": f"无法发布任务：机器人 {clean_unit_id} 当前正在执行其他任务（处于忙碌状态）。\n请更换机器人，或在设备空闲后重新确认发布。",
-                    "unit_id": clean_unit_id,
-                    "checked_at": checked_at_str,
-                    "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-                }
-            elif busy_bool is None:
-                return {
-                    "available": False,
-                    "reason_code": "INVALID_STATE_DATA",
-                    "message": f"无法发布任务：机器人 {clean_unit_id} is_busy 指标无法解析为有效布尔值。\n请刷新设备状态后重新确认发布。",
-                    "unit_id": clean_unit_id,
-                    "checked_at": checked_at_str,
-                    "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-                }
-
-        # 收集所有存在的状态指标字段 (包含 overall_status, status, work_status, task_status, connection_status, online_status, busy)
-        status_entries = []
-        for key in ("overall_status", "status", "work_status", "task_status", "connection_status", "online_status", "busy"):
-            if key in state and state[key] is not None:
-                status_entries.append((key, state[key]))
-
-        if not status_entries and "is_online" not in state and "is_busy" not in state:
-            return {
-                "available": False,
-                "reason_code": "INVALID_STATE_DATA",
-                "message": f"无法发布任务：机器人 {clean_unit_id} 缺少状态指标 (overall_status)。\n请刷新设备状态后重新确认发布。",
-                "unit_id": clean_unit_id,
-                "checked_at": checked_at_str,
-                "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-            }
-
-        # 遍历所有状态字段，任何一个负面/矛盾信号即阻断
-        has_positive_available = False
-        for key, raw_val in status_entries:
-            parsed_bool = _parse_bool(raw_val)
-            if key in ("connection_status", "online_status"):
-                if parsed_bool is False:
-                    return {
-                        "available": False,
-                        "reason_code": "OFFLINE",
-                        "message": f"无法发布任务：机器人 {clean_unit_id} 当前离线。\n请更换机器人，或在设备恢复在线后重新确认发布。",
-                        "unit_id": clean_unit_id,
-                        "checked_at": checked_at_str,
-                        "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-                    }
-                elif parsed_bool is True:
-                    has_positive_available = True
-                    continue
-
-            if key == "busy":
-                if parsed_bool is True:
-                    return {
-                        "available": False,
-                        "reason_code": "BUSY",
-                        "message": f"无法发布任务：机器人 {clean_unit_id} 当前正在执行其他任务（处于忙碌状态）。\n请更换机器人，或在设备空闲后重新确认发布。",
-                        "unit_id": clean_unit_id,
-                        "checked_at": checked_at_str,
-                        "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-                    }
-                elif parsed_bool is False:
-                    has_positive_available = True
-                    continue
-
-            val_str = str(raw_val).strip().lower()
-            if val_str in OFFLINE_STATUSES:
-                return {
-                    "available": False,
-                    "reason_code": "OFFLINE",
-                    "message": f"无法发布任务：机器人 {clean_unit_id} 当前离线。\n请更换机器人，或在设备恢复在线后重新确认发布。",
-                    "unit_id": clean_unit_id,
-                    "checked_at": checked_at_str,
-                    "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-                }
-
-            if val_str in BUSY_STATUSES:
-                return {
-                    "available": False,
-                    "reason_code": "BUSY",
-                    "message": f"无法发布任务：机器人 {clean_unit_id} 当前正在执行其他任务（处于忙碌状态）。\n请更换机器人，或在设备空闲后重新确认发布。",
-                    "unit_id": clean_unit_id,
-                    "checked_at": checked_at_str,
-                    "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-                }
-
-            if val_str in AVAILABLE_STATUSES:
-                has_positive_available = True
-            else:
-                return {
-                    "available": False,
-                    "reason_code": "INVALID_STATE_DATA",
-                    "message": f"无法发布任务：机器人 {clean_unit_id} 状态字段 {key} 的值 '{raw_val}' 无法识别。\n请刷新设备状态后重新确认发布。",
-                    "unit_id": clean_unit_id,
-                    "checked_at": checked_at_str,
-                    "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-                }
-
-        if not has_positive_available and ("is_online" not in state or _parse_bool(state["is_online"]) is not True):
-            return {
-                "available": False,
-                "reason_code": "INVALID_STATE_DATA",
-                "message": f"无法发布任务：机器人 {clean_unit_id} 缺少明确可用的状态指标。\n请刷新设备状态后重新确认发布。",
-                "unit_id": clean_unit_id,
-                "checked_at": checked_at_str,
-                "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
-            }
-
-        # 5. 所有状态记录均强制校验配置的 TTL（默认 10 分钟）
-        if not state_updated_at_str:
-            return {
-                "available": False,
-                "reason_code": "STATE_EXPIRED",
-                "message": f"无法发布任务：机器人 {clean_unit_id} 状态信息已过期，无法确认当前可用性。\n请刷新设备状态后重新确认发布。",
-                "unit_id": clean_unit_id,
-                "checked_at": checked_at_str,
-                "state_updated_at": None,
-            }
-
-        try:
-            updated_dt = datetime.fromisoformat(str(state_updated_at_str))
-            if updated_dt.tzinfo is None:
-                updated_dt = updated_dt.replace(tzinfo=now_dt.tzinfo)
-            else:
-                updated_dt = updated_dt.astimezone(now_dt.tzinfo)
-
-            age_seconds = (now_dt - updated_dt).total_seconds()
-            if age_seconds < -TELEMETRY_MAX_FUTURE_SKEW_SECONDS:
-                return {
-                    "available": False,
-                    "reason_code": "INVALID_STATE_DATA",
-                    "message": (
-                        f"无法发布任务：机器人 {clean_unit_id} 状态时间戳明显晚于系统时间，"
-                        "无法确认当前可用性。\n请校准设备时钟并刷新状态后重新确认发布。"
-                    ),
-                    "unit_id": clean_unit_id,
-                    "checked_at": checked_at_str,
-                    "state_updated_at": str(state_updated_at_str),
-                }
-            if age_seconds > max_age_seconds:
-                return {
-                    "available": False,
-                    "reason_code": "STATE_EXPIRED",
-                    "message": f"无法发布任务：机器人 {clean_unit_id} 状态信息已过期，无法确认当前可用性。\n请刷新设备状态后重新确认发布。",
-                    "unit_id": clean_unit_id,
-                    "checked_at": checked_at_str,
-                    "state_updated_at": str(state_updated_at_str),
-                }
-        except Exception:
-            return {
-                "available": False,
-                "reason_code": "INVALID_STATE_DATA",
-                "message": f"无法发布任务：机器人 {clean_unit_id} 状态格式无法解析。\n请刷新设备状态后重新确认发布。",
-                "unit_id": clean_unit_id,
-                "checked_at": checked_at_str,
-                "state_updated_at": str(state_updated_at_str),
-            }
-
-        return {
-            "available": True,
-            "reason_code": "AVAILABLE",
-            "message": f"机器人 {clean_unit_id} 当前在线且空闲可用。",
-            "unit_id": clean_unit_id,
-            "checked_at": checked_at_str,
-            "state_updated_at": str(state_updated_at_str),
-        }
+        return inspect_robot_availability(
+            clean_unit_id,
+            matched_unit=matched_unit,
+            state=state,
+            max_age_seconds=max_age_seconds,
+            now_dt=now_dt,
+        )
 
 
     def _validate_update_request(
@@ -894,81 +681,25 @@ class RobotStateInfo:
             ) from exc
 
     def _load_fleet(self) -> Dict[str, Any]:
-        try:
-            fleet = yaml.safe_load(self.fleet_file.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError) as exc:
-            raise StateSnapshotValidationError(
-                "Robot fleet selector configuration is unavailable"
-            ) from exc
-        if not isinstance(fleet, dict):
-            raise StateSnapshotValidationError(
-                "Robot fleet selector configuration must be a mapping"
-            )
-        return fleet
+        return _load_fleet_cfg(self.fleet_file)
 
     def _resolve_status_ref_from_snapshot(
         self,
         equipment_selector: str,
         snapshot: Dict[str, Any],
     ) -> Optional[str]:
-        needle = _normalize_selector(equipment_selector)
-        if not needle:
-            return None
-        fleet = self._load_fleet()
-        units = fleet.get("fleet_units", [])
-        if not isinstance(units, list):
-            raise StateSnapshotValidationError("Robot fleet_units must be a list")
-
-        for matches in (
-            self._matching_unit_refs(units, needle),
-            self._matching_variant_refs(fleet, units, needle),
-            self._matching_family_refs(fleet, units, needle),
-        ):
-            if len(matches) == 1:
-                return next(iter(matches))
-            if len(matches) > 1:
-                return None
-
-        existing_refs = {
-            status_ref
-            for status_ref in snapshot["robots"]
-            if _normalize_selector(status_ref) == needle
-        }
-        return next(iter(existing_refs)) if len(existing_refs) == 1 else None
+        return _resolve_status_ref_impl(
+            equipment_selector,
+            snapshot,
+            self.fleet_file,
+        )
 
     @staticmethod
     def _unit_status_ref(unit: Dict[str, Any]) -> Optional[str]:
-        status_ref = unit.get("status_ref") or unit.get("unit_id")
-        return str(status_ref) if status_ref else None
+        return _unit_status_ref_impl(unit)
 
     def _matching_unit_refs(self, units: list, needle: str) -> set[str]:
-        matches: set[str] = set()
-        for unit in units:
-            if not isinstance(unit, dict):
-                raise StateSnapshotValidationError(
-                    "Each fleet unit must be a mapping"
-                )
-            aliases = unit.get("aliases", [])
-            if not isinstance(aliases, list):
-                raise StateSnapshotValidationError(
-                    "Fleet unit aliases must be a list"
-                )
-            targets = [
-                unit.get("unit_id"),
-                unit.get("display_name"),
-                unit.get("serial_no"),
-                unit.get("status_ref"),
-                *aliases,
-            ]
-            if any(
-                _normalize_selector(target) == needle
-                for target in targets
-                if target
-            ):
-                status_ref = self._unit_status_ref(unit)
-                if status_ref:
-                    matches.add(status_ref)
-        return matches
+        return _match_unit_refs(units, needle)
 
     def _matching_variant_refs(
         self,
@@ -976,36 +707,7 @@ class RobotStateInfo:
         units: list,
         needle: str,
     ) -> set[str]:
-        variants = fleet.get("model_variants", {})
-        if not isinstance(variants, dict):
-            raise StateSnapshotValidationError(
-                "Robot model_variants must be a mapping"
-            )
-        matched_variant_ids: set[str] = set()
-        for variant_id, variant in variants.items():
-            if not isinstance(variant, dict):
-                raise StateSnapshotValidationError(
-                    "Each robot model variant must be a mapping"
-                )
-            aliases = variant.get("aliases", [])
-            if not isinstance(aliases, list):
-                raise StateSnapshotValidationError(
-                    "Robot model variant aliases must be a list"
-                )
-            targets = [variant_id, variant.get("full_name"), *aliases]
-            if any(
-                _normalize_selector(target) == needle
-                for target in targets
-                if target
-            ):
-                matched_variant_ids.add(variant_id)
-        return {
-            status_ref
-            for unit in units
-            if unit.get("variant_id") in matched_variant_ids
-            for status_ref in [self._unit_status_ref(unit)]
-            if status_ref
-        }
+        return _match_variant_refs(fleet, units, needle)
 
     def _matching_family_refs(
         self,
@@ -1013,42 +715,4 @@ class RobotStateInfo:
         units: list,
         needle: str,
     ) -> set[str]:
-        families = fleet.get("robot_families", {})
-        variants = fleet.get("model_variants", {})
-        if not isinstance(families, dict) or not isinstance(variants, dict):
-            raise StateSnapshotValidationError(
-                "Robot family selector configuration must be a mapping"
-            )
-
-        matched_family_ids: set[str] = set()
-        for family_id, family in families.items():
-            if not isinstance(family, dict):
-                raise StateSnapshotValidationError(
-                    "Each robot family must be a mapping"
-                )
-            aliases = family.get("aliases", [])
-            if not isinstance(aliases, list):
-                raise StateSnapshotValidationError(
-                    "Robot family aliases must be a list"
-                )
-            targets = [family_id, family.get("full_name"), *aliases]
-            if any(
-                _normalize_selector(target) == needle
-                for target in targets
-                if target
-            ):
-                matched_family_ids.add(family_id)
-
-        matched_variant_ids = {
-            variant_id
-            for variant_id, variant in variants.items()
-            if isinstance(variant, dict)
-            and variant.get("family_id") in matched_family_ids
-        }
-        return {
-            status_ref
-            for unit in units
-            if unit.get("variant_id") in matched_variant_ids
-            for status_ref in [self._unit_status_ref(unit)]
-            if status_ref
-        }
+        return _match_family_refs(fleet, units, needle)
