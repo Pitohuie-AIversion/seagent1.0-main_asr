@@ -26,8 +26,8 @@
 | **AM-15** | `traceability` | /api/chat 透传显式 request_id | 客户端传入的 request_id 全链路透传至 DialogueManager.process (INV-11 Path A) | 无 | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv11_request_traceability_explicit` |
 | **AM-16** | `traceability` | /api/chat 自动生成 request_id | 客户端未传 request_id 时自动生成非空 req_xxx 并透传 (INV-11 Path B) | 无 | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv11_request_traceability_auto_generated` |
 | **AM-17** | `emergency_control` | 紧急停止指令 ("立即停止当前任务") | 正向识别控制指令为 stop (INV-01/02) | `control_state=stop_requested` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_emergency_control_routing` |
-| **AM-18** | `emergency_control` | 否定式控制指令 ("不要停止当前任务") | 绝对不触发 stop 控制动作 (INV-01/02) | `control_state=idle` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_negative_control_request` |
-| **AM-19** | `emergency_control` | 询问式控制 ("如果停止当前任务会怎样？") | 只读咨询，不触发控制动作 (INV-01/02) | `control_state=idle` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_query_control_distinction` |
+| **AM-18** | `emergency_control` | 否定式控制指令 ("不要停止当前任务") | 绝对不触发 stop 控制动作 (INV-01/02) | `control_state=idle` | False | INVARIANT | NOT_YET_VERIFIED | 待补充直接回归测试 |
+| **AM-19** | `emergency_control` | 询问式控制 ("如果停止当前任务会怎样？") | 只读咨询，不触发控制动作 (INV-01/02) | `control_state=idle` | False | INVARIANT | NOT_YET_VERIFIED | 待补充直接回归测试 |
 | **AM-20** | `terminal_ui` | 终态任务继续只读对话 | `done` / `rejected` 保持任务只读，同时允许继续发送只读查询 | 无 | False | INVARIANT | VERIFIED | `tests/test_issue_31_ui_state_contract.py::TestUIStateContract::test_actions_done_phase` |
 | **AM-21** | `known_defect` | 知识库未命中缺少 LLM 兜底 (KD-02) | found=false 时直接预设拒绝，未调用 Reasoning 兜底 | 无 | False | KNOWN_DEFECT | NOT_YET_VERIFIED | 待补充直接回归测试 |
 | **AM-22** | `known_defect` | LLM 模板硬编码 enable_thinking=False (KD-03) | 旧模型配置路径固定关闭 thinking；v2 profile 路径受功能开关控制 | 无 | False | KNOWN_DEFECT | NOT_YET_VERIFIED | 待补充直接回归测试 |
@@ -39,4 +39,4 @@
 
 1. **Classification 字段限定**：只能使用 `INVARIANT`、`EXPECTED_BEHAVIOR` 或 `KNOWN_DEFECT`。
 2. **Current Status 字段限定**：只能使用 `VERIFIED`、`KNOWN_DEFECT` 或 `NOT_YET_VERIFIED`。
-3. **VERIFIED 的判定规则**：必须存在直接测试该场景的自动化测试用例，并且测试用例绝对存在于代码库中。测试用例名称格式必须为 `tests/test_file.py::TestClass::test_method`。
+3. **VERIFIED 的判定规则**：必须存在直接测试该场景的自动化测试用例，并且测试用例绝对存在于代码库中。测试用例名称格式为 `<test_file>.py::TestClass::test_method`。

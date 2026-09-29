@@ -18,7 +18,7 @@ This skill explains how to build, test, run, and update the subsea dialog applic
   pytest path/to/test_file.py::test_specific_case -q
   ```
   > [!NOTE]
-  > The legacy `python -m unittest discover tests` invocation is no longer the canonical entry point. Use `pytest -q` instead. A full suite run produces ~1352 tests including subtests.
+  > The legacy `python -m unittest discover tests` invocation is no longer the canonical entry point. Use `pytest -q` instead. The collected test count changes as suites grow; verify the actual count in the run output.
 * **Offline Execution**: Ensure the model loading remains offline. Keep the environment variables `TRANSFORMERS_OFFLINE=1` and `HF_HUB_OFFLINE=1` active.
 
 ## 2. Running the Server & Port Forwarding

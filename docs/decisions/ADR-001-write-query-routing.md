@@ -48,4 +48,4 @@ else:
 
 ## 验证
 - 单元测试：[tests/test_intent_routing_matrix.py](../../tests/test_intent_routing_matrix.py), [tests/test_system_capability_intent_routing.py](../../tests/test_system_capability_intent_routing.py), [tests/test_query_write_mixed_benchmark.py](../../tests/test_query_write_mixed_benchmark.py)
-- CI 门控：在 mandatory unittest 自动化流水线中覆盖。
+- CI 门控：在全量 pytest 自动化流水线中覆盖；个别兼容测试仍可由 unittest 直接调用。

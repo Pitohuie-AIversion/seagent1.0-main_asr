@@ -20,6 +20,16 @@ from .grounded_catalog import GroundedCatalogHandler
 from .telemetry_status import TelemetryStatusHandler
 from .execution_control import ExecutionControlHandler
 from .slot_extraction_pipeline import SlotExtractionPipeline, ExtractionPipelineResult
+from .command_predicates import (
+    is_business_identity_query,
+    is_confirmation_only,
+    is_final_publish_confirmation,
+    is_ignore_warning,
+    is_payload_modification_request,
+    is_user_cancelled,
+    is_user_confirmed,
+    is_user_requested_modification,
+)
 
 __all__ = [
     "BaseDialogueHandler",
@@ -44,4 +54,12 @@ __all__ = [
     "ExecutionControlHandler",
     "SlotExtractionPipeline",
     "ExtractionPipelineResult",
+    "is_business_identity_query",
+    "is_confirmation_only",
+    "is_final_publish_confirmation",
+    "is_ignore_warning",
+    "is_payload_modification_request",
+    "is_user_cancelled",
+    "is_user_confirmed",
+    "is_user_requested_modification",
 ]

@@ -385,14 +385,14 @@ python -c "import vllm; print('vllm ok')"
 - `run.py` 中 `LOCAL_MODEL_PATH` 是否指向真实大模型路径。
 - CUDA 驱动版本是否满足当前 PyTorch/vLLM。
 - `8890` 端口是否开放或已做 SSH 转发。
-- `.../result/task` 和 `.../result/history` 是否可写。
+- `SEAGENT_TASK_DIR`（默认位于结果目录下的 `task`）和 `SEAGENT_RESULT_DIR` 是否可写。
 
 ## 六、结果输出位置
 
 | 输出 | 路径 | 脚本 |
 | --- | --- | --- |
-| TaskIntent JSON | `.../result/task/task_intent_{intent_id}.json` | `src/dispatch/task_intent_builder.py` |
-| 对话历史快照 | `.../result/history/history_{intent_id}.json` | `src/session/history_manager.py` |
+| TaskIntent JSON | `${SEAGENT_TASK_DIR}/task_intent_{intent_id}.json` | `src/dispatch/task_intent_builder.py` |
+| 对话历史快照 | `${SEAGENT_RESULT_DIR}/history/history_{intent_id}.json` | `src/session/history_manager.py` |
 
 ## 七、能力总结
 
