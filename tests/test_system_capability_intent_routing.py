@@ -113,7 +113,6 @@ def test_broad_device_list_query(manager):
             ),
         )
         reply = manager._handle_knowledge_query(q, route, request_id="test_req")
-        print(f"\n[DEBUG_TEST] query={q!r} -> reply={reply!r}")
         assert "项目知识库中未找到该设备信息" not in reply
         assert ("观察级" in reply or "工作级" in reply or "机器人" in reply)
 

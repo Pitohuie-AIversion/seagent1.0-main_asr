@@ -11,7 +11,7 @@ from ..knowledge_retriever import RobotSelectionDataError
 
 EQUIPMENT_KEYS = frozenset({'equipment_class', 'equipment_family', 'equipment_type',
                             'equipment_unit_id', 'equipment_name', 'equipment_model', 'rov_description'})
-_SELECT = re.compile(r'改为|改成|改用|换成|换为|选用|选择|使用|采用|配备|安排|派遣|派出|指派')
+_SELECT = re.compile(r'改为|改成|改用|换成|换为|选用|选择|使用|采用|配备|安排|派遣|派出|指派|就用|要用|选|用')
 _NON_ASSERTION = re.compile(r'不要|不想|不改|不换|不使用|不用|别|如果|假如|是否|能否|可以吗|怎么样|不变|保持|保留')
 
 
@@ -30,6 +30,42 @@ def ground_explicit_values(extraction, message, *, kb, fields, current_state, ta
     if coords:
         candidates = [c for c in candidates if c.get('canonical_key') not in coords]
         candidates.extend(_candidate(k, v, message) for k, v in coords.items())
+
+    # Ground explicit cable_type when stated plainly in task context.
+    cable_field = next((field for field in fields if field.get('key') == 'cable_type'), None)
+    if cable_field:
+        allowed = cable_field.get('allowed_values') or []
+        cable_alias_map = {
+            '海底油气管道': ['海底油气管道', '油气管道', '油气管线', '输油管道', '输气管道', '海底管道'],
+            '电力电缆': ['电力电缆', '海底电力电缆', '海底电缆', '海缆', '电力缆'],
+            '光纤通信缆': ['光纤通信缆', '海底光纤通信缆', '通信光缆', '海底光缆', '光纤电缆', '通信电缆', '光纤缆', '通信缆', '光缆'],
+        }
+        selections = []
+        for sentence in re.split(r'[。；;！!\n]', message):
+            if re.search(r'如果|假如|假设|倘若|要是|除非|若是', sentence):
+                continue
+            clauses = re.split(r'[，,]', sentence)
+            cancelled = any(
+                re.search(r'不要|别|取消|撤销|暂不|先不|不想', clause)
+                and re.search(r'管道|电缆|通信缆|光缆|海缆|管缆', clause)
+                for clause in clauses
+            )
+            if cancelled:
+                continue
+            for clause in clauses:
+                if _NON_ASSERTION.search(clause):
+                    continue
+                for canonical_val in allowed:
+                    aliases = cable_alias_map.get(canonical_val, [canonical_val])
+                    for alias in aliases:
+                        if alias in clause:
+                            selections.append((canonical_val, clause.strip()))
+                            break
+        distinct_selected = {val for val, _ in selections}
+        if len(distinct_selected) == 1:
+            value, raw = selections[-1]
+            candidates = [candidate for candidate in candidates if candidate.get('canonical_key') != 'cable_type']
+            candidates.append(_candidate('cable_type', value, raw))
 
     # A simultaneous list mutation must not erase a plainly stated support ship.
     # Accept only a complete affirmative value from this task's configured domain;
@@ -61,7 +97,7 @@ def ground_explicit_values(extraction, message, *, kb, fields, current_state, ta
                 if _NON_ASSERTION.search(clause):
                     continue
                 match = re.fullmatch(
-                    r'\s*(?:支持船(?:编号)?|船只)\s*(?:改成|改为|改用|换成|使用|选择|选用|用|为|是|[：:])?\s*(.+?)\s*',
+                    r'\s*(?:支持船(?:编号)?|船只|母船|作业船|船)\s*(?:改成|改为|改用|换成|使用|选择|选用|就用|要用|配|用|为|是|[：:])?\s*(.+?)\s*',
                     clause,
                 )
                 if match:
@@ -107,4 +143,27 @@ def ground_explicit_values(extraction, message, *, kb, fields, current_state, ta
             # family and variant in the post-update evaluation context.
             candidates.append(_candidate('equipment_unit_id', unit['unit_id'], selector_text))
     extraction['slot_candidates'] = candidates
+
+    # Fallback grounding for plain explicit payload items when model produced no mutations
+    list_mutations = extraction.get('list_mutations', [])
+    if not list_mutations and not any(c.get('canonical_key') == 'payload' for c in candidates):
+        payload_field = next((field for field in fields if field.get('key') == 'payload'), None)
+        if payload_field and hasattr(kb, 'assets'):
+            task_commons = kb.assets.get('payload_options', {}).get(task_type, {}).get('common', [])
+            if task_commons:
+                matched_items = []
+                for tool in task_commons:
+                    if tool in message and not re.search(rf'(?:不要|别带|不用|取消|去掉|删除).*{re.escape(tool)}', message):
+                        matched_items.append(tool)
+                if matched_items and re.search(r'工具|载荷|带上|配备|加装|携带|配置|配|带', message):
+                    extraction['list_mutations'] = [{
+                        'field': 'payload',
+                        'operation': 'set',
+                        'items': matched_items,
+                        'target_items': [],
+                        'raw_text': message.strip(),
+                        'confidence': 1.0,
+                        'source': 'user_input',
+                    }]
+
     return extraction
