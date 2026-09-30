@@ -1,6 +1,6 @@
 # 文档索引
 
-整理日期：2026-09-29。当前实现以代码、配置和实际测试结果为依据；历史报告中的用例数量、阈值和缺陷状态只对应记录时的版本。
+整理日期：2026-09-30。当前实现以代码、配置和实际测试结果为依据；历史报告中的用例数量、阈值和缺陷状态只对应记录时的版本。逐文件范围、修订状态和剩余证据缺口见[文档审查清单](documentation-audit.md)。
 
 ## 当前使用与维护
 
@@ -15,6 +15,7 @@
 | ROS 2 配置与集成 | [运行配置设计](architecture/ros2_runtime_configuration.md)、[ROS MCP 说明](../mcp/ros-mcp/README.md) |
 | 海流查询与作业窗口 | [海流 MCP 说明](../mcp/operation-time-window/README.md) |
 | 贡献流程 | [CONTRIBUTING](../CONTRIBUTING.md) |
+| 文档覆盖与本轮验证 | [逐文件审查清单](documentation-audit.md)、[测试运行记录](../test_logs/documentation-review-2026-09-30.md) |
 
 ## 决策与历史证据
 
@@ -22,6 +23,8 @@
 - [治理基线](architecture/governance-baseline.md) 保留 G0.1 的背景与保护边界，并标注后续变化。
 - [Phase 1.5 验证记录](progress/phase-1-5-validation.md) 是历史阶段记录。
 - [2026-09-26 用户流程验收](progress/2026-09-26-user-journey-audit.md) 和 [2026-09-26 至 27 日真实模型验收](progress/2026-09-26-real-model-dialogue-audit.md) 包含当时的环境、结果与验证限制。
+- [海流 MCP 设计与实现状态](../mcp/operation-time-window/DESIGN_SPEC.md) 描述独立模块的现状；[历史海流测试记录](../mcp/operation-time-window/evidence/current_status.json) 文件名中的 `current` 不代表实时结果。该模块尚未成为主 DialogueManager 的默认运行链路。
+- ROS MCP 的[当前协议报告](../mcp/ros-mcp/docs/adapter_specification_report.md)及[2026-09-30 协议核对 PDF](../mcp/ros-mcp/docs/SEAgent_ROS2_MCP_Protocol_Review_20260930.pdf)区分生产适配器和 stdio Mock；[原集成 PDF](../mcp/ros-mcp/docs/SEAgent_ROS2_MCP_Integration_Report.pdf)保留为历史材料，不能独立作为现行接口说明。
 - [CHANGELOG](../CHANGELOG.md)、[历史产物报告](../artifacts/) 和 [测试报告](../test_logs/) 保留演进证据。机器临时目录中的原始日志可能不随仓库克隆提供。
 
 ## 文档维护约定
