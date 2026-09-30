@@ -1,14 +1,14 @@
 # SEAgent Current Design Contract & Architecture Specification
 
-This document defines the current design contract for SEAgent as of 2026-09-29. Code and tests are the final authority when this document conflicts with an implementation detail; update this contract when a public behavior changes.
+This document describes the design contract and implementation boundaries checked on 2026-09-30. Requirements marked MUST describe intended invariants; the explicit implementation notes below identify known gaps rather than claiming every requirement is implemented or newly verified.
 
 ---
 
 ## 1. Routing & Interaction Types
 
 ### 1.1 InteractionPlan Semantic Authority (ADR-005)
-- Every turn, the LLM produces a structured `InteractionPlan` with an `operation` field: `READ`, `WRITE`, `CONTROL`, or `CLARIFY`.
-- `operation` is the **sole routing authority**. Backend deterministic code MUST NOT override the operation type based on keyword heuristics.
+- The semantic router requests a structured `InteractionPlan` with `operation`: `READ`, `WRITE`, `CONTROL`, or `CLARIFY`. Deterministic control paths may be handled before a model call.
+- ADR-005 intends `operation` to be the semantic routing authority. **Current exception:** `_call_llm_router()` still promotes some `READ` / `CLARIFY` results to `WRITE` for grounded candidate/alias selections, list selections and fixed task-start expressions, then revalidates the plan. See [ADR-005's implementation note](decisions/ADR-005-llm-semantic-authority.md); the target of no heuristic operation changes is not fully implemented.
 - If the LLM returns an invalid protocol or is unavailable, the system MUST fall back to `CLARIFY` — it MUST NOT guess a write operation.
 - Low-confidence `WRITE` or `CONTROL` operations MUST be demoted to `CLARIFY` to prevent uncertain semantics from producing state side effects.
 
@@ -32,9 +32,9 @@ The system classifies all natural language user inputs into two primary interact
 ## 2. Control Commands & Negation Syntax
 
 ### 2.1 Control Intent Definitions
-- **Confirm (`TASK_CONFIRM` / `"确认发布"`, `"确认"`):** When phase is `confirming`, triggers atomic persistence of finalized `TaskIntent_TI*.json` and history snapshot.
+- **Publish (`TASK_CONFIRM` / `"确认发布"`):** In `confirming`, explicit publication intent triggers TaskIntent persistence and history snapshot handling. A generic `"确认"` alone requests final publication confirmation; it does not itself publish.
 - **Cancel (`TASK_CANCEL` / `"取消任务"`, `"放弃"`):** Resets current task state and sets phase to `rejected`.
-- **Continue / Ignore Warning (`"继续"`, `"忽略预警"`):** Overrides `blocked_soft` warnings and proceeds to next state.
+- **Accept warning (`"忽略警告"`, `"接受风险"`):** Explicit acceptance in `blocked_soft` records acknowledgement against the current validation context and proceeds after revalidation. `"继续"` alone is not explicit risk acceptance, and acceptance is separate from publication.
 
 ### 2.2 Negation Handling Rules
 - **Cancel Negation (`"不要取消"`, `"别取消"`, `"不取消"`):** MUST NOT trigger task cancellation or phase transition to `rejected`.
@@ -132,13 +132,13 @@ If **any** condition fails, the provenance check MUST delete the write candidate
 ### 8.1 Single Authority Entry Point
 - `KnowledgeBase.get_feasible_robot_selection_domain()` is the **sole authority** for computing robot candidates. Both `DialogueManager` and `OutputBuilder` MUST consume the same domain result.
 
-### 8.2 Filtering Layers
-The candidate tree is pruned in the following order:
-1. Template `required_capabilities` matched against robot-family capabilities (task type gate); class is grouping metadata, and legacy `allowed_robot_classes` is not the hard task-compatibility authority.
-2. Confirmed `water_depth` vs. `Variant.hard_params.max_depth_m` (strict `<=` semantics).
-3. Confirmed `payload` vs. `onboard_payloads ∪ supported_payloads` of each Variant.
-4. Outside interactive collection, immediate tasks use online, idle and telemetry-validity filtering. The default immediate-task window is 60 minutes and also covers ongoing tasks; interactive collection defers runtime filtering.
-5. Prune empty Variants, Families, and Classes after filtering.
+### 8.2 Current Filtering and Unimplemented Layers
+1. The current entry point matches template `required_capabilities` against family capabilities. Class is grouping metadata; legacy `allowed_robot_classes` is not the hard task-compatibility authority.
+2. With the default `purpose="interactive"`, it keeps runtime-unavailable units visible. Other purposes filter units only when the task starts within the next 0–60 minutes, using online, idle and telemetry-validity checks. This candidate-window predicate is distinct from the validator's handling of ongoing tasks.
+3. Variants without remaining units are retained with `has_available_units=false`; empty families/classes are pruned while assembling the tree.
+4. The entry point does **not** currently filter variants by water depth, payload or seabed, or rank them by soft warnings; `rejected_variants` is returned empty. A separate `VariantEvaluator` exists, but its existence does not establish integration into this path. Full filtering remains an [ADR-008 target](decisions/ADR-008-constraint-aware-robot-selection.md).
+
+Candidate membership therefore does not imply that all task constraints pass. Publication and runtime execution require their own validation.
 
 ### 8.3 Three-Segment Decision Rule
 After filtering:

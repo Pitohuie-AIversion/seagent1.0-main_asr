@@ -26,7 +26,7 @@ SEAgent 位于用户任务需求与机器人控制系统之间，负责将自然
 - 约束验证；
 - Task Intent Builder；
 - staging、snapshot、final、claim、temp、quarantine 持久化；
-- 后续机器人执行适配层。
+- 已实现的可选 ROS 2 MCP 执行桥接与任务状态跟踪；通用机器人网关仍在规划中。
 
 当前目标是先完成稳定、可测试、可恢复的软件闭环，再扩展世界模型、多机器人协同和动态重规划。
 
@@ -171,7 +171,7 @@ Slot 更新时必须考虑：
 
 涉及 `task_intent_builder.py`、snapshot、staging、final、claim、temp 或 quarantine 时必须遵守：
 
-- 先写临时文件，再进行原子替换；
+- 先写临时文件，再使用 `os.link` 原子无覆盖发布 TaskIntent；已有 final 文件不得被替换；
 - 文件写入完成后执行必要的 `fsync`；
 - 必要时同步父目录；
 - 发布、读取、恢复和关键清理操作使用一致的跨进程锁；

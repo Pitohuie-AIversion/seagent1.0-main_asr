@@ -3,6 +3,8 @@
 ## 状态
 Accepted
 
+2026-09-30 复核：状态单源原则继续有效。下方代码为简化示意；具体字段投影、候选及冲突状态处理以 SlotStore 和拆分后的槽位模块为准。
+
 ## 背景
 在早期实现中，系统任务状态同时散落在 `DialogueManager` 的临时字典 `task_state`、`last_built_json`、对话历史以及各个逻辑模块的局部变量中。这种多源状态设计极易导致“槽位状态不一致”问题：例如，提取器更新了临时字典，但构建器导出的 JSON 缺失字段，或者验证器校验的状态与下游生成的 TaskIntent 内容不一致。
 
@@ -39,7 +41,7 @@ class SlotStore:
 
 ## 代价与限制
 1. 所有状态变更必须经过 `SlotStore` 封装方法，增加了对象封装开销。
-2. 在 Schema 切换（如 Standard 切换至 Emergency 紧急模式）时，需正确执行 `init_task_slots` 同步槽位定义。
+2. 任务类型切换时需通过 `init_task_slots` 同步对应模板槽位；任务 `mode` 与任务类型是不同维度，不应把 normal/emergency 的变化等同于任务 Schema 切换。
 
 ## 验证
 - 单元测试：[tests/test_slot_consistency.py](../../tests/test_slot_consistency.py), [tests/test_p0_final_consistency.py](../../tests/test_p0_final_consistency.py)

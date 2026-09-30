@@ -4,6 +4,17 @@
 
 Accepted（第二阶段实施中，2026-08-13 用户确认）
 
+### 实现状态复核（2026-09-30）
+
+下文保留已接受的目标与阶段决策，不能全部视为当前代码事实：
+
+- `IntentRouter.route()` 在模型调用失败时返回澄清，WRITE 后仍经过候选与事务门禁；这些边界已接入。
+- `src/session/intent_router.py::_call_llm_router()` 当前会将部分模型 `READ` / `CLARIFY` 修正为 `WRITE`，触发条件包括待填候选的选择/别名匹配、列表选择和固定的任务启动表达，并重新校验计划。这与“代码不再改变操作类型”的目标存在差异。
+- 控制路径仍保留确定性发布、否定确认和软警告处理；`tests/test_llm_semantic_authority.py` 中也覆盖了软警告快速路径。因此“删除控制词二次解析”不能作为已全部完成的声明。
+- 后续维护应针对这些例外作出保留、收窄或移除的明确决定，并验证 READ 只读与发布授权边界。本次文档修订只记录差异，不更改运行行为，也不据此扩大例外授权。
+
+实现入口：[IntentRouter](../../src/session/intent_router.py)、[控制谓词](../../src/handlers/command_predicates.py)、[回归用例](../../tests/test_llm_semantic_authority.py)。
+
 ## 背景
 
 现有正常对话路径在模型判断前后叠加了关键词快速通道、WRITE 证据门、

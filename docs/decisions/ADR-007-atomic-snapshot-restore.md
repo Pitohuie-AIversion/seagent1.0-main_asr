@@ -4,6 +4,8 @@
 
 已确认，2026-08-13。
 
+2026-09-30 实现复核：快照恢复已拆分至 [dialogue_snapshot.py](../../src/session/dialogue_snapshot.py)，由 `DialogueManager.load_snapshot()` 委托。候选恢复成功后才提交状态；默认关闭 v2 时的非法 phase、非法 mode 和 session_id 不变性已有 [test_session_state_runtime_v2.py](../../tests/test_session_state_runtime_v2.py) 覆盖。下文保留设计和验收要求，不代表本轮重新执行全量测试。
+
 ## 背景与问题
 
 `DialogueManager.load_snapshot()` 同时恢复会话标识、对话历史、任务阶段、任务模式、对话模式、控制状态、`SlotStore`、派生缓存以及已发布任务结果。

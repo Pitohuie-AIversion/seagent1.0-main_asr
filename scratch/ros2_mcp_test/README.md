@@ -1,18 +1,19 @@
-# ROS 2 MCP 测试沙箱 (ROS2 MCP Test Sandbox)
+# ROS 2 MCP 历史测试沙箱
 
-本目录为 SEAgent 与 ROS 2 MCP（Model Context Protocol）协同工作的独立测试与实验沙箱。
+本目录使用本地 stdio Mock 模拟 ROS 消息，不需要真实机器人；它不是现行生产适配器的验收入口。生产协议与运行配置见 [ROS MCP 说明](../../mcp/ros-mcp/README.md)。
 
-## 目录结构
-* **`mock_ros2_mcp_server.py`**：基于 `FastMCP` 构建的 ROS 2 模拟服务端。提供 `/task/system_status` 遥测话题与 `/task_cmd` 任务指令话题。
-* **`seagent_mcp_adapter.py`**：SEAgent 端的 MCP 客户端适配器。实现遥测数据向 `RobotStateInfo` 的原子同步，以及将 `TaskIntent` 转换为 `SysTaskCmd` ROS 2 消息下发。
-* **`test_e2e_ros2_mcp.py`**：端到端集成测试脚本。
+| 文件 | 行为 |
+| --- | --- |
+| `mock_ros2_mcp_server.py` | 用 FastMCP 模拟读取 `/task/system_status` 和发布 `/task_cmd` |
+| `seagent_mcp_adapter.py` | 沙箱客户端，确实会对传入的 `RobotStateInfo` 调用 `set_status()`，并构建历史 SysTaskCmd 示例 |
+| `test_e2e_ros2_mcp.py` | 显式运行的 Mock 测试，状态 fixture 使用 `tmp_path` 下的文件 |
 
-## 运行测试
-
-在 `seagent` conda 环境下直接运行：
+根 pytest 配置默认排除 `scratch/`；需要时在仓库根目录显式执行：
 
 ```bash
-conda activate seagent
-cd /root/mzy/seagent1.0-main_asr
-pytest scratch/ros2_mcp_test/test_e2e_ros2_mcp.py -s -v
+python -m pytest scratch/ros2_mcp_test/test_e2e_ros2_mcp.py -s -v
 ```
+
+测试会清理固定文件 `/tmp/mock_ros2_received_cmds.json`，不适合同时启动多个沙箱实例。单独调用适配器时，应传入隔离状态对象；不能因为测试 fixture 使用临时文件，就认为所有手动调用都不会写运行状态。
+
+历史载荷示例不替代生产契约。本轮只核对文档和 fixture，未重新执行此沙箱，也未验证实机 ROS 链路。

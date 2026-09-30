@@ -1,6 +1,6 @@
 # 系统架构总览
 
-本文档描述 SEAgent 当前的运行架构和边界，基准日期为 2026-09-29。实现状态以代码、测试和运行配置为准；本页不替代 ADR、执行下发契约或历史验收报告。
+本文档描述 SEAgent 当前的运行架构和边界，基准日期为 2026-09-30。实现状态以代码、测试和运行配置为准；本页不替代 ADR、执行下发契约或历史验收报告。
 
 ## 1. 系统范围
 
@@ -67,13 +67,13 @@ flowchart TD
 ### 3.2 写入路径
 
 - `WRITE` 路径负责候选抽取与字段更新；`CONTROL` 由阶段处理器执行确认、取消、警告确认等动作，不要求每个控制操作经过抽取器。
-- InteractionPlan 的 `operation` 是语义路由权威；协议非法或置信度不足时进入澄清。
+- InteractionPlan 的 `operation` 是路由计划字段；协议非法或 WRITE / CONTROL 置信度不足时进入澄清，合法低置信度 READ 仍可只读回答。当前 Router 对特定候选选择和任务启动表达保留 READ / CLARIFY 到 WRITE 的修正，见 [ADR-005 实现状态](../decisions/ADR-005-llm-semantic-authority.md)。
 - 字段写入经过允许值、来源和规范化检查；Validator 对已收集任务执行业务约束校验，违规任务保留可修正的上下文并阻断确认或发布。
 - 硬约束阻断不能通过“确认”“继续”或“忽略警告”绕过；软约束只能由明确的忽略动作继续。
 
 ### 3.3 终态会话
 
-`done` 和 `rejected` 任务的任务字段保持只读，但会话仍可接收普通对话和只读查询。前端状态由 `src/session/ui_state_builder.py` 统一构建，相关行为由 `tests/test_issue_31_ui_state_contract.py` 覆盖。
+`done` 和 `rejected` 任务的任务字段保持只读，但会话仍可接收普通对话和只读查询；后续 WRITE 可沿事务创建新草稿，不能覆盖已发布文件。前端状态由 `src/session/ui_state_builder.py` 统一构建，相关行为由 `tests/test_issue_31_ui_state_contract.py` 覆盖。
 
 ## 4. 约束与遥测
 
@@ -84,7 +84,7 @@ flowchart TD
 - `config/robot_fleet.yaml`：设备层级、能力和物理上限；
 - `config/state.yaml` 或底层遥测：机器人运行状态和更新时间。
 
-候选机器人域由 `KnowledgeBase.get_feasible_robot_selection_domain()` 统一计算。水深、载荷和即时任务的运行状态过滤后，系统执行零候选阻断、单候选自动绑定、多候选等待消歧的决策。
+候选机器人域由 `KnowledgeBase.get_feasible_robot_selection_domain()` 统一计算。当前入口按任务 `required_capabilities` 筛选系列，再组装 Class → Family → Variant → Unit 层级；它不按水深、载荷或海床条件剔除和排序型号，返回的 `rejected_variants` 为空。默认 `purpose="interactive"` 不用当前忙闲状态过滤候选；非交互用途且任务开始时间位于未来 0～60 分钟时，才额外过滤不可用 Unit，并以 `has_available_units` 标记型号。候选域不等于完整的任务可执行性结论，物理和环境约束仍需 Validator 检查。
 
 交互收集阶段允许延后遥测检查。默认立即任务判定窗口为未来 60 分钟，并包含正在执行的任务；未来计划可延后动态状态校验。`purpose="runtime_execution"` 在派发前强制执行最新设备与环境检查，未来归档不表示已取得执行许可。
 
@@ -106,8 +106,8 @@ flowchart TD
 1. 在内存中构建并校验 TaskIntent；
 2. 在任务目录创建独占临时文件；
 3. 获取 `TaskPublishLock`；
-4. 读取回校验临时文件内容；
-5. 使用 `os.link` 将临时文件以 no-overwrite 方式提交为正式文件；
+4. 校验并认领 staging，再从内存 intent 写入私有临时文件，回读核对内容；
+5. 使用 `os.link` 将该私有临时文件以 no-overwrite 方式提交为正式文件；
 6. 对正式文件和父目录执行必要的 `fsync`；
 7. 清理可证明属于本次提交的临时文件并记录历史。
 

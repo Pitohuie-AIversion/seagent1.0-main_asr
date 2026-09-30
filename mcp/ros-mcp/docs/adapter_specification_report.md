@@ -1,148 +1,134 @@
-# SEAgent ROS 2 MCP 适配器 (SeagentROS2MCPAdapter) 技术说明文档
-
-> 文档说明：本文描述的是本地 stdio Mock 适配器。当前源码位于 `mcp/ros-mcp/mock/seagent_mcp_adapter.py`，生产对话派发使用 `mcp/ros-mcp/core/dialogue_mcp_integration.py` 和 `src/dispatch/task_dispatch.py`；历史示例与统计不作为当前实机验收结果。
+# SEAgent ROS 2 通信适配与历史 Mock 协议勘误
 
 | 属性 | 内容 |
-|:---|:---|
-| **组件名称** | SEAgent ROS 2 MCP 适配器 (`SeagentROS2MCPAdapter`) |
-| **源码路径** | `mcp/ros-mcp/mock/seagent_mcp_adapter.py` |
-| **依赖协议库** | Anthropic 官方 `mcp` Python SDK (`mcp.client.stdio`) |
-| **对接网关** | `ros-mcp-server` (RobotMCP / FastMCP 框架) |
-| **底层 ROS 2 消息** | `sealien_ctrlpilot_llmbridge/msg/SysTaskCmd` (话题: `/task_cmd`) |
-| **支持任务类型** | 管缆巡检 (`pipeline_inspection`)、管缆埋设 (`pipeline_burial`)、采油树控制面板插拔 (`tree_valve_operation`) |
+| --- | --- |
+| 项目 / 模块 | SEAgent / ROS 2 MCP |
+| 修订日期 | 2026-09-30 |
+| 核验环境 | 仓库源码、协议配置与本地自动化测试；未连接真实机器人 |
+| 当前实现 | `core/bridge_service.py`、`core/rosbridge_client.py` |
+| 历史实验组件 | `mock/seagent_mcp_adapter.py` 中的 `SeagentROS2MCPAdapter` |
+| 证据边界 | 源码核对与本地测试不代表实机验收；历史测试统计单独保留 |
+| 当前 PDF | [2026-09-30 协议核对版](SEAgent_ROS2_MCP_Protocol_Review_20260930.pdf) |
+| 历史 PDF | [原集成测试报告](SEAgent_ROS2_MCP_Integration_Report.pdf)，保留历史内容，不作为当前接口说明 |
 
----
+## 1. 核验结论与适用范围
 
-## 1. 组件定位与架构职责
+生产对话链路通过 `SEAgentMCPBridgeService` 和 `RosbridgeClient` 直接使用 rosbridge WebSocket。`SeagentROS2MCPAdapter` 则通过 MCP SDK 的 stdio 传输启动本地 FastMCP 模拟进程。两条链路的传输、校验与载荷构造不同。
 
-`SeagentROS2MCPAdapter` 作为 SEAgent 上层任务认知层与深海机器人 ROS 2 控制网关（`ros-mcp-server`）之间的核心桥梁，主要承担以下三项职责：
+旧版本文将实验适配器写成生产桥梁，并将 `params=[水深, 速度]` 描述为三类任务的统一协议。当前生产协议要求管缆巡检、夹缆和插入任务的 `params` 为空。Mock 仍保留旧式载荷；模拟服务器返回成功仅说明它记录了输入，不证明输入符合生产协议。
 
-1. **JSON Schema 转换**：将 SEAgent 导出的 TaskIntent v2 单任务扁平 JSON，解析并装配为符合 ROS 2 工业控制协议的 `SysTaskCmd` 消息体。
-2. **MCP 工具异步调用**：基于 Anthropic 官方 `mcp` Python SDK，建立与 `ros-mcp-server` 的 JSON-RPC 2.0 传输会话，调用 `publish_topic` 工具下发控制指令。
-3. **遥测数据隔离获取**：通过 MCP 工具 `read_topic` 获取 ROS 2 侧 Topic `/task/system_status` 广播的物理姿态与状态推演数据，保持在内存数据结构（`TaskStatusTracker`）中，确保静态配置文件不被污染。
+当前调用与配置见 [MCP 模块说明](../README.md)、[执行下发契约](../../../docs/execution_dispatch_contract.md)及[静态协议定义](../../../config/ros2_protocol_spec.yaml)。
+
+## 2. 两条运行链路
+
+### 2.1 对话任务派发
 
 ```text
-[ SEAgent 任务认知层 ] ── TaskIntent v2 JSON
-           │
-           ▼
-[ SeagentROS2MCPAdapter ] (mcp/ros-mcp/mock/seagent_mcp_adapter.py)
-           │
-           │  (基于 stdio / JSON-RPC 2.0 调用 MCP 工具)
-           ▼
-[ ros-mcp-server ] (@mcp.tool: publish_topic / read_topic)
-           │
-           │  (DDS 二进制数据帧 SysTaskCmd.msg / 话题: /task_cmd)
-           ▼
-[ ROV / AUV 水下机器人控制网关 ]
+DialogueManager 完成任务归档
+  -> dispatch_completed_task / dispatch_dialogue_result
+  -> 时间门禁、执行前校验与发送记录核对
+  -> SEAgentMCPBridgeService
+  -> RosbridgeClient -> rosbridge WebSocket -> /task_cmd
+  <- /task/system_status -> TaskStatusTracker
 ```
 
----
+`attach_mcp_bridge()` 只绑定引用。Python 调用者需显式派发；Web 路由在首次进入 `done` 时尝试派发。未来任务返回 `SCHEDULED`，当前没有自动到期调度器。派发状态 `SENT` 不等于机器人执行完成；完成或失败由 `FINISH` / `FAIL` 状态确认。
 
-## 2. 三种核心任务类型的适配处理逻辑
+### 2.2 stdio 模拟实验
 
-适配器通过字典映射将上层语义化的 `task_type` 转换为 ROS 2 协议规定的整数枚举，并针对不同任务的数据特性装配目标位姿 `pos_target` 与控制参数 `params`。
+```text
+SeagentROS2MCPAdapter
+  -> stdio_client / ClientSession.call_tool
+  -> mock_ros2_mcp_server.py (本地 FastMCP 进程)
+  -> publish_topic: 记录载荷；read_topic: 返回模拟数据
+```
 
-### (1) 管缆巡检任务 (`pipeline_inspection`)
+实验适配器每次调用单独打开 stdio 会话。`fetch_and_sync_telemetry(state_info)` 当前只返回遥测字典，未更新传入的 `state_info`，也不接入生产 `TaskStatusTracker`。本地 Mock 接收成功不代表 DDS 发布或真实机器人动作。
 
-- **上层提取数据**：`start_point`（起点经纬度）、`end_point`（终点经纬度）、`water_depth_m`（水深）、`speed_ms`（巡航速度）。
-- **底层枚举映射**：`task_type = 2` (`SEARCH_CABLE`, 巡缆)。
-- **数据帧装配规则**：
-  - `pos_target[0]`：起点位姿 $\text{Pose}(x = \text{lon}_1, y = \text{lat}_1, z = -h_{\text{water}})$
-  - `pos_target[1]`：终点位姿 $\text{Pose}(x = \text{lon}_2, y = \text{lat}_2, z = -h_{\text{water}})$
-  - `params`：$[h_{\text{water}}, v_{\text{speed}}]$
-- **MCP Tool 下发请求 Payload 示例**：
-  ```json
-  {
-    "topic": "/task_cmd",
-    "message": {
-      "task_type": 2,
-      "task_id": 524289,
-      "frame_id": "odom",
-      "priority": 15,
-      "pos_target": [
-        { "position": { "x": 113.2, "y": 19.8, "z": -130.0 }, "orientation": { "x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0 } },
-        { "position": { "x": 113.6, "y": 19.9, "z": -130.0 }, "orientation": { "x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0 } }
-      ],
-      "params": [ 130.0, 1.5 ],
-      "fail_stop": true
+## 3. 当前生产协议与逐项迁移
+
+### 3.1 三类业务模板的下发边界
+
+| 业务任务 | 协议枚举 | `task.details` 输入 | `frame_id` / `pos_target` | `params` |
+| --- | --- | --- | --- | --- |
+| 管缆巡检 | `SEARCH_CABLE=2` | `start_point` 和 `end_point`；也支持至少两个 `waypoints` | 默认 `odom`；起点和终点两个位姿 | `[]` |
+| 管缆埋设 | `CLAMP_CABLE=1` | `target` | 空字符串；一个位姿 | `[]` |
+| 采油树插入 | `INSERT_PLUG=4` | `target`，且动作明确为 `insert` | 空字符串；一个位姿 | `[]` |
+| 采油树拔出 | 未定义 | 动作 `withdraw` 可作为计划保存 | 转换 / 派发拒绝执行 | 不生成下发载荷 |
+
+通用的采油树任务类型必须在 `task.details.operation` 中明确动作；具有明确插入名称的类型也可提供动作语义。含糊或相互冲突的动作会被拒绝。井口编号本身不能替代目标坐标。
+
+水深由 `location.water_depth_m` 提供，也可由各坐标的 `depth` 覆盖；默认位置映射是 `x=longitude`、`y=latitude`、`z=-depth`。只有显式启用 `use_geodetic` 时才进行局部投影，参考原点需按现场配置核对。默认数值不能直接解释为已完成米制投影。上述三类协议载荷不传输航速。
+
+### 3.2 旧说明与当前行为对照
+
+| 旧说明或示例 | 当前事实与迁移要求 |
+| --- | --- |
+| 三类任务都发送 `params=[water_depth, speed_ms]` | 生产转换器要求三类任务均为 `params=[]`；水深体现在位姿 `z` |
+| 巡检只需要一个 `target` | 生产巡检要求起终点两个位姿；当前 stdio Mock 仍只生成一个 `target`，不满足此约束 |
+| 夹缆、插入使用 `frame_id="odom"` | 生产协议要求这两类操作 `frame_id=""`；旧 Mock 示例不能作为接口模板 |
+| `INSERT_PLUG=4` 覆盖插入和拔出 | 仅支持明确插入；拔出和缺少动作的通用采油树任务会被拒绝 |
+| 适配器自动分配唯一任务 ID | stdio Mock 固定使用 `0x80001`；生产由 `generate_task_id()` 在 AI 范围内分配 ID |
+| 通过 `/task_manage` 发送管理动作 | 统一发送到 `/task_cmd`，使用 `task_type=0` 与管理动作参数 |
+| 所有命令均 `fail_stop=true` | 普通任务默认 true；`build_task_manage_cmd()` 使用 `priority=0`、`fail_stop=false` |
+| `fetch_and_sync_telemetry` 自动同步状态 | Mock 方法只返回字典；生产由桥接服务和追踪器维护运行快照 |
+| 下发成功意味着任务完成 | `SENT` 表示传输发送状态；机器人 `FINISH` / `FAIL` 才是终态 |
+
+### 3.3 协议示例
+
+以下是夹缆任务经生产转换器生成的结构示例，不是实机日志。示例采用默认坐标兼容映射，未启用地理投影；显式任务 ID 仅用于展示。
+
+```json
+{
+  "task_type": 1,
+  "task_id": 524289,
+  "frame_id": "",
+  "priority": 15,
+  "pos_target": [
+    {
+      "position": {"x": 115.7, "y": 20.8, "z": -200.0},
+      "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}
     }
-  }
-  ```
+  ],
+  "params": [],
+  "fail_stop": true
+}
+```
 
----
+管理命令由 `build_task_manage_cmd(action, target_task_id)` 构造：`task_type=0`、`frame_id=""`、`pos_target=[]`，`params` 包含动作枚举及该动作需要的目标 ID。系统配置仍使用 `/task/sys_config`；任务状态仍来自 `/task/system_status`。
 
-### (2) 管缆埋设任务 (`pipeline_burial`)
+## 4. 模块与 API 对照
 
-- **上层提取数据**：`start_point`（埋设起始经纬度）、`water_depth_m`（水深）、`speed_ms`（埋设速度）。
-- **底层枚举映射**：`task_type = 1` (`CLAMP_CABLE`, 夹缆/埋设)。
-- **数据帧装配规则**：
-  - `pos_target[0]`：埋设起点位姿 $\text{Pose}(x = \text{lon}, y = \text{lat}, z = -h_{\text{water}})$
-  - `params`：$[h_{\text{water}}, v_{\text{speed}}]$
-- **MCP Tool 下发请求 Payload 示例**：
-  ```json
-  {
-    "topic": "/task_cmd",
-    "message": {
-      "task_type": 1,
-      "task_id": 524290,
-      "frame_id": "odom",
-      "priority": 15,
-      "pos_target": [
-        { "position": { "x": 115.7, "y": 20.8, "z": -200.0 }, "orientation": { "x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0 } }
-      ],
-      "params": [ 200.0, 1.0 ],
-      "fail_stop": true
-    }
-  }
-  ```
+下列文件均相对 `mcp/ros-mcp/`。
 
----
+| 文件 | 当前 API | 职责 |
+| --- | --- | --- |
+| `core/dialogue_mcp_integration.py` | `attach_mcp_bridge()`、`dispatch_dialogue_result()` | 绑定、显式派发和可选等待终态 |
+| `core/bridge_service.py` | `SEAgentMCPBridgeService.dispatch_intent()` | 转换、发送记录与传输调度；业务调用需先通过统一派发门禁 |
+| `core/rosbridge_client.py` | `intent_to_syscmd()`、`validate_sys_task_cmd()` | 任务转换和逐类协议校验 |
+| `core/rosbridge_client.py` | `RosbridgeClient.publish_task_cmd()`、`task_manage()` | 使用 WebSocket 发布任务和管理指令 |
+| `core/task_status_tracker.py` | `get_task_status()`、`wait_for_finish()` | 内存任务状态；等待 `FINISH` 或 `FAIL`，超时返回 `None` |
+| `mock/seagent_mcp_adapter.py` | `dispatch_task_intent()`、`fetch_and_sync_telemetry()` | stdio 模拟调用；存在上表列明的协议与同步限制 |
 
-### (3) 采油树控制面板插拔任务 (`tree_valve_operation`)
+`RosbridgeClient` 使用 `websocket.create_connection()`；旧报告中的 `WebSocketApp`、`dispatch_sys_task_cmd()`、`build_task_manage()`、`update_task_status()` 不是当前这条调用链的 API。
 
-- **上层提取数据**：`oilfield_coordinates`（阀门/井口坐标）、`water_depth_m`（作业水深）、`wellhead_id`（井口编号）。
-- **底层枚举映射**：`task_type = 4` (`INSERT_PLUG`, 采油树插拔/阀门操作)。
-- **数据帧装配规则**：
-  - `pos_target[0]`：阀门插孔目标位姿 $\text{Pose}(x = \text{lon}, y = \text{lat}, z = -h_{\text{water}})$
-  - `params`：$[h_{\text{water}}, v_{\text{speed}}]$
-- **MCP Tool 下发请求 Payload 示例**：
-  ```json
-  {
-    "topic": "/task_cmd",
-    "message": {
-      "task_type": 4,
-      "task_id": 524291,
-      "frame_id": "odom",
-      "priority": 15,
-      "pos_target": [
-        { "position": { "x": 115.735, "y": 20.815, "z": -300.0 }, "orientation": { "x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0 } }
-      ],
-      "params": [ 300.0, 1.5 ],
-      "fail_stop": true
-    }
-  }
-  ```
+## 5. 验证记录与历史统计
 
----
+本轮对照了协议转换器、动作校验、Mock 实现、桥接服务及现有协议测试。2026-09-30 使用维护环境 `/root/miniconda3/envs/seagent/bin/python` 执行以下命令，结果为 **11 passed in 4.31s**，无失败、跳过或测试警告。这一小范围测试不覆盖全部 MCP 功能。
 
-## 3. 其他控制与遥测通信支持
+```bash
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 \
+/root/miniconda3/envs/seagent/bin/python -m pytest -q \
+  mcp/ros-mcp/tests/test_ros_group_protocol_contract.py \
+  mcp/ros-mcp/tests/test_dialogue_mcp_integration.py
+```
 
-除了上述三种主要作业任务外，适配器同时提供如下通用控制接口支持：
+| 验证范围 | 对应套件 | 本次结果 |
+| --- | --- | --- |
+| 协议布局、管理参数和 Topic 定义 | `test_ros_group_protocol_contract.py` | 通过 |
+| 显式派发与对话集成 | `test_dialogue_mcp_integration.py` | 通过 |
+| 合计 | 上述两份套件 | 11 通过；0 失败；0 跳过 |
 
-1. **应急任务管理 (`task_type = 0`)**：
-   通过 MCP 工具 `publish_topic` 向 `/task_cmd` 发送挂起 (SUSPEND)、恢复 (RESUME)、删除 (DELETE) 等控制指令。
-2. **控制器模式配置 (`/task/sys_config`)**：
-   发送 `ctr_mode` 配置控制模式（如定深模式 `AUTODEPTH=4` 或定高模式 `AUTODHEIGHT=5`）。
-3. **遥测数据与推演状态读取**：
-   通过 MCP 工具 `read_topic` 定期查询 `/task/system_status`，接收物理水深、距海底高度与任务状态推演（`READY` -> `PLAN` -> `ONGOING` -> `FINISH`）。
+历史说明曾记录 `test_public_libraries_comparison.py` 为 36 / 36 通过。这一数字保留为历史材料，本轮未复现该次执行。旧说明中的 `test_pipeline_inspection_mcp_dispatch`、`test_pipeline_burial_mcp_dispatch`、`test_tree_valve_operation_mcp_dispatch` 也不是当前测试方法名，不应继续作为可执行节点引用。
 
----
-
-## 4. 代码测试与验证状态
-
-在历史测试套件 `mcp/ros-mcp/tests/test_public_libraries_comparison.py` 中，曾对 `SeagentROS2MCPAdapter` 在三种任务类型下的协议转换、MCP 工具调用以及异步响应进行了验证：
-
-- **管缆巡检用例**：`test_pipeline_inspection_mcp_dispatch` (PASS)
-- **管缆埋设用例**：`test_pipeline_burial_mcp_dispatch` (PASS)
-- **采油树插拔用例**：`test_tree_valve_operation_mcp_dispatch` (PASS)
-- **用例总数与结果**：36 / 36 项测试用例全部执行通过。
+2026-08-21 的 120 项统计及旧控制台日志见[历史测试报告](mcp_execution_verification_report.md)。原 PDF 末页标记编写日期为 2026-08-26，与 Markdown 记录的测试日期不同，两个日期按原记录保留。原 PDF 不变；本次协议核对版 PDF 与本文配套，不替代历史实测记录。真实 ROS 2 网关、设备动作和现场坐标校准尚未在本轮验证。

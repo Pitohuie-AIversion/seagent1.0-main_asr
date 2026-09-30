@@ -2,6 +2,8 @@
 
 All notable changes to the SEAgent multi-agent task planning system will be documented in this file.
 
+> 历史变更记录：以下描述与测试数字对应各条目记录时的版本，本轮未重新执行其历史实验。2026-09-30 核对发现部分能力描述已不适合作为现状：语义路由仍有局部规则修正，机器人候选入口未接入完整水深/载荷过滤，遥测也不能以单一“24 小时”概括。当前边界见[架构总览](docs/architecture/overview.md)和[设计契约](docs/current_design_contract.md)。
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---

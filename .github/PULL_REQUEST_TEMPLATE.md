@@ -18,8 +18,8 @@
 
 ## 测试结果
 <!-- 附上本地测试或 CI 运行结果 -->
-- `python -m compileall -q src tests`: Pass
-- `python -m pytest -q`: Pass
+- `python -m compileall -q src tests mcp/ros-mcp mcp/operation-time-window`：待填写实际结果
+- `python -m pytest -q`：待填写通过/失败/跳过数量；未执行或中断请注明
 
 ## 文档更新
 <!-- 说明已同步更新的文档，如 README.md, docs/architecture/overview.md 等 -->

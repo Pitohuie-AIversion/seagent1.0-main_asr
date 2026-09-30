@@ -1,5 +1,7 @@
 # SEAgent GitHub Actions CI Dependency Installation Failure Record
 
+> Historical incident record. The dependency split below describes the repair at that time. As checked on 2026-09-30, [the current CI workflow](../.github/workflows/tests.yml) installs CPU PyTorch and then editable `.[test]` from `pyproject.toml`; see [the testing guide](development/testing.md) for current commands. This review did not rerun the referenced remote CI job.
+
 ## Overview
 - **Run ID**: `30256398910`
 - **Job ID**: `89945911141` (`test-and-verify`)

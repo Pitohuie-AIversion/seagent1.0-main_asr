@@ -1,9 +1,15 @@
 # SEAgent 1.0 时间模块 v2.0 全面升级验收报告
 
+> **历史记录说明（2026-09-30）**：以下表格保留 2026-08-25 的历史数字；原 `/tmp/time_module_v2_test_report.xml` 当前不存在，无法复核当时执行结果。145/145 是原报告声称的固定用例集通过率，不能推导真实自然语言时间识别准确率达到 99% 或当前版本全量通过。2026-09-30 的当前源码回归另见下方说明，不用于追认这次历史实验。
+
+> **计数与证据核对**：下表 T01～T12 合计 126，加 T13 的 19 为 145，表内算术一致。但 `tests/test_time_module_v2_upgrade.py` 的最早可追溯提交 `37492d95e7073dc02f9b8d9f2a9ce6ced858684d`（2026-08-26）及本轮源码，按测试方法和静态参数列表展开均为 129 例、12 个测试类，与原报告的 126 及各类分配未能对应。静态计数不是实际收集或通过证据；缺少原命令、收集清单和 JUnit 时，不能把这些数字互相替换。
+
+> **当前回归单独记录**：2026-09-30 使用维护环境运行时间升级、相对时间、时长和任务时间校验四份现有测试，结果为 155 passed、4 subtests passed，耗时 0.93 秒；命令及保存的日志/JUnit 见[本轮文档验证记录](../test_logs/documentation-review-2026-09-30.md)。该结果覆盖当前选定测试，不是历史 145 例实验重跑，也不是自然语言识别准确率评估。
+
 > 报告生成时间: 2026-08-25 17:33:38
 > 测试基准: pytest 9.1.1 / Python 3.12.3
 > 测试范围: test_time_module_v2_upgrade.py (126 新用例) + 原有回归测试 (19 用例)
-> 升级目标: 时间识别准确率 >= 99% / 一次修复到位 / Temporal IR 可审计
+> 原升级目标: 时间识别准确率 >= 99%（本报告未验证该指标） / Temporal IR 可审计
 
 ---
 
@@ -15,10 +21,10 @@
 | 通过 | 145 | OK |
 | 失败 | 0 | 无 |
 | 错误 | 0 | 无 |
-| 准确率 | 100.00% | 达标 (>= 99%) |
+| 用例通过率 | 100.00% | 仅针对本报告的固定用例集 |
 | 执行用时 | ~5.3s | OK |
 
-> 结果: 145/145 = 100.00%，已交付通过。
+> 历史记录结果：145/145 = 100.00% 用例通过；时间识别准确率目标仍需独立、带标注的评估集验证。
 
 ---
 
@@ -42,7 +48,7 @@
 
 ---
 
-## 三、核心缺陷溯源与修复清单 (12 项根因全量解决)
+## 三、历史缺陷与修复记录 (12 项)
 
 | 缺陷ID | 问题根因描述 | 修复方案 |
 |--------|------------|---------|
@@ -67,7 +73,7 @@
 [relative_time_parser.py:L76-L110](../src/temporal/relative_time_parser.py#L76-L110) 统一承载 18 个语义字段（year/month/day/weekday/boundary/day_offset/hour_offset 等）。解析先结构化再 materialize，审计链完整。
 
 ### 4.2 时区 & DST 基础架构
-引入 IANA ZoneInfo（Asia/Shanghai 默认），AmbiguityCode 预置 DST_GAP_NONEXISTENT / DST_FOLD_AMBIGUOUS 两种检测代码，后续接入真实 DST 无需改解析层接口。
+原实现使用 IANA ZoneInfo（Asia/Shanghai 默认），AmbiguityCode 预置 DST_GAP_NONEXISTENT / DST_FOLD_AMBIGUOUS 两种检测代码。枚举预留不等于已实现 DST gap/fold 解析；实际接入仍需审查时间上下文、接口及序列化契约，并增加相应测试。
 
 ### 4.3 相对偏移体系 (新增)
 - 日偏移: N天前/后，今天/明天/后天/大后天/昨天/前天
@@ -83,7 +89,7 @@
 - 个位-千位-万-亿进位（三十一、两百、九百九十九、一亿三千万）
 - 口语变体：两/俩=2、仨=3、幺=1、勾=9
 - 半 = 0.5；X点Y / X.Y 的小数拆分
-- cn2an 可用时优先 (smart 模式)，不可用时不退化
+- cn2an 可用时优先 (smart 模式)，不可用时使用内置解析；两种路径的支持范围应由对应测试确认。
 
 ### 4.6 歧义检测体系 (7 大类)
 | AmbiguityCode | 触发条件 | 处理策略 |
@@ -130,7 +136,7 @@
 | is_keep_duration_expression 接口保持 | OK |
 | 全部原有测试 (test_duration / test_relative_time / test_task_time_validation) | 19 / 19 OK |
 | SlotConsistency / ValidatorDefects / NormalizationContract 相关 | 全部通过 |
-| 更大范围 141 项非时间相关回归 | 通过（6 项失败为 issue_12/14 知识库快照，与时间模块无关） |
+| 更大范围 141 项非时间相关回归 | 原记录同时报告 6 项失败，不能标记全量通过；“与时间模块无关”是当时归因，本轮未复验 |
 
 ---
 
@@ -140,20 +146,20 @@
 |------|------|
 | [src/temporal/duration_parser.py](../src/temporal/duration_parser.py) | 重写: 零依赖中文数字 + DurationParseResult + 负数/零 Fail-Fast |
 | [src/temporal/relative_time_parser.py](../src/temporal/relative_time_parser.py) | 重写: Temporal IR + 12 项根因修复 + 7 类歧义检测 |
-| [tests/test_time_module_v2_upgrade.py](../tests/test_time_module_v2_upgrade.py) | 新建: 126 用例 x 13 大类 |
-| /tmp/time_module_v2_test_report.xml | JUnit XML，可接入 Jenkins / GitLab CI |
+| [tests/test_time_module_v2_upgrade.py](../tests/test_time_module_v2_upgrade.py) | 原报告标为新增 126 用例；与现存源码静态计数的差异见页首说明 |
+| /tmp/time_module_v2_test_report.xml | 原报告所列 JUnit 路径；本轮检查文件不存在，不能作为现存验收证据 |
 
 ---
 
 ## 八、结论与后续建议
 
 ### 验收结论
-- 准确率 = 100.00%，达到 >= 99% 的交付门槛。
-- 全部 12 项根因 (DEF-T01 ~ DEF-T12) 均有确定性修复并对应测试覆盖，无需多轮重复修复。
-- 所有公开 API 签名保持不变，零下游改造成本。
-- DST / IANA 时区架构预留在位，为真实跨时区部署保留完整扩展点。
+- 原报告记录固定测试集通过率为 100.00%；原始结果文件缺失、分类计数未对齐，不能据此重申历史验收或识别准确率达标。
+- DEF-T01～DEF-T12 保留为历史修复记录；当前正确性按现有测试及实际使用场景验证，不推定一次修复后不存在其他边界问题。
+- 报告列出的兼容性用例只覆盖对应接口场景，不能推导全部下游调用无改造成本。
+- DST 检测代码和时区字段仅提供部分基础；真实跨时区部署仍需专项实现与验证。
 
 ### 后续建议
 1. 将 12 个 DEF-Txx 缺陷加入项目回归必跑清单。
-2. 如需接入真实 DST 计算，只需在 _materialize_ira 末尾增加 resolve_dst_local_dt_to_utc 步骤，利用已有的 timezone_id 字段（无需改解析层）。
-3. 将 /tmp/time_module_v2_test_report.xml 接入 Jenkins / GitLab CI 的 JUnit 发布步骤，作为 publish-gate。
+2. 接入 DST 前明确不存在时间与重复时间的处理策略，核对解析、归一化、序列化和调用方契约，并补充跨时区及 gap/fold 边界测试。
+3. 后续执行保存准确命令、环境、收集清单和新的 JUnit 文件；使用仓库现有 CI 归档机制，不依赖已经缺失的历史 `/tmp` 文件。

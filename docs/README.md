@@ -25,6 +25,7 @@
 - [2026-09-26 用户流程验收](progress/2026-09-26-user-journey-audit.md) 和 [2026-09-26 至 27 日真实模型验收](progress/2026-09-26-real-model-dialogue-audit.md) 包含当时的环境、结果与验证限制。
 - [海流 MCP 设计与实现状态](../mcp/operation-time-window/DESIGN_SPEC.md) 描述独立模块的现状；[历史海流测试记录](../mcp/operation-time-window/evidence/current_status.json) 文件名中的 `current` 不代表实时结果。该模块尚未成为主 DialogueManager 的默认运行链路。
 - ROS MCP 的[当前协议报告](../mcp/ros-mcp/docs/adapter_specification_report.md)及[2026-09-30 协议核对 PDF](../mcp/ros-mcp/docs/SEAgent_ROS2_MCP_Protocol_Review_20260930.pdf)区分生产适配器和 stdio Mock；[原集成 PDF](../mcp/ros-mcp/docs/SEAgent_ROS2_MCP_Integration_Report.pdf)保留为历史材料，不能独立作为现行接口说明。
+- 时间调研的[来源核对与实现边界](../artifacts/temporal-research-source-review.md)及[PDF](../artifacts/temporal-research-source-review.pdf)补充本次核实的一手资料、当前代码对照和定向测试；[原草案](../artifacts/deep-research-report.md)仍保留历史方案属性，旧引用的原 URL 映射尚未恢复。
 - [CHANGELOG](../CHANGELOG.md)、[历史产物报告](../artifacts/) 和 [测试报告](../test_logs/) 保留演进证据。机器临时目录中的原始日志可能不随仓库克隆提供。
 
 ## 文档维护约定

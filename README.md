@@ -21,10 +21,10 @@ SEAgent 通过 **WRITE/QUERY 双通道路由**、**SlotStore 统一状态中心*
 当前支持管缆巡检、管缆埋设和采油树控制面板阀门插拔三类模板。拔出任务可归档，但当前 ROS 2 协议不支持拔出指令，执行派发会阻断；详见 [执行下发契约](docs/execution_dispatch_contract.md)。
 
 - **多模态自然语言交互**：支持文本输入与基于 Qwen ASR 的语音转写输入，结合领域词汇+上下文纠错与油田实体 Link 打分匹配。
-- **LLM 语义权威路由（ADR-005）**：以 `InteractionPlan.operation` 为每轮路由的唯一权威字段，后端不根据关键词覆盖路由决策；低置信度写操作降级 CLARIFY，模型失效 fail-safe 澄清。
+- **结构化语义路由（ADR-005）**：以 `InteractionPlan.operation` 组织路由，低置信度写操作和模型协议失败转入澄清；当前仍有候选别名、列表选择和固定任务启动表达触发的局部规则修正，详见 ADR-005 的实现差异说明。
 - **WRITE / QUERY 意图解耦**：精准区分写任务参数 (`WRITE`) 与读知识/状态 (`QUERY`)，确保查询交互绝对不污染任务状态。
 - **SlotStore 状态中心**：提供 Single Source of Truth，支持全局版本自增、只读快照断言与事务回滚。
-- **约束驱动机器人候选自动收敛（ADR-008）**：`get_feasible_robot_selection_domain()` 基于已确认 `water_depth`、`payload` 与即时遥测状态自动过滤候选树，执行"0 关闭 / 1 自动绑定 / 多等待消歧"三段决策。
+- **机器人候选收敛（ADR-008）**：统一候选入口按任务能力筛选系列，交互收集阶段保留忙闲候选；非交互且任务在未来 60 分钟内开始时过滤不可用单机。水深、载荷和海床过滤尚未接入此入口，候选仍须经过后续业务校验。
 - **设备候选与别名层级解析**：支持系列（Family）、型号（Variant）与单机（Unit）分层别名映射及 `canonical_exact` -> `alias_exact` -> `llm_semantic` 递进解析。
 - **物理与海况强约束校验**：集成水深、海况、载荷及机器人在 `config/state.yaml` 中的实时遥测状态校验；约束失败直接阻断，不退化为追问。
 - **TaskIntent 原子落盘保障**：基于 Staging 暂存区、跨进程排他锁 `TaskPublishLock` 与 `_atomic_commit_noreplace` 硬链接提交，确保任务文件全有或全无落盘。
@@ -189,5 +189,5 @@ TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q
   - 极度冷门或未录入别名表的设备俗称仍需依赖 LLM 语义解析，可能带来微小延时。
   - 遥测规则 C019 当前为超过 30 分钟产生软警告；运行可用性门禁另有时效检查，不能以单一“24 小时窗口”概括，详见架构总览。
   - TaskIntent 原子落盘依靠 `os.link`；提交临时文件与正式文件必须位于同一支持硬链接的文件系统，网络挂载需单独验证。
-  - `burial_depth`、航程、续航过滤暂未接入约束驱动候选域（当前 schema 无对应任务字段）。
+  - 候选域尚未接入完整的型号约束过滤与软警告排序；`burial_depth`、航程和续航也没有对应的当前任务字段。详见 ADR-008。
   - `done` / `rejected` 任务保持任务字段只读，但允许继续进行只读对话；该行为由 `tests/test_issue_31_ui_state_contract.py` 覆盖。

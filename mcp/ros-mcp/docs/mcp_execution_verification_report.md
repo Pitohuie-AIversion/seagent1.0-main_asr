@@ -1,7 +1,23 @@
 # SEAgent 深海机器人任务智能系统
 ## ROS 2 MCP 双向通信模块测试与验证报告
 
-> 历史报告：测试时间为 2026-08-21。本文保留当时的仿真结果和用例统计，不代表当前工作区的实时结果。当前目录、入口和测试命令以 [MCP 模块说明](../README.md) 为准；当前 MCP 子套件应使用 `python -m pytest -q mcp/ros-mcp/tests`，结果以当次输出为准。
+> 历史报告：测试时间为 2026-08-21。2026-09-30 修订保留原控制台日志和 120 项统计，补充协议与 API 勘误；未重新执行当年的完整测试，不能据此认定当前环境或实机验收通过。当前目录、入口和测试命令以 [MCP 模块说明](../README.md) 为准。
+
+本报告配套的[原 PDF](SEAgent_ROS2_MCP_Integration_Report.pdf)保留历史内容；其末页编写日期为 2026-08-26，本文测试日期为 2026-08-21，两者按原记录保留。当前接口另见[协议勘误 Markdown](adapter_specification_report.md)与[2026-09-30 协议核对版 PDF](SEAgent_ROS2_MCP_Protocol_Review_20260930.pdf)。
+
+## 0. 2026-09-30 迁移勘误
+
+| 历史描述 | 当前行为 |
+| --- | --- |
+| MCP stdio 与 rosbridge WebSocket 作为同一条生产链路 | `SeagentROS2MCPAdapter` 是本地 stdio Mock；生产通过 `SEAgentMCPBridgeService` / `RosbridgeClient` 直连 rosbridge WebSocket |
+| 三类任务 `params=[水深, 航速]` | 当前生产巡检、夹缆、插入均要求 `params=[]`；水深体现在位姿 `z` |
+| 插入任务 `frame_id="odom"`，未明确动作 | 当前插入使用空 `frame_id`；通用采油树类型须明确 `operation="insert"`；拔出拒绝执行 |
+| 通过 `/task_manage` 管理任务 | 使用 `/task_cmd`、`task_type=0` 及动作参数；不是独立话题 |
+| 经纬度已转为米制坐标 | 默认仅 longitude→x、latitude→y；局部投影须显式启用并核对原点 |
+| 对话完成自动下发并完成任务 | Python 绑定操作不派发；须显式调用。Web 路由在首次进入 `done` 时尝试派发，仍须通过门禁 |
+| `success` / `SENT` 表示机器人完成 | 仅表示派发状态；机器人终态是 `FINISH` 或 `FAIL`，等待超时无终态 |
+
+第 4 节中的旧 TaskIntent 未明确插入动作，输出含旧式 `params` 与 `frame_id`，不符合当前生产转换器；日志按历史原文保留，禁止直接作为当前下发模板。第 5 节计数同样只属于历史记录。
 
 | 属性 | 内容 |
 |:---|:---|
@@ -10,12 +26,12 @@
 | **测试类型** | 集成测试与双向通信闭环测试 |
 | **测试环境** | Linux x86_64 / `ros-mcp-server` 仿真网关 |
 | **测试时间** | 2026年8月21日 |
-| **测试结果** | **通过 (PASS)** |
-| **用例执行结果** | 120 项用例测试通过 |
+| **历史测试结果** | 原报告记录为 **通过 (PASS)** |
+| **历史用例执行结果** | 原报告记录为 120 项通过，本轮未复现该次运行 |
 
 ---
 
-## 1. 测试概述
+## 1. 历史测试概述
 
 本报告对 SEAgent 云端任务智能系统与 ROS 2 通信模块之间的 MCP (Model Context Protocol) 双向通信逻辑进行了测试。
 
@@ -27,14 +43,14 @@
 
 测试集中共 120 项测试用例全部执行通过。
 
-*说明：本报告反映当前单机仿真环境（Mock Gateway）下的测试结果。*
+*说明：本节反映当时单机仿真环境（Mock Gateway）的历史记录。*
 
 ---
 
-## 2. 方案设计说明
+## 2. 方案设计说明（按当前代码核对）
 
-1. **采用 `ros-mcp-server` 通信设计**：
-   使用开源 `ros-mcp-server`（RobotMCP）项目结构，通过 MCP 规范将 ROS 2 话题收发封装为工具函数（`read_topic` / `publish_topic`），使上层任务层解耦，不直接依赖底层系统驱动。
+1. **区分协议实验与生产派发**：
+   本地 FastMCP Mock 将模拟收发封装为 `read_topic` / `publish_topic` 工具。当前生产链路使用 rosbridge WebSocket，不经由这个 stdio Mock 工具会话。
 
 2. **模块解耦与接口设计**：
    系统通信适配逻辑存放在 `mcp/` 目录下，主要通过 `RosbridgeClient` 与 `SEAgentMCPBridgeService` 进行数据收发，支持通过配置参数指定连接的目标 IP 地址与端口。
@@ -43,29 +59,29 @@
    接收到的水深、距海底高度及控制器状态等遥测数据保存在 `TaskStatusTracker` 内存数据结构中，未将其写入 `config/state.yaml` 静态配置文件。
 
 4. **消息结构映射**：
-   将任务意图映射为 `SysTaskCmd` 结构，进行任务 ID 编号分配、经纬度转空间坐标及深度值符号转换，同时提供了挂起 (`SUSPEND`)、恢复 (`RESUME`)、删除 (`DELETE`) 等管理接口的打包函数。
+   生产转换器将任务意图映射为 `SysTaskCmd`，校验各任务类型的位姿、参数和动作。默认经纬度作兼容映射，地理投影须显式启用。挂起 (`SUSPEND`)、恢复 (`RESUME`)、删除 (`DELETE`) 通过 `/task_cmd` 的管理命令表达。
 
 ---
 
 ## 3. 涉及的主要库函数与接口列表
 
-相关模块所调用的库函数与类定义如下表所示：
+以下表格按当前源码替换旧报告中的过期 API 名称；不属于 2026-08-21 原始测试证据。
 
 | 所属模块 / 库 | 类 / 函数名称 | 功能说明 |
 |:---|:---|:---|
-| **`ros-mcp-server`**<br/>*(FastMCP 框架)* | `ROSMCPGateway`<br/>`ClientSession` | • `@mcp.tool() read_topic(topic)`: 订阅 ROS 2 话题数据<br/>• `@mcp.tool() publish_topic(topic, msg)`: 发布 ROS 2 话题数据<br/>• `ClientSession.call_tool(name, args)`: 异步调用工具接口 |
-| **`mcp.client.stdio`** | `stdio_client` | • `stdio_client(server_params)`: 建立 stdio 传输通道收发 JSON-RPC 2.0 消息帧 |
-| **`websocket-client` / `websockets`** | `WebSocketApp` | • `WebSocketApp(url, on_message, on_error)`: 建立 WebSocket 连接，与网关建立双向通信 |
-| **SeagentROS2MCPAdapter**<br/>*(`mcp/ros-mcp/mock/seagent_mcp_adapter.py`)* | `SeagentROS2MCPAdapter` | • `fetch_and_sync_telemetry(state_info)`: 调用 `read_topic` 获取姿态数据<br/>• `dispatch_task_intent(task_intent)`: 调用 `publish_topic` 下发任务指令 |
-| **RosbridgeClient**<br/>*(`mcp/ros-mcp/core/rosbridge_client.py`)* | `RosbridgeClient` | • `dispatch_sys_task_cmd(...)`: 打包 `SysTaskCmd` 并发送至 `/task_cmd` 话题<br/>• `build_task_manage(action_code, task_id)`: 打包任务控制管理指令帧<br/>• `subscribe_keypoints(callback)`: 订阅 `/vision/keypoints` 视觉话题 |
-| **SEAgentMCPBridgeService**<br/>*(`mcp/ros-mcp/core/bridge_service.py`)* | `SEAgentMCPBridgeService` | • `dispatch_intent(task_intent)`: 转换 TaskIntent 并调用 `RosbridgeClient` 发送<br/>• `wait_for_task_finish(task_id, timeout)`: 等待任务状态推演至 `FINISH` 标识 |
-| **TaskStatusTracker**<br/>*(`mcp/ros-mcp/core/task_status_tracker.py`)* | `TaskStatusTracker` | • `update_task_status(...)`: 跟踪 `READY -> PLAN -> ONGOING -> FINISH` 状态变化<br/>• `update_telemetry(...)`: 更新内存中的物理遥测快照 |
+| MCP SDK / 本地 FastMCP | `ClientSession.call_tool()`、`stdio_client()` | 实验适配器启动本地进程并调用模拟工具；不属于生产 WebSocket 派发链路 |
+| `websocket-client` | `websocket.create_connection()` | 当前 `RosbridgeClient.connect()` 使用的 WebSocket 连接入口 |
+| `mock/seagent_mcp_adapter.py` | `SeagentROS2MCPAdapter` | `fetch_and_sync_telemetry(state_info)` 返回模拟遥测，未修改 `state_info`；`dispatch_task_intent()` 发送旧式实验载荷 |
+| `core/rosbridge_client.py` | `intent_to_syscmd()`、`build_task_manage_cmd()` | 独立函数：生成并校验普通任务或管理命令 |
+| `core/rosbridge_client.py` | `RosbridgeClient.publish_task_cmd()`、`task_manage()` | 发布 `/task_cmd`；视觉订阅仍可通过 `subscribe_keypoints()` 注册 |
+| `core/bridge_service.py` | `SEAgentMCPBridgeService.dispatch_intent()`、`wait_for_task_finish()` | 发送记录与派发；等待 `FINISH` 或 `FAIL`，超时返回 `None` |
+| `core/task_status_tracker.py` | `TaskStatusTracker.get_task_status()`、`latest_telemetry` | 从订阅更新的内存中读取任务状态和遥测 |
 
 ---
 
-## 4. 集成测试控制台日志输出
+## 4. 历史集成测试控制台日志（原文保留）
 
-运行全链路测试脚本（`scratch/run_live_mcp_demo.py`），捕获的标准控制台输出记录如下：
+原报告记载运行 `scratch/run_live_mcp_demo.py` 得到如下输出。本轮没有重跑或改写此日志；其中载荷已由第 0 节注明过期。
 
 ```text
 ================================================================================
@@ -131,7 +147,7 @@ Payload 数据:
 
 ---
 
-## 5. 自动化测试用例统计
+## 5. 历史自动化测试用例统计（2026-08-21）
 
 | 测试套件 / 模块名称 | 用例数 | 主要测试内容 | 结果 |
 |:---|:---:|:---|:---:|
@@ -147,8 +163,10 @@ Payload 数据:
 
 ---
 
-## 6. 物理环境联调试验注意事项
+## 6. 当前联调入口与验证边界
 
-1. **网络连接与目标配置**：现场水池或深海支持船环境联调时，需在启动命令中提供实际支持船网关工控机的 IP 地址与端口（当前入口为 `python -m mcp.mock.run_mcp_bridge --host 192.168.1.100 --port 9090`）。
-2. **紧急停机保护**：指令下发时默认保持 `fail_stop: true`，发生信号异常或推演阻塞时可通过 `/task_manage` 接口发送 `SUSPEND` 或 `DELETE` 指令。
+1. **网络连接与目标配置**：独立网关控制台入口为 `MCP_MOCK=0 python -m mcp.mock.run_mcp_bridge --host 192.168.1.100 --port 9090`，需替换为现场网关地址。该 CLI 不提供交互式任务控制；Web 对话集成另见[现场联调指南](live_e2e_debugging_guide.md)。
+2. **任务管理与保护字段**：普通任务默认 `fail_stop=true`；`SUSPEND`、`RESUME`、`DELETE` 使用 `/task_cmd` 上的 `TASK_MANAGE=0`，管理命令由构造器设置 `priority=0`、`fail_stop=false`。字段值不替代对现场控制器行为的验证。
 3. **传感器坐标映射校验**：实机运行前需确认物理机器人的传感器坐标系（如 `odom` 或水面 GPS/DVL 基准）与位姿映射规则一致。
+
+本轮协议与对话集成验证的命令和结果见[适配说明](adapter_specification_report.md#5-验证记录与历史统计)。当前 MCP 子套件可用 `python -m pytest -q mcp/ros-mcp/tests` 重新运行；用例数量及通过、跳过、失败情况以当次输出为准。本文不将旧 120 项结果当作当前验收结果。

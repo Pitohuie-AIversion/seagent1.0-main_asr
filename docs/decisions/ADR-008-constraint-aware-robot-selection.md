@@ -4,13 +4,19 @@
 
 已确认，2026-08-13。
 
+2026-09-30 实现复核：本 ADR 的完整约束驱动候选过滤尚未体现在当前候选域入口，不能登记为全部实现。`SelectionEngine.get_feasible_robot_selection_domain()` 按 `required_capabilities` 筛选系列并组装四级树，不调用型号可行性评估来按 `water_depth`、`payload` 或海床剔除型号，也不按软警告排序；`rejected_variants` 当前为空列表。独立评估器中存在约束逻辑不代表该候选入口已经使用它。
+
+原方案中的“十分钟内按实时状态预选”也已调整：当前开始时间窗口为未来 0～60 分钟，且仅 `purpose != "interactive"` 时执行 Unit 运行过滤；默认交互候选不会因当前忙闲而消失。无可用 Unit 的型号仍保留并标记 `has_available_units=false`，没有按本 ADR 目标向上删除所有空分支。以下保留原始决策与验收要求；当前行为以上述复核说明及代码为准，发布和派发仍需 Validator / 遥测门禁独立校验。
+
+当前依据：[selection_engine.py](../../src/knowledge/selection_engine.py)、[交互候选回归](../../tests/test_interactive_robot_selection_no_hard_violation.py)、[当前设计契约](../current_design_contract.md)。
+
 ## 背景与问题
 
-当前机器人选择已经能够根据任务模板中的 `allowed_robot_classes` 和
+决策提出时，机器人选择已经能够根据任务模板中的 `allowed_robot_classes` 和
 `required_capabilities` 构造 `Class -> Family -> Variant -> Unit` 静态候选树，
 并按每层候选数执行“0 个失败关闭、1 个自动绑定、多个等待消歧”。
 
-但是候选树尚未使用已经收集的任务条件，也没有在即时任务中使用 Unit 的
+当时的候选树尚未使用已经收集的任务条件，也没有在即时任务中使用 Unit 的
 在线、空闲和状态时效信息。因此系统可能在已有条件足以唯一确定机器人时仍要求
 用户选择，也可能把当前不可用的 Unit 暴露为候选。
 

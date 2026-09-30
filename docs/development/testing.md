@@ -2,6 +2,8 @@
 
 本文档提供 SEAgent 系统开发环境搭建、依赖区别、单元测试与全量回归测试命令、CI 对应的测试阶段以及测试排错指南。
 
+核对日期：2026-09-30。以下描述的是当前测试入口；历史报告中的通过数不是本次工作区的测试结果。
+
 ---
 
 ## 1. Python 环境与依赖配置
@@ -38,7 +40,7 @@ python -m compileall -q src tests mcp/ros-mcp mcp/operation-time-window
 ### 2.2 核心单元测试
 
 运行项目全量单元测试与集成测试套件。pytest 会在收集测试模块前自动创建与用户
-运行目录分离的一次性 result/task/history 目录：
+运行目录分离的一次性 result/task/history 目录和遥测 `state.yaml` 副本：
 
 ```bash
 TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q
@@ -71,36 +73,38 @@ RUN_COPERNICUS_LIVE_TEST=1 python -m pytest -q mcp/operation-time-window/tests_m
 `outside/` 中的第三方 ROS 库未纳入版本控制。其比较测试默认跳过；准备好这些源码和依赖后，
 可设置 `SEAGENT_RUN_EXTERNAL_COMPARISON=1` 运行。仓库自身的适配器和模拟下发测试始终默认运行。
 
+显式开启 Copernicus 实测后，缺少凭据或提供方失败会使该测试失败，不会降为模拟通过。真实模型、ASR 和浏览器验收由 [.github/workflows/real-e2e.yml](../../.github/workflows/real-e2e.yml) 使用独立 GPU Runner 执行；普通 pytest 通过不代表这条真实链路已验证。
+
 ### 2.3 常用单测试模块运行
 
 如果开发过程中只需要针对特定子模块进行调试，可直接通过 `pytest` 指定模块文件：
 
 - 意图路由测试：
   ```bash
-  pytest tests/test_intent_routing_matrix.py -v
+  python -m pytest tests/test_intent_routing_matrix.py -v
   ```
 - SlotStore 状态测试：
   ```bash
-  pytest tests/test_slot_consistency.py -v
+  python -m pytest tests/test_slot_consistency.py -v
   ```
 - TaskIntent 原子发布测试：
   ```bash
-  pytest tests/test_phase1_atomic_publish_final_closeout.py -v
+  python -m pytest tests/test_phase1_atomic_publish_final_closeout.py -v
   ```
 - ASR 规范化测试：
   ```bash
-  pytest tests/test_asr_normalizer.py -v
+  python -m pytest tests/test_asr_normalizer.py -v
   ```
 - 领域子包按需加载测试：
   ```bash
-  pytest tests/test_package_imports.py -v
+  python -m pytest tests/test_package_imports.py -v
   ```
 
 ---
 
 ## 3. GitHub Actions CI 测试阶段
 
-系统的 CI 流水线配置文件位于 [.github/workflows/tests.yml](../../.github/workflows/tests.yml)，在代码 `push` 或提交 `pull_request` 时自动触发。
+系统的 CI 流水线配置文件位于 [.github/workflows/tests.yml](../../.github/workflows/tests.yml)，在配置匹配的分支 `push` 或面向 `main` 的 `pull_request` 时触发。该文件设置了文档等路径的 `paths-ignore`；仅修改被忽略路径不保证触发测试，也不能据此宣称 CI 通过。
 
 ### 3.1 CI 阶段与本地命令对照表
 
@@ -140,10 +144,12 @@ flowchart LR
 ### 5.1 排查方式
 1. **优先查看完整 Traceback**：单元测试失败时，避免仅根据 Assertion 报错诊断，应结合终端日志查看完整的异常调用栈。
 2. **检查输出日志**：CI 运行会保留并上传 `full_test.log` 和 `pytest-results.xml`，可作为审计对比。
+3. **区分结果类型**：收集错误、进程 `Killed`、超时或中断均不等于套件通过。记录退出码、已执行范围与完整日志；仅有 `Killed` 不足以断定具体资源原因。`Unknown config option: asyncio_mode` 通常意味着当前 Python 环境缺少 `pytest-asyncio`，应核对 `test` extra 是否完整安装。
 
 ### 5.2 运行输出与持久化路径处理
 测试运行过程中生成的中间文件与任务 Intent 输出目录通过 [src/dispatch/result_paths.py](../../src/dispatch/result_paths.py) 统一管理：
-- 用户运行优先读取 `SEAGENT_RESULT_DIR`，未配置时使用 `/root/autodl-tmp/result`。
+- 用户运行优先读取 `SEAGENT_RESULT_DIR`；未配置时优先使用 `/root/autodl-tmp/result`，默认目录不可写时按 helper 规则回退至仓库 `result/`。显式配置不可写时直接失败。
 - pytest 和包级 unittest 在导入业务模块前统一覆盖 result/task/history 为测试专用目录。
+- 引导逻辑同时将原遥测文件复制进测试目录，并覆盖 `SEAGENT_STATE_FILE` 指向副本；不会把继承的真实状态文件当作测试写入目标。
 - 子进程继承同一测试目录；未设置 `SEAGENT_TEST_RESULT_DIR` 时，测试结束自动清理。
 - 需要保留测试产物时，可显式设置 `SEAGENT_TEST_RESULT_DIR`，不得指向用户运行目录。

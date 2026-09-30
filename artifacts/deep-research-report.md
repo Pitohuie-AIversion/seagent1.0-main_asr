@@ -1,8 +1,12 @@
 # 大模型厂商如何实现“时间的自然语言对话写入”：技术调研、代码风险审查与可执行改造方案
 
+> **归档状态（2026-09-30 复核）**：这是 2026-08-25 的历史调研草案。成文时未读取本仓库，正文也明确说明未取得代码和错误样本；其中“风险”“修复方案”和示例均不是对 SEAgent 当前实现的审计结论。
+>
+> **来源复核补充（2026-09-30）**：本次重新查阅官方标准、厂商文档和工具项目，修正下述部分主张，结果与可用 URL 见[来源核对说明](temporal-research-source-review.md)。正文的“旧引文”链接仅指向[导出标记存档](temporal-research-legacy-citations.json)：37 处原始标记、32 个不同 ID 均保留，但原 URL 映射仍未恢复；新找到的资料不冒充旧来源。以下方案仍是历史设计建议，当前实现请查阅[架构总览](../docs/architecture/overview.md)与来源核对说明中的代码对照。
+
 ## 执行摘要
 
-截至 **2026 年 8 月 25 日**，OpenAI、Google/DeepMind、Anthropic、Meta、Microsoft 等主流厂商公开的 API、模型格式与 Agent/Tool 文档呈现出一个非常一致的工程方向：**不会把“让大模型直接算出一个 UTC 时间戳并写数据库”作为可靠的生产级时间方案，而是把大模型放在“语义理解/工具参数生成”这一层，把真正的时间归一化、时区换算、夏令时处理、重复规则和最终写入交给应用程序的确定性代码。** OpenAI 和 Anthropic 提供严格 schema 的工具调用，Google Gemini 同时提供 Structured Output、Function Calling 和多轮状态，Meta 的 Llama 官方 prompt format 明确支持工具调用并在系统上下文中注入“Today Date”，Microsoft 则进一步提供了 `TimePlugin` 和 Recognizers-Text 这样的确定性时间组件。citeturn16search0turn18search0turn16search1turn16search5turn11search1turn17search1turn15search0
+本草案成文于 **2026 年 8 月 25 日**；以下关键事实于 2026-09-30 另行核对。厂商公开 API 能支持结构化参数与工具执行边界的说明，**不能据此推断其闭源内部时间算法，也不能证明厂商共同采用了本文完整方案。把语义抽取、时间归一化、歧义处理与写入分开，是本文提出的应用设计。** OpenAI 和 Anthropic 提供严格 schema 的工具调用，Google Gemini 同时提供 Structured Output、Function Calling 和多轮状态，Meta 的 Llama 官方 prompt format 明确支持工具调用并在系统上下文中注入“Today Date”，Microsoft 则进一步提供了 `TimePlugin` 和 Recognizers-Text 这样的确定性时间组件。[旧引文01](temporal-research-legacy-citations.json)
 
 这意味着，“明天下午三点提醒我开会”真正应该经历的是：
 
@@ -12,7 +16,7 @@
 
 > **自然语言 → LLM 生成 `2026-08-26T07:00:00Z` → 直接写库**
 
-两者最大的区别在于：**Structured Output 保证的是“JSON 长得对”，不保证“时间算得对”**。Google 的官方 Structured Output 文档甚至明确要求应用对 schema-compliant 的输出继续做语义校验；OpenAI 的 Structured Outputs/strict function calling 同样解决的是模式符合性问题。citeturn18search2turn18search0turn16search0
+结构化输出主要约束响应格式，**不能保证时间语义正确**；还需处理拒绝、截断和不受支持的 schema。Google 的官方 Structured Output 文档要求应用对 schema-compliant 的输出继续做语义校验；OpenAI 的 Structured Outputs/strict function calling 同样不能替代这层校验。[旧引文02](temporal-research-legacy-citations.json)
 
 对于你的代码库，由于当前没有提供仓库路径、文件或实际错误样本，因此本报告无法声称已经定位到具体代码行。现阶段可以做的是**代码架构级风险审查和可直接实施的改造设计**。真正进行 repo-level audit 时，优先需要：
 
@@ -22,9 +26,9 @@
 
 1. 每次解析都显式携带不可变的 `reference_instant + timezone_id + locale`；
 2. LLM 输出**语义 IR**，而不是只输出最终 UTC timestamp；
-3. 使用 **IANA 时区 ID**，绝不能仅存固定 UTC offset；
+3. 需要保留未来地区民用时间意图时，保存原始本地时间及 **IANA 时区 ID**，并明确时区规则更新策略；仅表示一个已确定时间点时，UTC 或带 offset 的 timestamp 可以足够；
 4. 单次事件保存 UTC instant，同时保留原始 local datetime 和 IANA timezone；
-5. 重复事件以 **本地墙钟时间 + TZID + RFC 5545 RRULE** 为主语义，不能把无限重复提前压平成 UTC，也不应把 cron 当用户日历语义的唯一表示；citeturn17search2turn17search3
+5. 对“某地区每周固定本地钟点”这类重复事件，采用 **本地时间 + TZID + RRULE** 表达；RFC 5545 也允许 UTC 和 floating time，TZID 不必然是 IANA 名称。实际表示须按业务语义选择；[旧引文03](temporal-research-legacy-citations.json)
 6. DST gap/fold、日期与星期冲突、“3点”“下周一”“月底”等情况必须进入语义校验，而不是静默猜测；
 7. 中文常见表达用**规则/确定性解析器 + LLM 上下文理解**混合处理，不建议单押任何一个时间 NLP 库；
 8. 所有真正执行的 `create/update reminder/event` 必须经过最后一层 deterministic validator。
@@ -59,7 +63,7 @@
 
 关键点是，**`2026-08-26 15:00 Asia/Shanghai` 才是用户表达的原始语义；`07:00Z` 是它在时间轴上的投影。**
 
-RFC 3339 定义的是互联网协议中的“时间点 timestamp”，要求时间具有明确 UTC 关系，并明确指出它**不覆盖时间区间**；RFC 也强调本地时区/DST 法规可能变化，数字 offset 比模糊的字母时区缩写更适合互操作。citeturn20view0 RFC 5545 iCalendar 则针对日历事件和重复规则定义了 `DTSTART`、`RRULE` 等语义，因此对“每周一上午 9 点”这一类表达，RRULE 比单一 RFC 3339 timestamp 更接近真实领域模型。citeturn17search2turn17search6
+RFC 3339 定义的是互联网协议中的“时间点 timestamp”，要求时间具有明确 UTC 关系，并明确指出它**不覆盖时间区间**；RFC 也强调本地时区/DST 法规可能变化，数字 offset 比模糊的字母时区缩写更适合互操作。[旧引文04](temporal-research-legacy-citations.json) RFC 5545 iCalendar 则针对日历事件和重复规则定义了 `DTSTART`、`RRULE` 等语义，因此对“每周一上午 9 点”这一类表达，RRULE 比单一 RFC 3339 timestamp 更接近真实领域模型。[旧引文05](temporal-research-legacy-citations.json)
 
 **必须区分的时间类型**如下：
 
@@ -68,7 +72,7 @@ RFC 3339 定义的是互联网协议中的“时间点 timestamp”，要求时�
 | 绝对时间点 | “8 月 31 日上午 9 点” | LocalDateTime + TZID → Instant |
 | 相对时间点 | “明天下午 3 点” | reference time + calendar operation |
 | 持续时间 | “半小时后” | Duration |
-| 时间区间 | “下周一 9 点到 11 点” | `[start, end)` |
+| 时间区间 | “下周一 9 点到 11 点” | 明确端点包含规则；iCalendar VEVENT 使用 `[start, end)`，不推广到全部业务区间 |
 | 日期 | “明天交报告” | LocalDate，不应强行变成午夜 UTC |
 | 模糊时间 | “明早”“晚上”“月底” | range / fuzzy semantic + policy |
 | 重复时间 | “每周一 9 点” | DTSTART + TZID + RRULE |
@@ -78,9 +82,9 @@ RFC 3339 定义的是互联网协议中的“时间点 timestamp”，要求时�
 
 这里有几个尤其容易被低估的边界。
 
-**“半小时后”和“明天这个时候”不是同一种运算。** 前者通常表示 elapsed duration，即时间轴上加 30 分钟；后者更接近 calendar arithmetic，即本地日历日期加一天、尽量维持墙钟时间。跨 DST 时，两者可能产生不同的真实经过时长。IANA 时区数据库会随着各国政治决策修改 UTC offset 和 DST 规则，因此不能用一个固定的 `-08:00` 代替 `America/Los_Angeles`。citeturn17search3turn17search7
+**“半小时后”和“明天这个时候”不是同一种运算。** 前者通常表示 elapsed duration，即时间轴上加 30 分钟；后者更接近 calendar arithmetic，即本地日历日期加一天、尽量维持墙钟时间。跨 DST 时，两者可能产生不同的真实经过时长。IANA 时区数据库会随着各国政治决策修改 UTC offset 和 DST 规则，因此不能用一个固定的 `-08:00` 代替 `America/Los_Angeles`。[旧引文06](temporal-research-legacy-citations.json)
 
-**DST 会使一个合法格式的 local datetime 根本不存在，或者存在两次。** Python `zoneinfo` 官方文档用 `America/Los_Angeles` 的秋季回拨展示了同一个 `01:00` 可对应两个不同 offset，并通过 `fold=0/1` 区分。TC39 Temporal 同样显式设计了 `earlier / later / compatible / reject` 四种 disambiguation 策略。citeturn19search0turn19search1
+**DST 会使一个合法格式的 local datetime 根本不存在，或者存在两次。** Python `zoneinfo` 官方文档用 `America/Los_Angeles` 的秋季回拨展示了同一个 `01:00` 可对应两个不同 offset，并通过 `fold=0/1` 区分。TC39 Temporal 同样显式设计了 `earlier / later / compatible / reject` 四种 disambiguation 策略。[旧引文07](temporal-research-legacy-citations.json)
 
 因此，时间解析的正确心智模型应该是：
 
@@ -103,7 +107,7 @@ flowchart LR
 
 这也是我建议你代码库最终收敛的目标结构。
 
-## 主流大模型厂商实现方式对比
+## 主流大模型厂商公开接口与应用建议
 
 公开资料并没有显示这些厂商在 API 内部开放了类似“GeminiTemporalParser”或“GPTDateParser”的专有确定性时间解析器。能够可靠从官方资料确认的是，厂商普遍公开的是**工具调用、结构化输出、上下文管理和应用侧执行边界**。因此下面的“时间实现方法”应该理解为**公开可复现的应用架构模式**，而不是对闭源模型内部算法的逆向猜测。
 
@@ -112,10 +116,10 @@ flowchart LR
 | **OpenAI** | Function Calling + Structured Outputs；`strict:true` 约束工具参数 schema | Responses/对话历史可保留前文，因此可携带“刚才那个时间”“改到四点”等语境 | 官方工具机制本身不替应用决定用户 timezone，应由上下文/工具参数提供 | JSON Schema；Structured Outputs 支持 `date-time`、`date`、`time` 等格式 | LLM 负责语义 IR；strict schema 后仍必须做业务时间校验 |
 | **Google / DeepMind** | Gemini Function Calling + Structured Output；Interactions API | `previous_interaction_id` 可在服务端连续维护历史 | 时区仍应作为应用上下文传入；工具执行在模型与应用之间形成明确边界 | JSON Schema，并支持 `format: date-time/date/time`；Gemini 3 可组合工具调用和 Structured Output | 适合多轮“改时间”；但 Google 官方明确要求继续做 semantic validation |
 | **Anthropic** | Claude Tool Use，工具定义使用 JSON `input_schema`；支持 `strict:true` | Messages/tool lifecycle 支持多轮工具交互 | 应用执行 client tool，因此最终 timezone 和写入可完全由应用控制 | JSON Schema + strict tool use | 可利用详细 tool description / input examples 明确时间语义；不要把流式未完成参数直接执行 |
-| **Meta** | Llama 官方 prompt format 支持 zero-shot function calling | 对话历史由推理框架维护 | Llama 官方 prompt 格式示例把 “Today Date” 放进 system context，说明当前日期必须成为显式 grounding | Tool-call 参数结构；实际 executor 在模型之外 | 自托管 Llama 尤其需要自己实现 context、normalizer 和 validator |
-| **Microsoft** | Azure OpenAI Structured Outputs / Function Calling；Semantic Kernel / Agent Framework；Recognizers-Text | Agent/function layer 可维护上下文 | Semantic Kernel `TimePlugin` 明确提供 local now、UTC now、timezone name、offset | JSON Schema，同时有 Recognizers-Text 做 date/time recognition & resolution | 五家里公开组件最完整：LLM + 时间工具 + 确定性 NLP parser 很适合混合架构 |
+| **Meta** | Llama 3.3 70B Instruct 官方 prompt format 展示 zero-shot function calling | 对话历史由推理框架维护 | 该型号示例把 “Today Date” 放进 system context，提供显式参考日期 | Tool-call 参数结构；实际 executor 在模型之外 | 按具体型号核对协议；应用提供 context、normalizer 和 validator |
+| **Microsoft** | Azure OpenAI Structured Outputs / Function Calling；Semantic Kernel / Agent Framework；Recognizers-Text | Agent/function layer 可维护上下文 | Semantic Kernel `TimePlugin` 提供当前时间和本地时区信息；不自动代表用户时区 | JSON Schema，同时有 Recognizers-Text 做 date/time recognition & resolution | 可组合时间插件和解析器；本文未建立跨厂商完整性排名 |
 
-OpenAI 的 Function Calling 文档明确推荐启用 `strict:true`；严格模式借助 Structured Outputs 使工具参数服从 schema，并要求关闭额外字段等约束。OpenAI 同时明确区分模型生成函数参数和**应用真正执行函数**这一边界。citeturn16search0turn18search0 这非常适合设计：
+OpenAI 的 Function Calling 文档明确推荐启用 `strict:true`；严格模式借助 Structured Outputs 使工具参数服从 schema，并要求关闭额外字段等约束。OpenAI 同时明确区分模型生成函数参数和**应用真正执行函数**这一边界。[旧引文08](temporal-research-legacy-citations.json) 这非常适合设计：
 
 ```json
 {
@@ -135,23 +139,23 @@ OpenAI 的 Function Calling 文档明确推荐启用 `strict:true`；严格模�
 }
 ```
 
-Google 当前推荐的新开发路径是 Gemini Interactions API；官方文档说明可以利用 `previous_interaction_id` 保留会话历史，而 `tools`、system instruction 等仍需要按 interaction 配置。Function Calling 与 Structured Output 也可组合使用。citeturn16search4turn16search1turn18search2 更关键的是 Google 官方 Structured Output 文档直接提醒：**结构合法不等于值的语义正确，最终结果应在应用代码中验证。** citeturn18search2
+Google 当前推荐的新开发路径是 Gemini Interactions API；官方文档说明可以利用 `previous_interaction_id` 保留会话历史，而 `tools`、system instruction 等仍需要按 interaction 配置。Function Calling 与 Structured Output 也可组合使用。[旧引文09](temporal-research-legacy-citations.json) 更关键的是 Google 官方 Structured Output 文档直接提醒：**结构合法不等于值的语义正确，最终结果应在应用代码中验证。** [旧引文10](temporal-research-legacy-citations.json)
 
 这其实是本问题最重要的厂商级共识之一。
 
-Anthropic 的工具由 `input_schema` 定义，可以补充 `input_examples`，而 `strict:true` 能用于严格工具 schema；Claude 生成 `tool_use`，真正的 client-side 工具仍由应用执行。citeturn16search2turn16search5turn16search12 Anthropic 的 fine-grained tool streaming 还有一个值得时间写入系统特别警惕的细节：流式工具参数在完整结束前可能是**不完整甚至暂时无效的 JSON**，因此绝不能边流边执行“创建日程”这样的有副作用操作。citeturn16search16
+Anthropic 的工具由 `input_schema` 定义，可以补充 `input_examples`，而 `strict:true` 能用于严格工具 schema；Claude 生成 `tool_use`，真正的 client-side 工具仍由应用执行。[旧引文11](temporal-research-legacy-citations.json) Anthropic 的 fine-grained tool streaming 还有一个值得时间写入系统特别警惕的细节：流式工具参数在完整结束前可能是**不完整甚至暂时无效的 JSON**，因此绝不能边流边执行“创建日程”这样的有副作用操作。[旧引文12](temporal-research-legacy-citations.json)
 
-Meta 的开放模型更能看出这条边界。Llama 官方仓库明确给出了 zero-shot function calling 格式，而工具本身由外部 executor 执行；Llama 3 系列官方 prompt format 还显式包含当前日期上下文，例如 `Today Date`。citeturn17search0turn17search4turn11search1 这说明一个很实用的原则：**不要期待模型“知道现在是什么时候”，应该显式注入解析基准。**
+Meta 的 Llama 3.3 70B Instruct 官方格式文档给出了 zero-shot function calling 示例，工具本身由外部 executor 执行；其中还包含当前日期上下文，例如 `Today Date`。[旧引文13](temporal-research-legacy-citations.json) 这支持应用显式注入解析基准的建议，但不能推广成所有 Llama 型号具有相同工具协议。
 
-Microsoft 除 Azure Structured Outputs 之外还有一个值得特别借鉴的组件设计：Semantic Kernel 的 `TimePlugin` 明确暴露 `Now`、`UtcNow`、`Today`、`TimeZoneName`、`TimeZoneOffset` 等函数。citeturn17search1turn17search5 Microsoft Recognizers-Text 则专门做 numbers/date-time 等实体的 recognition + resolution，官方项目列出的完整支持语言包含中文。citeturn15search0 它体现的是很经典的混合路线：
+Microsoft 除 Azure Structured Outputs 之外还有一个值得特别借鉴的组件设计：Semantic Kernel 的 `TimePlugin` 明确暴露 `Now`、`UtcNow`、`Today`、`TimeZoneName`、`TimeZoneOffset` 等函数。[旧引文14](temporal-research-legacy-citations.json) Microsoft Recognizers-Text 则专门做 numbers/date-time 等实体的 recognition + resolution，官方项目列出的完整支持语言包含中文。[旧引文15](temporal-research-legacy-citations.json) 它体现的是很经典的混合路线：
 
 > LLM 理解“用户想创建/修改什么”  
 > + 确定性组件解析“这段文本对应什么时间”  
 > + 应用程序决定最终怎么写。
 
-但不要因此假定 Microsoft 的 parser 可以解决全部中文问题；其项目 issue 中有直接例子显示，“下个星期/下星期”等中文表达曾存在未识别问题。citeturn15search4 这正说明**任何规则库都需要用你的真实中文语料进行基准测试。**
+原草案曾引用“下个星期/下星期”未识别的项目 issue，但对应 URL 尚未恢复，本轮未核实其具体版本、问题状态或修复情况。[旧引文16](temporal-research-legacy-citations.json) 选用规则库仍应以目标中文语料做基准测试，不能把这条待核实的历史引用当成现版本缺陷。
 
-由此可以把五家共同实践概括为四层：
+结合这些公开接口，本文建议将应用处理分为四层；这不是对五家内部实现的认定：
 
 **第一层：Grounding。** 给模型明确的“现在”、用户 timezone、locale 和会话时间锚点。
 
@@ -168,18 +172,18 @@ Microsoft 除 Azure Structured Outputs 之外还有一个值得特别借鉴的�
 | 工具 | 主要方法 | 相对时间/归一化 | 中文 | 优点 | 局限与建议 |
 |---|---|---|---|---|---|
 | **HeidelTime** | 手工规则 + domain-sensitive temporal tagging | TIMEX3；根据文档 domain 使用不同策略 | 有手工中文资源；另有大量自动生成语言资源 | 可解释、稳定、文档时间抽取成熟 | 更偏“文本时间标注”而非聊天动作写入；JVM/UIMA；需要评估许可证和部署成本 |
-| **SUTime** | 确定性规则；基于 TokensRegex | 使用 reference time 归一化，例如 next Wednesday → concrete datetime；TIMEX3 | 官方内置规则主要英语 | 算法透明、强可重复性、方便新增规则 | 中文不是官方强项；Java/CoreNLP 依赖较重 |
-| **Duckling** | regex/token predicates + composable production rules | Time/Duration 等维度输出结构化候选 | 有中文规则，但维度完整性因语言而异 | 快、可解释、非常适合 NLU fast path | Haskell 部署成本；中文复杂区间仍需补规则与回归 |
+| **SUTime** | 确定性规则；基于 TokensRegex | 使用 reference time 归一化，输出 TIMEX3 | 官方 SUTime 页面所述随附规则仅英语 | 规则可检查、可扩展 | CoreNLP 整体中文支持不等于 SUTime 自带中文规则；SET 类型不等于可执行 RRULE |
+| **Duckling** | regex/token predicates + composable production rules | Time/Duration 等维度输出结构化候选 | 有中文规则，各语言维度不同 | 可作为规则解析路径候选 | 本项目未实测中文覆盖或延迟；不能据此声称更快、更准 |
 | **Chronyk** | 轻量 Python 解析 | yesterday、X hours ago 等 | 主要英语 | 极简单 | 时区表达是数字 offset 风格；版本和生态老，不建议作为新生产系统核心 |
-| **Microsoft Recognizers-Text** | 语言规则 + recognition/resolution | DateTime resolution | 官方列中文为完整支持语言之一 | 多平台、MIT、确定性、与微软生态配合好 | 中文长尾表达仍有 issue，必须实际 benchmark |
-| **dateparser / 类似现代库** | 多语言规则/locale parsing | 日期、相对日期等 | 通常较好 | Python 集成快，适合作 fallback | 不等于完整 interval/recurrence/dialogue temporal engine |
-| **chrono-node** | JS 规则型自然语言日期 parser | today/tomorrow/range 等 | 非中文主力 | Web/Node 方便，range 支持实用 | 中文产品仍需额外 parser 或 LLM |
+| **Microsoft Recognizers-Text** | 语言规则 + recognition/resolution | DateTime resolution | 项目总体列中文为完整支持语言之一 | 提供多个语言实现 | README 将 Python 标为 alpha、Java 标为 in progress；所选包的覆盖和兼容性需单独核验 |
+| **dateparser** | 多语言规则/locale parsing | 日期、相对日期和可选时间跨度检测 | 提供 zh、zh-Hans、zh-Hant 资源与中文示例 | 可通过 settings 指定参考时间及解析行为 | 本项目中文准确率未测；默认补齐、无时区结果和文本搜索限制需显式处理 |
+| **chrono-node** | JS/TS 自然语言日期 parser | start/end、参考时间等 | 当前 README 列简体与繁体中文为部分支持，默认入口为英语 | 可显式选择 zh.hans / zh.hant locale | 是否补充解析器取决于目标语料缺口，不能断言中文必须外接 parser 或 LLM |
 
-HeidelTime 官方项目明确把自己描述为 **multilingual, domain-sensitive temporal tagger**，从文档中抽取时间表达并归一化为 TIMEX3，同时包含手工中文资源；它的架构把 pattern、normalization data 和 rules 分离，因此很适合做可解释规则扩展。citeturn15search2turn15search6
+HeidelTime 官方项目明确把自己描述为 **multilingual, domain-sensitive temporal tagger**，从文档中抽取时间表达并归一化为 TIMEX3，同时包含手工中文资源；它的架构把 pattern、normalization data 和 rules 分离，因此很适合做可解释规则扩展。[旧引文17](temporal-research-legacy-citations.json)
 
-SUTime 的定位同样非常清楚：它是一个 deterministic rule-based system，用 reference time 将类似 “next Wednesday at 3pm” 的表达映射成具体时间，同时输出 DATE、TIME、DURATION、SET 等 TIMEX3 类型。citeturn15search3turn15search10 其中 `SET` 对周期性时间表达尤其有启发——自然语言的重复时间本质上不是一个 timestamp。
+SUTime 的定位同样非常清楚：它是一个 deterministic rule-based system，用 reference time 将类似 “next Wednesday at 3pm” 的表达映射成具体时间，同时输出 DATE、TIME、DURATION、SET 等 TIMEX3 类型。[旧引文18](temporal-research-legacy-citations.json) 其中 `SET` 对周期性时间表达尤其有启发——自然语言的重复时间本质上不是一个 timestamp。
 
-Duckling 则更像工程型 NLU parsing engine。官方 README 明确表示规则由 **name + pattern + production** 组成；pattern 可以对字符 regex 或 token 概念进行匹配，production 将匹配结果生成新的语义 token。Time 维度可以输出带 grain 的归一化时间。citeturn15search1 它很适合做：
+Duckling 则更像工程型 NLU parsing engine。官方 README 明确表示规则由 **name + pattern + production** 组成；pattern 可以对字符 regex 或 token 概念进行匹配，production 将匹配结果生成新的语义 token。Time 维度可以输出带 grain 的归一化时间。[旧引文19](temporal-research-legacy-citations.json) 它很适合做：
 
 ```text
 简单可确定表达
@@ -189,9 +193,9 @@ Duckling / 自研规则 fast path
 Temporal IR
 ```
 
-但官方也明确说明不同语言并非支持所有维度，因此“支持中文”绝不能理解成“中文所有时间表达都正确”。citeturn15search1
+但官方也明确说明不同语言并非支持所有维度，因此“支持中文”绝不能理解成“中文所有时间表达都正确”。[旧引文20](temporal-research-legacy-citations.json)
 
-Chronyk 的设计明显不适合承担现代时区系统核心职责：官方仓库示例主要使用 `timezone=0` 或以“秒数 offset”修改 timezone，其 setup 元数据仍面向早期 Python 3.x。citeturn19search2turn19search5 对只解析 “yesterday” 的小工具没问题，但对于 DST、IANA timezone、跨国日历和重复事件，建议直接排除。
+Chronyk 官方示例主要使用秒数 offset 表示 timezone，未在该接口说明 IANA 区域时区语义；setup 的旧 Python 分类器也不能单独证明当前版本兼容性。[旧引文21](temporal-research-legacy-citations.json) 因此本文暂不将它作为区域时区和重复事件处理的核心；这是方案取舍，不是对该库全部用途或运行兼容性的结论。
 
 综合来看，**你的系统不应该在“规则库”和“LLM”之间二选一。**
 
@@ -279,7 +283,7 @@ RRULE/Calendar layer 擅长：
 | **上下文只保留纯文本** | “改到四点”重新从零解析 | 不知道修改哪个时间对象 | 高 |
 | **LLM confidence 当真概率** | `0.92 → 自动写` | 未校准概率造成误执行 | 中高 |
 
-Python 官方文档明确指出 naive datetime 本身没有足够信息确定它相对于其他时间的位置。citeturn19search3 因此代码中出现以下类型值得直接做高危扫描：
+Python 官方文档明确指出 naive datetime 本身没有足够信息确定它相对于其他时间的位置。[旧引文22](temporal-research-legacy-citations.json) 因此代码中出现以下类型值得直接做高危扫描：
 
 ```python
 datetime.now()
@@ -310,7 +314,7 @@ dt.replace(tzinfo=...)
 }
 ```
 
-这类冗余字段冲突问题与 RFC 3339 对日期中加入 weekday 造成不一致风险的讨论本质相同。citeturn20view0
+这类冗余字段冲突问题与 RFC 3339 对日期中加入 weekday 造成不一致风险的讨论本质相同。[旧引文23](temporal-research-legacy-citations.json)
 
 ## 可执行修复方案、代码、测试与迁移
 
@@ -468,9 +472,9 @@ start_at_utc = ...
 utc_offset = +08:00
 ```
 
-IANA tzdb 会根据政治决策更新时区边界、UTC offsets 和夏令时规则，所以 IANA zone ID 才能表达用户的 civil-time intent。citeturn17search3
+IANA tzdb 会根据政治决策更新时区边界、UTC offsets 和夏令时规则；对需要保留未来地区本地日程意图的应用，本方案建议保存区域 ID、原始本地值及规则更新政策。单个 UTC instant 与固定 offset 无法单独表达这些未来区域规则。[旧引文24](temporal-research-legacy-citations.json)
 
-RFC 5545 的 recurrence model 则适合表示用户日历语义。citeturn17search2 例如：
+RFC 5545 的 recurrence model 则适合表示用户日历语义。[旧引文25](temporal-research-legacy-citations.json) 例如：
 
 ```text
 DTSTART;TZID=Asia/Shanghai:20260831T090000
@@ -491,7 +495,7 @@ RRULE:FREQ=WEEKLY;BYDAY=MO
 
 **Python 示例：DST-safe 的本地时间解析。**
 
-下面的实现只有标准库依赖，重点是证明“local datetime → instant”必须先检测 0/1/2 个合法候选。
+下面的标准库示例通过 UTC 回转检查本地时间的 0/1/2 个候选；它实现的是本方案的歧义检查策略，不是唯一合法策略。2026-09-30 的 7 项固定检查见[来源核对说明](temporal-research-source-review.md)，未据此证明所有时区规则都已覆盖。
 
 ```python
 from __future__ import annotations
@@ -584,7 +588,7 @@ def resolve_local_datetime(
     )
 ```
 
-Python 官方 `zoneinfo` 的 `fold` 就是为了表示 DST 回拨造成的重复时间；这一思路与 TC39 Temporal 对 `earlier/later/reject` 的显式 disambiguation 一致。citeturn19search0turn19search1
+Python 官方 `zoneinfo` 的 `fold` 用于区分 offset 回拨造成的重复时间（不限于 DST）；构造器和 `replace(tzinfo=...)` 本身不会拒绝 gap，这一思路与 TC39 Temporal 对 `earlier/later/reject` 的显式 disambiguation 一致。[旧引文26](temporal-research-legacy-citations.json)
 
 业务层应该是：
 
@@ -619,7 +623,9 @@ DST fold                 → reject / 需要确认
 显式带 offset 的输入      → 验证 offset 和 timezone 是否一致
 ```
 
-而不是 Temporal 默认的 `compatible` 静默修复，因为“自动帮用户把 02:30 改成 03:30”在日程领域很难被认为是安全语义。TC39 Temporal 提供 `reject` 正说明这种策略应该由应用明确决定。citeturn19search1
+本方案在新建或修改日程时倾向拒绝并澄清；Temporal 的 `compatible` 也是合法选择，应由应用明确约定，不能据标准要求所有日历产品一律拒绝。[旧引文27](temporal-research-legacy-citations.json)
+
+这层录入策略与标准日历文件的解释应分开：RFC 5545 对显式 DATE-TIME 的 fold/gap 有规定；RRULE 生成的无效日期或缺失本地时间须跳过且不计数。“每月31日”也不能默认为月末夹取。上面的 DTSTART/RRULE 只是片段，完整交换还需相应日历结构与时区定义。具体标准条款见[来源核对说明](temporal-research-source-review.md)。
 
 **建议建立如下黄金测试集。**
 
@@ -656,9 +662,11 @@ week_start        = MONDAY
 | 2020-11-01 01:30 America/Los_Angeles | DST fold | `AMBIGUOUS`, 两个 instant |
 | 03/04 下午3点 | locale ambiguity | 不依赖隐式美式/欧式日期格式 |
 
-Python 官方文档直接使用 2020 年 11 月 1 日 Los Angeles 的 `01:00` 展示两个不同 offset，因此这个 DST fold 是很好的永久回归样本。citeturn19search0 RFC 3339 也专门指出类似 `10/11/1996` 的本地日期格式不适合全球互操作，因为不同地区解释不同。citeturn20view0
+Python 官方文档直接使用 2020 年 11 月 1 日 Los Angeles 的 `01:00` 展示两个不同 offset，因此这个 DST fold 是很好的永久回归样本。[旧引文28](temporal-research-legacy-citations.json) RFC 3339 也专门指出类似 `10/11/1996` 的本地日期格式不适合全球互操作，因为不同地区解释不同。[旧引文29](temporal-research-legacy-citations.json)
 
 **模型 schema 本身也需要改。**
+
+2026-09-30 示例勘误：`local_time` 和 `end_local_time` 表示无 offset 的墙钟值，改用 `HH:MM:SS` pattern。JSON Schema 的 `format: time` 对应 RFC 3339 的 `full-time`，不适合直接描述这里的本地钟点；pattern 仅约束本方案的时分秒字面格式，不验证日期、时区、DST 或厂商 schema 兼容性。本次未调用任何厂商 API 验证该示例。[格式规范](https://json-schema.org/draft/2020-12/json-schema-validation#section-7.3.1)
 
 推荐：
 
@@ -686,7 +694,7 @@ Python 官方文档直接使用 2020 年 11 月 1 日 Los Angeles 的 `01:00` �
     },
     "local_time": {
       "type": ["string", "null"],
-      "format": "time"
+      "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$"
     },
     "end_local_date": {
       "type": ["string", "null"],
@@ -694,7 +702,7 @@ Python 官方文档直接使用 2020 年 11 月 1 日 Los Angeles 的 `01:00` �
     },
     "end_local_time": {
       "type": ["string", "null"],
-      "format": "time"
+      "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$"
     },
     "timezone_id": {
       "type": ["string", "null"]
@@ -734,7 +742,7 @@ Python 官方文档直接使用 2020 年 11 月 1 日 Los Angeles 的 `01:00` �
 }
 ```
 
-OpenAI strict function calling 要求对象 schema 对额外字段和 required 字段进行严格约束，因此这种 IR 也天然适合 OpenAI 的工具接口。citeturn16search0 Google、Anthropic 也支持 JSON-schema 型 structured/tool output。citeturn18search2turn16search5
+OpenAI strict function calling 对对象的额外字段和 required 字段有严格约束；这种 IR 可作为接口设计起点，但仍需按目标模型支持的 schema 子集验证。[旧引文30](temporal-research-legacy-citations.json) Google、Anthropic 也支持 JSON-schema 型 structured/tool output，各自限制不同，本示例未经过跨厂商请求测试。[旧引文31](temporal-research-legacy-citations.json)
 
 注意：字段名叫 `timezone_id` 而不是：
 
@@ -750,7 +758,7 @@ CST
 IST
 ```
 
-缩写在全球语境中可能有多义性，而且 RFC 3339 也指出字母形式 local offset 在互操作历史上存在问题。citeturn20view0
+缩写在全球语境中可能有多义性，而且 RFC 3339 也指出字母形式 local offset 在互操作历史上存在问题。[旧引文32](temporal-research-legacy-citations.json)
 
 **优先修复顺序如下。**
 
@@ -784,7 +792,7 @@ stdlib datetime
 + RRULE/iCalendar library
 ```
 
-Python `zoneinfo` 是标准库对 IANA 时区数据库的支持，并且可以依赖系统数据或 `tzdata` 数据包。citeturn19search0
+Python `zoneinfo` 是标准库对 IANA 时区数据库的支持，并且可以依赖系统数据或 `tzdata` 数据包。[旧引文33](temporal-research-legacy-citations.json)
 
 JavaScript/TypeScript：
 
@@ -796,7 +804,7 @@ Temporal / Temporal polyfill
 + RRULE library
 ```
 
-TC39 Temporal 的 `ZonedDateTime` 明确把 exact time、wall-clock datetime 和 timezone 关联在一起，并且对 DST 冲突提供显式策略，因此比在新系统中继续大规模堆叠 legacy `Date` 更适合作为时间领域模型。citeturn19search1turn19search9
+TC39 Temporal 的 `ZonedDateTime` 明确把 exact time、wall-clock datetime 和 timezone 关联在一起，并且对 DST 冲突提供显式策略，因此比在新系统中继续大规模堆叠 legacy `Date` 更适合作为时间领域模型。[旧引文34](temporal-research-legacy-citations.json)
 
 **迁移建议不要一次重写全部。**
 
@@ -882,7 +890,7 @@ HTTP 200 rate
 
 > **创建后几分钟内用户主动修改时间的比例。**
 
-它往往比单纯的 parser exception 更能反映真实时间错误。
+这只是候选监测指标；用户改变计划、界面误操作也会导致修改，需结合标注反馈和写入回读分析，不能直接当作解析错误率。
 
 测试至少分四层。
 
@@ -948,9 +956,9 @@ llama/checkpoint
 → validator
 ```
 
-规则型时间解析的优势不是“它永远比 LLM 准”，而是**行为可重复、错误可以通过测试固定下来、升级不会随机改变语义**。LLM 的优势则在复杂上下文、口语省略和组合推理。因此最优路线不是替换关系，而是职责划分。
+规则型时间解析的优势不是“它永远比 LLM 准”，而是**在固定版本、规则、locale、参考时间和依赖条件下便于复现；升级规则或时区数据仍可能改变结果**。LLM 的优势则在复杂上下文、口语省略和组合推理。因此最优路线不是替换关系，而是职责划分。
 
-对固定的 tool/schema 也应尽量避免每次动态生成完全不同的结构。OpenAI 的 function/structured schema 机制以及 Anthropic 的 schema/grammar 类机制都存在 schema 处理与缓存相关的工程考量；稳定 schema 更适合生产调用。citeturn16search0turn16search2
+对固定的 tool/schema 也应尽量避免每次动态生成完全不同的结构。OpenAI 当前文档将额外首次 schema 处理延迟的说明限定于微调模型；Anthropic 文档另有 grammar 编译与缓存机制。不能把这两者泛化成所有模型、所有 API 都具有相同缓存行为；schema 变动仍应做兼容性验证。[旧引文35](temporal-research-legacy-citations.json)
 
 最终建议的生产架构可以压缩为一句话：
 
@@ -977,7 +985,7 @@ request reference clock
 + deterministic normalization rules
 ```
 
-IANA 明确说明时区数据库会随各地政治机构对 UTC offset、边界和夏令时规则的变更而更新；RFC 3339 也明确指出本地时区规则存在这种不可预测性。citeturn17search3turn20view0 因此，从长期正确性来看，**“UTC + IANA TZID + 原始 local semantic”三者同时保留**比“所有东西立刻转 UTC”更安全。
+IANA 明确说明时区数据库会随各地政治机构对 UTC offset、边界和夏令时规则的变更而更新；RFC 3339 也明确指出本地时区规则存在这种不可预测性。[旧引文36](temporal-research-legacy-citations.json) 因此，从长期正确性来看，**“UTC + IANA TZID + 原始 local semantic”三者同时保留**比“所有东西立刻转 UTC”更安全。
 
 对于你尚未提供的代码库，最高价值的实际审查顺序应当是：
 
@@ -1003,4 +1011,4 @@ conversation temporal state
 tests / observability
 ```
 
-而不是首先去找一个“比当前更聪明的日期解析库”。从 OpenAI、Google、Anthropic、Meta、Microsoft 的公开工程接口，到 SUTime、HeidelTime、Duckling、Recognizers-Text 等传统时间 NLP 系统，最一致的结论都是：**自然语言时间理解可以是概率性的，但产生实际提醒和日程之前的时间归一化必须尽可能确定性、可审计、可回放、可回归。** citeturn16search0turn18search2turn16search5turn17search0turn17search1turn15search3turn15search2turn15search1
+而不是首先去找一个“比当前更聪明的日期解析库”。从 OpenAI、Google、Anthropic、Meta、Microsoft 的公开工程接口，到 SUTime、HeidelTime、Duckling、Recognizers-Text 等传统时间 NLP 系统，可以得到本文的工程建议：**在产生实际提醒和日程之前，应明确时间语义、校验与回放边界。这个建议不等于厂商内部实现或本仓库已验收能力。** [旧引文37](temporal-research-legacy-citations.json)

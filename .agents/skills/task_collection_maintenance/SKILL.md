@@ -11,12 +11,13 @@ This skill outlines how to modify, add, or troubleshoot the fields and logic req
 Task templates are defined in [task_schemas.yaml](../../../config/task_schemas.yaml).
 - **Adding a task parameter**: Locate the relevant task type (`pipeline_inspection`, `pipeline_burial` or `tree_valve_operation`) and add the field configuration under `output_schema`.
 - **Configuring Normal vs Emergency Mode**:
-  - Normal mode fields are defined under `normal_fields` or the default fields list.
-  - Emergency mode fields represent a reduced subset of critical fields and are defined under `emergency_fields`.
+  - Normal mode fields are defined under `output_schema.normal`.
+  - Emergency mode fields are defined under `output_schema.emergency`.
   - Field metadata options:
-    - `type`: `string`, `number`, `list`, `datetime`, `coordinate`.
-    - `required`: boolean.
-    - `auto`/`fixed`: fields that are calculated automatically (e.g. `task_id`) or static, and should not be asked to the user.
+    - `key` and `label`: machine field name and display label.
+    - `type`: `string`, `number`, `list`, `datetime`, `coord`, `raw`, `tasktype`, `auto` or `fixed`.
+    - `auto`/`fixed` are type values, not boolean flags. They are omitted from user-facing missing-field prompts. `fixed_value` supplies a fixed field value.
+    - `OutputBuilder` treats a missing non-`auto`/`fixed` field in the selected schema as required; a separate `required` boolean is not the current switch.
     - `allowed_values` or `allowed_values_ref`: lists of standard values or references to asset lists (vessels, ROVs, etc.).
 
 ## 2. Maintaining Extraction Prompts & Logic (`src/extraction/extractor.py`)
@@ -27,7 +28,7 @@ Task templates are defined in [task_schemas.yaml](../../../config/task_schemas.y
   2. **JSON diff logic**: Only return the diff (new or updated parameters) of the current turn, avoiding repeating existing fields.
   3. **Continuous Commands & Clarifications**: Evaluate context history to handle continuous edits (e.g., changes to previously stated parameters) and confirmation of suggestions.
   4. **Fuzzy ROV description**: Extract ambiguous ROV names to `rov_description` first to prevent direct assignment of incorrect standard types.
-  5. **ROV model recommendations**: Recommend up to 3 candidate ROVs from `robot_fleet.yaml` based on task type and equipment metadata.
+  5. **ROV candidate resolution**: `resolve_rov_description()` delegates ambiguous descriptions to the candidate resolver. Candidate resolution is separate from the grounded recommendation flow below; do not treat a candidate as a confirmed selection.
   6. **Numbered Option Selection**: If the assistant lists numbered choices (e.g. "1.", "2.", "3.") for a parameter in the previous message, and the user replies with a digit (e.g. "1", "2"), the extractor must map the digit back to the corresponding standard option.
 
 ## 3. Customizing Parameter Normalization (`src/extraction/normalizer.py`)
@@ -43,18 +44,16 @@ Task templates are defined in [task_schemas.yaml](../../../config/task_schemas.y
 - **Schema Routing**: Route validation and field construction based on selected task types and execution mode (emergency vs. normal).
 - **Filtering System Fields**: Exclude fields marked `auto` or `fixed` from the user-facing prompts.
 - **Missing fields detection**: Compiles a list of required fields that have not yet been successfully filled, which the dialogue manager uses to generate follow-up questions.
-- **ID Generation**: Interfaces with [id_sequence.py](../../../src/dispatch/id_sequence.py) to build incremental `task_id` tags (e.g. based on date and serial sequence) while scanning existing files to prevent duplicates.
+- **ID Generation**: `preview_task_id()` provides a non-consuming estimate; `reserve_task_id()` allocates the authoritative ID at final publication through [id_sequence.py](../../../src/dispatch/id_sequence.py). Ordinary rendering must not consume a sequence number.
 - **Data Type Validation**: Verify that coordinates, numeric values, datetimes, and lists adhere to correct schemas, and references (vessels, payloads) are matched correctly in assets. Caches lookup results to improve normalization efficiency.
 
 ## 5. Pending Action & Confirm/Reject Flow (`src/session/interaction_plan.py`, `src/session/intent_router.py`)
-`InteractionPlan` carries a `pending_action` field (`"confirm"`, `"reject"`, or `None`) that signals whether the current LLM turn is closing a proposed action:
-- When `pending_action=confirm`, the dialogue manager treats the turn as the user accepting a suggested option (e.g. an assistant-recommended ROV).
-- When `pending_action=reject`, the suggestion is discarded and the dialogue continues to collect the field.
-- All other turns must have `pending_action=None`; the intent router enforces this in its prompt schema.
+`InteractionPlan.pending_action` (`"confirm"`, `"reject"`, or `None`) is the protocol for the active `pending_oilfield` candidate. Both confirmation and rejection use WRITE and are processed by [oilfield_confirmation.py](../../../src/handlers/oilfield_confirmation.py). Other turns must leave it unset.
 
-## 6. Grounded Recommendation Logic (`src/dialogue_manager.py`)
-When the intent router produces a plan with `operation=READ` and `relation=recommend`, the dialogue manager intercepts the turn in `_build_grounded_recommendation()` before forwarding to the LLM:
-- Grounds the recommendation against the live robot fleet and slot values already confirmed.
-- Returns a structured response directly if a valid recommendation can be made without a full LLM call.
-- Falls through to `_build_grounded_device_class_answer()` for device-class queries if the recommend branch does not match.
-- `_scope_confirmed_recommendation()` handles cases where the user selects a previously offered recommendation option.
+Accepting a previously offered single robot recommendation instead uses WRITE with `relation=recommend`, the same subject type/value, and visible-source validation. Soft-warning acknowledgement uses `warning_action=acknowledge`; neither action should be encoded as `pending_action`.
+
+## 6. Grounded Recommendation Logic
+[conversation_router.py](../../../src/handlers/conversation_router.py) delegates grounded recommendations and device-class answers to [grounded_catalog.py](../../../src/handlers/grounded_catalog.py). `DialogueManager` retains compatibility delegates.
+- READ with `relation=recommend` uses current legal options and confirmed task evidence. Some semantic disambiguation may still call the LLM; the result must remain inside the validated candidate domain.
+- If the recommendation branch does not match, the router may try a grounded device-class answer.
+- [equipment_scoping.py](../../../src/handlers/equipment_scoping.py) limits accepted recommendations to the preceding visible offer and the current legal candidate domain before slot mutation.

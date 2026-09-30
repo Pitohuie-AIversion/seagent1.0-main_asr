@@ -1,5 +1,7 @@
 # Equipment Unit ID Candidate Chain Implementation Plan
 
+> Historical plan dated 2026-07-17, retained for design context. The checkboxes, source line numbers, commands, skill reference and session-specific Git restrictions below describe that session; they are not the current backlog or instructions authorizing work in a new session. The referenced `superpowers:executing-plans` skill is not available in the current workspace skill catalog. Current implementation lives in the domain packages, including `src/dispatch/catalog_resolver.py`; use the [testing guide](../../development/testing.md) for current verification commands. This review did not execute the historical plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ensure `equipment_unit_id` candidates are resolved from the selected robot model and delivered intact to extraction and response prompts.
