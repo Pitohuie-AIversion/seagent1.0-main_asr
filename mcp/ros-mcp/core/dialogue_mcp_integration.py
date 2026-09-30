@@ -3,12 +3,12 @@ dialogue_mcp_integration.py
 ==============================
 SEAgent 对话管理器与 MCP ROS 2 通信闭环桥接集成器
 
-用于在 DialogueManager 完成确认发布（进入 done 阶段）时，
-自动触发 MCP 桥接服务将落盘的 TaskIntent 下发给水下机器人 ROS 2 控制系统。
+用于显式下发 DialogueManager 已归档的 TaskIntent，并可选等待机器人终态。
+挂载桥接引用不会注册自动发送回调；Web 对话的自动派发由 routes_chat 处理。
 
 能力：
 1. `attach_mcp_bridge(dialogue_manager, bridge_service)`:
-   挂载 MCP 桥接服务到 DialogueManager，实现自动下发与状态追踪。
+   挂载 MCP 桥接服务引用，供后续显式派发调用使用。
 2. `dispatch_dialogue_result(dialogue_manager, bridge_service)`:
    对已处于 done 阶段的 DialogueManager，手动触发其 final_result 的下发与闭环跟踪。
 """
@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 def attach_mcp_bridge(dialogue_manager: Any, bridge_service: SEAgentMCPBridgeService) -> None:
     """
     将 SEAgentMCPBridgeService 绑定到 DialogueManager 实例。
-    绑定后，DialogueManager 会持有 mcp_bridge 引用，
-    并在确认发布成功后记录已下发的 ROS 2 task_id。
+    绑定后，DialogueManager 会持有 mcp_bridge 引用。
+    本函数不发送任务；显式调用 dispatch_dialogue_result 后才执行派发检查。
     """
     dialogue_manager.mcp_bridge = bridge_service
     logger.info("[DialogueMCPIntegration] 成功挂载 MCP Bridge 到 DialogueManager")
@@ -43,16 +43,25 @@ def dispatch_dialogue_result(
     Args:
         dialogue_manager: DialogueManager 实例（需处于 done 阶段）
         bridge_service: SEAgentMCPBridgeService 实例（为空时取 dialogue_manager.mcp_bridge）
-        wait_finish: 是否阻塞等待机器人侧执行完成 (FINISH)
-        timeout: 最长等待超时时间（秒）
+        wait_finish: SENT 时是否等待机器人终态 (FINISH 或 FAIL)
+        timeout: 等待机器人终态的超时时间（秒），不包含派发检查耗时
 
     Returns:
         Dict[str, Any]: {
-            "status": "success" | "error",
-            "task_id": int,
+            "status": "success" | "pending" | "error",
+            "task_id": int | None,
             "final_status_item": TaskStatusItem | None,
-            "message": str
+            "message": str,
+            "ros2_dispatch": dict
         }
+
+        status 表示派发结果：SENT 映射为 success，SCHEDULED/UNKNOWN 为 pending，
+        其余为 error。success 不表示机器人执行成功；FINISH/FAIL 见 final_status_item，
+        未等待或等待超时时该值为 None。详细门禁原因保留在 ros2_dispatch 中。
+
+    Raises:
+        RuntimeError: 未提供且未挂载桥接服务。
+        ValueError: 会话不处于 done，或没有 final_result。
     """
     service = bridge_service or getattr(dialogue_manager, "mcp_bridge", None)
     if service is None:

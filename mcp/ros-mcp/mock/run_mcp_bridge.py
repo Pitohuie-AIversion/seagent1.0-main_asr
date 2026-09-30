@@ -4,12 +4,12 @@ run_mcp_bridge.py
 SEAgent MCP 独立桥接与通讯运行服务 (CLI Starter)
 
 用法：
-  python mcp/run_mcp_bridge.py [--host 127.0.0.1] [--port 9090] [--mock] [--sync-interval 1.0]
+  python -m mcp.mock.run_mcp_bridge [--host 127.0.0.1] [--port 9090] [--mock] [--sync-interval 1.0]
 
 功能：
   1. 启动 SEAgentMCPBridgeService
   2. 若指定 --mock，自动在后台拉起 MockRosbridgeServer (9091 端口)，实现无支持船环境下的全功能本地仿真调试
-  3. 提供控制台实时遥测面板与交互命令行，支持下发命令、挂起/恢复任务、查询实时姿态
+  3. 提供控制台实时遥测面板；任务下发和控制由调用方通过桥接 API 执行
 """
 
 import argparse
@@ -23,7 +23,7 @@ from pathlib import Path
 MOCK_DIR = Path(__file__).resolve().parent
 MCP_ROOT = MOCK_DIR.parent
 CORE_DIR = MCP_ROOT / "core"
-SEAGENT_ROOT = MCP_ROOT.parent
+SEAGENT_ROOT = MCP_ROOT.parent.parent
 
 for p in [MOCK_DIR, CORE_DIR, MCP_ROOT, SEAGENT_ROOT]:
     if str(p) not in sys.path:

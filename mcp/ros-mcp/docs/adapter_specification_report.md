@@ -1,9 +1,11 @@
 # SEAgent ROS 2 MCP 适配器 (SeagentROS2MCPAdapter) 技术说明文档
 
+> 文档说明：本文描述的是本地 stdio Mock 适配器。当前源码位于 `mcp/ros-mcp/mock/seagent_mcp_adapter.py`，生产对话派发使用 `mcp/ros-mcp/core/dialogue_mcp_integration.py` 和 `src/dispatch/task_dispatch.py`；历史示例与统计不作为当前实机验收结果。
+
 | 属性 | 内容 |
 |:---|:---|
 | **组件名称** | SEAgent ROS 2 MCP 适配器 (`SeagentROS2MCPAdapter`) |
-| **源码路径** | `mcp/seagent_mcp_adapter.py` |
+| **源码路径** | `mcp/ros-mcp/mock/seagent_mcp_adapter.py` |
 | **依赖协议库** | Anthropic 官方 `mcp` Python SDK (`mcp.client.stdio`) |
 | **对接网关** | `ros-mcp-server` (RobotMCP / FastMCP 框架) |
 | **底层 ROS 2 消息** | `sealien_ctrlpilot_llmbridge/msg/SysTaskCmd` (话题: `/task_cmd`) |
@@ -23,7 +25,7 @@
 [ SEAgent 任务认知层 ] ── TaskIntent v2 JSON
            │
            ▼
-[ SeagentROS2MCPAdapter ] (mcp/seagent_mcp_adapter.py)
+[ SeagentROS2MCPAdapter ] (mcp/ros-mcp/mock/seagent_mcp_adapter.py)
            │
            │  (基于 stdio / JSON-RPC 2.0 调用 MCP 工具)
            ▼
@@ -138,7 +140,7 @@
 
 ## 4. 代码测试与验证状态
 
-在 `mcp/test_public_libraries_comparison.py` 测试套件中，已对 `SeagentROS2MCPAdapter` 在三种任务类型下的协议转换、MCP 工具调用以及异步响应进行了全量验证：
+在历史测试套件 `mcp/ros-mcp/tests/test_public_libraries_comparison.py` 中，曾对 `SeagentROS2MCPAdapter` 在三种任务类型下的协议转换、MCP 工具调用以及异步响应进行了验证：
 
 - **管缆巡检用例**：`test_pipeline_inspection_mcp_dispatch` (PASS)
 - **管缆埋设用例**：`test_pipeline_burial_mcp_dispatch` (PASS)

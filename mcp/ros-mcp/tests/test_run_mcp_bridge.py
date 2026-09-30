@@ -14,6 +14,8 @@ import sys
 import time
 import pytest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 TESTS_DIR = Path(__file__).resolve().parent
 MCP_DIR = TESTS_DIR.parent
@@ -65,3 +67,27 @@ class TestRunMCPBridgeCLI:
         assert bridge.is_healthy()
         bridge.stop()
         srv.stop()
+
+    def test_runner_loads_configuration_from_project_root(self, monkeypatch):
+        """目录拆分后，CLI 仍须读取仓库 config，而非不存在的 mcp/config。"""
+        from mcp.mock import run_mcp_bridge as runner
+
+        monkeypatch.setattr(runner, "parse_args", lambda: SimpleNamespace(
+            host="127.0.0.1", port=9090, mock=False, sync_interval=0.01,
+        ))
+        state_factory = Mock()
+        bridge_factory = Mock()
+        monkeypatch.setattr(runner, "RobotStateInfo", state_factory)
+        monkeypatch.setattr(runner, "SEAgentMCPBridgeService", bridge_factory)
+        monkeypatch.setattr(runner.time, "sleep", Mock(side_effect=KeyboardInterrupt))
+
+        runner.main()
+
+        config_dir = Path(__file__).resolve().parents[3] / "config"
+        state_factory.assert_called_once_with(
+            state_file=config_dir / "state.yaml",
+            fleet_file=config_dir / "robot_fleet.yaml",
+        )
+        assert bridge_factory.call_args.kwargs["state_info"] is state_factory.return_value
+        bridge_factory.return_value.start.assert_called_once()
+        bridge_factory.return_value.stop.assert_called_once()

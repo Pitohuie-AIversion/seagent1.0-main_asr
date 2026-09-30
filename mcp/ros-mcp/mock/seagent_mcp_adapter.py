@@ -7,6 +7,8 @@ SEAgent ROS 2 MCP 适配器（测试/仿真链路）
 """
 
 import json
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -33,8 +35,8 @@ class SeagentROS2MCPAdapter:
         self.server_script_path = str(server_script_path)
 
     def _get_server_params(self) -> StdioServerParameters:
-        # 使用 seagent conda 环境的 python 启动 mock server
-        python_bin = "/root/miniconda3/envs/seagent/bin/python"
+        # 使用当前 Python 解释器或环境变量指定的解释器启动 mock server
+        python_bin = os.environ.get("PYTHON_EXECUTABLE", sys.executable)
         return StdioServerParameters(
             command=python_bin,
             args=[self.server_script_path],

@@ -1,6 +1,8 @@
 # SEAgent 深海机器人任务智能系统
 ## ROS 2 MCP 双向通信模块测试与验证报告
 
+> 历史报告：测试时间为 2026-08-21。本文保留当时的仿真结果和用例统计，不代表当前工作区的实时结果。当前目录、入口和测试命令以 [MCP 模块说明](../README.md) 为准；当前 MCP 子套件应使用 `python -m pytest -q mcp/ros-mcp/tests`，结果以当次输出为准。
+
 | 属性 | 内容 |
 |:---|:---|
 | **项目名称** | SEAgent 任务智能层系统 |
@@ -54,10 +56,10 @@
 | **`ros-mcp-server`**<br/>*(FastMCP 框架)* | `ROSMCPGateway`<br/>`ClientSession` | • `@mcp.tool() read_topic(topic)`: 订阅 ROS 2 话题数据<br/>• `@mcp.tool() publish_topic(topic, msg)`: 发布 ROS 2 话题数据<br/>• `ClientSession.call_tool(name, args)`: 异步调用工具接口 |
 | **`mcp.client.stdio`** | `stdio_client` | • `stdio_client(server_params)`: 建立 stdio 传输通道收发 JSON-RPC 2.0 消息帧 |
 | **`websocket-client` / `websockets`** | `WebSocketApp` | • `WebSocketApp(url, on_message, on_error)`: 建立 WebSocket 连接，与网关建立双向通信 |
-| **SeagentROS2MCPAdapter**<br/>*(`mcp/seagent_mcp_adapter.py`)* | `SeagentROS2MCPAdapter` | • `fetch_and_sync_telemetry(state_info)`: 调用 `read_topic` 获取姿态数据<br/>• `dispatch_task_intent(task_intent)`: 调用 `publish_topic` 下发任务指令 |
-| **RosbridgeClient**<br/>*(`mcp/rosbridge_client.py`)* | `RosbridgeClient` | • `dispatch_sys_task_cmd(...)`: 打包 `SysTaskCmd` 并发送至 `/task_cmd` 话题<br/>• `build_task_manage(action_code, task_id)`: 打包任务控制管理指令帧<br/>• `subscribe_keypoints(callback)`: 订阅 `/vision/keypoints` 视觉话题 |
-| **SEAgentMCPBridgeService**<br/>*(`mcp/bridge_service.py`)* | `SEAgentMCPBridgeService` | • `dispatch_intent(task_intent)`: 转换 TaskIntent 并调用 `RosbridgeClient` 发送<br/>• `wait_for_task_finish(task_id, timeout)`: 等待任务状态推演至 `FINISH` 标识 |
-| **TaskStatusTracker**<br/>*(`mcp/task_status_tracker.py`)* | `TaskStatusTracker` | • `update_task_status(...)`: 跟踪 `READY -> PLAN -> ONGOING -> FINISH` 状态变化<br/>• `update_telemetry(...)`: 更新内存中的物理遥测快照 |
+| **SeagentROS2MCPAdapter**<br/>*(`mcp/ros-mcp/mock/seagent_mcp_adapter.py`)* | `SeagentROS2MCPAdapter` | • `fetch_and_sync_telemetry(state_info)`: 调用 `read_topic` 获取姿态数据<br/>• `dispatch_task_intent(task_intent)`: 调用 `publish_topic` 下发任务指令 |
+| **RosbridgeClient**<br/>*(`mcp/ros-mcp/core/rosbridge_client.py`)* | `RosbridgeClient` | • `dispatch_sys_task_cmd(...)`: 打包 `SysTaskCmd` 并发送至 `/task_cmd` 话题<br/>• `build_task_manage(action_code, task_id)`: 打包任务控制管理指令帧<br/>• `subscribe_keypoints(callback)`: 订阅 `/vision/keypoints` 视觉话题 |
+| **SEAgentMCPBridgeService**<br/>*(`mcp/ros-mcp/core/bridge_service.py`)* | `SEAgentMCPBridgeService` | • `dispatch_intent(task_intent)`: 转换 TaskIntent 并调用 `RosbridgeClient` 发送<br/>• `wait_for_task_finish(task_id, timeout)`: 等待任务状态推演至 `FINISH` 标识 |
+| **TaskStatusTracker**<br/>*(`mcp/ros-mcp/core/task_status_tracker.py`)* | `TaskStatusTracker` | • `update_task_status(...)`: 跟踪 `READY -> PLAN -> ONGOING -> FINISH` 状态变化<br/>• `update_telemetry(...)`: 更新内存中的物理遥测快照 |
 
 ---
 
@@ -147,6 +149,6 @@ Payload 数据:
 
 ## 6. 物理环境联调试验注意事项
 
-1. **网络连接与目标配置**：现场水池或深海支持船环境联调时，需在启动命令中提供实际支持船网关工控机的 IP 地址与端口（例如 `python mcp/run_mcp_bridge.py --host 192.168.1.100 --port 9090`）。
+1. **网络连接与目标配置**：现场水池或深海支持船环境联调时，需在启动命令中提供实际支持船网关工控机的 IP 地址与端口（当前入口为 `python -m mcp.mock.run_mcp_bridge --host 192.168.1.100 --port 9090`）。
 2. **紧急停机保护**：指令下发时默认保持 `fail_stop: true`，发生信号异常或推演阻塞时可通过 `/task_manage` 接口发送 `SUSPEND` 或 `DELETE` 指令。
 3. **传感器坐标映射校验**：实机运行前需确认物理机器人的传感器坐标系（如 `odom` 或水面 GPS/DVL 基准）与位姿映射规则一致。

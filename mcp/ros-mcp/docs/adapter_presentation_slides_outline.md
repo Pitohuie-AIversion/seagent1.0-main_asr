@@ -1,5 +1,7 @@
 # SEAgent ROS 2 MCP 适配器架构设计汇报提纲
 
+> 历史汇报提纲：当前目录已按 `mcp/ros-mcp/{core,mock,shim}` 拆分。生产对话派发和状态门禁以 [MCP 模块说明](../README.md) 与 [执行下发契约](../../../docs/execution_dispatch_contract.md) 为准；文中的固定用例数和旧路径仅保留为当时的演示材料。
+
 > [!NOTE]
 > 本提纲旨在阐述 SEAgent 任务智能层与水下机器人 ROS 2 控制网关之间 `SeagentROS2MCPAdapter` 组件的设计逻辑、协议映射机制与双向通信闭环实现。
 
@@ -7,7 +9,7 @@
 | :--- | :--- |
 | **汇报主题** | SEAgent 与 ROS 2 MCP 双向通信适配器设计逻辑与实现 |
 | **汇报团队** | SEAgent 研发小组 |
-| **核心适配组件** | `SeagentROS2MCPAdapter` (`mcp/seagent_mcp_adapter.py`) |
+| **核心适配组件** | `SeagentROS2MCPAdapter` (`mcp/ros-mcp/mock/seagent_mcp_adapter.py`) |
 | **底层协议规范** | Anthropic Model Context Protocol (MCP) / `ros-mcp-server` (RobotMCP 框架) |
 | **目标工控系统** | 深海支持船 Topside 网关 / ROV & AUV 水下控制系统 |
 
@@ -142,7 +144,7 @@ sequenceDiagram
 
 ## 6. 测试验证结论
 
-在自动化测试套件（`mcp/test_public_libraries_comparison.py`）及完整集成测试中：
+在历史自动化测试套件（`mcp/ros-mcp/tests/test_public_libraries_comparison.py`）及完整集成测试中：
 
 - **测试用例覆盖**：120 项用例全部执行通过（100% PASS）。
 - **稳定性与鲁棒性**：协议转换正确，并发 ID 锁安全分配，异常中断后具备恢复能力。

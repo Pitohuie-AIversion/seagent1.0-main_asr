@@ -6,8 +6,10 @@ SEAgent 对话流 ──> TaskIntent ──> MCP ROS 2 闭环测试
 场景：
   R1: 挂载测试（attach_mcp_bridge）
   R2: 未完成对话直接下发引发 ValueError 校验
-  R3: 模拟完整对话完成 (done 阶段) 触发 MCP 自动下发至 /task_cmd
-  R4: 端到端：对话输入 → TaskIntent 落盘 → MCP 下发 → 机器人侧等待 FINISH 闭环
+  R3: 模拟 done 阶段与已归档 intent，显式下发至 Mock /task_cmd
+  R4: 显式下发 → Mock 机器人推进状态 → 等待 FINISH 闭环
+
+这些用例使用 MockDialogueManager 和预构造 intent，不覆盖 LLM 对话或真实文件发布。
 """
 
 import time
@@ -136,7 +138,7 @@ class TestDialogueMCPIntegration:
         assert cmd["pos_target"][0]["position"]["z"] == pytest.approx(-300.0)
 
     def test_R4_full_dialogue_to_robot_finish_roundtrip(self, bridge):
-        """[R4] 端到端：完成对话 → 下发至 ROS 2 → 等待机器人推演至 FINISH"""
+        """[R4] 预构造 intent 下发至 Mock ROS 2，并等待 FINISH。"""
         task_intent = {
             "schema_version": 2,
             "intent_id": "TEST-DIALOGUE-MCP-R4",

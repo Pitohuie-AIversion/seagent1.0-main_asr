@@ -25,11 +25,27 @@ TESTS_DIR = Path(__file__).resolve().parent
 MCP_DIR = TESTS_DIR.parent
 CORE_DIR = MCP_DIR / "core"
 MOCK_DIR = MCP_DIR / "mock"
-SEAGENT_ROOT = MCP_DIR.parent
+SEAGENT_ROOT = MCP_DIR.parent.parent
+OUTSIDE_DIR = SEAGENT_ROOT / "outside"
+ROBOTMCP_DIR = OUTSIDE_DIR / "robotmcp-ros-mcp-server"
 
 for p in [TESTS_DIR, CORE_DIR, MOCK_DIR, MCP_DIR, SEAGENT_ROOT]:
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
+
+if ROBOTMCP_DIR.exists() and str(ROBOTMCP_DIR) not in sys.path:
+    sys.path.insert(0, str(ROBOTMCP_DIR))
+
+try:
+    from ros_mcp.utils.websocket import WebSocketManager
+    HAS_ROBOTMCP = True
+except ImportError:
+    HAS_ROBOTMCP = False
+
+pytestmark = pytest.mark.skipif(
+    not HAS_ROBOTMCP,
+    reason="External robotmcp (ros_mcp) dependency is not installed or outside/ directory is missing",
+)
 
 from mcp.shim.mock_rosbridge_server import MockRosbridgeServer
 

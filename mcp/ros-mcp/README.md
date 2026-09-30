@@ -1,183 +1,126 @@
-# SEAgent ROS 2 MCP 模块 (Model Context Protocol Integration)
+# SEAgent ROS 2 MCP 模块
 
-本目录为 SEAgent 项目中**连接自然语言任务规划层与水下机器人 ROS 2 控制系统**的核心 MCP 集成模块。
+本模块连接 SEAgent 已归档的任务与 ROS 2 控制系统。任务归档、发送和机器人执行是三个不同阶段；详细状态与重试规则见[执行下发契约](../../docs/execution_dispatch_contract.md)。
 
----
-
-## 1. 架构定位
-
-采用确定好的**“云-边-端”公网协同架构**：
+## 1. 运行链路
 
 ```text
-[ 云端 SEAgent 服务器 ]
-         │ (基于 TaskIntent v2 生成任务)
-         ▼
-[ SeagentROS2MCPAdapter ]
-         │
-         │  WebSocket 协议 (ws://topside-ip:9090) ─── 穿透公网/NAT
-         ▼
-[ 支持船 Topside 网关 (rosbridge_server / sealien_ctrlpilot_llmbridge) ]
-         │
-         │  rclpy / DDS / 局域网 / 脐带缆通信
-         ▼
-[ ROV / AUV 水下机器人 ROS 2 控制节点 ]
+DialogueManager 确认并归档 TaskIntent
+    │
+    ├─ Web：routes_chat 在首次进入 done 时尝试派发
+    └─ Python：显式调用 dispatch_dialogue_result()
+    │
+    ▼
+dispatch_completed_task()：时间门禁、执行前校验、发送记录核对
+    │
+    ▼
+SEAgentMCPBridgeService → RosbridgeClient
+    │ WebSocket
+    ▼
+支持船 rosbridge → ROS 2 控制节点
+    │ /task/system_status
+    ▼
+TaskStatusTracker → 任务状态和遥测快照
 ```
 
----
+`attach_mcp_bridge()` 只给 Manager 绑定引用，不安装自动派发回调。未来任务返回 `SCHEDULED`，到期后需要显式检查并下发，当前没有后台调度器。
 
-## 2. 核心文件清单
+`SeagentROS2MCPAdapter` 通过 FastMCP stdio 启动本地模拟服务器，用于协议实验。生产对话通过上述统一入口执行校验与派发。
 
-| 文件名 | 类型 | 职责说明 |
-|:---|:---:|:---|
-| **`run_mcp_bridge.py`** | **CLI 启动脚本** | **MCP 服务独立运行入口**。支持 `--host`, `--port`, `--mock` 参数，提供后台自动化桥接与控制台实时遥测面板。 |
-| **`dialogue_mcp_integration.py`** | **对话闭环集成** | **DialogueManager ↔ MCP 桥接器**。提供 `attach_mcp_bridge` 与 `dispatch_dialogue_result`，将自然语言对话收集、落盘与 ROS 2 下发完全连通。 |
-| **`bridge_service.py`** | **生产服务** | **SEAgent 云端 MCP 自动化桥接服务**。整合 WebSocket 客户端与 TaskStatusTracker，实现自动意图下发、遥测同步与任务生命周期追踪。 |
-| **`rosbridge_client.py`** | **生产客户端** | **核心生产级 WebSocket 客户端**。实现完整内部协议（`UI接口协议.md`）：TaskType 枚举、`intent_to_syscmd` 转换、任务管理（TASK_MANAGE）、设备控制（CTRL_TASK）、AUV 任务、系统配置、遥测订阅，及无死锁后台监听线程。 |
-| **`sealien_protocol.py`** | **高精度算法** | **水下协议与姿态算法组件**。实现 WGS-84 大地坐标系高精度投影 (`geodetic_to_odom_position`)、切线偏航角与四元数推算 (`yaw_between`/`pose`) 及 Payload 去重守护器 (`TaskMessageGuard`/`RequestIdGuard`)。 |
-| **`task_status_tracker.py`** | **状态追踪器** | **任务执行状态实时追踪**。订阅 `/task/system_status`，解析 `SysStatus.msg` 中的 `TaskStatus[]` 任务队列，提供 `wait_for_finish()` 阻塞等待与状态变化回调机制。 |
-| **`runtime_config.py`** | **运行配置** | 加载并校验 `config/ros2_runtime.yaml`，驱动网关、动态订阅、字段提取、消息大小限制和8088展示元数据。 |
-| **`seagent_mcp_adapter.py`** | stdio 适配器 | 通过 FastMCP stdio 协议与 Mock MCP 服务器交互（用于本地测试验证）。 |
-| **`mock_rosbridge_server.py`** | 仿真服务端 | **Mock rosbridge WebSocket 服务端**（支持完整 `SysStatus.msg`、TASK_MANAGE 解析、任务状态生命周期自动推进）。 |
-| **`mock_ros2_mcp_server.py`** | 仿真服务端 | **Mock FastMCP stdio 服务端**，用于本地无网络的 stdio 接口校验。 |
-| **`test_run_mcp_bridge.py`** | 测试套件 | **CLI 脚本测试**（3 个用例，T1~T3）。测试 CLI 参数解析、环境变量覆盖与 Mock 模式自拉起。 |
-| **`test_sealien_protocol_integration.py`** | 测试套件 | **协议集成与算法测试**（8 个用例，T1~T8）。测试 WGS-84 高精度 ENU 投影、四元数航向计算、TaskMessageGuard 拦截与 SysTaskCmd 坐标转换。 |
-| **`test_bidirectional_closed_loop.py`** | 测试套件 | **双向收发闭环深度测试**（6 个用例，S1~S6）。涵盖动态任务跟踪、交互式中途挂起/恢复、应急清除阻断、连续姿态回传、视觉关键点双向接收、多机并发独立收发。 |
-| **`test_dialogue_mcp_integration.py`** | 测试套件 | **对话流至 ROS 2 闭环测试**（4 个用例，R1~R4）。测试对话完成 (done 阶段) 触发 MCP 自动下发与等待机器人侧 FINISH 闭环。 |
-| **`test_rosbridge_client.py`** | 测试套件 | **完整内部协议测试**（35 个用例，K~P）。覆盖协议构造、WebSocket 下发、TASK_MANAGE 管理、CTRL_TASK/AUV/sys_config、遥测解析、完整闭环。 |
-| **`test_architecture_validation.py`** | 测试套件 | **云-边-端分层架构测试**（20 个用例，G~J），验证 WebSocket 握手、公网任务下发、遥测回传及数据隔离。 |
-| **`test_public_libraries_comparison.py`** | 测试套件 | **公开库对比与模拟下发测试**（36 个用例，A~F），验证 3 大公开 ROS 2 MCP 库的契约与 SEAgent 兼容性。 |
-| **`test_real_llm_to_ros2_pipeline.py`** | E2E 脚本 | 真实端侧大模型全流程测试（需 GPU 与本地模型文件）。 |
-| **`README.md`** | 文档 | 本模块的说明文档。 |
+## 2. 文件与导入路径
 
----
+| 文件 | 职责 |
+| --- | --- |
+| [core/dialogue_mcp_integration.py](core/dialogue_mcp_integration.py) | 绑定 Manager 与桥接服务、显式派发、可选等待机器人终态 |
+| [core/bridge_service.py](core/bridge_service.py) | 发送记录、遥测同步、连接与运行快照 |
+| [core/rosbridge_client.py](core/rosbridge_client.py) | WebSocket 通信、任务消息转换、任务管理和设备控制 |
+| [core/sealien_protocol.py](core/sealien_protocol.py) | 协议约束、可选地理投影、姿态计算与重复消息保护 |
+| [core/task_status_tracker.py](core/task_status_tracker.py) | 解析任务队列、状态回调、等待 FINISH 或 FAIL |
+| [core/runtime_config.py](core/runtime_config.py) | 运行配置校验与动态订阅规则 |
+| [mock/run_mcp_bridge.py](mock/run_mcp_bridge.py) | 独立桥接 CLI、可选本地 Mock 服务器、遥测控制台 |
+| [mock/mock_rosbridge_server.py](mock/mock_rosbridge_server.py) | WebSocket 模拟服务器和任务生命周期推进 |
+| [mock/seagent_mcp_adapter.py](mock/seagent_mcp_adapter.py)、[mock/mock_ros2_mcp_server.py](mock/mock_ros2_mcp_server.py) | 本地 stdio 模拟链路 |
+| [shim/](shim/) | 对上述实现的兼容导出 |
+| [tests/](tests/) | 协议、桥接、配置、任务状态与模拟收发测试 |
 
-## 2.1 实际运行调用映射（整理版本）
-
-当前结构改为“显式 shim 驱动 + 真实实现”：
-
-- `mcp/shim/*` 作为唯一入口（例如 `mcp/shim/bridge_service.py`）
-- `mcp/core/*` 为生产链路实现
-- `mcp/mock/*` 为仿真链路实现
-
-建议统一使用的导入方式：
-
-- `from mcp.shim.bridge_service import SEAgentMCPBridgeService`
-- `from mcp.shim.dialogue_mcp_integration import attach_mcp_bridge, dispatch_dialogue_result`
-- `from mcp.shim.rosbridge_client import RosbridgeClient, TaskType, intent_to_syscmd`
-- `from mcp.shim.sealien_protocol import LocalOrigin, geodetic_to_odom_position`
-- `from mcp.shim.task_status_tracker import TaskStatusTracker`
-- `from mcp.shim.runtime_config import load_ros2_runtime_config`
-- `from mcp.shim.run_mcp_bridge import parse_args, main`
-- `from mcp.shim.mock_rosbridge_server import MockRosbridgeServer, active_tasks, received_publishes`
-- `from mcp.shim.mock_ros2_mcp_server import mcp`
-- `from mcp.shim.seagent_mcp_adapter import SeagentROS2MCPAdapter`
-
-为了与“无兼容”要求一致，已去掉根目录平铺入口文件；平铺导入需要改为 shim 入口。
-
-## 2.2 协议边界（防止两个版本并行）
-
-本模块的**主通信协议**固定为：
-
-- 任务发布与管理：`/task_cmd`，`sealien_ctrlpilot_llmbridge/msg/SysTaskCmd`
-- 系统配置：`/task/sys_config`，`sealien_ctrlpilot_llmbridge/msg/SysConfig`
-- 状态回传：`/task/system_status`，`sealien_ctrlpilot_llmbridge/msg/SysStatus`
-- 以上字段定义与行为以 `outside/sealien_ctrlpilot_llmbridge-ros-mcp-server/sealien_ctrlpilot_llmbridge/UI接口协议.md` 为准。
-
-`outside/sealien_ctrlpilot_msgmanagement-dev_rov-msg` 目录中的消息文件不作为以上主链路判据，  
-仅保留给可选的辅助功能（如底层遥测、视觉/插拔工具链等）使用。  
-主闭环任务链路只允许按上述 3 个主题 + 3 个消息进行判断与回放。
-
-测试契约同步该约束（示例：`mcp/tests/test_ros_group_protocol_contract.py`）。
-
-## 2.3 静态协议与动态运行配置
-
-- `config/ros2_protocol_spec.yaml` 是静态权威协议，只保存核心话题、消息 schema、任务映射与枚举。
-- `config/ros2_runtime.yaml` 是可热加载的运行策略，保存当前网关、启用订阅、解析器和8088展示字段。
-- 6006 自动监控运行配置；合法修改通过一条准备完成的新 rosbridge 连接原子替换旧连接。
-- 非法 YAML 或与核心 `system_status` 协议不一致的配置不会覆盖最后有效运行态，错误会出现在 `/api/mcp/status` 与8088页面。
-- 实时消息只进入6006内存快照，禁止持续写回任一 YAML。
-
-示例订阅：
-
-```yaml
-subscriptions:
-- id: thruster_status
-  enabled: true
-  topic: /sensor/thruster_status
-  message_type: sealien_ctrlpilot_msgmanagement/msg/ThrusterStatus
-  parser: raw
-  stale_after_seconds: 5
-  display:
-    title: 推进器状态
-    show_raw_message: true
-    fields:
-    - path: speed_rpm.0
-      label: 1号转速
-      unit: rpm
-```
-
-修改、增加、删除或禁用订阅后，8088动态卡片会跟随6006返回的 `dynamic_subscriptions` 自动变化。图像等大消息应保持禁用，或关闭 `show_raw_message` 并只提取必要字段。
-
-当前启用的辅助遥测为：
-
-| ID | Topic | ROS 2 类型 |
-|:---|:---|:---|
-| `depth_status` | `/sensor/depth` | `sealien_ctrlpilot_msgmanagement/msg/DepthStatus` |
-| `imu_dvl_status` | `/sensor/imu_dvl` | `sealien_ctrlpilot_msgmanagement/msg/ImuDvlStatus` |
-| `thruster_status` | `/sensor/thruster_status` | `sealien_ctrlpilot_msgmanagement/msg/ThrusterStatus` |
-| `heartbeat_status` | `/system/heartbeat` | `sealien_ctrlpilot_msgmanagement/msg/HeartbeatStatus` |
-
-真实 rosbridge 所在的 ROS 2 环境必须已经构建并 source
-`sealien_ctrlpilot_msgmanagement` 接口包；否则 YAML 卡片能够创建，但 ROS 2 无法解析或发布上述自定义消息。
-`uint8[]` 经 rosbridge 返回时使用 Base64 表示，动态字段路径仍可按 `.0`、`.1` 方式读取单个字节状态码。
-
----
-
-## 3. 使用方法与快速开始
-
-### 3.1 运行全套 MCP 自动化测试（118 个用例）
-
-在 SEAgent 项目根目录下执行：
-
-```bash
-/root/miniconda3/envs/seagent/bin/pytest mcp/ -v
-```
-
-预计结果：`118 passed in ~40s` (100% 通过)。
-
-### 3.2 运行真实端侧大模型 E2E 测试
-
-确保环境具备 GPU（如 RTX 5090）且模型文件存放于指定路径后执行：
-
-```bash
-python mcp/test_real_llm_to_ros2_pipeline.py
-```
-
-### 3.3 代码调用示例
-
-在 SEAgent 业务代码中使用适配器发送任务：
+物理目录是 `mcp/ros-mcp/{core,mock,shim}`。[mcp/__init__.py](../__init__.py) 扩展包搜索路径，保留 `mcp.core.*`、`mcp.mock.*`、`mcp.shim.*` 导入，并兼容上游 MCP SDK。业务调用可以使用：
 
 ```python
-from mcp.shim.seagent_mcp_adapter import SeagentROS2MCPAdapter
-from src.state_info import RobotStateInfo
-
-# 初始化适配器
-adapter = SeagentROS2MCPAdapter()
-
-# 1. 任务下发
-task_intent_v2 = {
-    "schema_version": 2,
-    "task_type": "tree_valve_operation",
-    "location": {"oilfield": "流花11-1油田", "water_depth_m": 300.0},
-    "task": {
-        "details": {"target": {"latitude": 20.815, "longitude": 115.735}}
-    }
-}
-result = await adapter.dispatch_task_intent(task_intent_v2)
-print("下发结果:", result)
-
-# 2. 遥测同步
-state_info = RobotStateInfo()
-telemetry = await adapter.fetch_and_sync_telemetry(state_info)
-print("遥测更新成功:", telemetry)
+from mcp.shim.bridge_service import SEAgentMCPBridgeService
+from mcp.shim.dialogue_mcp_integration import attach_mcp_bridge, dispatch_dialogue_result
 ```
+
+## 3. 协议与运行配置
+
+[config/ros2_protocol_spec.yaml](../../config/ros2_protocol_spec.yaml) 保存仓库内的静态协议定义：
+
+| 用途 | Topic | ROS 2 消息类型 |
+| --- | --- | --- |
+| 任务发布与管理 | `/task_cmd` | `sealien_ctrlpilot_llmbridge/msg/SysTaskCmd` |
+| 系统配置 | `/task/sys_config` | `sealien_ctrlpilot_llmbridge/msg/SysConfig` |
+| 核心状态 | `/task/system_status` | `sealien_ctrlpilot_llmbridge/msg/SysStatus` |
+
+当前业务模板为管缆巡检、管缆埋设和采油树阀门插拔。协议只支持阀门插入 `INSERT_PLUG=4`；拔出任务可归档，但派发会阻断。`valve_operation` 是协议兼容映射，不是独立的第四类业务模板。
+
+默认坐标兼容映射为 longitude→x、latitude→y、负水深→z；地理投影工具需显式启用并指定参考原点。现场必须核对接收端 odom 约定，不能因工具存在就假定默认已使用 WGS-84 投影。
+
+[config/ros2_runtime.yaml](../../config/ros2_runtime.yaml) 保存网关、动态订阅、消息解析和展示策略。主服务 `run.py --mcp` 加载此文件，合法配置变更通过新连接准备后替换旧连接；非法配置保留上一次有效运行态。独立 CLI 通过 `--host` / `--port` 指定网关，不加载这套热重载配置。
+
+可选辅助话题使用 `sealien_ctrlpilot_msgmanagement/msg/*`，需要接收端构建相应接口包。辅助遥测不替代 `/task/system_status` 的任务状态判定。具体订阅和展示规则见[运行配置设计](../../docs/architecture/ros2_runtime_configuration.md)。
+
+## 4. 启动与测试
+
+以下命令在仓库根目录执行；项目维护环境使用 `/root/miniconda3/envs/seagent/bin/python`。其他环境按[开发测试指南](../../docs/development/testing.md)安装依赖后替换解释器路径。
+
+运行 ROS MCP 自动化测试：
+
+```bash
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 \
+/root/miniconda3/envs/seagent/bin/python -m pytest -q mcp/ros-mcp/tests
+```
+
+默认使用本地模拟服务，不连接真实机器人。部分第三方库对比测试需显式启用；用例数量和结果以当次输出为准。全仓库测试使用 `python -m pytest -q`，也包含海流 MCP 子项目。
+
+独立本地模拟桥接与遥测控制台：
+
+```bash
+/root/miniconda3/envs/seagent/bin/python -m mcp.mock.run_mcp_bridge \
+  --host 127.0.0.1 --mock
+```
+
+默认 Mock 端口为 9091；显式指定其他 `--port` 时使用指定值。控制台展示遥测，使用 Ctrl+C 退出，不提供交互式任务控制命令。
+
+连接真实网关、启用 Web 对话派发的步骤见[现场联调指南](docs/live_e2e_debugging_guide.md)。[真实模型实验脚本](tests/test_real_llm_to_ros2_pipeline.py)需要 GPU 和本地模型，但其 MCP 接收端仍是 stdio Mock；它不会作为普通 pytest 用例运行，也不能作为实机验收结论。
+
+## 5. Python 对话集成
+
+以下示例假定 `manager` 已通过对话完成确认归档，`bridge` 是已启动的 `SEAgentMCPBridgeService`：
+
+```python
+from mcp.shim.dialogue_mcp_integration import attach_mcp_bridge, dispatch_dialogue_result
+
+attach_mcp_bridge(manager, bridge)
+result = dispatch_dialogue_result(manager, wait_finish=True, timeout=60.0)
+print(result["ros2_dispatch"])  # 包含详细门禁状态、原因和重试信息
+
+if result["status"] == "success":
+    terminal = result["final_status_item"]
+    if terminal is None:
+        print("等待超时，机器人执行结果尚未确认")
+    else:
+        print("机器人终态：", terminal.status_name)  # FINISH 或 FAIL
+else:
+    print(result["message"])
+```
+
+返回值中的 `status` 表示派发结果：
+
+| ros2_dispatch.state | status | 含义 |
+| --- | --- | --- |
+| SENT | success | 已写入 ROS 传输，或已有可核验发送记录 |
+| SCHEDULED、UNKNOWN | pending | 未到执行时间，或发送结果仍待核对 |
+| BLOCKED、FAILED | error | 门禁阻断或派发失败，详情见 `ros2_dispatch` |
+
+`success` 不表示机器人完成任务。只有 SENT 会进入可选等待；FINISH 与 FAIL 都会返回状态项，超时返回 `None`。未设置 `wait_finish` 时，`final_status_item` 也为 `None`。缺少桥接服务抛出 `RuntimeError`；未确认归档抛出 `ValueError`。
+
+模拟对话集成测试使用预构造 intent 和 Mock Manager；真实抽取、发布落盘与现场机器人执行需分别验证。历史报告保留在 [docs/](docs/)，其中的旧路径、固定用例数和通过结论仅适用于报告当时的版本。
