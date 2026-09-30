@@ -40,13 +40,21 @@ logging.basicConfig(
 logger = logging.getLogger("mcp_runner")
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Parse an environment flag without treating the string ``0`` as true."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="SEAgent MCP 通讯与网关调度服务")
     parser.add_argument("--host", type=str, default=os.environ.get("MCP_HOST", "127.0.0.1"),
                         help="支持船 Topside rosbridge 网关 IP (默认 127.0.0.1)")
     parser.add_argument("--port", type=int, default=int(os.environ.get("MCP_PORT", "9090")),
                         help="rosbridge WebSocket 端口 (默认 9090)")
-    parser.add_argument("--mock", action="store_true", default=bool(os.environ.get("MCP_MOCK", "")),
+    parser.add_argument("--mock", action="store_true", default=_env_flag("MCP_MOCK"),
                         help="开启本地 Mock rosbridge 仿真服务器 (端口自动使用 9091)")
     parser.add_argument("--sync-interval", type=float, default=2.0,
                         help="状态面板刷新时间间隔 (秒)")

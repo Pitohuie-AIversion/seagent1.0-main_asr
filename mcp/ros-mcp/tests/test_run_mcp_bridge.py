@@ -54,6 +54,16 @@ class TestRunMCPBridgeCLI:
         assert args.mock is True
         assert args.sync_interval == pytest.approx(0.5)
 
+    @pytest.mark.parametrize("raw, expected", [
+        ("0", False), ("false", False), ("1", True), ("yes", True),
+    ])
+    def test_env_mock_flag_uses_explicit_boolean_values(self, monkeypatch, raw, expected):
+        """MCP_MOCK=0 must disable Mock mode instead of becoming truthy."""
+        monkeypatch.setenv("MCP_MOCK", raw)
+        monkeypatch.setattr(sys, "argv", ["run_mcp_bridge.py"])
+
+        assert parse_args().mock is expected
+
     def test_T3_mock_runner_bridge_connection(self):
         """[T3] 仿真模式下 MockRosbridgeServer + SEAgentMCPBridgeService 可以自动建立连接"""
         srv = MockRosbridgeServer(port=9099)

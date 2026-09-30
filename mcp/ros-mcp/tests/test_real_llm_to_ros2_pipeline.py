@@ -37,7 +37,7 @@ from src.slots.slot_store import ValidationAcknowledgement
 from src.temporal.simulated_time import get_current_datetime, get_simulated_time
 from mcp.shim.seagent_mcp_adapter import SeagentROS2MCPAdapter
 
-LOCAL_MODEL_PATH = "/root/autodl-tmp/model/Qwen3.5-9B"
+LOCAL_MODEL_PATH = os.environ.get("LOCAL_MODEL_PATH", "/root/autodl-tmp/model/Qwen3.5-9B")
 
 
 def main():
