@@ -286,6 +286,7 @@ def api_chat_stream():
                         # Inspect compatibility before execution: an internal TypeError may follow a mutation.
                         process_kwargs.pop("event_sink")
                     reply = mgr.process(msg, **process_kwargs)
+                    print_status(mgr)
 
                     ros2_dispatch = _persist_and_dispatch_done_transition(mgr, phase_before)
                     ui_builder = _get_backend_symbol("build_frontend_ui_state", build_frontend_ui_state)

@@ -155,7 +155,7 @@ EXTRACTION_SYSTEM = """\
    - raw_text 必须填写本轮用户原句，confidence 为 0 到 1 的数值，source 固定为 user_input。
    - 产生 list_mutations 时，仅针对 payload 字段不要在 slot_candidates 中重复输出；若用户在本轮同时给出了其他字段（如具体机器人编号 equipment_unit_id、支持船编号 support_vessel、水深、坐标等），必须正常抽取并输出到 slot_candidates 中！
 8. 【时间区间与时长规则】对于 start_time / end_time / 持续时长：
-   - 用户表达"两小时后开始"、"明天上午九点"等相对时间时，尝试根据今天日期 {today} 换算为绝对 ISO 时间 "YYYY-MM-DDTHH:MM:SS"。
+   - 用户表达"两小时后开始"、"明天上午九点"等相对时间，或表达"现在开始"、"即刻开始"、"立刻开始"等即时开始意图时，直接根据今天日期和当前时刻 {today} 换算为绝对 ISO 时间 "YYYY-MM-DDTHH:MM:SS" 输出为 start_time。
    - 用户明确表达持续时长或时长增量变动时（如"干2小时"、"作业持续3天"、"时长再延长1小时"、"提前半小时结束"、"结束时间保持不变"），除尽量换算 end_time 外，必须在 time_relation 中输出：
      {{"has_duration": true, "raw_text": "用户时长原词", "duration_seconds": 换算秒数, "target": "duration/start_time/end_time", "action": "SET/ADD/SUB", "confidence": 0.95}}
 9. 【设备选择器特别规则】用户明确指定的机器人编号必须保留为 equipment_unit_id 候选；即使该设备不在当前任务允许列表中，也不得遗漏、替换成其他机器人或当作支持船。保留 raw_value，交由后端验证设备与任务是否兼容；无法确定具体编号时使用 rov_description。
@@ -487,6 +487,9 @@ class ParameterExtractor:
             re.compile(r"本轮无(?:字段|参数)更新"),
             re.compile(r"无需更新"),
             re.compile(r"无需修改"),
+            re.compile(r"无法自动将.*映射为.*(?:时间|ISO)"),
+            re.compile(r"缺少.*等必要(?:参数|槽位|字段)"),
+            re.compile(r"当前系统时间为"),
         ]
         cleaned = []
         for item in items:

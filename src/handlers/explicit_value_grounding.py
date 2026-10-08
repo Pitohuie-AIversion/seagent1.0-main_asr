@@ -145,6 +145,46 @@ def ground_explicit_values(extraction, message, *, kb, fields, current_state, ta
             # One authoritative leaf selector lets the existing cascade derive
             # family and variant in the post-update evaluation context.
             candidates.append(_candidate('equipment_unit_id', unit['unit_id'], selector_text))
+
+    # Ground explicit immediate start_time when user plainly requests "现在开始/即刻开始/立刻开始"
+    start_time_field = next((field for field in fields if field.get('key') == 'start_time'), None)
+    if start_time_field and not any(c.get('canonical_key') == 'start_time' and c.get('normalized_value') for c in candidates):
+        immediate_patterns = [
+            r'(?:任务|作业|工作|巡检)?\s*(?:从)?(?:现在|即刻|立刻|马上|此时|当即|即时)\s*(?:就)?(?:开始|开展|执行|开工|起步|做|进行)',
+            r'(?:开始|起步|开工)时间\s*(?:定在|设为|为|是)?\s*(?:现在|即刻|立刻|马上)',
+            r'^(?:现在|即刻|立刻|马上)(?:开始)?$'
+        ]
+        matched_immediate = False
+        match_raw = ""
+        for sentence in re.split(r'[。；;！!\n]', message):
+            if re.search(r'如果|假如|假设|倘若|要是|除非|若是', sentence):
+                continue
+            clauses = re.split(r'[，,]', sentence)
+            cancelled = any(
+                re.search(r'不要|别|取消|撤销|暂不|先不|不想', clause)
+                and re.search(r'现在|即刻|立刻|马上|开始', clause)
+                for clause in clauses
+            )
+            if cancelled:
+                continue
+            for clause in clauses:
+                clause_strip = clause.strip()
+                if _NON_ASSERTION.search(clause_strip):
+                    continue
+                if any(re.search(p, clause_strip) for p in immediate_patterns):
+                    matched_immediate = True
+                    match_raw = clause_strip
+                    break
+            if matched_immediate:
+                break
+
+        if matched_immediate:
+            from src.temporal.simulated_time import get_current_datetime
+            now_dt = get_current_datetime().replace(microsecond=0)
+            iso_start = now_dt.strftime("%Y-%m-%dT%H:%M:00")
+            candidates = [c for c in candidates if c.get('canonical_key') != 'start_time']
+            candidates.append(_candidate('start_time', iso_start, match_raw))
+
     extraction['slot_candidates'] = candidates
 
     # Fallback grounding for plain explicit payload items when model produced no mutations

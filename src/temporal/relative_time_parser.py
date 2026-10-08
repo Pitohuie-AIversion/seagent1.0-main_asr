@@ -396,8 +396,8 @@ def _extract_explicit_date_ira(text: str, base_dt: datetime, ira: TemporalIR) ->
 
 def _extract_explicit_time_ira(text: str, base_dt: datetime, ira: TemporalIR) -> None:
     norm = text
-    # "现在/当前/立即/此时" 作为即时词
-    if re.search(r"现在|当前|立即|此时|此刻|马上|立刻", norm):
+    # "现在/当前/立即/此时/即刻" 作为即时词
+    if re.search(r"现在|当前|立即|此时|此刻|马上|立刻|即刻|当即|即时", norm):
         ira.is_now = True
         ira.hour = base_dt.hour
         ira.minute = base_dt.minute

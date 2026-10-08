@@ -40,6 +40,7 @@ from src.asr.asr_service import ASRConfig, ASRService
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "fork")
 
 LOCAL_MODEL_PATH = (
     os.environ.get("LOCAL_MODEL_PATH")
@@ -152,10 +153,11 @@ def startup():
     vllm_gpu_util = float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.80"))
     vllm_max_seqs = int(os.getenv("VLLM_MAX_NUM_SEQS", "64"))
     vllm_max_model_len = int(os.getenv("VLLM_MAX_MODEL_LEN", "16384"))
+    vllm_dtype = os.getenv("VLLM_DTYPE", "bfloat16")
     llm_engine = LLM(
         model=LOCAL_MODEL_PATH,
         trust_remote_code=True,
-        dtype="bfloat16" if torch.cuda.is_bf16_supported() else "float16",
+        dtype=vllm_dtype,
         gpu_memory_utilization=vllm_gpu_util,
         max_num_seqs=vllm_max_seqs,
         max_model_len=vllm_max_model_len,
