@@ -399,6 +399,24 @@ class ParameterExtractor:
         ]
         cleaned_unresolved = self._filter_meta_unresolved(all_unresolved)
 
+        # The model may return an arbitrary unresolved explanation (or even a
+        # seemingly concrete selector) for a tree-valve utterance.  Validate
+        # the selector against the user's words here so that committing this
+        # operation never depends on one particular explanation string.
+        tree_valve_error = self._tree_valve_selector_error(
+            user_message,
+            normalized_candidates,
+            task_type_map or {},
+        )
+        if tree_valve_error:
+            normalized_candidates = [
+                candidate
+                for candidate in normalized_candidates
+                if candidate.get("canonical_key") not in {"task_type", "task_type_key"}
+            ]
+            if tree_valve_error not in cleaned_unresolved:
+                cleaned_unresolved.append(tree_valve_error)
+
         return {
             "slot_candidates": normalized_candidates,
             "unresolved": [
@@ -408,6 +426,45 @@ class ParameterExtractor:
             ],
             "list_mutations": list_mutations,
         }
+
+    @staticmethod
+    def _tree_valve_selector_error(
+        user_message: str,
+        candidates: list[dict],
+        task_type_map: dict[str, str],
+    ) -> str | None:
+        """Reject a tree-valve selector unless its direction is explicit.
+
+        Only the complete operation words are accepted.  A single ``插`` or
+        ``拔`` is too ambiguous in Chinese ASR text (for example ``插槽`` or
+        ``拔管``), so it must not silently select one side of the operation.
+        """
+        tree_selected = False
+        for candidate in candidates:
+            key = candidate.get("canonical_key")
+            value = candidate.get("normalized_value")
+            if key == "task_type_key" and value == "tree_valve_operation":
+                tree_selected = True
+                break
+            if key == "task_type" and isinstance(value, str):
+                if task_type_map.get(value) == "tree_valve_operation":
+                    tree_selected = True
+                    break
+        if not tree_selected:
+            return None
+
+        text = str(user_message or "")
+        directions = {
+            direction
+            for direction, token in (
+                ("insert", "插入"),
+                ("withdraw", "拔出"),
+            )
+            if token in text
+        }
+        if len(directions) == 1:
+            return None
+        return "采油树阀门操作存在歧义，请明确说明‘插入’或‘拔出’。"
 
     @staticmethod
     def _filter_meta_unresolved(items: list[Any]) -> list[str]:
@@ -499,12 +556,19 @@ class ParameterExtractor:
 
         t_key, disp_name = next(iter(matched_keys.items()))
 
-        # 采油树特殊拔出逻辑
+        # 采油树特殊插入/拔出逻辑：若未明确指定插入或拔出，具体操作存疑，必须回退到 LLM 进行歧义澄清
         if t_key == "tree_valve_operation":
-            if "拔出" in user_message:
+            # Do not treat a single character as an operation.  ASR text can
+            # contain unrelated words such as 插槽/插管 or 拔管; only the
+            # complete operation terms disambiguate this task type.
+            has_withdraw = "拔出" in user_message
+            has_insert = "插入" in user_message
+            if has_withdraw and not has_insert:
                 disp_name = "采油树控制面板拔出"
-            elif "插入" in user_message:
+            elif has_insert and not has_withdraw:
                 disp_name = "采油树控制面板插入"
+            else:
+                return None
 
         candidates = [
             {

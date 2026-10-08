@@ -92,5 +92,44 @@ class TestFastExtractTaskType(unittest.TestCase):
         self.mock_llm.extract_json.assert_called_once()
 
 
+    def test_tree_valve_operation_without_insert_withdraw_fallbacks_to_llm(self):
+        """采油树阀门操作未指定插入或拔出时，属于操作歧义，快路径必须回退到 LLM。"""
+        self.mock_llm.extract_json.return_value = {
+            "slot_candidates": [],
+            "unresolved": ["用户描述为'水面采油树阀门操作'，未明确是'插入'还是'拔出'，无法确定具体 task_type 值。"],
+        }
+        res = self.extractor.extract_updates(
+            "在崖城13-1气田进行水面采油树阀门操作，水深50米",
+            current_state={},
+            task_type_key=None,
+            task_type_map=self.task_type_map,
+        )
+        self.mock_llm.extract_json.assert_called_once()
+        self.assertIn("未明确是'插入'还是'拔出'", "".join(res.get("unresolved", [])))
+
+    def test_tree_valve_operation_with_explicit_insert_or_withdraw(self):
+        """明确指定采油树插入或拔出时，快路径精确命中且不调用 LLM。"""
+        res_insert = self.extractor.extract_updates(
+            "执行采油树控制面板插入作业",
+            current_state={},
+            task_type_key=None,
+            task_type_map=self.task_type_map,
+        )
+        self.mock_llm.extract_json.assert_not_called()
+        cands_ins = {c["canonical_key"]: c["normalized_value"] for c in res_insert["slot_candidates"]}
+        self.assertEqual(cands_ins.get("task_type"), "采油树控制面板插入")
+        self.assertEqual(cands_ins.get("task_type_key"), "tree_valve_operation")
+
+        res_withdraw = self.extractor.extract_updates(
+            "安排水下采油树控制面板拔出任务",
+            current_state={},
+            task_type_key=None,
+            task_type_map=self.task_type_map,
+        )
+        cands_wd = {c["canonical_key"]: c["normalized_value"] for c in res_withdraw["slot_candidates"]}
+        self.assertEqual(cands_wd.get("task_type"), "采油树控制面板拔出")
+        self.assertEqual(cands_wd.get("task_type_key"), "tree_valve_operation")
+
+
 if __name__ == "__main__":
     unittest.main()

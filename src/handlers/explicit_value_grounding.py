@@ -55,6 +55,9 @@ def ground_explicit_values(extraction, message, *, kb, fields, current_state, ta
             for clause in clauses:
                 if _NON_ASSERTION.search(clause):
                     continue
+                has_task_action = bool(re.search(r'巡检|埋设|敷设|开沟|检修|后埋|施工', sentence) or _SELECT.search(clause))
+                if not has_task_action:
+                    continue
                 for canonical_val in allowed:
                     aliases = cable_alias_map.get(canonical_val, [canonical_val])
                     for alias in aliases:

@@ -239,10 +239,15 @@ class SlotFillingHandler(BaseDialogueHandler):
             role=ModelRole.TASK_RESPONDER,
         )
         model_reply = manager._safe_llm_filter_reply(model_reply, role=ModelRole.FILTER_REPLY)
-        if task_type_key and (not model_reply or "已就绪" in model_reply):
+        if task_type_key and (not model_reply or not model_reply.strip() or (len(model_reply.strip()) <= 30 and "已就绪" in model_reply and manager.phase == "collecting" and not manager.task_state.get("start_time"))):
             tv = manager.kb.task_schemas.get("task_templates", {}).get(task_type_key, {})
             task_name = tv.get("display_name") or tv.get("name") or task_type_key
-            model_reply = f"已为您开启【{task_name}】任务规划。请提供具体作业参数（如管缆类型、作业区域与执行机器人）。"
+            if manager.phase in ("blocked_hard", "blocked_soft"):
+                model_reply = f"当前任务【{task_name}】存在约束限制，请根据提示调整作业参数。"
+            elif manager.phase == "confirming":
+                model_reply = f"当前任务【{task_name}】参数已齐备，请核对是否确认发布。"
+            else:
+                model_reply = f"已为您开启【{task_name}】任务规划。请提供具体作业参数（如管缆类型、作业区域与执行机器人）。"
 
         reply = self.ground_write_reply(
             model_reply,

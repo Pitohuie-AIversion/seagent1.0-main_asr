@@ -394,7 +394,8 @@ class WriteReplyGrounder:
         else:
             parts.append("本轮未写入任务状态。")
         if unresolved:
-            parts.append("⚠️ 未写入或仍需确认：" + "；".join(unresolved) + "。")
+            cleaned_unresolved = [str(u).rstrip("。；;，,\n ") for u in unresolved if u]
+            parts.append("⚠️ 未写入或仍需确认：" + "；".join(cleaned_unresolved) + "。")
 
         # Show retained facts too: failed deletes or time edits must not let a
         # preceding assistant claim become the user's apparent task state.
@@ -532,8 +533,8 @@ class WriteReplyGrounder:
         deduped_parts = []
         for part in parts:
             prefix = part.split("：")[0] if "：" in part else part
-            if prefix in ("✅ 已记录", "仍需补充", "⚠️ 未写入或仍需确认", "当前已保存"):
-                if prefix in scrubbed:
+            if prefix in ("✅ 已记录", "仍需补充", "⚠️ 未写入或仍需确认", "当前已保存", "本轮未写入任务状态。"):
+                if prefix.rstrip("。") in scrubbed:
                     continue
             deduped_parts.append(part)
 
@@ -545,4 +546,6 @@ class WriteReplyGrounder:
         if scrubbed in ("本轮未写入任务状态。", "本轮未写入任务状态"):
             return receipt
 
-        return f"{scrubbed}\n{final_receipt}".strip()
+        combined = f"{scrubbed}\n{final_receipt}".strip()
+        combined = re.sub(r"([。！？])\1+", r"\1", combined)
+        return combined

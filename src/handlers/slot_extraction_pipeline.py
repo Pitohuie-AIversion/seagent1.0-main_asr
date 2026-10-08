@@ -132,7 +132,13 @@ class SlotExtractionPipeline(BaseDialogueHandler):
             (
                 item
                 for item in extraction_res.get("unresolved", [])
-                if "同轮具体任务类型互相冲突" in str(item)
+                if any(kw in str(item) for kw in (
+                    "同轮具体任务类型互相冲突",
+                    "无法确定具体 task_type",
+                    "未明确是'插入'还是'拔出'",
+                    "未明确任务类型",
+                    "任务类型存在歧义",
+                ))
             ),
             None,
         )
@@ -151,6 +157,10 @@ class SlotExtractionPipeline(BaseDialogueHandler):
             or task_type_preflight_error
         )
         if task_type_preflight_error:
+            extraction_res["slot_candidates"] = [
+                c for c in extraction_res.get("slot_candidates", [])
+                if isinstance(c, dict) and c.get("canonical_key") not in {"task_type", "task_type_key"}
+            ]
             manager._record_task_type_update_error(
                 new_slots,
                 task_type_preflight_error,
