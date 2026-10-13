@@ -51,3 +51,34 @@ def test_model_direction_conflict_is_rejected_before_task_type_commit():
     assert manager.task_state == before
     assert "候选与用户明确方向不一致" in reply
     assert llm.extract_json.call_count == 1
+
+
+def test_model_direction_conflict_cannot_auto_select_on_first_turn():
+    """A first-turn selector mismatch must not trigger robot auto-selection."""
+    llm = MagicMock(spec=LLMClient)
+    llm.extract_json.return_value = {
+        "slot_candidates": [{
+            "canonical_key": "task_type",
+            "normalized_value": "采油树控制面板插入",
+            "raw_value": "采油树控制面板插入",
+        }],
+        "unresolved": [],
+    }
+    llm.chat.return_value = "已更新"
+    llm.filter_reply.side_effect = lambda text, *args, **kwargs: text
+
+    manager = DialogueManager(llm=llm)
+    manager.intent_router.route = MagicMock(return_value=IntentRouteResult(
+        interaction_type="WRITE",
+        confidence=1.0,
+        reason="test",
+    ))
+
+    reply = manager.process("执行采油树控制面板拔出作业")
+
+    state = manager.slot_store.get_task_state()
+    assert "task_type" not in state
+    assert "task_type_key" not in state
+    assert "equipment_unit_id" not in state
+    assert "候选与用户明确方向不一致" in reply
+    assert llm.extract_json.call_count == 1
