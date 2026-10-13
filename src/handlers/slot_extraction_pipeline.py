@@ -128,20 +128,6 @@ class SlotExtractionPipeline(BaseDialogueHandler):
             extracted_task_type_updates,
             duplicate_task_selector_error,
         ) = manager._task_selector_updates_from_extraction(extraction_res)
-        extraction_selector_error = next(
-            (
-                item
-                for item in extraction_res.get("unresolved", [])
-                if any(kw in str(item) for kw in (
-                    "同轮具体任务类型互相冲突",
-                    "无法确定具体 task_type",
-                    "未明确是'插入'还是'拔出'",
-                    "未明确任务类型",
-                    "任务类型存在歧义",
-                ))
-            ),
-            None,
-        )
         (
             pending_task_type_key,
             effective_task_type_key,
@@ -153,7 +139,6 @@ class SlotExtractionPipeline(BaseDialogueHandler):
         )
         task_type_preflight_error = (
             duplicate_task_selector_error
-            or extraction_selector_error
             or task_type_preflight_error
         )
         if task_type_preflight_error:
@@ -226,30 +211,27 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                 build_task_patch(target_extraction, allowed_keys=None)
             (
                 _target_task_type_updates,
-                duplicate_target_selector_error,
+                target_selector_error,
             ) = manager._task_selector_updates_from_extraction(
                 target_extraction,
             )
-            duplicate_target_selector_error = (
-                duplicate_target_selector_error
-                or next(
-                    (
-                        item
-                        for item in target_extraction.get("unresolved", [])
-                        if "同轮具体任务类型互相冲突" in str(item)
-                    ),
-                    None,
-                )
+            # A target pass may disagree with the selector-discovery pass. Do
+            # not return its direction mismatch yet: both passes must be
+            # merged so the shared preflight can report the stronger atomic
+            # cross-pass conflict instead of whichever pass ran first.
+            defer_target_selector_error = bool(
+                target_selector_error
+                and "采油树阀门操作候选与用户明确方向不一致" in target_selector_error
             )
-            if duplicate_target_selector_error:
+            if target_selector_error and not defer_target_selector_error:
                 manager._record_task_type_update_error(
                     new_slots,
-                    duplicate_target_selector_error,
+                    target_selector_error,
                 )
-                if duplicate_target_selector_error not in turn_unresolved:
-                    turn_unresolved.append(duplicate_target_selector_error)
-                if duplicate_target_selector_error not in new_unresolved:
-                    new_unresolved.append(duplicate_target_selector_error)
+                if target_selector_error not in turn_unresolved:
+                    turn_unresolved.append(target_selector_error)
+                if target_selector_error not in new_unresolved:
+                    new_unresolved.append(target_selector_error)
                 manager.slot_store.commit_transaction(
                     new_slots,
                     new_unresolved,

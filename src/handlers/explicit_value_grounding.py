@@ -13,6 +13,13 @@ EQUIPMENT_KEYS = frozenset({'equipment_class', 'equipment_family', 'equipment_ty
                             'equipment_unit_id', 'equipment_name', 'equipment_model', 'rov_description'})
 _SELECT = re.compile(r'改为|改成|改用|换成|换为|选用|选择|使用|采用|配备|安排|派遣|派出|指派|就用|要用|选|用')
 _NON_ASSERTION = re.compile(r'不要|不想|不改|不换|不使用|不用|别|如果|假如|是否|能否|可以吗|怎么样|不变|保持|保留')
+_CABLE_CONDITION = re.compile(r'如果|假如|假设|倘若|要是|除非|若是|只要|只有|仅当|当.{0,8}时')
+_CABLE_QUESTION = re.compile(
+    r'[?？]|(?:吗|呢)(?:[。！!，,?？]|$)|是什么|有何|为何|为什么|如何|怎么|哪个|哪种|哪些|'
+    r'能否|可否|行不行|可以吗|行吗|也行|或者|还是|怎么样|什么风险|什么区别'
+)
+_CABLE_NEGATION = re.compile(r'不要|别|取消|撤销|暂不|先不|不想|不改|不换|不使用|不用|不选|不采用|不是|并非|拒绝')
+_CABLE_NON_UPDATE = re.compile(r'昨天|此前|之前|已完成|完成了|曾经|过去|历史')
 
 
 def _candidate(key, value, raw):
@@ -41,27 +48,69 @@ def ground_explicit_values(extraction, message, *, kb, fields, current_state, ta
             '光纤通信缆': ['光纤通信缆', '海底光纤通信缆', '通信光缆', '海底光缆', '光纤电缆', '通信电缆', '光纤缆', '通信缆', '光缆'],
         }
         selections = []
+        task_suffix = r'(?:巡检|埋设|敷设|开沟|检修|后埋|施工)(?:任务|作业)?(?:吧|了)?'
+        action_prefix = r'(?:请|帮我|那帮我(?:安排)?|安排(?:一次)?|选择|选用|使用|采用|就用|要用|用|设置|设为|执行|进行|开展)'
+
+        def explicit_cable_selection(clause: str, alias: str) -> bool:
+            """Match a complete current-turn assignment, not an alias substring."""
+            compact = re.sub(r'\s+', '', clause).strip('：:')
+            value = re.escape(re.sub(r'\s+', '', alias))
+            field = (
+                rf'(?:{action_prefix})?把?管缆类型'
+                rf'(?:为|是|设为|改为|改成|改用|换成|换为|选用|选择|使用|采用|就用|要用|用|：|:)?{value}'
+            )
+            action = rf'(?:{action_prefix})?{value}(?:{task_suffix})?'
+            return bool(
+                re.fullmatch(field, compact)
+                or re.fullmatch(action, compact)
+                or compact == re.sub(r'\s+', '', alias)
+            )
+
         for sentence in re.split(r'[。；;！!\n]', message):
-            if re.search(r'如果|假如|假设|倘若|要是|除非|若是', sentence):
+            # Conditions and historical statements are not current writes.
+            if _CABLE_CONDITION.search(sentence) or _CABLE_NON_UPDATE.search(sentence):
                 continue
-            clauses = re.split(r'[，,]', sentence)
+            # Keep question delimiters attached to the preceding clause. This
+            # permits an assignment after a separate question in one turn.
+            tokens = re.split(r'([，,？?])', sentence)
+            clause_items = []
+            pending = ''
+            for token in tokens:
+                if token in {'，', ',', '？', '?'}:
+                    if pending.strip():
+                        clause_items.append((pending, token in {'？', '?'}))
+                    pending = ''
+                else:
+                    pending += token
+            if pending.strip():
+                clause_items.append((pending, False))
+            query_positions = [
+                index for index, (clause, ends_question) in enumerate(clause_items)
+                if ends_question or _CABLE_QUESTION.search(clause)
+            ]
+            # If a trailing clause asks whether the preceding assignment is
+            # acceptable, none of that assignment is a WRITE. A question at
+            # the beginning still permits a later independent assignment.
+            trailing_query = min((index for index in query_positions if index > 0), default=None)
             cancelled = any(
-                re.search(r'不要|别|取消|撤销|暂不|先不|不想', clause)
-                and re.search(r'管道|电缆|通信缆|光缆|海缆|管缆', clause)
-                for clause in clauses
+                _CABLE_NEGATION.search(clause)
+                and (
+                    re.search(r'管道|电缆|通信缆|光缆|海缆|管缆', clause)
+                    or re.search(r'改|换|选|用|这个|该|上述', clause)
+                )
+                for clause, _ in clause_items
             )
             if cancelled:
                 continue
-            for clause in clauses:
-                if _NON_ASSERTION.search(clause):
-                    continue
-                has_task_action = bool(re.search(r'巡检|埋设|敷设|开沟|检修|后埋|施工', sentence) or _SELECT.search(clause))
-                if not has_task_action:
+            for index, (clause, ends_question) in enumerate(clause_items):
+                if (ends_question or _CABLE_QUESTION.search(clause)
+                        or (trailing_query is not None and index < trailing_query)
+                        or _CABLE_NEGATION.search(clause)):
                     continue
                 for canonical_val in allowed:
-                    aliases = cable_alias_map.get(canonical_val, [canonical_val])
+                    aliases = sorted(cable_alias_map.get(canonical_val, [canonical_val]), key=len, reverse=True)
                     for alias in aliases:
-                        if alias in clause:
+                        if explicit_cable_selection(clause, alias):
                             selections.append((canonical_val, clause.strip()))
                             break
         distinct_selected = {val for val, _ in selections}

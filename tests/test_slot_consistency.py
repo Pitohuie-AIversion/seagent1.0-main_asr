@@ -476,6 +476,8 @@ class SlotConsistencyTest(unittest.TestCase):
         assert_ssot_consistency(self, self.dm)
 
     def test_unextracted_value_remains_missing_for_followup(self):
+        # A genuinely unspecified value must remain missing. Exact configured
+        # values are now recovered by the explicit grounding contract.
         self._set_plan("WRITE")
         self.dm.reset()
         self.dm.slot_store.init_task_slots(
@@ -493,7 +495,7 @@ class SlotConsistencyTest(unittest.TestCase):
             "unresolved": [],
         }
 
-        self.dm.process("管缆类型海底油气管道")
+        self.dm.process("管缆类型还没确定")
         self.llm.extract_json.assert_called_once()
 
         slot = self.dm.slot_store.slots["cable_type"]

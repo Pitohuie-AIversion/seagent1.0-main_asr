@@ -367,6 +367,24 @@ class SlotFillingHandler(BaseDialogueHandler):
                  if item["canonical_key"] in {"task_type", "task_type_key"}],
             )
 
+            # Stage one can trigger robot auto-selection as soon as a task is
+            # applied. Reject contradictory selectors before those mutations,
+            # rather than relying on the second extraction to notice them.
+            selectors, selector_error = manager._task_selector_updates_from_extraction(extraction_res)
+            _, _, _, context_error = manager._resolve_task_type_update_context(selectors, new_slots)
+            task_type_error = selector_error or context_error
+            if task_type_error:
+                record_unresolved(extraction_res)
+                record_unresolved({"unresolved": [task_type_error]})
+                manager._record_task_type_update_error(new_slots, task_type_error)
+                manager.slot_store.commit_transaction(
+                    new_slots,
+                    new_unresolved,
+                    request_id=request_id,
+                    expected_version=expected_version,
+                )
+                return reply_write_without_candidates()
+
             if getattr(_dm_mod, "is_task_patch_v2_enabled", is_task_patch_v2_enabled)():
                 allowed_stage1 = {"task_type", "task_type_key", "emergency_mode"}
                 patch = build_task_patch(extraction_res, allowed_keys=allowed_stage1)

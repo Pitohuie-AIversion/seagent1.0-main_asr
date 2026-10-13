@@ -73,6 +73,96 @@ def test_cable_type_deterministic_grounding():
     assert "cable_type" not in cands4
 
 
+@pytest.mark.parametrize("message, expected", [
+    ("管缆类型海底油气管道", "海底油气管道"),
+    ("管缆类型为海底油气管道", "海底油气管道"),
+    ("管缆类型：海底油气管道", "海底油气管道"),
+    ("海底油气管道", "海底油气管道"),
+    ("请把管缆类型改为电力电缆。", "电力电缆"),
+    ("选择光缆。", "光纤通信缆"),
+    ("那帮我安排海底油气管道巡检吧", "海底油气管道"),
+    ("水深不变，管缆类型为电力电缆。", "电力电缆"),
+    ("如果天气不好，不出海。管缆类型为海底油气管道。", "海底油气管道"),
+    ("光缆巡检有何风险？管缆类型为电力电缆。", "电力电缆"),
+])
+def test_affirmative_cable_type_is_recovered_when_model_omits_it(message, expected):
+    result = ground_explicit_values(
+        {"slot_candidates": []}, message, kb=KnowledgeBase(),
+        fields=[{"key": "cable_type", "allowed_values": ["海底油气管道", "电力电缆", "光纤通信缆"]}],
+        current_state={"task_type_key": "pipeline_inspection"}, task_type="pipeline_inspection",
+    )
+    assert [(candidate["canonical_key"], candidate["normalized_value"])
+            for candidate in result["slot_candidates"]] == [("cable_type", expected)]
+
+
+@pytest.mark.parametrize("message", [
+    "管缆类型选海底油气管道？",
+    "海底油气管道巡检吗？",
+    "海底油气管道巡检是什么",
+    "水深改为320米，海底油气管道巡检有什么风险？",
+    "管缆类型为海底油气管道，行吗？",
+    "不是海底油气管道巡检",
+    "不要安排海底油气管道巡检，换成别的。",
+    "不用海底油气管道。",
+    "如果天气允许，管缆类型为海底油气管道。",
+    "假设水深合适，安排海底油气管道巡检。",
+    "只要天气允许，就用海底油气管道。",
+    "管缆类型为海底油气管道，等等，先不要改。",
+    "管缆类型选海底油气管道，取消这个管缆修改。",
+    "管缆类型为海底油气管道或者电力电缆。",
+    "管缆类型为海底油气管道，电力电缆也行。",
+    "管缆类型为海底油气管道。管缆类型为电力电缆。",
+    "管缆类型为魔法海底油气管道。",
+    "昨天完成海底油气管道巡检。",
+])
+def test_cable_mentions_without_unambiguous_choice_are_not_grounded(message):
+    result = ground_explicit_values(
+        {"slot_candidates": [slot_candidate("water_depth", 320)]}, message,
+        kb=KnowledgeBase(),
+        fields=[{"key": "cable_type", "allowed_values": ["海底油气管道", "电力电缆", "光纤通信缆"]}],
+        current_state={"task_type_key": "pipeline_inspection"}, task_type="pipeline_inspection",
+    )
+    assert [(candidate["canonical_key"], candidate["normalized_value"])
+            for candidate in result["slot_candidates"]] == [("water_depth", 320)]
+
+
+def test_cable_recovery_is_scoped_to_schema_values():
+    for fields in ([], [{"key": "cable_type", "allowed_values": ["电力电缆"]}]):
+        result = ground_explicit_values(
+            {"slot_candidates": []}, "管缆类型为海底油气管道", kb=KnowledgeBase(),
+            fields=fields, current_state={}, task_type="pipeline_inspection",
+        )
+        assert result["slot_candidates"] == []
+
+
+def test_explicit_cable_followup_commits_when_model_omits_value(pipeline_dialogue):
+    dm, llm = pipeline_dialogue
+    llm.queue_extraction({"slot_candidates": [], "list_mutations": [], "unresolved": []})
+
+    dm.process("管缆类型海底油气管道")
+
+    assert dm.task_state["cable_type"] == "海底油气管道"
+    assert dm.slot_store.slots["cable_type"].status == "valid"
+    missing = dm.slot_store.get_missing_slots(dm.builder.get_schema("pipeline_inspection", "normal"))
+    assert "cable_type" not in {field["key"] for field in missing}
+
+
+def test_mixed_cable_question_does_not_overwrite_confirmed_value(pipeline_dialogue):
+    dm, llm = pipeline_dialogue
+    dm.slot_store.slots["cable_type"] = Slot("cable_type", value="电力电缆", status="valid")
+    dm._rebuild_cache()
+    llm.queue_extraction({
+        "slot_candidates": [slot_candidate("water_depth", 320)],
+        "list_mutations": [], "unresolved": [],
+    })
+
+    dm.process("水深改为320米，海底油气管道巡检有什么风险？")
+
+    assert dm.task_state["water_depth"] == 320
+    assert dm.task_state["cable_type"] == "电力电缆"
+    assert dm.slot_store.slots["cable_type"].status == "valid"
+
+
 def test_compound_robot_vessel_payload_turn(pipeline_dialogue):
     """
     验证类似 test_cable_prompt.py 的复合多槽位更新：

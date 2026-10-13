@@ -362,7 +362,7 @@ class TaskTransitionManager:
     def _task_selector_updates_from_extraction(
         extraction: dict,
     ) -> tuple[dict[str, object], str | None]:
-        """Return task selectors, rejecting duplicate values in one result."""
+        """Preflight selectors before either extraction stage can mutate slots."""
         updates: dict[str, object] = {}
         for candidate in extraction.get("slot_candidates", []):
             if not isinstance(candidate, dict):
@@ -377,6 +377,18 @@ class TaskTransitionManager:
             if key in updates and updates[key] != value:
                 return {}, "同轮具体任务类型互相冲突，请只指定一种任务操作。"
             updates[str(key)] = value
+        for item in extraction.get("unresolved", []):
+            message = str(item)
+            if any(marker in message for marker in (
+                "同轮具体任务类型互相冲突",
+                "无法确定具体 task_type",
+                "未明确是'插入'还是'拔出'",
+                "未明确任务类型",
+                "任务类型存在歧义",
+                "采油树阀门操作存在歧义",
+                "采油树阀门操作候选与用户明确方向不一致",
+            )):
+                return {}, message
         return updates, None
 
     def _resolve_task_type_update_context(

@@ -130,6 +130,67 @@ class TestFastExtractTaskType(unittest.TestCase):
         self.assertEqual(cands_wd.get("task_type"), "采油树控制面板拔出")
         self.assertEqual(cands_wd.get("task_type_key"), "tree_valve_operation")
 
+    def test_tree_valve_rejects_negated_operation(self):
+        """否定句不能经由快路径提交一个操作方向。"""
+        res = self.extractor.extract_updates(
+            "不要执行采油树控制面板插入",
+            current_state={},
+            task_type_key=None,
+            task_type_map=self.task_type_map,
+        )
+        self.mock_llm.extract_json.assert_called_once()
+        self.assertFalse(any(c["canonical_key"] == "task_type" for c in res["slot_candidates"]))
+
+    def test_tree_valve_correction_keeps_final_positive_direction(self):
+        """“不是拔出，是插入”应以用户最后的明确方向为准。"""
+        res = self.extractor.extract_updates(
+            "不是拔出，是采油树控制面板插入",
+            current_state={},
+            task_type_key=None,
+            task_type_map=self.task_type_map,
+        )
+        candidates = {c["canonical_key"]: c["normalized_value"] for c in res["slot_candidates"]}
+        self.assertEqual(candidates.get("task_type"), "采油树控制面板插入")
+        self.assertEqual(candidates.get("task_type_key"), "tree_valve_operation")
+
+    def test_tree_valve_model_selector_must_match_explicit_direction(self):
+        """模型回显与用户方向相反时，候选必须被移除。"""
+        self.mock_llm.extract_json.return_value = {
+            "slot_candidates": [{
+                "canonical_key": "task_type",
+                "normalized_value": "采油树控制面板插入",
+            }],
+            "unresolved": [],
+        }
+        res = self.extractor.extract_updates(
+            "执行采油树控制面板拔出",
+            current_state={},
+            task_type_key="tree_valve_operation",
+            task_type_map=self.task_type_map,
+            required=[{"key": "water_depth"}],
+        )
+        self.assertTrue(any(c["canonical_key"] == "task_type" for c in res["slot_candidates"]))
+        self.assertTrue(any("不一致" in item for item in res["unresolved"]))
+
+    def test_tree_valve_echo_is_ignored_when_user_changes_another_field(self):
+        """已有任务仅修改水深时，模型回显任务类型不应制造歧义。"""
+        self.mock_llm.extract_json.return_value = {
+            "slot_candidates": [
+                {"canonical_key": "task_type", "normalized_value": "采油树控制面板插入"},
+                {"canonical_key": "water_depth", "normalized_value": 50},
+            ],
+            "unresolved": [],
+        }
+        res = self.extractor.extract_updates(
+            "水深改成50米",
+            current_state={"task_type_key": "tree_valve_operation"},
+            task_type_key="tree_valve_operation",
+            task_type_map=self.task_type_map,
+            required=[{"key": "water_depth"}],
+        )
+        self.assertEqual(len(res["slot_candidates"]), 2)
+        self.assertEqual(res["unresolved"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

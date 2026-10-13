@@ -409,11 +409,9 @@ class ParameterExtractor:
             task_type_map or {},
         )
         if tree_valve_error:
-            normalized_candidates = [
-                candidate
-                for candidate in normalized_candidates
-                if candidate.get("canonical_key") not in {"task_type", "task_type_key"}
-            ]
+            # Keep the candidate in the extraction result. The dialogue
+            # manager preflight owns the atomic decision and must see the
+            # original selector for cross-pass conflict reporting.
             if tree_valve_error not in cleaned_unresolved:
                 cleaned_unresolved.append(tree_valve_error)
 
@@ -443,9 +441,6 @@ class ParameterExtractor:
         for candidate in candidates:
             key = candidate.get("canonical_key")
             value = candidate.get("normalized_value")
-            if key == "task_type_key" and value == "tree_valve_operation":
-                tree_selected = True
-                break
             if key == "task_type" and isinstance(value, str):
                 if task_type_map.get(value) == "tree_valve_operation":
                     tree_selected = True
@@ -454,17 +449,48 @@ class ParameterExtractor:
             return None
 
         text = str(user_message or "")
-        directions = {
-            direction
-            for direction, token in (
-                ("insert", "插入"),
-                ("withdraw", "拔出"),
-            )
-            if token in text
-        }
-        if len(directions) == 1:
+        # A model may echo the existing task selector while the user only
+        # changes another field (for example, water depth).  In that case the
+        # selector is not being re-selected this turn.
+        if not any(term in text for term in ("阀门操作", "控制面板", "插入", "拔出")) \
+                and not ("采油树" in text and "操作" in text):
             return None
-        return "采油树阀门操作存在歧义，请明确说明‘插入’或‘拔出’。"
+
+        direction = ParameterExtractor._explicit_tree_valve_direction(text)
+        if direction is None:
+            return "采油树阀门操作存在歧义，请明确说明‘插入’或‘拔出’。"
+
+        for candidate in candidates:
+            if candidate.get("canonical_key") != "task_type":
+                continue
+            value = str(candidate.get("normalized_value") or "")
+            candidate_direction = (
+                "insert" if "插入" in value and "拔出" not in value
+                else "withdraw" if "拔出" in value and "插入" not in value
+                else None
+            )
+            if candidate_direction and candidate_direction != direction:
+                return "采油树阀门操作候选与用户明确方向不一致，请重新指定‘插入’或‘拔出’。"
+        return None
+
+    @staticmethod
+    def _explicit_tree_valve_direction(text: str) -> str | None:
+        """Return one positive complete operation word, if unambiguous."""
+        positive: list[str] = []
+        source = str(text or "")
+        previous_operation_end = 0
+        for match in re.finditer(r"插入|拔出", source):
+            # Negation belongs to this operation only when it appears after
+            # the previous operation word. This keeps "不是拔出，是插入"
+            # positive for the final insertion while rejecting
+            # "不要采油树控制面板插入".
+            prefix = source[previous_operation_end:match.start()]
+            if re.search(r"(?:不|不要|别|取消|撤销|不想|不是|并非|未|没)\s*", prefix):
+                previous_operation_end = match.end()
+                continue
+            positive.append("insert" if match.group() == "插入" else "withdraw")
+            previous_operation_end = match.end()
+        return positive[0] if len(positive) == 1 else None
 
     @staticmethod
     def _filter_meta_unresolved(items: list[Any]) -> list[str]:
@@ -564,11 +590,10 @@ class ParameterExtractor:
             # Do not treat a single character as an operation.  ASR text can
             # contain unrelated words such as 插槽/插管 or 拔管; only the
             # complete operation terms disambiguate this task type.
-            has_withdraw = "拔出" in user_message
-            has_insert = "插入" in user_message
-            if has_withdraw and not has_insert:
+            direction = self._explicit_tree_valve_direction(user_message)
+            if direction == "withdraw":
                 disp_name = "采油树控制面板拔出"
-            elif has_insert and not has_withdraw:
+            elif direction == "insert":
                 disp_name = "采油树控制面板插入"
             else:
                 return None

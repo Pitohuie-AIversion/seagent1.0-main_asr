@@ -189,7 +189,8 @@ class WriteReplyGrounder:
         """
         check_end = "end_time" not in visible
         check_payload = "payload" not in visible and bool(task_state.get("payload"))
-        if not check_end and not check_payload:
+        check_location = "oilfield_name" not in visible and not task_state.get("oilfield_name")
+        if not check_end and not check_payload and not check_location:
             return reply
 
         if check_payload:
@@ -200,6 +201,43 @@ class WriteReplyGrounder:
                 r"(?:当前|已保存|已选|携带)?(?:载荷(?:配置)?|携带工具)(?:\*\*)?"
                 r"[：:][ \t]*\n(?:[ \t]*[-*+] +[^\n]+(?:\n|$))+",
                 "", reply,
+            )
+
+        # Oilfield names are special: the linker may retain raw/pending
+        # metadata while the schema rejects the user-facing ``oilfield_name``.
+        # In that state the model often echoes the requested oilfield as if it
+        # were already the task location (for example, ``作业区域：流花11-1
+        # 油田``). Keep the rejection/explanation prose, but remove only the
+        # state-style assertion so the receipt remains the source of truth.
+        if "oilfield_name" not in visible and not task_state.get("oilfield_name"):
+            def scrub_uncommitted_oilfield_assertions(match: re.Match) -> str:
+                line = match.group(0)
+                plain = re.sub(r"[*_`]", "", line).strip()
+                value = re.split(r"[：:]|\s+(?:为|是)\s+", plain, maxsplit=1)[-1].strip()
+                if not re.search(r"(?:油田|气田)", value):
+                    return line
+                # Guidance such as ``油田名称：请提供坐标`` is useful and has
+                # no concrete state claim; only concrete values are removed.
+                if re.match(r"(?:请|需要|需|待|未|无法|不能|暂不|尚未|请选择|明确)", value):
+                    return line
+                return ""
+
+            reply = re.sub(
+                r"(?im)^[ \t]*(?:[-*+]\s+|\d+[.)、]\s+)?"
+                r"(?:\*\*)?(?:当前|目前|任务|作业)?(?:作业区域|作业地点|油田名称)"
+                r"(?:\*\*)?[ \t]*(?:(?:为|是)[ \t]*|[：:])"
+                r"[^，。！？!?\n]*?(?:油田|气田)(?:（[^，。！？!?\n]*）)?[。！？!?]?$",
+                scrub_uncommitted_oilfield_assertions,
+                reply,
+            )
+            reply = re.sub(
+                r"(?<![\u4e00-\u9fff])(?:当前|目前|任务|作业)?(?:作业区域|作业地点|油田名称)"
+                r"\s*(?:(?:为|是)\s*|[：:]\s*)"
+                r"(?!(?:请|需要|需|待|未|无法|不能|暂不|尚未|请选择|明确))"
+                r"[^，。！？!?\n]*(?:油田|气田)"
+                r"(?:（[^，。！？!?\n]*）)?",
+                "",
+                reply,
             )
 
         def scrub_sentence(match: re.Match) -> str:
@@ -524,7 +562,7 @@ class WriteReplyGrounder:
         if scrubbed.count(")") > scrubbed.count("("):
             scrubbed = re.sub(r"\)([。，\s]*)$", r"\1", scrubbed)
 
-        scrubbed = re.sub(r"^[，。；\s]+", "", scrubbed)
+        scrubbed = re.sub(r"(?m)^[，。；\s]+", "", scrubbed)
         scrubbed = re.sub(r"[，。；\s]+$", "。", scrubbed)
         scrubbed = re.sub(r"([。！？])\1+", r"\1", scrubbed)
         scrubbed = scrubbed.strip()

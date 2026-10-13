@@ -189,6 +189,11 @@ class TestEndToEndDialogueFlow(unittest.TestCase):
         # 校验：严禁将单向的拔出操作写入 task_type
         task_type_val = dm.task_state.get("task_type")
         self.assertNotEqual(task_type_val, "采油树控制面板拔出")
+        committed = dm.slot_store.get_task_state()
+        self.assertNotIn("task_type", committed)
+        self.assertNotIn("task_type_key", committed)
+        self.assertNotIn("water_depth", committed)
+        dm.extractor.extract_updates.assert_called_once()
         # 校验：回复包含明确未写入或澄清指引
         self.assertTrue(
             "未明确是'插入'还是'拔出'" in reply or "同轮具体任务类型互相冲突" in reply or "无法确定具体 task_type" in reply

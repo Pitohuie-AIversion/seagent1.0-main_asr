@@ -241,6 +241,51 @@ def test_missing_fields_do_not_claim_complete_collection(claim):
     assert '仍需补充：任务开始时间' in result
 
 
+def test_uncommitted_oilfield_state_assertion_is_removed_but_rejection_guidance_survives():
+    reply = (
+        "关于‘流花11-1油田’，当前系统暂不支持通过油田名称自动映射坐标。\n"
+        "当前任务状态如下：\n"
+        "- 任务类型：管缆埋设\n"
+        "- 作业区域：流花11-1油田（尚未转换为精确坐标）\n"
+        "请补充起始点和结束点坐标。"
+    )
+    result = WriteReplyGrounder.ground_write_reply(
+        reply,
+        accepted_updates={},
+        unresolved_inputs=["当前任务类型未包含油田槽位，无法通过油田名称映射。"],
+        task_state={"task_type": "管缆埋设"},
+        missing_fields=[{"key": "start_point", "label": "起始点经纬度"}],
+    )
+    assert "暂不支持通过油田名称自动映射坐标" in result
+    assert "作业区域：流花11-1油田" not in result
+    assert "当前已保存：任务类型：管缆埋设" in result
+
+
+def test_uncommitted_inline_oilfield_state_assertion_is_removed():
+    result = WriteReplyGrounder.ground_write_reply(
+        "当前作业区域为流花11-1油田。请补充精确坐标。",
+        accepted_updates={},
+        unresolved_inputs=[],
+        task_state={"task_type": "管缆埋设"},
+        missing_fields=[{"key": "start_point", "label": "起始点经纬度"}],
+    )
+    assert "当前作业区域为流花11-1油田" not in result
+    assert "\n，请" not in result
+    assert "请补充精确坐标" in result
+
+
+def test_uncommitted_inline_oilfield_scrub_preserves_followup_guidance():
+    result = WriteReplyGrounder.ground_write_reply(
+        "当前作业区域为流花11-1油田，请补充精确坐标。",
+        accepted_updates={},
+        unresolved_inputs=[],
+        task_state={"task_type": "管缆埋设"},
+        missing_fields=[{"key": "start_point", "label": "起始点经纬度"}],
+    )
+    assert "当前作业区域为流花11-1油田" not in result
+    assert "请补充精确坐标" in result
+
+
 def test_write_response_discards_misplaced_off_topic_reject_template():
     """在任务编辑与写入响应中，模型若误吐出离题拒识模板，必须被彻底剥离清洗。"""
     from src.extraction.prompts import OFF_TOPIC_REJECT_TEMPLATE
@@ -262,4 +307,3 @@ def test_write_response_discards_misplaced_off_topic_reject_template():
     assert "油田坐标" in result
     assert "开拓者号未在设备库登记" in result
     assert "✅ 已记录" in result
-
