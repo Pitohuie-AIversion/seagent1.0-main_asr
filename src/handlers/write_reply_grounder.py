@@ -190,7 +190,8 @@ class WriteReplyGrounder:
         check_end = "end_time" not in visible
         check_payload = "payload" not in visible and bool(task_state.get("payload"))
         check_location = "oilfield_name" not in visible and not task_state.get("oilfield_name")
-        if not check_end and not check_payload and not check_location:
+        check_vessel = "support_vessel" not in visible and not task_state.get("support_vessel")
+        if not check_end and not check_payload and not check_location and not check_vessel:
             return reply
 
         if check_payload:
@@ -286,6 +287,26 @@ class WriteReplyGrounder:
                 ))
                 if completed_mutation_about(r"载荷|携带工具") or (states_payload and not guidance_about(r"载荷|携带工具")):
                     return ""
+            if check_vessel and re.search(r"支持船|母船|母船支持|作业船|支援船", text):
+                vessel_names = r"(?:支持船|母船|母船支持|作业船|支援船)"
+                vessel_markers = r"(?:已(?:关联|选择|配置|设置|绑定|指定|预设)|关联|选择|配置|设置|绑定|指定|预设)"
+                stop_at_clause = r"[^，,。！？!?；;\n]*"
+                claim_patterns = (
+                    rf"{vessel_names}{stop_at_clause}{vessel_markers}{stop_at_clause}",
+                    rf"{vessel_markers}{stop_at_clause}{vessel_names}{stop_at_clause}",
+                    rf"{vessel_names}\s*(?:[：:]|为|是)\s*"
+                    rf"(?!请|需要|还需|仍需|待|未|尚未|无|没有|可选|候选|请选择|提供|补充|确认|确定){stop_at_clause}",
+                )
+                cleaned = text
+                claimed = False
+                for pattern in claim_patterns:
+                    cleaned, count = re.subn(pattern, "", cleaned)
+                    claimed = claimed or count > 0
+                if claimed:
+                    cleaned = re.sub(r"^[\s*：:，,；;]+|[\s*：:，,；;]+$", "", cleaned)
+                    if not re.sub(r"[\s*_`：:，,；;。！？!?()（）\[\]-]", "", cleaned):
+                        return ""
+                    return cleaned
             return original
 
         return re.sub(r"[^。！？!?\n]+[。！？!?]?", scrub_sentence, reply)

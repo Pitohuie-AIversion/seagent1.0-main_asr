@@ -63,6 +63,34 @@ def test_payload_guidance_does_not_discard_the_entire_conversation():
     assert "当前已保存：携带工具：双目水下成像系统" in result
 
 
+def test_uncommitted_support_vessel_claim_is_removed_but_question_survives():
+    prose = (
+        "当前已为您预设以下设备配置：\n"
+        "* **作业设备**：通用工作级深海机器人 250HP\n"
+        "* **母船支持**：已关联可用支持船（海洋石油681 / DSV-Oceanic）\n"
+        "请提供支持船编号，以便继续规划。"
+    )
+    result = ground(prose, state={"equipment_type": "通用工作级深海机器人 250HP"},
+                    missing=[{"key": "support_vessel", "label": "支持船编号"}])
+    assert "已关联可用支持船" not in result
+    assert "请提供支持船编号，以便继续规划" in result
+
+
+def test_support_vessel_choices_remain_when_no_vessel_is_committed():
+    prose = "可选支持船包括海洋石油681和 DSV-Oceanic，请确认支持船编号。"
+    result = ground(prose, state={"equipment_type": "通用工作级深海机器人 250HP"},
+                    missing=[{"key": "support_vessel", "label": "支持船编号"}])
+    assert prose in result
+
+
+def test_uncommitted_support_vessel_claim_is_removed_inside_followup_sentence():
+    prose = "母船支持：已关联可用支持船（海洋石油681），请确认支持船编号。"
+    result = ground(prose, state={"equipment_type": "通用工作级深海机器人 250HP"},
+                    missing=[{"key": "support_vessel", "label": "支持船编号"}])
+    assert "已关联可用支持船" not in result
+    assert "请确认支持船编号" in result
+
+
 def test_stale_payload_claim_is_removed_without_losing_independent_explanation():
     result = ground(
         "水深已修改为300米。\n当前载荷仍为浑水水下成像系统。\n"
