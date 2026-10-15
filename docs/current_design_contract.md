@@ -24,8 +24,10 @@ The system classifies all natural language user inputs into two primary interact
 
 ### 1.4 Write Pipeline
 - `WRITE` produces candidates through extraction, grounding and normalization; schema-accepted values update SlotStore before task-level constraint validation. Violations preserve a correction context and prevent publication.
+- **Immediate Task Start Grounding**: Explicit expressions requesting immediate startup (e.g., `"任务现在开始"`, `"立刻开始"`, `"即刻开始"`) are deterministically anchored to absolute current system time (`get_current_datetime()`) without ambiguity or relative shift errors.
 - `CONTROL` is handled by the relevant phase handler for confirmation, cancellation or warning acknowledgement; not every control action runs the extractor.
 - A model returning `WRITE` does not guarantee a field commit or publication.
+
 
 ---
 

@@ -19,9 +19,12 @@ Accepted；2026-09-30 对照实现补充提交后持久化失败与恢复语义�
 > **它绝不表示** Task Graph 任务分解理论中的“不可分割原子任务 (Atomic Sub-Task)”。
 
 ## 修改位置
-- [src/dispatch/task_intent_builder.py](../../src/dispatch/task_intent_builder.py) (`TaskPublishLock`, `TaskIntentBuilder.prepare`, `create_staging`, `publish_staging`, `_atomic_commit_noreplace`, `TaskCommitUncertainError`, `recover_committed`)
+- [src/dispatch/atomic_task_storage.py](../../src/dispatch/atomic_task_storage.py) (`TaskPublishLock`, `_write_all`, `_atomic_commit_noreplace`, `TaskCommitUncertainError` 底层原子写入基础设施)
+- [src/dispatch/task_intent_schema_validator.py](../../src/dispatch/task_intent_schema_validator.py) (`validate_task_intent_v1`, `validate_task_intent_v2`, `validate_task_intent` 双模态 Schema 与时空约束契约校验)
+- [src/dispatch/task_intent_builder.py](../../src/dispatch/task_intent_builder.py) (`TaskIntentBuilder.prepare`, `create_staging`, `publish_staging`, `recover_committed`，并 re-export 底层存储与校验符号以保持 100% 兼容)
 - [src/handlers/task_commit.py](../../src/handlers/task_commit.py)（区分提交前回滚与提交后恢复）
 - [src/exceptions.py](../../src/exceptions.py) (`IntentIdConflict`, `TaskPersistenceError`)
+
 
 ## 核心逻辑
 ```python

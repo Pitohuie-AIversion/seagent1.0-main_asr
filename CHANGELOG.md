@@ -10,6 +10,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Refactored — Dispatch 领域 TaskIntent 上帝代码解耦与职责分治（2026-10-15）
+
+- **抽离底层原子文件锁与写入基础设施**：新增 [src/dispatch/atomic_task_storage.py](src/dispatch/atomic_task_storage.py)（83 行），专职负责 `TaskPublishLock`（跨进程排他锁）、`TaskCommitUncertainError`、`_write_all`（POSIX 完整写入保障）与 `_atomic_commit_noreplace`（`os.link` 原子无覆盖发布机制）。
+- **抽离 TaskIntent 双模态契约校验器**：新增 [src/dispatch/task_intent_schema_validator.py](src/dispatch/task_intent_schema_validator.py)（234 行），专职负责 `validate_task_intent_v1`、`validate_task_intent_v2`、`validate_task_intent` 双模态分派校验，以及时空坐标、时间范围与有效负载等纯函数校验。
+- **构建器实体聚焦与透明兼容**：[src/dispatch/task_intent_builder.py](src/dispatch/task_intent_builder.py) 从 946 行缩减至 671 行（净减 274 行），专注领域实体构造与事务管理，并在模块顶层透明 re-export 所有下沉符号，保证全库既有接口与测试 100% 向后兼容。
+- **三级测试全绿验收**：Level 1 定向测试 73 项（17 subtests）、Level 2 治理与架构不变量 36 项、Level 3 核心业务回归 171 项全量通过（0 失败）。
+
+### Fixed & Enhanced — 即时启动时间物理锚定与流式槽位监控面板（2026-10-15）
+
+- **即时启动时间确定性物理锚定**：
+  - [src/temporal/relative_time_parser.py](src/temporal/relative_time_parser.py) 扩充即时词汇覆盖（新增“即刻”、“当即”等）；
+  - [src/handlers/explicit_value_grounding.py](src/handlers/explicit_value_grounding.py) 新增确定性即时 `start_time` 物理锚定兜底：当检测到“任务现在开始/即刻开始/立刻开始”且无否定/条件时，直接调用 `get_current_datetime()` 生成绝对 ISO 时间并规范化；
+  - [src/extraction/extractor.py](src/extraction/extractor.py) 增强 Prompt 规则 8，指导大模型将即时启动词映射为绝对时间，并补充正则过滤彻底剔除大模型生成的元思考反思。
+- **流式接口补齐状态卡片打印**：[src/web/routes_chat.py](src/web/routes_chat.py) 在 `/api/chat/stream` 每次调用 `mgr.process()` 后补齐 `print_status(mgr)` 调用，修复前端 HUD 走 SSE 流式时后端控制台不打印结构化槽位状态面板的缺陷。
+- **启动与并发死锁根除**：[run.py](run.py) 移除实例化 vLLM 前调用 `torch.cuda.is_bf16_supported()` 造成的 CUDA 预初始化；将 multiprocess 方式锁定为 `fork`，彻底杜绝子进程 `spawn` 死锁与超时。
+
+
 ### Refactored — DDD 领域子包模块化与根目录 Shims 彻底清除（2026-09-20）
 
 - **`src/` 扁平文件领域分层**：将原先平铺在 `src/` 根目录的 48 个 Python 文件按 DDD 领域驱动高内聚原则彻底划分为 12 个领域子包（`asr/`, `temporal/`, `slots/`, `validation/`, `dispatch/`, `extraction/`, `session/`, `handlers/`, `knowledge/`, `types/`, `utils/`, `web/`）。

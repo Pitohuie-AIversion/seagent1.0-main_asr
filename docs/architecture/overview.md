@@ -48,7 +48,7 @@ flowchart TD
 | 抽取与规范化 | `src/extraction/`, `src/handlers/slot_extraction_pipeline.py` | 任务类型、字段、时间、坐标、设备和载荷候选处理 | 已实现 |
 | 状态中心 | `src/slots/` | SlotStore、候选值、字段补丁、快照和列表槽位事务 | 已实现 |
 | 知识与约束 | `src/knowledge/`, `src/validation/`, `src/state_info.py` | 项目事实、设备候选域、环境、遥测和硬/软约束 | 已实现 |
-| 持久化 | `src/dispatch/task_intent_builder.py`, `src/session/history_manager.py` | TaskIntent 原子归档、历史快照、回滚和不确定提交恢复 | 已实现 |
+| 持久化 | `src/dispatch/task_intent_builder.py`, `src/dispatch/atomic_task_storage.py`, `src/dispatch/task_intent_schema_validator.py`, `src/session/history_manager.py` | TaskIntent 领域实体构建分发、原子排他锁与 POSIX 写入、双模态 Schema 契约校验与历史快照 | 已实现 |
 | 执行集成 | `mcp/ros-mcp/core/`, `src/dispatch/task_dispatch.py` | 可选 ROS 2 WebSocket/MCP 桥接、任务状态和发送结果 | 已实现，需运行配置和桥接端 |
 | 规划扩展 | Task Graph、多机器人分配、动态重规划、通用 Robot Gateway | 未来执行编排能力 | 规划中 |
 
