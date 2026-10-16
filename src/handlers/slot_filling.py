@@ -161,6 +161,7 @@ class SlotFillingHandler(BaseDialogueHandler):
         display_updates: dict | None = None,
         task_state: dict | None = None,
         constraint_context: dict | None = None,
+        payload_configuration: dict | None = None,
     ) -> str:
         """在 LLM 自然语言回复后追加事实锚点摘要，防止回复内容与实际写入状态不一致。"""
         return WriteReplyGrounder.ground_write_reply(
@@ -172,6 +173,7 @@ class SlotFillingHandler(BaseDialogueHandler):
             display_updates=display_updates,
             task_state=task_state,
             constraint_context=constraint_context,
+            payload_configuration=payload_configuration,
         )
 
 
@@ -256,6 +258,7 @@ class SlotFillingHandler(BaseDialogueHandler):
             missing_fields=missing if missing else None,
             task_state=manager.task_state,
             constraint_context=constraint_context,
+            payload_configuration=self.reply_grounder.get_payload_configuration(),
         )
         if task_type_key is None:
             supported = manager.kb.get_all_task_type_values()
@@ -742,6 +745,7 @@ class SlotFillingHandler(BaseDialogueHandler):
                 display_updates=self.get_committed_update_display_values(accepted_updates),
                 task_state=manager.task_state,
                 constraint_context=constraint_context,
+                payload_configuration=self.reply_grounder.get_payload_configuration(),
             )
             manager.conversation_history.extend([
                 {"role": "user", "content": user_message},
@@ -778,6 +782,7 @@ class SlotFillingHandler(BaseDialogueHandler):
             ),
             task_state=manager.task_state,
             constraint_context=constraint_context,
+            payload_configuration=self.reply_grounder.get_payload_configuration(),
         )
         reply = manager._ensure_constraint_details(reply, constraint_context)
 

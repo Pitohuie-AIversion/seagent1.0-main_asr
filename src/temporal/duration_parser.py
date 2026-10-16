@@ -225,6 +225,13 @@ def parse_duration_with_detail(text: Optional[str]) -> DurationParseResult:
         return result
 
     # --- "X个半小时" / "X小时半" / "X天半" / "X个半天" ---
+    # In 一天半小时 / 两小时半分钟, 半 belongs to the following unit.
+    # A suffix-half match must not consume it as part of the preceding unit.
+    half_unit_boundary = (
+        r"(?!\s*(?:个)?\s*(?:小时|钟头|天|日|分钟|分|秒钟|秒|"
+        r"(?:hours?|hrs?|h|days?|minutes?|mins?|seconds?|secs?)(?![a-z])))"
+    )
+
     def _try_pattern(pattern_regex: re.Pattern, unit_multiplier: float) -> Optional[float]:
         m = pattern_regex.search(cleaned)
         if m:
@@ -234,7 +241,7 @@ def parse_duration_with_detail(text: Optional[str]) -> DurationParseResult:
         return None
 
     p_hour_half = re.compile(
-        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+)\s*(?:个)?\s*半\s*(?:个)?\s*(?:小时|钟头|h|hr|hours?|hrs?)",
+        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+)\s*(?:个)?\s*半\s*(?:个)?\s*(?:小时|钟头|(?:hours?|hrs?|h)(?![a-z]))",
         re.IGNORECASE,
     )
     val = _try_pattern(p_hour_half, 3600.0)
@@ -242,10 +249,10 @@ def parse_duration_with_detail(text: Optional[str]) -> DurationParseResult:
         result.hours = val / 3600.0
         result.total_seconds = val
         result.parse_method = "hour_and_half_prefix"
-        return result
 
     p_hour_half2 = re.compile(
-        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+)\s*(?:小时|钟头)\s*半",
+        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+)\s*(?:小时|钟头)\s*半"
+        + half_unit_boundary,
         re.IGNORECASE,
     )
     val = _try_pattern(p_hour_half2, 3600.0)
@@ -253,7 +260,6 @@ def parse_duration_with_detail(text: Optional[str]) -> DurationParseResult:
         result.hours = val / 3600.0
         result.total_seconds = val
         result.parse_method = "hour_and_half_suffix"
-        return result
 
     p_day_half = re.compile(
         r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+)\s*(?:个)?\s*半\s*(?:个)?\s*天",
@@ -264,10 +270,10 @@ def parse_duration_with_detail(text: Optional[str]) -> DurationParseResult:
         result.days = val / 86400.0
         result.total_seconds = val
         result.parse_method = "day_and_half_prefix"
-        return result
 
     p_day_half2 = re.compile(
-        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+)\s*天\s*半",
+        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+)\s*天\s*半"
+        + half_unit_boundary,
         re.IGNORECASE,
     )
     val = _try_pattern(p_day_half2, 86400.0)
@@ -275,21 +281,24 @@ def parse_duration_with_detail(text: Optional[str]) -> DurationParseResult:
         result.days = val / 86400.0
         result.total_seconds = val
         result.parse_method = "day_and_half_suffix"
-        return result
 
     # --- 组合式：X天Y小时Z分钟W秒（或任一字段单独出现） ---
-    matched = False
-    tmp_days = 0.0
-    tmp_hours = 0.0
+    # Half-unit phrases may be only one part of the duration. Retain their
+    # values while collecting the other units, e.g. 一天半2小时 or 1天两个半小时.
+    matched = result.success
+    tmp_days = result.days
+    tmp_hours = result.hours
     tmp_minutes = 0.0
     tmp_seconds = 0.0
 
+    # English units must not consume prefixes of equipment labels such as 75HP.
+    # Use an ASCII-letter boundary so 1h30min and 2h左右 remain valid durations.
     # 天
     day_match = re.search(
-        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+)\s*(?:天|日|days?)",
+        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+|半)\s*(?:个)?\s*(?:天|日|days?(?![a-z]))",
         cleaned, re.IGNORECASE,
     )
-    if day_match:
+    if day_match and not tmp_days:
         d = parse_chinese_number(day_match.group(1))
         if d is not None and math.isfinite(d):
             tmp_days = d
@@ -297,10 +306,10 @@ def parse_duration_with_detail(text: Optional[str]) -> DurationParseResult:
 
     # 小时
     hour_match = re.search(
-        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+)\s*(?:个)?\s*(?:小时|钟头|h|hr|hours?|hrs?)",
+        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+|半)\s*(?:个)?\s*(?:小时|钟头|(?:hours?|hrs?|h)(?![a-z]))",
         cleaned, re.IGNORECASE,
     )
-    if hour_match:
+    if hour_match and not tmp_hours:
         h = parse_chinese_number(hour_match.group(1))
         if h is not None and math.isfinite(h):
             tmp_hours = h
@@ -308,7 +317,7 @@ def parse_duration_with_detail(text: Optional[str]) -> DurationParseResult:
 
     # 分钟
     min_match = re.search(
-        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+)\s*(?:个)?\s*(?:分钟|分|mins?|minutes?)",
+        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+|半)\s*(?:个)?\s*(?:分钟|分|(?:minutes?|mins?)(?![a-z]))",
         cleaned, re.IGNORECASE,
     )
     if min_match:
@@ -319,7 +328,7 @@ def parse_duration_with_detail(text: Optional[str]) -> DurationParseResult:
 
     # 秒
     sec_match = re.search(
-        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+)\s*(?:个)?\s*(?:秒钟|秒|secs?|seconds?)",
+        r"([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万亿点贰叁肆伍陆柒捌玖两佰仟万亿]+|半)\s*(?:个)?\s*(?:秒钟|秒|(?:seconds?|secs?)(?![a-z]))",
         cleaned, re.IGNORECASE,
     )
     if sec_match:
@@ -341,7 +350,8 @@ def parse_duration_with_detail(text: Optional[str]) -> DurationParseResult:
             result.minutes = tmp_minutes
             result.seconds = tmp_seconds
             result.total_seconds = total
-            result.parse_method = "composite_fields"
+            if sum(bool(value) for value in (tmp_days, tmp_hours, tmp_minutes, tmp_seconds)) > 1 or result.parse_method == "failed":
+                result.parse_method = "composite_fields"
             return result
 
     return result

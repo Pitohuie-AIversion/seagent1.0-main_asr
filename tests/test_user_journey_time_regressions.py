@@ -22,7 +22,7 @@ def candidate(key, raw, value):
             "normalized_value": value, "confidence": 0.95}
 
 
-def extract(message, candidates, relation=None, state=None):
+def extract(message, candidates, relation=None, state=None, required_extra=()):
     llm = SimpleNamespace(
         extract_json=lambda *args, **kwargs: {
             "slot_candidates": copy.deepcopy(candidates), "list_mutations": [],
@@ -33,7 +33,7 @@ def extract(message, candidates, relation=None, state=None):
     return ParameterExtractor(llm).extract_updates(
         message, current_state=state or {}, task_type_key="pipeline_inspection",
         required=[{"key": "start_time", "type": "datetime"},
-                  {"key": "end_time", "type": "datetime"}],
+                  {"key": "end_time", "type": "datetime"}, *required_extra],
     )
 
 
@@ -101,6 +101,95 @@ def test_explicit_duration_conflict_does_not_return_end_as_a_valid_update(now):
     ], {"has_duration": True, "raw_text": "持续2小时", "duration_seconds": 7200})
     assert "开始时间、持续时间和结束时间不一致" in result["unresolved"]
     assert "end_time" not in times(result)
+
+
+def test_full_pipeline_request_does_not_treat_robot_horsepower_as_duration(now):
+    message = (
+        "我想做管缆巡检，开始时间为2026年10月16日09:00，"
+        "结束时间为2026年10月16日12:00，管缆类型为海底油气管道，"
+        "起始点北纬20.1度东经115.2度，结束点北纬20.3度东经115.5度，"
+        "水深300米，使用观察级深海机器人75HP，具体机器人编号为OBSROV-75-001，"
+        "携带工具为高清水下摄像机和前视声呐，支持船为海洋石油681。"
+    )
+    result = extract(message, [
+        candidate("start_time", "2026年10月16日09:00", "2026-10-16T09:00:00"),
+        candidate("end_time", "2026年10月16日12:00", "2026-10-16T12:00:00"),
+    ], {"has_duration": True, "raw_text": message, "duration_seconds": 10800})
+    assert result["unresolved"] == []
+    assert times(result) == {
+        "start_time": "2026-10-16T09:00:00", "end_time": "2026-10-16T12:00:00",
+    }
+
+
+@pytest.mark.parametrize("instruction", [
+    "不要把开始时间推迟半小时", "不要将结束时间提前半小时",
+    "如果开始时间推迟半小时", "如果条件允许，开始时间推迟半小时",
+    "开始时间推迟半小时会怎样？", "开始时间推迟1小时会怎样",
+    "开始时间推迟1小时会有什么影响",
+])
+def test_nonassertive_time_adjustment_does_not_create_updates(now, instruction):
+    result = extract(f"水深改为400米，{instruction}。", [], state={
+        "start_time": "2026-09-17T09:00:00", "end_time": "2026-09-17T12:00:00",
+    })
+    assert result["unresolved"] == []
+    assert times(result) == {}
+
+
+def test_negated_start_shift_cannot_be_restored_by_model_relation(now):
+    result = extract("水深改为400米，不要把开始时间推迟半小时。", [
+        candidate("start_time", "开始时间推迟半小时", "2026-09-17T09:30:00"),
+        candidate("end_time", "推迟半小时", "2026-09-17T12:30:00"),
+    ], {"has_duration": True, "raw_text": "半小时", "duration_seconds": 1800,
+        "action": "ADD", "target": "start_time"}, {
+        "start_time": "2026-09-17T09:00:00", "end_time": "2026-09-17T12:00:00",
+    })
+    assert result["unresolved"] == []
+    assert times(result) == {}
+
+
+def test_negated_composite_shift_rejects_model_add_but_keeps_depth_edit(now):
+    state = {"start_time": "2026-09-17T09:00:00", "end_time": "2026-09-17T12:00:00", "water_depth": 300}
+    original = copy.deepcopy(state)
+    result = extract("水深改320米，不要把开始时间推迟半小时15分钟。", [
+        candidate("water_depth", "320米", 320),
+        candidate("start_time", "开始时间推迟半小时15分钟", "2026-09-17T09:45:00"),
+        candidate("end_time", "推迟半小时15分钟", "2026-09-17T12:45:00"),
+    ], {"has_duration": True, "raw_text": "半小时15分钟", "duration_seconds": 2700,
+        "action": "ADD", "target": "start_time"}, state,
+        required_extra=[{"key": "water_depth", "type": "number"}])
+    assert state == original
+    assert result["unresolved"] == []
+    assert times(result) == {"water_depth": 320}
+
+
+def test_negated_shift_keeps_separate_affirmative_end_edit(now):
+    result = extract("不要把开始时间推迟半小时，结束时间改成2026年9月17日13:00。", [
+        candidate("end_time", "2026年9月17日13:00", "2026-09-17T13:00:00"),
+    ], state={"start_time": "2026-09-17T09:00:00", "end_time": "2026-09-17T12:00:00"})
+    assert result["unresolved"] == []
+    assert times(result) == {"end_time": "2026-09-17T13:00:00"}
+
+
+def test_negated_shift_keeps_separate_affirmative_end_adjustment(now):
+    result = extract("不要把开始时间推迟半小时，结束时间提前半小时。", [], state={
+        "start_time": "2026-09-17T09:00:00", "end_time": "2026-09-17T12:00:00",
+    })
+    assert result["unresolved"] == []
+    assert times(result) == {"end_time": "2026-09-17T11:30:00"}
+
+
+@pytest.mark.parametrize("end_hour,conflict", [(13, False), (15, True)])
+def test_duration_increment_checks_explicit_end_constraint(now, end_hour, conflict):
+    raw_end = f"2026年9月17日{end_hour}:00"
+    result = extract(f"持续时长增加1小时，结束时间改成{raw_end}。", [
+        candidate("end_time", raw_end, f"2026-09-17T{end_hour}:00:00"),
+    ], state={"start_time": "2026-09-17T09:00:00", "end_time": "2026-09-17T12:00:00"})
+    if conflict:
+        assert "开始时间、持续时间和结束时间不一致" in result["unresolved"]
+        assert not times(result)
+    else:
+        assert result["unresolved"] == []
+        assert times(result) == {"end_time": "2026-09-17T13:00:00"}
 
 
 def test_explicit_duration_increment_is_applied_before_end_consistency_check(now):
@@ -245,4 +334,3 @@ def test_morning_to_twelve_resolves_to_noon_without_cross_day(monkeypatch):
         "start_time": "2026-09-30T10:00:00",
         "end_time": "2026-09-30T12:00:00",
     }
-

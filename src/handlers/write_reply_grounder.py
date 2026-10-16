@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from src.extraction import coord_parser
@@ -129,6 +130,169 @@ class WriteReplyGrounder:
                 display[k] = coord_parser.format_slot_display_value(k, v)
         return display
 
+    def get_payload_configuration(self) -> dict | None:
+        """Use the same selected robot as the task's knowledge context."""
+        state = self.manager.task_state
+        kb = self.manager.kb
+        equipment = state.get("equipment_type") or state.get("equipment_name")
+        if state.get("equipment_unit_id"):
+            unit = kb.resolve_robot_unit(
+                str(state["equipment_unit_id"]), state.get("task_type_key"),
+                str(state["equipment_type"]) if state.get("equipment_type") else None,
+            )
+            if unit:
+                return unit.get("robot")
+        return kb.get_rov_for_task(str(equipment), state.get("task_type_key")) if equipment else None
+
+    @staticmethod
+    def _remove_model_receipts(reply: str) -> str:
+        """Replace model receipts, including Markdown field blocks, with real ones."""
+        heading = re.compile(
+            r"^[ \t]*(?:(?:#{1,6}|>|[-*+]|\d+[.)、])\s+)*"
+            r"(?:\*\*|__|`)?(?:✅\s*已记录|当前已保存|仍需补充|⚠️\s*未写入或仍需确认)"
+            r"(?:\*\*|__|`)?[ \t]*[：:][ \t]*(?:\*\*|__|`)?"
+        )
+        labels = "|".join(re.escape(label) for label in FIELD_LABELS.values())
+        field_line = re.compile(rf"^(?:任务|作业)?(?:{labels})(?:\s*[：:]|[。；;]?$)")
+        cleaned = []
+        in_block = False
+        for line in reply.splitlines():
+            match = heading.match(line)
+            if match:
+                remainder = line[match.end():]
+                # Keep a follow-up sentence even when it shares the receipt's line.
+                boundary = re.search(r"[。！？!?]", remainder)
+                followup = remainder[boundary.end():].lstrip("*_` ") if boundary else ""
+                if followup:
+                    cleaned.append(followup)
+                in_block = not followup
+                continue
+            if in_block:
+                plain = re.sub(r"[*_`]", "", line).strip()
+                plain = re.sub(r"^(?:[-+]\s+|\d+[.)、]\s+)", "", plain)
+                if not plain:
+                    continue
+                if field_line.match(plain):
+                    value = re.split(r"[：:]", plain, maxsplit=1)[-1].strip()
+                    if re.match(r"请|需要|还需|仍需|待|建议|推荐|可选|候选|例如|比如", value):
+                        cleaned.append(line)
+                        continue
+                    boundary = re.search(r"[。！？!?]", line)
+                    followup = line[boundary.end():].lstrip("*_` ") if boundary else ""
+                    if not followup:
+                        continue
+                    cleaned.append(followup)
+                    in_block = False
+                    continue
+                in_block = False
+            cleaned.append(line)
+        return "\n".join(cleaned)
+
+    @staticmethod
+    def _ground_payload_classification(reply: str, configuration: dict | None) -> str:
+        """Correct explicit onboard/optional claims using exact catalogue names."""
+        if not configuration:
+            return reply
+        onboard = set(configuration.get("onboard_payloads") or [])
+        optional = set(configuration.get("supported_payloads") or []) - onboard
+        names = onboard | optional
+        if not names:
+            return reply
+        name_pattern = re.compile("|".join(re.escape(name) for name in sorted(names, key=len, reverse=True)))
+        previous_subjects = set()
+
+        def ground_sentence(match: re.Match) -> str:
+            nonlocal previous_subjects
+            original = match.group(0)
+            text = re.sub(r"[*_`]", "", original)
+            mentioned = set(name_pattern.findall(text))
+            prior_subjects, previous_subjects = previous_subjects, mentioned
+            if re.search(r"[？?]|是否|能否|为何|为什么|吗", text):
+                return original
+            corrections = set()
+            for category in re.finditer(r"标配|自带|机载|内置|选配|外部加装|额外挂载|额外加装", text):
+                prefix = text[:category.start()]
+                clause = re.split(r"[，,；;]", prefix)[-1]
+                if re.search(r"请|建议|推荐|例如|比如|如果|假如|可选|候选", clause):
+                    continue
+                if re.search(r"(?:不是|并非|不属于|不作为|无需|不必|不需要|未)[^，,；;]{0,4}$", clause):
+                    continue
+                if not re.search(r"是|为|属|作为|已|需|要|机器人.{0,10}的", clause):
+                    continue
+                subjects = set(name_pattern.findall(clause))
+                if not subjects and re.search(r"该(?:设备|载荷|工具)|上述(?:设备|载荷|工具)|它", clause):
+                    subjects = prior_subjects
+                claims_onboard = category.group(0) in {"标配", "自带", "机载", "内置"}
+                corrections.update(subjects & (optional if claims_onboard else onboard))
+            if not corrections:
+                return original
+            corrected = "".join(
+                f"{name}属于{'机载设备，无需另行加装' if name in onboard else '选配载荷'}。"
+                for name in sorted(corrections)
+            )
+            # An independent request following the mistaken explanation is useful.
+            guidance = re.search(r"[，,；;]((?:请|建议|推荐|如需|若需)[^。！？!?]*[。！？!?]?)$", original)
+            return corrected + (guidance.group(1) if guidance else "")
+
+        return re.sub(r"[^。！？!?\n]+[。！？!?]?", ground_sentence, reply)
+
+    @staticmethod
+    def _ground_water_depth_assertions(reply: str, visible: dict, task_state: dict) -> str:
+        """Align explicit task-depth assertions without rewriting surrounding prose."""
+        value = visible.get("water_depth", task_state.get("water_depth"))
+        try:
+            saved_depth = Decimal(str(value))
+        except InvalidOperation:
+            return reply
+        if not saved_depth.is_finite():
+            return reply
+
+        label = r"(?:任务|作业)?水深(?:[（(]\s*(?:米|m)\s*[）)])?"
+        done = r"已(?:经)?(?:成功)?(?:为您|为你)?"
+        verb = r"(?:记录|设置|设定|保存|更新|修改|调整)"
+        assertion = re.compile(
+            rf"(?:{done}{verb}(?:了)?\s*{label}"
+            rf"|{done}(?:将|把)\s*{label}\s*{verb}"
+            rf"|{label}\s*{done}{verb}"
+            rf"|(?:当前|目前|现有|已保存的?|已记录的?)\s*{label}(?:仍)?)"
+            r"\s*(?:为|是|至|到|[：:])?\s*"
+            r"(?P<number>[+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*"
+            r"(?P<unit>千米|公里|km|米|m|英尺|feet|ft)?(?![\d.a-zA-Z])",
+            re.IGNORECASE,
+        )
+        # Match through emphasis while retaining original formatting and every
+        # other number, including the old value in a before/after explanation.
+        positions = [index for index, char in enumerate(reply) if char not in "*_`"]
+        plain = "".join(reply[index] for index in positions)
+        replacements = []
+        for match in assertion.finditer(plain):
+            clause_start = max(plain.rfind(mark, 0, match.start()) for mark in "，,；;。！？!?\n") + 1
+            clause_end = min((pos for mark in "，,；;。！？!?\n"
+                              if (pos := plain.find(mark, match.end())) >= 0), default=len(plain))
+            prefix = plain[clause_start:match.start()]
+            suffix = plain[match.end():clause_end + 1]
+            sentence_start = max(plain.rfind(mark, 0, match.start()) for mark in "。！？!?\n") + 1
+            sentence_prefix = plain[sentence_start:match.start()]
+            if (re.search(r"例如|比如|示例|假如|如果|假设", sentence_prefix)
+                    or re.search(r"请|建议|推荐|是否|能否|尚未|还未|没有|不要|不是|并非|未曾|不能|无法", prefix)
+                    or re.search(r"设备|机器人|最大|额定|上限|允许", prefix)
+                    or re.search(r"[？?]|吗|示例", suffix)
+                    or re.match(r"\s*(?:时|的话|以上|以下|左右|以内|以外|至|到|[-~～])", suffix)):
+                continue
+            unit = (match["unit"] or "米").lower()
+            factor = Decimal("1000") if unit in {"千米", "公里", "km"} else (
+                Decimal("0.3048") if unit in {"英尺", "feet", "ft"} else Decimal("1")
+            )
+            if Decimal(match["number"]) * factor == saved_depth:
+                continue
+            number = format(saved_depth / factor, "f")
+            if "." in number:
+                number = number.rstrip("0").rstrip(".")
+            replacements.append((positions[match.start("number")], positions[match.end("number") - 1] + 1, number))
+        for start, end, number in reversed(replacements):
+            reply = reply[:start] + number + reply[end:]
+        return reply
+
     def get_committed_turn_updates(
         self,
         proposed_updates: dict,
@@ -180,6 +344,65 @@ class WriteReplyGrounder:
         return accepted
 
     @staticmethod
+    def _scrub_uncommitted_vessel_assertions(reply: str) -> str:
+        """Drop vessel state claims by clause, keeping guidance and its formatting."""
+        vessel_names = r"(?:母船支持|支持船|母船|作业船|支援船)"
+        actions = r"(?:关联|选择|选定|配置|设置|绑定|指定|预设)"
+        nonassertion = (
+            r"请(?!(?:您|你)?(?:注意|知悉))|是否|能否|尚未|还未|未曾|未能|没有|暂无|暂未|无法|不能|不要|不应|"
+            r"待|将要|需要|仍需|还需|可选|可以|建议|推荐|例如|比如|示例|如果|若|"
+            r"(?:未|不)(?:被|成功)?$"
+        )
+
+        def scrub_clause(match: re.Match) -> str:
+            original = match.group(0)
+            text = re.sub(r"[*_`]", "", original).strip()
+            if not re.search(vessel_names, text):
+                return original
+            # Choosing a vessel is also a common request, pending state, or
+            # question. A bare action verb is not proof of a completed write.
+            if text.endswith(("？", "?")):
+                return original
+            completed = re.search(
+                rf"已(?:经|成功)?(?:(?:为您|为你|自动|成功|完成))*"
+                rf"(?:(?:将|把){vessel_names}(?:编号|配置)?)?{actions}"
+                rf"|{actions}(?:完成|成功|好了)",
+                text,
+            )
+            # Only a request/negation before the claim can qualify it. A tail
+            # such as "（待确认）" or "满足作业需要" cannot undo "已配置".
+            if completed:
+                return original if re.search(nonassertion, text[:completed.start()]) else ""
+            state_value = re.search(
+                rf"{vessel_names}(?:编号|配置)?\s*(?:[：:]|为|是)\s*(\S.*?)"
+                r"[，,；;。！？!?]?$",
+                text,
+            )
+            if state_value:
+                prefix = text[:state_value.start(1)]
+                value = state_value.group(1)
+                guidance_value = re.match(
+                    r"(?:当前|目前|暂时|仍然|仍)?"
+                    r"(?:请|尚未|还未|暂无|暂未|未|无|不|需|待|可选|候选|"
+                    r"提供|补充|确认|确定|选择|建议|预计|计划)",
+                    value,
+                )
+                if not re.search(nonassertion, prefix) and not guidance_value:
+                    return ""
+            return original
+
+        cleaned = re.sub(r"[^，,；;。！？!?]+[，,；;。！？!?]?", scrub_clause, reply)
+        if cleaned == reply:
+            return reply
+        # If the last assertion was removed, use the sentence's original
+        # terminal punctuation for the surviving guidance, not a dangling comma.
+        terminal = re.search(r"[。！？!?]$", reply)
+        cleaned = re.sub(r"[，,；;]+$", "", cleaned.rstrip())
+        if cleaned and terminal and not re.search(r"[。！？!?]$", cleaned):
+            cleaned += terminal.group(0)
+        return cleaned
+
+    @staticmethod
     def _scrub_uncommitted_slot_assertions(reply: str, visible: dict, task_state: dict) -> str:
         """Remove unsupported state assertions, preserving questions and explanations.
 
@@ -188,9 +411,9 @@ class WriteReplyGrounder:
         survive when the end time has not been committed in this turn.
         """
         check_end = "end_time" not in visible
-        check_payload = "payload" not in visible and bool(task_state.get("payload"))
+        check_payload = "payload" not in visible
         check_location = "oilfield_name" not in visible and not task_state.get("oilfield_name")
-        check_vessel = "support_vessel" not in visible and not task_state.get("support_vessel")
+        check_vessel = "support_vessel" not in visible
         if not check_end and not check_payload and not check_location and not check_vessel:
             return reply
 
@@ -253,7 +476,9 @@ class WriteReplyGrounder:
                 return bool(named_clauses) and all(re.search(
                     r"(?:请|需要|还需|仍需|待).{0,12}(?:提供|补充|确认|确定|选择|指定|设置|输入|参考|核对|查看|修改)"
                     r"|是否|何时|几点|什么时候|是指|指的是|表示|定义"
-                    r"|(?:必须|应当|应该|需要|须|需).{0,8}(?:早于|晚于|大于|小于|一致|匹配)",
+                    r"|(?:必须|应当|应该|需要|须|需).{0,8}(?:早于|晚于|大于|小于|一致|匹配)"
+                    rf"|(?:建议|推荐|可选|候选).{{0,12}}(?:{names})"
+                    rf"|(?:{names})(?:配置)?\s*[：:]?\s*(?:建议|推荐|可选|候选)",
                     clause,
                 ) for clause in named_clauses)
 
@@ -280,33 +505,21 @@ class WriteReplyGrounder:
                             and (states_window or (names_end and (states_end or has_clock))))):
                     return ""
             if check_payload and re.search(r"载荷|携带工具", text):
+                pending_payload = not task_state.get("payload") and all(
+                    re.search(r"(?:载荷|携带工具)(?:配置)?\s*[：:]?\s*"
+                              r"(?:尚未|还未|暂未|暂无|未选择|未配置|未安装)", clause)
+                    for clause in clauses if re.search(r"载荷|携带工具", clause)
+                )
                 states_payload = bool(re.search(
                     r"(?:当前|目前|已保存|已选|携带).{0,8}(?:载荷|工具)"
                     r"|(?:载荷|携带工具)(?:配置)?\s*(?:[：:]|为|是|包括|包含|仍|依旧|依然|保持|当前|目前)",
                     text,
                 ))
-                if completed_mutation_about(r"载荷|携带工具") or (states_payload and not guidance_about(r"载荷|携带工具")):
+                if (completed_mutation_about(r"载荷|携带工具")
+                        or (states_payload and not pending_payload and not guidance_about(r"载荷|携带工具"))):
                     return ""
             if check_vessel and re.search(r"支持船|母船|母船支持|作业船|支援船", text):
-                vessel_names = r"(?:支持船|母船|母船支持|作业船|支援船)"
-                vessel_markers = r"(?:已(?:关联|选择|配置|设置|绑定|指定|预设)|关联|选择|配置|设置|绑定|指定|预设)"
-                stop_at_clause = r"[^，,。！？!?；;\n]*"
-                claim_patterns = (
-                    rf"{vessel_names}{stop_at_clause}{vessel_markers}{stop_at_clause}",
-                    rf"{vessel_markers}{stop_at_clause}{vessel_names}{stop_at_clause}",
-                    rf"{vessel_names}\s*(?:[：:]|为|是)\s*"
-                    rf"(?!请|需要|还需|仍需|待|未|尚未|无|没有|可选|候选|请选择|提供|补充|确认|确定){stop_at_clause}",
-                )
-                cleaned = text
-                claimed = False
-                for pattern in claim_patterns:
-                    cleaned, count = re.subn(pattern, "", cleaned)
-                    claimed = claimed or count > 0
-                if claimed:
-                    cleaned = re.sub(r"^[\s*：:，,；;]+|[\s*：:，,；;]+$", "", cleaned)
-                    if not re.sub(r"[\s*_`：:，,；;。！？!?()（）\[\]-]", "", cleaned):
-                        return ""
-                    return cleaned
+                return WriteReplyGrounder._scrub_uncommitted_vessel_assertions(original)
             return original
 
         return re.sub(r"[^。！？!?\n]+[。！？!?]?", scrub_sentence, reply)
@@ -405,6 +618,7 @@ class WriteReplyGrounder:
         display_updates: dict | None = None,
         task_state: dict | None = None,
         constraint_context: dict | None = None,
+        payload_configuration: dict | None = None,
     ) -> str:
         """Render a grounded WRITE response combining conversational prose with factual receipts.
 
@@ -459,7 +673,7 @@ class WriteReplyGrounder:
         # Show retained facts too: failed deletes or time edits must not let a
         # preceding assistant claim become the user's apparent task state.
         retained = []
-        for key in ("task_type", "wellhead_id", "equipment_type", "payload", "start_time", "end_time"):
+        for key in ("task_type", "wellhead_id", "equipment_type", "payload", "start_time", "end_time", "support_vessel"):
             value = (task_state or {}).get(key)
             if key in visible or value is None:
                 continue
@@ -508,6 +722,12 @@ class WriteReplyGrounder:
         cleaned_reply = WriteReplyGrounder._remove_write_off_topic_template(
             WriteReplyGrounder._remove_write_welcome_template(str(actual_model_reply).strip())
         )
+        # Structured receipts are rendered from committed state below. A model
+        # may echo their headings with different values; keep its follow-up
+        # sentences, but never let that echo replace the authoritative receipt.
+        cleaned_reply = WriteReplyGrounder._remove_model_receipts(cleaned_reply)
+        cleaned_reply = WriteReplyGrounder._ground_payload_classification(cleaned_reply, payload_configuration)
+        cleaned_reply = WriteReplyGrounder._ground_water_depth_assertions(cleaned_reply, visible, task_state or {})
         scrubbed = WriteReplyGrounder._scrub_uncommitted_slot_assertions(
             cleaned_reply,
             visible, task_state or {},
@@ -588,14 +808,8 @@ class WriteReplyGrounder:
         scrubbed = re.sub(r"([。！？])\1+", r"\1", scrubbed)
         scrubbed = scrubbed.strip()
 
-        # 7. 去重检查：如果 scrubbed 已经包含了部分客观条目，避免在拼接时重复堆叠
-        deduped_parts = []
-        for part in parts:
-            prefix = part.split("：")[0] if "：" in part else part
-            if prefix in ("✅ 已记录", "仍需补充", "⚠️ 未写入或仍需确认", "当前已保存", "本轮未写入任务状态。"):
-                if prefix.rstrip("。") in scrubbed:
-                    continue
-            deduped_parts.append(part)
+        # A shared heading is not evidence that values or missing fields match.
+        deduped_parts = [part for part in parts if part not in scrubbed]
 
         final_receipt = "\n".join(deduped_parts)
         if not scrubbed:

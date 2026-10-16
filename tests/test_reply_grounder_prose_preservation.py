@@ -91,6 +91,207 @@ def test_uncommitted_support_vessel_claim_is_removed_inside_followup_sentence():
     assert "请确认支持船编号" in result
 
 
+@pytest.mark.parametrize("prose", [
+    "请选择支持船。",
+    "尚未选择支持船。",
+    "支持船尚未选择。",
+    "请先配置支持船，再补充任务结束时间。",
+    "尚未关联支持船，请先选择支持船编号。",
+    "支持船是否已选择？",
+    "请不要选择支持船海洋石油681。",
+    "支持船可选择海洋石油681。",
+    "支持船： 请选择海洋石油681。",
+    "1. **支持船**：请选择海洋石油681。",
+    "支持船：尚未指定。",
+    "支持船：需要您提供编号。",
+    "支持船并未关联成功。",
+    "支持船：暂无。",
+    "支持船：未关联。",
+    "请确认支持船是否已完成配置。",
+    "支持船尚未完成配置。",
+    "支持船：当前尚未配置。",
+])
+def test_support_vessel_requests_negations_and_choices_preserve_prose(prose):
+    assert prose in ground(prose, missing=[{"key": "support_vessel", "label": "支持船编号"}])
+
+
+@pytest.mark.parametrize("claim", [
+    "母船支持：已关联可用支持船（海洋石油681）",
+    "已经为您选择支持船海洋石油681",
+    "已将支持船设置为海洋石油681",
+    "支持船已设置为海洋石油681",
+    "支持船：海洋石油681",
+    "已关联支持船海洋石油681（待确认）",
+    "支持船：海洋石油681（待确认）",
+    "已为您配置支持船海洋石油681以满足作业需要",
+    "支持船已配置为海洋石油681（可选其他支持船）",
+    "支持船已完成配置",
+])
+@pytest.mark.parametrize("claim_first", [True, False])
+def test_support_vessel_scrub_removes_only_assertion_clause(claim, claim_first):
+    guidance = "请补充**支持船编号**"
+    prose = f"{claim}，{guidance}。" if claim_first else f"{guidance}，{claim}。"
+    result = ground(prose, missing=[{"key": "support_vessel", "label": "支持船编号"}])
+    assert claim not in result
+    assert guidance + "。" in result
+    assert "，。" not in result
+
+
+@pytest.mark.parametrize("prose", [
+    "推荐支持船为海洋石油681。",
+    "建议支持船：海洋石油681。",
+    "支持船：建议选择海洋石油681。",
+])
+def test_support_vessel_recommendations_survive_without_becoming_saved_state(prose):
+    assert prose in ground(prose, missing=[{"key": "support_vessel", "label": "支持船编号"}])
+
+
+@pytest.mark.parametrize("notice", ["请注意", "请知悉", "请您注意"])
+def test_notice_prefix_does_not_authorize_uncommitted_vessel_claim(notice):
+    result = ground(f"{notice}：支持船已自动关联海洋石油681。请补充支持船编号。")
+    assert "已自动关联海洋石油681" not in result
+    assert "请补充支持船编号。" in result
+
+
+def test_rejected_vessel_change_reports_retained_vessel_and_keeps_guidance():
+    result = ground(
+        "支持船已设置为DSV-Oceanic。请核对支持船编号。",
+        state={"support_vessel": "海洋石油681"},
+    )
+    assert "DSV-Oceanic" not in result
+    assert "当前已保存：支持船编号：海洋石油681" in result
+    assert "请核对支持船编号。" in result
+
+
+@pytest.mark.parametrize("claim", [
+    "当前携带工具：高清水下摄像机。",
+    "当前载荷配置：\n- 高清水下摄像机\n- 前视声呐",
+])
+@pytest.mark.parametrize("state", [{}, {"payload": []}])
+def test_uncommitted_payload_assertion_is_removed_even_without_saved_payload(claim, state):
+    result = ground(claim + "\n请提供携带工具。", state=state)
+    assert "高清水下摄像机" not in result
+    assert "前视声呐" not in result
+    assert "请提供携带工具。" in result
+
+
+@pytest.mark.parametrize("prose", [
+    "携带工具：尚未选择。",
+    "当前载荷：暂无。",
+    "推荐携带工具：高清水下摄像机。",
+    "载荷：建议选择高清水下摄像机。",
+])
+def test_empty_payload_keeps_pending_status_and_recommendations(prose):
+    assert prose in ground(prose)
+
+
+def test_model_receipt_cannot_replace_committed_values_or_hide_followup():
+    result = ground("✅ 已记录：水深（米）：5000 米。请补充支持船编号。")
+    assert "5000" not in result
+    assert "✅ 已记录：水深（米）：300 米。" in result
+    assert "请补充支持船编号。" in result
+
+
+@pytest.mark.parametrize("prose", [
+    "已记录水深5000米。",
+    "已设置水深为5000米。",
+    "已将水深设置为5000米。",
+    "水深已更新为5000米。",
+    "当前水深为5000米。",
+    "当前**水深**：**5000**米。",
+    "请补充支持船编号，当前水深为5000米。",
+])
+@pytest.mark.parametrize("updated", [False, True], ids=["retained-depth", "updated-depth"])
+def test_explicit_depth_assertion_uses_committed_or_retained_value(prose, updated):
+    updates = {"water_depth": 300} if updated else {"support_vessel": "海洋石油681"}
+    state = {"water_depth": 300}
+    result = ground(prose + "\n请核对任务信息。", updates=updates, state=state)
+    assert "5000" not in result
+    assert "300" in result
+    assert "请核对任务信息。" in result
+    if "请补充支持船编号" in prose:
+        assert "请补充支持船编号" in result
+    assert state == {"water_depth": 300}
+    assert updates == ({"water_depth": 300} if updated else {"support_vessel": "海洋石油681"})
+
+
+@pytest.mark.parametrize("prose", [
+    "当前水深是5000米吗？",
+    "请确认是否已记录水深5000米。",
+    "例如，当前水深为5000米时需要另选设备。",
+    "假如已设置水深为5000米，应重新校验。",
+    "建议将水深设置为5000米。",
+    "尚未记录水深5000米。",
+    "当前水深并非5000米。",
+    "已记录水深300米；该机器人最大作业水深为5000米。",
+    "机器人当前水深为5000米，任务水深另行填写。",
+    "已记录水深300.0米。",
+    "当前水深为0.3公里。",
+])
+def test_depth_grounding_preserves_questions_examples_and_other_facts(prose):
+    assert prose in ground(prose, state={"water_depth": 300})
+
+
+@pytest.mark.parametrize("prose", [
+    "水深调整为330米（原320米）。",
+    "将水深从320米改为330米。",
+    "已将水深设置为330米（原320米）。",
+])
+def test_depth_grounding_preserves_correct_before_after_explanation(prose):
+    assert prose in ground(prose, updates={"water_depth": 330}, state={"water_depth": 330})
+
+
+def test_depth_grounding_does_not_guess_without_a_committed_value():
+    prose = "当前水深为5000米。"
+    assert prose in ground(prose, updates={"support_vessel": "海洋石油681"})
+
+
+@pytest.mark.parametrize("receipt", [
+    "**✅ 已记录**：水深（米）：5000 米。",
+    "**✅ 已记录：**水深（米）：5000 米。",
+    "### ✅ 已记录：水深（米）：5000 米。",
+    "- **✅ 已记录**：水深（米）：5000 米。",
+    "✅ 已记录：\n- 水深（米）：5000 米。",
+    "**✅ 已记录：**\n\n- **水深（米）**：5000 米。",
+    "### 当前已保存：\n1. **水深（米）**：5000 米。",
+])
+def test_markdown_model_receipt_cannot_retain_wrong_values(receipt):
+    result = ground(receipt + "\n- 请补充支持船编号。\n载荷选择请参考右侧卡片。")
+    assert "5000" not in result
+    assert "✅ 已记录：水深（米）：300 米。" in result
+    assert "- 请补充支持船编号。" in result
+    assert "载荷选择请参考右侧卡片。" in result
+
+
+def test_bold_receipt_keeps_followup_in_same_line():
+    result = ground("**✅ 已记录：水深（米）：5000 米。**请补充支持船编号。")
+    assert "5000" not in result
+    assert "请补充支持船编号。" in result
+
+
+def test_receipt_block_preserves_field_specific_request():
+    guidance = "- **结束时间**：请提供希望的完成时刻，避免与后续作业冲突。"
+    result = ground("**仍需补充：**\n" + guidance,
+                    missing=[{"key": "end_time", "label": "结束时间"}])
+    assert guidance in result
+
+
+def test_model_missing_receipt_cannot_hide_other_required_fields():
+    result = ground(
+        "仍需补充：支持船编号。",
+        missing=[{"key": "end_time", "label": "结束时间"},
+                 {"key": "payload", "label": "携带工具"}],
+    )
+    assert "仍需补充：结束时间、携带工具。" in result
+
+
+def test_identical_model_receipt_is_only_displayed_once():
+    receipt = "✅ 已记录：水深（米）：300 米。"
+    result = ground(receipt + "\n请补充支持船编号。")
+    assert result.count(receipt) == 1
+    assert "请补充支持船编号。" in result
+
+
 def test_stale_payload_claim_is_removed_without_losing_independent_explanation():
     result = ground(
         "水深已修改为300米。\n当前载荷仍为浑水水下成像系统。\n"
