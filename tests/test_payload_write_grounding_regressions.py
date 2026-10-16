@@ -27,8 +27,8 @@ def mutation(operation='add', items=None, targets=None):
             'confidence':0.99, 'source':'user_input'}
 
 
-def extraction(mutations=(), unresolved=()):
-    result = {'slot_candidates':[], 'list_mutations':list(mutations),
+def extraction(mutations=(), unresolved=(), *, candidates=()):
+    result = {'slot_candidates':list(candidates), 'list_mutations':list(mutations),
               'time_relation':None, 'unresolved':list(unresolved)}
     jsonschema.validate(result, SLOT_EXTRACTION_JSON_SCHEMA)
     return result
@@ -114,6 +114,50 @@ def test_negated_or_hypothetical_edit_cannot_apply_wrong_model_mutation(valve, m
     dm.process(message)
     assert dm.slot_store.slots['payload'].value==INITIAL
     assert not dm.slot_store.slots['payload'].validation_error
+
+
+@pytest.mark.parametrize('message', [
+    '水深改为320米，原有载荷保持不变。',
+    '水深改为320米，保留全部携带工具。',
+    '水深改为320米，阀门扭矩工具不变。',
+    '水深改为320米，携带工具保持不变。',
+    '水深改为320米，保持已选工具。',
+])
+@pytest.mark.parametrize('model_output', ['remove', 'candidate'])
+def test_keep_only_payload_clause_blocks_spurious_model_edit(valve, message, model_output):
+    dm, llm = valve
+    candidates = [slot_candidate('water_depth', 320)]
+    if model_output == 'candidate':
+        candidates.append(slot_candidate('payload', [STEREO]))
+    proposed = extraction(
+        [mutation('remove', [TORQUE])] if model_output == 'remove' else [],
+        candidates=candidates,
+    )
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(proposed)
+
+    dm.process(message)
+
+    assert dm.task_state['water_depth'] == 320
+    assert dm.task_state['payload'] == INITIAL
+    assert not dm.slot_store.slots['payload'].validation_error
+
+
+@pytest.mark.parametrize('message', [
+    '保留阀门扭矩工具，添加双目水下成像系统。',
+    '添加双目水下成像系统，原有载荷保持不变。',
+    '水深保持不变，载荷选择双目水下成像系统。',
+])
+def test_keep_clause_preserves_independent_payload_addition(valve, message):
+    dm, llm = valve
+    proposed = extraction(candidates=[slot_candidate('payload', [STEREO])])
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(proposed)
+
+    dm.process(message)
+
+    assert dm.task_state['payload'] == INITIAL + [STEREO]
+    assert dm.task_state['water_depth'] == 305
 
 
 @pytest.mark.parametrize('prefix', ['我想', '我想要', '请你帮我', '麻烦你', '那我想', '那就请你'])
@@ -227,6 +271,225 @@ def test_edit_and_keep_in_same_clause(valve,message,expected):
     llm.queue_extraction(extraction([mutation(items=[STEREO])]))
     dm.process(message)
     assert dm.slot_store.slots['payload'].value==expected
+
+
+@pytest.mark.parametrize('bad_output', [
+    extraction([mutation('remove', [TORQUE])]),
+    extraction([mutation('set', [STEREO])]),
+    extraction(candidates=[slot_candidate('payload', [STEREO])]),
+], ids=['wrong-remove', 'wrong-set', 'wrong-candidate'])
+@pytest.mark.parametrize('message,expected', [
+    ('保留阀门扭矩工具并删除液压飞线插拔工具。', [TORQUE, TURBID]),
+    ('删除液压飞线插拔工具并保留阀门扭矩工具。', [TORQUE, TURBID]),
+    ('保留阀门扭矩工具，删除液压飞线插拔工具。', [TORQUE, TURBID]),
+    ('保留阀门扭矩工具并且删除液压飞线插拔工具。', [TORQUE, TURBID]),
+    ('保留阀门扭矩工具同时添加双目水下成像系统。', INITIAL + [STEREO]),
+    ('保留阀门扭矩工具并把液压飞线插拔工具替换成双目水下成像系统。', [TORQUE, TURBID, STEREO]),
+    ('保留阀门扭矩工具并用双目水下成像系统替换液压飞线插拔工具。', [TORQUE, TURBID, STEREO]),
+    ('阀门扭矩工具保持不变并删除液压飞线插拔工具。', [TORQUE, TURBID]),
+    ('删除液压飞线插拔工具并保留阀门扭矩工具并添加双目水下成像系统。', [TORQUE, TURBID, STEREO]),
+    ('保留阀门扭矩工具并删除液压飞线插拔工具，浑水水下成像系统。', [TORQUE]),
+    ('水深保持不变，载荷改成双目水下成像系统。', [STEREO]),
+])
+def test_keep_and_explicit_edit_are_order_independent(valve, bad_output, message, expected):
+    dm, llm = valve
+    before = copy.deepcopy(dm.task_state)
+    version = dm.slot_store.slots['payload'].version
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(bad_output)
+
+    reply = dm.process(message)
+
+    payload = dm.slot_store.slots['payload']
+    assert payload.value == expected
+    assert payload.version == version + 1
+    assert payload.status == 'valid'
+    assert not payload.validation_error
+    assert dm.task_state['payload'] == expected
+    for key, value in before.items():
+        if key != 'payload':
+            assert dm.task_state.get(key) == value
+    receipt = next(line for line in reply.splitlines() if line.startswith('✅ 已记录：'))
+    assert '携带工具' in receipt
+    for item in expected:
+        assert item in receipt
+    for item in set(INITIAL) - set(expected):
+        assert item not in receipt
+
+
+@pytest.mark.parametrize('message', [
+    '保留阀门扭矩工具并不要删除液压飞线插拔工具。',
+    '如果保留阀门扭矩工具并删除液压飞线插拔工具会怎样？',
+    '保留阀门扭矩工具并删除液压飞线插拔工具吗？',
+])
+def test_keep_with_nonasserted_edit_does_not_mutate_payload(valve, message):
+    dm, llm = valve
+    before = copy.deepcopy(dm.slot_store.slots['payload'].to_dict())
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(extraction([mutation('remove', [HYDRAULIC])]))
+
+    reply = dm.process(message)
+
+    assert dm.slot_store.slots['payload'].to_dict() == before
+    retained = next(line for line in reply.splitlines() if line.startswith('当前已保存：'))
+    assert all(item in retained for item in INITIAL)
+    assert not any('携带工具' in line for line in reply.splitlines() if line.startswith('✅ 已记录：'))
+
+
+def test_distinct_named_payloads_are_not_conflicting_via_shared_broad_alias(valve):
+    dm, llm = valve
+    for info in dm.kb.assets['payload_catalog'].values():
+        if info['name'] in {TORQUE, HYDRAULIC}:
+            info['aliases'] = [*info.get('aliases', []), '操作工具']
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(extraction([mutation('remove', [TORQUE])]))
+
+    reply = dm.process('保留阀门扭矩工具并删除液压飞线插拔工具。')
+
+    assert dm.task_state['payload'] == [TORQUE, TURBID]
+    assert '冲突' not in reply
+
+
+@pytest.mark.parametrize('message', [
+    '保留阀门扭矩工具并删除阀门扭矩工具。',
+    '删除阀门扭矩工具并保留阀门扭矩工具。',
+    '保留阀门扭矩工具，删除阀门扭矩工具。',
+    '保留阀门操作工具并删除阀门扭矩工具。',
+    '保留阀门扭矩工具并把阀门扭矩工具换成双目水下成像系统。',
+    '保留阀门扭矩工具并清空全部携带工具。',
+    '保留全部携带工具并删除液压飞线插拔工具。',
+])
+def test_keep_and_destructive_edit_of_same_item_requires_clarification(valve, message):
+    dm, llm = valve
+    before = copy.deepcopy(dm.slot_store.slots['payload'].to_dict())
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(extraction([mutation('remove', [TORQUE])]))
+
+    reply = dm.process(message)
+
+    assert dm.slot_store.slots['payload'].to_dict() == before
+    assert '冲突' in reply and '保留' in reply
+    assert '未写入' in reply
+    assert any('冲突' in item for item in dm.slot_store.unresolved)
+
+
+def test_only_keep_named_tool_requires_explicit_full_selection(valve):
+    dm, llm = valve
+    before = copy.deepcopy(dm.slot_store.slots['payload'].to_dict())
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(extraction([mutation('set', [TORQUE])]))
+
+    reply = dm.process('只保留阀门扭矩工具。')
+
+    assert dm.slot_store.slots['payload'].to_dict() == before
+    assert '仅保留' in reply or '只保留' in reply
+    assert '确认' in reply
+
+
+@pytest.mark.parametrize('message', [
+    '保留阀门扭矩工具并删除不存在的工具。',
+    '保留阀门扭矩工具并把液压飞线插拔工具替换成不存在的工具。',
+    '保留阀门扭矩工具并删除液压飞线插拔工具，添加不存在的工具。',
+])
+def test_keep_with_unknown_operand_still_uses_atomic_validation(valve, message):
+    dm, llm = valve
+    version = dm.slot_store.slots['payload'].version
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(extraction([mutation('remove', [HYDRAULIC])]))
+
+    reply = dm.process(message)
+
+    payload = dm.slot_store.slots['payload']
+    assert payload.value == INITIAL
+    assert payload.version == version + 1  # Failure metadata is committed, not a partial edit.
+    assert payload.validation_error and '不存在' in payload.validation_error
+    assert '载荷操作失败' in reply
+
+
+@pytest.fixture
+def observation_payload(valve):
+    previous, llm = valve
+    dm = DialogueManager(llm, previous.kb)
+    dm.slot_store.init_task_slots(dm.builder.get_schema('pipeline_inspection', 'normal'))
+    values = {
+        'task_type_key': 'pipeline_inspection', 'task_type': '管缆巡检',
+        'cable_type': '海底油气管道', 'start_point': {'lat': 20.1, 'lon': 115.2},
+        'end_point': {'lat': 20.3, 'lon': 115.5}, 'water_depth': 320,
+        'equipment_type': '观察级深海机器人 75HP', 'equipment_family': '观察级深海机器人',
+        'equipment_unit_id': 'OBSROV-75-001', 'support_vessel': '海洋石油681',
+        'payload': ['高清水下摄像机'],
+        'start_time': '2026-10-17T09:00:00', 'end_time': '2026-10-17T23:00:00',
+    }
+    for key, value in values.items():
+        dm.slot_store.slots[key] = Slot(key, value=value, status='valid')
+    dm._rebuild_cache()
+    dm._refresh_validation(purpose='preview')
+    dm.phase = 'blocked_soft'
+    return dm, llm
+
+
+@pytest.mark.parametrize('message', [
+    '新增机械扫描声呐，保留现有高清水下摄像机。',
+    '保留现有高清水下摄像机并新增机械扫描声呐。',
+    '新增机械扫描声呐并保留现有高清水下摄像机。',
+])
+@pytest.mark.parametrize('bad_output', [
+    extraction(unresolved=['未抽取到工具名称']),
+    extraction([mutation('remove', ['高清水下摄像机'])]),
+    extraction(candidates=[slot_candidate('payload', ['机械扫描声呐'])]),
+], ids=['missing', 'wrong-remove', 'wrong-candidate'])
+def test_new_add_word_preserves_existing_camera(observation_payload, message, bad_output):
+    dm, llm = observation_payload
+    before = copy.deepcopy(dm.task_state)
+    version = dm.slot_store.slots['payload'].version
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(bad_output)
+
+    reply = dm.process(message)
+
+    assert dm.task_state['payload'] == ['高清水下摄像机', '机械扫描声呐']
+    assert dm.slot_store.slots['payload'].version == version + 1
+    assert not dm.slot_store.slots['payload'].validation_error
+    assert {key: dm.task_state[key] for key in before if key != 'payload'} == {
+        key: value for key, value in before.items() if key != 'payload'
+    }
+    receipt = next(line for line in reply.splitlines() if line.startswith('✅ 已记录：'))
+    assert '高清水下摄像机' in receipt and '机械扫描声呐' in receipt
+
+
+@pytest.mark.parametrize('message', [
+    '不要新增机械扫描声呐。',
+    '保留现有高清水下摄像机并不要新增机械扫描声呐。',
+    '新增机械扫描声呐吗？',
+    '保留现有高清水下摄像机并新增机械扫描声呐吗？',
+])
+def test_nonasserted_new_add_word_does_not_mutate_payload(observation_payload, message):
+    dm, llm = observation_payload
+    before = copy.deepcopy(dm.slot_store.slots['payload'].to_dict())
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(extraction([mutation('add', ['机械扫描声呐'])]))
+
+    reply = dm.process(message)
+
+    assert dm.slot_store.slots['payload'].to_dict() == before
+    assert not any('携带工具' in line for line in reply.splitlines() if line.startswith('✅ 已记录：'))
+
+
+@pytest.mark.parametrize('message', [
+    '保留现有高清水下摄像机并删除高清水下摄像机。',
+    '删除高清水下摄像机，保留现有的高清水下摄像机。',
+])
+def test_existing_keep_prefix_does_not_hide_same_item_conflict(observation_payload, message):
+    dm, llm = observation_payload
+    before = copy.deepcopy(dm.slot_store.slots['payload'].to_dict())
+    llm.queue_plan(make_plan('WRITE'))
+    llm.queue_extraction(extraction([mutation('remove', ['高清水下摄像机'])]))
+
+    reply = dm.process(message)
+
+    assert dm.slot_store.slots['payload'].to_dict() == before
+    assert '冲突' in reply
+    assert any('冲突' in item for item in dm.slot_store.unresolved)
 
 
 def test_read_device_question_cannot_apply_extractor_mutation(valve):

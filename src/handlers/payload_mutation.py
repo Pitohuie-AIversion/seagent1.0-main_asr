@@ -16,22 +16,34 @@ from typing import Any
 
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
-from src.slots.slot_store import Slot
+from src.slots.slot_store import Slot, normalize_payload_match_key
 
 logger = logging.getLogger("src.dialogue_manager")
 
 _REMOVE = r"删除|移除|去掉|卸下|取消携带|别带|不要带|不要"
-_ADD = r"添加|增加|加装|再带|加上|补充|携带|带上"
+# Consume the complete field label before treating the remainder as tool names.
+_ADD = r"添加|增加|新增|加装|再带|加上|补充|携带(?:工具\s*(?:为|是|[:：])\s*)?|带上"
 _REPLACE = r"替换成|替换为|换成|换为|改成|改为"
 _NEGATED_ACTION = re.compile(
     r"(?:不要|不用|无需|不能|别|不|勿)\s*"
     r"(?:(?:替我|帮我|给我|为我|擅自|自动|随意|继续|再|去)\s*)*"
-    r"(?:删除|移除|去掉|卸下|清空|清除|替换|更换|换成|添加|增加|加装|再带|加上|补充|携带|带上)"
+    r"(?:删除|移除|去掉|卸下|清空|清除|替换|更换|换成|添加|增加|新增|加装|再带|加上|补充|携带|带上)"
+)
+_NONASSERTED_EDIT = re.compile(r"如果|假如|能否|是否|吗|会怎样|会怎么样|会有什么|[?？]")
+_KEEP_EDIT_BOUNDARY = re.compile(
+    rf"(?:并且|同时|并|但)\s*(?=(?:保留|保持|{_REMOVE}|{_ADD}|清空|清除|把|将|用))"
 )
 _CLEAR_PAYLOAD = re.compile(
     r"^(?:请|帮我|给我)?(?:清空|清除|删除|移除|卸下)(?:全部|所有)?(?:携带的?|选配的?|已选的?)?(?:工具|载荷|payload)$"
     r"|^(?:所有|全部)(?:工具|载荷)(?:都)?(?:不要|删除|移除|卸下)$"
     r"|^(?:不带任何工具|什么工具都不带|什么都不带)$", re.IGNORECASE,
+)
+_PENDING_PAYLOAD = re.compile(
+    r"^(?:携带的?工具|工具|(?:选配)?载荷|payload)"
+    r"(?:(?:和|及|与|、)(?:支持船(?:编号)?|母船))*"
+    r"(?:(?:我(?:们)?|现在|目前|暂时|都|均|还)\s*)*"
+    r"(?:(?:尚未|未|还没(?:有)?|没(?:有)?)(?:决定|选定|选择|确认)|未定|待定|待确认|待选择)",
+    re.IGNORECASE,
 )
 
 
@@ -190,7 +202,9 @@ class PayloadMutationManager(BaseDialogueHandler):
             }]
             return
 
-        explicit = self._explicit_payload_mutations(user_message, current_slots)
+        explicit = self._explicit_payload_mutations(
+            user_message, current_slots, unresolved=extraction_res.setdefault("unresolved", []),
+        )
         if explicit is not None:
             # A schema-valid model operation is still only a proposal. Explicit
             # named edits take precedence, including when the model returned no
@@ -256,7 +270,7 @@ class PayloadMutationManager(BaseDialogueHandler):
             return
 
         msg = str(user_message or "")
-        add_kws = ("添加", "加装", "增加", "加上", "还要", "补充", "带上", "携带", "配置", "配合", "还要带", "加个")
+        add_kws = ("添加", "加装", "增加", "新增", "加上", "还要", "补充", "带上", "携带", "配置", "配合", "还要带", "加个")
         remove_kws = ("删除", "去掉", "移除", "不要", "取消", "别带")
         replace_kws = ("替换", "改成", "换成", "重置", "覆盖")
 
@@ -325,7 +339,7 @@ class PayloadMutationManager(BaseDialogueHandler):
     def _payload_items(text: str) -> list[str]:
         result = []
         for part in re.split(r"[、,，+]|以及|和|及", text):
-            part = re.sub(r"^(?:请|把|将|原来的?|当前的?|已有的?|一套|一个|一件|个|套|件|携带的?)", "", part.strip())
+            part = re.sub(r"^(?:请|把|将|原来的?|当前的?|已有的?|现有的?|一套|一个|一件|个|套|件|携带的?)", "", part.strip())
             part = part.strip(" ：:。.!！")
             if not part:
                 continue
@@ -334,7 +348,42 @@ class PayloadMutationManager(BaseDialogueHandler):
                 result.append(part)
         return result
 
-    def _explicit_payload_mutations(self, message: str, current_slots: dict) -> list[dict] | None:
+    @staticmethod
+    def _payload_edit_clauses(message: str):
+        for clause in re.split(r"[，,。；;！!]", message or ""):
+            # Apply assertion guards to the complete clause before splitting:
+            # "保留A并删除B吗" must not turn into an imperative delete.
+            if (re.search(r"保留|保持|不变", clause)
+                    and not _NEGATED_ACTION.search(clause)
+                    and not _NONASSERTED_EDIT.search(clause)):
+                yield from _KEEP_EDIT_BOUNDARY.split(clause)
+            else:
+                yield clause
+
+    def _payload_operand_keys(self, items: list[str]) -> set[str]:
+        """Match preservation conflicts using exact names and catalog aliases."""
+        if not items:
+            return set()
+        keys = {normalize_payload_match_key(item) for item in items}
+        catalog = getattr(getattr(self.manager, "kb", None), "assets", {}).get("payload_catalog", {})
+        identities = set()
+        for key in keys:
+            exact_names = [catalog_id for catalog_id, info in catalog.items()
+                           if normalize_payload_match_key(info.get("name")) == key]
+            matches = exact_names or [
+                catalog_id for catalog_id, info in catalog.items()
+                if any(normalize_payload_match_key(alias) == key for alias in (info.get("aliases") or []))
+            ]
+            # Shared broad aliases must not make two distinct explicit names
+            # equivalent. An ambiguous alias itself remains conservative.
+            identities.update(f"catalog:{catalog_id}" for catalog_id in matches)
+            if not matches:
+                identities.add(f"name:{key}")
+        return identities
+
+    def _explicit_payload_mutations(
+        self, message: str, current_slots: dict, *, unresolved: list | None = None,
+    ) -> list[dict] | None:
         """Recover explicit list edits; ambiguous language stays with extraction.
 
         Only payload operands from the current sentence are used. Negated and
@@ -344,23 +393,53 @@ class PayloadMutationManager(BaseDialogueHandler):
         terms = self._payload_terms(current_slots)
         commands = []
         guarded = False
-        for clause in re.split(r"[，,。；;！!]", message or ""):
+        kept_items = []
+        exclusive_keep = False
+        for clause in self._payload_edit_clauses(message):
             clause = re.sub(
-                r"^(?:(?:那就|那么|那|然后|并且|再|并|请你|请|帮我|给我|我想要|我想|我要|麻烦你)\s*)+",
+                r"^(?:(?:那就|那么|那|然后|并且|再|并|但是|但|先|请你|请|帮我|给我|我想要|我想|我要|麻烦你)\s*)+",
                 "", clause.strip(),
             )
             if not clause:
                 continue
-            if _NEGATED_ACTION.search(clause) or re.search(r"如果|假如|能否|是否|吗|会怎样|会怎么样|会有什么|[?？]", clause):
+            if _PENDING_PAYLOAD.match(clause):
+                # Here 携带工具 names the undecided field; 携带 is not an
+                # instruction to add a tool. Other clauses may still edit it.
+                guarded = True
+                continue
+            if _NEGATED_ACTION.search(clause) or _NONASSERTED_EDIT.search(clause):
                 guarded = guarded or any(term in clause for term in terms) or bool(re.search(r"载荷|工具", clause))
                 continue
             if _CLEAR_PAYLOAD.fullmatch(clause):
                 commands.append(("clear", [], []))
                 continue
             if re.search(r"保留|保持|不变", clause):
+                # A keep-only payload clause is evidence against model edits,
+                # just like a negated command. Explicit edits in other clauses
+                # still take precedence over the empty guarded result.
+                payload_keep = any(term in clause for term in terms) or bool(
+                    re.search(r"载荷|工具|payload", clause, re.IGNORECASE)
+                )
+                guarded = guarded or payload_keep
+                before, keep_word, after = re.split(r"(保留|保持|不变)", clause, maxsplit=1)
+                keep_text = after if keep_word == "保留" and after else (before or after)
+                keep_text = re.sub(r"(?:继续|保持|不变|都)+$", "", keep_text).strip()
+                if re.search(r"(?:只|仅)保留", clause) and payload_keep:
+                    exclusive_keep = True
+                if (payload_keep and re.search(r"载荷|工具|payload", keep_text, re.IGNORECASE)
+                        and not re.search(r"其他|其余", keep_text)
+                        and re.fullmatch(r"(?:原有|已有|现有的?|全部|所有|已选|携带的?|选配的?)*(?:载荷|工具|payload)", keep_text, re.IGNORECASE)):
+                    slot = current_slots.get("payload")
+                    kept_items.extend(slot.value if slot and isinstance(slot.value, list) else [])
+                elif payload_keep:
+                    kept_items.extend(self._payload_items(keep_text))
                 # Remove+keep in one clause only takes the removal's operands.
                 clause = re.split(r"保留|保持|不变", clause, maxsplit=1)[0]
                 clause = re.sub(r"(?:并且|同时|并|但)\s*$", "", clause)
+                # Here "携带工具" is the subject of "保持不变", not an add
+                # verb followed by the unknown tool named "工具".
+                if re.fullmatch(r"携带的?工具(?:配置|清单|列表)?(?:都)?", clause.strip()):
+                    continue
                 if not re.search(rf"{_REMOVE}|{_REPLACE}|{_ADD}|替换", clause):
                     continue
             forward = re.fullmatch(rf"(?:把|将)?(.+?)(?:{_REPLACE})(.+)", clause)
@@ -381,6 +460,24 @@ class PayloadMutationManager(BaseDialogueHandler):
                 op, items, targets = commands[-1]
                 if op in {"add", "remove"}:
                     items.extend(item for item in self._payload_items(clause) if item not in items)
+        conflict = False
+        kept_keys = self._payload_operand_keys(kept_items)
+        for op, items, targets in commands:
+            removed = items if op == "remove" else targets if op == "replace" else []
+            if op == "clear" and kept_keys:
+                conflict = True
+            elif op == "set" and kept_keys - self._payload_operand_keys(items):
+                conflict = True
+            elif kept_keys & self._payload_operand_keys(removed):
+                conflict = True
+        if conflict or exclusive_keep:
+            if unresolved is not None:
+                unresolved.append(
+                    "载荷指令冲突：同一工具既要求保留又要求删除或替换，请确认要保留还是移除；原有载荷配置未修改。"
+                    if conflict else
+                    "“只保留”涉及移除其他载荷，请确认完整工具清单，例如“载荷改成……”；原有载荷配置未修改。"
+                )
+            return []
         if not commands and not guarded:
             return None
         return [{"field": "payload", "operation": op, "items": items,
