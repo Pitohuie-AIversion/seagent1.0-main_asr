@@ -2739,6 +2739,9 @@ Please describe your operational requirements directly, or ask the question you 
       applyInteractionState(currentActions, currentReadOnly);
       const mySeq = ++currentRequestSeq;
       const myGen = sessionGeneration;
+      const requestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `req_${Date.now()}_${mySeq}_${Math.random().toString(16).slice(2)}`;
       currentAbortController = new AbortController();
       addMessage('user', msg);
       messageInput.value = '';
@@ -2756,7 +2759,7 @@ Please describe your operational requirements directly, or ask the question you 
             const streamRes = await fetch(API_BASE + '/api/chat/stream', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ session_id: sessionId, message: msg, source }),
+              body: JSON.stringify({ session_id: sessionId, request_id: requestId, message: msg, source }),
               signal: currentAbortController.signal,
             });
             if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
@@ -2766,6 +2769,17 @@ Please describe your operational requirements directly, or ask the question you 
                 ? '连接凭据无效，请填写有效凭据后重新发送。'
                 : 'Access credentials are required. Enter valid credentials and send again.');
               return;
+            }
+
+            if (!streamRes.ok && streamRes.status !== 404 && streamRes.status !== 405) {
+              const failure = await streamRes.json();
+              if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
+              if (failure && failure.error) {
+                const errMsg = failure.msg || failure.message || '请求处理异常';
+                addMessage('bot', `⛔ 错误 (${failure.error}): ${errMsg}`);
+                return;
+              }
+              throw new Error(`Unexpected stream response (HTTP ${streamRes.status})`);
             }
 
             if (streamRes.ok && (streamRes.headers.get('content-type') || '').includes('text/event-stream')) {
@@ -2960,7 +2974,7 @@ Please describe your operational requirements directly, or ask the question you 
           const res = await fetch(API_BASE + '/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: sessionId, message: msg, source }),
+            body: JSON.stringify({ session_id: sessionId, request_id: requestId, message: msg, source }),
             signal: currentAbortController.signal,
           });
 

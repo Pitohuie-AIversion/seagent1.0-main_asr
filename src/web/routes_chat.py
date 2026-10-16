@@ -7,8 +7,10 @@ import json
 import logging
 import uuid
 from typing import Any
-from flask import Blueprint, Response, jsonify, request, stream_with_context
+from flask import Blueprint, current_app, jsonify, request
 import src.web.state as state
+from src.web.chat_request_cache import ChatRequestCache, RequestIdConflict, RequestReplayUnavailable
+from src.web.chat_stream import StreamCapacityError, start_chat_stream
 from src.exceptions import (
     ContextBudgetError,
     IdReservationError,
@@ -61,6 +63,15 @@ def _read_chat_request():
     data, error = _read_json_object()
     if error is not None:
         return None, error
+
+    for key in ('message', 'session_id', 'request_id'):
+        value = data.get(key)
+        if isinstance(value, str):
+            try:
+                value.encode('utf-8')
+            except UnicodeEncodeError:
+                # Reject before session lookup or mutation, and never echo an invalid identifier.
+                return None, _request_error('InvalidRequest', f'{key} 包含无效 Unicode 字符。')
 
     raw_request_id = data.get("request_id")
     request_id = (
@@ -120,298 +131,136 @@ def _persist_and_dispatch_done_transition(mgr, phase_before):
     return ros2_dispatch
 
 
-@chat_bp.route("/api/chat", methods=["POST"])
+def _chat_failure(exc, request_id):
+    if isinstance(exc, SlotVersionConflict):
+        code, name, message, retryable = 409, 'SlotVersionConflict', f'并发版本冲突: {exc}', True
+    elif isinstance(exc, IntentIdConflict):
+        code, name, message, retryable = 409, 'IntentIdConflict', 'Intent ID 存在冲突，未覆盖已有任务文件。', True
+    elif isinstance(exc, (TaskPersistenceError, IdReservationError, TaskRollbackError)):
+        code, name, message, retryable = 500, type(exc).__name__, '任务文件保存失败，任务未能成功下发。', True
+    elif isinstance(exc, ContextBudgetError):
+        code, name, message, retryable = 503, 'ContextBudgetError', str(exc), False
+    elif isinstance(exc, RequestIdConflict):
+        code, name, message, retryable = 409, 'RequestIdConflict', '该 request_id 已用于另一条消息，请使用新的请求标识。', False
+    elif isinstance(exc, RequestReplayUnavailable):
+        code, name, message, retryable = 409, 'RequestReplayUnavailable', '该请求已处理，结果超过重放容量；请刷新会话状态核对，不要重复执行增量操作。', False
+    elif isinstance(exc, ValueError):
+        code, name, message, retryable = 400, 'ValidationError', f'槽位校验失败: {exc}', False
+    else:
+        code, name, message, retryable = 500, 'InternalServerError', '服务器内部错误，请稍后重试。', True
+    logger.log(logging.ERROR if code == 500 else logging.WARNING,
+               'Chat request failed: request_id=%s error=%s', request_id, name, exc_info=True)
+    return {'ok': False, 'code': code, 'error': name, 'msg': message,
+            'request_id': request_id, 'retryable': retryable}, code, []
+
+
+def _chat_result(mgr, sid, request_id, reply, ros2_dispatch):
+    ui_builder = _get_backend_symbol('build_frontend_ui_state', build_frontend_ui_state)
+    return {
+        'code': 200, 'session_id': sid, 'request_id': request_id, 'reply': reply,
+        'ui_state': ui_builder(mgr),
+        # Compatibility fields remain available alongside the authoritative UI contract.
+        'done': mgr.phase == 'done', 'rejected': mgr.phase == 'rejected',
+        'collected': mgr._last_built_json,
+        'missing': [miss['key'] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
+        'task_type': mgr.task_state.get('task_type_key'), 'task_id': mgr.task_state.get('task_id'),
+        'task_id_preview': mgr.task_id_preview, 'emergency': mgr.mode == 'emergency',
+        'final_json': mgr._last_built_json if mgr.phase == 'done' else None,
+        'ros2_dispatch': ros2_dispatch,
+    }
+
+
+def _process_chat_request(mgr, sid, request_id, msg, step_sink=None):
+    """One serialized transaction shared by JSON and SSE, including replay."""
+    with mgr._session_lock:
+        with state._sessions_lock:
+            if state._sessions_manager.get(sid) is not mgr:
+                return {'ok': False, 'code': 409, 'error': 'SessionReset',
+                        'msg': '当前会话已重新开始，请在新会话中重试。',
+                        'request_id': request_id, 'retryable': True}, 409, []
+        cache = getattr(mgr, '_http_request_cache', None)
+        if cache is None:
+            cache = mgr._http_request_cache = ChatRequestCache()
+        try:
+            previous = cache.get(request_id, msg)
+        except (RequestIdConflict, RequestReplayUnavailable) as exc:
+            return _chat_failure(exc, request_id)
+        if previous is not None:
+            return previous['payload'], previous['status'], previous['events']
+
+        events = []
+
+        def event_sink(event_type, data):
+            if not isinstance(data, dict):
+                return
+            if event_type == 'step' and step_sink is not None:
+                step_sink(event_type, data)
+            elif event_type in {'slot', 'warning'}:
+                events.append((event_type, data))
+
+        try:
+            phase_before = mgr.phase
+            process_kwargs = {'request_id': request_id}
+            if step_sink is not None:
+                process_kwargs['event_sink'] = event_sink
+                try:
+                    inspect.signature(mgr.process).bind(msg, **process_kwargs)
+                except TypeError:
+                    # Inspect before execution; an internal TypeError must never trigger a second mutation.
+                    process_kwargs.pop('event_sink')
+            reply = mgr.process(msg, **process_kwargs)
+            print_status(mgr)
+            dispatch = _persist_and_dispatch_done_transition(mgr, phase_before)
+            payload = _chat_result(mgr, sid, request_id, reply, dispatch)
+            # Freeze and validate while still holding the lock, before a later turn can edit shared slots.
+            packet = json.loads(json.dumps({'payload': payload, 'status': 200, 'events': events}, ensure_ascii=False))
+        except Exception as exc:
+            payload, status, _ = _chat_failure(exc, request_id)
+            packet = {'payload': payload, 'status': status, 'events': []}
+        # Failed/uncertain outcomes also replay: a failure after mutation must not apply a delta twice.
+        cache.put(request_id, msg, packet)
+        return packet['payload'], packet['status'], packet['events']
+
+
+@chat_bp.route('/api/chat', methods=['POST'])
 @_require_api_token
 def api_chat():
+    request_id = 'req_unknown'
     try:
         parsed, error = _read_chat_request()
         if error is not None:
             return error
         sid, request_id, msg = parsed
-
-        manager_getter = _get_backend_symbol("get_or_create_manager", get_or_create_manager)
-        mgr = manager_getter(sid)
-
-        with mgr._session_lock:
-            with state._sessions_lock:
-                if state._sessions_manager.get(sid) is not mgr:
-                    return jsonify({
-                        "ok": False,
-                        "code": 409,
-                        "error": "SessionReset",
-                        "msg": "当前会话已重新开始，请在新会话中重试。",
-                        "request_id": request_id,
-                        "retryable": True,
-                    }), 409
-            phase_before = mgr.phase
-            reply = mgr.process(
-                msg,
-                request_id=request_id,
-            )
-            print_status(mgr)
-            ros2_dispatch = _persist_and_dispatch_done_transition(mgr, phase_before)
-
-            ui_builder = _get_backend_symbol("build_frontend_ui_state", build_frontend_ui_state)
-            ui_state = ui_builder(mgr)
-            resp_data = {
-                "code": 200,
-                "session_id": sid,
-                "request_id": request_id,
-                "reply": reply,
-                # ui_state: 统一前端状态契约（Issue #31）
-                "ui_state": ui_state,
-                # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
-                "done": mgr.phase == "done",
-                "rejected": mgr.phase == "rejected",
-                "collected": mgr._last_built_json,
-                "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
-                "task_type": mgr.task_state.get("task_type_key"),
-                "task_id": mgr.task_state.get("task_id"),
-                "task_id_preview": mgr.task_id_preview,
-                "emergency": mgr.mode == "emergency",
-                "final_json": mgr._last_built_json if mgr.phase == "done" else None,
-                "ros2_dispatch": ros2_dispatch,
-            }
-        for k, v in resp_data.items():
-            try:
-                json.dumps(v)
-            except Exception as e:
-                raise TypeError(f"Field '{k}' is not JSON serializable: {type(v)} -> {v}") from e
-
-        return jsonify(resp_data)
-    except SlotVersionConflict as svc:
-        logging.error(f"Slot version conflict in /api/chat: {svc}", exc_info=True)
-        return jsonify({
-            "ok": False,
-            "code": 409,
-            "error": "SlotVersionConflict",
-            "msg": f"并发版本冲突: {str(svc)}",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown",
-            "retryable": True,
-        }), 409
-    except IntentIdConflict as iic:
-        logging.error(f"Intent ID conflict in /api/chat: {iic}", exc_info=True)
-        return jsonify({
-            "ok": False,
-            "code": 409,
-            "error": "IntentIdConflict",
-            "msg": "Intent ID 存在冲突，未覆盖已有任务文件。",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown",
-            "retryable": True,
-        }), 409
-    except (TaskPersistenceError, IdReservationError, TaskRollbackError) as tpe:
-        logging.error(f"Task persistence error in /api/chat: {tpe}", exc_info=True)
-        return jsonify({
-            "ok": False,
-            "code": 500,
-            "error": type(tpe).__name__,
-            "msg": "任务文件保存失败，任务未能成功下发。",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown",
-            "retryable": True,
-        }), 500
-    except ContextBudgetError as exc:
-        logger.warning("Model context budget exceeded in /api/chat: %s", exc)
-        return jsonify({
-            "ok": False,
-            "code": 503,
-            "error": "ContextBudgetError",
-            "msg": str(exc),
-            "request_id": request_id if 'request_id' in locals() else "req_unknown",
-            "retryable": False,
-        }), 503
-    except ValueError as ve:
-        logging.error(f"Validation error in /api/chat: {ve}", exc_info=True)
-        return jsonify({
-            "ok": False,
-            "code": 400,
-            "error": "ValidationError",
-            "msg": f"槽位校验失败: {str(ve)}",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown",
-            "retryable": False,
-        }), 400
+        manager_getter = _get_backend_symbol('get_or_create_manager', get_or_create_manager)
+        payload, status, _ = _process_chat_request(manager_getter(sid), sid, request_id, msg)
+        return jsonify(payload), status
     except Exception as exc:
-        logging.error(f"Unhandled exception in /api/chat: {exc}", exc_info=True)
-        return jsonify({
-            "ok": False,
-            "code": 500,
-            "error": "InternalServerError",
-            "msg": "服务器内部错误，请稍后重试。",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown",
-            "retryable": True,
-        }), 500
+        payload, status, _ = _chat_failure(exc, request_id)
+        return jsonify(payload), status
 
 
-@chat_bp.route("/api/chat/stream", methods=["POST"])
+@chat_bp.route('/api/chat/stream', methods=['POST'])
 @_require_api_token
 def api_chat_stream():
-    """SSE 流式会话更新机制（Server-Sent Events），提供细粒度事件流与实时更新契约。"""
+    request_id = 'req_unknown'
     try:
         parsed, error = _read_chat_request()
         if error is not None:
             return error
         sid, request_id, msg = parsed
-
-        manager_getter = _get_backend_symbol("get_or_create_manager", get_or_create_manager)
+        manager_getter = _get_backend_symbol('get_or_create_manager', get_or_create_manager)
         mgr = manager_getter(sid)
-
-        session_error = None
-        reply = ""
-        result_json = ""
-        step_events: list[dict] = []
-        slot_events: list[dict] = []
-        warning_events: list[dict] = []
-
-        def event_sink(event_type: str, ev_data: dict) -> None:
-            if not isinstance(ev_data, dict):
-                return
-            if event_type == "step":
-                step_events.append(ev_data)
-            elif event_type == "slot":
-                slot_events.append(ev_data)
-            elif event_type == "warning":
-                warning_events.append(ev_data)
-
-        with mgr._session_lock:
-            with state._sessions_lock:
-                if state._sessions_manager.get(sid) is not mgr:
-                    session_error = {"code": 409, "error": "SessionReset", "msg": "当前会话已重新开始，请在新会话中重试。", "request_id": request_id, "retryable": True}
-
-            if session_error is None:
-                try:
-                    phase_before = mgr.phase
-                    process_kwargs = {"request_id": request_id, "event_sink": event_sink}
-                    try:
-                        inspect.signature(mgr.process).bind(msg, **process_kwargs)
-                    except TypeError:
-                        # Inspect compatibility before execution: an internal TypeError may follow a mutation.
-                        process_kwargs.pop("event_sink")
-                    reply = mgr.process(msg, **process_kwargs)
-                    print_status(mgr)
-
-                    ros2_dispatch = _persist_and_dispatch_done_transition(mgr, phase_before)
-                    ui_builder = _get_backend_symbol("build_frontend_ui_state", build_frontend_ui_state)
-                    ui_state = ui_builder(mgr)
-                    resp_data = {
-                        "code": 200,
-                        "session_id": sid,
-                        "request_id": request_id,
-                        "reply": reply,
-                        # ui_state: 统一前端状态契约（Issue #31）
-                        "ui_state": ui_state,
-                        # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
-                        "done": mgr.phase == "done",
-                        "rejected": mgr.phase == "rejected",
-                        "collected": mgr._last_built_json,
-                        "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
-                        "task_type": mgr.task_state.get("task_type_key"),
-                        "task_id": mgr.task_state.get("task_id"),
-                        "task_id_preview": mgr.task_id_preview,
-                        "emergency": mgr.mode == "emergency",
-                        "final_json": mgr._last_built_json if mgr.phase == "done" else None,
-                        "ros2_dispatch": ros2_dispatch,
-                    }
-                    for k, v in resp_data.items():
-                        json.dumps(v)
-                    result_json = json.dumps(resp_data, ensure_ascii=False)
-                except SlotVersionConflict as svc:
-                    logging.error(f"Slot version conflict in /api/chat/stream: {svc}", exc_info=True)
-                    session_error = {
-                        "code": 409,
-                        "error": "SlotVersionConflict",
-                        "msg": f"并发版本冲突: {str(svc)}",
-                        "request_id": request_id,
-                        "retryable": True,
-                    }
-                except IntentIdConflict as iic:
-                    logging.error(f"Intent ID conflict in /api/chat/stream: {iic}", exc_info=True)
-                    session_error = {
-                        "code": 409,
-                        "error": "IntentIdConflict",
-                        "msg": "Intent ID 存在冲突，未覆盖已有任务文件。",
-                        "request_id": request_id,
-                        "retryable": True,
-                    }
-                except (TaskPersistenceError, IdReservationError, TaskRollbackError) as tpe:
-                    logging.error(f"Task persistence error in /api/chat/stream: {tpe}", exc_info=True)
-                    session_error = {
-                        "code": 500,
-                        "error": type(tpe).__name__,
-                        "msg": "任务文件保存失败，任务未能成功下发。",
-                        "request_id": request_id,
-                        "retryable": True,
-                    }
-                except ContextBudgetError as exc:
-                    logger.warning("Model context budget exceeded in /api/chat/stream: %s", exc)
-                    session_error = {
-                        "code": 503,
-                        "error": "ContextBudgetError",
-                        "msg": str(exc),
-                        "request_id": request_id,
-                        "retryable": False,
-                    }
-                except ValueError as ve:
-                    logging.error(f"Validation error in /api/chat/stream: {ve}", exc_info=True)
-                    session_error = {
-                        "code": 400,
-                        "error": "ValidationError",
-                        "msg": f"槽位校验失败: {str(ve)}",
-                        "request_id": request_id,
-                        "retryable": False,
-                    }
-                except Exception as exc:
-                    logging.error(f"Unhandled exception in /api/chat/stream: {exc}", exc_info=True)
-                    session_error = {
-                        "code": 500,
-                        "error": "InternalServerError",
-                        "msg": "服务器内部错误，请稍后重试。",
-                        "request_id": request_id,
-                        "retryable": True,
-                    }
-
-        def event_stream():
-            if session_error is not None:
-                yield f"event: error\ndata: {json.dumps(session_error, ensure_ascii=False)}\n\n"
-                return
-
-            yield f"event: ping\ndata: {json.dumps({'status': 'connected', 'session_id': sid, 'request_id': request_id})}\n\n"
-            if step_events:
-                for step_ev in step_events:
-                    yield f"event: step\ndata: {json.dumps(step_ev, ensure_ascii=False)}\n\n"
-            else:
-                yield f"event: step\ndata: {json.dumps({'step': 'processing', 'message': '正在分析指令与状态...', 'phase': mgr.phase})}\n\n"
-
-            for slot_ev in slot_events:
-                yield f"event: slot\ndata: {json.dumps(slot_ev, ensure_ascii=False)}\n\n"
-
-            for warn_ev in warning_events:
-                yield f"event: warning\ndata: {json.dumps(warn_ev, ensure_ascii=False)}\n\n"
-
-            chunk_size = 4
-            for i in range(0, len(reply), chunk_size):
-                delta_text = reply[i:i + chunk_size]
-                yield f"event: delta\ndata: {json.dumps({'delta': delta_text, 'request_id': request_id}, ensure_ascii=False)}\n\n"
-            yield f"event: result\ndata: {result_json}\n\n"
-            yield "event: end\ndata: [DONE]\n\n"
-
-        return Response(
-            stream_with_context(event_stream()),
-            mimetype="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
-            },
+        return start_chat_stream(
+            lambda step_sink: _process_chat_request(mgr, sid, request_id, msg, step_sink),
+            app=current_app._get_current_object(), session_id=sid, request_id=request_id,
         )
+    except StreamCapacityError:
+        return jsonify({'ok': False, 'code': 503, 'error': 'ServerBusy',
+                        'msg': '当前处理中的请求较多，请稍后重试。',
+                        'request_id': request_id, 'retryable': True}), 503, {'Retry-After': '1'}
     except Exception as exc:
-        logging.error(f"Unhandled exception in /api/chat/stream: {exc}", exc_info=True)
-        return jsonify({
-            "ok": False,
-            "code": 500,
-            "error": "InternalServerError",
-            "msg": "服务器内部错误，请稍后重试。",
-            "request_id": request_id if 'request_id' in locals() else "req_unknown",
-            "retryable": True,
-        }), 500
+        payload, status, _ = _chat_failure(exc, request_id)
+        return jsonify(payload), status
 
 
 @chat_bp.route("/api/reset", methods=["POST"])

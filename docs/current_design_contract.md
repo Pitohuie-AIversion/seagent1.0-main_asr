@@ -163,3 +163,22 @@ After filtering:
 - C019 is currently a soft warning after 1800 seconds. Runtime availability has a separate age limit and invalid-state checks; see [the architecture overview](architecture/overview.md).
 - Future-task archival may defer dynamic telemetry validation. Dispatch uses `purpose="runtime_execution"` and fresh validation; archival alone is not execution authorization.
 - Sending, scheduling, uncertain results and unsupported valve withdrawal follow [the execution dispatch contract](execution_dispatch_contract.md).
+
+## 9. HTTP Retry and Streaming Boundaries
+
+### 9.1 Recent Request Replay
+
+- `/api/chat` and `/api/chat/stream` share the same replay records within a live session manager. An explicit `request_id` plus the same trimmed message replays the original outcome without re-running extraction, mutation, publication or dispatch. Concurrent duplicates serialize behind the same session lock.
+- Reusing a retained ID with different message content returns `RequestIdConflict` (409; an SSE `error` event for the streaming transport). The first result is not overwritten. IDs are scoped to the session, not globally.
+- Records last at most 10 minutes from completion, with at most 128 entries and a 4 MiB serialized-response budget per manager; older records may be evicted earlier by either budget. Oversized responses retain a bounded tombstone returning `RequestReplayUnavailable` instead of executing again while that record remains.
+- This is process-local, bounded retry protection. Reset, manager replacement, process restart, expiry or eviction ends that protection; it is not durable exactly-once processing. Clients must check current session state before retrying an old or uncertain incremental command.
+- Errors reached during processing are also replayed because an error may follow a state mutation. To intentionally attempt an operation again, inspect current state first and use a new request ID; the `retryable` flag does not invalidate a retained outcome. Input validation and streaming-capacity rejection occur before processing and are not recorded as completed turns.
+- Replayed responses contain the original snapshot. They do not revert newer session state; use `/api/session/state` for the latest state. A missing request ID creates a new logical turn. The browser supplies one ID per send and keeps it across its supported transport fallback; interrupted streams are still not automatically resent.
+
+### 9.2 Live Progress and Committed Results
+
+- An accepted stream starts an independent worker and immediately emits `ping` and `queued` progress, then live `step` events and a heartbeat while waiting. These events do not imply that a field is saved or a task published.
+- Slot/warning events, reply `delta`, final `result` and `end` wait until the session transaction, persistence/dispatch handling and response serialization finish. Reply deltas remain chunks of the validated final reply, not unvalidated model token streaming.
+- A disconnected observer stops receiving events but does not cancel an accepted transaction. Reset continues to acquire the session lock before removing/resetting the manager.
+- Each process allows at most 8 active streaming workers, with a 64-event advisory progress buffer per worker. Saturation returns HTTP 503 `ServerBusy` with `Retry-After: 1`; a slow/disconnected reader cannot block the worker by filling the progress queue. This worker bound does not remove the shared model lock or bound the ordinary JSON endpoint's request queue.
+- Invalid transport input still returns HTTP 400 before streaming. Processing failures after stream acceptance are represented by an SSE `error` event carrying the application code, without a success `result`.

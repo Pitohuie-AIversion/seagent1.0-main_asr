@@ -220,7 +220,8 @@ def test_disconnect_after_delta_completes_dispatch_and_releases_session_lock(mon
                 if b"event: delta" in chunk:
                     break
             # Archive first, then persist the actual dispatch outcome before
-            # yielding any response bytes that may trigger a disconnect.
+            # yielding result/delta bytes. Early ping/step events promise only
+            # progress; disconnecting must not interrupt the transaction.
             assert save.call_count == 2
             assert save.call_args_list[0].kwargs["ros2_dispatch"] is None
             assert save.call_args_list[1].kwargs["ros2_dispatch"] == {"state": "SENT"}

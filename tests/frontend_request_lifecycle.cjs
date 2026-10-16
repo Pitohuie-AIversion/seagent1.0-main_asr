@@ -115,6 +115,11 @@ async function successfulStreamReleasesLock() {
   assert.equal(client.updates.length, 1);
   const next = client.sendMessage('next');
   assert.equal(client.requests.length, 2);
+  const firstId = JSON.parse(client.requests[0].options.body).request_id;
+  const nextId = JSON.parse(client.requests[1].options.body).request_id;
+  assert.equal(typeof firstId, 'string');
+  assert(firstId.length > 8);
+  assert.notEqual(firstId, nextId, 'separate user sends need separate request IDs');
   client.cancelActiveRequest();
   await next;
 }
@@ -172,6 +177,10 @@ async function unsupportedEndpointCanFallback() {
     await settleNetwork();
     assert.equal(client.requests.length, 2);
     assert.equal(client.requests[1].url, '/api/chat');
+    const firstId = JSON.parse(client.requests[0].options.body).request_id;
+    const fallbackId = JSON.parse(client.requests[1].options.body).request_id;
+    assert.equal(typeof firstId, 'string');
+    assert.equal(firstId, fallbackId, 'transport fallback must retain the logical request ID');
     client.requests[1].resolve({ok: true, status: 200, async text() {
       return JSON.stringify({code: 200, reply: 'ok', ui_state: {phase: 'collecting'}});
     }});
@@ -189,6 +198,20 @@ async function unauthorizedRequestPreservesDraftWithoutReplay() {
   assert.equal(client.requests.length, 1);
   assert.equal(client.draft(), '需要凭据的指令');
   assert(client.messages.some(message => message.text.includes('连接凭据无效')));
+  assert(!client.messages.some(message => message.text.includes('服务器可能已处理')));
+}
+
+async function busyStreamShowsServerErrorWithoutReplay() {
+  const client = createClient();
+  const request = client.sendMessage('继续修改任务');
+  client.requests[0].resolve({ok: false, status: 503,
+    headers: {get() { return 'application/json'; }},
+    async json() { return {error: 'ServerBusy', msg: '当前请求较多，请稍后重试。', retryable: true}; },
+  });
+  await request;
+  assert.equal(client.requests.length, 1);
+  assert.equal(client.locked(), false);
+  assert(client.messages.some(message => message.text.includes('当前请求较多')));
   assert(!client.messages.some(message => message.text.includes('服务器可能已处理')));
 }
 
@@ -254,6 +277,7 @@ function payloadToolsFollowActualTaskState() {
   await interruptedStreamDoesNotResend();
   await unsupportedEndpointCanFallback();
   await unauthorizedRequestPreservesDraftWithoutReplay();
+  await busyStreamShowsServerErrorWithoutReplay();
   await clientWithoutStreamsUsesSyncOnce();
   await reloadRefreshRespectsSessionAndRequest();
   payloadToolsFollowActualTaskState();

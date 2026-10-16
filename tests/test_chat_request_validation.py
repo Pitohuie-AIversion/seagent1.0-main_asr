@@ -84,3 +84,17 @@ def test_bad_request_does_not_prevent_next_valid_turn(client, monkeypatch, endpo
     assert payload["session_id"] == sid
     assert payload["reply"]
     assert manager.conversation_history[-2]["content"] == "现在几点？"
+
+
+@pytest.mark.parametrize('endpoint', ['/api/chat', '/api/chat/stream'])
+@pytest.mark.parametrize('field', ['message', 'session_id', 'request_id'])
+def test_unpaired_unicode_is_rejected_before_manager_lookup(client, monkeypatch, endpoint, field):
+    get_manager = Mock(side_effect=AssertionError('invalid Unicode reached manager lookup'))
+    monkeypatch.setattr(web_backend, 'get_or_create_manager', get_manager)
+    payload = {'message': '延长一小时', 'session_id': 'unicode-test', 'request_id': 'unicode-request'}
+    payload[field] += '\ud800'
+    response = client.post(endpoint, json=payload)
+    assert response.status_code == 400
+    assert response.get_json()['error'] == 'InvalidRequest'
+    assert response.get_json()['retryable'] is False
+    get_manager.assert_not_called()

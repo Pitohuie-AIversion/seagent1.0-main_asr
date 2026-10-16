@@ -130,7 +130,8 @@ def test_overflow_error_rolls_back_and_allows_later_request(monkeypatch, endpoin
             body = response.get_data(as_text=True)
             assert "event: error" in body
             assert "event: result" not in body
-            payload = json.loads(body.split("data: ", 1)[1].strip())
+            error_event = next(block for block in body.split("\n\n") if block.startswith("event: error\n"))
+            payload = json.loads(error_event.split("data: ", 1)[1].strip())
         else:
             assert response.status_code == 503
             payload = response.get_json()
