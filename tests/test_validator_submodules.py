@@ -152,6 +152,7 @@ class TestSpatialValidator(unittest.TestCase):
         self.assertIn("forbidden_area", SPATIAL_CHECKS)
         self.assertIn("dvl_high_risk", SPATIAL_CHECKS)
         self.assertIn("seabed_compatibility", SPATIAL_CHECKS)
+        self.assertIn("start_end_points_distinct", SPATIAL_CHECKS)
 
     def test_forbidden_area_violation(self):
         c = next(item for item in self.kb.get_constraints() if item["id"] == "C008")
@@ -192,6 +193,40 @@ class TestSpatialValidator(unittest.TestCase):
         self.assertIsNotNone(v)
         self.assertEqual("C009", v.constraint_id)
         self.assertEqual("hard", v.severity)
+
+    def test_start_end_points_distinct_violation(self):
+        c = next(item for item in self.kb.get_constraints() if item["id"] == "C033")
+        task_state = {
+            "task_type_key": "pipeline_inspection",
+            "start_point": {"lat": 19.8, "lon": 113.5},
+            "end_point": {"lat": 19.8, "lon": 113.5},
+        }
+        v = self.validator.check_rule(c, "start_end_points_distinct", task_state, rov=None)
+        self.assertIsNotNone(v)
+        self.assertEqual("C033", v.constraint_id)
+        self.assertEqual("hard", v.severity)
+        self.assertEqual("start_end_points_distinct", v.check_type)
+        self.assertIn("巡检距离为 0", v.message)
+
+    def test_start_end_points_distinct_different_points_pass(self):
+        c = next(item for item in self.kb.get_constraints() if item["id"] == "C033")
+        task_state = {
+            "task_type_key": "pipeline_inspection",
+            "start_point": {"lat": 19.9, "lon": 112.2},
+            "end_point": {"lat": 19.9, "lon": 112.3},
+        }
+        v = self.validator.check_rule(c, "start_end_points_distinct", task_state, rov=None)
+        self.assertIsNone(v)
+
+    def test_start_end_points_distinct_missing_coordinate_pass(self):
+        c = next(item for item in self.kb.get_constraints() if item["id"] == "C033")
+        task_state = {
+            "task_type_key": "pipeline_inspection",
+            "start_point": {"lat": 19.9, "lon": 112.2},
+        }
+        v = self.validator.check_rule(c, "start_end_points_distinct", task_state, rov=None)
+        self.assertIsNone(v)
+
 
 
 class TestTelemetryGate(unittest.TestCase):

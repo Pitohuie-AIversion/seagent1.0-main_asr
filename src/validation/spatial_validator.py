@@ -24,6 +24,7 @@ SPATIAL_CHECKS = {
     "forbidden_area",
     "dvl_high_risk",
     "seabed_compatibility",
+    "start_end_points_distinct",
 }
 
 
@@ -122,4 +123,29 @@ class SpatialValidator:
                                 rel_fields, check_type=check, observed_value=seabed
                             )
 
+        elif check == "start_end_points_distinct":
+            sp = task_state.get("start_point")
+            ep = task_state.get("end_point")
+            if isinstance(sp, dict) and isinstance(ep, dict):
+                lat1 = sp.get("lat", sp.get("latitude"))
+                lon1 = sp.get("lon", sp.get("longitude"))
+                lat2 = ep.get("lat", ep.get("latitude"))
+                lon2 = ep.get("lon", ep.get("longitude"))
+                if lat1 is not None and lon1 is not None and lat2 is not None and lon2 is not None:
+                    try:
+                        f_lat1, f_lon1 = float(lat1), float(lon1)
+                        f_lat2, f_lon2 = float(lat2), float(lon2)
+                        if abs(f_lat1 - f_lat2) < 1e-5 and abs(f_lon1 - f_lon2) < 1e-5:
+                            msg = (
+                                c["violation_message"]
+                                .replace("{start_point}", f"(北纬 {f_lat1:.4f}°, 东经 {f_lon1:.4f}°)")
+                                .replace("{end_point}", f"(北纬 {f_lat2:.4f}°, 东经 {f_lon2:.4f}°)")
+                            )
+                            return Violation(
+                                c["id"], c["name"], msg.strip(), c["severity"],
+                                rel_fields, check_type=check,
+                                observed_value={"start_point": sp, "end_point": ep}
+                            )
+                    except (ValueError, TypeError):
+                        pass
         return None

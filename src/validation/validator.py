@@ -150,6 +150,7 @@ _CHECK_FIELDS: dict[str, list[str]] = {
     "start_time_not_in_past":      ["start_time"],
     "end_time_after_start_time":   ["start_time", "end_time"],
     "future_task_runtime_notice":  ["start_time"],
+    "start_end_points_distinct":   ["start_point", "end_point"],
 }
 
 _DYNAMIC_CHECKS = {

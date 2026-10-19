@@ -126,6 +126,16 @@ constraints:
       系统将在任务执行窗口期前（运行时）再行自动核验与设备状态绑定。
     severity: "soft"
 
+  - id: "C033"
+    name: "管缆巡检任务起点与终点不得重合"
+    applies_to: ["pipeline_inspection"]
+    check_type: "start_end_points_distinct"
+    violation_message: >
+      管缆巡检任务起点与终点坐标完全重合（起点：{start_point}，终点：{end_point}），
+      巡检距离为 0。管缆巡检属于线性路径巡视任务，必须具备明确不同的起始点与结束点，请修正坐标后再发布。
+    severity: "hard"
+
+
   # ── 环境约束 ─────────────────────────────────────────────────────────────────
 
 #  - id: "C005"

@@ -74,6 +74,13 @@ CONSTRAINT_TRIGGER_MATRIX = {
     "C030": {"task": {"start_time": (NOW - timedelta(minutes=6)).isoformat()}},
     "C031": {"task": {"end_time": (NOW - timedelta(seconds=1)).isoformat()}},
     "C032": {"task": {"start_time": (NOW + timedelta(hours=2)).isoformat()}},
+    "C033": {
+        "task": {
+            "task_type_key": "pipeline_inspection",
+            "start_point": copy.deepcopy(SAFE_POINT),
+            "end_point": copy.deepcopy(SAFE_POINT),
+        },
+    },
     "C007": {"task": {"support_vessel": "海洋石油708"}},
     "C008": {"task": {"start_point": FORBIDDEN_POINT}},
     "C009": {
