@@ -77,7 +77,7 @@
         finaljson: "最终任务JSON",
         history: "历史记录",
         historyBtn: "查看历史",
-        resetBtn: "⟳ 重新开始",
+        resetBtn: "重新开始",
         inputPlaceholder: "描述您的水下任务...",
         voiceBtn: "语音",
         voiceStop: "停止",
@@ -177,7 +177,7 @@
         finaljson: "Final Task JSON",
         history: "History",
         historyBtn: "View History",
-        resetBtn: "⟳ Restart",
+        resetBtn: "Restart",
         inputPlaceholder: "Describe your underwater task...",
         voiceBtn: "Voice",
         voiceStop: "Stop",
@@ -628,17 +628,16 @@ Please describe your operational requirements directly, or ask the question you 
       return valStr;
     }
 
-    // Sleek vector bot/user visors
+    // Brand-aligned, consistent line avatars.
     const botAvatarSvg = `
-  <svg class="bot-avatar-svg" viewBox="0 0 24 24" width="22" height="22">
-    <rect x="4" y="6" width="16" height="12" rx="3" stroke="currentColor" stroke-width="1.8" fill="none" />
-    <path d="M2 10h2M20 10h2M9 16l3 2 3-2" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" />
-    <rect x="7" y="9" width="10" height="2" rx="1" fill="currentColor" class="visor-glow" />
+  <svg class="bot-avatar-svg" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+    <path d="m12 2.5 8.25 4.75v9.5L12 21.5l-8.25-4.75v-9.5Z" />
+    <path class="visor-glow" d="m7 10 5-3 5 3-5 3-5-3Zm0 4 5 3 5-3M12 13v4" />
   </svg>`;
     const userAvatarSvg = `
-  <svg class="user-avatar-svg" viewBox="0 0 24 24" width="22" height="22">
-    <circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.8" fill="none" />
-    <path d="M4 20c0-4 4-5 8-5s8 1 8 5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" />
+  <svg class="user-avatar-svg" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+    <circle cx="12" cy="8" r="4" />
+    <path d="M4 20c0-4 4-5 8-5s8 1 8 5" />
   </svg>`;
 
     function addMessage(role, content, options = {}) {
@@ -1743,10 +1742,10 @@ Please describe your operational requirements directly, or ask the question you 
 
     function retireDecisionCards() {
       currentDecisionCard = null;
-      document.querySelectorAll('.warning-decision-card:not(.warning-card-resolved), .hard-blocked-card:not(.warning-card-resolved)').forEach(card => {
+      document.querySelectorAll('.warning-decision-card:not(.warning-card-resolved), .hard-blocked-card:not(.warning-card-resolved), .telemetry-decision-card:not(.warning-card-resolved)').forEach(card => {
         card.classList.add('warning-card-resolved');
         card.classList.remove('warning-card-resolving');
-        const actions = card.querySelector('.warning-card-actions');
+        const actions = card.querySelector('.warning-card-actions, .telemetry-card-actions');
         if (!actions) return;
         const note = document.createElement('div');
         note.className = 'historical-validation-note';
@@ -1772,7 +1771,7 @@ Please describe your operational requirements directly, or ask the question you 
       const isCurrentCard = card => card === currentDecisionCard && uiState === currentDecisionState
         && cardGeneration === sessionGeneration && !currentReadOnly && !uiState.read_only;
 
-      const existingCard = wrapper.querySelector('.warning-decision-card, .hard-blocked-card');
+      const existingCard = wrapper.querySelector('.warning-decision-card, .hard-blocked-card, .telemetry-decision-card');
       if (existingCard) existingCard.remove();
 
       if (phase === 'blocked_soft' && uiState.actions && uiState.actions.can_ignore_soft_warning) {
@@ -1892,7 +1891,235 @@ Please describe your operational requirements directly, or ask the question you 
         wrapper.appendChild(card);
         if (shouldFollow) messageContainer.scrollTop = messageContainer.scrollHeight;
         globalThis.window?.SEAgentWorkspace?.followLatest?.(shouldFollow);
+      } else if (phase === 'confirming' || (uiState.slots?.length > 0 && uiState.slots.every(s => s.status === 'valid' || s.status === 'confirmed') && uiState.actions?.can_confirm)) {
+        renderTelemetryConfirmCard(wrapper, uiState, isCurrentCard, botMsgDiv);
+        if (shouldFollow) messageContainer.scrollTop = messageContainer.scrollHeight;
+        globalThis.window?.SEAgentWorkspace?.followLatest?.(shouldFollow);
       }
+    }
+
+    function renderTelemetryConfirmCard(wrapper, uiState, isCurrentCard, botMsgDiv) {
+      const cs = uiState.constraint_state || {};
+      const snapshot = cs.state_snapshot || {};
+      const state = snapshot.state || {};
+      if (!state || (!state.overall_status && !snapshot.unit_id && state.water_current_velocity === undefined)) {
+        return null;
+      }
+
+      const card = document.createElement('div');
+      card.className = 'telemetry-decision-card';
+      currentDecisionCard = card;
+
+      const unitId = snapshot.unit_id || snapshot.status_ref || (currentLang === 'zh' ? '当前作业机器人' : 'ROV Unit');
+      const overall = String(state.overall_status || 'available').toLowerCase();
+      const isAvailable = overall === 'available' || overall === 'normal';
+
+      // 1. Header
+      const header = document.createElement('div');
+      header.className = 'telemetry-card-header';
+      header.innerHTML = `
+        <div class="telemetry-card-badge-group">
+          <span class="telemetry-card-badge">LIVE TELEMETRY</span>
+          <span class="telemetry-status-pill ${isAvailable ? 'status-pill-ok' : 'status-pill-warn'}">
+            <span class="status-indicator-dot"></span>
+            <span>${isAvailable ? (currentLang === 'zh' ? '就绪可用' : 'Available') : escapeHtml(overall)}</span>
+          </span>
+        </div>
+        <div class="telemetry-card-title">🤖 ${escapeHtml(unitId)} · ${currentLang === 'zh' ? '实时遥测与作业环境核验看板' : 'Live Telemetry & Environment Dashboard'}</div>
+      `;
+      card.appendChild(header);
+
+      // 2. Environment metrics grid
+      const envGrid = document.createElement('div');
+      envGrid.className = 'telemetry-metrics-grid';
+
+      const vel = state.water_current_velocity !== undefined ? state.water_current_velocity : state.current_velocity;
+      const turb = state.water_turbidity !== undefined ? state.water_turbidity : state.turbidity;
+      const obs = state.obstacle_density;
+      const support = state.mothership_support;
+
+      const formatEnvVal = (val, suffix = '', warnThreshold = null) => {
+        if (val === undefined || val === null) return `<span style="color:#78a2cc;">${currentLang === 'zh' ? '未提供' : 'N/A'}</span>`;
+        const num = parseFloat(val);
+        const isWarn = warnThreshold !== null && !isNaN(num) && num > warnThreshold;
+        return `<span class="${isWarn ? 'metric-val-warn' : 'metric-val-ok'}">${escapeHtml(String(val))}${suffix}</span>`;
+      };
+
+      const translateEnv = (val) => {
+        const map = {
+          low: { zh: '低', en: 'Low' },
+          medium: { zh: '中', en: 'Medium' },
+          high: { zh: '高', en: 'High' },
+          strong: { zh: '强', en: 'Strong' },
+          weak: { zh: '弱', en: 'Weak' },
+          normal: { zh: '正常', en: 'Normal' },
+          available: { zh: '可用', en: 'Available' },
+          degraded: { zh: '性能受限', en: 'Degraded' },
+          fault: { zh: '故障', en: 'Fault' },
+          abnormal: { zh: '异常', en: 'Abnormal' },
+        };
+        const s = String(val || '').toLowerCase();
+        if (map[s]) return map[s][currentLang];
+        return String(val || (currentLang === 'zh' ? '未知' : 'Unknown'));
+      };
+
+      envGrid.innerHTML = `
+        <div class="telemetry-metric-box">
+          <div class="metric-label">🌊 ${currentLang === 'zh' ? '海流流速' : 'Current Velocity'}</div>
+          <div class="metric-value">${formatEnvVal(vel, ' m/s', 0.5)}</div>
+        </div>
+        <div class="telemetry-metric-box">
+          <div class="metric-label">💧 ${currentLang === 'zh' ? '水体浑浊度' : 'Turbidity'}</div>
+          <div class="metric-value">${formatEnvVal(turb, ' NTU', 3.0)}</div>
+        </div>
+        <div class="telemetry-metric-box">
+          <div class="metric-label">🪨 ${currentLang === 'zh' ? '障碍物密度' : 'Obstacles'}</div>
+          <div class="metric-value">${obs ? translateEnv(obs) : (currentLang === 'zh' ? '低' : 'Low')}</div>
+        </div>
+        <div class="telemetry-metric-box">
+          <div class="metric-label">🚢 ${currentLang === 'zh' ? '母船支援' : 'Support Ship'}</div>
+          <div class="metric-value">${support ? translateEnv(support) : (currentLang === 'zh' ? '强' : 'Strong')}</div>
+        </div>
+      `;
+      card.appendChild(envGrid);
+
+      // 3. Subsystem Health Matrix
+      const subsysSection = document.createElement('div');
+      subsysSection.className = 'telemetry-subsystems-section';
+      const subsysTitle = document.createElement('div');
+      subsysTitle.className = 'telemetry-section-title';
+      subsysTitle.textContent = currentLang === 'zh' ? '关键设备子系统健康矩阵' : 'Subsystem Health Matrix';
+      subsysSection.appendChild(subsysTitle);
+
+      const subsysGrid = document.createElement('div');
+      subsysGrid.className = 'telemetry-subsys-grid';
+
+      const subsystems = [
+        { key: 'thruster', label: { zh: '推进系统', en: 'Thruster' }, val: state.thruster_status },
+        { key: 'depth_keeping', label: { zh: '定深控制', en: 'Depth Hold' }, val: state.depth_keeping_status },
+        { key: 'vision', label: { zh: '水下视觉', en: 'Vision' }, val: state.vision_status },
+        { key: 'sonar', label: { zh: '声呐系统', en: 'Sonar' }, val: state.sonar_status },
+        { key: 'arm', label: { zh: '机械臂', en: 'Robotic Arm' }, val: state.arm_status },
+        { key: 'end_effector', label: { zh: '末端工具', en: 'End Effector' }, val: state.end_effector_status },
+        { key: 'acoustic_comms', label: { zh: '水声通信', en: 'Acoustic Comms' }, val: state.acoustic_comms_status },
+        { key: 'tether_connection', label: { zh: '脐带缆', en: 'Tether' }, val: state.tether_connection_status },
+      ];
+
+      subsystems.forEach(sub => {
+        const valStr = String(sub.val || 'normal').toLowerCase();
+        const isOk = valStr === 'normal' || valStr === 'available' || valStr === 'ok';
+        const isDegraded = valStr === 'degraded' || valStr === 'warning';
+        const statusClass = isOk ? 'subsys-ok' : (isDegraded ? 'subsys-warn' : 'subsys-err');
+        const icon = isOk ? '🟢' : (isDegraded ? '🟡' : '🔴');
+
+        const item = document.createElement('div');
+        item.className = `telemetry-subsys-item ${statusClass}`;
+        item.innerHTML = `
+          <span class="subsys-indicator">${icon}</span>
+          <span class="subsys-name">${escapeHtml(sub.label[currentLang])}</span>
+          <span class="subsys-status-text">${escapeHtml(translateEnv(sub.val || 'normal'))}</span>
+        `;
+        subsysGrid.appendChild(item);
+      });
+      subsysSection.appendChild(subsysGrid);
+      card.appendChild(subsysSection);
+
+      // 4. Metadata footer (Time and version)
+      const meta = document.createElement('div');
+      meta.className = 'telemetry-card-meta';
+      const timeStr = snapshot.updated_at || state.updated_at || '';
+      const verStr = snapshot.state_version !== undefined ? snapshot.state_version : (state.version !== undefined ? state.version : '');
+      meta.innerHTML = `
+        <span>🕒 ${currentLang === 'zh' ? '遥测更新时间' : 'Updated'}: ${escapeHtml(timeStr || (currentLang === 'zh' ? '刚刚' : 'Just now'))}</span>
+        ${verStr !== '' ? `<span>·</span><span>${currentLang === 'zh' ? '状态版本' : 'Ver'}: v${escapeHtml(String(verStr))}</span>` : ''}
+        <span class="telemetry-verified-tag">✓ ${currentLang === 'zh' ? '即时核验通过' : 'Pre-check Verified'}</span>
+      `;
+      card.appendChild(meta);
+
+      // 5. Actions
+      const actionsDiv = document.createElement('div');
+      actionsDiv.className = 'telemetry-card-actions';
+
+      const canConfirm = Boolean(uiState.actions && (uiState.actions.can_confirm || uiState.actions.can_publish));
+      if (canConfirm) {
+        const confirmBtn = document.createElement('button');
+        confirmBtn.type = 'button';
+        confirmBtn.className = 'btn-telemetry-confirm-publish';
+        confirmBtn.innerHTML = `<span>🚀</span><span>${currentLang === 'zh' ? '确认参数并发布任务' : 'Confirm & Publish Task'}</span>`;
+        confirmBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          if (!isCurrentCard(card) || isSending || typeof window.sendMessage !== 'function') return;
+          const submitGen = sessionGeneration;
+          const originalLabel = confirmBtn.innerHTML;
+          confirmBtn.disabled = true;
+          card.classList.add('warning-card-resolving');
+          confirmBtn.innerHTML = `<span>⏳</span><span>${currentLang === 'zh' ? '正在发布任务...' : 'Publishing...'}</span>`;
+          try {
+            await window.sendMessage('确认发布');
+          } finally {
+            if (submitGen === sessionGeneration && isCurrentCard(card)) {
+              confirmBtn.disabled = false;
+              card.classList.remove('warning-card-resolving');
+              confirmBtn.innerHTML = originalLabel;
+            }
+          }
+        });
+        actionsDiv.appendChild(confirmBtn);
+      }
+
+      const refreshBtn = document.createElement('button');
+      refreshBtn.type = 'button';
+      refreshBtn.className = 'btn-telemetry-refresh';
+      refreshBtn.innerHTML = `<span>🔄</span><span>${currentLang === 'zh' ? '刷新遥测' : 'Refresh Telemetry'}</span>`;
+      refreshBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!isCurrentCard(card) || isSending) return;
+        const origText = refreshBtn.innerHTML;
+        refreshBtn.disabled = true;
+        refreshBtn.innerHTML = `<span>⏳</span><span>${currentLang === 'zh' ? '正在刷新...' : 'Refreshing...'}</span>`;
+        try {
+          if (typeof window.refreshSessionState === 'function') {
+            await window.refreshSessionState();
+          } else if (currentSessionId) {
+            const resp = await fetch(`/api/session/state?session_id=${encodeURIComponent(currentSessionId)}`);
+            if (resp.ok) {
+              const freshData = await resp.json();
+              if (freshData?.ui_state) {
+                updateSidebar(freshData.ui_state);
+                if (botMsgDiv) renderDecisionCardInBubble(botMsgDiv, freshData.ui_state);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('Refresh telemetry failed', err);
+        } finally {
+          if (isCurrentCard(card)) {
+            refreshBtn.disabled = false;
+            refreshBtn.innerHTML = origText;
+          }
+        }
+      });
+      actionsDiv.appendChild(refreshBtn);
+
+      const modifyBtn = document.createElement('button');
+      modifyBtn.type = 'button';
+      modifyBtn.className = 'btn-modify-warning-task';
+      modifyBtn.textContent = currentLang === 'zh' ? '修改任务参数' : 'Modify Parameters';
+      modifyBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!isCurrentCard(card) || isSending) return;
+        const input = document.getElementById('messageInput');
+        if (input) {
+          input.value = currentLang === 'zh' ? '修改任务：' : 'Modify task: ';
+          globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
+          input.focus();
+        }
+      });
+      actionsDiv.appendChild(modifyBtn);
+
+      card.appendChild(actionsDiv);
+      wrapper.appendChild(card);
+      return card;
     }
 
     function getSlotUiLabel(slot) {

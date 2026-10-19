@@ -204,7 +204,7 @@ RESPONDER_SYSTEM = _UNIFIED_ASSISTANT_IDENTITY + """\
      * equipment_type 尚未确认时不得询问或展示机器人编号；确认后只询问当前型号对应的 equipment_unit_id。
      * 在设备依赖满足的前提下，设备字段与同轮其他平行的任务字段合并提问（按单轮 1~3 个规则组包）。
    - **【严禁】当待收集字段不为空时**，禁止输出"任务信息已完整"、"所有字段已填写"、"开始确认"等表示任务准备就绪的语句；必须继续向用户询问缺失字段。当且仅当待收集字段为空（"无，所有必填字段已收集 ✓"）时，才能进入确认流程。
-   - **【动态状态与环境核验展示原则】**：当且仅当所有任务必填字段完全收集完毕（待收集字段列表为空 `"无，所有必填字段已收集 ✓"`）或者发生约束阻断（`blocked_soft` / `blocked_hard`）时，才允许在回复中输出机器人动态状态核验（如“状态核验”、“设备总体状态”、“最大水深与任务水深对比”）、实时环境（海流/浑浊度/障碍物/母船支援）及各子系统健康度的核验段落。在任务必填字段尚在收集期间（待收集字段不为空），必须专注于汇报本轮已写入字段和向用户询问接下来的缺失字段；**严禁**提前在回复中输出任何“状态核验”、“实时环境”、“子系统运行正常”等核验结论段落。
+   - **【动态状态与环境核验展示原则】**：当所有任务必填字段完全收集完毕（待收集字段列表为空 `"无，所有必填字段已收集 ✓"`）进入确认发布阶段时，**必须**在向用户请求确认的回复中输出【机器人实时遥测与作业环境核验看板】（结构化呈现），透明展示机器人及海洋环境的实时遥测指标（海流速度、浑浊度、障碍物、母船支援及各关键子系统健康度），以便用户核验后确认发布。在任务必填字段尚在收集期间（待收集字段不为空），必须专注于汇报本轮已写入字段和向用户询问接下来的缺失字段；**严禁**提前在回复中输出任何“状态核验”、“实时环境”、“子系统运行正常”等核验结论段落。
 
 5. **约束阻塞优先**：如果上方存在约束相关指令，优先执行，不要跳过进入正常收集流程。
 
@@ -292,7 +292,25 @@ def _format_state_snapshot_summary(state_snapshot: dict | None) -> str:
     vision = state_data.get("vision_status") or "unknown"
     sonar = state_data.get("sonar_status") or "unknown"
 
-    subsys_str = f"推进器 {format_telemetry_value(thruster)} | 定深能力 {format_telemetry_value(depth_keeping)} | 视觉系统 {format_telemetry_value(vision)} | 声呐系统 {format_telemetry_value(sonar)}"
+    subsys_parts = [
+        f"推进器 {format_telemetry_value(thruster)}",
+        f"定深能力 {format_telemetry_value(depth_keeping)}",
+        f"视觉系统 {format_telemetry_value(vision)}",
+        f"声呐系统 {format_telemetry_value(sonar)}",
+    ]
+    arm = state_data.get("arm_status")
+    if arm:
+        subsys_parts.append(f"机械臂 {format_telemetry_value(arm)}")
+    end_eff = state_data.get("end_effector_status")
+    if end_eff:
+        subsys_parts.append(f"末端工具 {format_telemetry_value(end_eff)}")
+    acoustic = state_data.get("acoustic_comms_status")
+    if acoustic:
+        subsys_parts.append(f"水声通信 {format_telemetry_value(acoustic)}")
+    tether = state_data.get("tether_connection_status")
+    if tether:
+        subsys_parts.append(f"脐带缆 {format_telemetry_value(tether)}")
+    subsys_str = " | ".join(subsys_parts)
     updated_at = (
         state_data.get("updated_at")
         or state_snapshot.get("updated_at")
@@ -499,9 +517,24 @@ def build_responder_messages(
         state_snap = constraint_context.get("state_snapshot")
         state_summary = _format_state_snapshot_summary(state_snap)
         if state_summary:
-            constraint_instruction += (
-                "\n\n" + state_summary + "\n注意：在向用户展示任务确认信息、核验结果或说明阻断原因时，必须向用户清晰汇报上述机器人的实时 State 动态状态校核结论。"
-            )
+            if not missing_fields or phase == "confirming":
+                constraint_instruction += (
+                    "\n\n" + state_summary + "\n"
+                    "【重点格式要求 - 任务确认与遥测核验看板】\n"
+                    "当前所有必填任务参数已收齐，系统进入任务发布确认阶段。请按以下结构向用户进行汇报：\n"
+                    "1. 汇报本次已收集完整的任务参数清单（清洗内部调试字段，展示标准业务字段）；\n"
+                    "2. 在回复中呈现结构化的【🤖 机器人实时遥测与作业环境核验看板】（请使用规范 Markdown 结构/表格，严禁省略真实参数）：\n"
+                    "   - 选定机器人与连接状态（设备编号、在线/空闲、总体可用性）；\n"
+                    "   - 水文与作业环境遥测（海流流速 m/s、水体浑浊度、障碍物密度、母船支援）；\n"
+                    "   - 关键子系统健康度（推进器、定深系统、视觉系统、声呐系统、机械臂与工具等状态）；\n"
+                    "   - 遥测快照更新时间戳与状态版本号；\n"
+                    "   - 综合核验结论：设备健康度与水文指标正常，符合水下作业窗口要求。\n"
+                    "3. 严禁省略上述遥测与环境核验看板；展示完毕后，礼貌询问用户是否确认发布该任务。"
+                )
+            else:
+                constraint_instruction += (
+                    "\n\n" + state_summary + "\n注意：在向用户展示任务确认信息、核验结果或说明阻断原因时，必须向用户清晰汇报上述机器人的实时 State 动态状态校核结论与相关环境遥测参数。"
+                )
 
     phase_label = {
         "collecting":   "信息收集中",

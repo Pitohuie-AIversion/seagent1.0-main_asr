@@ -26,6 +26,7 @@
       blockedCheck: '条件未满足', errorCheck: '校验未完成：返回异常', noCheck: '尚无有效校验结果',
       staleCheck: '历史校验结果已过期，需重新核验', accepted: '已接受的风险',
       reviewNote: '仍有字段待核对或补充，请查看工作单。', noValues: '暂无已确认参数。',
+      waterCurrent: '海流速度', waterTurbidity: '水体浑浊度',
     },
     en: {
       valid: 'Confirmed', review: 'Review', missing: 'Missing', candidate: 'Candidate',
@@ -43,6 +44,7 @@
       blockedCheck: 'Conditions not met', errorCheck: 'Validation incomplete: error returned', noCheck: 'No current validation result',
       staleCheck: 'Validation is out of date; revalidation required', accepted: 'Acknowledged risks',
       reviewNote: 'Some parameters still need review or completion. Check the worksheet.', noValues: 'No confirmed parameters yet.',
+      waterCurrent: 'Current Velocity', waterTurbidity: 'Turbidity',
     },
   };
   let lang = 'zh';
@@ -135,11 +137,11 @@
     return parts.join(' · ');
   }
 
-  function renderChanges() {
+  function renderChanges(animate = false) {
     const list = $('taskChangesList');
     if (!list) return;
     list.replaceChildren();
-    document.querySelectorAll('.field-changed').forEach(row => row.classList.remove('field-changed'));
+    document.querySelectorAll('.field-changed').forEach(row => row.classList.remove('field-changed', 'field-change-flash'));
     document.querySelectorAll('.field-change-label').forEach(el => el.remove());
     changes.forEach(change => {
       const slot = change.after || change.before;
@@ -151,6 +153,7 @@
       const row = fieldRow(change.key);
       if (row) {
         row.classList.add('field-changed');
+        if (animate) row.classList.add('field-change-flash');
         const badge = node('span', 'field-change-label', t().changed);
         (row.querySelector('.field-metadata') || row).append(badge);
       }
@@ -217,6 +220,12 @@
     if (present(snapshot.unit_id)) pair(dl, t().unit, plain(snapshot.unit_id));
     if (present(snapshot.updated_at)) pair(dl, t().stateTime, plain(snapshot.updated_at));
     if (present(snapshot.state_version)) pair(dl, t().stateVersion, plain(snapshot.state_version));
+    if (snapshot.state && typeof snapshot.state === 'object') {
+      const vel = snapshot.state.water_current_velocity !== undefined ? snapshot.state.water_current_velocity : snapshot.state.current_velocity;
+      const turb = snapshot.state.water_turbidity !== undefined ? snapshot.state.water_turbidity : snapshot.state.turbidity;
+      if (present(vel)) pair(dl, t().waterCurrent, `${vel} m/s`);
+      if (present(turb)) pair(dl, t().waterTurbidity, `${turb} NTU`);
+    }
     pair(dl, t().next, next);
     body.append(dl);
   }
@@ -253,7 +262,7 @@
         counter.append(cell);
       });
     }
-    renderChanges();
+    renderChanges(reason === 'reply');
     renderConfirmation(current.ui);
     renderReceipt(current.ui);
   }

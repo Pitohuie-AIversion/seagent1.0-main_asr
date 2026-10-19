@@ -3,8 +3,8 @@
   'use strict';
   const copy = {
     zh: {
-      skip: '跳转到输入框', workspace: '对话工作台', monitor: '运行监控 ↗', language: '界面语言',
-      conversation: '智能交互', latest: '回到最新消息 ↓', recording: '正在录音', cancelRecording: '取消录音',
+      skip: '跳转到输入框', workspace: '对话工作台', monitor: '运行监控', language: '界面语言',
+      conversation: '智能交互', latest: '回到最新消息', recording: '正在录音', cancelRecording: '取消录音',
       inputLabel: '作业需求或查询问题', inputHint: '支持自然语言描述与语音输入', keyboardHint: 'Enter 发送 · Shift＋Enter 换行',
       worksheet: '任务工作单', emptyTitle: '尚未创建任务', emptyBody: '描述作业需求后，任务参数、待补充信息和校验结果将在这里呈现。',
       emptyNote: '知识查询不会创建或修改任务', confirmTitle: '任务已就绪，等待你的确认',
@@ -23,8 +23,8 @@
       changesTitle: '本轮参数变更', unavailable: '状态暂不可用', errorTitle: '任务状态暂不可用', errorBody: '当前返回的任务状态不完整，请恢复会话状态后再核对和发布。',
     },
     en: {
-      skip: 'Skip to message input', workspace: 'Conversation', monitor: 'Monitor ↗', language: 'Interface language',
-      conversation: 'Intelligent interaction', latest: 'Latest messages ↓', recording: 'Recording', cancelRecording: 'Cancel recording',
+      skip: 'Skip to message input', workspace: 'Conversation', monitor: 'Monitor', language: 'Interface language',
+      conversation: 'Intelligent interaction', latest: 'Latest messages', recording: 'Recording', cancelRecording: 'Cancel recording',
       inputLabel: 'Task description or question', inputHint: 'Describe your task or use voice input', keyboardHint: 'Enter to send · Shift+Enter for a new line',
       worksheet: 'Task worksheet', emptyTitle: 'No task yet', emptyBody: 'Describe an operation to see its parameters, missing information and validation results here.',
       emptyNote: 'Knowledge queries do not create or modify tasks', confirmTitle: 'Ready for your confirmation',
@@ -87,8 +87,10 @@
     example.type = 'button';
     example.dataset.example = t()[`${kind}Example`];
     example.setAttribute('aria-label', `${t().exampleLabel}: ${example.dataset.example}`);
-    example.append(make('span', '', example.dataset.example), make('span', 'example-arrow', '↗'));
-    example.lastElementChild.setAttribute('aria-hidden', 'true');
+    const arrow = make('span', 'example-arrow');
+    arrow.dataset.icon = 'arrow-up-right';
+    arrow.setAttribute('aria-hidden', 'true');
+    example.append(make('span', '', example.dataset.example), arrow);
     card.append(head, make('h3', '', t()[`${kind}Title`]), make('p', '', t()[`${kind}Body`]),
       make('span', 'capability-note', t()[`${kind}Note`]), example);
     return card;
@@ -101,6 +103,13 @@
     if (!bubble) return;
     message.hidden = hasConversation;
     const layout = make('div', 'welcome-layout');
+    const contours = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    contours.setAttribute('class', 'welcome-contours');
+    contours.setAttribute('viewBox', '0 0 320 180');
+    contours.setAttribute('aria-hidden', 'true');
+    contours.setAttribute('focusable', 'false');
+    // Static bathymetric linework: decorative branding, not live telemetry.
+    contours.innerHTML = '<path d="M320 8C240-10 257 48 206 44S154 11 106 38 62 89 0 78M320 32C249 13 270 71 215 66S166 36 119 59 75 111 0 99M320 57C261 37 281 96 227 90S180 58 134 82 86 135 0 123M320 83C273 64 296 121 239 116S194 85 148 108 101 160 0 148M320 111C287 89 309 148 251 144S210 111 164 135 121 183 50 180"/>';
     const intro = make('div', 'welcome-intro');
     intro.append(make('span', 'welcome-eyebrow', t().welcomeEyebrow), make('h2', '', t().welcomeTitle), make('p', '', t().welcomeBody));
     const cards = make('div', 'capability-grid');
@@ -111,7 +120,7 @@
     if (window.SEAgentMarkdown) guide.innerHTML = window.SEAgentMarkdown.render(content, 'bot');
     else guide.textContent = content;
     details.append(guide);
-    layout.append(intro, cards, make('p', 'example-hint', t().exampleHint), details);
+    layout.append(contours, intro, cards, make('p', 'example-hint', t().exampleHint), details);
     bubble.replaceChildren(layout);
     if (!hasConversation) byId('messages').scrollTop = 0;
     layout.addEventListener('click', event => {

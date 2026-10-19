@@ -1978,3 +1978,285 @@
         padding: 0 0.85rem;
       }
     }
+
+    /* ==================== 机器人实时遥测与环境核验看板卡片 ==================== */
+    .telemetry-decision-card {
+      margin-top: 12px;
+      border-radius: 12px;
+      padding: 14px 18px;
+      background: linear-gradient(135deg, rgba(0, 160, 255, 0.12) 0%, rgba(10, 25, 47, 0.94) 100%);
+      border: 1px solid rgba(0, 210, 255, 0.45);
+      box-shadow: 0 4px 24px rgba(0, 150, 255, 0.16), inset 0 0 16px rgba(0, 210, 255, 0.05);
+      backdrop-filter: blur(12px);
+      width: 100%;
+      max-width: 620px;
+      animation: cardFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: all 0.3s ease;
+    }
+
+    .telemetry-card-header {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 12px;
+      border-bottom: 1px solid rgba(0, 210, 255, 0.2);
+      padding-bottom: 10px;
+    }
+
+    .telemetry-card-badge-group {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .telemetry-card-badge {
+      font-size: 0.72rem;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: rgba(0, 210, 255, 0.2);
+      border: 1px solid #00f0ff;
+      color: #00f0ff;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+    }
+
+    .telemetry-status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.75rem;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+
+    .status-pill-ok {
+      background: rgba(0, 255, 170, 0.15);
+      border: 1px solid rgba(0, 255, 170, 0.4);
+      color: #00ffaa;
+    }
+
+    .status-pill-warn {
+      background: rgba(255, 184, 48, 0.15);
+      border: 1px solid rgba(255, 184, 48, 0.4);
+      color: #ffb830;
+    }
+
+    .status-indicator-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 6px currentColor;
+      animation: pulseDot 2s infinite ease-in-out;
+    }
+
+    @keyframes pulseDot {
+      0%, 100% { opacity: 0.6; transform: scale(0.9); }
+      50% { opacity: 1; transform: scale(1.2); }
+    }
+
+    .telemetry-card-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #e2f1ff;
+      letter-spacing: 0.2px;
+    }
+
+    /* 4 宫格环境指标 */
+    .telemetry-metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .telemetry-metric-box {
+      background: rgba(0, 20, 40, 0.45);
+      border: 1px solid rgba(0, 210, 255, 0.22);
+      border-radius: 8px;
+      padding: 8px 10px;
+      text-align: center;
+      transition: all 0.2s ease;
+    }
+
+    .telemetry-metric-box:hover {
+      border-color: rgba(0, 210, 255, 0.45);
+      background: rgba(0, 30, 60, 0.55);
+    }
+
+    .metric-label {
+      font-size: 0.72rem;
+      color: #8bb2d9;
+      margin-bottom: 4px;
+      white-space: nowrap;
+    }
+
+    .metric-value {
+      font-size: 0.88rem;
+      font-weight: 700;
+      font-family: var(--font-mono, monospace);
+      color: #d8ecff;
+    }
+
+    .metric-val-ok {
+      color: #38ef7d;
+    }
+
+    .metric-val-warn {
+      color: #ffb830;
+      font-weight: 800;
+    }
+
+    /* 子系统健康矩阵 */
+    .telemetry-subsystems-section {
+      background: rgba(0, 15, 30, 0.35);
+      border: 1px solid rgba(0, 210, 255, 0.15);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+    }
+
+    .telemetry-section-title {
+      font-size: 0.76rem;
+      color: #79a6d2;
+      font-weight: 600;
+      margin-bottom: 8px;
+      letter-spacing: 0.4px;
+    }
+
+    .telemetry-subsys-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+    }
+
+    .telemetry-subsys-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.74rem;
+      padding: 4px 6px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .subsys-indicator {
+      font-size: 0.68rem;
+      line-height: 1;
+    }
+
+    .subsys-name {
+      color: #c0d8f0;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .subsys-status-text {
+      font-size: 0.7rem;
+      color: #78a2cc;
+    }
+
+    .subsys-ok .subsys-status-text {
+      color: #52e5a5;
+    }
+
+    .subsys-warn .subsys-status-text {
+      color: #ffb830;
+    }
+
+    .subsys-err .subsys-status-text {
+      color: #ff4d73;
+    }
+
+    /* 元数据栏 */
+    .telemetry-card-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.73rem;
+      color: #6a8fae;
+      margin-top: 6px;
+      padding-top: 6px;
+    }
+
+    .telemetry-verified-tag {
+      color: #00f0ff;
+      font-weight: 600;
+      margin-left: auto;
+    }
+
+    /* 操作栏 */
+    .telemetry-card-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(0, 210, 255, 0.2);
+    }
+
+    .btn-telemetry-confirm-publish {
+      background: linear-gradient(135deg, rgba(0, 210, 255, 0.35) 0%, rgba(0, 150, 255, 0.6) 100%);
+      border: 1px solid #00f0ff;
+      color: #fff;
+      font-weight: 700;
+      padding: 8px 18px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 0 14px rgba(0, 210, 255, 0.35);
+      transition: all 0.25s ease;
+    }
+
+    .btn-telemetry-confirm-publish:hover:not(:disabled) {
+      background: linear-gradient(135deg, rgba(0, 210, 255, 0.5) 0%, rgba(0, 170, 255, 0.8) 100%);
+      box-shadow: 0 0 22px rgba(0, 210, 255, 0.65);
+      transform: translateY(-1px);
+    }
+
+    .btn-telemetry-confirm-publish:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none !important;
+      box-shadow: none !important;
+    }
+
+    .btn-telemetry-refresh {
+      background: rgba(0, 210, 255, 0.08);
+      border: 1px solid rgba(0, 210, 255, 0.3);
+      color: #a8d5ff;
+      font-weight: 600;
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 0.84rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.2s ease;
+    }
+
+    .btn-telemetry-refresh:hover:not(:disabled) {
+      background: rgba(0, 210, 255, 0.18);
+      border-color: rgba(0, 210, 255, 0.6);
+      color: #ffffff;
+    }
+
+    @media (max-width: 640px) {
+      .telemetry-metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .telemetry-subsys-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .telemetry-card-actions {
+        flex-wrap: wrap;
+      }
+    }
