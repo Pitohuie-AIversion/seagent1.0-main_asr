@@ -14,6 +14,63 @@ import src.web.routes_time_history as history_routes
 import src.web.state as state
 
 
+@pytest.mark.parametrize("refresh", [False, True])
+@pytest.mark.parametrize("replace", [False, True])
+def test_state_query_rejects_manager_reset_while_waiting(monkeypatch, refresh, replace):
+    sid = "state-reset-identity-regression"
+    manager = DialogueManager(session_id=sid)
+    monkeypatch.setitem(state._sessions_manager, sid, manager)
+    monkeypatch.setitem(web_backend.app.config, "SEAGENT_API_TOKENS", [])
+    original_lock = manager._session_lock
+    waiting = threading.Event()
+    owner = threading.get_ident()
+    refreshed = []
+    responses = []
+
+    class ObservedLock:
+        def __enter__(self):
+            if threading.get_ident() != owner:
+                waiting.set()
+            return original_lock.__enter__()
+
+        def __exit__(self, *args):
+            return original_lock.__exit__(*args)
+
+    monkeypatch.setattr(manager, "_session_lock", ObservedLock())
+    monkeypatch.setattr(manager, "refresh_external_state_constraints",
+                        lambda: refreshed.append(True))
+
+    def query_state():
+        with web_backend.app.test_client() as client:
+            responses.append(client.get("/api/session/state", query_string={
+                "session_id": sid, "refresh_constraints": int(refresh),
+            }))
+
+    thread = threading.Thread(target=query_state)
+    try:
+        with original_lock:
+            thread.start()
+            assert waiting.wait(5), "state query did not reach the session lock"
+            with web_backend.app.test_client() as client:
+                assert client.post("/api/reset", json={"session_id": sid}).status_code == 200
+            if replace:
+                replacement = DialogueManager(manager.llm, manager.kb, session_id=sid)
+                replacement.task_state["water_depth"] = 456
+                monkeypatch.setitem(state._sessions_manager, sid, replacement)
+    finally:
+        thread.join(5)
+    assert not thread.is_alive()
+    assert responses[0].status_code == 409
+    assert responses[0].get_json()["error"] == "SessionReset"
+    assert responses[0].get_json()["retryable"] is True
+    assert refreshed == [], "detached managers must not refresh constraints"
+    if replace:
+        assert state._sessions_manager[sid] is replacement
+        assert replacement.task_state["water_depth"] == 456
+    else:
+        assert sid not in state._sessions_manager
+
+
 def test_history_restore_rejects_manager_removed_by_reset(monkeypatch):
     sid = "history-reset-identity-regression"
     manager = DialogueManager(session_id=sid)

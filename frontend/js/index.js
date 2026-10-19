@@ -23,6 +23,8 @@
     window.sessionGeneration = sessionGeneration;
     let currentActions = { can_send: true };
     let currentReadOnly = false;
+    let currentDecisionCard = null;
+    let currentDecisionState = null;
     let timeUpdateInterval = null;
     let isTimePickerEditing = false;
     let lastReloadEventId = 0;
@@ -45,6 +47,7 @@
     let recordedChunks = [];
     let recordingSampleRate = 16000;
     let isRecording = false;
+    let isStartingVoice = false;
 
     const RESET_ACTIONS = Object.freeze({
       can_send: true,
@@ -125,14 +128,14 @@
         timeSuccess: "模拟时间已更新",
         timeError: "设置模拟时间失败",
         timeNetError: "设置模拟时间网络错误，请检查服务是否启动",
-        voiceRecording: "**正在录音...**",
-        voiceStopping: "**正在停止录音...**",
-        voiceTranscribing: "**正在转写...**",
-        voiceNoAudio: "**没有录到音频，请重试。**",
-        voiceEmptyText: "**未识别到有效文本，请重新录音或手动输入。**",
-        voiceError: "**语音转写失败：**",
-        voiceNotSupport: "**当前浏览器不支持麦克风录音**",
-        voiceNotAvailable: "**录音不可用：**",
+        voiceRecording: "正在录音...",
+        voiceStopping: "正在停止录音...",
+        voiceTranscribing: "正在转写...",
+        voiceNoAudio: "没有录到音频，请重试。",
+        voiceEmptyText: "未识别到有效文本，请重新录音或手动输入。",
+        voiceError: "语音转写失败：",
+        voiceNotSupport: "当前浏览器不支持麦克风录音",
+        voiceNotAvailable: "录音不可用：",
         rawTranscript: "原始转写：",
         correctedTranscript: "纠错后：",
         replacementList: "替换列表：",
@@ -225,14 +228,14 @@ Please describe your operational requirements directly, or ask the question you 
         timeSuccess: "Simulated time updated",
         timeError: "Failed to set simulated time",
         timeNetError: "Failed to set simulated time, please check if the server is running",
-        voiceRecording: "**Recording...**",
-        voiceStopping: "**Stopping recording...**",
-        voiceTranscribing: "**Transcribing...**",
-        voiceNoAudio: "**No audio captured, please try again.**",
-        voiceEmptyText: "**No valid text transcribed. Re-record or type manually.**",
-        voiceError: "**Speech transcription failed: **",
-        voiceNotSupport: "**Microphone recording not supported by current browser**",
-        voiceNotAvailable: "**Recording unavailable: **",
+        voiceRecording: "Recording...",
+        voiceStopping: "Stopping recording...",
+        voiceTranscribing: "Transcribing...",
+        voiceNoAudio: "No audio captured, please try again.",
+        voiceEmptyText: "No valid text transcribed. Re-record or type manually.",
+        voiceError: "Speech transcription failed: ",
+        voiceNotSupport: "Microphone recording not supported by current browser",
+        voiceNotAvailable: "Recording unavailable: ",
         rawTranscript: "Raw Transcript: ",
         correctedTranscript: "Corrected: ",
         replacementList: "Replacements: ",
@@ -389,6 +392,7 @@ Please describe your operational requirements directly, or ask the question you 
     });
 
     function updateLanguage() {
+      globalThis.window?.SEAgentWorkspace?.setLanguage?.(currentLang);
       document.getElementById('ui-title').innerText = I18N[currentLang].title;
       document.getElementById('ui-subtitle').innerText = I18N[currentLang].subtitle;
       document.getElementById('title-simtime').innerText = I18N[currentLang].simtime;
@@ -413,11 +417,12 @@ Please describe your operational requirements directly, or ask the question you 
         document.getElementById('voiceBtn').innerText = I18N[currentLang].voiceStop;
       }
       document.getElementById('sendBtn').innerText = I18N[currentLang].sendBtn;
+      updateVoiceControls();
 
 
 
       if (lastResponseData) {
-        updateSidebar(lastResponseData);
+        updateSidebar(lastResponseData, { origin: 'render' });
       } else {
         document.getElementById('collectedFields').innerHTML = I18N[currentLang].none;
       }
@@ -431,6 +436,7 @@ Please describe your operational requirements directly, or ask the question you 
         if (bubble) {
           bubble.innerHTML = renderMessageContent(welcomeContent, 'bot');
         }
+        globalThis.window?.SEAgentWorkspace?.renderWelcome?.(welcomeContent, currentLang);
       }
 
       // 2. 普通对话消息翻译循环（跳过 welcome 类型的消息）
@@ -636,6 +642,8 @@ Please describe your operational requirements directly, or ask the question you 
   </svg>`;
 
     function addMessage(role, content, options = {}) {
+      const shouldFollow = !options.restored && (role === 'user' || (globalThis.window?.SEAgentWorkspace?.isNearBottom?.() ?? true));
+      if (role === 'user') globalThis.window?.SEAgentWorkspace?.onUserMessage?.();
       const div = document.createElement('div');
       const displayRole = role === 'assistant' ? 'bot' : role;
       div.className = `message ${displayRole}`;
@@ -652,12 +660,13 @@ Please describe your operational requirements directly, or ask the question you 
 
       let translateBtn = '';
       if (content.trim() && options.kind !== 'welcome' && options.kind !== 'system') {
-        translateBtn = `<div class="msg-translate-bar" data-action="translate-message">${I18N[currentLang].transTranslate}</div>`;
+        translateBtn = `<button type="button" class="msg-translate-bar" data-action="translate-message">${I18N[currentLang].transTranslate}</button>`;
       }
 
       div.innerHTML = avatarHtml + `<div class="bubble-wrapper" style="display:flex; flex-direction:column; align-items: ${role === 'user' ? 'flex-end' : 'flex-start'};"><div class="bubble">${renderedContent}</div>${translateBtn}</div>`;
       messageContainer.appendChild(div);
-      messageContainer.scrollTop = messageContainer.scrollHeight;
+      if (shouldFollow) messageContainer.scrollTop = messageContainer.scrollHeight;
+      if (!options.restored) globalThis.window?.SEAgentWorkspace?.followLatest?.(shouldFollow);
 
       if (options.kind !== 'welcome' && currentLang === 'en' && hasChinese(content)) {
         if (options.kind !== 'system') {
@@ -670,6 +679,7 @@ Please describe your operational requirements directly, or ask the question you 
 
     function addWelcomeMessage() {
       addMessage('bot', I18N[currentLang].welcomeMsg, { kind: 'welcome' });
+      globalThis.window?.SEAgentWorkspace?.renderWelcome?.(I18N[currentLang].welcomeMsg, currentLang);
     }
 
     function isReloadNotificationText(text) {
@@ -694,7 +704,7 @@ Please describe your operational requirements directly, or ask the question you 
     }
 
     async function refreshSessionStateAfterReload() {
-      if (!sessionId || isSending) return;
+      if (!sessionId || isSending) return false;
       const refreshSid = sessionId;
       const refreshGen = sessionGeneration;
       const requestSeq = currentRequestSeq;
@@ -705,11 +715,36 @@ Please describe your operational requirements directly, or ask the question you 
         if (refreshSid !== sessionId || refreshGen !== sessionGeneration ||
             requestSeq !== currentRequestSeq || refreshSeq !== reloadStateRequestSeq) return;
         if (res.ok && data.ok && data.exists && data.ui_state) {
-          updateSidebar(data);
+          updateSidebar(data, { origin: 'refresh' });
+          return true;
         }
       } catch (err) {
         console.warn('Reload session state refresh failed', err);
       }
+      return false;
+    }
+
+    function appendRecoveryAction(message) {
+      const wrapper = message?.querySelector('.bubble-wrapper');
+      if (!wrapper || typeof wrapper.appendChild !== 'function' || !sessionId) return;
+      const recoverySession = sessionId;
+      const recoveryGeneration = sessionGeneration;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'session-recovery-btn';
+      button.textContent = currentLang === 'zh' ? '核对当前状态' : 'Check current state';
+      button.addEventListener('click', async () => {
+        if (isSending || button.disabled || recoverySession !== sessionId || recoveryGeneration !== sessionGeneration) return;
+        button.disabled = true;
+        button.textContent = currentLang === 'zh' ? '正在核对…' : 'Checking…';
+        const refreshed = await refreshSessionStateAfterReload();
+        if (recoverySession !== sessionId || recoveryGeneration !== sessionGeneration) return;
+        button.disabled = false;
+        button.textContent = refreshed
+          ? (currentLang === 'zh' ? '状态已更新 · 再次核对' : 'State updated · Check again')
+          : (currentLang === 'zh' ? '核对未完成 · 点击重试' : 'Check incomplete · Try again');
+      });
+      wrapper.appendChild(button);
     }
 
     async function pollReloadEvents() {
@@ -812,12 +847,14 @@ Please describe your operational requirements directly, or ask the question you 
       const canSend = !!currentActions.can_send && !isSending;
       messageInput.disabled = !canSend;
       sendBtn.disabled = !canSend;
-      voiceBtn.disabled = !canSend;
+      voiceBtn.disabled = !canSend || isStartingVoice || !!asrAbortController;
       isDone = !currentActions.can_send;
       for (const id of ['dispatchRetryBtn', 'dispatchRefreshBtn']) {
         const button = document.getElementById(id);
         if (button) button.disabled = isSending;
       }
+      refreshConstraintActions();
+      globalThis.window?.SEAgentWorkspace?.setInteractionState?.({ isSending, canSend, actions: currentActions, readOnly: currentReadOnly });
     }
 
     let activeTypewriter = null;
@@ -889,7 +926,7 @@ Please describe your operational requirements directly, or ask the question you 
         SENT: zh ? '已发送，等待机器人遥测确认。' : 'Sent; awaiting robot telemetry confirmation.',
         FAILED: zh ? '任务已保存，发送失败。' : 'Task saved; dispatch failed.',
         UNKNOWN: zh ? '任务已保存，发送结果待核对。' : 'Task saved; dispatch outcome is unknown.',
-        SCHEDULED: zh ? '任务已保存，等待计划时间与执行条件。' : 'Task saved; waiting for its start time and execution checks.',
+        SCHEDULED: zh ? '任务已保存，等待计划时间；到期后需人工检查执行条件并下发。' : 'Task saved; when due, manually check execution conditions and dispatch.',
         BLOCKED: zh ? '任务已保存，执行条件未满足。' : 'Task saved; execution conditions are not met.',
         NOT_SENT: zh ? '任务已保存，尚未发送。' : 'Task saved; not sent.',
       };
@@ -924,7 +961,7 @@ Please describe your operational requirements directly, or ask the question you 
         const result = await response.json();
         if (sid !== sessionId || generation !== sessionGeneration || seq !== currentRequestSeq) return;
         if (result.ros2_dispatch) {
-          updateSidebar({...lastResponseData, ros2_dispatch: result.ros2_dispatch});
+          updateSidebar({...lastResponseData, ros2_dispatch: result.ros2_dispatch}, { origin: 'refresh' });
         } else if (!response.ok) {
           addMessage('bot', result.msg || (currentLang === 'zh' ? '发送检查失败，请刷新发送状态。' : 'Dispatch check failed. Refresh its status.'));
         }
@@ -934,7 +971,7 @@ Please describe your operational requirements directly, or ask the question you 
         updateSidebar({...lastResponseData, ros2_dispatch: {
           state: 'UNKNOWN', retry_allowed: false,
           message: currentLang === 'zh' ? '响应中断，请刷新发送状态后核对。' : 'Response interrupted. Refresh the dispatch status to check.',
-        }});
+        }}, { origin: 'refresh' });
       } finally {
         if (generation === sessionGeneration && seq === currentRequestSeq) {
           isSending = false;
@@ -944,16 +981,174 @@ Please describe your operational requirements directly, or ask the question you 
       }
     }
 
+    function appendFieldMetadata(row, slot) {
+      const zh = currentLang === 'zh';
+      const statuses = zh
+        ? { valid: '已确定', candidate: '待核对', missing: '待补充', invalid: '需修正', conflict: '值有冲突', unresolved: '需澄清' }
+        : { valid: 'Confirmed', candidate: 'Review needed', missing: 'Missing', invalid: 'Correction needed', conflict: 'Conflicting values', unresolved: 'Clarification needed' };
+      const sources = zh
+        ? { user: '用户提供', user_input: '用户提供', user_confirmation: '用户确认', user_modification: '用户修改',
+            auto: '系统补全', fixed: '固定配置', oilfield_default: '油田默认资料', auto_preview: '系统预览值', auto_reserved: '系统预留值',
+            alias_mapping: '别名匹配', llm_semantic_match: '语义匹配', entity_linker: '实体匹配', assistant_recommendation: '助手建议',
+            assistant_option_selection: '用户选项选择', system_candidate_resolution: '系统候选解析', snapshot_migration: '历史记录迁移' }
+        : { user: 'User provided', user_input: 'User provided', user_confirmation: 'User confirmed', user_modification: 'User edited',
+            auto: 'System filled', fixed: 'Fixed configuration', oilfield_default: 'Oilfield defaults', auto_preview: 'System preview', auto_reserved: 'System reserved',
+            alias_mapping: 'Alias matching', llm_semantic_match: 'Semantic matching', entity_linker: 'Entity matching', assistant_recommendation: 'Assistant suggestion',
+            assistant_option_selection: 'User option selection', system_candidate_resolution: 'System candidate resolution', snapshot_migration: 'History migration' };
+      row.dataset.slotKey = slot.key;
+      row.dataset.slotStatus = slot.status || 'unknown';
+      const metadata = document.createElement('div');
+      metadata.className = 'field-metadata';
+      const status = document.createElement('span');
+      status.className = 'field-status-label';
+      status.textContent = statuses[slot.status] || (zh ? '状态未说明' : 'Status unspecified');
+      metadata.appendChild(status);
+      const source = document.createElement('span');
+      source.className = 'field-source-label';
+      const rawSource = typeof slot.source === 'string' ? slot.source : '';
+      source.dataset.source = rawSource;
+      // A default source on an empty slot does not mean a value was supplied.
+      const sourceLabel = slot.status === 'missing' ? (zh ? '待补充' : 'Awaiting input')
+        : sources[rawSource] || (zh ? '未说明' : 'Unspecified');
+      source.textContent = `${zh ? '来源：' : 'Source: '}${sourceLabel}`;
+      if (rawSource) source.title = rawSource;
+      metadata.appendChild(source);
+      row.appendChild(metadata);
+    }
+
+    function constraintActionAllowed(uiState, generation, action) {
+      const permission = action === 'ignore' ? 'can_ignore_soft_warning' : 'can_modify';
+      return generation === sessionGeneration && lastResponseData?.ui_state === uiState
+        && !isSending && !currentReadOnly && !uiState.read_only
+        && currentActions.can_send === true && uiState.actions?.can_send === true
+        && currentActions[permission] === true && uiState.actions?.[permission] === true;
+    }
+
+    function refreshConstraintActions() {
+      document.querySelectorAll('[data-constraint-action]').forEach(button => {
+        button.disabled = !button.constraintCanAct?.();
+      });
+    }
+
+    function renderConstraintCards(container, uiState, slotLabel) {
+      if (!container) return;
+      container.replaceChildren();
+      const zh = currentLang === 'zh';
+      const cs = uiState.constraint_state || {};
+      const generation = sessionGeneration;
+      const slots = Array.isArray(uiState.slots) ? uiState.slots : [];
+      const labelFor = key => {
+        const slot = slots.find(item => item.key === key);
+        return slot ? slotLabel(slot) : getFieldLabel(key);
+      };
+      const known = value => value !== undefined && value !== null && value !== '';
+      const valueText = value => typeof value === 'object' ? JSON.stringify(value) : String(value);
+      const sourceLabels = zh
+        ? { validation_result: '约束校验结果', fallback: '兼容校验结果', stale_validation_result: '已失效校验结果' }
+        : { validation_result: 'Validation result', fallback: 'Compatibility validation result', stale_validation_result: 'Stale validation result' };
+      const ignored = Array.isArray(cs.ignored_soft_warnings) ? cs.ignored_soft_warnings : [];
+      const ignoredIds = new Set(ignored.map(item => item.constraint_id).filter(Boolean));
+      const groups = [
+        { kind: 'hard', label: zh ? '必须处理' : 'Correction required', items: cs.hard_violations || [] },
+        { kind: 'soft', label: zh ? '待确认风险' : 'Risk to review', items: (cs.soft_warnings || []).filter(item => !ignoredIds.has(item.constraint_id)) },
+        { kind: 'ignored-soft', label: zh ? '已确认忽略' : 'Acknowledged warning', items: ignored },
+      ];
+      const addAction = (parent, label, action, handler) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = action === 'ignore' ? 'btn-ignore-warning-action constraint-action' : 'constraint-edit-action constraint-action';
+        button.dataset.constraintAction = action;
+        button.textContent = label;
+        button.constraintCanAct = () => constraintActionAllowed(uiState, generation, action);
+        button.disabled = !button.constraintCanAct();
+        button.addEventListener('click', async () => {
+          if (!button.constraintCanAct()) return;
+          await handler();
+        });
+        parent.appendChild(button);
+      };
+      for (const group of groups) {
+        if (!Array.isArray(group.items) || !group.items.length) continue;
+        const section = document.createElement('section');
+        section.className = `constraint-block ${group.kind}`;
+        const heading = document.createElement('h4');
+        heading.className = 'constraint-group-title';
+        heading.textContent = group.label;
+        section.appendChild(heading);
+        for (const violation of group.items) {
+          const card = document.createElement('article');
+          card.className = 'constraint-detail-card';
+          card.dataset.constraintId = violation.constraint_id || violation.code || '';
+          if (violation.constraint_name) {
+            const title = document.createElement('div');
+            title.className = 'constraint-name';
+            title.textContent = violation.constraint_name;
+            card.appendChild(title);
+          }
+          const message = document.createElement('p');
+          message.className = 'constraint-message';
+          message.textContent = violation.message || (zh ? '未提供问题说明' : 'No description provided');
+          card.appendChild(message);
+          const evidence = document.createElement('dl');
+          evidence.className = 'constraint-evidence';
+          const addEvidence = (label, value) => {
+            if (!known(value)) return;
+            const term = document.createElement('dt');
+            term.textContent = label;
+            const detail = document.createElement('dd');
+            detail.textContent = valueText(value);
+            evidence.appendChild(term);
+            evidence.appendChild(detail);
+          };
+          addEvidence(zh ? '当前值' : 'Observed value', violation.observed_value);
+          addEvidence(zh ? '限值 / 条件' : 'Limit / condition', violation.threshold);
+          if (cs.source && cs.source !== 'none') addEvidence(zh ? '结果来源' : 'Result source', sourceLabels[cs.source] || cs.source);
+          addEvidence(zh ? '校验类型' : 'Check type', violation.check_type);
+          addEvidence(zh ? '校验时间' : 'Validated at', cs.validated_at);
+          const related = [...new Set([
+            ...(Array.isArray(violation.related_fields) ? violation.related_fields : []), violation.field,
+          ].filter(key => typeof key === 'string' && key))];
+          addEvidence(zh ? '关联字段' : 'Related fields', related.length ? related.map(labelFor).join(zh ? '、' : ', ') : null);
+          addEvidence(zh ? '规则编号' : 'Rule ID', violation.code || violation.constraint_id);
+          if (evidence.childElementCount) card.appendChild(evidence);
+          if (group.kind !== 'ignored-soft' && related.length) {
+            addAction(card, zh ? '修改相关参数' : 'Edit related parameters', 'modify', () => {
+              const prompt = `${zh ? '修改' : 'Modify '}${related.map(labelFor).join(zh ? '、' : ', ')}${zh ? '：' : ': '}`;
+              messageInput.value = messageInput.value.trim() ? `${messageInput.value}\n${prompt}` : prompt;
+              globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
+              messageInput.focus();
+            });
+          }
+          section.appendChild(card);
+        }
+        if (group.kind === 'soft' && uiState.actions?.can_ignore_soft_warning) {
+          addAction(section, zh ? '确认风险并继续核验' : 'Acknowledge risk and continue checks', 'ignore', async () => {
+            if (typeof window.sendMessage === 'function') await window.sendMessage('忽略警告');
+          });
+        }
+        container.appendChild(section);
+      }
+      if (cs.error) {
+        const error = document.createElement('p');
+        error.className = 'constraint-check-error';
+        error.textContent = `${zh ? '校验未完成：' : 'Validation incomplete: '}${cs.error}`;
+        container.appendChild(error);
+      }
+      if (!container.childElementCount) container.textContent = zh ? '暂无校验问题记录' : 'No validation issues recorded';
+    }
+
     /**
      * updateSidebar - 渲染任务字段面板。
      * Issue #31: 优先使用 data.ui_state（新路径），降级到旧 collected/missing 字段（compat 路径）。
      */
-    function updateSidebar(data) {
+    function updateSidebar(data, options = {}) {
       window.updateSidebar = updateSidebar;
       lastResponseData = data;
       renderDispatchStatus(data);
 
       const uiState = data.ui_state;
+      if (currentDecisionState !== uiState) retireDecisionCards();
+      currentDecisionState = uiState;
 
       // ── 任务类型和 ID ──────────────────────────────────────────────
       let taskTypeDisplay = '未识别';
@@ -1018,10 +1213,10 @@ Please describe your operational requirements directly, or ask the question you 
       const constraintDiv = document.getElementById('constraintWarnings');
       const collectedDiv = document.getElementById('collectedFields');
       const missingDiv = document.getElementById('missingFields');
+      const sidebarGeneration = sessionGeneration;
 
       function formatUiStateValue(slot, customVal = undefined) {
         const val = customVal !== undefined ? customVal : slot.value;
-        const key = slot ? (slot.key || '') : '';
 
         const coordFmt = parseAndFormatCoord(val);
         if (coordFmt) return coordFmt;
@@ -1039,19 +1234,11 @@ Please describe your operational requirements directly, or ask the question you 
         if (typeof val === 'boolean') {
           return val ? (currentLang === 'zh' ? '是' : 'True') : (currentLang === 'zh' ? '否' : 'False');
         }
-        if (typeof val === 'number') {
-          if (key === 'water_depth' || key.includes('depth')) {
-            return `${val} ${currentLang === 'zh' ? '米' : 'm'}`;
-          }
-          return String(val);
-        }
+        if (typeof val === 'number') return String(val);
         if (typeof val === 'string') {
           const str = val.trim();
           const strCoord = parseAndFormatCoord(str);
           if (strCoord) return strCoord;
-          if ((key === 'water_depth' || key.includes('depth')) && !isNaN(parseFloat(str)) && !str.includes('米') && !str.includes('m')) {
-            return `${parseFloat(str)} ${currentLang === 'zh' ? '米' : 'm'}`;
-          }
           return str;
         }
         if (Array.isArray(val)) {
@@ -1078,7 +1265,6 @@ Please describe your operational requirements directly, or ask the question you 
 
       function renderStandardSlot(slot) {
         const statusClass = slot.status === 'valid' ? 'valid' : (slot.status === 'invalid' ? 'invalid' : 'candidate');
-        const statusIcon = slot.status === 'valid' ? '✅' : (slot.status === 'invalid' ? '❌' : '⏳');
         const label = getSlotLabel(slot);
 
         const row = document.createElement('div');
@@ -1087,15 +1273,19 @@ Please describe your operational requirements directly, or ask the question you 
 
         const labelSpan = document.createElement('span');
         labelSpan.className = 'field-label';
-        labelSpan.textContent = `${statusIcon} ${label}`;
+        labelSpan.textContent = label;
         if (slot.key === 'payload' && uiState && !uiState.read_only && uiState.phase !== 'done') {
           const editBtn = document.createElement('button');
           editBtn.type = 'button';
           editBtn.className = 'btn-modify-payload-action';
+          editBtn.dataset.constraintAction = 'modify';
+          editBtn.constraintCanAct = () => constraintActionAllowed(uiState, sidebarGeneration, 'modify');
+          editBtn.disabled = !editBtn.constraintCanAct();
           editBtn.style.cssText = 'margin-left: 8px; background: rgba(0, 210, 255, 0.15); border: 1px solid rgba(0, 210, 255, 0.5); color: #00d2ff; border-radius: 4px; padding: 2px 6px; font-size: 0.75em; cursor: pointer; transition: all 0.2s ease;';
           editBtn.textContent = currentLang === 'zh' ? '修改' : 'Modify';
           editBtn.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (!constraintActionAllowed(uiState, sidebarGeneration, 'modify')) return;
             if (typeof window.sendMessage === 'function') {
               window.sendMessage(currentLang === 'zh' ? '修改载荷' : 'Modify payload');
             }
@@ -1120,9 +1310,10 @@ Please describe your operational requirements directly, or ask the question you 
           }
           valueSpan.appendChild(ul);
         } else {
-          valueSpan.textContent = formatUiStateValue(slot, displayVal);
+          valueSpan.textContent = slot.status === 'valid' ? formatUiStateValue(slot) : formatUiStateValue(slot, displayVal);
         }
         row.appendChild(valueSpan);
+        appendFieldMetadata(row, slot);
 
         if (slot.validation_error) {
           const errEl = document.createElement('div');
@@ -1138,10 +1329,11 @@ Please describe your operational requirements directly, or ask the question you 
         const label = getSlotLabel(slot);
         const row = document.createElement('div');
         row.className = 'field-row conflict';
+        row.dataset.slotKey = slot.key;
 
         const labelSpan = document.createElement('span');
         labelSpan.className = 'field-label';
-        labelSpan.textContent = `⚔️ ${label}`;
+        labelSpan.textContent = label;
         row.appendChild(labelSpan);
 
         const detailDiv = document.createElement('div');
@@ -1167,6 +1359,7 @@ Please describe your operational requirements directly, or ask the question you 
         }
 
         row.appendChild(detailDiv);
+        appendFieldMetadata(row, slot);
         return row;
       }
 
@@ -1174,10 +1367,11 @@ Please describe your operational requirements directly, or ask the question you 
         const label = getSlotLabel(slot);
         const row = document.createElement('div');
         row.className = 'field-row unresolved';
+        row.dataset.slotKey = slot.key;
 
         const labelSpan = document.createElement('span');
         labelSpan.className = 'field-label';
-        labelSpan.textContent = `❓ ${label}`;
+        labelSpan.textContent = label;
         row.appendChild(labelSpan);
 
         const detailDiv = document.createElement('div');
@@ -1208,6 +1402,7 @@ Please describe your operational requirements directly, or ask the question you 
         detailDiv.appendChild(hintP);
 
         row.appendChild(detailDiv);
+        appendFieldMetadata(row, slot);
         return row;
       }
 
@@ -1245,75 +1440,19 @@ Please describe your operational requirements directly, or ask the question you 
         // 阶段 badge + 约束状态（阶段只展示流程，警告只来自 constraint_state）
         const phase = uiState.workflow_phase || uiState.phase;
         const taskPhaseLabels = currentLang === 'zh'
-          ? { collecting: '任务收集', validating: '约束校验', confirming: '待确认', done: '已完成', rejected: '已拒绝' }
-          : { collecting: 'Task collection', validating: 'Constraint check', confirming: 'Confirming', done: 'Done', rejected: 'Rejected' };
+          ? { collecting: '任务收集', validating: '约束校验', confirming: '待确认', done: '已归档', rejected: '已拒绝' }
+          : { collecting: 'Task collection', validating: 'Constraint check', confirming: 'Confirming', done: 'Archived', rejected: 'Rejected' };
         let phaseLabel = taskPhaseLabels[phase] || phase || (currentLang === 'zh' ? '暂无' : 'None');
         if (uiState.dialogue_mode === 'knowledge_qa') phaseLabel = currentLang === 'zh' ? '知识问答' : 'Knowledge Q&A';
         if (uiState.dialogue_mode === 'emergency_intervention' || uiState.mode === 'emergency') phaseLabel = currentLang === 'zh' ? '紧急模式' : 'Emergency';
         const phasePrefix = currentLang === 'zh' ? '阶段：' : 'Phase: ';
         const statusHtml = `<div class="phase-badge" style="margin-bottom:6px; font-size:0.85em;"><span style="opacity:0.75;">${phasePrefix}</span><span style="color:var(--accent-cyan); font-weight:600;">${phaseLabel}</span></div>`;
-        let constraintHtml = '';
-
-        const cs = uiState.constraint_state || {};
-        if (cs.hard_violations && cs.hard_violations.length > 0) {
-          constraintHtml += `<div class="constraint-block hard" style="background: rgba(255,77,77,0.1); border: 1px solid rgba(255,77,77,0.4); border-radius:6px; padding:8px; margin-bottom:6px;"><div style="color:#ff4d4d; font-weight:600; margin-bottom:4px;">⛔ 硬约束</div>`;
-          for (const v of cs.hard_violations) {
-            const nameEl = document.createElement('div');
-            nameEl.style.cssText = 'font-size:0.85em; margin-bottom:2px;';
-            nameEl.textContent = `[${v.code || ''}] ${v.message || ''}`;
-            constraintHtml += nameEl.outerHTML;
-          }
-          constraintHtml += '</div>';
-        }
-
-        // 前端防御性过滤：排除已在 ignored_soft_warnings 中的 constraint_id，
-        // 避免后端偶尔漏过滤时前端依然持续展示已忽略的软警告。
-        const ignoredCids = new Set(
-          (cs.ignored_soft_warnings || []).map(a => a.constraint_id).filter(Boolean)
-        );
-        const visibleSoftWarnings = (cs.soft_warnings || []).filter(
-          v => !ignoredCids.has(v.constraint_id)
-        );
-        if (visibleSoftWarnings.length > 0) {
-          constraintHtml += `<div class="constraint-block soft" style="background: rgba(255,190,0,0.1); border: 1px solid rgba(255,190,0,0.4); border-radius:6px; padding:8px; margin-bottom:6px;"><div style="color:#ffbe00; font-weight:600; margin-bottom:4px;">⚠️ 软警告</div>`;
-          for (const v of visibleSoftWarnings) {
-            const nameEl = document.createElement('div');
-            nameEl.style.cssText = 'font-size:0.85em; margin-bottom:2px;';
-            nameEl.textContent = `[${v.code || ''}] ${v.message || ''}`;
-            constraintHtml += nameEl.outerHTML;
-          }
-          if (uiState.actions && uiState.actions.can_ignore_soft_warning) {
-            const ignoreBtnText = currentLang === 'zh' ? '⚠️ 忽略软警告' : '⚠️ Ignore Warning';
-            constraintHtml += `<div style="margin-top:8px; display:flex; align-items:center; justify-content:space-between; gap:6px;">
-              <span style="font-size:0.8em; opacity:0.7;">输入"忽略警告"或点击：</span>
-              <button type="button" class="btn-ignore-warning-action" onclick="window.sendMessage('忽略警告')" style="background: rgba(255,190,0,0.18); border: 1px solid #ffbe00; color: #ffbe00; border-radius: 4px; padding: 4px 10px; font-size: 0.8em; font-weight: 500; cursor: pointer; transition: all 0.2s ease;">${ignoreBtnText}</button>
-            </div>`;
-          }
-          constraintHtml += '</div>';
-        }
-        if (ignoredCids.size > 0) {
-          constraintHtml += `<div class="constraint-block ignored-soft" style="background: rgba(0,200,100,0.05); border: 1px solid rgba(0,200,100,0.2); border-radius:6px; padding:6px 8px; margin-bottom:6px; opacity:0.75;">`;
-          constraintHtml += `<div style="color:#00cc66; font-size:0.8em; font-weight:600; margin-bottom:2px;">✅ 已忽略软警告</div>`;
-          for (const a of (cs.ignored_soft_warnings || [])) {
-            const cid = a.constraint_id || '';
-            const msgText = `[${a.code || cid}] ${a.message || ''}`.trim();
-            const el = document.createElement('div');
-            el.style.cssText = 'font-size:0.8em; margin-bottom:1px; color:#a0d8b6;';
-            el.textContent = msgText;
-            constraintHtml += el.outerHTML;
-          }
-          constraintHtml += '</div>';
-        }
-        if (statusDiv) {
-          statusDiv.innerHTML = statusHtml;
-        }
-        if (constraintDiv) {
-          constraintDiv.innerHTML = constraintHtml || (currentLang === 'zh' ? '暂无' : 'None');
-        }
+        if (statusDiv) statusDiv.innerHTML = statusHtml;
+        renderConstraintCards(constraintDiv, uiState, getSlotLabel);
 
         // 缺失字段（仅展示缺失字段，不再混杂阶段与警告）
         let missingHtml = '';
-        if (missingSlots.length === 0 && validSlots.length > 0 && candidateSlots.length === 0 && invalidSlots.length === 0) {
+        if (missingSlots.length === 0 && validSlots.length > 0 && candidateSlots.length === 0 && invalidSlots.length === 0 && conflictSlots.length === 0 && unresolvedSlots.length === 0) {
           missingHtml = I18N[currentLang].allCollected;
         } else if (missingSlots.length === 0) {
           missingHtml = '-';
@@ -1328,8 +1467,10 @@ Please describe your operational requirements directly, or ask the question you 
             row.dataset.slotKey = slot.key;
             row.innerHTML = svgWarning;
             const labelEl = document.createElement('span');
+            labelEl.className = 'field-label';
             labelEl.textContent = label;
             row.appendChild(labelEl);
+            appendFieldMetadata(row, slot);
             missingHtml += row.outerHTML;
           }
         }
@@ -1337,6 +1478,9 @@ Please describe your operational requirements directly, or ask the question you 
 
       } else {
         // ── compat 路径：旧 collected/missing 字段 ────────────────────────
+        if (constraintDiv) constraintDiv.textContent = currentLang === 'zh'
+          ? '此会话未提供结构化校验结果'
+          : 'This session did not provide structured validation results';
         if (statusDiv) {
           if (data.emergency) {
             statusDiv.innerHTML = `<div class="phase-badge" style="margin-bottom:6px; font-size:0.85em;"><span style="color:#ff4d4d; font-weight:600;">${I18N[currentLang].emergencyBadge}</span></div>`;
@@ -1353,8 +1497,8 @@ Please describe your operational requirements directly, or ask the question you 
             const label = getFieldLabel(k);
             const translatedVal = translateValue(k, v);
             html += `
-          <div class="field-row">
-            <span class="field-label">${label}</span>
+          <div class="field-row" data-slot-key="${escapeHtml(k)}">
+            <span class="field-label">${escapeHtml(label)}</span>
             <span class="field-value">${escapeHtml(translatedVal)}</span>
           </div>
         `;
@@ -1370,7 +1514,7 @@ Please describe your operational requirements directly, or ask the question you 
           let html = '';
           for (const m of missing) {
             const label = m === 'payload' ? (currentLang === 'zh' ? '载荷' : 'Payload') : getFieldLabel(m);
-            html += `<div class="field-row missing">${svgWarning}${label}</div>`;
+            html += `<div class="field-row missing" data-slot-key="${escapeHtml(m)}">${svgWarning}${escapeHtml(label)}</div>`;
           }
           missingDiv.innerHTML = html;
         }
@@ -1390,6 +1534,7 @@ Please describe your operational requirements directly, or ask the question you 
       }
 
       renderOptionChips(uiState);
+      globalThis.window?.SEAgentWorkspace?.updateState?.(data, currentLang, { ...options, formatSlotValue: formatUiStateValue, slotLabel: getSlotLabel });
     }
 
     function createTypewriterEngine(onChunk, onComplete) {
@@ -1559,6 +1704,7 @@ Please describe your operational requirements directly, or ask the question you 
 
     function renderStreamingWarningNotice(botMsgDiv, warnings) {
       if (!botMsgDiv || !Array.isArray(warnings) || warnings.length === 0) return;
+      const shouldFollow = globalThis.window?.SEAgentWorkspace?.isNearBottom?.() ?? true;
       const wrapper = botMsgDiv.querySelector('.bubble-wrapper') || botMsgDiv;
       let noticeContainer = wrapper.querySelector('.bubble-warning-notice-container');
       if (!noticeContainer) {
@@ -1574,7 +1720,8 @@ Please describe your operational requirements directly, or ask the question you 
         noticeEl.innerHTML = `<span class="bubble-warning-notice-badge">WARN</span><span>${escapeHtml(msg)}</span>`;
         noticeContainer.appendChild(noticeEl);
       }
-      messageContainer.scrollTop = messageContainer.scrollHeight;
+      if (shouldFollow) messageContainer.scrollTop = messageContainer.scrollHeight;
+      globalThis.window?.SEAgentWorkspace?.followLatest?.(shouldFollow);
     }
 
     function highlightSidebarSlot(slotKey) {
@@ -1594,25 +1741,36 @@ Please describe your operational requirements directly, or ask the question you 
       }
     }
 
+    function retireDecisionCards() {
+      currentDecisionCard = null;
+      document.querySelectorAll('.warning-decision-card:not(.warning-card-resolved), .hard-blocked-card:not(.warning-card-resolved)').forEach(card => {
+        card.classList.add('warning-card-resolved');
+        card.classList.remove('warning-card-resolving');
+        const actions = card.querySelector('.warning-card-actions');
+        if (!actions) return;
+        const note = document.createElement('div');
+        note.className = 'historical-validation-note';
+        note.textContent = currentLang === 'zh' ? '历史校验结果，以当前状态为准' : 'Historical validation result. Refer to the current state.';
+        actions.replaceChildren(note);
+      });
+    }
+
     function renderDecisionCardInBubble(botMsgDiv, uiState) {
       if (!botMsgDiv || !uiState) return;
       const wrapper = botMsgDiv.querySelector('.bubble-wrapper');
       if (!wrapper) return;
 
-      const phase = uiState.workflow_phase || uiState.phase;
+      const phase = ['blocked_soft', 'blocked_hard'].includes(uiState.phase)
+        ? uiState.phase : (uiState.workflow_phase || uiState.phase);
       const cs = uiState.constraint_state || {};
+      const shouldFollow = globalThis.window?.SEAgentWorkspace?.isNearBottom?.() ?? true;
 
-      // 如果当前阶段已离开 blocked_soft，将历史卡片全部标记为已解决
-      if (phase !== 'blocked_soft') {
-        const allPrevWarningCards = document.querySelectorAll('.warning-decision-card:not(.warning-card-resolved)');
-        allPrevWarningCards.forEach(prevCard => {
-          prevCard.classList.add('warning-card-resolved');
-          const actions = prevCard.querySelector('.warning-card-actions');
-          if (actions) {
-            actions.innerHTML = `<div style="display:flex; align-items:center; gap:6px; color:#00ffc4; font-size:0.84rem; font-weight:600;"><span>✅</span><span>${currentLang === 'zh' ? '软警告已人工确认忽略，流程已继续' : 'Warning acknowledged & proceeding'}</span></div>`;
-          }
-        });
-      }
+      // Previous cards remain readable, but their controls belong to an older snapshot.
+      retireDecisionCards();
+      currentDecisionState = uiState;
+      const cardGeneration = sessionGeneration;
+      const isCurrentCard = card => card === currentDecisionCard && uiState === currentDecisionState
+        && cardGeneration === sessionGeneration && !currentReadOnly && !uiState.read_only;
 
       const existingCard = wrapper.querySelector('.warning-decision-card, .hard-blocked-card');
       if (existingCard) existingCard.remove();
@@ -1620,6 +1778,7 @@ Please describe your operational requirements directly, or ask the question you 
       if (phase === 'blocked_soft' && uiState.actions && uiState.actions.can_ignore_soft_warning) {
         const card = document.createElement('div');
         card.className = 'warning-decision-card';
+        currentDecisionCard = card;
 
         const header = document.createElement('div');
         header.className = 'warning-card-header';
@@ -1644,10 +1803,10 @@ Please describe your operational requirements directly, or ask the question you 
         const ignoreBtn = document.createElement('button');
         ignoreBtn.type = 'button';
         ignoreBtn.className = 'btn-ignore-warning-confirm';
-        ignoreBtn.innerHTML = `<span>⚡</span><span>${currentLang === 'zh' ? '忽略警告并继续发布' : 'Ignore Warning & Proceed'}</span>`;
+        ignoreBtn.innerHTML = `<span>⚡</span><span>${currentLang === 'zh' ? '确认风险并继续核验' : 'Acknowledge Risk & Continue Checks'}</span>`;
         ignoreBtn.addEventListener('click', async (e) => {
           e.stopPropagation();
-          if (isSending || !currentActions.can_ignore_soft_warning || typeof window.sendMessage !== 'function') return;
+          if (!isCurrentCard(card) || isSending || !currentActions.can_ignore_soft_warning || typeof window.sendMessage !== 'function') return;
           const submitGen = sessionGeneration;
           const buttonLabel = ignoreBtn.innerHTML;
           ignoreBtn.disabled = true;
@@ -1656,7 +1815,7 @@ Please describe your operational requirements directly, or ask the question you 
           try {
             await window.sendMessage('忽略警告');
           } finally {
-            if (submitGen === sessionGeneration && !card.classList.contains('warning-card-resolved')) {
+            if (submitGen === sessionGeneration && isCurrentCard(card)) {
               ignoreBtn.disabled = !currentActions.can_ignore_soft_warning;
               card.classList.remove('warning-card-resolving');
               ignoreBtn.innerHTML = buttonLabel;
@@ -1670,9 +1829,11 @@ Please describe your operational requirements directly, or ask the question you 
         modifyBtn.textContent = currentLang === 'zh' ? '修改任务参数' : 'Modify Parameters';
         modifyBtn.addEventListener('click', (e) => {
           e.stopPropagation();
+          if (!isCurrentCard(card) || isSending || !currentActions.can_modify) return;
           const input = document.getElementById('messageInput');
           if (input) {
             input.value = currentLang === 'zh' ? '修改任务：' : 'Modify task: ';
+            globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
             input.focus();
           }
         });
@@ -1682,10 +1843,12 @@ Please describe your operational requirements directly, or ask the question you 
         card.appendChild(actionsDiv);
 
         wrapper.appendChild(card);
-        messageContainer.scrollTop = messageContainer.scrollHeight;
+        if (shouldFollow) messageContainer.scrollTop = messageContainer.scrollHeight;
+        globalThis.window?.SEAgentWorkspace?.followLatest?.(shouldFollow);
       } else if (phase === 'blocked_hard') {
         const card = document.createElement('div');
         card.className = 'hard-blocked-card';
+        currentDecisionCard = card;
 
         const header = document.createElement('div');
         header.className = 'warning-card-header';
@@ -1714,9 +1877,11 @@ Please describe your operational requirements directly, or ask the question you 
         modifyBtn.textContent = currentLang === 'zh' ? '立即修改违规参数' : 'Modify Parameters Now';
         modifyBtn.addEventListener('click', (e) => {
           e.stopPropagation();
+          if (!isCurrentCard(card) || isSending || !currentActions.can_modify) return;
           const input = document.getElementById('messageInput');
           if (input) {
             input.value = currentLang === 'zh' ? '修改参数：' : 'Modify parameter: ';
+            globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
             input.focus();
           }
         });
@@ -1725,7 +1890,8 @@ Please describe your operational requirements directly, or ask the question you 
         card.appendChild(actionsDiv);
 
         wrapper.appendChild(card);
-        messageContainer.scrollTop = messageContainer.scrollHeight;
+        if (shouldFollow) messageContainer.scrollTop = messageContainer.scrollHeight;
+        globalThis.window?.SEAgentWorkspace?.followLatest?.(shouldFollow);
       }
     }
 
@@ -2171,6 +2337,7 @@ Please describe your operational requirements directly, or ask the question you 
         if (!isSending && selectedList.length > 0) {
           const fieldSelectionText = `确认选择${labelText}：${selectedList.join('、')}`;
           messageInput.value = fieldSelectionText;
+          globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
           confirmBtn.disabled = true;
           confirmBtn.textContent = currentLang === 'zh' ? '已选择，正在同步...' : 'Selected, syncing...';
           try {
@@ -2244,6 +2411,7 @@ Please describe your operational requirements directly, or ask the question you 
           const selectedList = Array.from(selectedValues);
           const fieldSelectionText = `确认选择${labelText}：${selectedList.join('、')}`;
           messageInput.value = fieldSelectionText;
+          globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
           sendMessage(fieldSelectionText);
         }
       });
@@ -2254,6 +2422,7 @@ Please describe your operational requirements directly, or ask the question you 
     }
 
     function renderOptionChips(uiState) {
+      const shouldFollow = globalThis.window?.SEAgentWorkspace?.isNearBottom?.() ?? true;
       const oldBar = document.getElementById('seagent-option-chips-bar');
       if (oldBar) oldBar.remove();
 
@@ -2293,7 +2462,8 @@ Please describe your operational requirements directly, or ask the question you 
 
       if (bar.childElementCount === 0) return;
       messageContainer.appendChild(bar);
-      messageContainer.scrollTop = messageContainer.scrollHeight;
+      if (shouldFollow) messageContainer.scrollTop = messageContainer.scrollHeight;
+      globalThis.window?.SEAgentWorkspace?.followLatest?.(shouldFollow);
     }
 
     async function updateSimulatedTime(isInit = false) {
@@ -2362,19 +2532,20 @@ Please describe your operational requirements directly, or ask the question you 
     function renderAsrNormalization(data, autoSent = false) {
       const rawText = (data.text || data.transcript || '').trim();
       const correctedText = (data.corrected_text || rawText).trim();
-      // const replacements = Array.isArray(data.replacements) ? data.replacements : [];
+      const replacements = Array.isArray(data.replacements) ? data.replacements : [];
       const warnings = Array.isArray(data.warnings) ? data.warnings : [];
       let html = `<strong>${I18N[currentLang].rawTranscript}</strong>${escapeHtml(rawText)}<br>`;
       html += `<strong>${I18N[currentLang].correctedTranscript}</strong>${escapeHtml(correctedText)}<br>`;
-      // if (replacements.length) {
-      //   html += `<strong>${I18N[currentLang].replacementList}</strong><br>`;
-      //   html += replacements.map(item => {
-      //     const evidence = Array.isArray(item.evidence) ? item.evidence.join('；') : '';
-      //     return `${escapeHtml(item.source || '')} → ${escapeHtml(item.target || '')}`
-      //       + (evidence ? ` <span style="color:#8b93b0;">(${escapeHtml(evidence)})</span>` : '');
-      //   }).join('<br>');
-      //   html += '<br>';
-      // }
+      if (replacements.length) {
+        html += `<strong>${I18N[currentLang].replacementList}</strong><div class="asr-replacements">`;
+        html += replacements.map(item => {
+          const evidence = Array.isArray(item.evidence) ? item.evidence.join('；') : '';
+          return `<div class="asr-replacement"><del>${escapeHtml(item.source || '')}</del>`
+            + ` <span aria-hidden="true">→</span> <ins>${escapeHtml(item.target || '')}</ins>`
+            + (evidence ? ` <span class="asr-evidence">(${escapeHtml(evidence)})</span>` : '') + '</div>';
+        }).join('');
+        html += '</div>';
+      }
       if (warnings.length) {
         html += `<strong>${I18N[currentLang].warningsLabel}</strong>${escapeHtml(warnings.join('；'))}<br>`;
       }
@@ -2449,6 +2620,35 @@ Please describe your operational requirements directly, or ask the question you 
       return data;
     }
 
+    function updateVoiceControls() {
+      voiceBtn.setAttribute('aria-pressed', String(isRecording));
+      voiceBtn.setAttribute('aria-label', currentLang === 'zh'
+        ? (isRecording ? '停止录音并转写' : '开始语音输入')
+        : (isRecording ? 'Stop recording and transcribe' : 'Start voice input'));
+      const cancel = document.getElementById('voiceCancelBtn');
+      if (cancel) {
+        cancel.hidden = !isRecording && !isStartingVoice && !asrAbortController;
+        cancel.textContent = currentLang === 'zh' ? '取消' : 'Cancel';
+      }
+      const elapsed = document.getElementById('voiceElapsed');
+      if (!isRecording) {
+        if (updateVoiceControls.timer) clearInterval(updateVoiceControls.timer);
+        updateVoiceControls.timer = null;
+        if (elapsed) elapsed.hidden = true;
+        return;
+      }
+      if (!elapsed) return;
+      elapsed.hidden = false;
+      if (updateVoiceControls.timer) return;
+      const started = Date.now();
+      const tick = () => {
+        const seconds = Math.floor((Date.now() - started) / 1000);
+        elapsed.textContent = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+      };
+      tick();
+      updateVoiceControls.timer = setInterval(tick, 1000);
+    }
+
     async function releaseVoiceRecordingResources() {
       const processor = recorderProcessor;
       const source = recorderSource;
@@ -2476,11 +2676,13 @@ Please describe your operational requirements directly, or ask the question you 
     }
 
     async function cancelVoiceActivity() {
+      cancelVoiceActivity.version = (cancelVoiceActivity.version || 0) + 1;
       if (asrAbortController) {
         try { asrAbortController.abort(); } catch (e) {}
       }
       asrAbortController = null;
       isRecording = false;
+      if (typeof updateVoiceControls === 'function') updateVoiceControls();
       await releaseVoiceRecordingResources();
       recordedChunks = [];
 
@@ -2497,6 +2699,7 @@ Please describe your operational requirements directly, or ask the question you 
       }
 
       const recordingGeneration = sessionGeneration;
+      const voiceVersion = cancelVoiceActivity.version || 0;
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -2504,7 +2707,7 @@ Please describe your operational requirements directly, or ask the question you 
           autoGainControl: true
         }
       });
-      if (recordingGeneration !== sessionGeneration) {
+      if (recordingGeneration !== sessionGeneration || voiceVersion !== (cancelVoiceActivity.version || 0)) {
         stream.getTracks().forEach(track => track.stop());
         return;
       }
@@ -2519,6 +2722,11 @@ Please describe your operational requirements directly, or ask the question you 
       recorderProcessor.onaudioprocess = (event) => {
         const input = event.inputBuffer.getChannelData(0);
         recordedChunks.push(new Float32Array(input));
+        let energy = 0;
+        for (let index = 0; index < input.length; index++) energy += input[index] * input[index];
+        const level = Math.min(1, Math.sqrt(energy / input.length) * 8);
+        const waveform = document.getElementById('audioWaveformWrapper');
+        if (waveform) waveform.style.setProperty('--voice-level', String(level));
       };
 
       recorderSource.connect(recorderProcessor);
@@ -2527,6 +2735,7 @@ Please describe your operational requirements directly, or ask the question you 
       isRecording = true;
       voiceBtn.classList.add('recording');
       voiceBtn.textContent = I18N[currentLang].voiceStop;
+      updateVoiceControls();
       setAsrStatus(I18N[currentLang].voiceRecording);
 
       // Show center pulsing visual
@@ -2535,7 +2744,9 @@ Please describe your operational requirements directly, or ask the question you 
 
     async function stopVoiceRecording() {
       const asrGeneration = sessionGeneration;
+      const voiceVersion = cancelVoiceActivity.version || 0;
       isRecording = false;
+      if (typeof updateVoiceControls === 'function') updateVoiceControls();
       voiceBtn.classList.remove('recording');
       voiceBtn.textContent = I18N[currentLang].voiceBtn;
 
@@ -2546,6 +2757,7 @@ Please describe your operational requirements directly, or ask the question you 
       recordedChunks = [];
       await releaseVoiceRecordingResources();
       if (asrGeneration !== sessionGeneration) return;
+      if (voiceVersion !== (cancelVoiceActivity.version || 0)) return;
 
       if (!chunks.length) {
         setAsrStatus(I18N[currentLang].voiceNoAudio);
@@ -2560,9 +2772,11 @@ Please describe your operational requirements directly, or ask the question you 
 
       const controller = new AbortController();
       asrAbortController = controller;
+      if (typeof updateVoiceControls === 'function') updateVoiceControls();
       try {
         const data = await uploadAudioForAsr(audioBlob, controller.signal);
         if (asrGeneration !== sessionGeneration) return;
+        if (controller.signal.aborted || voiceVersion !== (cancelVoiceActivity.version || 0)) return;
         const transcript = (data.corrected_text || data.text || data.transcript || '').trim();
         const directToLlm = data.direct_to_llm !== false;
 
@@ -2581,31 +2795,47 @@ Please describe your operational requirements directly, or ask the question you 
           await sendMessage(transcript, { source: 'voice' });
         } else {
           messageInput.value = transcript;
+          globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
           setAsrStatus(renderAsrNormalization(data, false), true);
           messageInput.focus();
         }
       } catch (err) {
-        if (err.name === 'AbortError' || asrGeneration !== sessionGeneration) return;
+        if (err.name === 'AbortError' || controller.signal.aborted || asrGeneration !== sessionGeneration) return;
         setAsrStatus(`${I18N[currentLang].voiceError}${escapeHtml(err.message || err)}`);
       } finally {
         if (asrAbortController === controller) asrAbortController = null;
-        if (asrGeneration === sessionGeneration && !isDone) voiceBtn.disabled = false;
+        if (asrGeneration === sessionGeneration) {
+          if (typeof updateVoiceControls === 'function') updateVoiceControls();
+          applyInteractionState(currentActions, currentReadOnly);
+        }
       }
     }
 
     async function toggleVoiceRecording() {
+      if (isStartingVoice || asrAbortController || isSending || !currentActions.can_send) return;
+      const voiceGeneration = sessionGeneration;
+      const voiceVersion = cancelVoiceActivity.version || 0;
       try {
         if (isRecording) {
           await stopVoiceRecording();
         } else {
+          isStartingVoice = true;
+          applyInteractionState(currentActions, currentReadOnly);
+          updateVoiceControls();
           await startVoiceRecording();
         }
       } catch (err) {
+        if (voiceGeneration !== sessionGeneration || voiceVersion !== (cancelVoiceActivity.version || 0)) return;
         isRecording = false;
+        await releaseVoiceRecordingResources();
         voiceBtn.classList.remove('recording');
         voiceBtn.textContent = I18N[currentLang].voiceBtn;
         voiceBtn.disabled = false;
         setAsrStatus(`${I18N[currentLang].voiceNotAvailable}${escapeHtml(err.message || err)}`);
+      } finally {
+        isStartingVoice = false;
+        updateVoiceControls();
+        applyInteractionState(currentActions, currentReadOnly);
       }
     }
 
@@ -2649,6 +2879,8 @@ Please describe your operational requirements directly, or ask the question you 
     }
 
     async function restoreHistory(historyId) {
+      const priorSession = sessionId;
+      const priorResponse = lastResponseData;
       cancelActiveRequest();
       sessionGeneration++;
       window.sessionGeneration = sessionGeneration;
@@ -2683,12 +2915,14 @@ Please describe your operational requirements directly, or ask the question you 
 
         messageContainer.innerHTML = '';
         for (const msg of data.conversation_history) {
-          addMessage(msg.role, msg.content);
+          addMessage(msg.role, msg.content, { restored: true });
         }
+        messageContainer.scrollTop = messageContainer.scrollHeight;
+        globalThis.window?.SEAgentWorkspace?.followLatest?.(true);
 
         // Issue #31: 优先使用 ui_state 恢复状态
         if (data.ui_state) {
-          updateSidebar(data);
+          updateSidebar(data, { origin: 'restore' });
           // applyInteractionState 已在 updateSidebar 内调用
           if (data.ui_state.phase === 'done' || data.ui_state.read_only) {
             addMessage('bot', I18N[currentLang].historyLoadedReadOnly);
@@ -2702,7 +2936,7 @@ Please describe your operational requirements directly, or ask the question you 
             collected: data.built_json,
             missing: data.missing,
             final_json: isCompleted ? data.built_json : null
-          });
+          }, { origin: 'restore' });
           if (isCompleted) {
             document.getElementById('resultCard').style.display = 'block';
             document.getElementById('finalJson').innerText = JSON.stringify(data.built_json, null, 2);
@@ -2726,6 +2960,10 @@ Please describe your operational requirements directly, or ask the question you 
           isSending = false;
           currentAbortController = null;
           applyInteractionState(currentActions, currentReadOnly);
+          // A failed restore retains this task, but its guarded controls need the new generation.
+          if (priorResponse && lastResponseData === priorResponse && sessionId === priorSession) {
+            updateSidebar(priorResponse, { origin: 'render' });
+          }
         }
       }
     }
@@ -2745,6 +2983,7 @@ Please describe your operational requirements directly, or ask the question you 
       currentAbortController = new AbortController();
       addMessage('user', msg);
       messageInput.value = '';
+      globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
 
       let data = {};
       let streamHandled = false;
@@ -2765,6 +3004,7 @@ Please describe your operational requirements directly, or ask the question you 
             if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
             if (streamRes.status === 401) {
               messageInput.value = msg;
+              globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
               addMessage('bot', currentLang === 'zh'
                 ? '连接凭据无效，请填写有效凭据后重新发送。'
                 : 'Access credentials are required. Enter valid credentials and send again.');
@@ -2801,6 +3041,7 @@ Please describe your operational requirements directly, or ask the question you 
                   };
               const typewriter = engineFactory((currentText, isFinal) => {
                 if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
+                const shouldFollow = globalThis.window?.SEAgentWorkspace?.isNearBottom?.() ?? true;
                 if (!botMsgDiv) {
                   botMsgDiv = addMessage('bot', currentText, { kind: 'streaming' });
                 } else {
@@ -2813,7 +3054,8 @@ Please describe your operational requirements directly, or ask the question you 
                   }
                   botMsgDiv.setAttribute('data-original', currentText);
                 }
-                messageContainer.scrollTop = messageContainer.scrollHeight;
+                if (shouldFollow) messageContainer.scrollTop = messageContainer.scrollHeight;
+                globalThis.window?.SEAgentWorkspace?.followLatest?.(shouldFollow);
               });
               if (typeof activeTypewriter !== 'undefined') {
                 activeTypewriter = typewriter;
@@ -2842,6 +3084,7 @@ Please describe your operational requirements directly, or ask the question you 
                         sessionId = parsed.session_id;
                         try { localStorage.setItem('seagent_session_id', sessionId); } catch(e){}
                       } else if (parsed.step && !accumulatedReply) {
+                        const shouldFollow = globalThis.window?.SEAgentWorkspace?.isNearBottom?.() ?? true;
                         const stepMsg = parsed.message || '正在分析与处理...';
                         const displayText = `⚡ ${stepMsg}`;
                         if (!botMsgDiv) {
@@ -2851,8 +3094,10 @@ Please describe your operational requirements directly, or ask the question you 
                           if (bubble) bubble.textContent = displayText;
                           botMsgDiv.setAttribute('data-original', displayText);
                         }
-                        messageContainer.scrollTop = messageContainer.scrollHeight;
+                        if (shouldFollow) messageContainer.scrollTop = messageContainer.scrollHeight;
+                        globalThis.window?.SEAgentWorkspace?.followLatest?.(shouldFollow);
                       } else if (parsed.slot) {
+                        const shouldFollow = globalThis.window?.SEAgentWorkspace?.isNearBottom?.() ?? true;
                         if (!botMsgDiv) {
                           botMsgDiv = addMessage('bot', '', { kind: 'streaming' });
                         }
@@ -2876,6 +3121,8 @@ Please describe your operational requirements directly, or ask the question you 
                         tagEl.innerHTML = `⚡ ${fieldLabel}: <strong>${escapeHtml(String(valStr))}</strong>`;
                         if (typeof patchSidebarSlot === 'function') patchSidebarSlot(parsed);
                         if (typeof highlightSidebarSlot === 'function') highlightSidebarSlot(parsed.key);
+                        if (shouldFollow) messageContainer.scrollTop = messageContainer.scrollHeight;
+                        globalThis.window?.SEAgentWorkspace?.followLatest?.(shouldFollow);
                       } else if (parsed.warnings || parsed.warning) {
                         const warnList = parsed.warnings || (parsed.warning ? [parsed.warning] : []);
                         if (!botMsgDiv) {
@@ -2911,6 +3158,7 @@ Please describe your operational requirements directly, or ask the question you 
               }
 
               if (streamHandled && data.code === 200) {
+                const shouldFollow = globalThis.window?.SEAgentWorkspace?.isNearBottom?.() ?? true;
                 typewriter.flush();
                 if (typeof activeTypewriter !== 'undefined' && activeTypewriter === typewriter) activeTypewriter = null;
                 if (botMsgDiv) {
@@ -2936,10 +3184,12 @@ Please describe your operational requirements directly, or ask the question you 
                 } else if (data.rejected || phase === 'rejected') {
                   addMessage('bot', I18N[currentLang].taskRejectedMsg);
                 }
-                updateSidebar(data);
+                updateSidebar(data, { origin: 'reply' });
                 if (data.ui_state && botMsgDiv) {
                   renderDecisionCardInBubble(botMsgDiv, data.ui_state);
                 }
+                if (shouldFollow) messageContainer.scrollTop = messageContainer.scrollHeight;
+                globalThis.window?.SEAgentWorkspace?.followLatest?.(shouldFollow);
                 return;
               }
               throw new Error('SSE response ended before the result arrived');
@@ -2963,9 +3213,10 @@ Please describe your operational requirements directly, or ask the question you 
             botMsgDiv.setAttribute('data-original', partialReply);
             delete botMsgDiv.dataset.messageKind;
           }
-          addMessage('bot', currentLang === 'zh'
+          const recoveryMessage = addMessage('bot', currentLang === 'zh'
             ? '响应中断，服务器可能已处理此消息；为避免重复执行，未自动重发。请先核对会话状态。'
             : 'The response was interrupted and the server may have processed this message. It was not resent automatically to avoid duplicate execution. Check the session state first.');
+          if (typeof appendRecoveryAction === 'function') appendRecoveryAction(recoveryMessage);
           return;
         }
 
@@ -2999,6 +3250,7 @@ Please describe your operational requirements directly, or ask the question you 
 
           if (!res.ok || data.ok === false || (data.code && data.code !== 200)) {
             if (res.status === 401) messageInput.value = msg;
+            globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
             const errMsg = data.msg || data.message || '请求处理异常';
             const reqId = data.request_id ? ` [request_id: ${data.request_id}]` : '';
             const retryHint = data.retryable ? ' (可尝试重试)' : '';
@@ -3026,7 +3278,7 @@ Please describe your operational requirements directly, or ask the question you 
             addMessage('bot', I18N[currentLang].taskRejectedMsg);
           }
 
-          updateSidebar(data);
+          updateSidebar(data, { origin: 'reply' });
           if (data.ui_state && syncBotDiv) {
             renderDecisionCardInBubble(syncBotDiv, data.ui_state);
           }
@@ -3071,19 +3323,21 @@ Please describe your operational requirements directly, or ask the question you 
           messageContainer.innerHTML = '';
           if (data.history && data.history.length > 0) {
             for (const m of data.history) {
-              addMessage(m.role, m.content);
+              addMessage(m.role, m.content, { restored: true });
             }
             removeReloadNotificationBubbles();
+            messageContainer.scrollTop = messageContainer.scrollHeight;
+            globalThis.window?.SEAgentWorkspace?.followLatest?.(true);
           } else {
             addWelcomeMessage();
           }
           // Issue #31: 优先使用 ui_state 恢复状态
           if (data.ui_state) {
-            updateSidebar(data);
+            updateSidebar(data, { origin: 'restore' });
             // applyInteractionState 已在 updateSidebar 内调用
           } else {
             isDone = !!data.done;
-            updateSidebar(data);
+            updateSidebar(data, { origin: 'restore' });
           }
           return true;
         }
@@ -3140,6 +3394,8 @@ Please describe your operational requirements directly, or ask the question you 
           isSending = false;
           currentAbortController = null;
           applyInteractionState(currentActions, currentReadOnly);
+          // A failed reset keeps the prior session; rebuild guarded actions for its current generation.
+          if (lastResponseData) updateSidebar(lastResponseData, { origin: 'render' });
           addMessage('bot', I18N[currentLang].resetFailed);
           return false;
         }
@@ -3161,10 +3417,12 @@ Please describe your operational requirements directly, or ask the question you 
       document.getElementById('dispatchCard').hidden = true;
       document.getElementById('historyList').style.display = 'none';
       messageInput.value = '';
+      globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
 
       isSending = false;
       currentAbortController = null;
       applyInteractionState(RESET_ACTIONS, false);
+      globalThis.window?.SEAgentWorkspace?.reset?.(currentLang, { origin: 'reset' });
       messageInput.focus();
       return true;
     }
@@ -3178,6 +3436,13 @@ Please describe your operational requirements directly, or ask the question you 
       }
     });
     voiceBtn.addEventListener('click', toggleVoiceRecording);
+    const voiceCancelBtn = document.getElementById('voiceCancelBtn');
+    if (voiceCancelBtn) voiceCancelBtn.addEventListener('click', async () => {
+      await cancelVoiceActivity();
+      updateVoiceControls();
+      applyInteractionState(currentActions, currentReadOnly);
+      messageInput.focus();
+    });
     resetBtn.addEventListener('click', reset);
     messageContainer.addEventListener('click', (event) => {
       const translateButton = event.target.closest('[data-action="translate-message"]');
@@ -3208,6 +3473,8 @@ Please describe your operational requirements directly, or ask the question you 
     window.updateSidebar = updateSidebar;
     window.applyInteractionState = applyInteractionState;
 
+    globalThis.window?.SEAgentWorkspace?.setLanguage?.(currentLang);
+    updateVoiceControls();
     restoreSessionFromStorage().then(restored => {
       if (!restored) reset();
       removeReloadNotificationBubbles();

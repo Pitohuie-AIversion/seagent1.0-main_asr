@@ -46,6 +46,12 @@ The system classifies all natural language user inputs into two primary interact
 ### 2.3 Control Command Processing Order
 - Control commands (e.g., confirm, cancel, continue/ignore warning) MUST be evaluated and processed BEFORE passing user inputs to standard WRITE extractor.
 
+### 2.4 Explicit Edit Restrictions (2026-10-19)
+- A standalone task-wide restriction such as `"不要修改任务"`, `"先别修改"` or `"只是讨论"` applies across the current message. Before processing model-proposed writes or pending selections, the manager preserves task fields, slot metadata, validation state and phase; its reply uses saved constraint context without revalidation. Emergency controls retain their existing route.
+- Domain-wide restrictions such as `"不要改任何时间"` or `"工具不要改"` suppress that domain's model candidates and deterministic recovery, while independent changes to other fields remain available. `"不要修改任务编号"` and `"先不发布"` are not task-wide edit restrictions.
+- Discussion or negation limited to one operation does not suppress a separate affirmative operation: `"只是讨论删除A，新增B"` may add B while retaining A. Time recovery applies the same nonassertive-context checks to explicit endpoints, ranges and duration relations.
+- These guards cover the explicit expressions tested in the [October 19 verification record](progress/2026-10-19-whole-turn-protection-fixes.md). They do not establish complete natural-language negation coverage.
+
 ---
 
 ## 3. Confidence & Validation Security
@@ -182,3 +188,8 @@ After filtering:
 - A disconnected observer stops receiving events but does not cancel an accepted transaction. Reset continues to acquire the session lock before removing/resetting the manager.
 - Each process allows at most 8 active streaming workers, with a 64-event advisory progress buffer per worker. Saturation returns HTTP 503 `ServerBusy` with `Retry-After: 1`; a slow/disconnected reader cannot block the worker by filling the progress queue. This worker bound does not remove the shared model lock or bound the ordinary JSON endpoint's request queue.
 - Invalid transport input still returns HTTP 400 before streaming. Processing failures after stream acceptance are represented by an SSE `error` event carrying the application code, without a success `result`.
+
+### 9.3 State Reads Concurrent with Reset
+
+- `/api/session/state` rechecks manager identity after acquiring the session lock. If reset removed or replaced that manager while the read waited, the endpoint returns HTTP 409 `SessionReset` with `retryable=true`; it neither exposes nor refreshes the detached manager.
+- A subsequent read observes the current manager or `exists=false`. Successful response fields remain unchanged. This check does not make reset interrupt in-progress generation; reset still waits for the session lock.

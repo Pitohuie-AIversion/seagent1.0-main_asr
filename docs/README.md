@@ -26,6 +26,7 @@
 - [2026-10-15 GPU 恢复后的真实对话复测](progress/2026-10-15-real-model-followup.md) 记录时间、载荷与回复事实修复，以及真实模型交互、归档恢复和全量回归的独立证据。
 - [2026-10-15 真实用户压力与边界测试](progress/2026-10-15-stress-boundary-followup.md) 保留修复前的组合时长、载荷指令、并发、流式响应和发布边界实测结果。
 - [2026-10-15 压力与边界问题修复](progress/2026-10-15-stress-boundary-fixes.md) 记录后续时间/载荷修复、有限请求重放、实时进度，以及定向、全量、真实模型和归档恢复的独立验证证据与保留限制。
+- [2026-10-19 整轮限制与状态查询修复](progress/2026-10-19-whole-turn-protection-fixes.md) 记录任务、时间和载荷修改限制的作用范围、状态查询与重置竞态，以及本轮回归和真实模型验证结果。
 - [海流 MCP 设计与实现状态](../mcp/operation-time-window/DESIGN_SPEC.md) 描述独立模块的现状；[历史海流测试记录](../mcp/operation-time-window/evidence/current_status.json) 文件名中的 `current` 不代表实时结果。该模块尚未成为主 DialogueManager 的默认运行链路。
 - ROS MCP 的[当前协议报告](../mcp/ros-mcp/docs/adapter_specification_report.md)及[2026-09-30 协议核对 PDF](../mcp/ros-mcp/docs/SEAgent_ROS2_MCP_Protocol_Review_20260930.pdf)区分生产适配器和 stdio Mock；[原集成 PDF](../mcp/ros-mcp/docs/SEAgent_ROS2_MCP_Integration_Report.pdf)保留为历史材料，不能独立作为现行接口说明。
 - 时间调研的[来源核对与实现边界](../artifacts/temporal-research-source-review.md)及[PDF](../artifacts/temporal-research-source-review.pdf)补充本次核实的一手资料、当前代码对照和定向测试；[原草案](../artifacts/deep-research-report.md)仍保留历史方案属性，旧引用的原 URL 映射尚未恢复。

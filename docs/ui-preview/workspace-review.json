@@ -1,0 +1,19 @@
+{
+  "source": "Real Jinja template and local frontend assets; isolated API fixtures only. Not real robot data or a validated complete mission.",
+  "views": [
+    "desktop.png",
+    "mobile.png",
+    "task-workspace.png",
+    "task-confirmation.png",
+    "task-validation.png",
+    "task-mobile.png"
+  ],
+  "desktop_viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "mobile_viewport": {
+    "width": 390,
+    "height": 900
+  }
+}

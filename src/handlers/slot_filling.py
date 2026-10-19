@@ -184,6 +184,7 @@ class SlotFillingHandler(BaseDialogueHandler):
         turn_unresolved: Optional[List[str]] = None,
         task_type_key: Optional[str] = None,
         has_acknowledge_action: bool = False,
+        refresh_constraints: bool = True,
     ) -> str:
         """依据事务结果回复，优先通过 LLM 依据处理事实向用户解释原因并引导。"""
         manager = self.manager
@@ -212,7 +213,22 @@ class SlotFillingHandler(BaseDialogueHandler):
 
         req_fields = manager.builder.get_required(task_type_key, manager.mode, manager.slot_store.get_task_state()) if task_type_key else []
         missing = manager.slot_store.get_missing_slots(req_fields) if task_type_key else []
-        constraint_context = manager._run_constraint_check(set(), purpose="interactive")
+        if refresh_constraints:
+            constraint_context = manager._run_constraint_check(set(), purpose="interactive")
+        else:
+            # Discussion uses the already saved warnings. Revalidation can change
+            # phase/refusal counts, so it must not run for an explicit edit pause.
+            validation = manager.slot_store.validation_result
+            constraint_context = {
+                "type": {"blocked_hard": "hard", "blocked_soft": "soft"}.get(manager.phase, "none"),
+                "violations": list(manager._blocking_violations),
+                "hard_refusal_counts": dict(manager._hard_refusal_counts),
+                "state_snapshot": getattr(validation, "state_snapshot", None),
+                "runtime_validation_deferred": any(
+                    getattr(item, "check_type", "") == "future_task_runtime_notice"
+                    for item in (getattr(validation, "violations", None) or [])
+                ),
+            }
         knowledge_context = manager.kb.get_context_for_state(
             manager.task_state,
             include_runtime_state=not constraint_context.get("runtime_validation_deferred", False),

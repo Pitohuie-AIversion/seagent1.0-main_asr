@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SEAgent 界面预览</title>
+<style>
+  *{box-sizing:border-box}body{margin:0;background:#080d16;color:#e7edf5;font:15px/1.7 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1300px;margin:0 auto;padding:32px 20px}h1{font-size:24px}h2{font-size:18px;margin:34px 0 12px}p{color:#a4b1c3}a{color:#8bdde5}nav{display:flex;gap:18px;flex-wrap:wrap;margin:24px 0}figure{margin:0;padding:12px;background:#101b2a;border:1px solid #2c4055;border-radius:12px}img{display:block;width:100%;height:auto;border-radius:7px}figcaption{padding:8px 4px 0;color:#b7c5d6;font-size:13px}.mobile{max-width:410px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:760px){.pair{grid-template-columns:1fr}}:focus-visible{outline:2px solid #57d1df;outline-offset:4px}
+</style>
+<main>
+  <h1>SEAgent 界面预览</h1>
+  <p>真实前端页面的浏览器截图。产品标题沿用原文，模拟时间置顶加粗；任务和监控画面使用隔离测试数据。</p>
+  <nav aria-label="预览导航"><a href="#workspace">任务工作单</a><a href="#validation">校验证据</a><a href="#monitor">运行监控</a><a href="#welcome">首屏与手机</a></nav>
+  <section id="workspace"><h2>任务摘要与确认发布</h2><figure><a href="task-workspace.png"><img src="task-workspace.png" alt="对话区与任务工作单，右侧显示确认参数摘要和发布入口"></a><figcaption>确认摘要优先显示；字段可定位，发布仍需用户明确确认。</figcaption></figure>
+  <h2>展开处理结果</h2><figure><a href="task-confirmation.png"><img loading="lazy" src="task-confirmation.png" alt="展开的处理回执，展示校验状态与校验时间"></a><figcaption>区分计划参数确认与尚待执行的运行条件校验。</figcaption></figure></section>
+  <section id="validation"><h2>校验问题与真实数值</h2><figure><a href="task-validation.png"><img loading="lazy" src="task-validation.png" alt="约束卡显示当前值、限值、关联字段与修改入口"></a><figcaption>观测值、限值与来源来自接口字段；“修改相关参数”填写输入草稿。</figcaption></figure></section>
+  <section id="monitor"><h2>运行监控</h2><figure><a href="dashboard-desktop.png"><img loading="lazy" src="dashboard-desktop.png" alt="网关任务监控，发送记录与执行反馈独立显示"></a><figcaption>服务端接收遥测时间与浏览器成功拉取时间分别显示。</figcaption></figure>
+  <h2>拉取失败后的快照提示</h2><figure><a href="dashboard-snapshot-retained.png"><img loading="lazy" src="dashboard-snapshot-retained.png" alt="连接更新失败，界面保留已有数据并提示旧快照"></a><figcaption>保留最近数据，同时明确其不代表当前状态。</figcaption></figure></section>
+  <section id="welcome"><h2>初始首屏</h2><figure><a href="desktop.png"><img loading="lazy" src="desktop.png" alt="桌面初始首屏，知识查询和任务创建入口"></a></figure>
+  <h2>手机布局</h2><div class="pair"><figure class="mobile"><a href="mobile.png"><img loading="lazy" src="mobile.png" alt="手机首屏"></a><figcaption>首屏与折叠工作单</figcaption></figure><figure class="mobile"><a href="task-mobile.png"><img loading="lazy" src="task-mobile.png" alt="手机展开任务工作单与确认摘要"></a><figcaption>展开工作单，可滚动核对字段</figcaption></figure></div></section>
+  <p>本页可直接在浏览器中打开，不需要启动后端；点击截图可查看原图。</p>
+</main>
+</html>

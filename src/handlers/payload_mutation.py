@@ -16,6 +16,7 @@ from typing import Any
 
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
+from src.extraction.assertion_scope import task_edits_are_paused
 from src.slots.slot_store import Slot, normalize_payload_match_key
 
 logger = logging.getLogger("src.dialogue_manager")
@@ -27,9 +28,30 @@ _REPLACE = r"替换成|替换为|换成|换为|改成|改为"
 _NEGATED_ACTION = re.compile(
     r"(?:不要|不用|无需|不能|别|不|勿)\s*"
     r"(?:(?:替我|帮我|给我|为我|擅自|自动|随意|继续|再|去)\s*)*"
-    r"(?:删除|移除|去掉|卸下|清空|清除|替换|更换|换成|添加|增加|新增|加装|再带|加上|补充|携带|带上)"
+    r"(?:删除|移除|去掉|卸下|清空|清除|替换|更换|换成|添加|增加|新增|加装|再带|加上|补充|携带|带上|修改|改动|调整|变更|更改|更新|改)"
 )
 _NONASSERTED_EDIT = re.compile(r"如果|假如|能否|是否|吗|会怎样|会怎么样|会有什么|[?？]")
+_TRAILING_EDIT_QUESTION = re.compile(
+    r"[,，]\s*(?:这样)?(?:可以吗|行吗|好吗|是否可以)\s*[。.!！]?\s*$"
+)
+_PAUSE_PREFIX = r"(?:(?:请|本轮|这轮|这次|现在|目前|暂时|先)\s*)*"
+_PAYLOAD_FIELD = (
+    r"(?:(?:原有的?|现有的?|已选的?|当前的?|全部|所有)\s*)*"
+    r"(?:载荷(?:配置|清单|列表)?|(?:携带的?)?工具(?:配置|清单|列表)?|payload)"
+)
+_PAUSED_EDIT = (
+    r"(?:不要|不用|无需|不能|别|不|勿)\s*"
+    r"(?:(?:再|先|替我|帮我|擅自)\s*)*"
+    r"(?:修改|改动|调整|变更|更改|更新|改|动)"
+)
+_PAYLOAD_PAUSE = re.compile(
+    rf"(?:{_PAUSE_PREFIX}{_PAUSED_EDIT}\s*{_PAYLOAD_FIELD}"
+    rf"|{_PAUSE_PREFIX}{_PAYLOAD_FIELD}\s*{_PAUSE_PREFIX}{_PAUSED_EDIT})\s*(?:了|吧)?",
+    re.IGNORECASE,
+)
+_PAYLOAD_DISCUSSION = re.compile(
+    _PAUSE_PREFIX + r"(?:仅|只)(?:是)?\s*(?:讨论|咨询|了解|询问|解释|分析)(?:一下)?(?P<object>.+)"
+)
 _KEEP_EDIT_BOUNDARY = re.compile(
     rf"(?:并且|同时|并|但)\s*(?=(?:保留|保持|{_REMOVE}|{_ADD}|清空|清除|把|将|用))"
 )
@@ -179,6 +201,10 @@ class PayloadMutationManager(BaseDialogueHandler):
             mutations = []
             extraction_res["list_mutations"] = mutations
 
+        # A field-wide restriction applies before both card confirmation and
+        # clause recovery; a later named edit must not override that scope.
+        paused = self._payload_writes_are_paused(user_message)
+
         # A card confirmation explicitly supplies the complete selection. Keep
         # it deterministic while still using the normal validation transaction.
         selection = re.fullmatch(
@@ -186,7 +212,7 @@ class PayloadMutationManager(BaseDialogueHandler):
             (user_message or "").strip(),
             flags=re.IGNORECASE,
         )
-        if selection and getattr(self.manager, "editing_slot", None) == "payload":
+        if selection and not paused and getattr(self.manager, "editing_slot", None) == "payload":
             items = [item.strip() for item in re.split(r"[、,，\n]+", selection.group(1)) if item.strip()]
             extraction_res["slot_candidates"] = [
                 candidate for candidate in extraction_res.get("slot_candidates", [])
@@ -202,7 +228,7 @@ class PayloadMutationManager(BaseDialogueHandler):
             }]
             return
 
-        explicit = self._explicit_payload_mutations(
+        explicit = [] if paused else self._explicit_payload_mutations(
             user_message, current_slots, unresolved=extraction_res.setdefault("unresolved", []),
         )
         if explicit is not None:
@@ -336,6 +362,19 @@ class PayloadMutationManager(BaseDialogueHandler):
         return sorted({term for term in terms if isinstance(term, str) and term}, key=len, reverse=True)
 
     @staticmethod
+    def _payload_writes_are_paused(message: str) -> bool:
+        if task_edits_are_paused(message):
+            return True
+        for clause in re.split(r"[，,。；;！!？?\n]+", message or ""):
+            clause = clause.strip()
+            if _PAYLOAD_PAUSE.fullmatch(clause):
+                return True
+            discussion = _PAYLOAD_DISCUSSION.fullmatch(clause)
+            if discussion and re.fullmatch(_PAYLOAD_FIELD, discussion["object"].strip(), re.IGNORECASE):
+                return True
+        return False
+
+    @staticmethod
     def _payload_items(text: str) -> list[str]:
         result = []
         for part in re.split(r"[、,，+]|以及|和|及", text):
@@ -350,15 +389,22 @@ class PayloadMutationManager(BaseDialogueHandler):
 
     @staticmethod
     def _payload_edit_clauses(message: str):
-        for clause in re.split(r"[，,。；;！!]", message or ""):
-            # Apply assertion guards to the complete clause before splitting:
-            # "保留A并删除B吗" must not turn into an imperative delete.
-            if (re.search(r"保留|保持|不变", clause)
-                    and not _NEGATED_ACTION.search(clause)
-                    and not _NONASSERTED_EDIT.search(clause)):
-                yield from _KEEP_EDIT_BOUNDARY.split(clause)
-            else:
-                yield clause
+        for sentence in re.split(r"(?<=[。；;！!？?\n])", message or ""):
+            # Keep a question's comma-separated operands within its scope.
+            # The next sentence can still contain an affirmative edit.
+            if sentence.rstrip().endswith(("?", "？")) or _TRAILING_EDIT_QUESTION.search(sentence):
+                yield sentence
+                continue
+            for clause in re.split(r"[，,。；;！!\n]", sentence):
+                # Apply assertion guards before splitting a keep/edit pair:
+                # "保留A并删除B吗" must not become an imperative delete.
+                if (re.search(r"保留|保持|不变", clause)
+                        and not _NEGATED_ACTION.search(clause)
+                        and not _NONASSERTED_EDIT.search(clause)
+                        and not _PAYLOAD_DISCUSSION.search(clause)):
+                    yield from _KEEP_EDIT_BOUNDARY.split(clause)
+                else:
+                    yield clause
 
     def _payload_operand_keys(self, items: list[str]) -> set[str]:
         """Match preservation conflicts using exact names and catalog aliases."""
@@ -407,7 +453,8 @@ class PayloadMutationManager(BaseDialogueHandler):
                 # instruction to add a tool. Other clauses may still edit it.
                 guarded = True
                 continue
-            if _NEGATED_ACTION.search(clause) or _NONASSERTED_EDIT.search(clause):
+            if (_NEGATED_ACTION.search(clause) or _NONASSERTED_EDIT.search(clause)
+                    or _PAYLOAD_DISCUSSION.fullmatch(clause)):
                 guarded = guarded or any(term in clause for term in terms) or bool(re.search(r"载荷|工具", clause))
                 continue
             if _CLEAR_PAYLOAD.fullmatch(clause):

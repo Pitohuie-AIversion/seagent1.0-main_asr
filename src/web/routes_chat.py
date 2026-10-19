@@ -313,6 +313,15 @@ def get_session_state():
 
     constraint_refresh = None
     with mgr._session_lock:
+        # A reset may have removed or replaced this manager while we waited.
+        # Never refresh or expose state from a detached session instance.
+        with state._sessions_lock:
+            if state._sessions_manager.get(sid) is not mgr:
+                return jsonify({
+                    "ok": False, "code": 409, "error": "SessionReset",
+                    "msg": "当前会话已重新开始，请重新获取会话状态。",
+                    "retryable": True,
+                }), 409
         if refresh_constraints:
             try:
                 constraint_refresh = mgr.refresh_external_state_constraints()

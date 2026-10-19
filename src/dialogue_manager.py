@@ -52,6 +52,7 @@ from src.session.session_state import (
 from src.slots.task_patch import build_task_patch
 from .knowledge_retriever import KnowledgeBase
 from src.extraction.extractor import ParameterExtractor
+from src.extraction.assertion_scope import task_edits_are_paused
 from src.slots.task_slot_filter import TaskSlotFilter
 from src.dispatch.task_capability_adapter import TaskCapabilityAdapter
 from .handlers import (
@@ -716,6 +717,17 @@ class DialogueManager:
         if route.interaction_type == "QUERY":
             self.emit_event(event_sink, "step", {"step": "synthesizing", "message": "正在组织知识库检索反馈...", "phase": self.phase})
             return self._handle_non_task_route(user_message, route, request_id)
+
+        # An explicit turn-wide pause outranks model-proposed parameter writes,
+        # including pending selections; emergency controls were handled above.
+        if task_edits_are_paused(user_message):
+            return self.slot_handler.reply_write_without_candidates(
+                user_message=user_message,
+                request_id=request_id,
+                turn_unresolved=["本轮明确要求只讨论或暂不修改，未修改任何任务参数。"],
+                task_type_key=self.task_state.get("task_type_key"),
+                refresh_constraints=False,
+            )
 
         is_ignore_warning_cmd = self._is_ignore_warning(user_message)
         has_acknowledge_action = bool(

@@ -1,9 +1,110 @@
-.api-credentials-button { padding: 6px 10px; cursor: pointer; }
-.api-credentials-dialog { color: #172a3b; background: #fff; border: 1px solid #627d91; border-radius: 8px; padding: 24px; max-width: min(420px, 85vw); }
-.api-credentials-dialog::backdrop { background: rgb(0 0 0 / 45%); }
-.api-credentials-dialog h2 { font-size: 1.1rem; margin: 0 0 12px; }
-.api-credentials-dialog p { font-size: .9rem; line-height: 1.5; }
-.api-credentials-dialog label { display: block; margin: 12px 0 6px; }
-.api-credentials-dialog input { box-sizing: border-box; width: 100%; padding: 8px; color: #172a3b; background: #fff; }
-.api-credentials-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-.api-credentials-actions button { padding: 7px 10px; cursor: pointer; }
+.api-credentials-button,
+.api-credentials-actions button {
+  box-sizing: border-box;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--line, #33465e);
+  border-radius: 10px;
+  color: var(--ink, #e7edf5);
+  background: var(--surface, #111b2a);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color .18s ease, background .18s ease;
+}
+
+.api-credentials-button[hidden],
+.api-credentials-dialog[hidden] { display: none !important; }
+
+.api-credentials-button:hover,
+.api-credentials-actions button:hover {
+  border-color: #4f6b84;
+  background: #1b2d43;
+}
+
+.api-credentials-dialog {
+  box-sizing: border-box;
+  color-scheme: dark;
+  color: var(--ink, #e7edf5);
+  background: var(--surface, #111b2a);
+  border: 1px solid #3b506a;
+  border-radius: 14px;
+  padding: 24px;
+  width: min(440px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 45%);
+  text-align: left;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.api-credentials-dialog::backdrop {
+  background: rgb(3 8 15 / 76%);
+  backdrop-filter: blur(5px);
+}
+
+.api-credentials-dialog h2 {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 0 0 12px;
+}
+
+.api-credentials-dialog p {
+  margin: 0;
+  color: var(--muted, #9aaac0);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.api-credentials-dialog label {
+  display: block;
+  margin: 20px 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.api-credentials-dialog input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  color: var(--ink, #e7edf5);
+  background: var(--surface-muted, #0d1623);
+  border: 1px solid #3c506a;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 16px;
+}
+
+.api-credentials-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.api-credentials-actions button[type="submit"] {
+  color: #06242b;
+  background: var(--cyan, #39c6d9);
+  border-color: var(--cyan, #39c6d9);
+  font-weight: 600;
+}
+
+.api-credentials-actions button[type="submit"]:hover {
+  background: #72deeb;
+  border-color: #72deeb;
+}
+
+.api-credentials-button:focus-visible,
+.api-credentials-dialog button:focus-visible,
+.api-credentials-dialog input:focus-visible {
+  outline: 2px solid var(--focus, #72deeb);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .api-credentials-button,
+  .api-credentials-actions button { transition: none; }
+}

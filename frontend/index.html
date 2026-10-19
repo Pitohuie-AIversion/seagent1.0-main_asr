@@ -1,190 +1,126 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
   <title>水下多智能体任务决策系统 - ROV HUD</title>
-  <!-- 引入高科技感的 Google 字体 (异步加载，无网环境零卡顿) -->
-  <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
   <link rel="stylesheet" href="static/css/index.css">
+  <link rel="stylesheet" href="static/css/workspace.css">
   <link rel="stylesheet" href="static/css/api-auth.css">
 </head>
-
 <body>
+  <a class="skip-link" href="#messageInput" data-ui="skip">跳转到输入框</a>
   <div class="app">
-    <!-- Top Cockpit Header -->
-    <div class="header">
+    <header class="header">
       <div class="header-left">
-        <div class="status-indicator-light"></div>
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 40 40"><path d="m20 3 15 9v16l-15 9-15-9V12Z"/><path d="m11 17 9-5 9 5-9 5Zm0 7 9 5 9-5"/><path d="M20 22v7"/></svg>
+        </div>
         <div>
           <h1 id="ui-title">水下多智能体任务决策大模型</h1>
           <p id="ui-subtitle">任务准入｜状态解析｜环境理解｜智能应答</p>
         </div>
       </div>
       <div class="header-right">
+        <nav class="workspace-nav" aria-label="工作区">
+          <span class="nav-current" aria-current="page" data-ui="workspace">对话工作台</span>
+          <a href="dashboard" data-ui="monitor">运行监控 ↗</a>
+        </nav>
         {% include 'auth_controls.html' %}
         <div class="lang-selector">
-          <select id="langSelect">
-            <option value="zh">中文 (ZH)</option>
-            <option value="en">English (EN)</option>
-          </select>
+          <label class="sr-only" for="langSelect" data-ui="language">界面语言</label>
+          <select id="langSelect"><option value="zh">中文 (ZH)</option><option value="en">English (EN)</option></select>
         </div>
       </div>
-    </div>
+    </header>
 
-    <div class="main-panel">
-
-      <!-- Center Column: Intelligent Interaction Area -->
-      <div class="chat-area">
-        <!-- 语音录音时的炫酷动画 -->
-        <div class="audio-waveform-wrapper" id="audioWaveformWrapper" style="display: none;">
-          <div class="waveform-bar"></div>
-          <div class="waveform-bar"></div>
-          <div class="waveform-bar"></div>
-          <div class="waveform-bar"></div>
-          <div class="waveform-bar"></div>
-          <div class="waveform-bar"></div>
-          <div class="waveform-bar"></div>
+    <main class="main-panel">
+      <section class="chat-area" aria-labelledby="conversationTitle">
+        <div class="workspace-heading">
+          <div><span class="section-marker" aria-hidden="true"></span><h2 id="conversationTitle" data-ui="conversation">智能交互</h2></div>
+          <span class="interaction-status" id="interactionStatus" role="status">等待输入</span>
         </div>
-        <div class="messages" id="messages"></div>
-        <div class="input-area">
-          <input type="text" id="messageInput" placeholder="描述您的水下任务..." autocomplete="off">
-          <button id="voiceBtn">语音</button>
-          <button id="sendBtn">发送</button>
+        <details id="turnReceipt" class="turn-receipt" hidden>
+          <summary id="turnReceiptSummary"></summary>
+          <div id="turnReceiptBody" class="turn-receipt-body"></div>
+        </details>
+        <div class="messages" id="messages" role="log" aria-label="对话记录" aria-live="polite" aria-relevant="additions"></div>
+        <button id="jumpToLatestBtn" type="button" class="jump-latest" hidden data-ui="latest">回到最新消息 ↓</button>
+        <div class="audio-waveform-wrapper" id="audioWaveformWrapper" style="display:none;" role="status">
+          <span class="recording-dot" aria-hidden="true"></span>
+          <span data-ui="recording">正在录音</span><span id="voiceElapsed">00:00</span>
         </div>
-        <div class="asr-panel" id="asrPanel"></div>
-      </div>
+        <button id="voiceCancelBtn" type="button" hidden data-ui="cancelRecording">取消录音</button>
+        <div class="composer">
+          <div class="input-area">
+            <label class="sr-only" for="messageInput" data-ui="inputLabel">作业需求或查询问题</label>
+            <textarea id="messageInput" rows="2" placeholder="描述您的水下任务..." autocomplete="off" aria-describedby="composerHint"></textarea>
+            <div class="composer-actions">
+              <button id="voiceBtn" type="button" class="voice-btn" aria-pressed="false" aria-label="开始录音">语音</button>
+              <button id="sendBtn" type="button">发送</button>
+            </div>
+          </div>
+          <div class="composer-hint" id="composerHint"><span data-ui="inputHint">支持自然语言描述与语音输入</span><span data-ui="keyboardHint">Enter 发送 · Shift＋Enter 换行</span></div>
+        </div>
+        <div class="asr-panel" id="asrPanel" role="status" aria-live="polite"></div>
+      </section>
 
-      <!-- Right Column: Sidebar / Parameter Verification Center -->
-      <div class="sidebar" id="sidebar">
-        <div class="info-card" style="background: rgba(4, 9, 22, 0.9);">
-          <div class="info-title">
-            <!-- simulated time clock SVG -->
-            <svg class="tech-icon" viewBox="0 0 24 24">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M12 6v6h4" />
-              <path d="M12 2v2M2 12h2M12 20v2M20 12h2" />
+      <aside class="sidebar" id="sidebar" aria-label="任务与会话">
+        <details class="clock-card">
+          <summary><span id="title-simtime">模拟时间</span><time id="simulatedTimeDisplay" class="time-display">--:--:--</time></summary>
+          <div class="clock-settings"><label class="sr-only" for="timePicker" data-ui="timeLabel">设置模拟基准时间</label><div class="time-control"><input type="datetime-local" id="timePicker" step="1"><button id="setTimeBtn" type="button">设置</button></div><p class="time-hint" id="hint-simtime">点击设置可自定义基准时间</p></div>
+        </details>
+        <details class="task-workspace" id="taskWorksheet" open>
+          <summary class="worksheet-heading"><span data-ui="worksheet">任务工作单</span><span class="worksheet-state" id="worksheetState">待创建</span></summary>
+          <div class="task-empty-state" id="taskEmptyState">
+            <svg class="empty-task-graphic" viewBox="0 0 240 128" fill="none" aria-hidden="true">
+              <path class="terrain-line" d="M0 94c30-20 42 13 73-4s43-28 74-12 52 23 93-1M0 108c30-20 42 13 73-4s43-28 74-12 52 23 93-1M0 122c30-20 42 13 73-4s43-28 74-12 52 23 93-1"/>
+              <rect x="88" y="20" width="64" height="76" rx="8"/><path d="M106 39h28M106 53h28M106 67h17"/>
+              <circle cx="152" cy="88" r="14"/><path d="M146 88h12M152 82v12"/>
             </svg>
-            <span id="title-simtime">模拟时间</span>
+            <h3 data-ui="emptyTitle">尚未创建任务</h3>
+            <p data-ui="emptyBody">描述作业需求后，任务参数、待补充信息和校验结果将在这里呈现。</p>
+            <div class="empty-task-note"><svg class="tech-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4v5c0 5-8 9-8 9s-8-4-8-9V7Z"/><path d="m8 12 3 3 5-6"/></svg><span data-ui="emptyNote">知识查询不会创建或修改任务</span></div>
           </div>
-          <div id="simulatedTimeDisplay" class="time-display">--:--:--</div>
-          <div class="time-control">
-            <input type="datetime-local" id="timePicker" step="1">
-            <button id="setTimeBtn">设置</button>
+          <div id="taskDetails" hidden>
+            <section class="info-card task-summary"><h3 class="info-title" id="title-curtask">当前任务</h3><div id="taskInfo">-</div></section>
+            <div id="worksheetCounts" class="worksheet-counts" aria-live="polite"></div>
+            <section id="confirmationCard" class="info-card confirmation-card" hidden>
+              <h3 data-ui="confirmTitle">任务已就绪，等待你的确认</h3>
+              <p data-ui="confirmBody">请核对下方参数。确认后归档任务，发送结果将单独显示。</p>
+              <dl id="confirmationSummary" class="confirmation-summary"></dl>
+              <div id="confirmationReview" class="confirmation-review"></div>
+              <div class="confirmation-actions"><button id="publishTaskBtn" type="button" class="primary-button" disabled data-ui="publish">确认发布</button><button id="modifyTaskBtn" type="button" disabled data-ui="modify">修改参数</button></div>
+            </section>
+            <section id="taskChangesCard" class="info-card task-changes" hidden>
+              <h3 class="info-title" data-ui="changesTitle">本轮参数变更</h3>
+              <ul id="taskChangesList" class="task-changes-list"></ul>
+            </section>
+            <section class="info-card phase-card"><h3 class="info-title" id="title-status">阶段</h3><div id="phaseWarnings">-</div><ol id="taskProgress" class="task-progress" aria-label="任务流程"></ol></section>
+            <section class="info-card" id="constraintsCard" hidden><h3 class="info-title" id="title-constraints">冲突与警告</h3><div id="constraintWarnings">-</div></section>
+            <section class="info-card" id="missingCard" hidden><h3 class="info-title" id="title-missing">缺失字段</h3><div id="missingFields">-</div></section>
+            <section class="info-card" id="collectedCard" hidden><div class="card-heading"><h3 class="info-title" id="title-collected">已收集字段</h3><span id="fieldCount" class="field-count"></span></div><div id="collectedFields">暂无</div></section>
+            <section class="info-card" id="dispatchCard" hidden>
+              <h3 class="info-title" id="dispatchTitle">任务发送状态</h3><div id="dispatchStatus" role="status" aria-live="polite"></div><div id="dispatchDetail"></div>
+              <button id="dispatchRetryBtn" type="button" hidden>重新检查并下发</button><button id="dispatchRefreshBtn" type="button">刷新发送状态</button>
+            </section>
+            <details class="info-card result-details" id="resultCard" style="display:none;"><summary class="info-title" id="title-finaljson">最终任务JSON</summary><div id="finalJson" class="final-json"></div></details>
           </div>
-          <div class="time-hint" id="hint-simtime">点击设置可自定义基准时间</div>
-        </div>
+        </details>
 
-        <div class="info-card">
-          <div class="info-title">
-            <!-- Clipboard Task SVG -->
-            <svg class="tech-icon" viewBox="0 0 24 24">
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-              <path d="M9 12l2 2 4-4M7 7h10M7 17h6" />
-            </svg>
-            <span id="title-curtask">当前任务</span>
-          </div>
-          <div id="taskInfo">-</div>
-        </div>
-
-        <div class="info-card">
-          <div class="info-title">
-            <!-- Shield Alert/Status SVG -->
-            <svg class="tech-icon warning" viewBox="0 0 24 24">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-              <path d="M12 8v4M12 16h.01" />
-            </svg>
-            <span id="title-status">阶段</span>
-          </div>
-          <div id="phaseWarnings">-</div>
-        </div>
-
-        <div class="info-card">
-          <div class="info-title">
-            <!-- Shield Alert/Status SVG -->
-            <svg class="tech-icon warning" viewBox="0 0 24 24">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-              <path d="M12 8v4M12 16h.01" />
-            </svg>
-            <span id="title-constraints">冲突与警告</span>
-          </div>
-          <div id="constraintWarnings">-</div>
-        </div>
-
-        <div class="info-card">
-          <div class="info-title">
-            <!-- Hexagon check SVG -->
-            <svg class="tech-icon success" viewBox="0 0 24 24">
-              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
-              <path d="M9 12l2 2 4-4" />
-            </svg>
-            <span id="title-collected">已收集字段</span>
-          </div>
-          <div id="collectedFields">暂无</div>
-        </div>
-
-        <div class="info-card">
-          <div class="info-title">
-            <!-- Hexagon warn SVG -->
-            <svg class="tech-icon warning" viewBox="0 0 24 24">
-              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
-              <path d="M12 8v5M12 16h.01" />
-            </svg>
-            <span id="title-missing">缺失字段</span>
-          </div>
-          <div id="missingFields">-</div>
-        </div>
-
-        <div class="info-card" id="dispatchCard" hidden>
-          <div class="info-title" id="dispatchTitle">任务发送状态</div>
-          <div id="dispatchStatus" role="status" aria-live="polite"></div>
-          <div id="dispatchDetail"></div>
-          <button id="dispatchRetryBtn" type="button" hidden>重新检查并下发</button>
-          <button id="dispatchRefreshBtn" type="button">刷新发送状态</button>
-        </div>
-
-        <div class="info-card" id="resultCard" style="display:none;">
-          <div class="info-title">
-            <!-- File code brackets SVG -->
-            <svg class="tech-icon" viewBox="0 0 24 24">
-              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
-              <path d="M14 2v6h6M8 13c-1.5 0-1.5 2 0 2m8-2c1.5 0 1.5 2 0 2" />
-            </svg>
-            <span id="title-finaljson">最终任务JSON</span>
-          </div>
-          <div id="finalJson" class="final-json"></div>
-        </div>
-
-        <!-- 历史记录区域 -->
-        <div class="info-card">
-          <div class="info-title">
-            <!-- Clock arrow logs SVG -->
-            <svg class="tech-icon" viewBox="0 0 24 24">
-              <path d="M12 20a8 8 0 100-16 8 8 0 00-6.3 3.1" />
-              <path d="M3 6V1.5M3 6h4.5M12 8v4h3" />
-            </svg>
-            <span id="title-history">历史记录</span>
-          </div>
-          <button id="historyBtn"
-            style="width:100%; background:rgba(0, 240, 255, 0.12); border:1px solid var(--accent-cyan); color:var(--accent-cyan); padding:6px; border-radius:4px; cursor:pointer; font-family:var(--font-tech); font-size:0.75rem;">查看历史</button>
-          <div id="historyList"
-            style="display:none; margin-top:8px; max-height:160px; overflow-y:auto; background:rgba(0,5,15,0.95); border:1px solid rgba(0, 240, 255, 0.15); border-radius:4px; padding:4px;">
-            <!-- 动态加载历史列表 -->
-          </div>
-        </div>
-        <button class="reset-btn" id="resetBtn">⟳ 重新开始</button>
-      </div>
-    </div>
+        <section class="history-card"><div class="card-heading"><h3 class="info-title" id="title-history">历史记录</h3><button id="historyBtn" type="button">查看历史</button></div><div id="historyList" style="display:none;"></div></section>
+        <button class="reset-btn" id="resetBtn" type="button">⟳ 重新开始</button>
+        <p class="sidebar-note" data-ui="archiveNote">任务归档、指令发送与执行结果分别记录</p>
+      </aside>
+    </main>
   </div>
-
   <script src="static/js/api-auth.js" defer></script>
+  <script src="static/js/task-insights.js" defer></script>
+  <script src="static/js/workspace.js" defer></script>
   <script src="static/vendor/marked/marked.umd.js" defer></script>
   <script src="static/vendor/dompurify/purify.min.js" defer></script>
   <script src="static/js/markdown-renderer.js" defer></script>
   <script src="static/js/index.js" defer></script>
 </body>
-
 </html>

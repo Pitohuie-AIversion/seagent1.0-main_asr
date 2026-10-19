@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 from .duration_parser import (
     is_keep_duration_expression, parse_duration_evidence, parse_duration_spec,
 )
+from src.extraction.assertion_scope import task_edits_are_paused
 from src.extraction.model_profile import ModelRole, _is_unsupported_role_keyword_error
 from .relative_time_parser import parse_time_range
 
@@ -135,10 +136,37 @@ class TemporalParser:
         sentence_start = max((text.rfind(mark, 0, start) for mark in "。；;\n"), default=-1) + 1
         prefix = text[sentence_start:end]
         return bool(
-            re.search(r"不要|暂不|暂时不|不必|无需|不需要|不能|禁止|不允许|别把|别将|别再|勿", clause)
+            re.search(r"不要|暂不|暂时不|不必|无需|不需要|不能|禁止|不允许|"
+                      r"别(?:把|将|再|修改|改|调整|设置|动|推迟|提前|延长|缩短)|勿", clause)
+            or re.search(r"(?<!不)(?:只|仅)(?:是|想|要)?(?:讨论|咨询|了解|询问|问问|假设|举例)", clause)
             or re.search(r"如果|假如|假设|要是|若|是否|能否|会不会", prefix)
             or re.search(r"[？?]|(?:吗|么)\s*$|会怎样|会怎么样|会有什么", clause)
         )
+
+    @staticmethod
+    def _time_edits_are_paused(text: str) -> bool:
+        """Whole-turn restrictions on time must survive clause recovery.
+
+        Require the complete object: a restriction on water depth or a task
+        identifier does not forbid an independently requested time edit.
+        Endpoint-specific restrictions remain with the existing clause guards.
+        """
+        if task_edits_are_paused(text):
+            return True
+        prefix = r"(?:(?:请|本轮|这轮|这次|现在|目前|暂时|先|以上)\s*)*"
+        target = r"(?:(?:任何|所有|全部|当前|现有)\s*)*(?:任务时间|起止时间|时间(?:参数|配置|字段)?)"
+        refusal = r"(?:不要|别|不|无需|不必|不需要|禁止|不允许|不能|勿)\s*(?:再|先)?\s*"
+        action = r"(?:修改|改动|调整|变更|更改|更新|设置|写入|改|动)"
+        patterns = (
+            prefix + refusal + action + r"\s*" + target + r"\s*(?:了|吧)?",
+            prefix + refusal + r"(?:把|将)\s*" + target + r"\s*" + action + r"\s*(?:了|吧)?",
+            prefix + target + r"\s*(?:先|暂时|都)?\s*" + refusal + action + r"\s*(?:了|吧)?",
+            prefix + r"(?:我|我们)?(?:只|仅)(?:是|想|要)?(?:讨论|咨询|了解|询问|问问)\s*"
+            + target + r"\s*(?:而已)?",
+        )
+        return any(re.fullmatch(pattern, clause.strip())
+                   for clause in re.split(r"[，,。；;！!？?\n]+", str(text or ""))
+                   for pattern in patterns if clause.strip())
 
     @staticmethod
     def _time_adjustment_evidence(text: str) -> tuple[dict[str, tuple[str, float]], set[str]]:
@@ -292,7 +320,9 @@ class TemporalParser:
         for sentence in re.split(r"[。；;！!\n]", user_message):
             if re.search(r"如果|假如|假设|不要|取消|暂不|是否|能否|[？?]", sentence):
                 continue
-            matches.extend(pattern.finditer(sentence))
+            matches.extend(match for match in pattern.finditer(sentence)
+                           if not TemporalParser._nonassertive_time_context(
+                               sentence, match.start(), match.end()))
         if len(matches) != 1:
             return []
         match = matches[0]
@@ -383,6 +413,12 @@ class TemporalParser:
         user_message: str = "",
     ) -> tuple[list, list[str]]:
         """Resolve grounded S/D/E edits once, then validate the resulting interval."""
+        # Apply the full-turn veto before recovering omitted fields or trusting
+        # a model relation, including schemas which expose only start_time.
+        if TemporalParser._time_edits_are_paused(user_message):
+            return [item for item in candidates if not (
+                isinstance(item, dict) and item.get("canonical_key") in ("start_time", "end_time")
+            )], []
         if "end_time" not in allowed_keys:
             return candidates, []
 
@@ -391,6 +427,18 @@ class TemporalParser:
 
         # Work on copies: a rejected adjustment must not mutate caller candidates.
         candidates = [dict(item) if isinstance(item, dict) else item for item in candidates]
+        # A model can return an absolute clock quoted only in a rejected or
+        # discussed clause; do not let that bypass the deterministic guards.
+        def only_nonassertive_time_evidence(item):
+            if not isinstance(item, dict) or item.get("canonical_key") not in ("start_time", "end_time"):
+                return False
+            raw = str(item.get("raw_value") or "")
+            occurrences = list(re.finditer(re.escape(raw), user_message)) if raw else []
+            return bool(occurrences) and all(TemporalParser._nonassertive_time_context(
+                user_message, match.start(), match.end(),
+            ) for match in occurrences)
+
+        candidates = [item for item in candidates if not only_nonassertive_time_evidence(item)]
         explicit_fields = TemporalParser.explicit_field_time_candidates(
             user_message, get_current_datetime().replace(microsecond=0),
         )

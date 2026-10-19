@@ -6,17 +6,18 @@
   <title>SEAgent ROS 2 Bridge Monitor</title>
   <style>
     :root {
-      --page: #eef2f3;
-      --surface: #ffffff;
-      --surface-muted: #f6f8f9;
-      --ink: #172126;
-      --muted: #607078;
-      --line: #d8e0e3;
-      --cyan: #087f8c;
-      --green: #24845b;
-      --amber: #a66a00;
-      --red: #b43838;
-      --focus: #0b7189;
+      color-scheme: dark;
+      --page: #080d16;
+      --surface: #111b2a;
+      --surface-muted: #0d1623;
+      --ink: #e7edf5;
+      --muted: #9aaac0;
+      --line: #253449;
+      --cyan: #39c6d9;
+      --green: #74d6af;
+      --amber: #f0c17b;
+      --red: #f39b9b;
+      --focus: #72deeb;
     }
 
     * { box-sizing: border-box; }
@@ -24,73 +25,93 @@
       margin: 0;
       min-height: 100vh;
       color: var(--ink);
-      background: var(--page);
-      font-family: Inter, "Noto Sans SC", "Microsoft YaHei", Arial, sans-serif;
+      background: radial-gradient(ellipse at 20% 0, #102239 0, transparent 50%), var(--page);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
       font-size: 14px;
+      line-height: 1.5;
       letter-spacing: 0;
     }
     button, input, select { font: inherit; }
     button { cursor: pointer; }
-    button:focus-visible, input:focus-visible, select:focus-visible {
+    button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible, summary:focus-visible, .table-wrap:focus-visible {
       outline: 2px solid var(--focus);
       outline-offset: 2px;
     }
+    button:disabled { cursor: wait; opacity: .55; }
+    ::selection { color: var(--ink); background: #25546a; }
 
     .topbar {
-      height: 66px;
+      min-height: 84px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      padding: 0 28px;
-      color: #fff;
-      background: #172126;
-      border-bottom: 3px solid var(--cyan);
+      padding: 18px 28px;
+      color: var(--ink);
+      background: rgb(8 13 22 / 88%);
+      border-bottom: 1px solid var(--line);
     }
     .brand { min-width: 0; }
-    .brand h1 { margin: 0; font-size: 19px; font-weight: 700; }
-    .brand p { margin: 3px 0 0; color: #b9c7cc; font-size: 12px; }
-    .top-actions { display: flex; align-items: center; gap: 8px; }
+    .brand h1 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -.3px; }
+    .brand p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .top-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
     .btn {
-      min-height: 36px;
-      border: 1px solid #526269;
-      border-radius: 5px;
-      padding: 7px 12px;
-      color: #fff;
-      background: #26343a;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      border: 1px solid #33465e;
+      border-radius: 10px;
+      padding: 8px 14px;
+      color: var(--ink);
+      background: #142133;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: background .18s ease, border-color .18s ease;
     }
-    .btn:hover { background: #34464d; }
-    .btn.primary { border-color: var(--cyan); background: var(--cyan); }
-    .btn.primary:hover { background: #076d78; }
+    .btn:hover { background: #1b2d43; border-color: #4f6b84; }
+    .btn.primary { color: #06242b; border-color: var(--cyan); background: var(--cyan); font-weight: 650; }
+    .btn.primary:hover { background: #72deeb; border-color: #72deeb; }
+    .btn.nav-link { color: var(--muted); background: transparent; border-color: transparent; }
+    .btn.nav-link:hover { color: var(--ink); background: #142133; border-color: var(--line); }
 
-    main { width: min(1480px, 100%); margin: 0 auto; padding: 20px 24px 32px; }
+    main { width: min(1480px, 100%); margin: 0 auto; padding: 24px 28px 40px; }
+    .scope-summary { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 20px; margin: 0 0 16px; }
+    .scope-summary h2 { margin: 0; font-size: 16px; font-weight: 600; }
+    .scope-summary p { margin: 0; color: var(--muted); font-size: 12px; }
     .connection-strip {
       display: grid;
-      grid-template-columns: minmax(220px, 1.4fr) repeat(3, minmax(130px, .6fr));
+      grid-template-columns: minmax(160px, 1fr) minmax(175px, 1fr) minmax(130px, .8fr) repeat(2, minmax(170px, 1fr));
       border: 1px solid var(--line);
+      border-radius: 14px;
       background: var(--surface);
+      overflow: hidden;
     }
     .connection-main, .strip-cell { min-height: 76px; padding: 15px 18px; }
     .strip-cell { border-left: 1px solid var(--line); }
-    .label { color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; }
-    .value { margin-top: 7px; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .label { color: var(--muted); font-size: 12px; font-weight: 500; letter-spacing: .4px; }
+    .value { margin-top: 7px; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
     .value.small { font-size: 14px; overflow-wrap: anywhere; }
-    .state-line { display: flex; align-items: center; gap: 9px; margin-top: 7px; }
+    .state-line { display: flex; align-items: center; gap: 9px; margin-top: 7px; overflow-wrap: anywhere; }
     .state-dot { width: 9px; height: 9px; border-radius: 50%; background: #8d989d; flex: 0 0 auto; }
     .state-dot.good { background: var(--green); }
     .state-dot.warn { background: var(--amber); }
     .state-dot.bad { background: var(--red); }
+    .data-notice { margin: 14px 0 0; padding: 12px 16px; border: 1px solid #635039; border-radius: 10px; color: var(--amber); background: #29251f; font-size: 13px; }
+    .data-notice[hidden] { display: none; }
 
     .metrics {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       margin-top: 16px;
       border: 1px solid var(--line);
+      border-radius: 14px;
       background: var(--surface);
+      overflow: hidden;
     }
-    .metric { padding: 18px; min-height: 100px; }
+    .metric { padding: 20px; min-height: 116px; }
     .metric + .metric { border-left: 1px solid var(--line); }
-    .metric-number { margin-top: 8px; font-size: 28px; font-weight: 750; font-variant-numeric: tabular-nums; }
+    .metric-number { margin-top: 8px; font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.6px; overflow-wrap: anywhere; }
     .metric-unit { margin-left: 4px; color: var(--muted); font-size: 13px; font-weight: 500; }
 
     .workspace {
@@ -99,114 +120,127 @@
       gap: 16px;
       margin-top: 16px;
     }
-    .panel { border: 1px solid var(--line); background: var(--surface); min-width: 0; }
+    .panel { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); min-width: 0; overflow: hidden; }
     .panel-head {
-      min-height: 50px;
+      min-height: 58px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 10px 16px;
+      padding: 14px 18px;
       border-bottom: 1px solid var(--line);
     }
-    .panel-head h2 { margin: 0; font-size: 14px; }
+    .panel-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
     .counter { color: var(--muted); font-size: 12px; }
-    .table-wrap { overflow-x: auto; }
+    .table-scroll-hint { display: none; }
+    .table-wrap { overflow-x: auto; scrollbar-color: #3d526c var(--surface-muted); scrollbar-width: thin; }
+    .table-wrap:focus-visible { outline-offset: -2px; }
     table { width: 100%; border-collapse: collapse; table-layout: fixed; }
     th {
-      height: 38px;
+      height: 42px;
       padding: 0 14px;
       color: var(--muted);
       background: var(--surface-muted);
       border-bottom: 1px solid var(--line);
-      font-size: 11px;
+      font-size: 12px;
+      font-weight: 500;
       text-align: left;
     }
-    td { height: 58px; padding: 8px 14px; border-bottom: 1px solid #e8edef; overflow-wrap: anywhere; }
+    td { height: 62px; padding: 10px 14px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+    tbody tr:hover { background: #152235; }
     tr:last-child td { border-bottom: 0; }
     .mono { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; }
     .status {
       display: inline-flex;
       align-items: center;
-      min-height: 24px;
-      padding: 3px 8px;
-      border-radius: 4px;
-      color: #47565d;
-      background: #e8edef;
-      font-size: 11px;
-      font-weight: 800;
+      min-height: 26px;
+      padding: 3px 9px;
+      border: 1px solid #3c4e66;
+      border-radius: 6px;
+      color: #bac9dc;
+      background: #1c2a3b;
+      font-size: 12px;
+      font-weight: 600;
+      overflow-wrap: anywhere;
     }
-    .status.active { color: #076472; background: #d9f0f2; }
-    .status.success { color: #1e6949; background: #dff1e7; }
-    .status.warn { color: #7d5100; background: #fff0cf; }
-    .status.fail { color: #8f2d2d; background: #f8dede; }
-    .progress { width: 100%; height: 6px; overflow: hidden; background: #e5eaec; }
-    .progress span { display: block; height: 100%; background: var(--cyan); transition: width .25s ease; }
-    .empty { padding: 50px 20px; color: var(--muted); text-align: center; }
+    td .status + .status { margin-top: 5px; }
+    .status.active { color: #82e1ed; background: #16343f; border-color: #285563; }
+    .status.success { color: #8ae0ba; background: #17382e; border-color: #2a5948; }
+    .status.warn { color: #f0c98b; background: #382e21; border-color: #635039; }
+    .status.fail { color: #f3aaaa; background: #3b242c; border-color: #65404a; }
+    .task-note { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .task-legend { margin: 0; padding: 14px 18px; color: var(--muted); border-top: 1px solid var(--line); font-size: 12px; line-height: 1.8; }
+    .empty { padding: 48px 20px; color: var(--muted); text-align: center; line-height: 1.7; }
 
     .detail-list { margin: 0; }
     .detail-row {
       display: grid;
       grid-template-columns: 105px minmax(0, 1fr);
       gap: 12px;
-      padding: 13px 16px;
-      border-bottom: 1px solid #e8edef;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
     }
+    .detail-row:last-child { border-bottom: 0; }
     .detail-row dt { color: var(--muted); }
     .detail-row dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-    .error-box { display: none; margin: 14px; padding: 12px; color: #842c2c; background: #fae8e8; border-left: 3px solid var(--red); }
+    .error-box { display: none; margin: 14px; padding: 12px; color: #f3aaaa; background: #33202a; border: 1px solid #65404a; border-radius: 10px; overflow-wrap: anywhere; }
     .dynamic-panel { margin-top: 16px; }
-    .subscription-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 12px; padding: 14px; }
-    .subscription-card { min-width: 0; border: 1px solid var(--line); background: var(--surface-muted); }
-    .subscription-card-head { display: flex; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+    .subscription-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(290px, 100%), 1fr)); gap: 12px; padding: 16px; }
+    .subscription-grid:empty { display: none; }
+    .subscription-card { min-width: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-muted); overflow: hidden; }
+    .subscription-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px; border-bottom: 1px solid var(--line); }
+    .subscription-card-head > div { min-width: 0; }
+    .subscription-card-head > .status { flex: 0 0 auto; }
     .subscription-card-head h3 { margin: 0; font-size: 13px; }
-    .subscription-meta { margin-top: 4px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+    .subscription-meta { margin-top: 6px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
     .subscription-fields { margin: 0; }
     .subscription-fields .detail-row { grid-template-columns: minmax(100px, .8fr) minmax(0, 1.2fr); padding: 9px 14px; }
     .raw-message { margin: 0; padding: 12px 14px; border-top: 1px solid var(--line); }
-    .raw-message summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 700; }
-    .raw-message pre { max-height: 280px; margin: 10px 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+    .raw-message summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 500; padding: 5px 0; }
+    .raw-message summary:hover { color: var(--cyan); }
+    .raw-message pre { max-height: 280px; margin: 10px 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 
-    dialog { width: min(440px, calc(100vw - 28px)); border: 1px solid var(--line); border-radius: 6px; padding: 0; }
-    dialog::backdrop { background: rgba(13, 24, 29, .48); }
+    dialog { width: min(440px, calc(100vw - 28px)); max-height: calc(100dvh - 32px); border: 1px solid #3b506a; border-radius: 14px; padding: 0; color: var(--ink); background: var(--surface); box-shadow: 0 24px 80px rgb(0 0 0 / 45%); }
+    dialog::backdrop { background: rgb(3 8 15 / 76%); backdrop-filter: blur(5px); }
     .dialog-head { display: flex; justify-content: space-between; align-items: center; padding: 15px 18px; border-bottom: 1px solid var(--line); }
     .dialog-head h2 { margin: 0; font-size: 15px; }
-    .close-btn { width: 32px; height: 32px; border: 0; background: transparent; font-size: 22px; }
+    .close-btn { width: 40px; height: 40px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; font-size: 22px; }
+    .close-btn:hover { color: var(--ink); background: #1b2d43; }
     .dialog-body { display: grid; gap: 14px; padding: 18px; }
     .field { display: grid; gap: 6px; }
     .field label { color: var(--muted); font-size: 12px; font-weight: 700; }
-    .field input, .field select { width: 100%; min-height: 38px; border: 1px solid #bfcacf; border-radius: 4px; padding: 7px 9px; background: #fff; }
+    .field input, .field select { width: 100%; min-height: 42px; border: 1px solid #3c506a; border-radius: 8px; padding: 9px 11px; color: var(--ink); background: var(--surface-muted); }
     .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--line); }
-    .dialog-actions .btn { color: var(--ink); background: #fff; border-color: #aab7bc; }
-    .dialog-actions .btn.primary { color: #fff; background: var(--cyan); border-color: var(--cyan); }
 
-    @media (max-width: 900px) {
+    @media (max-width: 1050px) {
       .connection-strip { grid-template-columns: 1fr 1fr; }
       .connection-main { grid-column: 1 / -1; }
       .strip-cell { border-left: 0; border-top: 1px solid var(--line); }
-      .strip-cell:nth-child(3) { border-left: 1px solid var(--line); }
+      .strip-cell:nth-child(odd) { border-left: 1px solid var(--line); }
       .metrics { grid-template-columns: 1fr 1fr; }
       .metric:nth-child(3) { border-left: 0; border-top: 1px solid var(--line); }
       .metric:nth-child(4) { border-top: 1px solid var(--line); }
       .workspace { grid-template-columns: 1fr; }
     }
     @media (max-width: 600px) {
-      .topbar { height: auto; display: grid; grid-template-columns: minmax(0, 1fr) 84px; align-items: flex-start; padding: 14px 16px; }
-      .brand p { display: none; }
+      .topbar { flex-direction: column; align-items: stretch; gap: 14px; padding: 18px 16px; }
       .brand h1 { font-size: 18px; }
-      .top-actions { width: 84px; flex-direction: column; align-items: stretch; }
-      .top-actions .btn { width: 84px; padding-left: 6px; padding-right: 6px; white-space: nowrap; }
+      .top-actions { justify-content: flex-start; gap: 6px; }
+      .top-actions .btn { padding: 8px 11px; font-size: 13px; }
       main { padding: 12px; }
-      .connection-strip, .metrics { grid-template-columns: 1fr; }
+      .connection-strip { grid-template-columns: 1fr; }
       .connection-main { grid-column: auto; }
-      .strip-cell, .strip-cell:nth-child(3), .metric + .metric, .metric:nth-child(3) { border-left: 0; border-top: 1px solid var(--line); }
-      table { min-width: 0; }
-      th, td { padding-left: 8px; padding-right: 8px; }
-      th:nth-child(1) { width: 25% !important; }
-      th:nth-child(2) { width: 33% !important; }
-      th:nth-child(3) { width: 22% !important; }
-      th:nth-child(4) { width: 20% !important; }
-      th:nth-child(5), td:nth-child(5) { display: none; }
+      .strip-cell, .strip-cell:nth-child(odd) { border-left: 0; border-top: 1px solid var(--line); }
+      .connection-main, .strip-cell { min-height: 68px; padding: 12px 16px; }
+      .metric { min-height: 100px; padding: 16px; }
+      .metric-number { font-size: 26px; }
+      .table-wrap table { min-width: 760px; }
+      .table-scroll-hint { display: block; margin: 0; padding: 8px 16px; color: var(--muted); background: var(--surface-muted); font-size: 12px; }
+      .panel-head { padding: 13px 16px; }
+      .dialog-actions { flex-wrap: wrap; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
     }
   </style>
   <link rel="stylesheet" href="static/css/api-auth.css">
@@ -218,6 +252,9 @@
       <p>Task transport and robot execution telemetry</p>
     </div>
     <div class="top-actions">
+      {% if dashboard_api.status.endswith('/api/mcp/status') %}
+      <a class="btn nav-link" href="./">返回对话</a>
+      {% endif %}
       {% include 'auth_controls.html' %}
       <button class="btn" id="refreshButton" type="button">刷新</button>
       <button class="btn primary" id="gatewayButton" type="button">网关设置</button>
@@ -225,61 +262,69 @@
   </header>
 
   <main>
+    <div class="scope-summary">
+      <h2>监控范围 · 当前网关全部 ROS 任务</h2>
+      <p>按 ROS task ID 与 Intent ID 对照任务</p>
+    </div>
     <section class="connection-strip" aria-label="连接状态">
       <div class="connection-main">
-        <div class="label">Bridge state</div>
+        <div class="label">网关连接</div>
         <div class="state-line"><span class="state-dot" id="bridgeDot"></span><strong id="bridgeState">检查中</strong></div>
       </div>
-      <div class="strip-cell"><div class="label">Gateway</div><div class="value small" id="gatewayValue">--</div></div>
-      <div class="strip-cell"><div class="label">Telemetry</div><div class="value small" id="telemetryState">--</div></div>
-      <div class="strip-cell"><div class="label">Last update</div><div class="value small" id="lastUpdate">--</div></div>
+      <div class="strip-cell"><div class="label">当前网关</div><div class="value small" id="gatewayValue">--</div></div>
+      <div class="strip-cell"><div class="label">遥测有效性</div><div class="value small" id="telemetryState">等待状态</div></div>
+      <div class="strip-cell"><div class="label">服务端接收遥测</div><div class="value small" id="lastUpdate">--</div></div>
+      <div class="strip-cell"><div class="label">浏览器最近成功拉取</div><div class="value small" id="lastSuccessfulPull">--</div></div>
     </section>
+    <p class="data-notice" id="dataNotice" role="status" hidden></p>
 
     <section class="metrics" aria-label="机器人遥测指标">
       <div class="metric"><div class="label">Water depth</div><div class="metric-number"><span id="depthValue">--</span><span class="metric-unit">m</span></div></div>
       <div class="metric"><div class="label">Altitude</div><div class="metric-number"><span id="altitudeValue">--</span><span class="metric-unit">m</span></div></div>
       <div class="metric"><div class="label">Control mode</div><div class="metric-number" id="controlMode">--</div></div>
-      <div class="metric"><div class="label">Active tasks</div><div class="metric-number" id="taskCount">0</div></div>
+      <div class="metric"><div class="label">Active tasks</div><div class="metric-number" id="taskCount">--</div></div>
     </section>
 
     <section class="workspace">
       <div class="panel">
-        <div class="panel-head"><h2>当前活动任务</h2><span class="counter" id="taskCounter">0 records</span></div>
-        <div class="table-wrap">
+        <div class="panel-head"><h2>当前活动任务</h2><span class="counter" id="taskCounter">等待状态</span></div>
+        <p class="table-scroll-hint">左右滑动查看发送记录与执行反馈</p>
+        <div class="table-wrap" tabindex="0" role="region" aria-label="当前活动任务表格，可横向滚动">
           <table>
-            <thead><tr><th style="width:18%">ROS task ID</th><th style="width:24%">Intent ID</th><th style="width:18%">Type</th><th style="width:16%">Status</th><th style="width:24%">Progress</th></tr></thead>
+            <thead><tr><th scope="col" style="width:15%">ROS task ID</th><th scope="col" style="width:23%">Intent ID</th><th scope="col" style="width:16%">Type</th><th scope="col" style="width:21%">发送记录</th><th scope="col" style="width:25%">执行反馈</th></tr></thead>
             <tbody id="taskRows"></tbody>
           </table>
-          <div class="empty" id="emptyTasks">暂无 ROS 任务回传</div>
+          <div class="empty" id="emptyTasks">正在获取任务状态…</div>
         </div>
       </div>
 
       <aside class="panel">
-        <div class="panel-head"><h2>实时姿态</h2></div>
+        <div class="panel-head"><h2>姿态快照</h2></div>
         <dl class="detail-list">
           <div class="detail-row"><dt>X</dt><dd id="poseX">--</dd></div>
           <div class="detail-row"><dt>Y</dt><dd id="poseY">--</dd></div>
           <div class="detail-row"><dt>Z</dt><dd id="poseZ">--</dd></div>
           <div class="detail-row"><dt>System health</dt><dd id="systemHealth">--</dd></div>
-          <div class="detail-row"><dt>Data owner</dt><dd>SEAgent :6006</dd></div>
+          <div class="detail-row"><dt>时间含义</dt><dd>服务端接收时间，非设备采集时间</dd></div>
         </dl>
         <div class="error-box" id="errorBox"></div>
       </aside>
     </section>
 
     <section class="panel dynamic-panel" aria-label="历史与待确认任务">
-      <div class="panel-head"><h2>历史与待确认任务</h2><span class="counter" id="historyCounter">0 records</span></div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>ROS task ID</th><th>Intent ID</th><th>Type</th><th>Status</th><th>Progress</th></tr></thead>
+      <div class="panel-head"><h2>历史与待确认任务</h2><span class="counter" id="historyCounter">等待状态</span></div>
+      <p class="table-scroll-hint">左右滑动查看发送记录与执行反馈</p>
+      <div class="table-wrap" tabindex="0" role="region" aria-label="历史与待确认任务表格，可横向滚动"><table>
+        <thead><tr><th scope="col">ROS task ID</th><th scope="col">Intent ID</th><th scope="col">Type</th><th scope="col">发送记录</th><th scope="col">执行反馈</th></tr></thead>
         <tbody id="historyRows"></tbody>
-      </table><div class="empty" id="emptyHistory">暂无历史或待确认任务</div></div>
-      <p style="padding:0 16px;color:var(--muted)">DELETE_REQUESTED 表示已发送删除请求，尚未确认删除；UNKNOWN 表示当前没有有效执行状态。</p>
+      </table><div class="empty" id="emptyHistory">正在获取历史与待确认任务…</div></div>
+      <p class="task-legend">工作单归档仅表示任务已保存；SENT 表示已写入传输；FINISH 才表示执行完成。删除请求仍需确认，历史记录也可能尚无有效执行反馈。</p>
     </section>
 
     <section class="panel dynamic-panel" aria-label="配置驱动的ROS订阅">
-      <div class="panel-head"><h2>动态 ROS 订阅</h2><span class="counter" id="subscriptionCounter">0 channels</span></div>
+      <div class="panel-head"><h2>动态 ROS 订阅</h2><span class="counter" id="subscriptionCounter">等待状态</span></div>
       <div class="subscription-grid" id="dynamicSubscriptions"></div>
-      <div class="empty" id="emptySubscriptions">当前 YAML 没有启用的动态订阅</div>
+      <div class="empty" id="emptySubscriptions">正在获取订阅状态…</div>
     </section>
   </main>
 
@@ -300,55 +345,75 @@
     const fetch = (...args) => window.SEAgentAuth.fetch(...args);
     const taskTypeNames = {0: 'TASK_MANAGE', 1: 'CLAMP_CABLE', 2: 'SEARCH_CABLE', 3: 'CLAMP_PIN', 4: 'INSERT_PLUG', 5: 'MOVE_TASK', 6: 'CTRL_TASK', 10: 'AUV_TASK'};
     const statusClasses = {READY: '', PLAN: 'active', ENTER: 'active', ONGOING: 'active', EXIT: 'active', FINISH: 'success', PAUSE: 'warn', FAIL: 'fail', FAILED: 'fail', SENT: ''};
+    const executionNames = {READY: '准备就绪', PLAN: '规划中', ENTER: '进入作业', ONGOING: '执行中', EXIT: '退出作业', FINISH: '执行完成', PAUSE: '已暂停', FAIL: '执行失败'};
+    const dispatchNames = {SENT: '已写入传输', SENDING: '发送结果待核实', FAILED: '发送失败'};
     let pollTimer = null;
     let pollIntervalMs = 1000;
     let statusRequestSeq = 0;
     let renderedStatusSeq = 0;
     let isSavingGateway = false;
+    let lastSuccessfulPullAt = null;
 
     const text = (id, value) => { document.getElementById(id).textContent = value ?? '--'; };
-    const number = value => value === null || value === undefined || Number.isNaN(Number(value)) ? '--' : Number(value).toFixed(1);
-    const formatTime = value => value ? new Date(value).toLocaleString('zh-CN', {hour12: false}) : '--';
+    const number = value => value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? '--' : Number(value).toFixed(1);
+    const formatTime = value => {
+      if (value === null || value === undefined || value === '') return '--';
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? '--' : date.toLocaleString('zh-CN', {hour12: false, timeZoneName: 'short'});
+    };
+
+    function taskBadge(cell, label, style = '') {
+      const badge = document.createElement('span');
+      badge.className = `status ${style}`;
+      badge.textContent = label;
+      cell.appendChild(badge);
+    }
+
+    function taskNote(cell, label) {
+      const note = document.createElement('span');
+      note.className = 'task-note';
+      note.textContent = label;
+      cell.appendChild(note);
+    }
 
     function renderTasks(tasks, history = false) {
       const rows = document.getElementById(history ? 'historyRows' : 'taskRows');
       rows.replaceChildren();
-      document.getElementById(history ? 'emptyHistory' : 'emptyTasks').style.display = tasks.length ? 'none' : 'block';
+      const empty = document.getElementById(history ? 'emptyHistory' : 'emptyTasks');
+      empty.style.display = tasks.length ? 'none' : 'block';
+      empty.textContent = history ? '暂无历史或待确认任务' : '暂无当前活动任务';
       if (!history) text('taskCount', tasks.length);
       text(history ? 'historyCounter' : 'taskCounter', `${tasks.length} records`);
       tasks.forEach(task => {
         const row = document.createElement('tr');
-        const values = [task.task_id, task.intent_id || '--', taskTypeNames[task.task_type] || String(task.task_type), task.status];
+        const values = [task.task_id, task.intent_id || '--', taskTypeNames[task.task_type] || String(task.task_type)];
         values.forEach((value, index) => {
           const cell = document.createElement('td');
           if (index < 2) cell.className = 'mono';
-          if (index === 3) {
-            const badge = document.createElement('span');
-            badge.className = `status ${statusClasses[String(value).toUpperCase()] || ''}`;
-            badge.textContent = value;
-            cell.appendChild(badge);
-            if (task.control_state && task.control_state !== value) {
-              const request = document.createElement('span');
-              request.className = 'status warn';
-              request.textContent = task.control_state;
-              cell.appendChild(request);
-            }
-            if (task.last_observed_status && task.last_observed_status !== value) {
-              cell.title = `上次观测：${task.last_observed_status}`;
-            }
-          } else {
-            cell.textContent = value;
-          }
+          cell.textContent = value;
           row.appendChild(cell);
         });
-        const progressCell = document.createElement('td');
-        const progress = document.createElement('div');
-        progress.className = 'progress';
-        const fill = document.createElement('span');
-        fill.style.width = `${Math.max(0, Math.min(100, Number(task.progress) || 0))}%`;
-        progress.appendChild(fill);
-        progressCell.appendChild(progress);
-        row.appendChild(progressCell);
+        const dispatchCell = document.createElement('td');
+        const dispatch = task.dispatch_state;
+        taskBadge(dispatchCell, dispatch ? `${dispatch} · ${dispatchNames[dispatch] || '未知发送状态'}` : '无发送记录', dispatch === 'FAILED' ? 'fail' : dispatch === 'SENDING' ? 'warn' : '');
+        if (task.error) taskNote(dispatchCell, task.error);
+        row.appendChild(dispatchCell);
+
+        const feedbackCell = document.createElement('td');
+        const status = String(task.status || 'UNKNOWN').toUpperCase();
+        const observed = task.observed_in_latest === true && !task.observation_precedes_control;
+        if (observed && executionNames[status]) {
+          taskBadge(feedbackCell, `${status} · ${executionNames[status]}`, statusClasses[status]);
+        } else {
+          taskBadge(feedbackCell, status === 'SENT' ? '等待执行回传' : '执行状态未确认');
+        }
+        if (task.last_observed_status && (!observed || !executionNames[status] || task.last_observed_status !== status)) {
+          taskNote(feedbackCell, `上次回传：${task.last_observed_status}`);
+        }
+        if (task.control_state) {
+          taskNote(feedbackCell, task.control_state === 'DELETE_REQUESTED' ? 'DELETE_REQUESTED · 删除请求已发送，待确认' : `控制请求：${task.control_state}`);
+        }
+        row.appendChild(feedbackCell);
         rows.appendChild(row);
       });
     }
@@ -364,6 +429,7 @@
       const empty = document.getElementById('emptySubscriptions');
       container.replaceChildren();
       empty.style.display = subscriptions.length ? 'none' : 'block';
+      empty.textContent = '当前没有启用的动态订阅';
       text('subscriptionCounter', `${subscriptions.length} channels`);
 
       subscriptions.forEach(subscription => {
@@ -431,12 +497,19 @@
       const snapshot = data.snapshot || {};
       const connected = Boolean(data.mcp_connected);
       const fresh = Boolean(data.telemetry_fresh);
+      lastSuccessfulPullAt = new Date();
+      text('lastSuccessfulPull', formatTime(lastSuccessfulPullAt));
       const dot = document.getElementById('bridgeDot');
       dot.className = `state-dot ${connected && fresh ? 'good' : connected ? 'warn' : 'bad'}`;
-      text('bridgeState', connected && fresh ? 'CONNECTED / LIVE' : connected ? 'CONNECTED / WAITING TELEMETRY' : 'DISCONNECTED');
+      text('bridgeState', connected ? '已连接' : '未连接');
       text('gatewayValue', data.host && data.port ? `ws://${data.host}:${data.port}` : '--');
-      text('telemetryState', fresh ? 'LIVE' : 'STALE / NONE');
+      text('telemetryState', fresh ? '有效遥测' : snapshot.last_update ? '已过期 · 最近快照' : '尚未收到遥测');
       text('lastUpdate', formatTime(snapshot.last_update));
+      const notice = document.getElementById('dataNotice');
+      notice.hidden = connected && fresh;
+      notice.textContent = !connected
+        ? (snapshot.last_update ? '网关未连接。下方保留服务端最近快照，当前执行状态可能已变化。' : '网关未连接，尚未收到遥测。发送记录不能证明机器人已执行任务。')
+        : '网关已连接，但尚无有效遥测。下方数值如有显示，为服务端保留的最近快照。';
       text('depthValue', number(snapshot.water_depth_m));
       text('altitudeValue', number(snapshot.altitude_m));
       text('controlMode', snapshot.ctr_mode || '--');
@@ -455,6 +528,25 @@
       errorBox.style.display = error ? 'block' : 'none';
     }
 
+    function showStatusFailure(error) {
+      text('bridgeState', '连接状态未确认');
+      document.getElementById('bridgeDot').className = 'state-dot warn';
+      text('telemetryState', lastSuccessfulPullAt ? '更新中断 · 保留快照' : '尚未获取状态');
+      const notice = document.getElementById('dataNotice');
+      notice.hidden = false;
+      notice.textContent = lastSuccessfulPullAt
+        ? '状态拉取失败。保留上次成功获取的快照；下方信息不代表当前状态，最近成功拉取时间保持不变。'
+        : '状态拉取失败，尚未获取监控数据。请检查连接后刷新。';
+      if (!lastSuccessfulPullAt) {
+        text('emptyTasks', '尚未获取任务状态');
+        text('emptyHistory', '尚未获取历史与待确认任务');
+        text('emptySubscriptions', '尚未获取订阅状态');
+      }
+      const errorBox = document.getElementById('errorBox');
+      errorBox.textContent = String(error.message || error);
+      errorBox.style.display = 'block';
+    }
+
     const dashboardApi = {{ dashboard_api | tojson }};
 
     async function refreshStatus() {
@@ -465,11 +557,12 @@
         if (requestSeq < renderedStatusSeq) return;
         renderedStatusSeq = requestSeq;
         if (!response.ok) throw new Error(data.msg || `HTTP ${response.status}`);
+        if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('状态响应格式无效');
         renderStatus(data);
       } catch (error) {
         if (requestSeq < renderedStatusSeq) return;
         renderedStatusSeq = requestSeq;
-        renderStatus({mcp_connected: false, telemetry_fresh: false, msg: String(error), snapshot: {}});
+        showStatusFailure(error);
       }
     }
 
@@ -486,7 +579,7 @@
     document.getElementById('refreshButton').addEventListener('click', refreshStatus);
     document.getElementById('gatewayButton').addEventListener('click', async () => {
       try { await loadGateway(); document.getElementById('gatewayDialog').showModal(); }
-      catch (error) { renderStatus({mcp_connected: false, telemetry_fresh: false, msg: String(error), snapshot: {}}); }
+      catch (error) { window.alert(`读取网关设置失败：${error.message || error}。当前监控快照保持不变。`); }
     });
     document.getElementById('closeDialog').addEventListener('click', () => document.getElementById('gatewayDialog').close());
     document.getElementById('cancelDialog').addEventListener('click', () => document.getElementById('gatewayDialog').close());

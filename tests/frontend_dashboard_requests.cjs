@@ -8,7 +8,7 @@ function harness(){
   const context=vm.createContext({console});
   vm.runInContext(`
     let statusRequestSeq=0,renderedStatusSeq=0,isSavingGateway=false;
-    const requests=[],renders=[],alerts=[],nodes=new Map();
+    const requests=[],renders=[],failures=[],alerts=[],nodes=new Map();
     const dashboardApi={status:'/status',gateway:'/gateway'};
     const document={getElementById(id){
       if(!nodes.has(id))nodes.set(id,{value:id==='gatewayPort'?'9090':'localhost',disabled:false,open:true,
@@ -17,9 +17,10 @@ function harness(){
     }};
     const window={alert(message){alerts.push(message);}};
     function renderStatus(data){renders.push(data);}
+    function showStatusFailure(error){failures.push(error.message || String(error));}
     function fetch(url,options={}){return new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}));}
     ${html.slice(first,last)}
-    globalThis.client={refreshStatus,requests,renders,alerts,node:id=>document.getElementById(id),
+    globalThis.client={refreshStatus,requests,renders,failures,alerts,node:id=>document.getElementById(id),
       submit(){return document.getElementById('gatewayForm').listeners.submit({preventDefault(){}});}};
   `,context);
   return context.client;
@@ -35,7 +36,32 @@ async function staleStatusCannotOverwrite(){
     await older;
     assert.equal(client.renders.length,1,'stale poll responses must not overwrite current telemetry');
     assert.equal(client.renders[0].host,'new');
+    assert.equal(client.failures.length,0,'stale errors must not mark current data unavailable');
   }
+}
+async function pollingFailurePreservesPreviousSnapshot(){
+  const client=harness();
+  const first=client.refreshStatus();
+  client.requests[0].resolve({ok:true,async json(){return {mcp_connected:true,host:'known-gateway'};}});
+  await first;
+  const broken=client.refreshStatus();
+  client.requests[1].reject(new Error('network unavailable'));
+  await broken;
+  assert.equal(client.renders.length,1,'failed requests must not render an empty replacement snapshot');
+  assert.deepEqual(Array.from(client.failures),['network unavailable']);
+  const recovered=client.refreshStatus();
+  client.requests[2].resolve({ok:true,async json(){return {mcp_connected:true,host:'recovered-gateway'};}});
+  await recovered;
+  assert.equal(client.renders.at(-1).host,'recovered-gateway');
+}
+async function gatewayReadFailureDoesNotChangeTelemetry(){
+  const client=harness();
+  const opened=client.node('gatewayButton').listeners.click();
+  client.requests[0].reject(new Error('settings unavailable'));
+  await opened;
+  assert.equal(client.renders.length,0);
+  assert.equal(client.failures.length,0);
+  assert(client.alerts[0].includes('settings unavailable'));
 }
 async function slowPollingStillMakesProgress(){
   const client=harness();
@@ -69,6 +95,8 @@ async function gatewaySaveRecovers(){
 (async()=>{
   await staleStatusCannotOverwrite();
   await slowPollingStillMakesProgress();
+  await pollingFailurePreservesPreviousSnapshot();
+  await gatewayReadFailureDoesNotChangeTelemetry();
   await gatewaySaveRecovers();
   console.log('Dashboard request recovery regressions passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
