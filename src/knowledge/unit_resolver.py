@@ -233,6 +233,51 @@ class UnitResolver:
             )
         return matches[0] if matches else None
 
+    @staticmethod
+    def _unit_lookup_targets(unit: dict) -> list[str]:
+        targets = [
+            unit.get("unit_id", ""),
+            unit.get("display_name", ""),
+            *unit.get("aliases", []),
+        ]
+        serial_no = str(unit.get("serial_no") or "").strip()
+        if serial_no:
+            targets.extend([
+                serial_no,
+                f"{serial_no}号",
+                f"{serial_no}号机",
+                f"{serial_no}机",
+            ])
+            lstripped = serial_no.lstrip("0")
+            if lstripped.isdigit():
+                num = int(lstripped)
+                targets.extend([
+                    str(num),
+                    f"{num}号",
+                    f"{num}号机",
+                    f"{num}机",
+                ])
+                cn_map = {
+                    1: ["一"],
+                    2: ["二", "两"],
+                    3: ["三"],
+                    4: ["四"],
+                    5: ["五"],
+                    6: ["六"],
+                    7: ["七"],
+                    8: ["八"],
+                    9: ["九"],
+                }
+                for cn in cn_map.get(num, []):
+                    targets.extend([
+                        cn,
+                        f"{cn}号",
+                        f"{cn}号机",
+                        f"{cn}机",
+                        f"{cn}台",
+                    ])
+        return [t for t in targets if t]
+
     def resolve_robot_unit_exact(
         self,
         unit_selector: str,
@@ -263,10 +308,7 @@ class UnitResolver:
                 for unit in units
                 if any(
                     needle == _norm(target)
-                    for target in (
-                        unit.get("display_name", ""),
-                        *unit.get("aliases", []),
-                    )
+                    for target in self._unit_lookup_targets(unit)
                     if target
                 )
             ]
@@ -290,6 +332,7 @@ class UnitResolver:
         unit_selector: str,
         task_type_key: str | None = None,
         variant_selector: str | None = None,
+        family_selector: str | None = None,
     ) -> dict | None:
         """按单机层解析 unit_id、display_name 或 aliases；存在歧义时返回 None"""
         needle = _norm(unit_selector)
@@ -300,11 +343,23 @@ class UnitResolver:
         if variant_selector:
             variant = self.get_rov_for_task(variant_selector, task_type_key)
             if not variant:
-                return None
+                # 容错：如果 variant_selector 实际上传入的是 family（例如上一级传入了系列名称）
+                if not family_selector:
+                    family_selector = variant_selector
+                else:
+                    return None
+
+        family_id = None
+        if variant:
+            family_id = variant.get("family_id")
+        elif family_selector:
+            family_id = self.engine.resolve_robot_family_id(family_selector, task_type_key)
+            if not family_id and not task_type_key:
+                family_id = self.engine.resolve_robot_family_id(family_selector, None)
 
         needle_conv = re.sub(r'^(?:改|改成|换成|采用|使用|选择)?\s*(\d+|[零〇一二两三四五六七八九十]+)\s*(?:号\s*)?级$', r'\1号机', needle)
         if needle_conv != needle:
-            alt_res = self.resolve_robot_unit(needle_conv, task_type_key, variant_selector)
+            alt_res = self.resolve_robot_unit(needle_conv, task_type_key, variant_selector, family_selector)
             if alt_res:
                 return alt_res
 
@@ -319,6 +374,8 @@ class UnitResolver:
             unit_variant = variants.get(u.get("variant_id"))
             if variant and u.get("variant_id") != variant.get("variant_id"):
                 return None
+            if family_id and unit_variant and unit_variant.get("family_id") != family_id:
+                return None
             if unit_variant and self.engine.robot_matches_task(unit_variant, task_type_key):
                 return {**u, "robot": unit_variant}
             return None
@@ -326,26 +383,35 @@ class UnitResolver:
         def matching_units(contains: bool) -> list[dict]:
             matches: list[dict] = []
             variants = {r["variant_id"]: r for r in self.get_all_rovs()}
+            clean_needle = re.sub(r'^(?:改|改成|换成|采用|使用|选择)\s*', '', needle)
             for unit in self.robot_fleet.get("fleet_units", []):
                 if variant and unit.get("variant_id") != variant.get("variant_id"):
                     continue
                 unit_variant = variants.get(unit.get("variant_id"))
                 if not unit_variant or not self.engine.robot_matches_task(unit_variant, task_type_key):
                     continue
-                targets = [
-                    unit.get("unit_id", ""),
-                    unit.get("display_name", ""),
-                    *unit.get("aliases", []),
-                ]
+                if family_id and unit_variant.get("family_id") != family_id:
+                    continue
                 if contains:
+                    # 模糊包含匹配：仅使用具有特异性的正式标识（unit_id, display_name 及配置的 aliases）
+                    # 避免通用的短序号（如 "001", "1", "1号机"）作为子串误匹配无关设备
+                    targets = [
+                        unit.get("unit_id", ""),
+                        unit.get("display_name", ""),
+                        *unit.get("aliases", []),
+                    ]
                     matched = any(
                         needle in _norm(target) or _norm(target) in needle
                         for target in targets
-                        if target
+                        if target and len(_norm(target)) >= 3
                     )
                 else:
+                    # 精确匹配：包含完整的序号口语衍生别名（如 "001号", "001号机", "1号机", "002号机" 等）
+                    targets = self._unit_lookup_targets(unit)
                     matched = any(
-                        needle == _norm(target) for target in targets if target
+                        needle == _norm(target) or (clean_needle and clean_needle == _norm(target))
+                        for target in targets
+                        if target
                     )
                 if matched:
                     matches.append({**unit, "robot": unit_variant})
@@ -355,12 +421,35 @@ class UnitResolver:
         if exact:
             return exact[0] if len(exact) == 1 else None
         partial = matching_units(True)
-        return partial[0] if len(partial) == 1 else None
+        if partial and len(partial) == 1:
+            return partial[0]
+
+        # 复合输入探测兜底：如果未显式指定 family_id 与 variant，且 needle 包含 family 名称（例如 "轻型001号" 或 "轻型工作001"）
+        if not family_id and not variant:
+            families = self.robot_fleet.get("robot_families", {}) or {}
+            for f_id, f_cfg in families.items():
+                if not isinstance(f_cfg, dict):
+                    continue
+                f_targets = [
+                    f_cfg.get("full_name", ""),
+                    *f_cfg.get("aliases", []),
+                ]
+                for f_target in f_targets:
+                    f_norm = _norm(f_target)
+                    if len(f_norm) >= 2 and needle.startswith(f_norm):
+                        remainder = needle[len(f_norm):].strip()
+                        if remainder:
+                            sub_res = self.resolve_robot_unit(remainder, task_type_key, None, f_id)
+                            if sub_res:
+                                return sub_res
+
+        return None
 
     def resolve_robot_unit_from_text(
         self,
         text: str,
         task_type_key: str | None = None,
+        family_selector: str | None = None,
     ) -> dict | None:
         """从自然语言文本中提取最长匹配的唯一 fleet unit"""
         if not text or not isinstance(text, str):
@@ -388,7 +477,7 @@ class UnitResolver:
                 matched_spans.append((start, end))
                 for target in unit_targets:
                     uid = target.split(":", 1)[1]
-                    unit = self.resolve_robot_unit(uid, task_type_key)
+                    unit = self.resolve_robot_unit(uid, task_type_key, family_selector=family_selector)
                     if unit and not any(u.get("unit_id") == unit.get("unit_id") for u in unit_matches):
                         unit_matches.append(unit)
         if len(unit_matches) == 1:

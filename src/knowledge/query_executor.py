@@ -199,12 +199,22 @@ class QueryExecutor:
             target = f"unit:{unit_id}"
             for field in ("unit_id", "display_name", "serial_no", "status_ref"):
                 add(unit.get(field), target)
-            serial_no = str(unit.get("serial_no") or "").lstrip("0")
-            if serial_no.isdigit():
-                num = int(serial_no)
-                cn_num = {1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八", 9: "九"}.get(num, str(num))
-                add(f"{num}号机", target)
-                add(f"{cn_num}号机", target)
+            raw_serial = str(unit.get("serial_no") or "").strip()
+            if raw_serial:
+                add(f"{raw_serial}号", target)
+                add(f"{raw_serial}号机", target)
+                add(f"{raw_serial}机", target)
+                lstripped = raw_serial.lstrip("0")
+                if lstripped.isdigit():
+                    num = int(lstripped)
+                    cn_map = {1: ["一"], 2: ["二", "两"], 3: ["三"], 4: ["四"], 5: ["五"], 6: ["六"], 7: ["七"], 8: ["八"], 9: ["九"]}
+                    add(f"{num}号", target)
+                    add(f"{num}号机", target)
+                    add(f"{num}机", target)
+                    for cn in cn_map.get(num, []):
+                        add(f"{cn}号", target)
+                        add(f"{cn}号机", target)
+                        add(f"{cn}机", target)
             for alias in unit.get("aliases", []):
                 add(alias, target)
 

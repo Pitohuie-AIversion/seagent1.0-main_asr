@@ -125,3 +125,151 @@ class TestEquipmentUnitInteractiveSelection(unittest.TestCase):
         # 确认 phase 保持在 collecting
         self.assertEqual(dm.phase, "collecting")
 
+    def test_oral_serial_unit_resolution(self):
+        """测试 001号、001号机、002号机、2号机等口语化单机编号的精准解析。"""
+        # 在指定 variant 情况下，001 相关口语均应解析为 LROV-150-001
+        for alias in ["001号", "001号机", "1号机", "1号", "001", "一号机"]:
+            unit = self.kb.resolve_robot_unit(alias, "pipeline_inspection", "轻型工作级深海机器人 150HP")
+            self.assertIsNotNone(unit, f"Failed to resolve {alias}")
+            self.assertEqual(unit["unit_id"], "LROV-150-001")
+
+        # 在指定 variant 情况下，002 相关口语均应解析为 LROV-150-002
+        for alias in ["002号", "002号机", "2号机", "2号", "002", "二号机"]:
+            unit = self.kb.resolve_robot_unit(alias, "pipeline_inspection", "轻型工作级深海机器人 150HP")
+            self.assertIsNotNone(unit, f"Failed to resolve {alias}")
+            self.assertEqual(unit["unit_id"], "LROV-150-002")
+
+    def test_simultaneous_parent_and_valid_unit_update_all_succeed(self):
+        """测试同轮输入系列、型号及 001号 单机编号时，四级槽位均成功写入 valid。"""
+        from src.dialogue_manager import DialogueManager
+
+        dm = DialogueManager()
+        slots = dm.slot_store.clone_slots()
+        slots["task_type_key"].value = "pipeline_inspection"
+        slots["task_type_key"].status = "valid"
+        updates = {
+            "equipment_family": "轻型工作级深海机器人",
+            "equipment_type": "150HP",
+            "equipment_unit_id": "001号",
+        }
+        dm._apply_updates_in_transaction(updates, slots, allow_overwrite=True)
+        dm.slot_store.commit_transaction(slots, [])
+
+        res_slots = dm.slot_store.slots
+        self.assertEqual(res_slots["equipment_family"].status, "valid")
+        self.assertEqual(res_slots["equipment_family"].value, "轻型工作级深海机器人")
+        self.assertEqual(res_slots["equipment_type"].status, "valid")
+        self.assertEqual(res_slots["equipment_type"].value, "轻型工作级深海机器人 150HP")
+        self.assertEqual(res_slots["equipment_unit_id"].status, "valid")
+        self.assertEqual(res_slots["equipment_unit_id"].value, "LROV-150-001")
+        self.assertEqual(res_slots["equipment_name"].status, "valid")
+        self.assertEqual(res_slots["equipment_name"].value, "轻型工作级深海机器人150HP-001")
+
+    def test_unit_failure_does_not_rollback_valid_parent_slots(self):
+        """当单机编号未知或不合法时，已合法校验的系列与型号槽位必须保留 valid，不得连坐回滚抹除。"""
+        from src.dialogue_manager import DialogueManager
+
+        dm = DialogueManager()
+        slots = dm.slot_store.clone_slots()
+        slots["task_type_key"].value = "pipeline_inspection"
+        slots["task_type_key"].status = "valid"
+        updates = {
+            "equipment_family": "轻型工作级深海机器人",
+            "equipment_type": "150HP",
+            "equipment_unit_id": "999号机不存在",
+        }
+        dm._apply_updates_in_transaction(updates, slots, allow_overwrite=True)
+        dm.slot_store.commit_transaction(slots, [])
+
+        res_slots = dm.slot_store.slots
+        # 上级系列和型号应成功保留为 valid
+        self.assertEqual(res_slots["equipment_family"].status, "valid")
+        self.assertEqual(res_slots["equipment_family"].value, "轻型工作级深海机器人")
+        self.assertEqual(res_slots["equipment_type"].status, "valid")
+        self.assertEqual(res_slots["equipment_type"].value, "轻型工作级深海机器人 150HP")
+        # 仅目标 unit 标记为 invalid
+        self.assertEqual(res_slots["equipment_unit_id"].status, "invalid")
+        self.assertIsNone(res_slots["equipment_unit_id"].value)
+        self.assertEqual(res_slots["equipment_unit_id"].candidate_value, "999号机不存在")
+        self.assertIn("Unknown fleet unit", res_slots["equipment_unit_id"].validation_error)
+
+    def test_selected_family_and_unit_auto_converges_parent_variant(self):
+        """用户已选定系列（轻型），输入 001号 时自动在系列范围内消歧，并自动收敛父级型号与大类。"""
+        from src.dialogue_manager import DialogueManager
+
+        dm = DialogueManager()
+        slots = dm.slot_store.clone_slots()
+        slots["task_type_key"].value = "pipeline_inspection"
+        slots["task_type_key"].status = "valid"
+        # 上一轮已确定系列，但未指定具体型号
+        slots["equipment_family"].value = "轻型工作级深海机器人"
+        slots["equipment_family"].status = "valid"
+        self.assertIsNone(slots["equipment_type"].value)
+        self.assertEqual(slots["equipment_type"].status, "missing")
+
+        # 本轮仅输入单机编号
+        updates = {
+            "equipment_unit_id": "001号",
+        }
+        dm._apply_updates_in_transaction(updates, slots, allow_overwrite=True)
+        dm.slot_store.commit_transaction(slots, [])
+
+        res_slots = dm.slot_store.slots
+        # 验证单机编号成功解析为 LROV-150-001
+        self.assertEqual(res_slots["equipment_unit_id"].status, "valid")
+        self.assertEqual(res_slots["equipment_unit_id"].value, "LROV-150-001")
+        # 验证父级型号自动收敛为轻型工作级深海机器人 150HP 且状态为 valid
+        self.assertEqual(res_slots["equipment_type"].status, "valid")
+        self.assertEqual(res_slots["equipment_type"].value, "轻型工作级深海机器人 150HP")
+        # 验证设备大类自动收敛
+        self.assertEqual(res_slots["equipment_class"].status, "valid")
+        self.assertEqual(res_slots["equipment_class"].value, "observation_rov")
+
+    def test_simultaneous_family_and_unit_without_type_auto_converges(self):
+        """同轮输入系列（轻型）与单机（001号）而未指定型号时，自动收敛父级型号为 150HP。"""
+        from src.dialogue_manager import DialogueManager
+
+        dm = DialogueManager()
+        slots = dm.slot_store.clone_slots()
+        slots["task_type_key"].value = "pipeline_inspection"
+        slots["task_type_key"].status = "valid"
+
+        updates = {
+            "equipment_family": "轻型",
+            "equipment_unit_id": "001号",
+        }
+        dm._apply_updates_in_transaction(updates, slots, allow_overwrite=True)
+        dm.slot_store.commit_transaction(slots, [])
+
+        res_slots = dm.slot_store.slots
+        self.assertEqual(res_slots["equipment_family"].status, "valid")
+        self.assertEqual(res_slots["equipment_family"].value, "轻型工作级深海机器人")
+        self.assertEqual(res_slots["equipment_type"].status, "valid")
+        self.assertEqual(res_slots["equipment_type"].value, "轻型工作级深海机器人 150HP")
+        self.assertEqual(res_slots["equipment_unit_id"].status, "valid")
+        self.assertEqual(res_slots["equipment_unit_id"].value, "LROV-150-001")
+
+    def test_composite_unit_input_auto_converges(self):
+        """直接输入带系列前缀的复合单机编号（轻型 001号 或 轻型001号），自动收敛系列、型号与单机。"""
+        from src.dialogue_manager import DialogueManager
+
+        for text_input in ["轻型 001号", "轻型001号"]:
+            dm = DialogueManager()
+            slots = dm.slot_store.clone_slots()
+            slots["task_type_key"].value = "pipeline_inspection"
+            slots["task_type_key"].status = "valid"
+
+            updates = {
+                "equipment_unit_id": text_input,
+            }
+            dm._apply_updates_in_transaction(updates, slots, allow_overwrite=True)
+            dm.slot_store.commit_transaction(slots, [])
+
+            res_slots = dm.slot_store.slots
+            self.assertEqual(res_slots["equipment_unit_id"].status, "valid", f"Failed for {text_input}")
+            self.assertEqual(res_slots["equipment_unit_id"].value, "LROV-150-001")
+            self.assertEqual(res_slots["equipment_type"].status, "valid")
+            self.assertEqual(res_slots["equipment_type"].value, "轻型工作级深海机器人 150HP")
+            self.assertEqual(res_slots["equipment_family"].status, "valid")
+            self.assertEqual(res_slots["equipment_family"].value, "轻型工作级深海机器人")
+

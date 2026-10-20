@@ -216,19 +216,26 @@ class RobotSelectionEngine:
         unit_selector: str,
         task_type_key: str | None = None,
         variant_selector: str | None = None,
+        family_selector: str | None = None,
     ) -> dict | None:
         return self.resolver.resolve_robot_unit(
             unit_selector,
             task_type_key,
             variant_selector,
+            family_selector,
         )
 
     def resolve_robot_unit_from_text(
         self,
         text: str,
         task_type_key: str | None = None,
+        family_selector: str | None = None,
     ) -> dict | None:
-        return self.resolver.resolve_robot_unit_from_text(text, task_type_key)
+        return self.resolver.resolve_robot_unit_from_text(
+            text,
+            task_type_key,
+            family_selector,
+        )
 
     def find_rov_by_description(self, description: str) -> list[dict]:
         return self.resolver.find_rov_by_description(description)

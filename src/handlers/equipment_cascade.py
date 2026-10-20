@@ -292,7 +292,11 @@ class EquipmentCascadeResolver:
                 if unit_in:
                     active_unit_slot = equipment_before.get("equipment_unit_id")
                     if active_unit_slot and active_unit_slot.status in ("valid", "conflict") and active_unit_slot.value is not None:
-                        res_unit = self.kb.resolve_robot_unit(str(unit_in), task_type)
+                        active_type_slot = equipment_before.get("equipment_type")
+                        type_ctx = str(active_type_slot.value) if active_type_slot and active_type_slot.value else None
+                        active_fam_slot = equipment_before.get("equipment_family")
+                        fam_ctx = str(active_fam_slot.value) if active_fam_slot and active_fam_slot.value else None
+                        res_unit = self.kb.resolve_robot_unit(str(unit_in), task_type, type_ctx, fam_ctx)
                         if res_unit and res_unit.get("unit_id") != active_unit_slot.value:
                             highest_conflict_key = "equipment_unit_id"
                             highest_candidate_val = unit_in
@@ -553,15 +557,26 @@ class EquipmentCascadeResolver:
                 if selected_variant
                 else None
             )
+            family_context = None
+            if resolved_family:
+                family_context = resolved_family.get("full_name")
+            if not family_context:
+                fam_slot = sandbox_slots.get("equipment_family") or equipment_before.get("equipment_family")
+                if fam_slot and fam_slot.status in ("valid", "conflict") and fam_slot.value:
+                    family_context = str(fam_slot.value)
+
             resolved_unit = self.kb.resolve_robot_unit(
                 str(unit_update),
                 task_type,
                 str(variant_context) if variant_context else None,
+                str(family_context) if family_context else None,
             )
             if not resolved_unit and not task_type:
                 resolved_unit = self.kb.resolve_robot_unit(
                     str(unit_update),
                     None,
+                    str(variant_context) if variant_context else None,
+                    str(family_context) if family_context else None,
                 )
 
             if not resolved_unit:
@@ -574,20 +589,56 @@ class EquipmentCascadeResolver:
                         str(unit_raw),
                         task_type,
                         str(variant_context) if variant_context else None,
+                        str(family_context) if family_context else None,
                     )
                     if not resolved_unit and not task_type:
                         resolved_unit = self.kb.resolve_robot_unit(
                             str(unit_raw),
                             None,
+                            str(variant_context) if variant_context else None,
+                            str(family_context) if family_context else None,
                         )
 
             if not resolved_unit and hasattr(self.kb, "resolve_robot_unit_from_text") and getattr(self, "conversation_history", None):
                 last_user_msg = next((m.get("content") for m in reversed(self.conversation_history) if isinstance(m, dict) and m.get("role") == "user"), "")
                 if last_user_msg:
-                    resolved_unit = self.kb.resolve_robot_unit_from_text(last_user_msg, task_type)
+                    resolved_unit = self.kb.resolve_robot_unit_from_text(
+                        last_user_msg,
+                        task_type,
+                        str(family_context) if family_context else None,
+                    )
 
             if resolved_unit and task_type and not self.kb.robot_matches_task(resolved_unit.get("robot"), task_type):
                 resolved_unit = None
+
+            def _apply_failed_unit(candidate_val: Any, error_msg: str, force_conflict: bool = False):
+                prior_slot = equipment_before.get("equipment_unit_id")
+                has_prior_valid_value = (
+                    prior_slot is not None
+                    and prior_slot.status in ("valid", "conflict")
+                    and prior_slot.value is not None
+                )
+                if force_conflict or has_prior_valid_value:
+                    target_slot = copy.deepcopy(prior_slot) if prior_slot else Slot(slot_name="equipment_unit_id")
+                    target_slot.status = "conflict"
+                    target_slot.candidate_value = candidate_val
+                    target_slot.validation_error = error_msg
+                    sandbox_slots["equipment_unit_id"] = target_slot
+                else:
+                    default_vtype = BASE_SLOT_TYPES.get("equipment_unit_id", "string")
+                    target_slot = copy.deepcopy(prior_slot) if prior_slot else Slot(slot_name="equipment_unit_id", value_type=default_vtype)
+                    target_slot.status = "invalid"
+                    target_slot.value = None
+                    target_slot.value_type = default_vtype
+                    target_slot.candidate_value = candidate_val
+                    target_slot.validation_error = error_msg
+                    sandbox_slots["equipment_unit_id"] = target_slot
+
+                if "equipment_name" in sandbox_slots:
+                    name_slot = sandbox_slots["equipment_name"]
+                    name_slot.value = None
+                    name_slot.status = "missing"
+                    name_slot.validation_error = None
 
             if resolved_unit:
                 unit_variant = resolved_unit["robot"]
@@ -622,98 +673,100 @@ class EquipmentCascadeResolver:
                 parent_mismatch = explicit_cls_mismatch or explicit_fam_mismatch or explicit_type_mismatch
 
                 if parent_mismatch:
-                    _rollback_and_fail(
-                        "equipment_unit_id",
+                    _apply_failed_unit(
                         unit_update,
                         f"Unit '{unit_update}' belongs to variant '{unit_variant_full}' but explicitly selected parent is mismatched",
                     )
-                    return
+                    resolved_unit = None
+                else:
+                    # 四级组合权威校验
+                    try:
+                        self.kb.validate_static_robot_selection(
+                            unit_robot_cls,
+                            unit_fam_id,
+                            unit_variant_full,
+                            resolved_unit["unit_id"],
+                            task_type,
+                        )
+                    except RobotSelectionDataError as _v_exc:
+                        _apply_failed_unit(
+                            unit_update,
+                            f"{_v_exc.error_code}: {_v_exc}",
+                            force_conflict=True,
+                        )
+                        resolved_unit = None
 
-                # 四级组合权威校验
-                try:
-                    self.kb.validate_static_robot_selection(
-                        unit_robot_cls,
-                        unit_fam_id,
-                        unit_variant_full,
-                        resolved_unit["unit_id"],
-                        task_type,
+                if resolved_unit:
+                    # Selecting a unit may change its parent variant even when the
+                    # user did not submit an explicit equipment_type candidate.
+                    # Apply the same payload dependency invalidation as a direct
+                    # variant change; never carry old confirmed tooling silently.
+                    previous_type = equipment_before.get("equipment_type")
+                    previous_variant = (
+                        self.kb.get_rov(str(previous_type.value))
+                        if previous_type and previous_type.value else None
                     )
-                except RobotSelectionDataError as _v_exc:
-                    _rollback_and_fail(
-                        "equipment_unit_id",
-                        unit_update,
-                        f"{_v_exc.error_code}: {_v_exc}",
-                        force_conflict=True,
-                    )
-                    return
+                    if (
+                        previous_variant
+                        and previous_variant.get("variant_id") != unit_vid
+                        and "equipment_type" not in changed_parents
+                    ):
+                        changed_parents.append("equipment_type")
 
-                # Selecting a unit may change its parent variant even when the
-                # user did not submit an explicit equipment_type candidate.
-                # Apply the same payload dependency invalidation as a direct
-                # variant change; never carry old confirmed tooling silently.
-                previous_type = equipment_before.get("equipment_type")
-                previous_variant = (
-                    self.kb.get_rov(str(previous_type.value))
-                    if previous_type and previous_type.value else None
-                )
-                if (
-                    previous_variant
-                    and previous_variant.get("variant_id") != unit_vid
-                    and "equipment_type" not in changed_parents
-                ):
-                    changed_parents.append("equipment_type")
-
-                # 四级校验通过，更新 sandbox
-                self._apply_slot_update_in_transaction(
-                    "equipment_class",
-                    unit_robot_cls,
-                    sandbox_slots,
-                    allow_overwrite,
-                )
-                sandbox_slots["equipment_class"].status = "valid"
-                self._apply_slot_update_in_transaction(
-                    "equipment_family",
-                    unit_fam_full,
-                    sandbox_slots,
-                    allow_overwrite,
-                )
-                sandbox_slots["equipment_family"].status = "valid"
-                self._apply_slot_update_in_transaction(
-                    "equipment_type",
-                    unit_variant_full,
-                    sandbox_slots,
-                    allow_overwrite,
-                )
-                sandbox_slots["equipment_type"].status = "valid"
-                self._apply_slot_update_in_transaction(
-                    "equipment_unit_id",
-                    resolved_unit["unit_id"],
-                    sandbox_slots,
-                    allow_overwrite,
-                )
-                sandbox_slots["equipment_unit_id"].status = "valid"
-                if "equipment_name" in sandbox_slots:
+                    # 四级校验通过，更新 sandbox
                     self._apply_slot_update_in_transaction(
-                        "equipment_name",
-                        resolved_unit.get("display_name", resolved_unit["unit_id"]),
+                        "equipment_class",
+                        unit_robot_cls,
                         sandbox_slots,
                         allow_overwrite,
                     )
-                    sandbox_slots["equipment_name"].status = "valid"
+                    sandbox_slots["equipment_class"].status = "valid"
+                    self._apply_slot_update_in_transaction(
+                        "equipment_family",
+                        unit_fam_full,
+                        sandbox_slots,
+                        allow_overwrite,
+                    )
+                    sandbox_slots["equipment_family"].status = "valid"
+                    self._apply_slot_update_in_transaction(
+                        "equipment_type",
+                        unit_variant_full,
+                        sandbox_slots,
+                        allow_overwrite,
+                    )
+                    sandbox_slots["equipment_type"].status = "valid"
+                    self._apply_slot_update_in_transaction(
+                        "equipment_unit_id",
+                        resolved_unit["unit_id"],
+                        sandbox_slots,
+                        allow_overwrite,
+                    )
+                    sandbox_slots["equipment_unit_id"].status = "valid"
+                    if "equipment_name" in sandbox_slots:
+                        self._apply_slot_update_in_transaction(
+                            "equipment_name",
+                            resolved_unit.get("display_name", resolved_unit["unit_id"]),
+                            sandbox_slots,
+                            allow_overwrite,
+                        )
+                        sandbox_slots["equipment_name"].status = "valid"
             else:
                 # Resolve without task filtering only to explain the rejection.
                 # Never use this diagnostic lookup to accept the selected unit.
-                known_unit = self.kb.resolve_robot_unit(str(unit_update), None)
+                known_unit = self.kb.resolve_robot_unit(
+                    str(unit_update),
+                    None,
+                    str(variant_context) if variant_context else None,
+                    str(family_context) if family_context else None,
+                )
                 message = f"Unknown fleet unit '{unit_update}'"
                 if known_unit and task_type and not self.kb.robot_matches_task(known_unit.get("robot"), task_type):
                     task_name = self.kb.task_schemas.get("task_templates", {}).get(task_type, {}).get("display_name", task_type)
                     message = f"机器人“{unit_update}”已收录，但不支持当前任务“{task_name}”。请选择该任务允许的机器人。"
-                _rollback_and_fail(
-                    "equipment_unit_id",
+                _apply_failed_unit(
                     unit_update,
                     message,
                 )
-                return
 
         # 执行层级依赖失效
         robot_cascade_preserve_keys = set(equipment_updates.keys())
