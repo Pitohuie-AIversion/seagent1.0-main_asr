@@ -24,6 +24,16 @@ from src.extraction.model_profile import ModelRole, _is_unsupported_role_keyword
 from .relative_time_parser import parse_time_range
 
 
+_RANGE_DATE = r"(?:大后天|后天|明天|今天|\d{4}-\d{1,2}-\d{1,2})"
+_RANGE_PART = r"(?:凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜间)"
+_RANGE_NUMBER = r"[0-9零一二两三四五六七八九十]{1,3}"
+_RANGE_CLOCK = rf"(?:{_RANGE_NUMBER}点(?:半|{_RANGE_NUMBER}分?)?|\d{{1,2}}[:：]\d{{2}})"
+_DATED_CLOCK_RANGE = re.compile(
+    rf"(?P<start>{_RANGE_DATE}\s*{_RANGE_PART}?\s*{_RANGE_CLOCK})\s*(?:到|至)\s*"
+    rf"(?P<end>{_RANGE_DATE}?\s*{_RANGE_PART}?\s*{_RANGE_CLOCK})(?=$|[，,。；;！!？?\s])"
+)
+
+
 def parse_relative_datetime(*args: Any, **kwargs: Any) -> Any:
     """动态感知外部针对 src.extraction.extractor.parse_relative_datetime 的 monkey-patch"""
     import sys
@@ -127,19 +137,59 @@ class TemporalParser:
         return TemporalParser._time_adjustment_evidence(text)[0]
 
     @staticmethod
-    def _nonassertive_time_context(text: str, start: int, end: int) -> bool:
-        """An embedded delta must still be an instruction in its own clause."""
-        clause_start = max((text.rfind(mark, 0, start) for mark in "，,。；;\n"), default=-1) + 1
-        clause_end = min((pos for mark in "，,。；;\n"
+    def _time_context_modifiers(text: str, start: int, end: int) -> tuple[bool, bool]:
+        """History crosses commas until a present instruction; questions end it."""
+        sentence_start = max((text.rfind(mark, 0, start) for mark in "。；;！!？?\n"), default=-1) + 1
+        historical = conditional = False
+        for context in re.split(r"[，,]", text[sentence_start:end]):
+            if re.match(r"\s*(?:(?:请|任务|作业)\s*)*(?:现在|目前|当前|本次|这次|本轮)", context):
+                historical = False
+            if re.match(r"\s*(?:此前|之前|昨天|昨日|前天|曾经|上次|上一轮|过去|历史|原先)", context):
+                historical = True
+            conditional |= bool(re.search(r"如果|假如|假设|要是|倘若|除非|若|只要|只有|仅当", context))
+        return historical, conditional
+
+    @staticmethod
+    def _nonassertive_time_context(
+        text: str, start: int, end: int, *, allow_withdrawal: bool = False,
+    ) -> bool:
+        """Bind history and dependent questions to the time statement they qualify."""
+        boundaries = "，,。；;！!？?\n"
+        clause_start = max((text.rfind(mark, 0, start) for mark in boundaries), default=-1) + 1
+        clause_end = min((pos for mark in boundaries
                           if (pos := text.find(mark, end)) >= 0), default=len(text))
         clause = text[clause_start:clause_end]
-        sentence_start = max((text.rfind(mark, 0, start) for mark in "。；;\n"), default=-1) + 1
-        prefix = text[sentence_start:end]
+        if text[clause_end:clause_end + 1] in {"？", "?"}:
+            clause += text[clause_end]
+        historical, conditional = TemporalParser._time_context_modifiers(text, start, clause_end)
+        dependent_question = False
+        if text[clause_end:clause_end + 1] in {"，", ","}:
+            following = re.match(r"[^，,。；;！!？?\n]*(?:[？?])?", text[clause_end + 1:])[0].strip()
+            # "可以吗" qualifies this edit; "可以把水深改为300米吗"
+            # is an independent question with its own named subject.
+            has_subject = re.search(
+                r"水深|机器人|设备|ROV|AUV|支持船|母船|船只|井口|管缆|电缆|起点|终点|"
+                r"坐标|经纬度|载荷|工具", following,
+                re.IGNORECASE,
+            )
+            time_subjects = (r"开始|起始|开工", r"结束|终止|截止|完工|收工", r"持续|时长")
+            current_subjects = {index for index, pattern in enumerate(time_subjects) if re.search(pattern, clause)}
+            following_subjects = {index for index, pattern in enumerate(time_subjects) if re.search(pattern, following)}
+            has_subject = has_subject or bool(following_subjects and not current_subjects & following_subjects)
+            dependent_question = not has_subject and bool(
+                re.match(
+                    r"(?:这样|这个(?:修改|设置|开始时间|结束时间|持续时间|持续时长|时长|时间)?|这么)?"
+                    r"(?:可以|行吗|是否|能否|可否|合适|安全|会怎样|会怎么样|好吗|对吗)", following,
+                )
+                and re.search(r"[？?]|吗|呢|是否|能否|可否|会怎样|会怎么样", following)
+            )
         return bool(
-            re.search(r"不要|暂不|暂时不|不必|无需|不需要|不能|禁止|不允许|"
+            historical or conditional or dependent_question
+            or re.search(r"不要|暂不|暂时不|不必|无需|不需要|不能|禁止|不允许|"
                       r"别(?:把|将|再|修改|改|调整|设置|动|推迟|提前|延长|缩短)|勿", clause)
+            or (not allow_withdrawal and re.search(r"取消|撤销", clause))
             or re.search(r"(?<!不)(?:只|仅)(?:是|想|要)?(?:讨论|咨询|了解|询问|问问|假设|举例)", clause)
-            or re.search(r"如果|假如|假设|要是|若|是否|能否|会不会", prefix)
+            or re.search(r"是否|能否|会不会", clause)
             or re.search(r"[？?]|(?:吗|么)\s*$|会怎样|会怎么样|会有什么", clause)
         )
 
@@ -169,15 +219,72 @@ class TemporalParser:
                    for pattern in patterns if clause.strip())
 
     @staticmethod
+    def _cancelled_time_targets(text: str) -> set[str]:
+        """Distinguish withdrawing a field edit from rejecting one delta.
+
+        A local '取消这个修改' refers to the preceding time statement in the
+        same sentence. It must not cancel a later independent endpoint edit.
+        """
+        cancelled: set[str] = set()
+        targets = {
+            "start_time": r"开始|起始|开工",
+            "end_time": r"结束|终止|截止|完工|收工",
+            "duration": r"持续|时长",
+        }
+        text = str(text or "")
+        for sentence in re.finditer(r"[^。；;！!？?\n]+", text):
+            previous_targets: set[str] = set()
+            for clause_match in re.finditer(r"[^，,]+", sentence[0]):
+                clause = clause_match[0]
+                start = sentence.start() + clause_match.start()
+                end = sentence.start() + clause_match.end()
+                if TemporalParser._nonassertive_time_context(
+                    text, start, end, allow_withdrawal=True,
+                ):
+                    previous_targets = set()
+                    continue
+                # Bind withdrawals to task fields. A camera's start-time
+                # correction must not withdraw an independent task start.
+                task_field_clause = re.match(
+                    r"\s*(?:(?:请|先|暂时|把|将|对|取消|撤销|任务|作业)\s*)*"
+                    r"(?:开始|起始|开工|结束|终止|截止|完工|收工|持续|时长)", clause,
+                )
+                if task_field_clause:
+                    mentioned = {key for key, pattern in targets.items() if re.search(pattern, clause)}
+                else:
+                    mentioned = set()
+                    if _DATED_CLOCK_RANGE.search(clause):
+                        mentioned.update({"start_time", "end_time"})
+                    for statement in TemporalParser._explicit_time_statements(clause):
+                        if statement["kind"] == "duration":
+                            mentioned.add("duration")
+                        elif statement["kind"] == "endpoint":
+                            mentioned.add("start_time" if statement["label"] in (
+                                "开始时间", "起始时间", "开工时间", "开始", "开工",
+                            ) else "end_time")
+                withdrawal = re.search(r"取消|撤销", clause)
+                if withdrawal and not re.search(r"不要\s*(?:取消|撤销)|别\s*(?:取消|撤销)|[吗么]\s*$", clause):
+                    if mentioned and not TemporalParser.has_explicit_duration(clause):
+                        cancelled.update(mentioned)
+                    elif not mentioned and re.fullmatch(
+                        r"\s*(?:请|先|暂时)?(?:取消|撤销)(?:这个|该|上述|刚才(?:的)?)?(?:修改|调整|改动|变更)\s*", clause,
+                    ):
+                        cancelled.update(previous_targets)
+                elif not withdrawal:
+                    previous_targets = mentioned
+        return cancelled
+
+    @staticmethod
     def _time_adjustment_evidence(text: str) -> tuple[dict[str, tuple[str, float]], set[str]]:
         adjustments = {}
         ignored_targets = set()
+        rejected_deltas: dict[str, set[float]] = {}
         text = str(text or "")
         for match in re.finditer(
             r"(?P<target>开始时间|起始时间|开工时间|结束时间|终止时间|截止时间|完工时间|收工时间|持续时间|持续时长|时长)"
             r"\s*(?:再|又|继续|比原来|比原本)?\s*"
             r"(?P<action>增加|减少|加长|缩短|延长|加上|减去|推迟|延后|提前|推后|后移|前移|加|减)"
-            r"(?:了)?\s*(?P<amount>[^，,。；;\n]+)", text,
+            r"(?:了)?\s*(?P<amount>[^，,。；;！!？?\n]+)", text,
         ):
             if re.match(r"(?:到|至|为)", match["amount"]):
                 continue
@@ -191,10 +298,18 @@ class TemporalParser:
                    "end_time" if target in ("结束时间", "终止时间", "截止时间", "完工时间", "收工时间") else "duration")
             if TemporalParser._nonassertive_time_context(text, match.start(), match.end()):
                 ignored_targets.add(key)
-                adjustments.pop(key, None)
+                clause_start = max(text.rfind(mark, 0, match.start()) for mark in "，,。；;！!？?\n") + 1
+                # Repeating yesterday's change or asking about it does not
+                # revoke a later affirmative instruction for the same amount.
+                if (not any(TemporalParser._time_context_modifiers(text, match.start(), match.end()))
+                        and re.search(r"不要|别|取消|撤销|暂不|不能|禁止|勿", text[clause_start:match.end()])):
+                    rejected_deltas.setdefault(key, set()).add(spec.delta_seconds)
                 continue
-            ignored_targets.discard(key)
             adjustments[key] = (match[0], spec.delta_seconds)
+        for key, (_, delta) in list(adjustments.items()):
+            if delta in rejected_deltas.get(key, set()):
+                adjustments.pop(key)
+        ignored_targets.difference_update(adjustments)
         return adjustments, ignored_targets
 
     @staticmethod
@@ -220,6 +335,11 @@ class TemporalParser:
 
         raw = str(start_cand.get("raw_value") or "").strip()
         normalized = start_cand.get("normalized_value")
+        if re.search(r"(?:小时|钟头|分钟|分|秒)[^，,。；;\n]*后", raw):
+            # Model-normalized ISO values may contain the old truncated-offset
+            # result. Recompute from the full relative evidence before deriving
+            # an end; an invalid phrase must reach range validation unchanged.
+            return parse_relative_datetime(raw, base_dt, full_user_message=raw) or raw
         if raw and (
             TemporalParser.has_date_semantics(raw)
             or TemporalParser.has_date_semantics(user_message)
@@ -311,18 +431,12 @@ class TemporalParser:
         This only supplies candidates on a WRITE path. Ambiguous, conditional,
         negated and multiple ranges remain with the ordinary clarification path.
         """
-        date = r"(?:大后天|后天|明天|今天|\d{4}-\d{1,2}-\d{1,2})"
-        part = r"(?:凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜间)"
-        number = r"[0-9零一二两三四五六七八九十]{1,3}"
-        clock = rf"(?:{number}点(?:半|{number}分?)?|\d{{1,2}}[:：]\d{{2}})"
-        pattern = re.compile(rf"(?P<start>{date}\s*{part}?\s*{clock})\s*(?:到|至)\s*(?P<end>{date}?\s*{part}?\s*{clock})(?=$|[，,。；;！!\s])")
-        matches = []
-        for sentence in re.split(r"[。；;！!\n]", user_message):
-            if re.search(r"如果|假如|假设|不要|取消|暂不|是否|能否|[？?]", sentence):
-                continue
-            matches.extend(match for match in pattern.finditer(sentence)
-                           if not TemporalParser._nonassertive_time_context(
-                               sentence, match.start(), match.end()))
+        matches = [
+            match for match in _DATED_CLOCK_RANGE.finditer(user_message)
+            if not TemporalParser._nonassertive_time_context(
+                user_message, match.start(), match.end(),
+            )
+        ]
         if len(matches) != 1:
             return []
         match = matches[0]
@@ -330,9 +444,9 @@ class TemporalParser:
         result = parse_time_range(start, None, end, base_dt=base_dt)
         # An unqualified 1..11 o'clock endpoint can share the stated meridiem.
         # Noon parses without a prefix and must never become 上午十二点 (00:00).
-        if not result.success and result.error_code == "INVALID_END_TIME" and not re.search(part, end):
-            meridiem = re.search(part, start)
-            if meridiem and not re.search(date, end):
+        if not result.success and result.error_code == "INVALID_END_TIME" and not re.search(_RANGE_PART, end):
+            meridiem = re.search(_RANGE_PART, start)
+            if meridiem and not re.search(_RANGE_DATE, end):
                 result = parse_time_range(start, None, meridiem[0] + end, base_dt=base_dt)
         if not result.success:
             return []
@@ -347,28 +461,103 @@ class TemporalParser:
         ]
 
     @staticmethod
-    def explicit_field_time_candidates(user_message: str, base_dt: datetime) -> list[dict]:
-        """Recover unambiguous labeled endpoints, including model-omitted ones.
+    def _explicit_time_statements(user_message: str) -> list[dict]:
+        """Read adjacent task endpoints and durations as separate statements.
 
-        Each endpoint must carry its own date and clock. The existing time
-        engine still checks its relationship with duration and saved state.
+        A statement must start a task clause or follow another complete time
+        statement. This prevents equipment clocks and partial quantities from
+        becoming task times, while preserving unpunctuated spoken requests.
         """
-        from .relative_time_parser import parse_relative_datetime_detail
+        from .relative_time_parser import DURATION_VALUE_PATTERN, RELATIVE_OFFSET_PATTERN
 
         date = r"(?:大后天|后天|明天|今天|\d{4}年\d{1,2}月\d{1,2}日|\d{4}[-/]\d{1,2}[-/]\d{1,2})"
         meridiem = r"(?:凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜间)"
         number = r"[0-9零一二两三四五六七八九十]{1,3}"
         clock = rf"(?:\d{{1,2}}[:：]\d{{2}}(?::\d{{2}})?|{number}点(?:半|{number}分?)?)"
-        pattern = re.compile(
-            r"(?P<label>开始时间|起始时间|开工时间|结束时间|终止时间|截止时间|完工时间|收工时间)"
-            r"\s*(?:修改为|设置为|调整为|改成|改为|延长到|推迟到|提前到|为|是|[:：=])\s*"
-            rf"(?P<value>{date}\s*{meridiem}?\s*{clock})(?=$|[，,。；;！!\s])"
+        value = rf"(?:{date}\s*{meridiem}?\s*{clock}|{RELATIVE_OFFSET_PATTERN}|现在|此刻|当前|立即|马上|立刻|即刻)"
+        label = r"(?:开始时间|起始时间|开工时间|结束时间|终止时间|截止时间|完工时间|收工时间)"
+        connector = r"\s*(?:修改为|设置为|调整为|改成|改为|延长到|推迟到|提前到|为|是|[:：=])?\s*"
+        event = r"(?:开始|开工|结束|完工|收工)"
+        endpoint = rf"(?:{label}{connector}{value}(?:\s*{event})?|(?:在|于|从)?\s*{value}\s*(?:再)?{event})"
+        duration_label = r"(?:持续时间|持续时长|时长|持续)"
+        # Requiring a complete following statement lets the duration matcher
+        # backtrack: 持续4小时30分钟后结束 means a four-hour duration and
+        # an endpoint 30 minutes from now, not a 4h30m duration with lost end.
+        boundary = rf"(?=$|\s|[？?]|{endpoint}|{duration_label})"
+        endpoint_pattern = re.compile(
+            rf"(?:(?P<field_label>{label}){connector}(?P<field_value>{value})(?:\s*(?P<field_event>{event}))?"
+            rf"|(?:在|于|从)?\s*(?P<event_value>{value})\s*(?:再)?(?P<event_label>{event})){boundary}"
         )
+        duration_pattern = re.compile(
+            rf"{duration_label}\s*(?:为|是|[:：=])?\s*(?P<value>{DURATION_VALUE_PATTERN}){boundary}"
+        )
+        endpoint_hint = re.compile(
+            rf"(?:(?P<field_label>{label}){connector}(?=[\d零〇一二两三四五六七八九十半负+\-]|明天|今天|后天|大后天|现在)"
+            rf"|(?:在|于|从)?\s*(?=[\d零〇一二两三四五六七八九十半负+\-])"
+            rf"[^，,。；;]*?后\s*(?P<event_label>{event}))"
+        )
+        statements = []
+        for clause in re.finditer(r"[^，,。；;！!？?\n]+", user_message):
+            text = clause[0]
+            prefix = re.match(
+                rf"\s*(?:(?:请|把|将|任务|作业|"
+                rf"(?:现在|目前|当前|本次|这次|本轮)(?=\s*(?:{label}|{duration_label}|任务|作业|把|将)))\s*)*",
+                text,
+            )
+            position = prefix.end()
+            while position < len(text):
+                match = endpoint_pattern.match(text, position)
+                kind = "endpoint"
+                if match is None:
+                    match = duration_pattern.match(text, position)
+                    kind = "duration"
+                if match is None:
+                    hint = endpoint_hint.match(text, position)
+                    if hint and not TemporalParser._nonassertive_time_context(
+                        user_message, clause.start() + position, clause.end(),
+                    ):
+                        statements.append({
+                            "kind": "invalid_endpoint",
+                            "label": hint["field_label"] or hint["event_label"],
+                        })
+                    break
+                start, end = clause.start() + match.start(), clause.start() + match.end()
+                if not TemporalParser._nonassertive_time_context(user_message, start, end):
+                    groups = match.groupdict()
+                    if groups.get("field_event"):
+                        starts = groups["field_label"] in ("开始时间", "起始时间", "开工时间")
+                        if starts != (groups["field_event"] in ("开始", "开工")):
+                            kind = "invalid_endpoint"
+                    statements.append({
+                        "kind": kind,
+                        "label": groups.get("field_label") or groups.get("event_label"),
+                        "value": groups.get("field_value") or groups.get("event_value") or groups.get("value"),
+                        "raw_text": match[0], "start": start, "end": end,
+                    })
+                position = match.end()
+                whitespace = re.match(r"\s*", text[position:])
+                position += whitespace.end()
+        return statements
+
+    @staticmethod
+    def explicit_field_time_candidates(user_message: str, base_dt: datetime) -> list[dict]:
+        """Recover complete, unique task endpoints omitted by the model."""
+        return TemporalParser._explicit_field_time_evidence(user_message, base_dt)[0]
+
+    @staticmethod
+    def _explicit_field_time_evidence(user_message: str, base_dt: datetime) -> tuple[list[dict], set[str]]:
+        from .relative_time_parser import parse_relative_datetime_detail
+
         by_key: dict[str, list[dict]] = {}
-        for match in pattern.finditer(user_message):
-            if TemporalParser._nonassertive_time_context(user_message, match.start(), match.end()):
+        rejected_keys: set[str] = set()
+        for statement in TemporalParser._explicit_time_statements(user_message):
+            if statement["kind"] not in ("endpoint", "invalid_endpoint"):
                 continue
-            raw = match['value'].strip()
+            key = "start_time" if statement["label"] in ("开始时间", "起始时间", "开工时间", "开始", "开工") else "end_time"
+            if statement["kind"] == "invalid_endpoint":
+                rejected_keys.add(key)
+                continue
+            raw = statement["value"].strip()
             result = parse_relative_datetime_detail(raw, base_dt, full_user_message=raw)
             # A numeric HH:MM clock is a 24-hour field value. The general
             # spoken-time parser also flags 09:00 as missing a meridiem.
@@ -378,27 +567,25 @@ class TemporalParser:
                 for ambiguity in result.ambiguities
             )
             if not result.success or unsafe_ambiguities:
+                rejected_keys.add(key)
                 continue
-            key = "start_time" if match['label'] in ("开始时间", "起始时间", "开工时间") else "end_time"
             by_key.setdefault(key, []).append({
-                "canonical_key": key, "raw_key": match['label'], "raw_value": raw,
+                "canonical_key": key, "raw_key": statement["label"], "raw_value": raw,
                 "normalized_value": result.iso_string, "confidence": 1.0,
                 "resolution_method": "explicit_time_field",
             })
-        return [items[0] for items in by_key.values() if len(items) == 1]
+        rejected_keys.update(key for key, items in by_key.items() if len(items) != 1)
+        return [items[0] for key, items in by_key.items() if key not in rejected_keys], rejected_keys
 
     @staticmethod
     def explicit_duration_relation(user_message: str) -> dict | None:
         """Keep the complete affirmative duration clause when the model truncates it."""
         relations = []
-        for match in re.finditer(r"(?:^|[，,。；;\n])\s*(?:任务|作业)?(?:持续时间|持续时长|时长|持续)[^，,。；;\n]+", user_message):
-            raw = match[0].lstrip("，,。；;\n ")
-            start = match.end() - len(raw)
-            if TemporalParser._nonassertive_time_context(user_message, start, match.end()):
+        for statement in TemporalParser._explicit_time_statements(user_message):
+            if statement["kind"] != "duration":
                 continue
-            if re.search(r"[？?]|吗|么", raw):
-                continue
-            spec = parse_duration_spec(raw)
+            raw = statement["raw_text"]
+            spec = parse_duration_spec(statement["value"])
             if spec.state.value == "explicit":
                 relations.append({"has_duration": True, "target": "duration", "action": "SET",
                                   "raw_text": raw, "duration_seconds": spec.total_seconds, "confidence": 1.0})
@@ -425,6 +612,12 @@ class TemporalParser:
         import math
         from .simulated_time import get_current_datetime
 
+        cancelled_targets = TemporalParser._cancelled_time_targets(user_message)
+        adjustments, ignored_adjustments = TemporalParser._time_adjustment_evidence(user_message)
+        adjustments = {key: value for key, value in adjustments.items() if key not in cancelled_targets}
+        if isinstance(relation, dict) and str(relation.get("target") or "duration").lower() in cancelled_targets:
+            relation = None
+
         # Work on copies: a rejected adjustment must not mutate caller candidates.
         candidates = [dict(item) if isinstance(item, dict) else item for item in candidates]
         # A model can return an absolute clock quoted only in a rejected or
@@ -439,21 +632,73 @@ class TemporalParser:
             ) for match in occurrences)
 
         candidates = [item for item in candidates if not only_nonassertive_time_evidence(item)]
-        explicit_fields = TemporalParser.explicit_field_time_candidates(
+        explicit_fields, rejected_time_keys = TemporalParser._explicit_field_time_evidence(
             user_message, get_current_datetime().replace(microsecond=0),
         )
+        explicit_fields = [item for item in explicit_fields if item["canonical_key"] not in cancelled_targets]
+        rejected_time_keys.difference_update(cancelled_targets)
         explicit_keys = {item["canonical_key"] for item in explicit_fields}
+        withdrawn_keys = cancelled_targets & {"start_time", "end_time"}
+        if cancelled_targets & {"start_time", "duration"} and "end_time" not in explicit_keys | adjustments.keys():
+            # An inferred end belongs to the withdrawn start/duration edit;
+            # an independently specified end remains an authorized update.
+            withdrawn_keys.add("end_time")
+        def ungrounded_relative_candidate(item):
+            if not isinstance(item, dict) or item.get("canonical_key") not in ("start_time", "end_time"):
+                return False
+            if item.get("canonical_key") in explicit_keys:
+                return False
+            raw = str(item.get("raw_value") or "")
+            if not re.search(r"(?:小时|钟头|分钟|分|秒)[^，,。；;\n]*后", raw):
+                return False
+            from .relative_time_parser import parse_relative_datetime_detail
+
+            clauses = [match[0] for match in re.finditer(r"[^，,。；;！!\n]+", user_message)
+                       if raw in match[0]]
+            for clause in clauses:
+                parsed = parse_relative_datetime_detail(clause, get_current_datetime(), full_user_message=clause)
+                if not parsed.success or parsed.has_ambiguities:
+                    return True
+                # A bare answer such as 半小时后 may use the model's field
+                # binding. An explicitly named event must have task evidence.
+                if re.search(r"开始|起始|开工|结束|终止|截止|完工|收工|启动", clause):
+                    return True
+            return False
+
         candidates = [item for item in candidates if not (
-            isinstance(item, dict) and item.get("canonical_key") in explicit_keys
-        )] + explicit_fields
+            isinstance(item, dict) and item.get("canonical_key") in (explicit_keys | rejected_time_keys | withdrawn_keys)
+        ) and not ungrounded_relative_candidate(item)] + explicit_fields
+        duration_statements = [statement for statement in TemporalParser._explicit_time_statements(user_message)
+                               if statement["kind"] == "duration" and "duration" not in cancelled_targets]
+        if rejected_time_keys or len(duration_statements) > 1:
+            # A duplicated or ambiguous endpoint cannot be replaced by a model
+            # guess, nor can a duration re-derive it from an old saved endpoint.
+            return [item for item in candidates if not (
+                isinstance(item, dict) and item.get("canonical_key") in ("start_time", "end_time")
+            )], ["任务时间存在歧义或重复声明，请明确唯一的开始时间、结束时间和持续时长。"]
         if not any(isinstance(item, dict) and item.get("canonical_key") in ("start_time", "end_time") for item in candidates):
-            candidates.extend(TemporalParser.explicit_range_candidates(user_message, get_current_datetime().replace(microsecond=0)))
+            candidates.extend(
+                item for item in TemporalParser.explicit_range_candidates(
+                    user_message, get_current_datetime().replace(microsecond=0),
+                ) if item["canonical_key"] not in withdrawn_keys
+            )
         previous_start = TemporalParser.parse_state_datetime(current_state.get("start_time"))
         previous_end = TemporalParser.parse_state_datetime(current_state.get("end_time"))
-        adjustments, ignored_adjustments = TemporalParser._time_adjustment_evidence(user_message)
-        keep_duration = is_keep_duration_expression(user_message)
-        keep_start = bool(re.search(r"(?:开始|起始|开工)时间\s*(?:保持)?不变", user_message))
-        keep_end = TemporalParser.mentions_end_time_keep(user_message)
+        asserted_clauses = [
+            match[0] for match in re.finditer(r"[^，,。；;！!？?\n]+", user_message)
+            if not TemporalParser._nonassertive_time_context(user_message, match.start(), match.end())
+        ]
+        asserted_text = "，".join(asserted_clauses)
+        keep_duration = "duration" not in cancelled_targets and is_keep_duration_expression(asserted_text)
+        keep_start = "start_time" not in cancelled_targets and bool(re.search(r"(?:开始|起始|开工)时间\s*(?:保持)?不变", asserted_text))
+        keep_end = ("end_time" in cancelled_targets and previous_end is not None) or (
+            "end_time" not in cancelled_targets and TemporalParser.mentions_end_time_keep(asserted_text)
+        )
+
+        def without_cancelled(items):
+            return [item for item in items if not (
+                isinstance(item, dict) and item.get("canonical_key") in cancelled_targets
+            )]
 
         def without_times(items):
             return [item for item in items if not (
@@ -477,6 +722,7 @@ class TemporalParser:
             if ignored_adjustments & {"start_time", "duration"}:
                 ignored_keys.add("end_time")
             ignored_keys -= adjustments.keys()
+            ignored_keys -= explicit_keys
             if "duration" in adjustments:
                 ignored_keys.discard("end_time")
             candidates = [item for item in candidates if not (
@@ -491,7 +737,7 @@ class TemporalParser:
         # SET relations need the same authorization guard as endpoint deltas.
         # Models may turn a rejected/hypothetical duration into an inferred end;
         # retain an independently stated clock while discarding that inference.
-        duration_clauses = [match for match in re.finditer(r"[^，,。；;\n]+", user_message)
+        duration_clauses = [match for match in re.finditer(r"[^，,。；;！!？?\n]+", user_message)
                             if TemporalParser.has_explicit_duration(match[0])]
         rejected_duration_clauses = [match for match in duration_clauses
                                     if TemporalParser._nonassertive_time_context(
@@ -519,7 +765,8 @@ class TemporalParser:
 
         if user_message and not TemporalParser.has_explicit_duration(user_message):
             relation = None
-        explicit_duration = TemporalParser.explicit_duration_relation(user_message)
+        explicit_duration = (TemporalParser.explicit_duration_relation(user_message)
+                             if "duration" not in cancelled_targets else None)
         if explicit_duration is not None:
             relation = explicit_duration
         rel = relation if isinstance(relation, dict) and relation.get("has_duration") is not False else {}
@@ -628,7 +875,7 @@ class TemporalParser:
                 raw_text = raw_text or "保持原持续时长"
         has_relation = bool(duration_text)
         if not has_relation and not endpoint_adjustments and not keep_end and not (start_cand and end_cand):
-            return candidates, []
+            return without_cancelled(candidates), []
 
         base_dt = get_current_datetime().replace(microsecond=0)
         start_text = TemporalParser.select_time_range_start_text(start_cand, current_state, user_message, base_dt)
@@ -689,17 +936,17 @@ class TemporalParser:
                     if normalized_range.success:
                         range_result = normalized_range
         if not range_result.success:
-            if endpoint_adjustments or "duration" in adjustments:
+            if endpoint_adjustments or "duration" in adjustments or cancelled_targets:
                 candidates = without_times(candidates)
             elif range_result.error_code == "TIME_RANGE_CONFLICT":
                 candidates = [item for item in candidates if not (
                     isinstance(item, dict) and item.get("canonical_key") == "end_time"
                 )]
             if range_result.error_code == "START_TIME_REQUIRED":
-                return candidates, [f"{raw_text or duration_text or '持续时长'}：缺少开始时间，无法计算结束时间。"]
+                return without_cancelled(candidates), [f"{raw_text or duration_text or '持续时长'}：缺少开始时间，无法计算结束时间。"]
             if range_result.error_code == "INVALID_DURATION":
-                return candidates, ["持续时长必须为正数且置信度合法，未写入结束时间。"]
-            return candidates, [range_result.error_message] if range_result.error_message else []
+                return without_cancelled(candidates), ["持续时长必须为正数且置信度合法，未写入结束时间。"]
+            return without_cancelled(candidates), [range_result.error_message] if range_result.error_message else []
 
         if start_cand is not None:
             original = start_cand.get("normalized_value")
@@ -721,4 +968,4 @@ class TemporalParser:
                 "normalized_value": range_result.end_time.iso_string, "confidence": confidence,
                 "resolution_method": "duration_incremental_arithmetic" if model_increment and target == "duration"
                     else "duration_arithmetic"})
-        return candidates, []
+        return without_cancelled(candidates), []

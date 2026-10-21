@@ -56,6 +56,74 @@ def test_uncommitted_end_time_claims_are_still_removed(claim):
     assert "请确认支持船编号" in result
 
 
+def test_relative_start_claims_are_removed_when_only_cable_type_was_committed():
+    reply = (
+        "您已成功将任务类型确认为‘管缆巡检’，电缆类型设定为‘电力电缆’。\n"
+        "目前任务计划于 1 小时后开始，持续时长为 4 小时。"
+        "为了生成完整任务，还需要您确认以下 3 个关键参数：\n"
+        "1. **任务开始时间**：（已记录为当前时间 1 小时后，请确认该时间是否准确）\n"
+        "2. **起始点经纬度**：（示例：北纬 19.8 度，东经 113.5 度）\n"
+        "请提供上述信息或确认已填项，以便继续收集后续参数。"
+    )
+    result = WriteReplyGrounder.ground_write_reply(
+        reply,
+        accepted_updates={"cable_type": "电力电缆"},
+        unresolved_inputs=["持续4小时：缺少开始时间，无法计算结束时间。"],
+        task_state={"task_type": "管缆巡检"},
+        missing_fields=[{"key": "start_time", "label": "任务开始时间"},
+                        {"key": "end_time", "label": "任务结束时间"},
+                        {"key": "start_point", "label": "起始点经纬度"}],
+    )
+    assert "计划于 1 小时后开始" not in result
+    assert "持续时长为 4 小时" not in result
+    assert "已记录为当前时间" not in result
+    assert "请确认该时间是否准确" not in result
+    assert "起始点经纬度" in result and "北纬 19.8 度" in result
+    assert "请提供上述信息" in result
+    assert "✅ 已记录：管缆类型：电力电缆。" in result
+    assert "缺少开始时间，无法计算结束时间" in result
+
+
+@pytest.mark.parametrize("claim", [
+    "开始时间已记录为一小时后",
+    "已将开始时间设置为09:00",
+    "开始时间：明天09:00",
+    "目前任务计划于一小时后开始",
+])
+@pytest.mark.parametrize("claim_first", [True, False])
+def test_uncommitted_start_claim_scrub_preserves_independent_followup(claim, claim_first):
+    guidance = "请提供起始点坐标"
+    prose = f"{claim}，{guidance}。" if claim_first else f"{guidance}，{claim}。"
+    result = ground(prose, updates={"cable_type": "电力电缆"}, state={"task_type": "管缆巡检"})
+    assert claim not in result
+    assert guidance + "。" in result
+
+
+@pytest.mark.parametrize("prose", [
+    "请确认开始时间是否为一小时后。",
+    "任务计划什么时候开始？",
+    "开始时间：请提供明天09:00这样的具体时刻。",
+    "开始时间是否已记录为09:00？",
+    "开始时间：建议选择明天09:00。",
+    "开始时间必须早于明天10:00。",
+    "例如任务于一小时后开始、持续4小时，结束时间为5小时后。",
+    "如果任务一小时后开始，可以安排四小时的作业。",
+    "您希望任务一小时后开始，请提供起始点坐标。",
+])
+def test_start_time_questions_examples_and_hypotheses_survive(prose):
+    assert prose in ground(prose)
+
+
+@pytest.mark.parametrize("committed_this_turn", [False, True])
+def test_saved_start_time_can_be_repeated_without_being_scrubbed(committed_this_turn):
+    prose = "目前任务计划于 1 小时后开始。任务开始时间已记录为09:00，请提供起始点坐标。"
+    updates = {"cable_type": "电力电缆"}
+    state = {"task_type": "管缆巡检"}
+    (updates if committed_this_turn else state)["start_time"] = "2026-10-20T09:00:00"
+    result = ground(prose, updates=updates, state=state)
+    assert prose in result
+
+
 def test_payload_guidance_does_not_discard_the_entire_conversation():
     prose = "水深信息已收到。载荷选择请参考右侧卡片。\n请提供支持船编号，以便继续规划。"
     result = ground(prose, state={"payload": ["双目水下成像系统"]})
@@ -241,9 +309,11 @@ def test_depth_grounding_preserves_correct_before_after_explanation(prose):
     assert prose in ground(prose, updates={"water_depth": 330}, state={"water_depth": 330})
 
 
-def test_depth_grounding_does_not_guess_without_a_committed_value():
+def test_depth_grounding_does_not_claim_a_value_without_a_committed_depth():
     prose = "当前水深为5000米。"
-    assert prose in ground(prose, updates={"support_vessel": "海洋石油681"})
+    result = ground(prose, updates={"support_vessel": "海洋石油681"})
+    assert "5000" not in result
+    assert "水深" not in result
 
 
 @pytest.mark.parametrize("receipt", [

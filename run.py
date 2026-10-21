@@ -75,16 +75,25 @@ def check_port_available(port: int, host: str = "0.0.0.0") -> None:
                 f"请手动关闭占用该端口的服务，或通过指定 PORT 环境变量（如 PORT=8891）更换端口。"
             )
 
-    # 2. 尝试实际独占绑定（不设 SO_REUSEADDR 以确保强独占性）
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as bind_sock:
-        try:
-            bind_sock.bind((host, port))
-        except OSError as exc:
-            raise RuntimeError(
-                f"TCP 端口 {port} 无法绑定（已被占用或处于占用状态），启动中止！\n"
-                f"为保障共享 GPU 环境与其他工作区实例安全，禁止自动终止外部进程。\n"
-                f"请手动关闭占用该端口的服务，或通过指定 PORT 环境变量（如 PORT=8891）更换端口。"
-            ) from exc
+    # 2. 尝试实际独占绑定（不设 SO_REUSEADDR 以确保强独占性；短暂重试以容忍内核 TIME_WAIT 释放）
+    last_exc = None
+    for attempt in range(4):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as bind_sock:
+            try:
+                bind_sock.bind((host, port))
+                last_exc = None
+                break
+            except OSError as exc:
+                last_exc = exc
+                if attempt < 3:
+                    time.sleep(1.0)
+
+    if last_exc is not None:
+        raise RuntimeError(
+            f"TCP 端口 {port} 无法绑定（已被占用或处于占用状态），启动中止！\n"
+            f"为保障共享 GPU 环境与其他工作区实例安全，禁止自动终止外部进程。\n"
+            f"请手动关闭占用该端口的服务，或通过指定 PORT 环境变量（如 PORT=8891）更换端口。"
+        ) from last_exc
 
 
 

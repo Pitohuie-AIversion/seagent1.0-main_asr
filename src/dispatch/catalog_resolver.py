@@ -232,7 +232,16 @@ class CatalogResolver:
                 return []
 
         if ref == "robot_family_full_names":
-            for _, family in self.kb.get_robot_families_for_task(task_type_key):
+            feasible_families = {
+                family["family_id"]
+                for category in self.kb.get_feasible_robot_selection_domain(
+                    task_type_key, task_state,
+                )["classes"]
+                for family in category["families"]
+            }
+            for family_id, family in self.kb.get_robot_families_for_task(task_type_key):
+                if family_id not in feasible_families:
+                    continue
                 standard = family.get("full_name")
                 if standard:
                     brief = " ".join(str(family.get("brief") or family.get("description") or "").split())
@@ -466,7 +475,17 @@ class CatalogResolver:
                 return []
 
         if ref == "robot_family_full_names":
-            return self.kb.get_task_allowed_robot_family_names(task_type_key)
+            feasible_names = {
+                family["full_name"]
+                for category in self.kb.get_feasible_robot_selection_domain(
+                    task_type_key, task_state,
+                )["classes"]
+                for family in category["families"]
+            }
+            return [
+                name for name in self.kb.get_task_allowed_robot_family_names(task_type_key)
+                if name in feasible_names
+            ]
 
         if ref in ("robot_full_names", "robot_variant_full_names"):
             family_selector = ""
@@ -613,8 +632,10 @@ class CatalogResolver:
     ) -> list[str]:
         """从匹配的型号变体中提取可用的单机 unit_id 列表。"""
         selector = ""
+        family_selector = ""
         if task_state:
             selector = str(task_state.get("equipment_type") or "")
+            family_selector = str(task_state.get("equipment_family") or "")
 
         if selector:
             robot = self.kb.get_rov(selector)
@@ -643,5 +664,21 @@ class CatalogResolver:
                 for unit_id in robot.get("unit_ids", [])
                 if unit_id in feasible_unit_ids
             ]
+        elif family_selector:
+            domain = self.kb.get_feasible_robot_selection_domain(
+                task_type_key,
+                task_state,
+            )
+            resolved_fam = self.kb.resolve_robot_family(family_selector, task_type_key)
+            fam_id = resolved_fam.get("family_id") if resolved_fam else None
+            units = []
+            for class_node in domain.get("classes", []):
+                for family in class_node.get("families", []):
+                    if not fam_id or family.get("family_id") == fam_id:
+                        for variant in family.get("variants", []):
+                            for unit in variant.get("units", []):
+                                if unit.get("unit_id"):
+                                    units.append(unit["unit_id"])
+            return list(dict.fromkeys(units))
 
         return []

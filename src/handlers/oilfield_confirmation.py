@@ -16,6 +16,7 @@ import re
 from typing import Any
 
 from src.slots.slot_store import Slot
+from src.slots.visible_selection_provenance import parse_ordinal_reference, visible_ordinal_matches_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,111 @@ class OilfieldConfirmationHandler:
             return getattr(self.manager, name)
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
+    @staticmethod
+    def _name_is_mentioned(name: str, message: str) -> bool:
+        names = {name, re.sub(r"(?:油田|气田)$", "", name)}
+        return any(alias and re.search(
+            rf"(?<![A-Za-z0-9-]){re.escape(alias)}(?![A-Za-z0-9-])", message, re.IGNORECASE,
+        ) for alias in names)
+
+    @staticmethod
+    def _short_confirmation(message: str) -> bool:
+        return bool(re.fullmatch(
+            r"(?:是的?|对的?|就是|采用|确认|确定|可以|好的?|ok|使用)"
+            r"(?:这个(?:油田)?|该油田)?(?:吧|了)?",
+            message.strip().lower().strip("。！! "),
+        ))
+
+    def _pending_candidates(self) -> list[dict]:
+        slot = self.manager.slot_store.slots.get("pending_oilfield_candidates")
+        return [item for item in slot.value if isinstance(item, dict) and item.get("name")] \
+            if slot and slot.status == "valid" and isinstance(slot.value, list) else []
+
+    def _visible_ordinal_text(self, raw_name: str | None, message: str) -> str | None:
+        reference = parse_ordinal_reference(message)
+        history = self.manager.conversation_history
+        if not raw_name or reference is None or not history or history[-1].get("role") != "assistant":
+            return None
+        match = self.manager.oilfield_linker.link(str(raw_name))
+        if match.status != "accepted" or not match.standard_name:
+            return None
+        terms = {
+            entity["name"]: {entity["name"], *entity.get("aliases", [])}
+            for entity in self.manager.oilfield_linker.entities if entity.get("name")
+        }
+        if visible_ordinal_matches_candidate(
+            history[-1].get("content", ""), reference, match.standard_name, terms,
+        ):
+            return reference.raw_text
+        return None
+
+    def _implicit_confirmation(self, message: str) -> bool:
+        if self._short_confirmation(message):
+            return True
+        clauses, named = self._asserted_oilfield_clauses(message, include_short_answers=True)
+        return not named and any(self._short_confirmation(clause) for clause in clauses)
+
+    def _asserted_oilfield_clauses(
+        self, message: str, *, include_rejections: bool = False, include_short_answers: bool = False,
+        additional_names: tuple[str, ...] = (),
+    ) -> tuple[list[str], bool]:
+        """Separate current named choices from mentions in questions or history."""
+        aliases = [str(name) for entity in self.manager.oilfield_linker.entities
+                   for name in (entity.get("name"), *entity.get("aliases", [])) if name]
+        aliases.extend(additional_names)
+
+        def mentioned(clause: str) -> bool:
+            return bool(re.search(r"油田|气田|海域", clause)
+                        or any(self._name_is_mentioned(name, clause) for name in aliases))
+
+        asserted, seen = [], False
+        for sentence_match in re.finditer(r"([^。；;！!？?\n]+)([。；;！!？?\n]|$)", message):
+            clauses = re.split(r"[，,]", sentence_match[1])
+            # A trailing permission question scopes its preceding proposal,
+            # while a question about a different field leaves earlier choices.
+            question_proposal = len(clauses) - 2 if len(clauses) > 1 and re.fullmatch(
+                r"\s*(?:这样|这么做)?(?:可以|行|好|对)(?:吗|么)\s*", clauses[-1],
+            ) else None
+            condition = historical = False
+            for index, clause in enumerate(clauses):
+                if re.search(r"如果|假如|假设|倘若|要是|除非|若", clause):
+                    condition = True
+                if re.search(r"昨天|此前|之前|曾经|过去|历史", clause):
+                    historical = True
+                elif re.match(r"\s*(?:现在|当前|本次|目前)", clause):
+                    historical = False
+                short_rejection = include_rejections and clause.strip() in {
+                    "不要", "取消", "不对", "不是", "否", "错了", "重新",
+                }
+                named = mentioned(clause)
+                short_confirmation = include_short_answers and self._short_confirmation(clause)
+                if not named and not short_rejection and not short_confirmation:
+                    continue
+                seen |= named
+                if (condition or historical
+                        or index == question_proposal
+                        or (index == len(clauses) - 1 and sentence_match[2] in {"？", "?"})
+                        or re.search(r"是否|能否|可否|吗|只(?:是|想)?(?:讨论|咨询|了解)", clause)
+                        or (not include_rejections and re.search(
+                            r"不要|不用|不去|不选|不是|并非|不对|错了|别|取消|撤销|尚未|暂不|先不", clause,
+                        ))):
+                    continue
+                asserted.append(clause.strip())
+        return asserted, seen
+
+    def has_additional_parameters(self, message: str) -> bool:
+        """A pending answer is one side effect, not the whole compound turn."""
+        if re.search(
+            r"水深|起点|起始点|终点|结束点|坐标|经纬度|北纬|南纬|东经|西经|"
+            r"支持船|母船|井口|井号|设备|机器人|载荷|工具|管缆|电缆|"
+            r"开始|结束|持续|小时|分钟|任务类型",
+            message,
+        ):
+            return True
+        clauses, _ = self._asserted_oilfield_clauses(message)
+        candidates = self._pending_candidates()
+        return any(not any(self._name_is_mentioned(item["name"], clause) for item in candidates)
+                   for clause in clauses)
 
     def resolve_pending_oilfield_confirmation(
         self,
@@ -43,9 +149,7 @@ class OilfieldConfirmationHandler:
         pending_slot = manager.slot_store.slots.get("pending_oilfield_name")
         if not pending_slot or not pending_slot.value or pending_slot.status != "valid":
             return None
-        if pending_action == "reject" or (
-            pending_action is None and self.user_cancelled_oilfield(user_message)
-        ):
+        if self.user_cancelled_oilfield(user_message):
             oil_slot = manager.slot_store.slots.get("oilfield_name")
             clear_oil = ("oilfield_name", "oilfield_entity_id") if (not oil_slot or oil_slot.status != "valid") else ()
             manager._commit_internal_slot_values(
@@ -61,12 +165,16 @@ class OilfieldConfirmationHandler:
 
         if pending_action not in {"confirm", None}:
             return None
-        if pending_action is None and not self.user_confirmed_oilfield(user_message):
+        if not self.user_confirmed_oilfield(user_message):
             return None
 
-        candidate = self.top_pending_oilfield_candidate(subject_text or user_message)
+        candidate = self.top_pending_oilfield_candidate(user_message)
+        if self._implicit_confirmation(user_message) and subject_text:
+            candidate = self.top_pending_oilfield_candidate(subject_text)
         if not candidate:
-            return self.build_pending_oilfield_reply()
+            # A newly named oilfield belongs to ordinary extraction; an
+            # unmatched explicit target must never select the old first offer.
+            return self.build_pending_oilfield_reply() if self._implicit_confirmation(user_message) else None
 
         confirmed_name = candidate.get("name")
         manager._commit_internal_slot_values(
@@ -113,47 +221,54 @@ class OilfieldConfirmationHandler:
         )
 
     def top_pending_oilfield_candidate(self, user_message: str = "") -> dict | None:
-        cand_slot = self.manager.slot_store.slots.get("pending_oilfield_candidates")
-        candidates = cand_slot.value if (cand_slot and cand_slot.status == "valid") else None
-        if isinstance(candidates, list) and candidates:
+        candidates = self._pending_candidates()
+        if candidates:
             if user_message:
-                for c in candidates:
-                    if isinstance(c, dict) and c.get("name") and c.get("name") in user_message:
-                        return c
+                current_clauses, _ = self._asserted_oilfield_clauses(user_message)
+                matched = [item for item in candidates
+                           if any(self._name_is_mentioned(item["name"], clause) for clause in current_clauses)]
+                if matched:
+                    return matched[0] if len(matched) == 1 else None
+                if not self._implicit_confirmation(user_message):
+                    return None
             candidate = candidates[0]
-            if isinstance(candidate, dict) and candidate.get("name"):
-                return candidate
+            return candidate
         return None
 
     def user_confirmed_oilfield(self, message: str) -> bool:
-        keywords = ["是", "对", "就是", "采用", "确认", "确定", "可以", "好的", "ok", "使用"]
-        negations = ["不", "别", "不要", "不是", "取消"]
-        msg = message.strip().lower()
-        if any(neg in msg for neg in negations):
-            return False
-        return any(kw in msg for kw in keywords)
+        if self._implicit_confirmation(message):
+            return True
+        clauses, _ = self._asserted_oilfield_clauses(message)
+        return any(
+            any(self._name_is_mentioned(item["name"], clause) for item in self._pending_candidates())
+            and bool(re.search(r"是|对|就是|采用|确认|确定|使用|就用|选择", clause))
+            for clause in clauses
+        )
 
     def user_cancelled_oilfield(self, message: str) -> bool:
         msg = message.strip()
         if any(neg in msg for neg in ["不是要取消", "不是取消", "不要取消", "不取消", "别取消", "不要修改", "不修改"]):
             return False
-        if any(mod_kw in msg for mod_kw in ["改成", "修改", "水深", "支持船", "管缆", "设备", "载荷"]) and "油田" not in msg:
-            return False
-        if "任务" in msg or "取消任务" in msg:
-            return False
-
-        pending_slot = self.manager.slot_store.slots.get("pending_oilfield_name")
-        pending_name = pending_slot.value if (pending_slot and pending_slot.status == "valid") else None
-        if pending_name:
-            mentioned_oilfields = re.findall(r"[\u4e00-\u9fa50-9\-]+油田", msg)
-            if mentioned_oilfields:
-                p_norm = pending_name.replace("油田", "").strip()
-                matched_any = any(p_norm in m or m.replace("油田", "").strip() in p_norm for m in mentioned_oilfields)
-                if not matched_any:
-                    return False
-
-        keywords = ["不是", "不对", "否", "错了", "重新", "取消油田", "不要此油田", "这个油田不对", "不要"]
-        return any(kw in msg for kw in keywords) or msg in ("不要", "取消", "不对", "不是")
+        rejection_positions = []
+        current_clauses, _ = self._asserted_oilfield_clauses(msg, include_rejections=True)
+        for clause in current_clauses:
+            clause = clause.strip()
+            if re.search(r"[？?]|是否|能否|如果|假如|昨天|此前|之前", clause):
+                continue
+            if clause in {"不要", "取消", "不对", "不是", "否", "错了", "重新"}:
+                rejection_positions.append(msg.rfind(clause))
+                continue
+            targeted = (any(self._name_is_mentioned(item["name"], clause) for item in self._pending_candidates())
+                        or bool(re.search(r"这个油田|此油田|该油田|取消油田", clause)))
+            if targeted and re.search(r"不是|不对|错了|不要|取消|撤销", clause):
+                rejection_positions.append(msg.rfind(clause))
+        asserted, _ = self._asserted_oilfield_clauses(msg)
+        confirmation_positions = [
+            msg.rfind(clause) for clause in asserted
+            if re.search(r"是|对|就是|采用|确认|确定|使用|就用|选择", clause)
+            and any(self._name_is_mentioned(item["name"], clause) for item in self._pending_candidates())
+        ]
+        return max(rejection_positions, default=-1) > max(confirmation_positions, default=-1)
 
     def remember_discussed_entities(self, user_message: str) -> None:
         """Remember query context without changing the task or its lifecycle."""
@@ -179,7 +294,7 @@ class OilfieldConfirmationHandler:
         """
         manager = self.manager
         candidates: list[dict] = []
-        if re.search(r"不要|不用|不选|不去|不带|别|取消|如果|假如|是否|能否", user_message):
+        if re.search(r"不要|不用|不选|不去|不带|别|取消|如果|假如|若|是否|能否", user_message):
             return candidates
 
         def add(key: str, value: Any) -> None:
@@ -301,10 +416,55 @@ class OilfieldConfirmationHandler:
         if isinstance(raw_name, dict):
             raw_name = raw_name.get("value")
 
-        if not raw_name and user_message and any(kw in user_message for kw in ("油田", "气田", "海域")):
-            m = manager.oilfield_linker.link(user_message)
-            if m and m.status == "accepted" and m.standard_name:
-                raw_name = m.standard_name
+        suppress_oilfield_linking = False
+        if user_message:
+            current_references = [
+                item for item in self.process_referential_carryover(user_message)
+                if item.get("canonical_key") == "oilfield_name"
+                and item.get("normalized_value") == raw_name
+            ]
+            pending_reference = any(
+                item.get("canonical_key") == "oilfield_name"
+                and item.get("normalized_value") == raw_name
+                for item in getattr(manager, "_pending_referential_candidates", [])
+            )
+            additional_names = (str(raw_name),) if raw_name else ()
+            if current_references:
+                additional_names += ("这里", "这个区域", "在这做")
+            ordinal_text = self._visible_ordinal_text(raw_name, user_message)
+            if ordinal_text:
+                additional_names += (ordinal_text,)
+            asserted_clauses, mentioned = self._asserted_oilfield_clauses(
+                user_message, additional_names=additional_names,
+            )
+            if not asserted_clauses and (mentioned or not pending_reference):
+                # Neither a model candidate nor an entity-name match turns a
+                # rejected or absent user assertion into a location change.
+                updates = {key: value for key, value in updates.items()
+                           if key not in {"oilfield_name", "raw_oilfield_name", "oilfield_entity_id"}}
+                raw_name = None
+                # Fresh coordinates retain the existing reverse-linking path;
+                # saved coordinates are not new evidence for an unrelated turn.
+                suppress_oilfield_linking = mentioned or not any(
+                    key in updates for key in ("oilfield_coordinates", "start_point", "cable_position")
+                )
+            asserted_matches = [manager.oilfield_linker.link(clause) for clause in asserted_clauses]
+            named_choices = {match.standard_name for match in asserted_matches
+                             if match.status == "accepted" and match.standard_name}
+            if len(named_choices) == 1:
+                asserted_name = named_choices.pop()
+                raw_match = manager.oilfield_linker.link(str(raw_name)) if raw_name else None
+                # Preserve the user's alias as evidence when it names the
+                # current choice; only repair missing or conflicting candidates.
+                if not (
+                    raw_match and raw_match.status == "accepted"
+                    and raw_match.standard_name == asserted_name
+                    and any(self._name_is_mentioned(str(raw_name), clause) for clause in asserted_clauses)
+                ):
+                    raw_name = asserted_name
+            elif len(named_choices) > 1:
+                return {key: value for key, value in updates.items()
+                        if key not in {"oilfield_name", "raw_oilfield_name", "oilfield_entity_id"}}
 
         is_task_switching = bool(current_tt and tt_val and tt_val != current_tt)
         is_locked_switch_rejected = bool(is_task_id_locked and current_tt and tt_val and tt_val != current_tt)
@@ -327,6 +487,9 @@ class OilfieldConfirmationHandler:
                     new_slots[k].value = None
                     new_slots[k].status = "missing"
             return linked
+
+        if suppress_oilfield_linking:
+            return updates
 
         coords = (
             updates.get("oilfield_coordinates")

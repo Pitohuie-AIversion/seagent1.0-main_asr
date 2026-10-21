@@ -33,6 +33,7 @@ from mcp.shim.bridge_service import SEAgentMCPBridgeService
 from mcp.shim.dialogue_mcp_integration import attach_mcp_bridge, dispatch_dialogue_result
 from mcp.shim.mock_rosbridge_server import MockRosbridgeServer, received_publishes, active_tasks
 from src.state_info import RobotStateInfo
+from src.validation.validator import ValidationResult
 
 PORT = 9096
 
@@ -80,8 +81,12 @@ class MockDialogueManager:
         self.dispatched_ros2_task_id = None
         self.task_state = {}
         self.slot_store = SimpleNamespace(version=1)
-        self.validator = SimpleNamespace(validate_task=Mock(return_value=SimpleNamespace(
-            overall_status="valid", violations=[], state_snapshot=None)))
+        self.validator = SimpleNamespace(validate_task=Mock(return_value=ValidationResult(
+            overall_status="valid", validated_at="2026-10-20T09:00:00+08:00",
+            task_version=self.slot_store.version, validation_version=1,
+            validation_fingerprint="mock-runtime-valid", state_snapshot=None,
+            violations=[], purpose="runtime_execution",
+        )))
         self._get_valid_acknowledgements = Mock(return_value=[])
 
 

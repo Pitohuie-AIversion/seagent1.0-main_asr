@@ -80,14 +80,18 @@ def test_history_restore_rejects_manager_removed_by_reset(monkeypatch):
     monkeypatch.setitem(web_backend.app.config, "SEAGENT_API_TOKENS", [])
     monkeypatch.setattr(history_routes, "load_history", lambda _: snapshot)
     selected = threading.Event()
-    reset_done = threading.Event()
     responses = []
+    original_lock = manager._session_lock
+    owner = threading.get_ident()
 
-    def select_before_reset(requested_sid):
-        assert requested_sid == sid
-        selected.set()
-        assert reset_done.wait(5)
-        return manager
+    class ObservedLock:
+        def __enter__(self):
+            if threading.get_ident() != owner:
+                selected.set()
+            return original_lock.__enter__()
+
+        def __exit__(self, *args):
+            return original_lock.__exit__(*args)
 
     def restore():
         with web_backend.app.test_client() as client:
@@ -95,15 +99,15 @@ def test_history_restore_rejects_manager_removed_by_reset(monkeypatch):
                 "history_id": "example.json", "session_id": sid,
             }))
 
-    monkeypatch.setattr(history_routes, "get_or_create_manager", select_before_reset)
+    monkeypatch.setattr(manager, "_session_lock", ObservedLock())
     thread = threading.Thread(target=restore)
-    thread.start()
     try:
-        assert selected.wait(5)
-        with web_backend.app.test_client() as client:
-            assert client.post("/api/reset", json={"session_id": sid}).status_code == 200
+        with original_lock:
+            thread.start()
+            assert selected.wait(5)
+            with web_backend.app.test_client() as client:
+                assert client.post("/api/reset", json={"session_id": sid}).status_code == 200
     finally:
-        reset_done.set()
         thread.join(5)
     assert not thread.is_alive()
     assert responses[0].status_code == 409
@@ -112,7 +116,7 @@ def test_history_restore_rejects_manager_removed_by_reset(monkeypatch):
     assert manager.conversation_history != snapshot["conversation_history"]
 
 
-def test_history_restore_preserves_active_session_identity(monkeypatch):
+def test_history_restore_forks_without_replacing_active_session_identity(monkeypatch):
     active_sid = "active-history-target"
     manager = DialogueManager(session_id=active_sid)
     snapshot = manager.export_snapshot()
@@ -126,10 +130,13 @@ def test_history_restore_preserves_active_session_identity(monkeypatch):
             "history_id": "example.json", "session_id": active_sid,
         })
     assert response.status_code == 200
-    assert manager.session_id == response.get_json()["session_id"] == active_sid
+    restored_sid = response.get_json()["session_id"]
+    assert restored_sid != active_sid
+    assert manager.session_id == active_sid
     assert snapshot["session_id"] == "historical-source-session"
     assert state._sessions_manager[active_sid] is manager
-    assert manager.conversation_history == snapshot["conversation_history"]
+    assert manager.conversation_history == []
+    assert state._sessions_manager[restored_sid].conversation_history == snapshot["conversation_history"]
     assert "ros2_dispatch" in response.get_json()
 
 
@@ -195,9 +202,12 @@ def test_dispatch_outcome_survives_history_restore_and_session_refresh(monkeypat
     with web_backend.app.test_client() as client:
         restored = client.post("/api/history/load", json={"session_id": sid, "history_id": history_id})
         assert restored.status_code == 200, restored.get_json()
-        refreshed = client.get("/api/session/state", query_string={"session_id": sid})
+        restored_sid = restored.get_json()["session_id"]
+        assert restored_sid != sid
+        refreshed = client.get("/api/session/state", query_string={"session_id": restored_sid})
     assert restored.get_json()["ui_state"]["phase"] == "done"
     assert restored.get_json()["ros2_dispatch"] == outcome
     assert refreshed.get_json()["ros2_dispatch"] == outcome
     assert target.session_id == sid
-    assert target.final_result == source.final_result
+    assert target.final_result is None
+    assert state._sessions_manager[restored_sid].final_result == source.final_result

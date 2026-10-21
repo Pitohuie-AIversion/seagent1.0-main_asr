@@ -75,6 +75,8 @@ flowchart TD
 
 `done` 和 `rejected` 任务的任务字段保持只读，但会话仍可接收普通对话和只读查询；后续 WRITE 可沿事务创建新草稿，不能覆盖已发布文件。前端状态由 `src/session/ui_state_builder.py` 统一构建，相关行为由 `tests/test_issue_31_ui_state_contract.py` 覆盖。
 
+HTTP 发布和执行风险确认绑定用户所见的 `confirmation_token`，历史恢复另开会话并先保存未完成草稿；配置刷新等待会话事务且保留请求重放记录。接口字段、冲突恢复及保存失败行为见[会话确认与恢复契约](session-confirmation-recovery.md)。
+
 ## 4. 约束与遥测
 
 约束来源包括：
@@ -84,7 +86,7 @@ flowchart TD
 - `config/robot_fleet.yaml`：设备层级、能力和物理上限；
 - `config/state.yaml` 或底层遥测：机器人运行状态和更新时间。
 
-候选机器人域由 `KnowledgeBase.get_feasible_robot_selection_domain()` 统一计算。当前入口按任务 `required_capabilities` 筛选系列，再组装 Class → Family → Variant → Unit 层级；它不按水深、载荷或海床条件剔除和排序型号，返回的 `rejected_variants` 为空。默认 `purpose="interactive"` 不用当前忙闲状态过滤候选；非交互用途且任务开始时间位于未来 0～60 分钟时，才额外过滤不可用 Unit，并以 `has_available_units` 标记型号。候选域不等于完整的任务可执行性结论，物理和环境约束仍需 Validator 检查。
+候选机器人域由 `KnowledgeBase.get_feasible_robot_selection_domain()` 统一计算。入口按任务 `required_capabilities` 筛选系列，再用 `VariantEvaluator` 按已确认水深和载荷筛选型号，组装 Class → Family → Variant → Unit 层级；`rejected_variants` 记录被排除型号及原因，候选同时记录需要额外安装的载荷。海床过滤和软警告排序尚未接入。默认 `purpose="interactive"` 不用当前忙闲状态过滤候选；非交互用途且任务开始时间位于未来 0～60 分钟时，才额外过滤不可用 Unit，并以 `has_available_units` 标记型号。用户明确选择的设备仍通过不带任务条件的静态准入域保留，由 Validator 报告具体组合冲突。候选域不等于完整的任务可执行性结论，发布和执行仍须校验物理及环境约束。
 
 交互收集阶段允许延后遥测检查。默认立即任务判定窗口为未来 60 分钟，并包含正在执行的任务；未来计划可延后动态状态校验。`purpose="runtime_execution"` 在派发前强制执行最新设备与环境检查，未来归档不表示已取得执行许可。
 

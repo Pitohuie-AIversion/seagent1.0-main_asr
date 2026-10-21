@@ -99,8 +99,8 @@ class TemporalIR:
     day_offset: Optional[int] = None
     week_offset: Optional[int] = None
     month_offset: Optional[int] = None
-    hour_offset: Optional[int] = None
-    minute_offset: Optional[int] = None
+    hour_offset: Optional[float] = None
+    minute_offset: Optional[float] = None
     # 边界锚点
     boundary: Optional[str] = None         # "eom"（月底）| "bom"（月初）| "eoy" | "boy" | ...
     # 即时词
@@ -130,6 +130,77 @@ def parse_cn_number_str(s: Optional[str]) -> Optional[int]:
         # 严格整数："二点五" 这种视为不合法（整数字段要求整数）
         return None
     return int(val)
+
+
+# Complete duration phrases are shared by point parsing and task-field recovery.
+# Numeric interpretation stays in duration_parser; this grammar only establishes
+# the span and rejects repeated/out-of-order units instead of accepting a suffix.
+_OFFSET_NUMBER = r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万亿点壹贰叁肆伍陆柒捌玖佰仟]+)"
+_OFFSET_UNITS = r"(?:小时|钟头|分钟|秒钟|天|日|分|秒)"
+
+
+def _duration_component_pattern(unit: str, *, suffix_half: bool = False) -> str:
+    half_suffix = rf"(?:\s*半(?!\s*(?:个)?\s*{_OFFSET_UNITS}))?" if suffix_half else ""
+    prefix_half = rf"{_OFFSET_NUMBER}\s*(?:个)?\s*半\s*(?:个)?\s*{unit}|" if suffix_half else ""
+    return (
+        rf"(?:{prefix_half}(?:{_OFFSET_NUMBER}|半)\s*(?:个)?\s*{unit}{half_suffix})"
+    )
+
+
+_DURATION_COMPONENTS = (
+    "(?:" + _duration_component_pattern(r"天", suffix_half=True) + "|"
+    + _duration_component_pattern(r"日") + ")",
+    _duration_component_pattern(r"(?:小时|钟头)", suffix_half=True),
+    _duration_component_pattern(r"(?:分钟|分)"),
+    _duration_component_pattern(r"(?:秒钟|秒)"),
+)
+DURATION_VALUE_PATTERN = "(?:" + "|".join(
+    component + "".join(rf"(?:\s*{tail})?" for tail in _DURATION_COMPONENTS[index + 1:])
+    for index, component in enumerate(_DURATION_COMPONENTS)
+) + ")"
+RELATIVE_OFFSET_PATTERN = rf"{DURATION_VALUE_PATTERN}\s*(?:之后|后)"
+
+
+def parse_elapsed_offset_seconds(text: str) -> Optional[float]:
+    """Parse one complete elapsed offset, never the last part of a quantity."""
+    norm = unicodedata.normalize("NFKC", str(text or "")).strip()
+    if not re.fullmatch(RELATIVE_OFFSET_PATTERN, norm):
+        return None
+    amount = re.sub(r"\s*(?:之后|后)$", "", norm)
+    spec = parse_duration_spec(amount)
+    return spec.total_seconds if spec.state == DurationState.EXPLICIT else None
+
+
+def _extract_elapsed_offset_ira(text: str, ira: TemporalIR) -> bool:
+    """Resolve subday offsets before clock parsing can mistake decimal 点."""
+    # Pure calendar offsets keep the existing date-only behavior. A composite
+    # such as 一天两小时后 is an elapsed interval and includes both components.
+    if not re.search(r"(?:小时|钟头|分钟|分|秒钟|秒)[^，,。；;\n]*?(?:之后|后)", text):
+        return False
+    matches = list(re.finditer(RELATIVE_OFFSET_PATTERN, text))
+    valid = len(matches) == 1
+    if valid:
+        match = matches[0]
+        prefix = text[:match.start()].rstrip()
+        # Do not silently reinterpret 1至2小时后, 1小时或2小时后,
+        # repeated quantities, signed values, or a decimal suffix.
+        valid = not re.search(
+            r"[\d.零〇一二两三四五六七八九十百千万亿点半个小时钟头分秒天日负+\-]$"
+            r"|(?:或(?:者)?|到|至|和|及|~|～|—|–)\s*$", prefix,
+        )
+        outside_offset = text[:match.start()] + text[match.end():]
+        valid = valid and not re.search(
+            rf"\d+[:：]\d+|{_OFFSET_NUMBER}\s*(?:点|时)|\d+[:：]\s*$", outside_offset,
+        )
+        seconds = parse_elapsed_offset_seconds(match[0]) if valid else None
+        valid = seconds is not None
+    if not valid:
+        ira.kind = TemporalKind.CONFLICT
+        ira.add_ambiguity(AmbiguityCode.MULTIPLE_PARSE_INTERPRETATIONS, "相对偏移必须是单一、完整的时长")
+        return True
+    ira.hour_offset = seconds / 3600
+    ira.resolution_method = "elapsed_duration_offset"
+    return True
 
 
 # ============================================================================
@@ -223,7 +294,7 @@ def _preprocess_colloquial_clock(text: str) -> str:
     t = text
     # "点一刻/时一刻" / "点半" / "点三刻" —— 口语化分数替换
     t = re.sub(r"点一刻|时一刻|(?<!\d)1刻", "点15分", t)
-    t = re.sub(r"点半|时半", "点30分", t)
+    t = re.sub(r"点半|(?<!小)时半", "点30分", t)
     t = re.sub(r"点三刻|时三刻|(?<!\d)3刻", "点45分", t)
     return t
 
@@ -396,6 +467,8 @@ def _extract_explicit_date_ira(text: str, base_dt: datetime, ira: TemporalIR) ->
 
 def _extract_explicit_time_ira(text: str, base_dt: datetime, ira: TemporalIR) -> None:
     norm = text
+    if _extract_elapsed_offset_ira(norm, ira):
+        return
     # "现在/当前/立即/此时/即刻" 作为即时词
     if re.search(r"现在|当前|立即|此时|此刻|马上|立刻|即刻|当即|即时", norm):
         ira.is_now = True
@@ -471,28 +544,6 @@ def _extract_explicit_time_ira(text: str, base_dt: datetime, ira: TemporalIR) ->
 
             ira.resolution_method = ira.resolution_method or "explicit_hms_colloquial"
             return
-
-    # 小时级偏移：N 小时后 / N 分钟后
-    m_h_off = re.search(
-        r"([0-9]+|[一二两三四五六七八九十百千万]+)\s*(?:个)?\s*(?:小时|钟头)\s*(后|之后)",
-        norm,
-    )
-    if m_h_off:
-        n = parse_cn_number_str(m_h_off.group(1))
-        if n is not None:
-            ira.hour_offset = n
-            ira.resolution_method = ira.resolution_method or "offset_hours_later"
-
-    m_m_off = re.search(
-        r"([0-9]+|[一二两三四五六七八九十百千万]+)\s*(?:个)?\s*(?:分钟|分)\s*(后|之后)",
-        norm,
-    )
-    if m_m_off and ira.hour_offset is None:
-        n = parse_cn_number_str(m_m_off.group(1))
-        if n is not None:
-            ira.minute_offset = n
-            ira.resolution_method = ira.resolution_method or "offset_minutes_later"
-
 
 # ============================================================================
 # 阶段三：将 TemporalIR 归一化 -> 具体日期 + 时刻（做冲突/歧义/闰年检测）
@@ -582,10 +633,15 @@ def _materialize_ira(ira: TemporalIR, base_dt: datetime) -> tuple[Optional[date]
     elif ira.hour_offset is not None or ira.minute_offset is not None:
         # 以 base_dt 的当前时刻为基准加偏移
         tmp = datetime.combine(target_date or ref_date, base_dt.timetz().replace(tzinfo=None))
-        if ira.hour_offset:
-            tmp += timedelta(hours=ira.hour_offset)
-        if ira.minute_offset:
-            tmp += timedelta(minutes=ira.minute_offset)
+        try:
+            if ira.hour_offset:
+                tmp += timedelta(hours=ira.hour_offset)
+            if ira.minute_offset:
+                tmp += timedelta(minutes=ira.minute_offset)
+        except OverflowError:
+            ira.kind = TemporalKind.CONFLICT
+            ira.add_ambiguity(AmbiguityCode.TIME_OUT_OF_RANGE, "相对偏移超出可表示的时间范围")
+            return None, None
         target_date = tmp.date()
         target_time = tmp.time()
         # 防止重复再加偏移：已经应用过了
@@ -685,8 +741,6 @@ def parse_relative_datetime_detail(
         result.kind = TemporalKind.INVALID
         return result
 
-    combined = f"{norm} {full_msg_norm}".strip()
-
     # ---- 构建 TemporalIR ----
     ira = TemporalIR(source_text=norm, timezone_id=timezone_id)
     # A field's explicit date/clock must not absorb another field's afternoon,
@@ -716,7 +770,7 @@ def parse_relative_datetime_detail(
     target_date, target_time = _materialize_ira(ira, base_naive)
     if target_date is not None and target_time is not None:
         target_date, target_time = _apply_overmidnight_correction(
-            target_date, target_time, base_naive, combined,
+            target_date, target_time, base_naive, norm,
         )
 
     # ---- 分类 kind 与歧义 ----

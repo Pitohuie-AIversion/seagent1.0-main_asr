@@ -350,12 +350,16 @@ class UnitResolver:
                     return None
 
         family_id = None
-        if variant:
-            family_id = variant.get("family_id")
-        elif family_selector:
+        if family_selector:
             family_id = self.engine.resolve_robot_family_id(family_selector, task_type_key)
-            if not family_id and not task_type_key:
-                family_id = self.engine.resolve_robot_family_id(family_selector, None)
+            # An unknown or task-incompatible parent must not silently become
+            # an unrestricted unit search. Explicit parents are constraints.
+            if not family_id:
+                return None
+            if variant and variant.get("family_id") != family_id:
+                return None
+        elif variant:
+            family_id = variant.get("family_id")
 
         needle_conv = re.sub(r'^(?:改|改成|换成|采用|使用|选择)?\s*(\d+|[零〇一二两三四五六七八九十]+)\s*(?:号\s*)?级$', r'\1号机', needle)
         if needle_conv != needle:

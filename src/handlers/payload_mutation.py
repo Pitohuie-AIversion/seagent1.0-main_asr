@@ -23,14 +23,25 @@ logger = logging.getLogger("src.dialogue_manager")
 
 _REMOVE = r"删除|移除|去掉|卸下|取消携带|别带|不要带|不要"
 # Consume the complete field label before treating the remainder as tool names.
-_ADD = r"添加|增加|新增|加装|再带|加上|补充|携带(?:工具\s*(?:为|是|[:：])\s*)?|带上"
+_ADD = r"添加|增加|新增|加装|再带|加上|补充|配备|装载|搭载|配置|携带(?:工具\s*(?:为|是|[:：])\s*)?|带上|带|配"
 _REPLACE = r"替换成|替换为|换成|换为|改成|改为"
 _NEGATED_ACTION = re.compile(
     r"(?:不要|不用|无需|不能|别|不|勿)\s*"
     r"(?:(?:替我|帮我|给我|为我|擅自|自动|随意|继续|再|去)\s*)*"
-    r"(?:删除|移除|去掉|卸下|清空|清除|替换|更换|换成|添加|增加|新增|加装|再带|加上|补充|携带|带上|修改|改动|调整|变更|更改|更新|改)"
+    r"(?:删除|移除|去掉|卸下|清空|清除|替换|更换|换成|添加|增加|新增|加装|配备|装载|搭载|配置|再带|加上|补充|携带|带上|修改|改动|调整|变更|更改|更新|改|配)"
 )
-_NONASSERTED_EDIT = re.compile(r"如果|假如|能否|是否|吗|会怎样|会怎么样|会有什么|[?？]")
+_PAYLOAD_CONDITION = re.compile(r"如果|假如|若")
+_NONASSERTED_EDIT = re.compile(
+    rf"{_PAYLOAD_CONDITION.pattern}|能否|是否|吗|会怎样|会怎么样|会有什么|[?？]"
+)
+_HISTORICAL_EDIT = re.compile(r"昨天|昨日|此前|之前|曾经|上次|上一轮|过去|历史|原先")
+_CANCELLED_ACTION = re.compile(
+    r"(?:取消|撤销)\s*(?:删除|移除|去掉|卸下|清空|清除|替换|更换|添加|增加|新增|"
+    r"加装|配备|装载|搭载|配置|修改|改动|调整|变更|更改|更新|设置)"
+)
+_CANCEL_PREVIOUS_EDIT = re.compile(
+    r"(?:请|先|暂时)?(?:取消|撤销)(?:这个|该|上述|刚才的?)?(?:修改|调整|改动|变更|操作)"
+)
 _TRAILING_EDIT_QUESTION = re.compile(
     r"[,，]\s*(?:这样)?(?:可以吗|行吗|好吗|是否可以)\s*[。.!！]?\s*$"
 )
@@ -47,6 +58,18 @@ _PAUSED_EDIT = (
 _PAYLOAD_PAUSE = re.compile(
     rf"(?:{_PAUSE_PREFIX}{_PAUSED_EDIT}\s*{_PAYLOAD_FIELD}"
     rf"|{_PAUSE_PREFIX}{_PAYLOAD_FIELD}\s*{_PAUSE_PREFIX}{_PAUSED_EDIT})\s*(?:了|吧)?",
+    re.IGNORECASE,
+)
+_PAYLOAD_CANCEL = re.compile(
+    rf"{_PAUSE_PREFIX}(?:(?:取消|撤销)\s*(?:本轮|这次|刚才的?)?\s*{_PAYLOAD_FIELD}"
+    rf"\s*(?:的)?(?:修改|调整|改动|变更|配置|设置)?"
+    rf"|{_PAYLOAD_FIELD}\s*(?:的)?(?:修改|调整|改动|变更|配置|设置)\s*(?:取消|撤销))\s*(?:了|吧)?",
+    re.IGNORECASE,
+)
+_PAYLOAD_ASSIGNMENT = re.compile(
+    r"(?:载荷(?:配置|清单|列表)?|工具(?:配置|清单|列表)?|携带工具|payload)\s*"
+    r"(?:设置为|设为|设成|配置为)\s*(?P<items>.+)"
+    r"|(?:载荷|工具|payload)\s*(?:为|是|[:：])\s*(?P<plain_items>.+)",
     re.IGNORECASE,
 )
 _PAYLOAD_DISCUSSION = re.compile(
@@ -367,7 +390,7 @@ class PayloadMutationManager(BaseDialogueHandler):
             return True
         for clause in re.split(r"[，,。；;！!？?\n]+", message or ""):
             clause = clause.strip()
-            if _PAYLOAD_PAUSE.fullmatch(clause):
+            if _PAYLOAD_PAUSE.fullmatch(clause) or _PAYLOAD_CANCEL.fullmatch(clause):
                 return True
             discussion = _PAYLOAD_DISCUSSION.fullmatch(clause)
             if discussion and re.fullmatch(_PAYLOAD_FIELD, discussion["object"].strip(), re.IGNORECASE):
@@ -388,19 +411,64 @@ class PayloadMutationManager(BaseDialogueHandler):
         return result
 
     @staticmethod
+    def _independent_payload_question(clause: str) -> bool:
+        """Recognize a separate field query, not approval of the payload edit.
+
+        Generic follow-ups and questions about the named tool's compatibility
+        remain dependent on the preceding command.
+        """
+        text = clause.strip().rstrip("。.!！?？").strip()
+        prefix = r"(?:(?:请问|顺便问一下|当前|现在|目前|已选|这个|这台|本次|任务|作业)(?:的)?\s*)*"
+        return bool(re.fullmatch(
+            prefix + r"(?:"
+            r"(?:水深|海水深度)(?:是|为|有)?(?:多少(?:米)?|多深)"
+            r"|(?:机器人|设备)(?:支持|可选|能选|可携带|能携带)(?:哪些|什么)(?:工具|载荷)"
+            r"|(?:机器人|设备)(?:的)?(?:型号|编号|状态)(?:是|为)?(?:什么|哪个|如何|怎样|多少)"
+            r")(?:呢)?", text,
+        ))
+
+    @staticmethod
     def _payload_edit_clauses(message: str):
         for sentence in re.split(r"(?<=[。；;！!？?\n])", message or ""):
             # Keep a question's comma-separated operands within its scope.
-            # The next sentence can still contain an affirmative edit.
-            if sentence.rstrip().endswith(("?", "？")) or _TRAILING_EDIT_QUESTION.search(sentence):
+            # A separate query about another field has its own scope; "可以吗"
+            # and tool-compatibility questions still qualify the payload edit.
+            clauses = re.split(r"[，,。；;！!\n]", sentence)
+            question = sentence.rstrip().endswith(("?", "？")) or _TRAILING_EDIT_QUESTION.search(sentence)
+            if question and not (
+                len(clauses) > 1
+                and PayloadMutationManager._independent_payload_question(clauses[-1])
+            ):
                 yield sentence
                 continue
-            for clause in re.split(r"[，,。；;！!\n]", sentence):
+            historical_prefix = ""
+            conditional_prefix = ""
+            for clause in clauses:
+                clause = clause.strip()
+                if _PAYLOAD_CONDITION.search(clause):
+                    conditional_prefix = "如果"
+                elif conditional_prefix:
+                    # A condition remains in force across commas, including
+                    # "如果需要，现在删除..."; a new sentence ends that scope.
+                    clause = conditional_prefix + clause
+                if _HISTORICAL_EDIT.fullmatch(clause):
+                    historical_prefix = clause
+                    yield clause
+                    continue
+                present = re.match(r"(?:现在|当前|本次|这次|本轮)\s*", clause)
+                if present:
+                    historical_prefix = ""
+                    clause = clause[present.end():]
+                elif historical_prefix:
+                    yield historical_prefix + clause
+                    continue
                 # Apply assertion guards before splitting a keep/edit pair:
                 # "保留A并删除B吗" must not become an imperative delete.
                 if (re.search(r"保留|保持|不变", clause)
                         and not _NEGATED_ACTION.search(clause)
                         and not _NONASSERTED_EDIT.search(clause)
+                        and not _HISTORICAL_EDIT.search(clause)
+                        and not _CANCELLED_ACTION.search(clause)
                         and not _PAYLOAD_DISCUSSION.search(clause)):
                     yield from _KEEP_EDIT_BOUNDARY.split(clause)
                 else:
@@ -441,6 +509,14 @@ class PayloadMutationManager(BaseDialogueHandler):
         guarded = False
         kept_items = []
         exclusive_keep = False
+        previous_command: int | None = None
+        previous_payload_clause = False
+
+        def append_command(operation, items, targets):
+            nonlocal previous_command
+            previous_command = len(commands)
+            commands.append((operation, items, targets))
+
         for clause in self._payload_edit_clauses(message):
             clause = re.sub(
                 r"^(?:(?:那就|那么|那|然后|并且|再|并|但是|但|先|请你|请|帮我|给我|我想要|我想|我要|麻烦你)\s*)+",
@@ -448,17 +524,30 @@ class PayloadMutationManager(BaseDialogueHandler):
             )
             if not clause:
                 continue
+            if _CANCEL_PREVIOUS_EDIT.fullmatch(clause.strip("。.!！")):
+                if previous_payload_clause:
+                    guarded = True
+                    if previous_command is not None:
+                        del commands[previous_command:]
+                previous_command = None
+                previous_payload_clause = False
+                continue
+            previous_command = None
+            previous_payload_clause = any(term in clause for term in terms) or bool(
+                re.search(r"载荷|工具|payload", clause, re.IGNORECASE)
+            )
             if _PENDING_PAYLOAD.match(clause):
                 # Here 携带工具 names the undecided field; 携带 is not an
                 # instruction to add a tool. Other clauses may still edit it.
                 guarded = True
                 continue
             if (_NEGATED_ACTION.search(clause) or _NONASSERTED_EDIT.search(clause)
+                    or _HISTORICAL_EDIT.search(clause) or _CANCELLED_ACTION.search(clause)
                     or _PAYLOAD_DISCUSSION.fullmatch(clause)):
-                guarded = guarded or any(term in clause for term in terms) or bool(re.search(r"载荷|工具", clause))
+                guarded = guarded or previous_payload_clause
                 continue
             if _CLEAR_PAYLOAD.fullmatch(clause):
-                commands.append(("clear", [], []))
+                append_command("clear", [], [])
                 continue
             if re.search(r"保留|保持|不变", clause):
                 # A keep-only payload clause is evidence against model edits,
@@ -489,24 +578,31 @@ class PayloadMutationManager(BaseDialogueHandler):
                     continue
                 if not re.search(rf"{_REMOVE}|{_REPLACE}|{_ADD}|替换", clause):
                     continue
+            assignment = _PAYLOAD_ASSIGNMENT.fullmatch(clause)
+            if assignment:
+                append_command("set", self._payload_items(
+                    assignment["items"] or assignment["plain_items"],
+                ), [])
+                continue
             forward = re.fullmatch(rf"(?:把|将)?(.+?)(?:{_REPLACE})(.+)", clause)
             reverse = re.fullmatch(r"用(.+?)(?:替换|更换)(.+)", clause)
             if forward or reverse:
                 old, new = forward.groups() if forward else reverse.groups()[::-1]
                 if re.fullmatch(r"(?:全部|所有|携带的?|已选的?)?(?:载荷(?:配置)?|工具(?:清单)?|携带工具|payload)", old.strip(), re.IGNORECASE):
-                    commands.append(("set", self._payload_items(new), []))
+                    append_command("set", self._payload_items(new), [])
                 elif any(term in old for term in terms) or re.search(r"工具|载荷", old):
-                    commands.append(("replace", self._payload_items(new), self._payload_items(old)))
+                    append_command("replace", self._payload_items(new), self._payload_items(old))
                 continue
             match = re.fullmatch(rf"(?P<operation>{_REMOVE}|{_ADD})(?P<items>.+)", clause)
             if match and (any(term in match['items'] for term in terms) or re.search(r"工具|载荷", match['items'])):
                 operation = "remove" if re.fullmatch(_REMOVE, match['operation']) else "add"
-                commands.append((operation, self._payload_items(match['items']), []))
+                append_command(operation, self._payload_items(match['items']), [])
             elif commands and any(term in clause for term in terms) and not re.search(r"保留|不变|改|设|选", clause):
                 # A comma-separated list can continue a preceding add/remove.
                 op, items, targets = commands[-1]
-                if op in {"add", "remove"}:
+                if op in {"add", "remove", "set"}:
                     items.extend(item for item in self._payload_items(clause) if item not in items)
+                    previous_command = len(commands) - 1
         conflict = False
         kept_keys = self._payload_operand_keys(kept_items)
         for op, items, targets in commands:

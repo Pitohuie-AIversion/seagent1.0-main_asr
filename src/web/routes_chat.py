@@ -21,7 +21,8 @@ from src.exceptions import (
 from src.session.history_manager import save_conversation
 from src.dispatch.task_dispatch import dispatch_completed_task, save_dispatch_history
 from src.slots.slot_store import SlotVersionConflict
-from src.session.ui_state_builder import build_frontend_ui_state
+from src.handlers.command_predicates import is_final_publish_confirmation
+from src.session.ui_state_builder import build_frontend_ui_state, confirmation_conflict
 from src.web.state import (
     _require_api_token,
     get_mcp_bridge,
@@ -64,7 +65,7 @@ def _read_chat_request():
     if error is not None:
         return None, error
 
-    for key in ('message', 'session_id', 'request_id'):
+    for key in ('message', 'session_id', 'request_id', 'expected_confirmation_token'):
         value = data.get(key)
         if isinstance(value, str):
             try:
@@ -90,7 +91,14 @@ def _read_chat_request():
     if not msg:
         return None, _request_error("EmptyMessage", "消息内容不能为空。", request_id)
     sid = data.get("session_id") or str(uuid.uuid4())
-    return (sid, request_id, msg), None
+    confirmation_token = data.get("expected_confirmation_token")
+    if confirmation_token is not None and (
+        not isinstance(confirmation_token, str) or len(confirmation_token) > 512
+    ):
+        return None, _request_error(
+            "InvalidRequest", "expected_confirmation_token 必须是有效的摘要确认标识。", request_id,
+        )
+    return (sid, request_id, msg, confirmation_token), None
 
 
 def _dispatch_ros2_on_done_transition(mgr, phase_before):
@@ -103,20 +111,36 @@ def _dispatch_ros2_on_done_transition(mgr, phase_before):
 
 def _persist_and_dispatch_done_transition(mgr, phase_before):
     """当会话首次到达 done 阶段时，先保存会话快照再尝试下发 ROS 2。"""
+    mgr._history_persistence_warning = None
+
+    def history_failed():
+        mgr._history_persistence_warning = (
+            "当前会话状态未能保存；执行结果请以当前发送状态为准，请勿重复发送控制指令。"
+        )
+
     save_fn = _get_backend_symbol("save_conversation", save_conversation)
     if getattr(mgr, "_pending_published_intent", None) is not None:
         try:
             save_dispatch_history(mgr, save_fn)
         except Exception as exc:
             logging.error("保存待核对发布记录失败: %s", exc, exc_info=True)
+            history_failed()
         return getattr(mgr, "ros2_dispatch", None)
-    if phase_before == "done" or mgr.phase != "done":
+    if mgr.phase != "done":
+        return getattr(mgr, "ros2_dispatch", None)
+    if phase_before == "done":
+        try:
+            save_dispatch_history(mgr, save_fn)
+        except Exception:
+            logger.exception("保存后续执行控制状态失败")
+            history_failed()
         return getattr(mgr, "ros2_dispatch", None)
 
     try:
         save_dispatch_history(mgr, save_fn)
     except Exception as exc:
         logging.error("保存历史快照失败: %s", exc, exc_info=True)
+        history_failed()
 
     dispatch_fn = _get_backend_symbol(
         "_dispatch_ros2_on_done_transition", _dispatch_ros2_on_done_transition
@@ -128,6 +152,7 @@ def _persist_and_dispatch_done_transition(mgr, phase_before):
         save_dispatch_history(mgr, save_fn)
     except Exception as exc:
         logging.error("保存下发结果失败: %s", exc, exc_info=True)
+        history_failed()
     return ros2_dispatch
 
 
@@ -156,6 +181,9 @@ def _chat_failure(exc, request_id):
 
 def _chat_result(mgr, sid, request_id, reply, ros2_dispatch):
     ui_builder = _get_backend_symbol('build_frontend_ui_state', build_frontend_ui_state)
+    persistence_warning = getattr(mgr, "_history_persistence_warning", None)
+    if persistence_warning:
+        reply = f"{reply}\n⚠️ {persistence_warning}"
     return {
         'code': 200, 'session_id': sid, 'request_id': request_id, 'reply': reply,
         'ui_state': ui_builder(mgr),
@@ -167,10 +195,11 @@ def _chat_result(mgr, sid, request_id, reply, ros2_dispatch):
         'task_id_preview': mgr.task_id_preview, 'emergency': mgr.mode == 'emergency',
         'final_json': mgr._last_built_json if mgr.phase == 'done' else None,
         'ros2_dispatch': ros2_dispatch,
+        'persistence_warning': persistence_warning,
     }
 
 
-def _process_chat_request(mgr, sid, request_id, msg, step_sink=None):
+def _process_chat_request(mgr, sid, request_id, msg, step_sink=None, confirmation_token=None):
     """One serialized transaction shared by JSON and SSE, including replay."""
     with mgr._session_lock:
         with state._sessions_lock:
@@ -188,6 +217,15 @@ def _process_chat_request(mgr, sid, request_id, msg, step_sink=None):
         if previous is not None:
             return previous['payload'], previous['status'], previous['events']
 
+        requires_confirmation = is_final_publish_confirmation(msg)
+        if mgr.phase == "done":
+            from src.dispatch.task_dispatch import is_runtime_risk_confirmation
+            requires_confirmation = requires_confirmation or is_runtime_risk_confirmation(msg)
+        if requires_confirmation:
+            conflict = confirmation_conflict(mgr, confirmation_token)
+            if conflict is not None:
+                return {**conflict, "request_id": request_id}, 409, []
+
         events = []
 
         def event_sink(event_type, data):
@@ -200,6 +238,7 @@ def _process_chat_request(mgr, sid, request_id, msg, step_sink=None):
 
         try:
             phase_before = mgr.phase
+            mgr.mcp_bridge = get_mcp_bridge()
             process_kwargs = {'request_id': request_id}
             if step_sink is not None:
                 process_kwargs['event_sink'] = event_sink
@@ -230,9 +269,11 @@ def api_chat():
         parsed, error = _read_chat_request()
         if error is not None:
             return error
-        sid, request_id, msg = parsed
+        sid, request_id, msg, confirmation_token = parsed
         manager_getter = _get_backend_symbol('get_or_create_manager', get_or_create_manager)
-        payload, status, _ = _process_chat_request(manager_getter(sid), sid, request_id, msg)
+        payload, status, _ = _process_chat_request(
+            manager_getter(sid), sid, request_id, msg, confirmation_token=confirmation_token,
+        )
         return jsonify(payload), status
     except Exception as exc:
         payload, status, _ = _chat_failure(exc, request_id)
@@ -247,11 +288,13 @@ def api_chat_stream():
         parsed, error = _read_chat_request()
         if error is not None:
             return error
-        sid, request_id, msg = parsed
+        sid, request_id, msg, confirmation_token = parsed
         manager_getter = _get_backend_symbol('get_or_create_manager', get_or_create_manager)
         mgr = manager_getter(sid)
         return start_chat_stream(
-            lambda step_sink: _process_chat_request(mgr, sid, request_id, msg, step_sink),
+            lambda step_sink: _process_chat_request(
+                mgr, sid, request_id, msg, step_sink, confirmation_token=confirmation_token,
+            ),
             app=current_app._get_current_object(), session_id=sid, request_id=request_id,
         )
     except StreamCapacityError:

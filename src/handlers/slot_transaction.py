@@ -294,6 +294,7 @@ class SlotTransactionManager:
         allow_overwrite: bool = False,
         transition_from_task_type_key: str | None = None,
         transition_to_task_type_key: str | None = None,
+        recompute_equipment: bool = True,
     ) -> None:
         return self._apply_normalized_plan_in_transaction(
             plan=plan,
@@ -301,6 +302,7 @@ class SlotTransactionManager:
             allow_overwrite=allow_overwrite,
             transition_from_task_type_key=transition_from_task_type_key,
             transition_to_task_type_key=transition_to_task_type_key,
+            recompute_equipment=recompute_equipment,
         )
 
     def _apply_normalized_plan_in_transaction(
@@ -310,6 +312,7 @@ class SlotTransactionManager:
         allow_overwrite: bool = False,
         transition_from_task_type_key: str | None = None,
         transition_to_task_type_key: str | None = None,
+        recompute_equipment: bool = True,
     ) -> None:
         """根据 NormalizationApplyPlan 修改 working dict new_slots。"""
         # 1. 成功 outcomes 写入 new_slots
@@ -371,7 +374,7 @@ class SlotTransactionManager:
                 slot.source = failure.source
                 slot.validation_error = failure.error_message
 
-        if not (
+        if recompute_equipment and not (
             transition_from_task_type_key
             and transition_to_task_type_key
             and transition_from_task_type_key != transition_to_task_type_key

@@ -38,6 +38,51 @@ def times(result):
     return {item["canonical_key"]: item["normalized_value"] for item in result["slot_candidates"]}
 
 
+@pytest.mark.parametrize("message", [
+    "任务1小时后开始持续4小时  电力",
+    "任务1小时后开始，持续4小时，电力",
+    "一小时后开始持续四小时",
+    "作业在60分钟后开工持续4小时",
+    "开始时间为1小时后，持续4小时，电力",
+    "不要改水深，任务1小时后开始持续4小时",
+    "不要改水深，开始时间为1小时后，持续4小时",
+])
+@pytest.mark.parametrize("relation", [
+    None,
+    {"has_duration": False},
+    {"has_duration": True, "raw_text": "持续4小时", "duration_seconds": 14400},
+    {"has_duration": True, "raw_text": "1小时后开始持续4小时", "duration_seconds": 3600},
+])
+def test_relative_start_and_inline_duration_recover_omitted_time_fields(message, relation):
+    result = extract(message, relation=relation)
+    assert result["unresolved"] == []
+    assert times(result) == {"start_time": "2026-10-15T18:00:00", "end_time": "2026-10-15T22:00:00"}
+
+
+def test_relative_start_replaces_stale_model_clock_and_uses_new_duration():
+    result = extract("任务1小时后开始持续4小时  电力", [
+        candidate("start_time", "1小时后", "2026-10-15T17:55:00"),
+    ], state={"start_time": "2026-10-16T09:00:00", "end_time": "2026-10-16T11:00:00"})
+    assert result["unresolved"] == []
+    assert times(result) == {"start_time": "2026-10-15T18:00:00", "end_time": "2026-10-15T22:00:00"}
+
+
+@pytest.mark.parametrize("message", [
+    "不要把任务设为1小时后开始持续4小时。",
+    "如果任务1小时后开始持续4小时会怎样？",
+    "只讨论，任务1小时后开始持续4小时。",
+    "任务1小时后开始持续4小时吗？",
+    "时间别动，任务1小时后开始持续4小时。",
+    "设备1小时后开始自检，持续4小时。",
+    "设备开始时间为1小时后，持续4小时。",
+    "持续4小时，电力。",
+    "1小时后。",
+    "任务1小时后开始，任务2小时后开始，持续4小时。",
+])
+def test_relative_start_recovery_requires_one_assertive_task_endpoint(message):
+    assert "start_time" not in times(extract(message))
+
+
 @pytest.mark.parametrize("relation", [
     {"has_duration": True, "raw_text": "持续一个半天两小时", "duration_seconds": 136800},
     {"has_duration": True, "raw_text": "两小时", "duration_seconds": 7200},

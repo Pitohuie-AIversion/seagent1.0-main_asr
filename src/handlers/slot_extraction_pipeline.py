@@ -30,7 +30,7 @@ from src.slots.normalization_contract import (
     normalized_task_patch_to_apply_plan,
 )
 from src.slots.task_patch import build_task_patch, task_patch_to_legacy_updates
-from src.slots.slot_store import Slot
+from src.slots.slot_store import Slot, reset_slot_to_missing
 from src.extraction.extractor import ParameterExtractor
 from ..constants import FIELD_LABELS
 from .explicit_value_grounding import ground_explicit_values
@@ -395,6 +395,26 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                 transition_state_active=transition_state_active,
             )
         )
+        automatic_payload_context = []
+        if any(m.get("field") == "payload" for m in filtered_mutations if isinstance(m, dict)):
+            cascade = ("equipment_class", "equipment_family", "equipment_type", "equipment_unit_id")
+            explicit_level = max(
+                (index for index, key in enumerate(cascade)
+                 if (slot := evaluation_slots.get(key)) and slot.status == "valid"
+                 and slot.value is not None and slot.source != "auto"),
+                default=-1,
+            )
+            # Automatic selection is a consequence of the old requirements.
+            # Let a payload edit change those requirements before recomputing
+            # its automatic suffix; explicit model/unit choices still constrain it.
+            automatic_payload_context = [
+                key for index, key in enumerate(cascade)
+                if index > explicit_level
+                and (slot := evaluation_slots.get(key)) and slot.source == "auto"
+            ]
+            for key in automatic_payload_context:
+                reset_slot_to_missing(evaluation_slots[key], source="system_candidate_recompute")
+                effective_state.pop(key, None)
         required_field_defs = manager.builder.get_required(
             effective_task_type_key,
             manager.mode,
@@ -566,6 +586,11 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                         "error": f"不支持的列表字段 '{m_field}'",
                     }
                     break
+
+        if not payload_mutation_failed and list_mutations and "payload" in stage2_updates:
+            for key in automatic_payload_context:
+                if (slot := new_slots.get(key)) and slot.source == "auto":
+                    reset_slot_to_missing(slot, source="system_candidate_recompute")
 
         if has_acknowledge_action and manager.phase == "blocked_soft":
             # A model may echo the warning identifier in unresolved even after
@@ -744,6 +769,10 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                     if effective_task_type_key != task_type_key
                     else None
                 ),
+                # List mutations and explicit robot selectors are applied below.
+                # Final transaction validation recomputes equipment once all
+                # requirements are present, avoiding a selection from old values.
+                recompute_equipment=False,
             )
             task_type_updates = {
                 k: v for k, v in stage2_updates.items()

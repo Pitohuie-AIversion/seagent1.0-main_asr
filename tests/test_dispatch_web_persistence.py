@@ -34,12 +34,18 @@ def _reply(response, stream):
                 if line.startswith("data: ") and '"ros2_dispatch"' in line)
 
 
+def _post(client, manager, path, **body):
+    ui = client.get("/api/session/state", query_string={"session_id": manager.session_id}).get_json()["ui_state"]
+    return client.post(path, json={
+        "session_id": manager.session_id, "expected_confirmation_token": ui["confirmation_token"], **body,
+    })
+
+
 @pytest.mark.parametrize("stream", [False, True])
 def test_dispatch_failure_survives_state_history_and_explicit_same_intent_retry(web_task, stream):
     client, manager, bridge, root = web_task
     bridge.client.publish_task_cmd.side_effect = RuntimeError("gateway rejected before send")
-    response = client.post("/api/chat/stream" if stream else "/api/chat",
-                           json={"session_id": manager.session_id, "message": "确认发布"})
+    response = _post(client, manager, "/api/chat/stream" if stream else "/api/chat", message="确认发布")
     result = _reply(response, stream)
     assert result["ros2_dispatch"]["state"] == "FAILED", result
     assert "已生成并下发" not in result["reply"]
@@ -50,11 +56,11 @@ def test_dispatch_failure_survives_state_history_and_explicit_same_intent_retry(
     intent = manager.final_result.copy()
     assigned = bridge._dispatch_records[intent["intent_id"]]["task_id"]
     bridge.client.publish_task_cmd.side_effect = None
-    result = client.post("/api/mcp/dispatch", json={"session_id": manager.session_id}).get_json()
+    result = _post(client, manager, "/api/mcp/dispatch").get_json()
     assert result["ros2_dispatch"]["state"] == "SENT", result
     assert result["task_id"] == assigned and manager.final_result == intent
     assert len(list((root / "task").glob("task_intent_*.json"))) == 1
-    client.post("/api/mcp/dispatch", json={"session_id": manager.session_id})
+    _post(client, manager, "/api/mcp/dispatch")
     assert bridge.client.publish_task_cmd.call_count == 2
 
 
@@ -63,14 +69,14 @@ def test_future_confirmation_and_early_manual_retry_never_send(web_task):
     client, manager, bridge, _ = web_task
     manager.slot_store.slots["start_time"].value = (get_current_datetime() + timedelta(hours=2)).isoformat()
     manager._rebuild_cache()
-    result = client.post("/api/chat", json={"session_id": manager.session_id, "message": "确认发布"}).get_json()
+    result = _post(client, manager, "/api/chat", message="确认发布").get_json()
     if manager.phase == "blocked_soft":
         # Future planning emits an existing runtime-check notice which the
         # established dialogue requires the user to acknowledge explicitly.
-        client.post("/api/chat", json={"session_id": manager.session_id, "message": "忽略警告"})
-        result = client.post("/api/chat", json={"session_id": manager.session_id, "message": "确认发布"}).get_json()
+        _post(client, manager, "/api/chat", message="忽略警告")
+        result = _post(client, manager, "/api/chat", message="确认发布").get_json()
     assert result["ros2_dispatch"]["state"] == "SCHEDULED", result
-    retry = client.post("/api/mcp/dispatch", json={"session_id": manager.session_id}).get_json()
+    retry = _post(client, manager, "/api/mcp/dispatch").get_json()
     assert retry["ros2_dispatch"]["state"] == "SCHEDULED"
     bridge.client.publish_task_cmd.assert_not_called()
 

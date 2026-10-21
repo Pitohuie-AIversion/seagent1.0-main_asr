@@ -273,3 +273,15 @@ class TestEquipmentUnitInteractiveSelection(unittest.TestCase):
             self.assertEqual(res_slots["equipment_family"].status, "valid")
             self.assertEqual(res_slots["equipment_family"].value, "轻型工作级深海机器人")
 
+    def test_family_only_unit_id_recommendations(self):
+        """当仅选定系列未选定型号时，get_robot_unit_ids 能正确列出该系列下的所有可用单机。"""
+        from src.dialogue_manager import DialogueManager
+
+        dm = DialogueManager()
+        units = dm.builder.catalog_resolver.get_robot_unit_ids(
+            "pipeline_inspection",
+            {"equipment_family": "轻型工作级深海机器人"},
+        )
+        self.assertIn("LROV-150-001", units)
+        self.assertIn("LROV-150-002", units)
+

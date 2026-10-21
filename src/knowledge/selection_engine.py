@@ -392,6 +392,19 @@ class RobotSelectionEngine:
                     if variant_cfg.get("family_id") != family_id:
                         continue
 
+                    feasibility = self.evaluate_static_robot_variant(
+                        variant_id, variant_cfg, task_state,
+                    )
+                    if not feasibility.eligible:
+                        rejected_variants.append({
+                            "variant_id": variant_id,
+                            "full_name": variant_cfg.get("full_name", variant_id),
+                            "family_id": family_id,
+                            "robot_class": class_id,
+                            "reasons": list(feasibility.reasons),
+                        })
+                        continue
+
                     units_node: list[dict] = []
                     for unit_cfg in fleet_units:
                         if unit_cfg.get("variant_id") != variant_id:
@@ -424,7 +437,7 @@ class RobotSelectionEngine:
                         "robot_class": class_id,
                         "aliases": list(variant_cfg.get("aliases", []) or []),
                         "hard_params": dict(variant_cfg.get("hard_params", {}) or {}),
-                        "requires_installation": [],
+                        "requires_installation": list(feasibility.requires_installation),
                         "units": units_node,
                         "has_available_units": bool(units_node),
                     })

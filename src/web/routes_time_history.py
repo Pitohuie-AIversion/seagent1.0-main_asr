@@ -3,11 +3,15 @@ src/web/routes_time_history.py - 虚拟时钟校准与多会话历史快照恢�
 """
 
 import logging
+import uuid
+from contextlib import nullcontext
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from flask import Blueprint, jsonify, request
 
-from src.session.history_manager import list_history, load_history
+from src.session.history_manager import list_history, load_history, save_conversation
+from src.dispatch.task_dispatch import save_dispatch_history
+from src.dialogue_manager import DialogueManager
 from src.temporal.simulated_time import get_simulated_time
 from src.session.ui_state_builder import build_frontend_ui_state
 import src.web.state as state
@@ -72,7 +76,7 @@ def api_history_list():
 @time_history_bp.route("/api/history/load", methods=["POST"])
 @_require_api_token
 def api_history_load():
-    """加载指定的历史快照，并恢复到当前会话"""
+    """Open history in a new session and retain a recoverable current draft."""
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"code": 400, "msg": "请求体必须是 JSON 对象"}), 400
@@ -80,6 +84,8 @@ def api_history_load():
     sid = data.get("session_id")
     if any(not isinstance(value, str) or not value.strip() for value in (history_id, sid)):
         return jsonify({"code": 400, "msg": "history_id 和 session_id 必须是非空字符串"}), 400
+    if data.get("restore_mode", "fork") != "fork":
+        return jsonify({"code": 400, "msg": "历史记录必须在新会话中打开，restore_mode 应为 fork。"}), 400
 
     try:
         snapshot = load_history(history_id)
@@ -93,19 +99,24 @@ def api_history_load():
     if not snapshot:
         return jsonify({"code": 404, "msg": "历史记录不存在"}), 404
 
-    mgr = get_or_create_manager(sid)
-    with mgr._session_lock:
+    with state._sessions_lock:
+        previous = state._sessions_manager.get(sid)
+    with previous._session_lock if previous is not None else nullcontext():
         with state._sessions_lock:
-            if state._sessions_manager.get(sid) is not mgr:
+            if previous is not None and state._sessions_manager.get(sid) is not previous:
                 return jsonify({
                     "ok": False, "code": 409, "error": "SessionReset",
                     "msg": "当前会话已重新开始，请在新会话中重试。",
                     "retryable": True,
                 }), 409
+        new_sid = str(uuid.uuid4())
+        mgr = DialogueManager(
+            previous.llm if previous is not None else state._shared_llm,
+            previous.kb if previous is not None else state._shared_kb,
+            session_id=new_sid,
+        )
         try:
-            # The historical session is the source, not the identity of the
-            # active session registered under sid.
-            mgr.load_snapshot({**snapshot, "session_id": sid})
+            mgr.load_snapshot({**snapshot, "session_id": new_sid})
         except (TypeError, ValueError) as exc:
             logging.warning("历史快照结构校验失败: history_id=%r, error=%s", history_id, exc)
             return jsonify({"code": 400, "msg": f"历史快照结构非法: {exc}"}), 400
@@ -113,10 +124,30 @@ def api_history_load():
             logging.error("恢复历史快照失败: history_id=%r", history_id, exc_info=True)
             return jsonify({"code": 500, "msg": f"恢复历史记录失败: {exc}"}), 500
 
+        preserved_draft_history_id = None
+        if previous is not None and previous.phase not in {"done", "rejected"} and (
+            previous.task_state.get("task_type_key") or previous.conversation_history
+        ):
+            try:
+                def save_draft(**fields):
+                    # Draft backups must not overwrite an archived intent's
+                    # canonical history or create a published task artifact.
+                    return save_conversation(**{**fields, "intent_id": None})
+                preserved_draft_history_id = save_dispatch_history(previous, save_draft)
+            except Exception:
+                logger.exception("打开历史前保存当前草稿失败")
+                return jsonify({
+                    "code": 500, "error": "DraftPreservationFailed",
+                    "msg": "当前草稿未能保存，已保留原会话；请稍后重试。",
+                }), 500
+        with state._sessions_lock:
+            state._sessions_manager[new_sid] = mgr
         ui_state = build_frontend_ui_state(mgr)
         return jsonify({
             "code": 200,
-            "session_id": sid,
+            "session_id": new_sid,
+            "previous_session_id": sid,
+            "preserved_draft_history_id": preserved_draft_history_id,
             "conversation_history": mgr.conversation_history,
             # ui_state: 统一前端状态契约（Issue #31）
             "ui_state": ui_state,

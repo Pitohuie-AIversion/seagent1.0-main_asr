@@ -142,6 +142,7 @@ def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str
     start_time = time.perf_counter()
     reloaded_mods = []
     refreshed_sessions: List[Dict[str, Any]] = []
+    failed_sessions: List[str] = []
 
     with _reload_lock:
         # Manual reload must observe unsupported changes too. Validate the
@@ -184,8 +185,15 @@ def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str
                 # 3. 平滑迁移活跃会话的 DialogueManager 实例（保持会话状态）
                 if hasattr(web_mod, "_sessions_lock") and hasattr(web_mod, "_sessions_manager"):
                     with web_mod._sessions_lock:
-                        new_dm_cls = sys.modules["src.dialogue_manager"].DialogueManager
-                        for sid, old_mgr in list(web_mod._sessions_manager.items()):
+                        sessions = list(web_mod._sessions_manager.items())
+                    new_dm_cls = sys.modules["src.dialogue_manager"].DialogueManager
+                    for sid, old_mgr in sessions:
+                        # Match chat/reset ordering: never hold the registry
+                        # lock while waiting for an accepted session transaction.
+                        with old_mgr._session_lock:
+                            with web_mod._sessions_lock:
+                                if web_mod._sessions_manager.get(sid) is not old_mgr:
+                                    continue
                             try:
                                 snap = old_mgr.export_snapshot()
                                 new_mgr = new_dm_cls(
@@ -208,25 +216,33 @@ def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str
                                             })
                                     except Exception as exc:
                                         logger.warning("[Hot-Reload] 会话 %s 强刷新外部约束失败: %s", sid, exc)
-                                web_mod._sessions_manager[sid] = new_mgr
+                                # A response lost around reload must replay the
+                                # original outcome instead of repeating a delta.
+                                if hasattr(old_mgr, "_http_request_cache"):
+                                    new_mgr._http_request_cache = old_mgr._http_request_cache
+                                # Confirmation epochs intentionally do not
+                                # migrate: changed configuration needs review.
+                                with web_mod._sessions_lock:
+                                    if web_mod._sessions_manager.get(sid) is old_mgr:
+                                        web_mod._sessions_manager[sid] = new_mgr
                             except Exception as err:
                                 logger.warning(
-                                    "[Hot-Reload] 会话 %s 迁移失败，已重置为空会话: %s",
+                                    "[Hot-Reload] 会话 %s 迁移失败，已保留原会话: %s",
                                     sid,
                                     err,
                                 )
-                                new_mgr = new_dm_cls(
-                                    web_mod._shared_llm,
-                                    web_mod._shared_kb,
-                                    session_id=sid,
-                                )
-                                if new_kb_cls and hasattr(new_mgr, "kb"):
-                                    new_mgr.kb.__class__ = new_kb_cls
-                                web_mod._sessions_manager[sid] = new_mgr
+                                failed_sessions.append(sid)
 
             # 更新记录的文件时间戳
             _file_mtimes = _scan_monitored_files()
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+            if failed_sessions:
+                msg = f"配置已读取，但 {len(failed_sessions)} 个会话迁移失败；原会话已保留，请稍后重试。"
+                _record_reload_event(
+                    ok=False, message=msg, changed_files=changed_files,
+                    reloaded_modules=reloaded_mods, refreshed_sessions=refreshed_sessions,
+                )
+                return False, msg, reloaded_mods
             msg = f"配置刷新成功，耗时 {elapsed_ms:.1f}ms"
             _record_reload_event(
                 ok=True,

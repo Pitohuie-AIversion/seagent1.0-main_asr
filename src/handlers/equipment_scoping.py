@@ -19,6 +19,7 @@ from ..constants import (
     ROBOT_CASCADE_FIELDS,
 )
 from src.extraction.extractor import ParameterExtractor
+from .equipment_assertion_grounding import conflicts_with_current_equipment_selection
 from src.slots.visible_selection_provenance import (
     build_candidate_terms,
     parse_ordinal_reference,
@@ -137,6 +138,10 @@ class EquipmentScopingHandler:
             candidate_terms.add(user_message.strip())
 
         kb_inst = getattr(self, "kb", None) or getattr(getattr(self, "validator", None), "kb", None)
+        if kb_inst and conflicts_with_current_equipment_selection(user_message, selected, kb_inst):
+            # The current explicit choice takes precedence over a stale
+            # recommendation relation inferred by the planner.
+            return extraction_result
         alias_map = getattr(kb_inst, "alias_map", {}) if kb_inst else {}
         for k, v in alias_map.items():
             if k in candidate_terms or v in candidate_terms:

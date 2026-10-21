@@ -139,6 +139,14 @@ class EquipmentCascadeResolver:
         def _unwrap(v):
             return v.get("value") if isinstance(v, dict) else v
 
+        def _exact_unit(selector):
+            # A fully identified leaf may replace its old ancestors. Short,
+            # ambiguous serial numbers still require the existing context.
+            try:
+                return self.kb._resolve_robot_unit_exact(str(selector), None)
+            except RobotSelectionDataError:
+                return None
+
         # 辅助函数：校验/推演失败时，原子回滚 new_slots 并标记目标 Slot
         def _rollback_and_fail(target_key: str, candidate_val: Any, error_msg: str, force_conflict: bool = False):
             for k in EQUIPMENT_KEYS:
@@ -174,11 +182,19 @@ class EquipmentCascadeResolver:
             task_type_slot = new_slots.get("task_type_key")
             if not task_type_slot or task_type_slot.status == "missing" or task_type_slot.value is None:
                 inferred_tt_key = None
+                fam_ctx = (
+                    equipment_updates.get("equipment_family")
+                    or (equipment_before.get("equipment_family").value if equipment_before.get("equipment_family") else None)
+                )
                 for key in ("equipment_unit_id", "equipment_name", "equipment_type", "equipment_family", "equipment_class"):
                     val = equipment_updates.get(key)
                     if val:
                         val_str = str(val.get("value") if isinstance(val, dict) else val)
-                        resolved_unit = self.kb.resolve_robot_unit(val_str, None)
+                        resolved_unit = self.kb.resolve_robot_unit(
+                            val_str,
+                            None,
+                            family_selector=str(fam_ctx) if fam_ctx else None,
+                        )
                         resolved_family = self.kb.resolve_robot_family(val_str, None) if not resolved_unit else None
                         cls_id = None
                         family_id = None
@@ -296,7 +312,12 @@ class EquipmentCascadeResolver:
                         type_ctx = str(active_type_slot.value) if active_type_slot and active_type_slot.value else None
                         active_fam_slot = equipment_before.get("equipment_family")
                         fam_ctx = str(active_fam_slot.value) if active_fam_slot and active_fam_slot.value else None
-                        res_unit = self.kb.resolve_robot_unit(str(unit_in), task_type, type_ctx, fam_ctx)
+                        exact_unit = _exact_unit(unit_in)
+                        res_unit = self.kb.resolve_robot_unit(
+                            str(unit_in), task_type,
+                            None if exact_unit else type_ctx,
+                            None if exact_unit else fam_ctx,
+                        )
                         if res_unit and res_unit.get("unit_id") != active_unit_slot.value:
                             highest_conflict_key = "equipment_unit_id"
                             highest_candidate_val = unit_in
@@ -552,6 +573,7 @@ class EquipmentCascadeResolver:
             or _unwrap(equipment_updates.get("equipment_name"))
         )
         if unit_update:
+            exact_unit = _exact_unit(unit_update)
             variant_context = (
                 selected_variant.get("full_name")
                 if selected_variant
@@ -560,18 +582,21 @@ class EquipmentCascadeResolver:
             family_context = None
             if resolved_family:
                 family_context = resolved_family.get("full_name")
-            if not family_context:
+            if not family_context and not exact_unit:
                 fam_slot = sandbox_slots.get("equipment_family") or equipment_before.get("equipment_family")
                 if fam_slot and fam_slot.status in ("valid", "conflict") and fam_slot.value:
                     family_context = str(fam_slot.value)
 
+            # Exact identity removes stale parent context, but acceptance still
+            # uses the public resolver and its task/registry validation contract.
+            # Explicit current-turn parent conflicts are checked below.
             resolved_unit = self.kb.resolve_robot_unit(
                 str(unit_update),
                 task_type,
-                str(variant_context) if variant_context else None,
-                str(family_context) if family_context else None,
+                str(variant_context) if variant_context and not exact_unit else None,
+                str(family_context) if family_context and not exact_unit else None,
             )
-            if not resolved_unit and not task_type:
+            if not resolved_unit and not exact_unit and not task_type:
                 resolved_unit = self.kb.resolve_robot_unit(
                     str(unit_update),
                     None,
@@ -579,7 +604,7 @@ class EquipmentCascadeResolver:
                     str(family_context) if family_context else None,
                 )
 
-            if not resolved_unit:
+            if not resolved_unit and not exact_unit:
                 unit_raw = None
                 raw_item = updates.get("equipment_unit_id") or updates.get("equipment_name")
                 if isinstance(raw_item, dict):
@@ -599,7 +624,7 @@ class EquipmentCascadeResolver:
                             str(family_context) if family_context else None,
                         )
 
-            if not resolved_unit and hasattr(self.kb, "resolve_robot_unit_from_text") and getattr(self, "conversation_history", None):
+            if not resolved_unit and not exact_unit and hasattr(self.kb, "resolve_robot_unit_from_text") and getattr(self, "conversation_history", None):
                 last_user_msg = next((m.get("content") for m in reversed(self.conversation_history) if isinstance(m, dict) and m.get("role") == "user"), "")
                 if last_user_msg:
                     resolved_unit = self.kb.resolve_robot_unit_from_text(
@@ -753,11 +778,9 @@ class EquipmentCascadeResolver:
             else:
                 # Resolve without task filtering only to explain the rejection.
                 # Never use this diagnostic lookup to accept the selected unit.
-                known_unit = self.kb.resolve_robot_unit(
+                known_unit = exact_unit or self.kb.resolve_robot_unit(
                     str(unit_update),
                     None,
-                    str(variant_context) if variant_context else None,
-                    str(family_context) if family_context else None,
                 )
                 message = f"Unknown fleet unit '{unit_update}'"
                 if known_unit and task_type and not self.kb.robot_matches_task(known_unit.get("robot"), task_type):

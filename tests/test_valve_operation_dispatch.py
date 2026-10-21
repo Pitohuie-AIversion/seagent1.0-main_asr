@@ -104,8 +104,14 @@ def test_real_confirmation_archive_and_ros_command_preserve_action(tmp_path, mon
     bridge.get_dispatch_record.return_value = None
     monkeypatch.setattr(state, '_shared_mcp_bridge', bridge)
 
-    response = web_backend.app.test_client().post('/api/chat', json={
-        'session_id': manager.session_id, 'message': '确认发布'}).get_json()
+    http_client = web_backend.app.test_client()
+    summary = http_client.get('/api/session/state', query_string={
+        'session_id': manager.session_id}).get_json()
+    confirmation = http_client.post('/api/chat', json={
+        'session_id': manager.session_id, 'message': '确认发布',
+        'expected_confirmation_token': summary['ui_state']['confirmation_token']})
+    response = confirmation.get_json()
+    assert confirmation.status_code == 200, response
 
     assert response['done'] and response['ui_state']['phase'] == 'done', response['reply']
     assert response['ros2_dispatch']['state'] == dispatch_state

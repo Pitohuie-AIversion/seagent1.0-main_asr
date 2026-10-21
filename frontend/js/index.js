@@ -397,7 +397,8 @@ Please describe your operational requirements directly, or ask the question you 
       document.getElementById('ui-subtitle').innerText = I18N[currentLang].subtitle;
       document.getElementById('title-simtime').innerText = I18N[currentLang].simtime;
       document.getElementById('setTimeBtn').innerText = I18N[currentLang].setBtn;
-      document.getElementById('hint-simtime').innerText = I18N[currentLang].simtimeHint;
+      document.getElementById('hint-simtime').innerText = I18N[currentLang].simtimeHint +
+        (currentLang === 'zh' ? ' · 上海时间 (UTC+08:00)' : ' · Shanghai time (UTC+08:00)');
       document.getElementById('title-curtask').innerText = I18N[currentLang].curtask;
       const statusTitleEl = document.getElementById('title-status');
       if (statusTitleEl) statusTitleEl.innerText = I18N[currentLang].statusTitle;
@@ -444,6 +445,7 @@ Please describe your operational requirements directly, or ask the question you 
         if (msgDiv.dataset.messageKind === 'welcome') {
           return;
         }
+        if (['streaming', 'streaming-status'].includes(msgDiv.dataset.messageKind)) return;
         const originalText = msgDiv.getAttribute('data-original');
         const btn = msgDiv.querySelector('.msg-translate-bar');
         const bubble = msgDiv.querySelector('.bubble');
@@ -452,6 +454,7 @@ Please describe your operational requirements directly, or ask the question you 
           if (currentLang === 'en' && hasZh) {
             autoTranslateMessage(msgDiv);
           } else {
+            msgDiv.translationVersion = (msgDiv.translationVersion || 0) + 1;
             bubble.innerHTML = renderMessageContent(originalText, msgDiv.getAttribute('data-role'));
             btn.innerText = I18N[currentLang].transTranslate;
             btn.setAttribute('data-translated', 'false');
@@ -523,10 +526,15 @@ Please describe your operational requirements directly, or ask the question you 
       const btn = msgDiv.querySelector('.msg-translate-bar');
       const bubble = msgDiv.querySelector('.bubble');
       if (!originalText || !btn || !bubble) return;
+      const translationVersion = msgDiv.translationVersion = (msgDiv.translationVersion || 0) + 1;
+      const isCurrentTranslation = () => msgDiv.translationVersion === translationVersion &&
+        msgDiv.getAttribute('data-original') === originalText && msgDiv.isConnected;
 
       btn.innerText = I18N[currentLang].transTranslating;
       try {
         const { translated, warning } = await fetchTranslation(originalText, 'English');
+        // A streaming reply may have replaced the text while translation was in flight.
+        if (!isCurrentTranslation()) return;
         msgDiv.setAttribute('data-translation-cache', translated);
         if (currentLang === 'en') {
           bubble.innerHTML = renderMessageContent(translated, msgDiv.getAttribute('data-role'));
@@ -539,6 +547,7 @@ Please describe your operational requirements directly, or ask the question you 
           }
         }
       } catch (err) {
+        if (!isCurrentTranslation()) return;
         btn.innerText = err.name === 'AbortError'
           ? I18N[currentLang].transNetError
           : I18N[currentLang].transFailed;
@@ -549,8 +558,14 @@ Please describe your operational requirements directly, or ask the question you 
       const wrapper = btn.closest('.bubble-wrapper');
       const bubble = wrapper.querySelector('.bubble');
       const messageDiv = btn.closest('.message');
+      if (['streaming', 'streaming-status'].includes(messageDiv.dataset.messageKind)) return;
       const originalText = messageDiv.getAttribute('data-original');
       const isTranslated = btn.getAttribute('data-translated');
+      const requestedLanguage = currentLang;
+      const translationVersion = messageDiv.translationVersion = (messageDiv.translationVersion || 0) + 1;
+      const isCurrentTranslation = () => messageDiv.translationVersion === translationVersion &&
+        messageDiv.getAttribute('data-original') === originalText && messageDiv.isConnected &&
+        currentLang === requestedLanguage;
 
       if (isTranslated === 'true' || isTranslated === 'warn') {
         // 显示原文
@@ -562,6 +577,7 @@ Please describe your operational requirements directly, or ask the question you 
         btn.innerText = I18N[currentLang].transTranslating;
         try {
           const { translated, warning } = await fetchTranslation(originalText, targetLang);
+          if (!isCurrentTranslation()) return;
           messageDiv.setAttribute('data-translation-cache', translated);
           bubble.innerHTML = renderMessageContent(translated, messageDiv.getAttribute('data-role'));
           if (warning === 'low_quality') {
@@ -572,6 +588,7 @@ Please describe your operational requirements directly, or ask the question you 
             btn.setAttribute('data-translated', 'true');
           }
         } catch (err) {
+          if (!isCurrentTranslation()) return;
           btn.innerText = err.name === 'AbortError'
             ? I18N[currentLang].transNetError
             : I18N[currentLang].transFailed;
@@ -658,8 +675,9 @@ Please describe your operational requirements directly, or ask the question you 
       const renderedContent = renderMessageContent(content, role);
 
       let translateBtn = '';
-      if (content.trim() && options.kind !== 'welcome' && options.kind !== 'system') {
-        translateBtn = `<button type="button" class="msg-translate-bar" data-action="translate-message">${I18N[currentLang].transTranslate}</button>`;
+      const streamingMessage = ['streaming', 'streaming-status'].includes(options.kind);
+      if ((content.trim() || streamingMessage) && options.kind !== 'welcome' && options.kind !== 'system') {
+        translateBtn = `<button type="button" class="msg-translate-bar" data-action="translate-message"${streamingMessage ? ' hidden disabled' : ''}>${I18N[currentLang].transTranslate}</button>`;
       }
 
       div.innerHTML = avatarHtml + `<div class="bubble-wrapper" style="display:flex; flex-direction:column; align-items: ${role === 'user' ? 'flex-end' : 'flex-start'};"><div class="bubble">${renderedContent}</div>${translateBtn}</div>`;
@@ -668,7 +686,7 @@ Please describe your operational requirements directly, or ask the question you 
       if (!options.restored) globalThis.window?.SEAgentWorkspace?.followLatest?.(shouldFollow);
 
       if (options.kind !== 'welcome' && currentLang === 'en' && hasChinese(content)) {
-        if (options.kind !== 'system') {
+        if (options.kind !== 'system' && !streamingMessage) {
           autoTranslateMessage(div);
         }
       }
@@ -848,9 +866,10 @@ Please describe your operational requirements directly, or ask the question you 
       sendBtn.disabled = !canSend;
       voiceBtn.disabled = !canSend || isStartingVoice || !!asrAbortController;
       isDone = !currentActions.can_send;
-      for (const id of ['dispatchRetryBtn', 'dispatchRefreshBtn']) {
+      for (const id of ['dispatchRetryBtn', 'dispatchRefreshBtn', 'acknowledgeRuntimeWarningBtn']) {
         const button = document.getElementById(id);
-        if (button) button.disabled = isSending;
+        if (button) button.disabled = isSending ||
+          (id === 'acknowledgeRuntimeWarningBtn' && (!canSend || !currentActions.can_acknowledge_runtime_warning));
       }
       refreshConstraintActions();
       globalThis.window?.SEAgentWorkspace?.setInteractionState?.({ isSending, canSend, actions: currentActions, readOnly: currentReadOnly });
@@ -921,6 +940,9 @@ Please describe your operational requirements directly, or ask the question you 
       if (card.hidden) return;
       const dispatch = data.ros2_dispatch || {state: 'UNKNOWN', retry_allowed: false};
       const zh = currentLang === 'zh';
+      const ui = data.ui_state || {};
+      const review = ui.runtime_execution_review;
+      const control = ui.execution_control?.last_control_request || ui.last_control_request || ui.execution_control;
       const labels = {
         SENT: zh ? '已发送，等待机器人遥测确认。' : 'Sent; awaiting robot telemetry confirmation.',
         FAILED: zh ? '任务已保存，发送失败。' : 'Task saved; dispatch failed.',
@@ -931,9 +953,69 @@ Please describe your operational requirements directly, or ask the question you 
       };
       document.getElementById('dispatchTitle').textContent = zh ? '任务发送状态' : 'Task dispatch';
       document.getElementById('dispatchStatus').textContent = labels[dispatch.state] || labels.UNKNOWN;
-      document.getElementById('dispatchDetail').textContent = dispatch.error || dispatch.message || '';
+      document.getElementById('dispatchDetail').textContent = [
+        dispatch.error || dispatch.message || '', data.persistence_warning || '',
+      ].filter(Boolean).join(' ');
+      let reviewSection = document.getElementById('runtimeExecutionReview');
+      if (review) {
+        if (!reviewSection) {
+          reviewSection = document.createElement('section');
+          reviewSection.id = 'runtimeExecutionReview';
+          reviewSection.className = 'constraint-group';
+          card.appendChild(reviewSection);
+        }
+        reviewSection.hidden = false;
+        reviewSection.replaceChildren();
+        const title = document.createElement('h4');
+        title.textContent = review.status === 'pending'
+          ? (zh ? '执行前风险需要重新确认' : 'Review new risks before execution')
+          : review.status === 'blocked_hard'
+            ? (zh ? '执行前校验阻断' : 'Execution is blocked by validation')
+            : (zh ? '执行前风险确认记录' : 'Pre-execution risk acknowledgement');
+        reviewSection.appendChild(title);
+        const list = document.createElement('ul');
+        for (const violation of review.violations || []) {
+          const item = document.createElement('li');
+          item.textContent = typeof violation === 'string' ? violation : violation.message || violation.constraint_id || '';
+          list.appendChild(item);
+        }
+        reviewSection.appendChild(list);
+        if (review.status === 'pending' && ui.actions?.can_acknowledge_runtime_warning) {
+          const acknowledge = document.createElement('button');
+          acknowledge.type = 'button';
+          acknowledge.id = 'acknowledgeRuntimeWarningBtn';
+          acknowledge.textContent = zh ? '确认执行风险' : 'Acknowledge execution risks';
+          acknowledge.disabled = isSending || !ui.actions.can_send;
+          const generation = sessionGeneration;
+          acknowledge.addEventListener('click', async () => {
+            if (isSending || generation !== sessionGeneration || lastResponseData?.ui_state !== ui ||
+                !currentActions.can_send || !currentActions.can_acknowledge_runtime_warning) return;
+            await window.sendMessage('确认执行风险');
+          });
+          reviewSection.appendChild(acknowledge);
+        }
+      } else if (reviewSection) reviewSection.hidden = true;
+      let controlStatus = document.getElementById('executionControlStatus');
+      if (control?.outcome) {
+        if (!controlStatus) {
+          controlStatus = document.createElement('p');
+          controlStatus.id = 'executionControlStatus';
+          controlStatus.role = 'status';
+          card.appendChild(controlStatus);
+        }
+        const outcomeLabels = {
+          not_sent_cancelled: zh ? '尚未发送的任务已取消。' : 'The task was cancelled before dispatch.',
+          not_sent_paused: zh ? '尚未发送的任务已暂停。' : 'The task was paused before dispatch.',
+          resumed: zh ? '任务已解除暂停。' : 'The task is no longer paused.',
+          sent: zh ? '控制指令已发送，等待设备反馈。' : 'Control command sent; awaiting device feedback.',
+          unknown: zh ? '控制指令发送结果未知，请核对设备反馈。' : 'Control outcome is unknown. Check device feedback.',
+          failed: zh ? '控制指令发送失败。' : 'Control command failed to send.',
+        };
+        controlStatus.textContent = [outcomeLabels[control.outcome] || '', control.message || ''].filter(Boolean).join(' ');
+        controlStatus.hidden = false;
+      } else if (controlStatus) controlStatus.hidden = true;
       const retry = document.getElementById('dispatchRetryBtn');
-      retry.hidden = dispatch.retry_allowed !== true;
+      retry.hidden = dispatch.retry_allowed !== true || control?.outcome === 'not_sent_cancelled' || review?.status === 'pending';
       retry.disabled = isSending;
       retry.textContent = dispatch.state === 'UNKNOWN'
         ? (zh ? '核对发送结果' : 'Check dispatch outcome')
@@ -947,6 +1029,10 @@ Please describe your operational requirements directly, or ask the question you 
 
     async function retryDispatch() {
       if (isSending || !sessionId || lastResponseData?.ros2_dispatch?.retry_allowed !== true) return;
+      const ui = lastResponseData?.ui_state;
+      const control = ui?.execution_control?.last_control_request || ui?.last_control_request || ui?.execution_control;
+      if (control?.outcome === 'not_sent_cancelled' ||
+          lastResponseData?.ui_state?.runtime_execution_review?.status === 'pending') return;
       const sid = sessionId, generation = sessionGeneration, seq = ++currentRequestSeq;
       isSending = true;
       applyInteractionState(currentActions, currentReadOnly);
@@ -955,12 +1041,17 @@ Please describe your operational requirements directly, or ask the question you 
       try {
         const response = await fetch(API_BASE + '/api/mcp/dispatch', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({session_id: sid}), signal: controller.signal,
+          body: JSON.stringify({session_id: sid,
+            expected_confirmation_token: lastResponseData?.ui_state?.confirmation_token}), signal: controller.signal,
         });
         const result = await response.json();
         if (sid !== sessionId || generation !== sessionGeneration || seq !== currentRequestSeq) return;
-        if (result.ros2_dispatch) {
-          updateSidebar({...lastResponseData, ros2_dispatch: result.ros2_dispatch}, { origin: 'refresh' });
+        if (result.ros2_dispatch || result.ui_state) {
+          updateSidebar({...lastResponseData, ...result}, { origin: 'refresh' });
+          if (result.error === 'ConfirmationStale') {
+            addMessage('bot', result.msg || (currentLang === 'zh'
+              ? '执行摘要已变化，请重新核对后确认。' : 'The execution summary changed. Review it before confirming again.'));
+          }
         } else if (!response.ok) {
           addMessage('bot', result.msg || (currentLang === 'zh' ? '发送检查失败，请刷新发送状态。' : 'Dispatch check failed. Refresh its status.'));
         }
@@ -1831,7 +1922,7 @@ Please describe your operational requirements directly, or ask the question you 
           if (!isCurrentCard(card) || isSending || !currentActions.can_modify) return;
           const input = document.getElementById('messageInput');
           if (input) {
-            input.value = currentLang === 'zh' ? '修改任务：' : 'Modify task: ';
+            if (!input.value.trim()) input.value = currentLang === 'zh' ? '修改任务：' : 'Modify task: ';
             globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
             input.focus();
           }
@@ -1879,7 +1970,7 @@ Please describe your operational requirements directly, or ask the question you 
           if (!isCurrentCard(card) || isSending || !currentActions.can_modify) return;
           const input = document.getElementById('messageInput');
           if (input) {
-            input.value = currentLang === 'zh' ? '修改参数：' : 'Modify parameter: ';
+            if (!input.value.trim()) input.value = currentLang === 'zh' ? '修改参数：' : 'Modify parameter: ';
             globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
             input.focus();
           }
@@ -1911,7 +2002,7 @@ Please describe your operational requirements directly, or ask the question you 
       currentDecisionCard = card;
 
       const unitId = snapshot.unit_id || snapshot.status_ref || (currentLang === 'zh' ? '当前作业机器人' : 'ROV Unit');
-      const overall = String(state.overall_status || 'available').toLowerCase();
+      const overall = String(state.overall_status || (currentLang === 'zh' ? '未知' : 'Unknown')).toLowerCase();
       const isAvailable = overall === 'available' || overall === 'normal';
 
       // 1. Header
@@ -1938,11 +2029,10 @@ Please describe your operational requirements directly, or ask the question you 
       const obs = state.obstacle_density;
       const support = state.mothership_support;
 
-      const formatEnvVal = (val, suffix = '', warnThreshold = null) => {
+      const formatEnvVal = (val, suffix = '') => {
         if (val === undefined || val === null) return `<span style="color:#78a2cc;">${currentLang === 'zh' ? '未提供' : 'N/A'}</span>`;
-        const num = parseFloat(val);
-        const isWarn = warnThreshold !== null && !isNaN(num) && num > warnThreshold;
-        return `<span class="${isWarn ? 'metric-val-warn' : 'metric-val-ok'}">${escapeHtml(String(val))}${suffix}</span>`;
+        // Thresholds belong to backend validation rules, not this display.
+        return `<span>${escapeHtml(String(val))}${suffix}</span>`;
       };
 
       const translateEnv = (val) => {
@@ -1966,19 +2056,19 @@ Please describe your operational requirements directly, or ask the question you 
       envGrid.innerHTML = `
         <div class="telemetry-metric-box">
           <div class="metric-label">🌊 ${currentLang === 'zh' ? '海流流速' : 'Current Velocity'}</div>
-          <div class="metric-value">${formatEnvVal(vel, ' m/s', 0.5)}</div>
+          <div class="metric-value">${formatEnvVal(vel, ' m/s')}</div>
         </div>
         <div class="telemetry-metric-box">
           <div class="metric-label">💧 ${currentLang === 'zh' ? '水体浑浊度' : 'Turbidity'}</div>
-          <div class="metric-value">${formatEnvVal(turb, ' NTU', 3.0)}</div>
+          <div class="metric-value">${formatEnvVal(turb, ' NTU')}</div>
         </div>
         <div class="telemetry-metric-box">
           <div class="metric-label">🪨 ${currentLang === 'zh' ? '障碍物密度' : 'Obstacles'}</div>
-          <div class="metric-value">${obs ? translateEnv(obs) : (currentLang === 'zh' ? '低' : 'Low')}</div>
+          <div class="metric-value">${obs ? escapeHtml(translateEnv(obs)) : formatEnvVal(null)}</div>
         </div>
         <div class="telemetry-metric-box">
           <div class="metric-label">🚢 ${currentLang === 'zh' ? '母船支援' : 'Support Ship'}</div>
-          <div class="metric-value">${support ? translateEnv(support) : (currentLang === 'zh' ? '强' : 'Strong')}</div>
+          <div class="metric-value">${support ? escapeHtml(translateEnv(support)) : formatEnvVal(null)}</div>
         </div>
       `;
       card.appendChild(envGrid);
@@ -2006,18 +2096,19 @@ Please describe your operational requirements directly, or ask the question you 
       ];
 
       subsystems.forEach(sub => {
-        const valStr = String(sub.val || 'normal').toLowerCase();
+        const valStr = String(sub.val || 'unknown').toLowerCase();
         const isOk = valStr === 'normal' || valStr === 'available' || valStr === 'ok';
         const isDegraded = valStr === 'degraded' || valStr === 'warning';
-        const statusClass = isOk ? 'subsys-ok' : (isDegraded ? 'subsys-warn' : 'subsys-err');
-        const icon = isOk ? '🟢' : (isDegraded ? '🟡' : '🔴');
+        const isUnknown = valStr === 'unknown';
+        const statusClass = isUnknown ? 'subsys-unknown' : isOk ? 'subsys-ok' : (isDegraded ? 'subsys-warn' : 'subsys-err');
+        const icon = isUnknown ? '⚪' : isOk ? '🟢' : (isDegraded ? '🟡' : '🔴');
 
         const item = document.createElement('div');
         item.className = `telemetry-subsys-item ${statusClass}`;
         item.innerHTML = `
           <span class="subsys-indicator">${icon}</span>
           <span class="subsys-name">${escapeHtml(sub.label[currentLang])}</span>
-          <span class="subsys-status-text">${escapeHtml(translateEnv(sub.val || 'normal'))}</span>
+          <span class="subsys-status-text">${escapeHtml(translateEnv(isUnknown ? null : sub.val))}</span>
         `;
         subsysGrid.appendChild(item);
       });
@@ -2029,10 +2120,19 @@ Please describe your operational requirements directly, or ask the question you 
       meta.className = 'telemetry-card-meta';
       const timeStr = snapshot.updated_at || state.updated_at || '';
       const verStr = snapshot.state_version !== undefined ? snapshot.state_version : (state.version !== undefined ? state.version : '');
+      const validationStatus = cs.overall_status || cs.status;
+      const verified = validationStatus === 'valid' && !cs.error && cs.source !== 'stale_validation_result';
+      const validationLabel = cs.source === 'stale_validation_result'
+        ? (currentLang === 'zh' ? '校验结果已过期' : 'Validation is stale')
+        : cs.error ? (currentLang === 'zh' ? '校验未完成' : 'Validation incomplete')
+        : validationStatus === 'pending_runtime_validation'
+          ? (currentLang === 'zh' ? '等待运行条件校验' : 'Runtime validation pending')
+          : verified ? (currentLang === 'zh' ? '✓ 即时核验通过' : '✓ Pre-check Verified')
+          : (currentLang === 'zh' ? '尚未通过即时核验' : 'Pre-check not passed');
       meta.innerHTML = `
-        <span>🕒 ${currentLang === 'zh' ? '遥测更新时间' : 'Updated'}: ${escapeHtml(timeStr || (currentLang === 'zh' ? '刚刚' : 'Just now'))}</span>
+        <span>🕒 ${currentLang === 'zh' ? '遥测更新时间' : 'Updated'}: ${escapeHtml(timeStr || (currentLang === 'zh' ? '未知' : 'Unknown'))}</span>
         ${verStr !== '' ? `<span>·</span><span>${currentLang === 'zh' ? '状态版本' : 'Ver'}: v${escapeHtml(String(verStr))}</span>` : ''}
-        <span class="telemetry-verified-tag">✓ ${currentLang === 'zh' ? '即时核验通过' : 'Pre-check Verified'}</span>
+        <span class="${verified ? 'telemetry-verified-tag' : 'telemetry-validation-status'}">${validationLabel}</span>
       `;
       card.appendChild(meta);
 
@@ -2068,6 +2168,11 @@ Please describe your operational requirements directly, or ask the question you 
       }
 
       const refreshBtn = document.createElement('button');
+      const refreshStatus = document.createElement('p');
+      refreshStatus.className = 'telemetry-refresh-status';
+      refreshStatus.role = 'status';
+      refreshStatus.hidden = true;
+      card.appendChild(refreshStatus);
       refreshBtn.type = 'button';
       refreshBtn.className = 'btn-telemetry-refresh';
       refreshBtn.innerHTML = `<span>🔄</span><span>${currentLang === 'zh' ? '刷新遥测' : 'Refresh Telemetry'}</span>`;
@@ -2077,18 +2182,18 @@ Please describe your operational requirements directly, or ask the question you 
         const origText = refreshBtn.innerHTML;
         refreshBtn.disabled = true;
         refreshBtn.innerHTML = `<span>⏳</span><span>${currentLang === 'zh' ? '正在刷新...' : 'Refreshing...'}</span>`;
+        const refreshGeneration = sessionGeneration;
+        refreshStatus.hidden = true;
         try {
-          if (typeof window.refreshSessionState === 'function') {
-            await window.refreshSessionState();
-          } else if (currentSessionId) {
-            const resp = await fetch(`/api/session/state?session_id=${encodeURIComponent(currentSessionId)}`);
-            if (resp.ok) {
-              const freshData = await resp.json();
-              if (freshData?.ui_state) {
-                updateSidebar(freshData.ui_state);
-                if (botMsgDiv) renderDecisionCardInBubble(botMsgDiv, freshData.ui_state);
-              }
-            }
+          const refreshed = await refreshSessionStateAfterReload();
+          if (refreshGeneration !== sessionGeneration) return;
+          if (refreshed && botMsgDiv && lastResponseData?.ui_state) {
+            renderDecisionCardInBubble(botMsgDiv, lastResponseData.ui_state);
+          } else if (isCurrentCard(card)) {
+            refreshStatus.textContent = currentLang === 'zh'
+              ? '刷新失败，请重试；当前仍为上次快照。'
+              : 'Refresh failed. Please retry; the previous snapshot is still shown.';
+            refreshStatus.hidden = false;
           }
         } catch (err) {
           console.warn('Refresh telemetry failed', err);
@@ -2110,7 +2215,7 @@ Please describe your operational requirements directly, or ask the question you 
         if (!isCurrentCard(card) || isSending) return;
         const input = document.getElementById('messageInput');
         if (input) {
-          input.value = currentLang === 'zh' ? '修改任务：' : 'Modify task: ';
+          if (!input.value.trim()) input.value = currentLang === 'zh' ? '修改任务：' : 'Modify task: ';
           globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
           input.focus();
         }
@@ -2694,22 +2799,26 @@ Please describe your operational requirements directly, or ask the question you 
     }
 
     async function updateSimulatedTime(isInit = false) {
+      document.getElementById('hint-simtime').innerText = I18N[currentLang].simtimeHint +
+        (currentLang === 'zh' ? ' · 上海时间 (UTC+08:00)' : ' · Shanghai time (UTC+08:00)');
       try {
         const res = await fetch(API_BASE + '/api/time/current');
         const data = await res.json();
         if (data.code === 200) {
-          const dt = new Date(data.current_time);
-          const formatted = dt.toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US', { hour12: false });
+          const rawTime = String(data.current_time || '');
+          const dt = new Date(/[zZ]$|[+-]\d{2}:\d{2}$/.test(rawTime) ? rawTime : rawTime + '+08:00');
+          if (Number.isNaN(dt.getTime())) return;
+          const formatted = dt.toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US',
+            { timeZone: 'Asia/Shanghai', hourCycle: 'h23' }) + ' (UTC+08:00)';
           document.getElementById('simulatedTimeDisplay').innerText = formatted;
 
           const picker = document.getElementById('timePicker');
           if (picker && (isInit || !isTimePickerEditing)) {
-            const year = dt.getFullYear();
-            const month = String(dt.getMonth() + 1).padStart(2, '0');
-            const day = String(dt.getDate()).padStart(2, '0');
-            const hours = String(dt.getHours()).padStart(2, '0');
-            const minutes = String(dt.getMinutes()).padStart(2, '0');
-            const localValue = `${year}-${month}-${day}T${hours}:${minutes}`;
+            const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+              timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+              hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+            }).formatToParts(dt).map(part => [part.type, part.value]));
+            const localValue = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
             if (picker.value !== localValue) {
               picker.value = localValue;
             }
@@ -2734,7 +2843,7 @@ Please describe your operational requirements directly, or ask the question you 
         const res = await fetch(API_BASE + '/api/time/set', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ time: timeValue }),
+          body: JSON.stringify({ time: timeValue + '+08:00' }),
         });
         const data = await res.json();
         if (data.code === 200) {
@@ -3015,13 +3124,14 @@ Please describe your operational requirements directly, or ask the question you 
         const hasRiskOrChanges = (data.warnings && data.warnings.length > 0) ||
                                  (data.replacements && data.replacements.length > 0) ||
                                  !!data.normalization_changed;
-        const shouldAutoSend = directToLlm && !hasRiskOrChanges;
+        const shouldAutoSend = directToLlm && !hasRiskOrChanges && !messageInput.value.trim();
 
         if (shouldAutoSend) {
           setAsrStatus(renderAsrNormalization(data, true), true);
           await sendMessage(transcript, { source: 'voice' });
         } else {
-          messageInput.value = transcript;
+          messageInput.value = messageInput.value.trim()
+            ? messageInput.value + '\n' + transcript : transcript;
           globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
           setAsrStatus(renderAsrNormalization(data, false), true);
           messageInput.focus();
@@ -3127,7 +3237,7 @@ Please describe your operational requirements directly, or ask the question you 
         const res = await fetch(API_BASE + '/api/history/load', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ history_id: historyId, session_id: effectiveSessionId }),
+          body: JSON.stringify({ history_id: historyId, session_id: effectiveSessionId, restore_mode: 'fork' }),
           signal: currentAbortController.signal,
         });
         const data = await res.json();
@@ -3177,6 +3287,31 @@ Please describe your operational requirements directly, or ask the question you 
           }
         }
 
+        if (data.preserved_draft_history_id) {
+          const notice = addMessage('bot', currentLang === 'zh'
+            ? '原草稿已保存到历史记录，所选历史已在新会话中打开。'
+            : 'Your previous draft was saved to history. The selected history is open in a new session.',
+          { kind: 'system' });
+          notice.classList.add('preserved-draft-notice');
+          const openDraft = document.createElement('button');
+          openDraft.type = 'button';
+          openDraft.className = 'session-recovery-btn';
+          openDraft.textContent = currentLang === 'zh' ? '打开原草稿' : 'Open previous draft';
+          const restoredSession = sessionId;
+          let noticeGeneration = sessionGeneration;
+          openDraft.addEventListener('click', async () => {
+            if (isSending || openDraft.disabled || restoredSession !== sessionId ||
+                noticeGeneration !== sessionGeneration) return;
+            openDraft.disabled = true;
+            await restoreHistory(data.preserved_draft_history_id);
+            if (notice.isConnected && restoredSession === sessionId) {
+              // A failed restore retains this notice and can be retried.
+              noticeGeneration = sessionGeneration;
+              openDraft.disabled = false;
+            }
+          });
+          notice.querySelector('.bubble-wrapper').appendChild(openDraft);
+        }
         document.getElementById('historyList').style.display = 'none';
       } catch (err) {
         if (err.name === 'AbortError') return;
@@ -3199,6 +3334,22 @@ Please describe your operational requirements directly, or ask the question you 
       // Issue #31: isSending 防重发送
       if (isSending || !msg.trim() || isDone) return;
       const source = options.source || 'text';
+      const expectedConfirmationToken = lastResponseData?.ui_state?.confirmation_token;
+      const submittedDraft = messageInput.value.trim() === msg.trim();
+
+      const showConfirmationConflict = failure => {
+        if (failure?.error !== 'ConfirmationStale') return false;
+        if (failure.session_id) {
+          sessionId = failure.session_id;
+          try { localStorage.setItem('seagent_session_id', sessionId); } catch (e) {}
+        }
+        if (failure.ui_state) updateSidebar(failure, { origin: 'refresh' });
+        const notice = addMessage('bot', failure.msg || (currentLang === 'zh'
+          ? '任务摘要或执行条件已变化，请重新核对当前摘要后确认。'
+          : 'The task summary or execution conditions changed. Review the updated summary and confirm again.'));
+        if (failure.ui_state && notice) renderDecisionCardInBubble(notice, failure.ui_state);
+        return true;
+      };
 
       isSending = true;
       applyInteractionState(currentActions, currentReadOnly);
@@ -3209,7 +3360,7 @@ Please describe your operational requirements directly, or ask the question you 
         : `req_${Date.now()}_${mySeq}_${Math.random().toString(16).slice(2)}`;
       currentAbortController = new AbortController();
       addMessage('user', msg);
-      messageInput.value = '';
+      if (submittedDraft) messageInput.value = '';
       globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
 
       let data = {};
@@ -3225,12 +3376,13 @@ Please describe your operational requirements directly, or ask the question you 
             const streamRes = await fetch(API_BASE + '/api/chat/stream', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ session_id: sessionId, request_id: requestId, message: msg, source }),
+              body: JSON.stringify({ session_id: sessionId, request_id: requestId, message: msg, source,
+                expected_confirmation_token: expectedConfirmationToken }),
               signal: currentAbortController.signal,
             });
             if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
             if (streamRes.status === 401) {
-              messageInput.value = msg;
+              if (submittedDraft || !messageInput.value.trim()) messageInput.value = msg;
               globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
               addMessage('bot', currentLang === 'zh'
                 ? '连接凭据无效，请填写有效凭据后重新发送。'
@@ -3241,6 +3393,7 @@ Please describe your operational requirements directly, or ask the question you 
             if (!streamRes.ok && streamRes.status !== 404 && streamRes.status !== 405) {
               const failure = await streamRes.json();
               if (mySeq !== currentRequestSeq || myGen !== sessionGeneration) return;
+              if (showConfirmationConflict(failure)) return;
               if (failure && failure.error) {
                 const errMsg = failure.msg || failure.message || '请求处理异常';
                 addMessage('bot', `⛔ 错误 (${failure.error}): ${errMsg}`);
@@ -3273,7 +3426,7 @@ Please describe your operational requirements directly, or ask the question you 
                   botMsgDiv = addMessage('bot', currentText, { kind: 'streaming' });
                 } else {
                   if (botMsgDiv.dataset.messageKind === 'streaming-status') {
-                    delete botMsgDiv.dataset.messageKind;
+                    botMsgDiv.dataset.messageKind = 'streaming';
                   }
                   const bubble = botMsgDiv.querySelector('.bubble');
                   if (bubble) {
@@ -3360,7 +3513,7 @@ Please describe your operational requirements directly, or ask the question you 
                         }
                       } else if (parsed.delta) {
                         if (botMsgDiv && botMsgDiv.dataset.messageKind === 'streaming-status') {
-                          delete botMsgDiv.dataset.messageKind;
+                          botMsgDiv.dataset.messageKind = 'streaming';
                         }
                         accumulatedReply += parsed.delta;
                         typewriter.enqueue(parsed.delta);
@@ -3371,6 +3524,10 @@ Please describe your operational requirements directly, or ask the question you 
                       } else if (parsed.error) {
                         typewriter.cancel();
                         if (typeof activeTypewriter !== 'undefined' && activeTypewriter === typewriter) activeTypewriter = null;
+                        if (showConfirmationConflict(parsed)) {
+                          streamHandled = true;
+                          return;
+                        }
                         const errMsg = parsed.msg || parsed.message || '请求处理异常';
                         const reqId = parsed.request_id ? ` [request_id: ${parsed.request_id}]` : '';
                         const retryHint = parsed.retryable ? ' (可尝试重试)' : '';
@@ -3389,7 +3546,7 @@ Please describe your operational requirements directly, or ask the question you 
                 typewriter.flush();
                 if (typeof activeTypewriter !== 'undefined' && activeTypewriter === typewriter) activeTypewriter = null;
                 if (botMsgDiv) {
-                  if (botMsgDiv.dataset.messageKind === 'streaming-status') {
+                  if (['streaming-status', 'streaming'].includes(botMsgDiv.dataset.messageKind)) {
                     delete botMsgDiv.dataset.messageKind;
                   }
                   const bubble = botMsgDiv.querySelector('.bubble');
@@ -3397,6 +3554,12 @@ Please describe your operational requirements directly, or ask the question you 
                     bubble.innerHTML = renderMessageContent(data.reply || accumulatedReply, 'bot');
                   }
                   botMsgDiv.setAttribute('data-original', data.reply || accumulatedReply);
+                  const translateBtn = botMsgDiv.querySelector('.msg-translate-bar');
+                  if (translateBtn) { translateBtn.hidden = false; translateBtn.disabled = false; }
+                  if (currentLang === 'en' && hasChinese(data.reply || accumulatedReply)) {
+                    // Translation starts only once the authoritative final reply is present.
+                    if (translateBtn) autoTranslateMessage(botMsgDiv);
+                  }
                 }
                 if (data.session_id) {
                   sessionId = data.session_id;
@@ -3452,7 +3615,8 @@ Please describe your operational requirements directly, or ask the question you 
           const res = await fetch(API_BASE + '/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: sessionId, request_id: requestId, message: msg, source }),
+            body: JSON.stringify({ session_id: sessionId, request_id: requestId, message: msg, source,
+              expected_confirmation_token: expectedConfirmationToken }),
             signal: currentAbortController.signal,
           });
 
@@ -3476,7 +3640,8 @@ Please describe your operational requirements directly, or ask the question you 
           }
 
           if (!res.ok || data.ok === false || (data.code && data.code !== 200)) {
-            if (res.status === 401) messageInput.value = msg;
+            if (showConfirmationConflict(data)) return;
+            if (res.status === 401 && (submittedDraft || !messageInput.value.trim())) messageInput.value = msg;
             globalThis.window?.SEAgentWorkspace?.resizeComposer?.();
             const errMsg = data.msg || data.message || '请求处理异常';
             const reqId = data.request_id ? ` [request_id: ${data.request_id}]` : '';

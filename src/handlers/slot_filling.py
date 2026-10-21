@@ -506,15 +506,22 @@ class SlotFillingHandler(BaseDialogueHandler):
                     if u not in new_unresolved:
                         new_unresolved.append(u)
 
-        # 强制保障：当油田已标准识别且用户未输入显式坐标时，强制使用油田权威基准坐标，消除大模型幻觉坐标
+        # 同一油田保留已保存的有效人工坐标；其他情况下，本轮未给显式坐标时使用油田默认坐标。
         of_id_slot = new_slots.get("oilfield_entity_id")
         if of_id_slot and of_id_slot.status == "valid" and of_id_slot.value:
+            saved_entity = manager.slot_store.slots.get("oilfield_entity_id")
+            saved_coordinates = manager.slot_store.slots.get("oilfield_coordinates")
+            same_entity_custom_coordinates = bool(
+                saved_entity and saved_entity.status == "valid" and saved_entity.value == of_id_slot.value
+                and saved_coordinates and saved_coordinates.status == "valid"
+                and saved_coordinates.value is not None and saved_coordinates.source != "oilfield_default"
+            )
             has_explicit_coord = False
             if user_message:
                 kw = ["北纬", "南纬", "东经", "西经", "纬度", "经度", "坐标", "lat", "lon", "coord"]
                 if any(k in user_message.lower() for k in kw) or re.search(r"[（(]\s*[-+]?\d+(?:\.\d*)?\s*[,，、/]\s*[-+]?\d+(?:\.\d*)?\s*[）)]", user_message):
                     has_explicit_coord = True
-            if not has_explicit_coord:
+            if not has_explicit_coord and not same_entity_custom_coordinates:
                 try:
                     ctx_res = manager.oilfield_linker.evaluate_context(entity_id=str(of_id_slot.value))
                     if ctx_res and ctx_res.default_coordinates:
@@ -870,6 +877,7 @@ class SlotFillingHandler(BaseDialogueHandler):
         allow_overwrite: bool = False,
         transition_from_task_type_key: str | None = None,
         transition_to_task_type_key: str | None = None,
+        recompute_equipment: bool = True,
     ) -> None:
         return self.slot_transaction._apply_normalized_plan_in_transaction(
             plan=plan,
@@ -877,6 +885,7 @@ class SlotFillingHandler(BaseDialogueHandler):
             allow_overwrite=allow_overwrite,
             transition_from_task_type_key=transition_from_task_type_key,
             transition_to_task_type_key=transition_to_task_type_key,
+            recompute_equipment=recompute_equipment,
         )
 
     @staticmethod

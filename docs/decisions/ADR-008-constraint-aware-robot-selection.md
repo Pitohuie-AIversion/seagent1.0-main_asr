@@ -4,9 +4,11 @@
 
 已确认，2026-08-13。
 
-2026-09-30 实现复核：本 ADR 的完整约束驱动候选过滤尚未体现在当前候选域入口，不能登记为全部实现。`SelectionEngine.get_feasible_robot_selection_domain()` 按 `required_capabilities` 筛选系列并组装四级树，不调用型号可行性评估来按 `water_depth`、`payload` 或海床剔除型号，也不按软警告排序；`rejected_variants` 当前为空列表。独立评估器中存在约束逻辑不代表该候选入口已经使用它。
+2026-10-20 更新：候选入口现已复用 `evaluate_static_robot_variant()`，按已确认的 `water_depth`、`payload` 排除不兼容型号，并返回排除原因及需额外安装的载荷。系列候选、型号候选和自动收敛使用同一可行域；不传任务条件的静态准入域继续用于识别并保留用户明确选择，由 Validator 报告具体冲突。海床过滤与软警告排序仍未接入。新增回归见 [任务条件与候选旅程](../../tests/test_constraint_candidate_journey.py)。
 
-原方案中的“十分钟内按实时状态预选”也已调整：当前开始时间窗口为未来 0～60 分钟，且仅 `purpose != "interactive"` 时执行 Unit 运行过滤；默认交互候选不会因当前忙闲而消失。无可用 Unit 的型号仍保留并标记 `has_available_units=false`，没有按本 ADR 目标向上删除所有空分支。以下保留原始决策与验收要求；当前行为以上述复核说明及代码为准，发布和派发仍需 Validator / 遥测门禁独立校验。
+2026-09-30 历史复核：当时本 ADR 的完整约束驱动候选过滤尚未体现在候选域入口，`rejected_variants` 为空列表；该历史缺口中的水深与载荷部分已由上述更新补齐。
+
+原方案中的“十分钟内按实时状态预选”也已调整：当前开始时间窗口为未来 0～60 分钟，且仅 `purpose != "interactive"` 时执行 Unit 运行过滤；默认交互候选不会因当前忙闲而消失。仅因无可用 Unit 的型号仍保留并标记 `has_available_units=false`，没有按本 ADR 目标向上删除所有运行空分支；因水深或载荷不兼容而产生的空系列与类别会被裁剪。以下保留原始决策与验收要求；当前行为以上述更新及代码为准，发布和派发仍需 Validator / 遥测门禁独立校验。
 
 当前依据：[selection_engine.py](../../src/knowledge/selection_engine.py)、[交互候选回归](../../tests/test_interactive_robot_selection_no_hard_violation.py)、[当前设计契约](../current_design_contract.md)。
 

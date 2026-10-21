@@ -10,7 +10,12 @@ ui_state_builder.py
 from __future__ import annotations
 
 from contextlib import nullcontext
+import copy
+import hashlib
+import hmac
+import json
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any
 from src.extraction import coord_parser
 
@@ -18,6 +23,56 @@ if TYPE_CHECKING:
     from src.dialogue_manager import DialogueManager
 
 logger = logging.getLogger(__name__)
+
+
+def get_confirmation_token(manager: "DialogueManager") -> str:
+    """Bind a reviewed task to this live session incarnation and its decisions."""
+    epoch = getattr(manager, "_confirmation_epoch", None)
+    if not isinstance(epoch, str) or not epoch:
+        epoch = manager._confirmation_epoch = uuid.uuid4().hex
+    store = manager.slot_store
+    validation = getattr(store, "validation_result", None)
+    if hasattr(validation, "to_dict"):
+        validation = validation.to_dict()
+    acknowledgements = [
+        item.to_dict() if hasattr(item, "to_dict") else item
+        for item in (getattr(store, "validation_acknowledgements", None) or [])
+    ]
+    evidence = {
+        "session_id": getattr(manager, "session_id", None),
+        "epoch": epoch,
+        "phase": getattr(manager, "phase", None),
+        "mode": getattr(manager, "mode", None),
+        "slot_version": getattr(store, "version", None),
+        "task": getattr(manager, "task_state", {}),
+        "validation": validation,
+        "acknowledgements": acknowledgements,
+        "runtime_execution_review": getattr(manager, "runtime_execution_review", None),
+        "control_state": getattr(manager, "control_state", None),
+        "last_control_request": getattr(manager, "last_control_request", None),
+        "dispatch": getattr(manager, "ros2_dispatch", None),
+    }
+    encoded = json.dumps(evidence, sort_keys=True, ensure_ascii=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def confirmation_conflict(manager: "DialogueManager", supplied_token: Any) -> dict | None:
+    """Check under the session lock, before publication or execution changes."""
+    expected = get_confirmation_token(manager)
+    if isinstance(supplied_token, str):
+        try:
+            if hmac.compare_digest(supplied_token.encode("utf-8"), expected.encode("utf-8")):
+                return None
+        except UnicodeEncodeError:
+            pass
+    return {
+        "ok": False, "code": 409, "error": "ConfirmationStale",
+        "msg": "任务或执行条件已更新，请核对当前摘要后重新确认。",
+        "session_id": manager.session_id, "retryable": False,
+        "done": getattr(manager, "phase", None) == "done",
+        "ros2_dispatch": copy.deepcopy(getattr(manager, "ros2_dispatch", None)),
+        "ui_state": build_frontend_ui_state(manager),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -613,6 +668,13 @@ def _build_frontend_ui_state_locked(manager: "DialogueManager") -> dict:
         constraint_state = _build_constraint_state(manager)
         actions = _compute_actions(phase, dialogue_mode)
         read_only = _compute_read_only(phase, dialogue_mode)
+        runtime_review = copy.deepcopy(getattr(manager, "runtime_execution_review", None))
+        actions["can_acknowledge_runtime_warning"] = bool(
+            phase == "done" and isinstance(runtime_review, dict)
+            and runtime_review.get("status") == "pending"
+        )
+        control_state = getattr(manager, "control_state", "idle")
+        last_control_request = copy.deepcopy(getattr(manager, "last_control_request", None))
 
         return {
             "state_status": "ok",
@@ -624,6 +686,14 @@ def _build_frontend_ui_state_locked(manager: "DialogueManager") -> dict:
             "task_id": task_id,
             "task_id_preview": task_id_preview,
             "slot_version": slot_version,
+            "confirmation_token": get_confirmation_token(manager),
+            "runtime_execution_review": runtime_review,
+            "control_state": control_state,
+            "last_control_request": last_control_request,
+            "execution_control": {
+                "control_state": control_state,
+                "last_control_request": last_control_request,
+            },
             "read_only": read_only,
             "editing_slot": getattr(manager, "editing_slot", None) if not read_only else None,
             "slots": slots,
@@ -644,6 +714,8 @@ def _build_frontend_ui_state_locked(manager: "DialogueManager") -> dict:
             "task_id": None,
             "task_id_preview": None,
             "slot_version": 0,
+            "confirmation_token": None,
+            "runtime_execution_review": None,
             "read_only": True,
             "editing_slot": None,
             "slots": [],
@@ -661,6 +733,7 @@ def _build_frontend_ui_state_locked(manager: "DialogueManager") -> dict:
                 "can_ignore_soft_warning": False,
                 "can_publish": False,
                 "can_cancel": False,
+                "can_acknowledge_runtime_warning": False,
             },
         }
 

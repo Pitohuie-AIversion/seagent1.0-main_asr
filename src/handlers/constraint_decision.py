@@ -217,6 +217,101 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
         dm.conversation_history.append({"role": "assistant", "content": reply})
         return reply
 
+    def _existing_runtime_delivery_reply(self) -> str | None:
+        """Reconcile delivery evidence before accepting a pre-dispatch review."""
+        from mcp.core.bridge_service import DispatchOutcomeUnknown
+        from src.dispatch.task_dispatch import _result, _sent
+
+        dm = self.manager
+        previous = getattr(dm, "ros2_dispatch", None) or {}
+        bridge = getattr(dm, "mcp_bridge", None)
+        reader = getattr(bridge, "get_dispatch_record", None)
+        try:
+            record = reader(dm.final_result) if callable(reader) else None
+            if isinstance(record, dict) and record.get("dispatch_state") == "SENT":
+                _sent(dm, int(record["task_id"]))
+        except DispatchOutcomeUnknown as exc:
+            _result(dm, "UNKNOWN", str(exc), task_id=exc.task_id,
+                    task_id_hex=f"0x{exc.task_id:X}", error=str(exc))
+        except Exception as exc:
+            # An unreadable transport record is not evidence of non-delivery.
+            if previous.get("state") not in {"SENT", "UNKNOWN"}:
+                _result(dm, "UNKNOWN", "任务发送记录暂时无法核验，请核对机器人任务记录。",
+                        error=str(exc), retry_allowed=False)
+
+        state = (getattr(dm, "ros2_dispatch", None) or {}).get("state")
+        if state not in {"SENT", "UNKNOWN"}:
+            return None
+        dm.runtime_execution_review = None
+        if state == "SENT":
+            return "任务已有 ROS 2 发送记录，等待机器人遥测确认；风险确认不会重新下发任务。"
+        return "任务发送结果尚未确认，请核对机器人任务记录；本轮不会确认执行前风险或重复发送。"
+
+    def acknowledge_runtime_warning(self, user_message: str) -> str:
+        """Accept only the execution evidence the user was actually shown."""
+        from src.dispatch.task_dispatch import runtime_validation_review
+        from src.dispatch.execution_state import intent_execution_guard, read_execution_control
+
+        dm = self.manager
+        previous = getattr(dm, "runtime_execution_review", None)
+        previous_token = previous.get("review_token") if isinstance(previous, dict) else None
+        with intent_execution_guard(dm.final_result) as path:
+            control = read_execution_control(path, dm.final_result)
+            if control and control["dispatch_blocked"]:
+                request = control["request"]
+                dm._set_execution_control_state(
+                    f"{request['action']}_requested", request,
+                    reason="runtime_review_control_reconciled",
+                )
+                dm.runtime_execution_review = None
+                message = request.get("message") or "当前任务已停止或暂停下发。"
+                dm.ros2_dispatch = {
+                    "state": "BLOCKED", "reason": "execution_control",
+                    "message": message,
+                    "retry_allowed": request.get("outcome") == "not_sent_paused",
+                }
+                reply = message + "风险确认不会解除取消或暂停。"
+            elif (delivery_reply := self._existing_runtime_delivery_reply()) is not None:
+                reply = delivery_reply
+            else:
+                validation, hard, unacknowledged = runtime_validation_review(dm)
+                review = dm.runtime_execution_review
+                if hard:
+                    reply = "执行前校验存在硬约束，不能通过确认风险解除。任务保持归档，尚未下发。"
+                elif not review:
+                    reply = "当前执行条件没有待确认的软警告。任务保持归档，请检查执行条件并下发。"
+                elif previous_token != review["review_token"]:
+                    reply = "执行条件已变化，请先核对最新告警，再回复“确认执行风险”。本轮没有接受新条件。"
+                else:
+                    snapshot = validation.state_snapshot or {}
+                    for violation in unacknowledged:
+                        ack = ValidationAcknowledgement(
+                            constraint_id=violation.constraint_id,
+                            acknowledged_at=get_current_datetime().isoformat(timespec="seconds"),
+                            task_version=validation.task_version,
+                            validation_version=validation.validation_version,
+                            validation_fingerprint=validation.validation_fingerprint,
+                            status_ref=snapshot.get("status_ref") or "",
+                            state_version=snapshot.get("state_version") or 0,
+                            field=violation.related_fields[0] if violation.related_fields else "",
+                            value=violation.observed_value,
+                        )
+                        if ack not in dm.slot_store.validation_acknowledgements:
+                            dm.slot_store.validation_acknowledgements.append(ack)
+                    review["status"] = "acknowledged"
+                    reply = "已确认当前执行风险，归档任务参数保持不变。请点击“重新检查并下发”；本轮尚未发送任务。"
+                dm.ros2_dispatch = {
+                    "state": "BLOCKED" if (hard or (review and review["status"] == "pending")) else "NOT_SENT",
+                    "reason": "runtime_hard_constraint" if hard else "runtime_review",
+                    "message": reply,
+                    "retry_allowed": True,
+                }
+        dm.conversation_history.extend([
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": reply},
+        ])
+        return reply
+
     def _reject_hard_constraint_bypass(self, user_message: str) -> str:
         """Reject confirmation/ignore commands while hard violations remain."""
         dm = self.manager
@@ -740,6 +835,11 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
         blockers, validation_result, and missing fields with current evidence.
         """
         dm = self.manager
+        if dm.phase == "done" and getattr(dm, "runtime_execution_review", None):
+            from src.dispatch.task_dispatch import runtime_validation_review
+            _, hard, remaining = runtime_validation_review(dm)
+            return {"refreshed": True, "phase": "done", "runtime_execution": True,
+                    "hard_violations": int(hard), "soft_violations": len(remaining)}
         if dm.phase in ("done", "rejected"):
             return {"refreshed": False, "reason": "terminal_phase"}
         if not self.task_uses_status_ref(status_ref):

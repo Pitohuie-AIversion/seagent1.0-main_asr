@@ -151,6 +151,7 @@ class DialogueManager:
         # 内存控制状态（Issue #10 运行期控制请求记录）
         self.control_state: str = "idle"
         self.last_control_request: dict | None = None
+        self.runtime_execution_review: dict | None = None
 
         # 会话模式状态（Issue #10 会话模式管理）
         self.dialogue_mode: str = "task_collection"
@@ -635,6 +636,10 @@ class DialogueManager:
                 return res.reply
 
         # Level 2: 任务提交流程与已归档任务防护（done重复确认/就地篡改拦截、confirming最终确认）
+        from src.dispatch.task_dispatch import is_runtime_risk_confirmation
+        if self.phase == "done" and is_runtime_risk_confirmation(user_message):
+            return self.constraint_handler.acknowledge_runtime_warning(user_message)
+
         if self.commit_handler.can_handle(ctx):
             res = self.commit_handler.handle(ctx)
             if res.handled and res.reply is not None:
@@ -743,14 +748,16 @@ class DialogueManager:
             # 先尝试提取并校验字段，只有没有任何任务候选时才执行警告确认。
 
         pending_reply = None
+        continue_after_pending = False
         if self.phase != "done":
+            continue_after_pending = self.slot_handler.oilfield_confirmation.has_additional_parameters(user_message)
             pending_reply = self._resolve_pending_oilfield_confirmation(
                 user_message,
                 request_id=request_id,
                 pending_action=plan.pending_action if plan else None,
                 subject_text=plan.subject_text if plan else None,
             )
-        if pending_reply is not None:
+        if pending_reply is not None and not continue_after_pending:
             self._switch_dialogue_mode(
                 "task_collection",
                 source="interaction_plan",
@@ -797,6 +804,12 @@ class DialogueManager:
             plan=plan,
             has_acknowledge_action=has_acknowledge_action,
         )
+        if pending_reply:
+            previous_reply = reply
+            reply = pending_reply + "\n" + reply
+            if (self.conversation_history and self.conversation_history[-1].get("role") == "assistant"
+                    and self.conversation_history[-1].get("content") == previous_reply):
+                self.conversation_history[-1]["content"] = reply
         if hasattr(self, "slot_store") and hasattr(self.slot_store, "slots"):
             for k, slot in self.slot_store.slots.items():
                 if slot.status in ("valid", "candidate", "conflict") and (slot.value is not None or slot.candidate_value is not None):
@@ -1035,6 +1048,7 @@ class DialogueManager:
             self._last_missing = []
             self.control_state = "idle"
             self.last_control_request = None
+            self.runtime_execution_review = None
             self.dialogue_mode = "task_collection"
             self.last_mode_transition = None
             self.mode_transition_history = []

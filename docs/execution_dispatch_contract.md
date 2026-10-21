@@ -14,11 +14,17 @@
 
 返回对象还包含 `message`、`retry_allowed`，可选 `error`、`task_id`、`task_id_hex`、`scheduled_for`。前端仅在 `retry_allowed=true` 时提供显式操作，后端每次重新决定是否允许发送。
 
-未来任务当前没有后台自动调度。到期后使用 `POST /api/mcp/dispatch`，请求体为 `{"session_id":"..."}`。服务会执行 `purpose="runtime_execution"` 的最新设备/环境校验；已经超过结束时间的任务不允许下发。任务未到期时，重复检查仍返回 SCHEDULED。
+未来任务当前没有后台自动调度。到期后使用 `POST /api/mcp/dispatch`，请求体为 `{"session_id":"...","expected_confirmation_token":"..."}`。确认标识来自用户刚核对的 `ui_state.confirmation_token`；缺失或过期返回 409 和最新摘要，客户端不能自动确认新摘要。服务会执行 `purpose="runtime_execution"` 的最新设备/环境校验；已经超过结束时间的任务不允许下发。任务未到期时，重复检查仍返回 SCHEDULED。
 
 该接口默认禁止自定义 TaskIntent。即使启用 `ALLOW_MCP_CUSTOM_INTENT`，也必须提供已确认会话，且 payload 与会话的归档结果完全一致，以保留可核验的设备选择和执行上下文。
 
 发送结果同时保存在 Manager 和会话历史中。恢复历史不会触发发送。旧历史没有发送结果时显示 UNKNOWN；只有持久下发记录或机器人接收记录能解除该不确定状态。
+
+已归档任务遇到新的执行前软警告时，`ui_state.runtime_execution_review` 展示当前证据。用户明确“确认执行风险”后，只记录风险接受，仍需单独检查并下发；归档 TaskIntent 和任务参数不变。确认时重新校验，证据变化必须先展示新告警；硬约束不能通过确认解除。
+
+针对已归档任务的控制与下发共享任务级文件锁。尚未发送的取消、终止或停止会写入持久撤销记录，从旧历史或另一会话也不能继续下发。暂停记录只有在当前会话已展示该暂停、用户再次明确下发时才能解除。记录位于任务输出目录的 `.execution_state` 下；不能仅凭旧会话快照覆盖它。
+
+已发送任务的停止、暂停使用现有 `suspend_task` 适配器，取消、终止使用 `delete_task`。`last_control_request.outcome` 区分未发送任务的撤销/暂停、控制指令已写入传输、失败和结果未知。控制指令发出不表示机器人已经停止，必须查看遥测；无法核验任务编号时不能改为批量控制。保存失败或发送结果未知会明确提示，不自动重发。
 
 在 bridge 中，SENDING 是不确定结果，不是成功。发送中断或发送成功后的记录落盘失败都保留这一证据。仅凭“没看到遥测”不能断言发送失败；同任务 ID/类型的正向接收证据可以把记录核对为 SENT。
 

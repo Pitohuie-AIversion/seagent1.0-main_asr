@@ -32,6 +32,7 @@ import web_backend
 from mcp.shim.mock_rosbridge_server import MockRosbridgeServer, received_publishes, active_tasks
 from mcp.shim.bridge_service import SEAgentMCPBridgeService
 from src.state_info import RobotStateInfo
+from src.validation.validator import ValidationResult
 
 PORT = 9098
 
@@ -155,8 +156,12 @@ class WebBackendMCPTestCase(unittest.TestCase):
             final_result=published_intent,
             task_state={},
             slot_store=SimpleNamespace(version=1),
-            validator=SimpleNamespace(validate_task=Mock(return_value=SimpleNamespace(
-                overall_status="valid", violations=[], state_snapshot=None))),
+            validator=SimpleNamespace(validate_task=Mock(return_value=ValidationResult(
+                overall_status="valid", validated_at="2026-10-20T09:00:00+08:00",
+                task_version=1, validation_version=1,
+                validation_fingerprint="mock-runtime-valid", state_snapshot=None,
+                violations=[], purpose="runtime_execution",
+            ))),
             _get_valid_acknowledgements=Mock(return_value=[]),
         )
         bridge = Mock()

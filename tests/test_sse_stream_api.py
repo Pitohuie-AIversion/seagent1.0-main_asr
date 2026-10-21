@@ -179,9 +179,11 @@ class TestSSEStreamAPI:
             return "注意作业风险。"
 
         monkeypatch.setattr(mgr, "process", mock_process)
+        from src.session.ui_state_builder import build_frontend_ui_state
         resp = client.post(
             "/api/chat/stream",
-            json={"session_id": sid, "message": "确认发布"},
+            json={"session_id": sid, "message": "确认发布",
+                  "expected_confirmation_token": build_frontend_ui_state(mgr)["confirmation_token"]},
         )
         assert resp.status_code == 200
         raw_stream = resp.get_data(as_text=True)

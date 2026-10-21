@@ -499,6 +499,7 @@ class TaskIntentBuilder:
         """由已选型号或单机的知识库 robot_class 生成 TaskIntent robot_type。"""
         unit_selector = built_json.get("equipment_unit_id") or task_state.get("equipment_unit_id")
         variant_selector = built_json.get("equipment_type") or task_state.get("equipment_type")
+        family_selector = built_json.get("equipment_family") or task_state.get("equipment_family")
 
         if not unit_selector and not variant_selector:
             raise TaskPersistenceError("缺少可解析的机器人型号或单机编号")
@@ -509,6 +510,7 @@ class TaskIntentBuilder:
                 str(unit_selector),
                 task_type_key,
                 str(variant_selector) if variant_selector else None,
+                str(family_selector) if family_selector else None,
             )
             if not resolved_unit:
                 raise TaskPersistenceError(f"无法解析具体机器人编号: {unit_selector}")

@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
+import re
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src.temporal.simulated_time import get_current_datetime
 from src.session.history_manager import save_conversation
+from src.dispatch.execution_state import (
+    intent_execution_guard, read_execution_control, write_execution_control,
+)
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
@@ -24,6 +30,7 @@ def save_dispatch_history(manager: Any, save_fn=save_conversation) -> str:
         control_state=manager.control_state, last_control_request=manager.last_control_request,
         ros2_dispatch=getattr(manager, "ros2_dispatch", None),
         pending_published_intent=getattr(manager, "_pending_published_intent", None),
+        runtime_execution_review=getattr(manager, "runtime_execution_review", None),
     )
 
 
@@ -47,7 +54,56 @@ def _sent(manager: Any, task_id: int) -> dict:
                    task_id=task_id, task_id_hex=f"0x{task_id:X}")
 
 
-def dispatch_completed_task(manager: Any, bridge: Any) -> dict:
+def is_runtime_risk_confirmation(message: str) -> bool:
+    return bool(re.fullmatch(
+        r"\s*(?:确认(?:当前)?执行风险|接受执行风险|忽略警告)\s*[。！!]*\s*", message or "",
+    ))
+
+
+def runtime_validation_review(manager: Any):
+    """Refresh execution evidence without reopening or changing an archived plan."""
+    validation = manager.validator.validate_task(
+        manager.task_state, task_version=manager.slot_store.version, purpose="runtime_execution",
+    )
+    manager.slot_store.validation_result = validation
+    violations = validation.violations or []
+    hard = validation.overall_status not in {"valid", "warning", "blocked_soft"} or any(
+        v.severity == "hard" for v in violations
+    )
+    soft = [v for v in violations if v.severity == "soft"]
+    # Interactive/publication acknowledgements are reusable only when their
+    # actual evidence is identical; a matching field name is insufficient.
+    acknowledged = {
+        ack.constraint_id for ack in manager._get_valid_acknowledgements(validation)
+        if ack.task_version == validation.task_version
+        and ack.validation_fingerprint == validation.validation_fingerprint
+        and any(v.constraint_id == ack.constraint_id
+                and ack.value == getattr(v, "observed_value", None) for v in soft)
+    }
+    review = {
+        "status": "blocked_hard" if hard else "pending",
+        "intent_id": manager.final_result.get("intent_id"),
+        "task_version": validation.task_version,
+        "validation_fingerprint": validation.validation_fingerprint,
+        "state_snapshot": copy.deepcopy(validation.state_snapshot),
+        "violations": [v.to_dict() for v in violations],
+    }
+    evidence = {key: value for key, value in review.items() if key != "status"}
+    review["review_token"] = hashlib.sha256(
+        json.dumps(evidence, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+    ).hexdigest()
+    previous = getattr(manager, "runtime_execution_review", None)
+    if isinstance(previous, dict) and previous.get("status") == "acknowledged":
+        if previous.get("review_token") != review["review_token"]:
+            acknowledged = set()
+    unacknowledged = [v for v in soft if v.constraint_id not in acknowledged]
+    if not hard and not unacknowledged:
+        review["status"] = "acknowledged"
+    manager.runtime_execution_review = review if (hard or soft) else None
+    return validation, hard, unacknowledged
+
+
+def dispatch_completed_task(manager: Any, bridge: Any, *, resume_paused: bool = False) -> dict:
     """Check a finalized intent at execution time; never schedule a background send.
 
     Callers serialize access with the session lock. Future tasks remain archived
@@ -57,6 +113,39 @@ def dispatch_completed_task(manager: Any, bridge: Any) -> dict:
     intent = getattr(manager, "final_result", None)
     if manager.phase != "done" or not isinstance(intent, dict) or not intent:
         return _result(manager, "BLOCKED", "当前会话尚无已确认归档的任务。", retry_allowed=False)
+    try:
+        with intent_execution_guard(intent) as control_path:
+            control = read_execution_control(control_path, intent)
+            if control and control["dispatch_blocked"]:
+                request = control["request"]
+                reviewed_control = getattr(manager, "last_control_request", None) == request
+                setter = getattr(manager, "_set_execution_control_state", None)
+                if callable(setter):
+                    setter(f"{request['action']}_requested", request, reason="intent_control_reconciled")
+                else:
+                    manager.control_state = f"{request['action']}_requested"
+                    manager.last_control_request = copy.deepcopy(request)
+                manager.runtime_execution_review = None
+                is_pause = request.get("outcome") == "not_sent_paused"
+                if is_pause and resume_paused and reviewed_control:
+                    resumed = dict(request, outcome="resumed", message="已明确恢复下发，正在重新校验执行条件。")
+                    write_execution_control(control_path, intent, resumed, blocked=False)
+                    if callable(setter):
+                        setter(f"{request['action']}_requested", resumed, reason="explicit_dispatch_resume")
+                    else:
+                        manager.last_control_request = copy.deepcopy(resumed)
+                else:
+                    message = request.get("message") or "该任务已收到停止或取消请求，禁止继续下发。"
+                    return _result(manager, "BLOCKED", message,
+                                   reason="execution_control", retry_allowed=is_pause)
+            return _dispatch_completed_task_locked(manager, bridge)
+    except Exception as exc:
+        return _result(manager, "FAILED", "执行控制记录无法核验，未下发任务。",
+                       error=str(exc), retry_allowed=False)
+
+
+def _dispatch_completed_task_locked(manager: Any, bridge: Any) -> dict:
+    intent = manager.final_result
     try:
         record = None
         if bridge is not None:
@@ -93,19 +182,14 @@ def dispatch_completed_task(manager: Any, bridge: Any) -> dict:
         store = getattr(manager, "slot_store", None)
         if validator is None or not isinstance(task_state, dict) or store is None:
             return _result(manager, "BLOCKED", "缺少可核验的任务状态，无法完成执行前校验。", retry_allowed=False)
-        validation = validator.validate_task(task_state, task_version=store.version,
-                                             purpose="runtime_execution")
+        validation, hard, unacknowledged = runtime_validation_review(manager)
         violations = validation.violations or []
-        if (validation.overall_status not in {"valid", "warning", "blocked_soft"}
-                or any(v.severity == "hard" for v in violations)):
+        if hard:
             return _result(manager, "BLOCKED", "执行前校验未通过，任务尚未下发。",
                            error="；".join(v.message for v in violations) or validation.overall_status)
-        acknowledged = manager._get_valid_acknowledgements(validation)
-        acknowledged_ids = {ack.constraint_id for ack in acknowledged}
-        unacknowledged = [v for v in violations if v.severity == "soft" and v.constraint_id not in acknowledged_ids]
         if unacknowledged:
-            return _result(manager, "BLOCKED", "执行条件出现尚未确认的告警，请重新确认任务条件。",
-                           error="；".join(v.message for v in unacknowledged))
+            return _result(manager, "BLOCKED", "执行条件出现尚未确认的告警。请核对后回复“确认执行风险”，再检查并下发。",
+                           reason="runtime_soft_warning", error="；".join(v.message for v in unacknowledged))
         if bridge is None or not bridge.is_healthy():
             return _result(manager, "FAILED", "任务已保存，ROS 2 桥接服务未连接。", error="ROS 2 MCP 桥接服务未连接")
 

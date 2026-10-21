@@ -134,12 +134,20 @@ def dispatch_mcp_task():
             return jsonify({"code": 400, "msg": f"当前会话 {sid} 尚未处于 done 阶段，无可下发的任务"}), 400
         if custom_intent and custom_intent != mgr.final_result:
             return jsonify({"code": 403, "msg": "task_intent 必须与会话已确认归档的任务完全一致。"}), 403
-        result = dispatch_completed_task(mgr, bridge)
+        from src.session.ui_state_builder import confirmation_conflict, build_frontend_ui_state
+        conflict = confirmation_conflict(mgr, data.get("expected_confirmation_token"))
+        if conflict:
+            return jsonify(conflict), 409
+        result = dispatch_completed_task(mgr, bridge, resume_paused=True)
+        persistence_error = None
         try:
             save_dispatch_history(mgr)
         except Exception as exc:
             logger.error("保存下发结果失败: %s", exc, exc_info=True)
+            persistence_error = "执行结果未能保存，请保留当前会话并核对机器人遥测，勿自动重发。"
         return jsonify({"code": 200, "msg": result["message"], "ros2_dispatch": result,
+                        "ui_state": build_frontend_ui_state(mgr),
+                        "persistence_warning": persistence_error,
                         "dispatch_state": result["state"], "task_id": result.get("task_id"),
                         "task_id_hex": result.get("task_id_hex")})
 

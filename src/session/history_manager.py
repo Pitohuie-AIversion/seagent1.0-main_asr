@@ -96,6 +96,7 @@ def save_conversation(
     last_control_request: Optional[Dict[str, Any]] = None,
     ros2_dispatch: Optional[Dict[str, Any]] = None,
     pending_published_intent: Optional[Dict[str, Any]] = None,
+    runtime_execution_review: Optional[Dict[str, Any]] = None,
 ) -> str:
     """保存 v2 对话快照，并返回不含路径的文件名。"""
     history_dir = _ensure_dir()
@@ -105,7 +106,7 @@ def save_conversation(
         filename = f"history_{safe_intent_id}.json"
     else:
         safe_session_id = _safe_filename_component(session_id, "session_id")
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
         filename = f"{safe_session_id}_{timestamp}.json"
 
     filepath = history_dir / filename
@@ -129,6 +130,7 @@ def save_conversation(
         "last_control_request": last_control_request,
         "ros2_dispatch": copy.deepcopy(ros2_dispatch),
         "_pending_published_intent": copy.deepcopy(pending_published_intent),
+        "runtime_execution_review": copy.deepcopy(runtime_execution_review),
         "task_id": built_json.get("task_id") or task_state.get("task_id") or "unknown",
         "task_type": task_state.get("task_type_key", "unknown"),
         "intent_id": intent_id,

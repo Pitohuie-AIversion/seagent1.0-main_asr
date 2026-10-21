@@ -64,8 +64,12 @@ button[data-icon], a[data-icon] { justify-content: center; }
   background: transparent; border: 0; border-bottom: 1px solid #1b293b; border-radius: 0;
   box-shadow: none; backdrop-filter: none;
 }
-.header-left { gap: 14px; min-width: 0; }
-.brand-mark { display: grid; place-items: center; flex: 0 0 44px; height: 48px; }
+.header-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.brand-mark { display: flex; align-items: center; flex: 0 0 auto; height: 48px; }
+.brand-logo-img { height: 40px; width: auto; object-fit: contain; display: block; filter: drop-shadow(0 0 8px rgba(0, 160, 233, 0.28)); transition: filter 0.3s ease, transform 0.2s ease; }
+.brand-logo-img:hover { filter: drop-shadow(0 0 14px rgba(0, 240, 255, 0.55)); }
+.brand-divider { width: 1px; height: 32px; background: linear-gradient(180deg, rgba(0, 240, 255, 0.05), rgba(0, 240, 255, 0.35) 50%, rgba(0, 240, 255, 0.05)); margin: 0 4px 0 2px; flex-shrink: 0; }
+.brand-text { min-width: 0; }
 .brand-mark svg { width: 40px; fill: none; stroke: var(--accent-cyan); stroke-width: 1.5; stroke-linejoin: round; }
 .header h1 { color: var(--text-primary); font-size: 20px; font-weight: 650; letter-spacing: .6px; text-shadow: none; line-height: 1.4; }
 .header p { font-size: 12px; color: var(--text-secondary); letter-spacing: 1px; margin-top: 5px; }
@@ -342,9 +346,11 @@ button[data-icon], a[data-icon] { justify-content: center; }
   body { height: auto; overflow: auto; }
   .app { height: auto; min-height: 100dvh; padding: 0 12px; }
   .header { padding: 16px 2px; gap: 12px; min-height: auto; }
-  .header-left { gap: 9px; }
-  .brand-mark { flex-basis: 30px; height: 36px; }
-  .brand-mark svg { width: 30px; }
+  .header-left { gap: 8px; flex-wrap: wrap; }
+  .brand-mark { flex-basis: auto; height: 32px; }
+  .brand-logo-img { height: 28px; }
+  .brand-divider { height: 22px; margin: 0 2px; }
+  .brand-mark svg { width: 28px; }
   .header h1 { font-size: clamp(14px, 4.2vw, 18px); letter-spacing: 0; }
   .header p { font-size: 12px; letter-spacing: .5px; }
   .header-right { width: 100%; justify-content: space-between; gap: 8px; }

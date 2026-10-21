@@ -12,14 +12,35 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from src.extraction import coord_parser
+from src.temporal.duration_parser import parse_chinese_number
 from ..constants import FIELD_LABELS
 
 class WriteReplyGrounder:
     """槽位提交事实锚点与回复展示生成器"""
+
+    # Explicit field labels are distinct from domain discussion or recommendations.
+    # Each assertion is checked against the same committed field as its receipt.
+    _FACT_FIELD_ALIASES = {
+        "start_time": (FIELD_LABELS["start_time"], "任务开始时间", "起始时间", "启动时间"),
+        "end_time": (FIELD_LABELS["end_time"], "任务结束时间", "终止时间", "截止时间"),
+        "task_type": (FIELD_LABELS.get("task_type", "任务类型"), "任务类型", "作业类型"),
+        "cable_type": (FIELD_LABELS["cable_type"], "电缆类型", "管线类型", "管道类型", "缆线类型"),
+        "start_point": (FIELD_LABELS["start_point"], "起始点坐标", "起点坐标", "起始点", "起点"),
+        "end_point": (FIELD_LABELS["end_point"], "结束点坐标", "终点坐标", "结束点", "终点"),
+        "oilfield_coordinates": (FIELD_LABELS["oilfield_coordinates"], "油田经纬度坐标", "油田经纬度", "油田坐标"),
+        "equipment_type": (FIELD_LABELS["equipment_type"], "机器人型号", "作业设备型号", "作业设备"),
+        "equipment_family": (FIELD_LABELS["equipment_family"], "作业机器人系列"),
+        "equipment_unit_id": (FIELD_LABELS["equipment_unit_id"], "机器人编号"),
+        "equipment_name": (FIELD_LABELS["equipment_name"],),
+        "wellhead_id": (FIELD_LABELS.get("wellhead_id", "井口编号"), "井口", "井号"),
+        "oilfield_name": (FIELD_LABELS.get("oilfield_name", "油田名称"), "作业油田", "目标油田"),
+        "support_vessel": (FIELD_LABELS.get("support_vessel", "支持船编号"), "支持船", "作业母船", "母船", "作业船", "支援船", "母船支持"),
+    }
 
     def __init__(self, manager: Any = None) -> None:
         self.manager = manager
@@ -243,21 +264,23 @@ class WriteReplyGrounder:
         try:
             saved_depth = Decimal(str(value))
         except InvalidOperation:
-            return reply
-        if not saved_depth.is_finite():
-            return reply
+            saved_depth = None
+        if saved_depth is not None and not saved_depth.is_finite():
+            saved_depth = None
 
         label = r"(?:任务|作业)?水深(?:[（(]\s*(?:米|m)\s*[）)])?"
         done = r"已(?:经)?(?:成功)?(?:为您|为你)?"
         verb = r"(?:记录|设置|设定|保存|更新|修改|调整)"
         assertion = re.compile(
-            rf"(?:{done}{verb}(?:了)?\s*{label}"
+            rf"(?:(?:{done})?(?:将|把)?{label}\s*(?:已)?从[^。！？!?\n]{{1,80}}?(?:改|调整|更新|设置)(?:为|成|到)"
+            rf"|{done}{verb}(?:了)?\s*{label}"
             rf"|{done}(?:将|把)\s*{label}\s*{verb}"
             rf"|{label}\s*{done}{verb}"
-            rf"|(?:当前|目前|现有|已保存的?|已记录的?)\s*{label}(?:仍)?)"
+            rf"|(?:当前|目前|现有|已保存的?|已记录的?)\s*{label}(?:仍)?"
+            rf"|{label}\s*(?:[：:]|为|是))"
             r"\s*(?:为|是|至|到|[：:])?\s*"
-            r"(?P<number>[+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*"
-            r"(?P<unit>千米|公里|km|米|m|英尺|feet|ft)?(?![\d.a-zA-Z])",
+            r"(?P<number>[+-]?(?:\d+(?:\.\d+)?|\.\d+)|负?[零〇一二两三四五六七八九十百千万亿点半]+?)\s*"
+            r"(?P<unit>千米|公里|km|米|m|英尺|feet|ft)?(?![\d.a-zA-Z零〇一二两三四五六七八九十百千万亿点半])",
             re.IGNORECASE,
         )
         # Match through emphasis while retaining original formatting and every
@@ -279,11 +302,21 @@ class WriteReplyGrounder:
                     or re.search(r"[？?]|吗|示例", suffix)
                     or re.match(r"\s*(?:时|的话|以上|以下|左右|以内|以外|至|到|[-~～])", suffix)):
                 continue
+            if saved_depth is None:
+                replacements.append((positions[match.start()], positions[match.end() - 1] + 1, ""))
+                continue
             unit = (match["unit"] or "米").lower()
             factor = Decimal("1000") if unit in {"千米", "公里", "km"} else (
                 Decimal("0.3048") if unit in {"英尺", "feet", "ft"} else Decimal("1")
             )
-            if Decimal(match["number"]) * factor == saved_depth:
+            try:
+                stated_depth = Decimal(match["number"])
+            except InvalidOperation:
+                parsed = parse_chinese_number(match["number"].removeprefix("负"))
+                if parsed is None:
+                    continue
+                stated_depth = Decimal(str(parsed)) * (-1 if match["number"].startswith("负") else 1)
+            if stated_depth * factor == saved_depth:
                 continue
             number = format(saved_depth / factor, "f")
             if "." in number:
@@ -292,6 +325,324 @@ class WriteReplyGrounder:
         for start, end, number in reversed(replacements):
             reply = reply[:start] + number + reply[end:]
         return reply
+
+    @staticmethod
+    def _time_claim_matches(saved: object, value: str) -> bool | None:
+        """Compare only stated date/clock components; never invent a 'now' base."""
+        try:
+            expected = saved if isinstance(saved, datetime) else datetime.fromisoformat(str(saved).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        value = re.split(r"[（(，,]", value, maxsplit=1)[0].strip()
+        if re.search(r"[今明后昨]天|[上下本这]周|(?:小时|分钟|秒|天)(?:之|以)?[前后]", value):
+            return None
+        display_zone = None
+        zone = re.search(r"(?:UTC|GMT)\s*([+-]\d{1,2}(?::\d{2})?)?|北京时间|(?<=\d)Z\b|([+-]\d{2}:?\d{2})[。；;]?$", value, re.IGNORECASE)
+        if zone:
+            offset = zone.group(1) or zone.group(2) or ("+08" if zone.group() == "北京时间" else "+00")
+            sign = -1 if offset.startswith("-") else 1
+            digits = offset.lstrip("+-")
+            if ":" not in digits and len(digits) == 4:
+                digits = digits[:2] + ":" + digits[2:]
+            chunks = digits.split(":")
+            try:
+                display_zone = timezone(sign * timedelta(hours=int(chunks[0]), minutes=int(chunks[1]) if len(chunks) > 1 else 0))
+            except ValueError:
+                return False
+        full = re.search(
+            r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?", value,
+        )
+        if full:
+            try:
+                claimed = datetime.fromisoformat(full.group().replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            if claimed.tzinfo is None and (display_zone is not None or expected.tzinfo is not None):
+                claimed = claimed.replace(tzinfo=display_zone or expected.tzinfo)
+            if claimed.tzinfo is not None and expected.tzinfo is None:
+                return None
+            if not re.search(r"[T ]\d{1,2}:\d{2}:\d{2}", full.group()):
+                expected = expected.replace(second=0, microsecond=0)
+            elif "." not in full.group():
+                expected = expected.replace(microsecond=0)
+            return claimed == expected
+
+        date_match = re.search(r"(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})日?", value)
+        clock = re.search(r"(?<!\d)(\d{1,2})[:：](\d{2})(?::(\d{2}))?", value)
+        has_seconds = bool(clock and clock.group(3))
+        if clock:
+            hour, minute, second = int(clock.group(1)), int(clock.group(2)), int(clock.group(3) or 0)
+        else:
+            clock = re.search(r"([零〇一二两三四五六七八九十\d]+)[点时](?:([零〇一二两三四五六七八九十\d]+)分?|半)?", value)
+            if clock:
+                parsed_hour = parse_chinese_number(clock.group(1))
+                parsed_minute = parse_chinese_number(clock.group(2)) if clock.group(2) else (30 if "半" in clock.group() else 0)
+                if parsed_hour is None or parsed_minute is None:
+                    return None
+                hour, minute, second = int(parsed_hour), int(parsed_minute), 0
+        if display_zone is not None:
+            if expected.tzinfo is None:
+                return None
+            expected = expected.astimezone(display_zone)
+        if date_match:
+            try:
+                date = datetime(*(int(part) for part in date_match.groups())).date()
+            except ValueError:
+                return False
+            if date != expected.date():
+                return False
+        if not clock:
+            return True if date_match else None
+        prefix = value[:clock.start()]
+        if re.search(r"下午|晚上|晚间|夜间", prefix) and hour < 12:
+            hour += 12
+        elif "中午" in prefix and 1 <= hour <= 6:
+            hour += 12
+        elif re.search(r"凌晨|午夜", prefix) and hour == 12:
+            hour = 0
+        if not (0 <= hour < 24 and 0 <= minute < 60 and 0 <= second < 60):
+            return False
+        return (hour, minute) == (expected.hour, expected.minute) and (not has_seconds or second == expected.second)
+
+    @staticmethod
+    def _ground_time_windows(reply: str, visible: dict, task_state: dict) -> str:
+        """Validate both endpoints of explicit windows, retaining follow-up prose."""
+        pattern = re.compile(
+            r"(?:当前|目前)?(?:作业时间|任务时间|执行时间|时间窗口)\s*[：:为是]\s*"
+            r"(?P<start>[^。！？!?\n]+?)\s*(?:至|到|～|~|—)\s*(?P<end>[^。！？!?\n]+)"
+        )
+        def ground(match: re.Match) -> str:
+            prefix = reply[max(reply.rfind(mark, 0, match.start()) for mark in "。！？!?\n") + 1:match.start()]
+            if re.search(r"请|是否|能否|例如|比如|示例|如果|假如|假设|建议|推荐", prefix):
+                return match.group()
+            if match.end() < len(reply) and reply[match.end()] in "？?":
+                return match.group()
+            end = match["end"]
+            followup = re.search(r"[，,；;]\s*((?:请|建议|推荐|需要|还需|仍需|下一步|接下来).*)", end)
+            end_value = end[:followup.start()] if followup else end
+            for key, value in (("start_time", match["start"]), ("end_time", end_value)):
+                saved = visible.get(key, task_state.get(key))
+                if saved is None or WriteReplyGrounder._time_claim_matches(saved, value) is False:
+                    return followup.group(1) if followup else ""
+            return match.group()
+        return pattern.sub(ground, reply)
+
+    @staticmethod
+    def _ground_field_assertions(reply: str, visible: dict, task_state: dict) -> str:
+        """Keep only explicit field-value claims supported by committed facts.
+
+        Parse coordinate values as a whole so their comma is never mistaken for
+        a boundary before independent follow-up guidance.
+        """
+        aliases = {alias: key for key, names in WriteReplyGrounder._FACT_FIELD_ALIASES.items() for alias in names}
+        label = "(?:" + "|".join(re.escape(alias) for alias in sorted(aliases, key=len, reverse=True)) + ")"
+        done = r"已(?:经|成功)?(?:为您|为你|自动)?"
+        verb = r"(?:记录|写入|设置|设定|保存|更新|修改|调整|选择|选定|确认|关联|绑定|配置|指定|预设)"
+        head = re.compile(
+            rf"(?:(?:{done})?(?:将|把)?{label}\s*(?:已)?从[^。！？!?\n]{{1,120}}?(?:改|调整|更新|设置)(?:为|成|到)"
+            rf"|{done}{verb}(?:了)?\s*{label}|{done}(?:将|把)\s*{label}\s*{verb}"
+            rf"|{label}\s*{verb}(?:完成|成功|好了)"
+            rf"|{label}\s*{done}{verb}|(?:当前|目前|现有|已保存的?|已记录的?)\s*{label}(?:仍)?"
+            rf"|{label}\s*(?:[：:]|(?:仍|当前|目前)?[为是]))\s*(?:为|是|至|到|[：:])?\s*"
+        )
+        label_pattern = re.compile(label)
+        nonassertion = r"请(?!(?:您|你)?(?:注意|知悉))|建议|推荐|可选|候选|例如|比如|示例|假如|如果|假设|是否|能否|尚未|还未|没有|不要|不是|并非|未曾|不能|无法|另一|其他"
+        pending = r"(?:当前|目前|仍)?(?:请|需要|还需|仍需|待|未|尚未|还未|暂无|无|建议|推荐|可选|候选|提供|补充|确认|选择)"
+
+        def compact(value: object) -> str:
+            return re.sub(r"[\s*_`“”‘’\"']", "", str(value)).lower()
+
+        def supported(key: str, value: str) -> bool:
+            saved = visible.get(key, task_state.get(key))
+            if key in {"start_time", "end_time"}:
+                # Missing values retain the established missing-time scrubber;
+                # relative wording without a reference clock is not guessed.
+                return saved is None or WriteReplyGrounder._time_claim_matches(saved, value) is not False
+            if saved is None or saved == "":
+                return False
+            candidate = re.split(r"[（(]", value, maxsplit=1)[0].rstrip("，,；;。 ")
+            if compact(candidate) == compact(coord_parser.format_slot_display_value(key, saved)):
+                return True
+            if key in coord_parser.COORD_FIELDS:
+                parsed = coord_parser.parse_coord_value(value)
+                expected = coord_parser.parse_coord_value(saved)
+                return parsed is not None and parsed == expected
+            if key in {"equipment_unit_id", "wellhead_id", "support_vessel"}:
+                return compact(candidate) == compact(saved)
+            candidate = re.split(r"[，,]", candidate, maxsplit=1)[0]
+            # A shorter display name may omit a generic suffix, but cannot add
+            # a contradictory value to the saved name.
+            candidate = compact(candidate)
+            if len(candidate) < 2:
+                return False
+            pattern = re.escape(candidate)
+            if re.match(r"[\d.]", candidate):
+                pattern = r"(?<![\d.])" + pattern
+            if re.search(r"[\d.]$", candidate):
+                pattern += r"(?![\d.])"
+            return re.search(pattern, compact(saved)) is not None
+
+        def ground_sentence(match: re.Match) -> str:
+            original = match.group(0)
+            positions = [index for index, char in enumerate(original) if char not in "*_`"]
+            plain = "".join(original[index] for index in positions)
+            assertions = list(head.finditer(plain))
+            removals = []
+            for index, assertion in enumerate(assertions):
+                key = aliases[label_pattern.search(assertion.group()).group()]
+                end = assertions[index + 1].start() if index + 1 < len(assertions) else len(plain)
+                tail = plain[assertion.end():end]
+                guidance = re.search(r"[，,；;]\s*(?:请|建议|推荐|需要|还需|仍需|下一步|接下来|同时|另外|例如|比如)", tail)
+                if guidance:
+                    end = assertion.end() + guidance.start()
+                value = plain[assertion.end():end].strip()
+                clause_start = max(plain.rfind(mark, 0, assertion.start()) for mark in "，,；;") + 1
+                prefix = plain[clause_start:assertion.start()]
+                sentence_prefix = plain[:assertion.start()]
+                if (not value or re.search(nonassertion, prefix)
+                        or re.search(r"例如|比如|示例|假如|如果|假设", sentence_prefix)
+                        or re.match(pending, value)
+                        or re.match(r"[（(]?\s*(?:示例|例如|比如)[：:]?", value)
+                        or re.search(r"(?:的话|情况下)(?:[，,].*)?[。！？!?]?$", value)
+                        or (key not in {"start_time", "end_time"} and re.search(r"时(?:[，,].*)?[。！？!?]?$", value))
+                        or (key in {"start_time", "end_time"} and re.match(r"必须|应当|应该|需要|须|早于|晚于|不早于|不晚于", value))
+                        or re.search(r"[？?]|吗[。！？!?]?$", value)):
+                    continue
+                negated = re.match(r"(?:不是|并非|不为|不等于)\s*(.*)", value)
+                if negated:
+                    contrast = re.split(r"[，,]\s*而是\s*", negated.group(1), maxsplit=1)
+                    if not supported(key, contrast[0]) and (len(contrast) == 1 or supported(key, contrast[1])):
+                        continue
+                elif supported(key, value):
+                    continue
+                # Include the boundary comma; the adjacent factual clause or
+                # follow-up request retains its own formatting and punctuation.
+                while end < len(plain) and plain[end] in "，,；; ":
+                    end += 1
+                start_offset = positions[assertion.start()]
+                end_offset = positions[end] if end < len(positions) else len(original)
+                while start_offset and original[start_offset - 1] in "*_`":
+                    start_offset -= 1
+                removals.append((start_offset, end_offset))
+            terminal = re.search(r"[。！？!?]$", original)
+            for start, end in reversed(removals):
+                original = original[:start] + original[end:]
+            if removals:
+                original = re.sub(r"[，,；;]+$", "", original.rstrip())
+                original = re.sub(r"^\s*(?:\d+[.)、]|[-*+])\s*$", "", original)
+                if original and terminal and not re.search(r"[。！？!?]$", original):
+                    original += terminal.group(0)
+            return original
+
+        return re.sub(r"[^。！？!?\n]+[。！？!?]?", ground_sentence, reply)
+
+    @staticmethod
+    def _ground_payload_assertions(reply: str, visible: dict, task_state: dict) -> str:
+        """Check configuration and edit claims against the final optional list.
+
+        Final state can disprove an edit without reconstructing its history:
+        added items must be present, and replaced items must no longer remain.
+        Onboard equipment is never added to this saved-list evidence.
+        """
+        saved = visible.get("payload", task_state.get("payload", []))
+        if not isinstance(saved, (list, tuple)):
+            return reply
+
+        def compact(value: str) -> str:
+            return re.sub(r"[\s*_`“”‘’\"']", "", value).lower()
+
+        expected = {compact(str(item)) for item in saved if str(item).strip()}
+        names = r"(?:携带工具|携带载荷|工具载荷|载荷(?:配置)?)"
+        done = r"已(?:经|成功)?(?:为您|为你|自动)?"
+        replacement = re.compile(
+            rf"(?:{done})?(?:将|把)?{names}\s*(?:{done})?(?:从|由)"
+            rf"(?P<old>.+?)(?:替换|更换|换|改|调整)(?:为|成|到)"
+        )
+        addition = re.compile(
+            rf"(?:{done}(?:新增|增加|添加|加装)(?:了)?\s*{names}"
+            rf"|{names}\s*{done}(?:新增|增加|添加|加装)(?:了)?)\s*[：:]?\s*"
+        )
+        configuration = re.compile(
+            rf"(?:(?:{done})?(?:将|把){names}(?:设置|设定|更新|修改|调整)(?:为|成)"
+            rf"|{done}(?:设置|设定|更新|修改|调整)(?:了)?{names}\s*(?:为|成|[：:])?"
+            rf"|(?:当前|目前|已保存的?|已选的?)?{names}\s*"
+            rf"(?:{done}(?:设置|设定|更新|修改|调整)(?:为|成)|"
+            rf"(?P<includes>包括|包含)|(?:仅|只)?(?:保留|剩下)|[：:]|为|是))\s*"
+        )
+        nonassertion = re.compile(
+            r"请(?!(?:您|你)?(?:注意|知悉))|建议|推荐|可选|候选|例如|比如|示例|如果|假如|假设|"
+            r"是否|能否|尚未|还未|未曾|没有|不要|不是|并非|不能|无法"
+        )
+        other_labels = "|".join(re.escape(alias) for aliases in WriteReplyGrounder._FACT_FIELD_ALIASES.values() for alias in aliases)
+        boundary = re.compile(
+            rf"[，,；;]\s*(?=请|建议|推荐|需要|还需|仍需|下一步|接下来|同时|另外|例如|比如|"
+            rf"(?:当前|目前)?(?:{other_labels}))"
+        )
+        expected_pattern = re.compile("|".join(re.escape(item) for item in sorted(expected, key=len, reverse=True))) if expected else None
+
+        def listed(value: str) -> tuple[set[str], bool]:
+            value = compact(value).strip("。；;[]【】")
+            found = set(expected_pattern.findall(value)) if expected_pattern else set()
+            remainder = expected_pattern.sub("", value) if expected_pattern else value
+            remainder = re.sub(r"[、，,；;]|以及|和|与|及", "", remainder)
+            return found, not remainder and bool(found)
+
+        def old_items_remain(value: str) -> bool:
+            value = compact(value).strip("。；;[]【】")
+            separator = r"[、，,；;]|以及|和|与|及"
+            return any(re.search(rf"(?:^|{separator}){re.escape(item)}(?=$|{separator})", value)
+                       for item in expected)
+
+        def ground_block(match: re.Match) -> str:
+            items = re.sub(r"(?m)^[ \t]*[-*+]\s+", "", match["items"])
+            found, complete = listed("、".join(items.splitlines()))
+            return match.group() if complete and found == expected else ""
+
+        reply = re.sub(
+            rf"(?m)^[ \t]*(?:\*\*)?(?:当前|目前|已保存的?|已选的?)?{names}(?:\*\*)?"
+            rf"\s*[：:][ \t]*(?:\*\*)?[ \t]*\n"
+            rf"(?P<items>(?:[ \t]*[-*+]\s+[^\n]+(?:\n|$))+)",
+            ground_block, reply,
+        )
+
+        def ground_sentence(match: re.Match) -> str:
+            original = match.group()
+            positions = [index for index, char in enumerate(original) if char not in "*_`"]
+            plain = "".join(original[index] for index in positions)
+            for pattern, kind in ((replacement, "replace"), (addition, "add"), (configuration, "configuration")):
+                claim = pattern.search(plain)
+                if not claim:
+                    continue
+                if (nonassertion.search(plain[:claim.start()])
+                        or re.search(r"[？?]|吗[。！？!?]?$", plain)):
+                    return original
+                end = len(plain)
+                followup = boundary.search(plain, claim.end())
+                if followup:
+                    end = followup.start()
+                value = plain[claim.end():end].strip()
+                if not value or re.match(r"(?:尚未|还未|暂无|未|无|待|请|需要|建议|推荐|可选|候选|例如|比如)", value):
+                    return original
+                # State headings can carry a completed action after the colon.
+                value = re.sub(rf"^{done}(?:设置|设定|更新|修改|调整)(?:为|成)\s*", "", value)
+                items, complete = listed(value)
+                supported = complete and (
+                    kind == "add"
+                    or (kind == "configuration" and (claim.group("includes") or items == expected))
+                    or (kind == "replace" and not old_items_remain(claim.group("old")))
+                )
+                if supported:
+                    return original
+                start = positions[claim.start()]
+                stop = positions[end] if end < len(positions) else len(original)
+                while start and original[start - 1] in "*_`":
+                    start -= 1
+                if followup:
+                    stop = positions[followup.end()] if followup.end() < len(positions) else len(original)
+                return original[:start] + original[stop:]
+            return original
+
+        return re.sub(r"[^。！？!?\n]+[。！？!?]?", ground_sentence, reply)
 
     def get_committed_turn_updates(
         self,
@@ -403,6 +754,57 @@ class WriteReplyGrounder:
         return cleaned
 
     @staticmethod
+    def _scrub_uncommitted_start_time_assertions(reply: str) -> str:
+        """Remove concrete start claims when no start time has been committed."""
+        names = r"(?:开始|起始|启动)时间|start_?time"
+        temporal_value = r"\d{1,2}:\d{2}|[零〇一二两三四五六七八九十百半\d.]+\s*(?:个\s*)?(?:小时|分钟|天|秒|点|时)"
+        removed_start = False
+
+        def scrub_clause(match: re.Match) -> str:
+            nonlocal removed_start
+            original = match.group(0)
+            text = re.sub(r"[*_`]", "", original)
+            completed = re.search(
+                r"已(?:经|成功)?(?:为您|为你|自动)?.{0,12}"
+                r"(?:记录|写入|更新|修改|调整|设置|设定)", text,
+            )
+            named = re.search(names, text)
+            scheduled = re.search(r"(?:任务|作业|执行|计划).{0,30}(?:开始|启动)", text)
+            concrete = re.search(temporal_value, text)
+            assertion = (named and completed) or (concrete and (named or scheduled))
+            if assertion:
+                boundary = completed.start() if completed else (named or scheduled).start()
+                prefix = text[:boundary]
+                if re.search(
+                    r"请|是否|何时|几点|什么时候|尚未|还未|暂未|未能|不能|无法|建议|推荐|希望|打算"
+                    r"|示例|例如|比如|如果|假如|假设", prefix,
+                ):
+                    return original
+                if not completed and re.search(
+                    r"请|建议|推荐|希望|打算|[？?]|是否|何时|几点|什么时候|必须|应当|应该|需要|尚未|还未|未记录"
+                    r"|示例|例如|比如|如果|假如|假设", text,
+                ):
+                    return original
+                removed_start = True
+                return ""
+            # A duration stated as part of the unsupported schedule is not a
+            # committed time window either. Independent follow-up requests stay.
+            if removed_start and re.match(r"\s*(?:持续|时长)", text) and concrete:
+                return ""
+            if removed_start and re.search(r"请确认(?:该|此)(?:开始)?时间", text):
+                return ""
+            return original
+
+        cleaned = re.sub(r"[^，,；;。！？!?]+[，,；;。！？!?]?", scrub_clause, reply)
+        if cleaned == reply:
+            return reply
+        terminal = re.search(r"[。！？!?]$", reply)
+        cleaned = re.sub(r"[，,；;]+$", "", cleaned.rstrip())
+        if cleaned and terminal and not re.search(r"[。！？!?]$", cleaned):
+            cleaned += terminal.group(0)
+        return cleaned
+
+    @staticmethod
     def _scrub_uncommitted_slot_assertions(reply: str, visible: dict, task_state: dict) -> str:
         """Remove unsupported state assertions, preserving questions and explanations.
 
@@ -410,11 +812,12 @@ class WriteReplyGrounder:
         In particular, missing-field questions and committed start times must
         survive when the end time has not been committed in this turn.
         """
-        check_end = "end_time" not in visible
+        check_start = "start_time" not in visible and not task_state.get("start_time")
+        check_end = "end_time" not in visible and not task_state.get("end_time")
         check_payload = "payload" not in visible
         check_location = "oilfield_name" not in visible and not task_state.get("oilfield_name")
         check_vessel = "support_vessel" not in visible
-        if not check_end and not check_payload and not check_location and not check_vessel:
+        if not check_start and not check_end and not check_payload and not check_location and not check_vessel:
             return reply
 
         if check_payload:
@@ -466,6 +869,8 @@ class WriteReplyGrounder:
 
         def scrub_sentence(match: re.Match) -> str:
             original = match.group(0)
+            if check_start:
+                original = WriteReplyGrounder._scrub_uncommitted_start_time_assertions(original)
             text = re.sub(r"[*_`]", "", original)
             clauses = re.split(r"[，,；;]", text)
 
@@ -673,7 +1078,12 @@ class WriteReplyGrounder:
         # Show retained facts too: failed deletes or time edits must not let a
         # preceding assistant claim become the user's apparent task state.
         retained = []
-        for key in ("task_type", "wellhead_id", "equipment_type", "payload", "start_time", "end_time", "support_vessel"):
+        retained_keys = ["task_type", "wellhead_id", "equipment_type", "payload", "start_time", "end_time", "support_vessel"]
+        retained_keys.extend(key for key, aliases in WriteReplyGrounder._FACT_FIELD_ALIASES.items()
+                             if any(alias in str(actual_model_reply) for alias in aliases))
+        if "水深" in str(actual_model_reply):
+            retained_keys.append("water_depth")
+        for key in dict.fromkeys(retained_keys):
             value = (task_state or {}).get(key)
             if key in visible or value is None:
                 continue
@@ -728,6 +1138,9 @@ class WriteReplyGrounder:
         cleaned_reply = WriteReplyGrounder._remove_model_receipts(cleaned_reply)
         cleaned_reply = WriteReplyGrounder._ground_payload_classification(cleaned_reply, payload_configuration)
         cleaned_reply = WriteReplyGrounder._ground_water_depth_assertions(cleaned_reply, visible, task_state or {})
+        cleaned_reply = WriteReplyGrounder._ground_time_windows(cleaned_reply, visible, task_state or {})
+        cleaned_reply = WriteReplyGrounder._ground_field_assertions(cleaned_reply, visible, task_state or {})
+        cleaned_reply = WriteReplyGrounder._ground_payload_assertions(cleaned_reply, visible, task_state or {})
         scrubbed = WriteReplyGrounder._scrub_uncommitted_slot_assertions(
             cleaned_reply,
             visible, task_state or {},
@@ -795,6 +1208,8 @@ class WriteReplyGrounder:
         scrubbed = re.sub(r"[^\n。，]*已自动为您确认此配置[^\n。，]*[，。]?", "", scrubbed)
 
         # 6. 去除多余标点、孤立括号与空行
+        if scrubbed != str(actual_model_reply).strip():
+            scrubbed = re.sub(r"(?m)^[ \t]*(?:\d+[.)、]|[-*+])?[ \t*_`。！？!?，,；;]*$", "", scrubbed)
         scrubbed = re.sub(r"[（\(]\s*[）\)]", "", scrubbed)
         scrubbed = re.sub(r"^[）\)]\s*", "", scrubbed)
         scrubbed = re.sub(r"\s*[（\(]$", "", scrubbed)

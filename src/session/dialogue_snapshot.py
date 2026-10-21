@@ -65,6 +65,7 @@ class DialogueSnapshotManager:
             "mode_transition_history": copy.deepcopy(dm.mode_transition_history),
             "control_state": dm.control_state,
             "last_control_request": copy.deepcopy(dm.last_control_request),
+            "runtime_execution_review": copy.deepcopy(dm.runtime_execution_review),
             "slot_store": dm.slot_store.export_snapshot(),
             "task_state": copy.deepcopy(dm.task_state),
             "ros2_dispatch": copy.deepcopy(dm.ros2_dispatch),
@@ -123,6 +124,7 @@ class DialogueSnapshotManager:
             "_last_missing",
             "control_state",
             "last_control_request",
+            "runtime_execution_review",
             "dialogue_mode",
             "last_mode_transition",
             "mode_transition_history",
@@ -227,6 +229,16 @@ class DialogueSnapshotManager:
             last_mode_transition = _val_trans(last_mode_transition)
 
         last_control_request = snapshot.get("last_control_request")
+        runtime_review = snapshot.get("runtime_execution_review")
+        if runtime_review is not None:
+            if not isinstance(runtime_review, dict) or runtime_review.get("status") not in {
+                "pending", "acknowledged", "blocked_hard",
+            }:
+                raise ValueError("Invalid runtime_execution_review in snapshot")
+            if not isinstance(runtime_review.get("violations"), list):
+                raise ValueError("runtime_execution_review violations must be a list")
+            if not isinstance(runtime_review.get("review_token"), str):
+                raise ValueError("runtime_execution_review must contain an evidence token")
         if last_control_request is not None:
             if not isinstance(last_control_request, dict):
                 raise ValueError("last_control_request must be a dictionary")
@@ -329,6 +341,7 @@ class DialogueSnapshotManager:
 
         # 候选 SlotStore 完整校验通过后再一次性替换，避免半恢复状态泄漏。
         candidate.conversation_history = copy.deepcopy(conversation_history)
+        candidate.runtime_execution_review = copy.deepcopy(runtime_review) if phase == "done" else None
         candidate.slot_store = candidate_store
         candidate.task_state = candidate.slot_store.get_task_state()
 
@@ -472,6 +485,7 @@ class DialogueSnapshotManager:
 
         if candidate.phase != "done":
             candidate.ros2_dispatch = None
+            candidate.runtime_execution_review = None
         if candidate.phase != "confirming":
             candidate._pending_published_intent = None
 

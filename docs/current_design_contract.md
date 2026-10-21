@@ -35,7 +35,7 @@ The system classifies all natural language user inputs into two primary interact
 
 ### 2.1 Control Intent Definitions
 - **Publish (`TASK_CONFIRM` / `"确认发布"`):** In `confirming`, explicit publication intent triggers TaskIntent persistence and history snapshot handling. A generic `"确认"` alone requests final publication confirmation; it does not itself publish.
-- **Cancel (`TASK_CANCEL` / `"取消任务"`, `"放弃"`):** Resets current task state and sets phase to `rejected`.
+- **Cancel (`TASK_CANCEL` / `"取消任务"`, `"放弃"`):** During collection, resets current task state and sets phase to `rejected`. Archived tasks retain their immutable plan and use persistent execution controls; see [the execution dispatch contract](execution_dispatch_contract.md).
 - **Accept warning (`"忽略警告"`, `"接受风险"`):** Explicit acceptance in `blocked_soft` records acknowledgement against the current validation context and proceeds after revalidation. `"继续"` alone is not explicit risk acceptance, and acceptance is separate from publication.
 
 ### 2.2 Negation Handling Rules
@@ -144,7 +144,7 @@ If **any** condition fails, the provenance check MUST delete the write candidate
 1. The current entry point matches template `required_capabilities` against family capabilities. Class is grouping metadata; legacy `allowed_robot_classes` is not the hard task-compatibility authority.
 2. With the default `purpose="interactive"`, it keeps runtime-unavailable units visible. Other purposes filter units only when the task starts within the next 0–60 minutes, using online, idle and telemetry-validity checks. This candidate-window predicate is distinct from the validator's handling of ongoing tasks.
 3. Variants without remaining units are retained with `has_available_units=false`; empty families/classes are pruned while assembling the tree.
-4. The entry point does **not** currently filter variants by water depth, payload or seabed, or rank them by soft warnings; `rejected_variants` is returned empty. A separate `VariantEvaluator` exists, but its existence does not establish integration into this path. Full filtering remains an [ADR-008 target](decisions/ADR-008-constraint-aware-robot-selection.md).
+4. The entry point filters variants by confirmed water depth and payload through `VariantEvaluator`, records reasons in `rejected_variants`, and reports payload installation requirements. Family and model choices share this feasible domain. The condition-free admission domain remains available to preserve explicit user choices for specific validation errors. Seabed filtering and soft-warning ranking remain [ADR-008 targets](decisions/ADR-008-constraint-aware-robot-selection.md).
 
 Candidate membership therefore does not imply that all task constraints pass. Publication and runtime execution require their own validation.
 
@@ -156,6 +156,7 @@ After filtering:
 
 ### 8.4 Auto-Bound Value Revocation
 - Auto-bound (`source="auto"`) selections are **not** user preferences. If task conditions change and the candidate domain changes, the auto-bound value and its downstream selections MUST be cleared and re-converged.
+- Payload edits evaluate against explicit equipment choices, then recompute the automatic suffix only after successful updates. Apply scalar, list and explicit equipment updates before candidate convergence so old payloads cannot constrain their replacements.
 - User-explicit selections are retained even if incompatible with current conditions; `Validator` MUST produce a hard constraint block in that case.
 
 ### 8.5 Four-Level Relationship Validation
@@ -168,6 +169,7 @@ After filtering:
 ### 8.7 Telemetry and Dispatch
 - C019 is currently a soft warning after 1800 seconds. Runtime availability has a separate age limit and invalid-state checks; see [the architecture overview](architecture/overview.md).
 - Future-task archival may defer dynamic telemetry validation. Dispatch uses `purpose="runtime_execution"` and fresh validation; archival alone is not execution authorization.
+- Archived tasks may acknowledge a new runtime soft warning against its displayed evidence, then dispatch separately. Evidence changes require another review; hard violations remain blocking and archived parameters remain unchanged.
 - Sending, scheduling, uncertain results and unsupported valve withdrawal follow [the execution dispatch contract](execution_dispatch_contract.md).
 
 ## 9. HTTP Retry and Streaming Boundaries
@@ -177,7 +179,8 @@ After filtering:
 - `/api/chat` and `/api/chat/stream` share the same replay records within a live session manager. An explicit `request_id` plus the same trimmed message replays the original outcome without re-running extraction, mutation, publication or dispatch. Concurrent duplicates serialize behind the same session lock.
 - Reusing a retained ID with different message content returns `RequestIdConflict` (409; an SSE `error` event for the streaming transport). The first result is not overwritten. IDs are scoped to the session, not globally.
 - Records last at most 10 minutes from completion, with at most 128 entries and a 4 MiB serialized-response budget per manager; older records may be evicted earlier by either budget. Oversized responses retain a bounded tombstone returning `RequestReplayUnavailable` instead of executing again while that record remains.
-- This is process-local, bounded retry protection. Reset, manager replacement, process restart, expiry or eviction ends that protection; it is not durable exactly-once processing. Clients must check current session state before retrying an old or uncertain incremental command.
+- This is process-local, bounded retry protection. Configuration migration preserves the replay cache; reset, history forks, process restart, expiry or eviction end that protection. It is not durable exactly-once processing. Clients must check current session state before retrying an old or uncertain incremental command.
+- Publication and runtime risk acceptance also require the current `expected_confirmation_token`. Successful request replay precedes that check. Stale confirmation, history forks and configuration migration follow [the session confirmation and recovery contract](architecture/session-confirmation-recovery.md).
 - Errors reached during processing are also replayed because an error may follow a state mutation. To intentionally attempt an operation again, inspect current state first and use a new request ID; the `retryable` flag does not invalidate a retained outcome. Input validation and streaming-capacity rejection occur before processing and are not recorded as completed turns.
 - Replayed responses contain the original snapshot. They do not revert newer session state; use `/api/session/state` for the latest state. A missing request ID creates a new logical turn. The browser supplies one ID per send and keeps it across its supported transport fallback; interrupted streams are still not automatically resent.
 
