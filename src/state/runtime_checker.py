@@ -25,6 +25,33 @@ BUSY_STATUSES = frozenset({
 AVAILABLE_STATUSES = frozenset({"available", "idle", "ready"})
 
 
+def inspect_state_timestamp(
+    timestamp: Any,
+    *,
+    now_dt: datetime,
+    max_age_seconds: int = ROBOT_STATE_MAX_AGE_SECONDS,
+) -> dict[str, Any]:
+    """Share the existing TTL/skew rules with read-only telemetry presentation."""
+    result = {"reason_code": "AVAILABLE", "age_seconds": None, "timestamp_error": None}
+    if not timestamp:
+        return {**result, "reason_code": "STATE_EXPIRED", "timestamp_error": "missing"}
+    try:
+        updated_dt = datetime.fromisoformat(str(timestamp))
+        if updated_dt.tzinfo is None:
+            updated_dt = updated_dt.replace(tzinfo=now_dt.tzinfo)
+        else:
+            updated_dt = updated_dt.astimezone(now_dt.tzinfo)
+        age_seconds = (now_dt - updated_dt).total_seconds()
+    except (ValueError, TypeError, OverflowError):
+        return {**result, "reason_code": "INVALID_STATE_DATA", "timestamp_error": "invalid"}
+    result["age_seconds"] = age_seconds
+    if age_seconds < -TELEMETRY_MAX_FUTURE_SKEW_SECONDS:
+        return {**result, "reason_code": "INVALID_STATE_DATA", "timestamp_error": "future"}
+    if age_seconds > max_age_seconds:
+        return {**result, "reason_code": "STATE_EXPIRED", "timestamp_error": "stale"}
+    return result
+
+
 def parse_bool(val: Any) -> bool | None:
     """严格解析布尔值或字符串形式的布尔标志 ("true"/"false"/"1"/"0" 等)，避免 Python 字符串 truthiness 错误。"""
     if isinstance(val, bool):
@@ -275,7 +302,10 @@ def inspect_robot_availability(
         }
 
     # 7. 存活性 TTL 与未来时间戳漂移校验
-    if not state_updated_at_str:
+    freshness = inspect_state_timestamp(
+        state_updated_at_str, now_dt=now_dt, max_age_seconds=max_age_seconds,
+    )
+    if freshness["reason_code"] == "STATE_EXPIRED":
         return {
             "available": False,
             "reason_code": "STATE_EXPIRED",
@@ -285,42 +315,22 @@ def inspect_robot_availability(
             ),
             "unit_id": clean_unit_id,
             "checked_at": checked_at_str,
-            "state_updated_at": None,
+            "state_updated_at": str(state_updated_at_str) if state_updated_at_str else None,
         }
 
-    try:
-        updated_dt = datetime.fromisoformat(str(state_updated_at_str))
-        if updated_dt.tzinfo is None:
-            updated_dt = updated_dt.replace(tzinfo=now_dt.tzinfo)
-        else:
-            updated_dt = updated_dt.astimezone(now_dt.tzinfo)
-
-        age_seconds = (now_dt - updated_dt).total_seconds()
-        if age_seconds < -TELEMETRY_MAX_FUTURE_SKEW_SECONDS:
-            return {
-                "available": False,
-                "reason_code": "INVALID_STATE_DATA",
-                "message": (
-                    f"无法发布任务：机器人 {clean_unit_id} 状态时间戳明显晚于系统时间，"
-                    "无法确认当前可用性。\n请校准设备时钟并刷新状态后重新确认发布。"
-                ),
-                "unit_id": clean_unit_id,
-                "checked_at": checked_at_str,
-                "state_updated_at": str(state_updated_at_str),
-            }
-        if age_seconds > max_age_seconds:
-            return {
-                "available": False,
-                "reason_code": "STATE_EXPIRED",
-                "message": (
-                    f"无法发布任务：机器人 {clean_unit_id} 状态信息已过期，无法确认当前可用性。\n"
-                    "请刷新设备状态后重新确认发布。"
-                ),
-                "unit_id": clean_unit_id,
-                "checked_at": checked_at_str,
-                "state_updated_at": str(state_updated_at_str),
-            }
-    except Exception:
+    if freshness["timestamp_error"] == "future":
+        return {
+            "available": False,
+            "reason_code": "INVALID_STATE_DATA",
+            "message": (
+                f"无法发布任务：机器人 {clean_unit_id} 状态时间戳明显晚于系统时间，"
+                "无法确认当前可用性。\n请校准设备时钟并刷新状态后重新确认发布。"
+            ),
+            "unit_id": clean_unit_id,
+            "checked_at": checked_at_str,
+            "state_updated_at": str(state_updated_at_str),
+        }
+    if freshness["reason_code"] == "INVALID_STATE_DATA":
         return {
             "available": False,
             "reason_code": "INVALID_STATE_DATA",

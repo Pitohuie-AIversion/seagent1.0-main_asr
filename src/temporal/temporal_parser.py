@@ -56,11 +56,18 @@ class TemporalParser:
     @staticmethod
     def has_explicit_duration(text: str) -> bool:
         """Use the shared duration parser, retaining model-converted week/quarter units."""
-        if parse_duration_evidence(text).success or is_keep_duration_expression(text):
+        from .relative_time_parser import RELATIVE_OFFSET_PATTERN
+
+        # Elapsed offsets name a point, not an execution duration. Keep a
+        # separately stated duration, including adjacent unpunctuated fields.
+        if TemporalParser.explicit_duration_relation(text) is not None:
+            return True
+        duration_text = re.sub(RELATIVE_OFFSET_PATTERN, " ", str(text or ""))
+        if parse_duration_evidence(duration_text).success or is_keep_duration_expression(duration_text):
             return True
         return bool(re.search(
             r"(?:\d+(?:\.\d+)?|[零一二两三四五六七八九十百千万点半]+)\s*(?:个)?\s*"
-            r"(?:周|星期|刻钟)", str(text or ""),
+            r"(?:周|星期|刻钟)", duration_text,
         ))
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -367,6 +374,11 @@ class TemporalParser:
         normalized = end_cand.get("normalized_value")
         if has_relation and raw and raw not in user_message:
             return None
+        if (has_relation and parse_duration_evidence(raw).success
+                and not TemporalParser._explicit_time_candidate(end_cand, user_message)):
+            # A model-derived end may quote the duration itself as evidence.
+            # It is not an independent endpoint constraint; derive it from S+D.
+            return None
         return raw or normalized
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -610,6 +622,7 @@ class TemporalParser:
             return candidates, []
 
         import math
+        from .relative_time_parser import RELATIVE_OFFSET_PATTERN
         from .simulated_time import get_current_datetime
 
         cancelled_targets = TemporalParser._cancelled_time_targets(user_message)
@@ -655,6 +668,8 @@ class TemporalParser:
 
             clauses = [match[0] for match in re.finditer(r"[^，,。；;！!\n]+", user_message)
                        if raw in match[0]]
+            if not clauses:
+                return True
             for clause in clauses:
                 parsed = parse_relative_datetime_detail(clause, get_current_datetime(), full_user_message=clause)
                 if not parsed.success or parsed.has_ambiguities:
@@ -663,6 +678,10 @@ class TemporalParser:
                 # binding. An explicitly named event must have task evidence.
                 if re.search(r"开始|起始|开工|结束|终止|截止|完工|收工|启动", clause):
                     return True
+                # Single-field follow-ups can return before range arithmetic.
+                # Ground them now so a model ISO cannot override the offset.
+                item["normalized_value"] = parsed.iso_string
+                item["resolution_method"] = "relative_date_parsed"
             return False
 
         candidates = [item for item in candidates if not (
@@ -857,11 +876,19 @@ class TemporalParser:
                     isinstance(item, dict) and item.get("canonical_key") == "end_time"
                     and not TemporalParser._explicit_time_candidate(item, user_message)
                 )]
-        elif "start_time" in endpoint_adjustments and not keep_end and "end_time" not in endpoint_adjustments:
+        elif (not keep_end and "end_time" not in endpoint_adjustments
+              and ("start_time" in endpoint_adjustments or (
+                  duration_text is None and any(
+                      isinstance(item, dict) and item.get("canonical_key") == "start_time"
+                      and re.search(RELATIVE_OFFSET_PATTERN, str(item.get("raw_value") or ""))
+                      for item in candidates
+                  )
+              ))):
             # Inferred endpoints may be based on the same erroneous model ISO.
             # A clock/date that the user explicitly gave remains a constraint.
             candidates = [item for item in candidates if not (
                 isinstance(item, dict) and item.get("canonical_key") == "end_time"
+                and "end_time" not in explicit_keys
                 and not TemporalParser._explicit_time_candidate(item, user_message)
             )]
 
@@ -884,6 +911,13 @@ class TemporalParser:
             start_text = start_cand["normalized_value"]
         if end_cand and end_cand.get("resolution_method") in ("time_endpoint_shifted", "end_time_unchanged", "explicit_time_field"):
             end_text = end_cand["normalized_value"]
+        if has_relation and end_cand is not None and end_text is None:
+            # Discard unsupported model arithmetic even if S+D later fails
+            # (for example because the start is still missing).
+            candidates = [item for item in candidates if not (
+                isinstance(item, dict) and item.get("canonical_key") == "end_time"
+            )]
+            end_cand = None
         range_result = parse_time_range(start_text, duration_text, end_text, base_dt=base_dt,
             previous_start=previous_start, previous_end=previous_end)
         if (

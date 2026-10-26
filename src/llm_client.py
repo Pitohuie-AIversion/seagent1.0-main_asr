@@ -771,9 +771,18 @@ class LLMClient:
         return text.strip()
 
     def _json_after_marker(self, content: str, marker: str) -> dict | None:
-        if marker not in content:
+        # The shared identity instructions quote these marker names as examples.
+        # Only a real section heading followed directly by its JSON is evidence;
+        # scanning ahead could consume an unrelated capability or task object.
+        heading = re.search(
+            rf"(?m)^[ \t]*{re.escape(marker)}[ \t]*\r?\n\s*(?=\{{)", content,
+        )
+        if heading is None:
             return None
-        value = self._decode_first_json_value(content.split(marker, 1)[1])
+        try:
+            value, _ = json.JSONDecoder().raw_decode(content[heading.end():])
+        except ValueError:
+            return None
         return value if isinstance(value, dict) else None
 
     @staticmethod

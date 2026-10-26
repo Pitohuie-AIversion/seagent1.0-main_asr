@@ -43,7 +43,10 @@ def test_future_task_prompt_does_not_present_old_telemetry_as_live_check(acknowl
 
 
 def test_missing_subsystems_are_unknown_not_implicitly_normal():
-    summary = _format_state_snapshot_summary({'unit_id': 'LROV-150-001', 'state': {'overall_status': 'unknown'}})
+    from src.temporal.simulated_time import get_current_datetime
+    summary = _format_state_snapshot_summary({'unit_id': 'LROV-150-001', 'state': {
+        'overall_status': 'unknown', 'updated_at': get_current_datetime().isoformat(),
+    }})
     assert '推进器 未知' in summary
     assert '声呐系统 未知' in summary
     assert '正常' not in summary

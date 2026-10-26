@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .models import format_seabed_type, format_telemetry_value
+from src.telemetry_evidence import assess_telemetry_freshness, format_telemetry_unavailable
 
 if TYPE_CHECKING:
     from ..knowledge_retriever import KnowledgeBase
@@ -86,6 +87,13 @@ class PromptGrounder:
                     else selected_robot.get("full_name")
                 )
                 state_dict = self.kb.get_robot_state_dict(state_selector) if include_runtime_state else None
+                if state_dict and isinstance(state_dict, dict):
+                    freshness = assess_telemetry_freshness(state_dict)
+                    if not freshness["usable"]:
+                        sections.append("【设备遥测状态】\n" + format_telemetry_unavailable(
+                            str(state_selector), state_dict, freshness=freshness,
+                        ))
+                        state_dict = None
                 if state_dict and isinstance(state_dict, dict):
                     state_lines = []
                     label_map = {

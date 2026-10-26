@@ -1143,6 +1143,14 @@ Please describe your operational requirements directly, or ask the question you 
         { kind: 'soft', label: zh ? '待确认风险' : 'Risk to review', items: (cs.soft_warnings || []).filter(item => !ignoredIds.has(item.constraint_id)) },
         { kind: 'ignored-soft', label: zh ? '已确认忽略' : 'Acknowledged warning', items: ignored },
       ];
+      if (cs.telemetry_freshness?.usable === false && cs.state_snapshot?.unit_id && groups.some(group => group.items.length)) {
+        const notice = document.createElement('p');
+        notice.className = 'constraint-telemetry-notice';
+        notice.textContent = zh
+          ? '当前遥测有效性无法确认。下列遥测相关警告基于历史快照，不能代表当前海况或设备健康；仍需按当前校验要求处理。'
+          : 'Current telemetry cannot be verified. Telemetry warnings below use historical readings, not current conditions or health; validation requirements still apply.';
+        container.appendChild(notice);
+      }
       const addAction = (parent, label, action, handler) => {
         const button = document.createElement('button');
         button.type = 'button';
@@ -1190,7 +1198,7 @@ Please describe your operational requirements directly, or ask the question you 
             evidence.appendChild(term);
             evidence.appendChild(detail);
           };
-          addEvidence(zh ? '当前值' : 'Observed value', violation.observed_value);
+          addEvidence(zh ? (cs.telemetry_freshness?.usable === false ? '校验所用值' : '当前值') : 'Observed value', violation.observed_value);
           addEvidence(zh ? '限值 / 条件' : 'Limit / condition', violation.threshold);
           if (cs.source && cs.source !== 'none') addEvidence(zh ? '结果来源' : 'Result source', sourceLabels[cs.source] || cs.source);
           addEvidence(zh ? '校验类型' : 'Check type', violation.check_type);
@@ -1874,6 +1882,14 @@ Please describe your operational requirements directly, or ask the question you 
         header.className = 'warning-card-header';
         header.innerHTML = `<span class="warning-card-badge">SOFT WARNING</span><span class="warning-card-title">${currentLang === 'zh' ? '⚠️ 环境与作业安全风险提示 (可人工确认)' : '⚠️ Safety & Environment Warning (Review Required)'}</span>`;
         card.appendChild(header);
+        if (cs.telemetry_freshness?.usable === false && cs.state_snapshot?.unit_id) {
+          const notice = document.createElement('p');
+          notice.className = 'constraint-telemetry-notice';
+          notice.textContent = currentLang === 'zh'
+            ? '下列遥测相关警告基于历史快照，不能代表当前海况或设备健康；仍需按当前校验要求处理。'
+            : 'Telemetry warnings below use historical readings, not current conditions or health; validation requirements still apply.';
+          card.appendChild(notice);
+        }
 
         const list = document.createElement('div');
         list.className = 'warning-items-list';
@@ -1992,10 +2008,16 @@ Please describe your operational requirements directly, or ask the question you 
     function renderTelemetryConfirmCard(wrapper, uiState, isCurrentCard, botMsgDiv) {
       const cs = uiState.constraint_state || {};
       const snapshot = cs.state_snapshot || {};
-      const state = snapshot.state || {};
-      if (!state || (!state.overall_status && !snapshot.unit_id && state.water_current_velocity === undefined)) {
+      const snapshotState = snapshot.state || {};
+      if (!snapshotState.overall_status && !snapshot.unit_id && snapshotState.water_current_velocity === undefined) {
         return null;
       }
+      const freshness = cs.telemetry_freshness || {};
+      const validationStatus = cs.overall_status || cs.status;
+      const runtimePending = cs.runtime_validation_deferred === true || validationStatus === 'pending_runtime_validation';
+      const currentTelemetry = freshness.usable === true && !runtimePending;
+      // Historical readings remain in the API snapshot, never as live health indicators.
+      const state = currentTelemetry ? snapshotState : {};
 
       const card = document.createElement('div');
       card.className = 'telemetry-decision-card';
@@ -2010,15 +2032,27 @@ Please describe your operational requirements directly, or ask the question you 
       header.className = 'telemetry-card-header';
       header.innerHTML = `
         <div class="telemetry-card-badge-group">
-          <span class="telemetry-card-badge">LIVE TELEMETRY</span>
+          <span class="telemetry-card-badge">${currentTelemetry ? 'LIVE TELEMETRY' : 'STATE SNAPSHOT'}</span>
           <span class="telemetry-status-pill ${isAvailable ? 'status-pill-ok' : 'status-pill-warn'}">
             <span class="status-indicator-dot"></span>
             <span>${isAvailable ? (currentLang === 'zh' ? '就绪可用' : 'Available') : escapeHtml(overall)}</span>
           </span>
         </div>
-        <div class="telemetry-card-title">🤖 ${escapeHtml(unitId)} · ${currentLang === 'zh' ? '实时遥测与作业环境核验看板' : 'Live Telemetry & Environment Dashboard'}</div>
+        <div class="telemetry-card-title">🤖 ${escapeHtml(unitId)} · ${currentTelemetry
+          ? (currentLang === 'zh' ? '实时遥测与作业环境核验看板' : 'Live Telemetry & Environment Dashboard')
+          : (currentLang === 'zh' ? '遥测快照与待核验状态' : 'Telemetry Snapshot & Pending Checks')}</div>
       `;
       card.appendChild(header);
+      if (!currentTelemetry) {
+        const notice = document.createElement('p');
+        notice.className = 'telemetry-freshness-notice';
+        notice.textContent = runtimePending
+          ? (currentLang === 'zh' ? '等待运行条件校验；历史快照不能证明执行时的设备状态。' : 'Runtime validation pending; historical readings do not establish availability at execution.')
+          : freshness.status === 'stale'
+            ? (currentLang === 'zh' ? '遥测已过期，无法确认当前状态。请刷新设备数据后重新核验。' : 'Telemetry is expired; current status cannot be confirmed. Refresh device data and revalidate.')
+            : (currentLang === 'zh' ? '缺少有效遥测时间，无法确认当前状态。请刷新设备数据后重新核验。' : 'A valid telemetry timestamp is unavailable; current status cannot be confirmed. Refresh device data and revalidate.');
+        card.appendChild(notice);
+      }
 
       // 2. Environment metrics grid
       const envGrid = document.createElement('div');
@@ -2118,14 +2152,13 @@ Please describe your operational requirements directly, or ask the question you 
       // 4. Metadata footer (Time and version)
       const meta = document.createElement('div');
       meta.className = 'telemetry-card-meta';
-      const timeStr = snapshot.updated_at || state.updated_at || '';
-      const verStr = snapshot.state_version !== undefined ? snapshot.state_version : (state.version !== undefined ? state.version : '');
-      const validationStatus = cs.overall_status || cs.status;
-      const verified = validationStatus === 'valid' && !cs.error && cs.source !== 'stale_validation_result';
+      const timeStr = freshness.updated_at || snapshot.updated_at || snapshotState.updated_at || '';
+      const verStr = snapshot.state_version !== undefined ? snapshot.state_version : (snapshotState.version !== undefined ? snapshotState.version : '');
+      const verified = currentTelemetry && validationStatus === 'valid' && !cs.error && cs.source !== 'stale_validation_result';
       const validationLabel = cs.source === 'stale_validation_result'
         ? (currentLang === 'zh' ? '校验结果已过期' : 'Validation is stale')
         : cs.error ? (currentLang === 'zh' ? '校验未完成' : 'Validation incomplete')
-        : validationStatus === 'pending_runtime_validation'
+        : runtimePending
           ? (currentLang === 'zh' ? '等待运行条件校验' : 'Runtime validation pending')
           : verified ? (currentLang === 'zh' ? '✓ 即时核验通过' : '✓ Pre-check Verified')
           : (currentLang === 'zh' ? '尚未通过即时核验' : 'Pre-check not passed');

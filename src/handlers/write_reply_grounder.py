@@ -17,6 +17,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from src.extraction import coord_parser
+from src.telemetry_evidence import ground_telemetry_reply
 from src.temporal.duration_parser import parse_chinese_number
 from ..constants import FIELD_LABELS
 
@@ -333,6 +334,21 @@ class WriteReplyGrounder:
             expected = saved if isinstance(saved, datetime) else datetime.fromisoformat(str(saved).replace("Z", "+00:00"))
         except (TypeError, ValueError):
             return None
+        historical = r"(?:原先|原来|原定|此前|之前|旧时间|调整前|修改前)"
+        value = re.sub(rf"[（(]\s*{historical}[^（）()]*[）)]", "", value)
+        value = re.split(rf"[，,]\s*{historical}", value, maxsplit=1)[0]
+        # Explanations may put a reference clock in parentheses and the actual
+        # claimed result after "即". Do not discard that result when removing
+        # historical annotations, or let relative wording bypass its check.
+        equivalent_values = re.split(
+            r"(?:[，,（(]\s*)?(?:也就是说|也就是|也即|即|换算(?:后)?为|折合为|对应(?:的时间)?为)\s*[：:]?\s*",
+            value,
+        )
+        if len(equivalent_values) > 1:
+            matches = [WriteReplyGrounder._time_claim_matches(saved, item) for item in equivalent_values]
+            if False in matches:
+                return False
+            return True if True in matches else None
         value = re.split(r"[（(，,]", value, maxsplit=1)[0].strip()
         if re.search(r"[今明后昨]天|[上下本这]周|(?:小时|分钟|秒|天)(?:之|以)?[前后]", value):
             return None
@@ -408,24 +424,128 @@ class WriteReplyGrounder:
     def _ground_time_windows(reply: str, visible: dict, task_state: dict) -> str:
         """Validate both endpoints of explicit windows, retaining follow-up prose."""
         pattern = re.compile(
-            r"(?:当前|目前)?(?:作业时间|任务时间|执行时间|时间窗口)\s*[：:为是]\s*"
+            r"(?:当前|目前)?(?:作业时间|任务时间|执行时间|时间窗口|(?<![\w])时间)\s*[：:为是]\s*"
             r"(?P<start>[^。！？!?\n]+?)\s*(?:至|到|～|~|—)\s*(?P<end>[^。！？!?\n]+)"
         )
-        def ground(match: re.Match) -> str:
-            prefix = reply[max(reply.rfind(mark, 0, match.start()) for mark in "。！？!?\n") + 1:match.start()]
+        positions = [index for index, char in enumerate(reply) if char not in "*_`"]
+        plain = "".join(reply[index] for index in positions)
+        replacements = []
+        for match in pattern.finditer(plain):
+            prefix = plain[max(plain.rfind(mark, 0, match.start()) for mark in "。！？!?\n") + 1:match.start()]
             if re.search(r"请|是否|能否|例如|比如|示例|如果|假如|假设|建议|推荐", prefix):
-                return match.group()
-            if match.end() < len(reply) and reply[match.end()] in "？?":
-                return match.group()
+                continue
+            if match.end() < len(plain) and plain[match.end()] in "？?":
+                continue
             end = match["end"]
             followup = re.search(r"[，,；;]\s*((?:请|建议|推荐|需要|还需|仍需|下一步|接下来).*)", end)
             end_value = end[:followup.start()] if followup else end
             for key, value in (("start_time", match["start"]), ("end_time", end_value)):
                 saved = visible.get(key, task_state.get(key))
                 if saved is None or WriteReplyGrounder._time_claim_matches(saved, value) is False:
-                    return followup.group(1) if followup else ""
-            return match.group()
-        return pattern.sub(ground, reply)
+                    start, stop = positions[match.start()], positions[match.end() - 1] + 1
+                    while start and reply[start - 1] in "*_`":
+                        start -= 1
+                    while stop < len(reply) and reply[stop] in "*_`":
+                        stop += 1
+                    replacements.append((start, stop, followup.group(1) if followup else ""))
+                    break
+        for start, stop, replacement in reversed(replacements):
+            reply = reply[:start] + replacement + reply[stop:]
+        return reply
+
+    @staticmethod
+    def _remove_unsupported_now_gloss(reply: str) -> str:
+        """A saved timestamp alone cannot prove an assertion that it equals now."""
+        reply = re.sub(
+            r"((?:\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?|\d{1,2}:\d{2}(?::\d{2})?)"
+            r"[*_`]*\s*)[（(]\s*(?:即|也就是|也即)(?:当前时间|现在|此刻)\s*[）)]",
+            r"\1", reply,
+        )
+        return re.sub(
+            r"[（(]\s*(?:(?:即|也就是|也即)\s*)?(?:当前时间|现在|此刻)\s*(?:为|是|[：:])?\s*"
+            r"\d{1,2}[:：]\d{2}(?::\d{2})?[^（）()\n]*[）)]", "", reply,
+        )
+
+    @staticmethod
+    def _repair_missing_field_block(reply: str, missing_fields: list[dict] | None,
+                                    visible: dict, task_state: dict) -> str:
+        """Repair broken collection lists using actual missing slots, keeping useful questions.
+
+        Ordinary prose and intact model questions remain untouched. A list is
+        rebuilt only when its count/numbering is broken, repeats a field, or
+        asks again for a field that is already saved and no longer missing.
+        """
+        if missing_fields is None:
+            return reply
+        missing = {item["key"]: item for item in missing_fields
+                   if isinstance(item, dict) and item.get("key") and item.get("type") not in ("auto", "fixed")}
+        aliases = {alias: key for key, names in WriteReplyGrounder._FACT_FIELD_ALIASES.items() for alias in names}
+        aliases.update({label: key for key, label in FIELD_LABELS.items()})
+        aliases.update({str(item.get("label") or key): key for key, item in missing.items()})
+        aliases.update({"载荷": "payload", "水深": "water_depth"})
+        labels = "|".join(re.escape(alias) for alias in sorted(aliases, key=len, reverse=True))
+        heading = re.compile(r"(?:还需|仍需|需要).{0,15}(?:以下|下列)\s*(\d+)\s*个.{0,8}(?:参数|字段|信息)")
+        numbered = re.compile(r"^\s*(\d+)[.)、]\s*(.+)$")
+        field = re.compile(rf"^(?:{labels})(?=\s*[：:（(]|$)")
+        lines = reply.splitlines()
+        result = []
+        i = 0
+        while i < len(lines):
+            title = heading.search(re.sub(r"[*_`]", "", lines[i]))
+            if not title:
+                result.append(lines[i])
+                i += 1
+                continue
+            j, entries = i + 1, []
+            while j < len(lines):
+                if not lines[j].strip():
+                    j += 1
+                    continue
+                plain_line = re.sub(r"[*_`]", "", lines[j])
+                item = numbered.match(plain_line)
+                name = field.match(item[2]) if item else None
+                if item and name:
+                    raw_item = numbered.match(lines[j])
+                    body = raw_item[2] if raw_item else f"**{item[2]}**"
+                    entries.append((int(item[1]), aliases.get(name[0]), body))
+                    j += 1
+                    continue
+                # A field's description/options can span unindented lines.
+                # Stop at an explicit section/closing prompt, not at the first
+                # explanatory sentence, which would leave later items behind.
+                boundary = re.match(
+                    r"\s*(?:#{1,6}\s|[|]|✅|⚠️|当前已保存|仍需补充|任务尚未发布|"
+                    r"请(?:补充|提供|确认)(?:以上|上述)|请回复|请逐项|请核对|您可以|随后|接下来)",
+                    plain_line,
+                )
+                if entries and not boundary and not heading.search(plain_line):
+                    number, key, body = entries[-1]
+                    entries[-1] = (number, key, body + "\n" + lines[j])
+                    j += 1
+                    continue
+                break
+            keys = [key for _, key, _ in entries if key]
+            saved = {**task_state, **visible}
+            invalid = (
+                [number for number, _, _ in entries] != list(range(1, int(title[1]) + 1))
+                or len(keys) != len(set(keys))
+                or any(key not in missing and saved.get(key) not in (None, [], "") for key in keys)
+                or not missing
+            )
+            if not invalid:
+                result.extend(lines[i:j])
+                i = j
+                continue
+            if missing:
+                selected = list(missing.items())[:3]
+                result.append(f"接下来，还需要您补充以下 {len(selected)} 个参数：")
+                originals = {key: body for _, key, body in entries if key in missing}
+                for number, (key, item) in enumerate(selected, 1):
+                    label = item.get("label") or FIELD_LABELS.get(key, key)
+                    body = originals.get(key, f"**{label}**：请提供{label}。")
+                    result.append(f"{number}. {body}")
+            i = j
+        return "\n".join(result)
 
     @staticmethod
     def _ground_field_assertions(reply: str, visible: dict, task_state: dict) -> str:
@@ -930,17 +1050,33 @@ class WriteReplyGrounder:
         return re.sub(r"[^。！？!?\n]+[。！？!?]?", scrub_sentence, reply)
 
     @staticmethod
-    def _ground_blocked_publish_instructions(reply: str, *, hard: bool) -> str:
+    def _ground_blocked_publish_instructions(reply: str, *, hard: bool,
+                                             include_guidance: bool = True) -> str:
         """Replace bypass instructions with the required action, retaining list numbering."""
         next_step = (
             "请先修正上述硬约束问题，再继续校验；当前不能确认发布。"
             if hard else
             "如接受这些软警告，请先明确回复“忽略软警告”，待系统重新校验后再确认发布。"
         )
+        guidance_emitted = False
+        warning_choice_rows: set[int] = set()
 
         def correct_instruction(match: re.Match) -> str:
+            nonlocal guidance_emitted
             original = match.group(0)
             text = re.sub(r"[*_`]", "", original)
+            # The receipt owns the choice to acknowledge a soft warning or
+            # modify the task. A model paraphrase is a duplicate even when it
+            # says "您希望忽略上述软性警告" instead of the literal command.
+            warning_choice = re.search(
+                r"(?:[您你](?:希望|想要?|愿意|是否)|是否(?:希望|愿意|选择)?|要不要|请(?:[您你])?(?:选择|决定))"
+                r"[^。！？!?]{0,60}(?:忽略|接受|豁免)[“\"']?\s*(?:上述|这些|此|该|本次|当前|所有)?"
+                r"软(?:性)?(?:约束)?警告", text,
+            )
+            if (warning_choice and re.search(r"[？?]|还是|或者|或修改", text)
+                    and not re.search(r"请勿|(?<!要)不要|不得|不能|不应|不可", warning_choice.group(0))):
+                warning_choice_rows.add(reply.count("\n", 0, match.start()))
+                return ""
             false_publication = re.search(r"(?:任务|指令)已(?:经)?(?:发布|下发)|已(?:成功)?发布", text)
             false_acknowledgement = re.search(
                 r"已(?:经|成功)?(?:为您)?(?:记录|接受|确认|忽略|处理)"
@@ -951,11 +1087,14 @@ class WriteReplyGrounder:
                 r"|(?:系统|警告|软警告|约束)[^，,；;。]{0,20}(?:不再|不会再)(?:阻塞|阻止|拦截)", text,
             )
             false_phase = re.search(
-                r"(?:(?:现)?已(?:经)?(?:进入|转入)|(?:任务|流程)[^，,；;。]{0,8}(?:进入|转入))"
+                r"(?:(?:现)?已(?:经)?(?:进入|转入)|(?:任务|流程|系统)[^，,；;。]{0,8}(?:进入|转入))"
                 r"(?:最终)?(?:发布确认|确认发布|confirming)", text,
             )
-            if false_phase and re.search(r"尚未|还未|未曾|未能|不能|无法|不会|不应|不可", false_phase.group(0)):
-                false_phase = None
+            if false_phase:
+                conditional = text[:false_phase.start()]
+                if (re.search(r"尚未|还未|未曾|未能|不能|无法|不会|不应|不可|将|会|待", false_phase.group(0))
+                        or re.search(r"待|如果|假如|若|完成后|处理后", conditional)):
+                    false_phase = None
             direct_action = re.search(
                 r"(?:请|可以|可|直接|回复|输入|发送|点击|选择).{0,20}"
                 r"(?:确认(?:并)?发布|发布(?:此)?任务|任务发布|发布(?=[。！？!?]|$))"
@@ -965,12 +1104,47 @@ class WriteReplyGrounder:
                 instruction = text[max(0, direct_action.start() - 6):direct_action.end()]
                 if re.search(r"请勿|不要|不能|无法|不得|不应|不可", instruction):
                     direct_action = None
-            if not (false_publication or false_acknowledgement or false_phase or direct_action):
+            warning_action = re.search(
+                r"(?:请|可|回复|输入|发送|点击|选择)[^。！？!?]{0,30}(?:忽略|接受)[“\"']?(?:这些|上述)?软警告",
+                text,
+            )
+            if warning_action and re.search(r"请勿|不要|不得|不能|不应|不可", warning_action.group(0)):
+                warning_action = None
+            if not (false_publication or false_acknowledgement or false_phase or direct_action or warning_action):
                 return original
-            prefix = re.match(r"(\s*(?:\d+[.)、]|[-*+])\s*)", original)
+            if not include_guidance or guidance_emitted:
+                return ""
+            guidance_emitted = True
+            prefix = re.match(r"(\s*(?:\d+[.)、]\s*|[-*+]\s+))", original)
             return (prefix.group(1) if prefix else "") + next_step
 
-        return re.sub(r"[^。！？!?\n]+[。！？!?]?", correct_instruction, reply)
+        grounded = re.sub(r"[^。！？!?\n]+[。！？!?]?(?:[*_`]+)?", correct_instruction, reply)
+        if warning_choice_rows:
+            # Remove only the choice block's dedicated heading and note, not
+            # task facts or independent explanations surrounding the question.
+            lines = grounded.splitlines()
+            source_lines = reply.splitlines()
+            remove_rows = set()
+            for row in warning_choice_rows:
+                previous, following = row - 1, row + 1
+                while previous >= 0 and not source_lines[previous].strip():
+                    previous -= 1
+                while following < len(source_lines) and not source_lines[following].strip():
+                    following += 1
+                title = re.sub(r"[*_`]", "", source_lines[previous]).strip() if previous >= 0 else ""
+                note = re.sub(r"[*_`]", "", source_lines[following]).strip() if following < len(source_lines) else ""
+                if re.fullmatch(
+                    r"(?:⚠️?\s*)?(?:请)?(?:明确|确认|选择)(?:[您你]的?)?"
+                    r"(?:操作意向|处理意向|处理方式|下一步操作)\s*[：:]?", title,
+                ):
+                    remove_rows.add(previous)
+                if re.fullmatch(
+                    r"[（(]注[：:][^（）()]*软(?:性)?(?:约束)?警告[^（）()]*"
+                    r"(?:发布|继续)[^（）()]*[）)]\s*[。.]?", note,
+                ):
+                    remove_rows.add(following)
+            grounded = "\n".join(line for index, line in enumerate(lines) if index not in remove_rows)
+        return grounded
 
     @staticmethod
     def _remove_write_welcome_template(reply: str) -> str:
@@ -1058,8 +1232,10 @@ class WriteReplyGrounder:
             if has_hard or has_soft:
                 # Extractor "unresolved" prose is not authority to acknowledge
                 # warnings or advance workflow state either.
-                text = WriteReplyGrounder._ground_blocked_publish_instructions(text, hard=has_hard)
-            if text not in unresolved:
+                text = WriteReplyGrounder._ground_blocked_publish_instructions(
+                    text, hard=has_hard, include_guidance=False,
+                )
+            if text and text not in unresolved:
                 unresolved.append(text)
 
         parts = []
@@ -1136,6 +1312,7 @@ class WriteReplyGrounder:
         # may echo their headings with different values; keep its follow-up
         # sentences, but never let that echo replace the authoritative receipt.
         cleaned_reply = WriteReplyGrounder._remove_model_receipts(cleaned_reply)
+        cleaned_reply = WriteReplyGrounder._remove_unsupported_now_gloss(cleaned_reply)
         cleaned_reply = WriteReplyGrounder._ground_payload_classification(cleaned_reply, payload_configuration)
         cleaned_reply = WriteReplyGrounder._ground_water_depth_assertions(cleaned_reply, visible, task_state or {})
         cleaned_reply = WriteReplyGrounder._ground_time_windows(cleaned_reply, visible, task_state or {})
@@ -1145,11 +1322,16 @@ class WriteReplyGrounder:
             cleaned_reply,
             visible, task_state or {},
         )
+        scrubbed = ground_telemetry_reply(scrubbed, context, task_state=task_state)
 
         blocked_hard = has_hard or str(context.get("type", "")).startswith("hard")
         blocked_soft = has_soft or str(context.get("type", "")).startswith("soft")
         if blocked_hard or blocked_soft:
             scrubbed = WriteReplyGrounder._ground_blocked_publish_instructions(scrubbed, hard=blocked_hard)
+            # The authoritative receipt below owns the gate status. Keep it
+            # out of echoed model receipts as well as the actionable step.
+            if blocked_soft and not blocked_hard:
+                scrubbed = re.sub(r"任务尚未发布，仍有软警告待处理[。.]", "", scrubbed)
 
         # 1. 越权发布与下发清洗
         scrubbed = re.sub(r"(，|,)?(已成功发布任务?|可以立即发布|立即发布|任务已下发|指令已下发)", "", scrubbed)
@@ -1222,6 +1404,19 @@ class WriteReplyGrounder:
         scrubbed = re.sub(r"[，。；\s]+$", "。", scrubbed)
         scrubbed = re.sub(r"([。！？])\1+", r"\1", scrubbed)
         scrubbed = scrubbed.strip()
+        scrubbed = WriteReplyGrounder._repair_missing_field_block(
+            scrubbed, missing_fields, visible, task_state or {},
+        )
+        scrubbed = re.sub(r'“([^“”"\n]+)"', r'“\1”', scrubbed)
+
+        # A correction in model prose already carries the actionable step;
+        # keep only the factual gate status in the appended receipt.
+        if blocked_hard and "请先修正上述硬约束问题，再继续校验；当前不能确认发布。" in scrubbed:
+            parts = ["任务尚未发布。" if part == "任务尚未发布，请先修正上述硬约束问题。" else part
+                     for part in parts]
+        elif blocked_soft and "如接受这些软警告，请先明确回复“忽略软警告”，待系统重新校验后再确认发布。" in scrubbed:
+            parts = ["任务尚未发布，仍有软警告待处理。请查看右侧看板。" if part.startswith("任务尚未发布，仍有软警告待处理。") else part
+                     for part in parts]
 
         # A shared heading is not evidence that values or missing fields match.
         deduped_parts = [part for part in parts if part not in scrubbed]

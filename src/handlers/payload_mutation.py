@@ -50,6 +50,11 @@ _PAYLOAD_FIELD = (
     r"(?:(?:原有的?|现有的?|已选的?|当前的?|全部|所有)\s*)*"
     r"(?:载荷(?:配置|清单|列表)?|(?:携带的?)?工具(?:配置|清单|列表)?|payload)"
 )
+_PAYLOAD_ADD_CONTEXT = re.compile(
+    rf"^(?P<negation>(?:不要|不用|无需|不能|别|不|勿)\s*)?"
+    rf"在\s*{_PAYLOAD_FIELD}\s*(?:中|里)\s*(?:再\s*)?(?=(?:{_ADD}))",
+    re.IGNORECASE,
+)
 _PAUSED_EDIT = (
     r"(?:不要|不用|无需|不能|别|不|勿)\s*"
     r"(?:(?:再|先|替我|帮我|擅自)\s*)*"
@@ -541,7 +546,9 @@ class PayloadMutationManager(BaseDialogueHandler):
                 # instruction to add a tool. Other clauses may still edit it.
                 guarded = True
                 continue
-            if (_NEGATED_ACTION.search(clause) or _NONASSERTED_EDIT.search(clause)
+            contextual_add = _PAYLOAD_ADD_CONTEXT.match(clause)
+            if ((contextual_add and contextual_add["negation"])
+                    or _NEGATED_ACTION.search(clause) or _NONASSERTED_EDIT.search(clause)
                     or _HISTORICAL_EDIT.search(clause) or _CANCELLED_ACTION.search(clause)
                     or _PAYLOAD_DISCUSSION.fullmatch(clause)):
                 guarded = guarded or previous_payload_clause
@@ -593,7 +600,11 @@ class PayloadMutationManager(BaseDialogueHandler):
                 elif any(term in old for term in terms) or re.search(r"工具|载荷", old):
                     append_command("replace", self._payload_items(new), self._payload_items(old))
                 continue
-            match = re.fullmatch(rf"(?P<operation>{_REMOVE}|{_ADD})(?P<items>.+)", clause)
+            # A field context is not an operand. Strip it only for an explicit
+            # add, after assertion guards, so a following keep clause cannot
+            # erase "在现有携带工具中再添加..." as an unrecognized command.
+            add_clause = _PAYLOAD_ADD_CONTEXT.sub("", clause, count=1)
+            match = re.fullmatch(rf"(?P<operation>{_REMOVE}|{_ADD})(?P<items>.+)", add_clause)
             if match and (any(term in match['items'] for term in terms) or re.search(r"工具|载荷", match['items'])):
                 operation = "remove" if re.fullmatch(_REMOVE, match['operation']) else "add"
                 append_command(operation, self._payload_items(match['items']), [])

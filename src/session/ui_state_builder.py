@@ -18,6 +18,7 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 from src.extraction import coord_parser
+from src.telemetry_evidence import assess_telemetry_freshness
 
 if TYPE_CHECKING:
     from src.dialogue_manager import DialogueManager
@@ -620,6 +621,12 @@ def _build_constraint_state(manager: "DialogueManager") -> dict:
         "validation_version": validation_version,
         "validation_fingerprint": validation_fingerprint,
         "state_snapshot": state_snapshot,
+        # A valid/acknowledged planning result does not make an old snapshot live.
+        "telemetry_freshness": assess_telemetry_freshness(state_snapshot),
+        "runtime_validation_deferred": any(
+            item.get("check_type") == "future_task_runtime_notice"
+            for item in all_serialized_violations
+        ),
         "violations": all_serialized_violations,
         "hard_violations": hard_violations,
         "soft_warnings": soft_warnings,

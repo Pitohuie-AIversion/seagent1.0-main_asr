@@ -19,6 +19,7 @@ from src.session.intent_router import IntentRouteResult
 from ..knowledge_retriever import format_telemetry_value
 from src.extraction.prompts import build_status_responder_messages
 from src.extraction.model_profile import ModelRole
+from src.telemetry_evidence import assess_telemetry_freshness, format_telemetry_unavailable
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +179,9 @@ class TelemetryStatusHandler(BaseDialogueHandler):
                     has_realtime = True
 
             if has_realtime:
+                freshness = assess_telemetry_freshness(state_dict)
+                if not freshness["usable"]:
+                    return format_telemetry_unavailable(equipment, state_dict, freshness=freshness)
                 if as_environment_status:
                     return self.build_environment_status_reply(equipment, state_dict)
                 status_evidence = {
@@ -202,6 +206,9 @@ class TelemetryStatusHandler(BaseDialogueHandler):
 
     def build_environment_status_reply(self, equipment: str, state_dict: dict) -> str:
         """构建结构化环境水文遥测回复。"""
+        freshness = assess_telemetry_freshness(state_dict)
+        if not freshness["usable"]:
+            return format_telemetry_unavailable(equipment, state_dict, freshness=freshness)
         fields = [
             ("current_velocity", "海流流速", " m/s"),
             ("water_current_velocity", "海流流速", " m/s"),
@@ -241,6 +248,10 @@ class TelemetryStatusHandler(BaseDialogueHandler):
         """后端数据硬对齐护栏：强制校对并替换 LLM 回复中与后端真理源不一致的所有遥测数值、文本与单位。"""
         if not isinstance(state_dict, dict) or not reply:
             return reply
+        freshness = assess_telemetry_freshness(state_dict)
+        if not freshness["usable"]:
+            equipment = self.task_state.get("equipment_unit_id") or "所选设备"
+            return format_telemetry_unavailable(equipment, state_dict, freshness=freshness)
 
         # 1. 强制水流速度对齐 (water_current_velocity / current_velocity)
         vel = state_dict.get("water_current_velocity")

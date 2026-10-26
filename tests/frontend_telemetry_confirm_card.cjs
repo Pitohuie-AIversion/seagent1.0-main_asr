@@ -107,6 +107,7 @@ vm.runInContext(`
       actions: currentActions,
       slots: [{ key: 'task_type', status: 'confirmed' }],
       constraint_state: {
+        telemetry_freshness: { status: 'fresh', usable: true },
         state_snapshot: {
           unit_id: 'LROV-150-002',
           status_ref: 'LROV-150-002',

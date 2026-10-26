@@ -21,6 +21,7 @@ def telemetry_response(status="pending_runtime_validation", state=None):
     data["ui_state"]["constraint_state"].update({
         "source": "validation_result",
         "overall_status": status,
+        "telemetry_freshness": {"status": "fresh", "usable": True},
         "state_snapshot": {
             "unit_id": "OBSROV-75-001",
             "state_version": 1,

@@ -181,6 +181,7 @@ def test_grounded_catalog_introductions_no_yaml_packaging() -> None:
 
 def test_environment_status_reply_telemetry_translation() -> None:
     from src.knowledge_retriever import format_telemetry_value
+    from src.temporal.simulated_time import get_current_datetime
     assert format_telemetry_value("high") == "高"
     assert format_telemetry_value("strong") == "强"
     assert format_telemetry_value("available") == "可用"
@@ -190,7 +191,7 @@ def test_environment_status_reply_telemetry_translation() -> None:
         "obstacle_density": "high",
         "mothership_support": "strong",
         "overall_status": "available",
-        "update_timestamp": "2026-09-01T10:00:00+08:00",
+        "update_timestamp": get_current_datetime().isoformat(),
         "version": 10,
     }
     reply = dm._build_environment_status_reply("WROV-250-001", state_dict)
@@ -266,7 +267,6 @@ def test_pronoun_context_carryover_and_no_public_identity_overtrigger() -> None:
     o_reply2 = dm._handle_non_task_route("它的海床类型是什么？", o_route, "req-o2")
     assert "您好，SEAgent 水下多智能体任务决策系统已就绪" not in o_reply2
     assert ("305" in str(mock_llm.chat.call_args) or "soft" in str(mock_llm.chat.call_args) or "软" in str(mock_llm.chat.call_args))
-
 
 
 

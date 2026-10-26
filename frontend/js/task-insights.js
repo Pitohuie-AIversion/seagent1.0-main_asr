@@ -27,6 +27,7 @@
       staleCheck: '历史校验结果已过期，需重新核验', accepted: '已接受的风险',
       reviewNote: '仍有字段待核对或补充，请查看工作单。', noValues: '暂无已确认参数。',
       waterCurrent: '海流速度', waterTurbidity: '水体浑浊度',
+      telemetry: '遥测有效性', telemetryUnknown: '无法确认当前状态，请刷新遥测后核验', telemetryStale: '遥测已过期，无法确认当前状态',
     },
     en: {
       valid: 'Confirmed', review: 'Review', missing: 'Missing', candidate: 'Candidate',
@@ -45,6 +46,7 @@
       staleCheck: 'Validation is out of date; revalidation required', accepted: 'Acknowledged risks',
       reviewNote: 'Some parameters still need review or completion. Check the worksheet.', noValues: 'No confirmed parameters yet.',
       waterCurrent: 'Current Velocity', waterTurbidity: 'Turbidity',
+      telemetry: 'Telemetry validity', telemetryUnknown: 'Current status unknown; refresh telemetry and revalidate', telemetryStale: 'Telemetry expired; current status unknown',
     },
   };
   let lang = 'zh';
@@ -220,11 +222,15 @@
     if (present(snapshot.unit_id)) pair(dl, t().unit, plain(snapshot.unit_id));
     if (present(snapshot.updated_at)) pair(dl, t().stateTime, plain(snapshot.updated_at));
     if (present(snapshot.state_version)) pair(dl, t().stateVersion, plain(snapshot.state_version));
-    if (snapshot.state && typeof snapshot.state === 'object') {
+    const runtimePending = cs.runtime_validation_deferred === true || (cs.overall_status || cs.status) === 'pending_runtime_validation';
+    const currentTelemetry = cs.telemetry_freshness?.usable === true && !runtimePending;
+    if (snapshot.state && typeof snapshot.state === 'object' && currentTelemetry) {
       const vel = snapshot.state.water_current_velocity !== undefined ? snapshot.state.water_current_velocity : snapshot.state.current_velocity;
       const turb = snapshot.state.water_turbidity !== undefined ? snapshot.state.water_turbidity : snapshot.state.turbidity;
       if (present(vel)) pair(dl, t().waterCurrent, `${vel} m/s`);
       if (present(turb)) pair(dl, t().waterTurbidity, `${turb} NTU`);
+    } else if (present(snapshot.unit_id)) {
+      pair(dl, t().telemetry, runtimePending ? t().pendingCheck : cs.telemetry_freshness?.status === 'stale' ? t().telemetryStale : t().telemetryUnknown);
     }
     pair(dl, t().next, next);
     body.append(dl);

@@ -30,7 +30,8 @@ def test_kb_runtime_state_is_optional_but_static_background_is_preserved(monkeyp
     assert '【作业区域背景资料】' in context and '海底底质' in context
     if include_runtime:
         telemetry.assert_called_once()
-        assert '【当前设备实时状态】' in context and '8.88' in context
+        assert '【设备遥测状态】' in context and '已过期' in context
+        assert '【当前设备实时状态】' not in context and '8.88' not in context
     else:
         telemetry.assert_not_called()
         assert '【当前设备实时状态】' not in context
@@ -63,7 +64,8 @@ def test_write_reply_paths_use_deferred_validation_for_knowledge_context(monkeyp
     assert context.call_count == 1
     assert context.call_args.kwargs == {'include_runtime_state': not deferred}
     responder_system = llm.chat_calls[-1][0]['content']
-    assert ('【当前设备实时状态】\n' in responder_system) is (not deferred)
+    assert '【当前设备实时状态】\n' not in responder_system
+    assert ('【设备遥测状态】\n' in responder_system) is (not deferred)
     assert ('2001-01-01T01:02:03' in responder_system) is (not deferred)
     if has_candidates:
         assert manager.task_state['wellhead_id'] == 'LH11-A2'

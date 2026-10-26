@@ -18,6 +18,12 @@ import re
 from typing import Any
 
 from .knowledge_reply_grounder import ground_payload_requirement_reply
+from .hypothetical_time_preview import build_hypothetical_time_reply
+from .task_structure_grounding import (
+    answer_task_structure_query,
+    build_task_structure_evidence,
+    ground_task_structure_reply,
+)
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
 from .off_topic_gate import (
     check_off_topic_gate,
@@ -235,8 +241,24 @@ class ConversationRouterHandler(BaseDialogueHandler):
             )
         )
 
-        task_fit_answer = self.grounded_catalog.build_grounded_task_fit_answer(user_message, route)
-        if (
+        time_preview = (
+            build_hypothetical_time_reply(user_message, self.task_state)
+            if plan and plan.operation == "READ" else None
+        )
+        structure_answer = (
+            answer_task_structure_query(user_message, build_task_structure_evidence(
+                self.kb.task_schemas, self.mode, self.task_state.get("task_type_key"),
+            )) if plan and plan.operation == "READ" and time_preview is None else None
+        )
+        task_fit_answer = (
+            self.grounded_catalog.build_grounded_task_fit_answer(user_message, route)
+            if time_preview is None and structure_answer is None else None
+        )
+        if time_preview is not None:
+            reply = time_preview
+        elif structure_answer is not None:
+            reply = structure_answer
+        elif (
             plan and plan.source_policy == "session_state"
             and plan.relation in ("status", "filled_fields", "missing_fields")
         ):
@@ -457,6 +479,13 @@ class ConversationRouterHandler(BaseDialogueHandler):
         if off_topic_reply is not None:
             return off_topic_reply
 
+        structure_evidence = build_task_structure_evidence(
+            self.kb.task_schemas, self.mode, self.task_state.get("task_type_key"),
+        )
+        structure_answer = answer_task_structure_query(user_message, structure_evidence)
+        if structure_answer is not None:
+            return structure_answer
+
         grounded_recommendation = self._build_grounded_recommendation(
             route,
             user_message=user_message,
@@ -636,6 +665,7 @@ class ConversationRouterHandler(BaseDialogueHandler):
             self.conversation_history,
             user_message,
             task_state=self.task_state,
+            task_structure_evidence=structure_evidence,
         )
         reply = self._safe_llm_chat(messages, temperature=0.1, role=ModelRole.KNOWLEDGE_QA)
         result_items = kb_evidence.get("results", [])
@@ -661,13 +691,22 @@ class ConversationRouterHandler(BaseDialogueHandler):
             return OFF_TOPIC_REJECT_TEMPLATE
         if kb_evidence.get("query_mode") == "payload_requirements":
             filtered_reply = ground_payload_requirement_reply(filtered_reply)
-        return filtered_reply
+        return ground_task_structure_reply(filtered_reply, structure_evidence)
 
     def _handle_general_chat(self, user_message: str, route: IntentRouteResult) -> str:
         off_topic_reply = check_off_topic_gate(user_message)
         if off_topic_reply is not None:
             return off_topic_reply
-        messages = build_general_chat_messages(self.conversation_history, user_message)
+        structure_evidence = build_task_structure_evidence(
+            self.kb.task_schemas, self.mode, self.task_state.get("task_type_key"),
+        )
+        structure_answer = answer_task_structure_query(user_message, structure_evidence)
+        if structure_answer is not None:
+            return structure_answer
+        messages = build_general_chat_messages(
+            self.conversation_history, user_message,
+            task_structure_evidence=structure_evidence,
+        )
         reply = self._safe_llm_chat(messages, temperature=0.7, role=ModelRole.GENERAL_REASONING)
         if not reply or not reply.strip():
             reply = "您好！我是水下多智能体任务规划与决策助手。请问有什么可以帮您的？"
@@ -676,7 +715,7 @@ class ConversationRouterHandler(BaseDialogueHandler):
             logger.warning("[OFF_TOPIC_GATE_L3] general_chat output blocked, forcing reject template. preview=%r",
                            (filtered_reply or "")[:120])
             return OFF_TOPIC_REJECT_TEMPLATE
-        return filtered_reply
+        return ground_task_structure_reply(filtered_reply, structure_evidence)
 
     def _handle_clarification(self, user_message: str, route: IntentRouteResult) -> str:
         plan = route.interaction_plan
