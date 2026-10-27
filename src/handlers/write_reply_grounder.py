@@ -1186,10 +1186,9 @@ class WriteReplyGrounder:
         cleaned = re.sub(r"请描述您的水下作业需求[，,]?或提出以上三类范围内的问题[。！？!?]?", "", cleaned).strip()
         return cleaned
 
-    @staticmethod
-    def ground_write_reply(
-        self_or_reply: object = "",
-        model_reply: str = "",
+    @classmethod
+    def _build_authoritative_receipt(
+        cls,
         *,
         accepted_updates: dict,
         unresolved_inputs: list,
@@ -1197,25 +1196,15 @@ class WriteReplyGrounder:
         display_updates: dict | None = None,
         task_state: dict | None = None,
         constraint_context: dict | None = None,
-        payload_configuration: dict | None = None,
-    ) -> str:
-        """Render a grounded WRITE response combining conversational prose with factual receipts.
-
-        Design principles:
-        1. Model conversational prose is preserved to maintain human-like dialogue;
-        2. Uncommitted claims, unauthorized publications, and false health assurances are scrubbed;
-        3. Objective receipts (accepted, unresolved, retained, constraints, missing) serve as the ground truth;
-        4. When model prose is empty or purely false, safely degrades to deterministic receipt.
-        """
-        if isinstance(self_or_reply, str):
-            actual_model_reply = self_or_reply
-        else:
-            actual_model_reply = model_reply if isinstance(model_reply, str) else ""
-
+        actual_model_reply: str = "",
+    ) -> tuple[str, list[str], dict, list, bool, bool, list[str], list]:
+        """构建权威客观回执文本及元数据。"""
         context = constraint_context or {}
         violations = context.get("violations") or []
-        severities = {v.get("severity") if isinstance(v, dict) else getattr(v, "severity", None)
-                      for v in violations}
+        severities = {
+            v.get("severity") if isinstance(v, dict) else getattr(v, "severity", None)
+            for v in violations
+        }
         has_hard = "hard" in severities or str(context.get("type", "")).startswith("hard")
         has_soft = "soft" in severities or str(context.get("type", "")).startswith("soft")
         visible = {key: value for key, value in accepted_updates.items() if key in FIELD_LABELS}
@@ -1232,7 +1221,7 @@ class WriteReplyGrounder:
             if has_hard or has_soft:
                 # Extractor "unresolved" prose is not authority to acknowledge
                 # warnings or advance workflow state either.
-                text = WriteReplyGrounder._ground_blocked_publish_instructions(
+                text = cls._ground_blocked_publish_instructions(
                     text, hard=has_hard, include_guidance=False,
                 )
             if text and text not in unresolved:
@@ -1255,7 +1244,7 @@ class WriteReplyGrounder:
         # preceding assistant claim become the user's apparent task state.
         retained = []
         retained_keys = ["task_type", "wellhead_id", "equipment_type", "payload", "start_time", "end_time", "support_vessel"]
-        retained_keys.extend(key for key, aliases in WriteReplyGrounder._FACT_FIELD_ALIASES.items()
+        retained_keys.extend(key for key, aliases in cls._FACT_FIELD_ALIASES.items()
                              if any(alias in str(actual_model_reply) for alias in aliases))
         if "水深" in str(actual_model_reply):
             retained_keys.append("water_depth")
@@ -1298,27 +1287,32 @@ class WriteReplyGrounder:
                 parts.append("所有必填字段已收集完成，任务尚未发布。请核对草稿后再确认发布。")
 
         receipt = "\n".join(parts)
+        return receipt, parts, visible, unresolved, has_hard, has_soft, labels, violations
 
-        # Clearing a list must not retain prose that claims a new payload was
-        # installed. The receipt already describes the committed empty value.
-        if (visible.get("payload") == [] or (not visible and not task_state)
-                or not actual_model_reply or not str(actual_model_reply).strip()):
-            return receipt
-
-        cleaned_reply = WriteReplyGrounder._remove_write_off_topic_template(
-            WriteReplyGrounder._remove_write_welcome_template(str(actual_model_reply).strip())
+    @classmethod
+    def _ground_conversational_assertions(
+        cls,
+        actual_model_reply: str,
+        *,
+        visible: dict,
+        task_state: dict | None,
+        context: dict,
+        payload_configuration: dict | None,
+        has_hard: bool,
+        has_soft: bool,
+    ) -> str:
+        """对模型自然语言回复进行事实接地与断言对齐。"""
+        cleaned_reply = cls._remove_write_off_topic_template(
+            cls._remove_write_welcome_template(str(actual_model_reply).strip())
         )
-        # Structured receipts are rendered from committed state below. A model
-        # may echo their headings with different values; keep its follow-up
-        # sentences, but never let that echo replace the authoritative receipt.
-        cleaned_reply = WriteReplyGrounder._remove_model_receipts(cleaned_reply)
-        cleaned_reply = WriteReplyGrounder._remove_unsupported_now_gloss(cleaned_reply)
-        cleaned_reply = WriteReplyGrounder._ground_payload_classification(cleaned_reply, payload_configuration)
-        cleaned_reply = WriteReplyGrounder._ground_water_depth_assertions(cleaned_reply, visible, task_state or {})
-        cleaned_reply = WriteReplyGrounder._ground_time_windows(cleaned_reply, visible, task_state or {})
-        cleaned_reply = WriteReplyGrounder._ground_field_assertions(cleaned_reply, visible, task_state or {})
-        cleaned_reply = WriteReplyGrounder._ground_payload_assertions(cleaned_reply, visible, task_state or {})
-        scrubbed = WriteReplyGrounder._scrub_uncommitted_slot_assertions(
+        cleaned_reply = cls._remove_model_receipts(cleaned_reply)
+        cleaned_reply = cls._remove_unsupported_now_gloss(cleaned_reply)
+        cleaned_reply = cls._ground_payload_classification(cleaned_reply, payload_configuration)
+        cleaned_reply = cls._ground_water_depth_assertions(cleaned_reply, visible, task_state or {})
+        cleaned_reply = cls._ground_time_windows(cleaned_reply, visible, task_state or {})
+        cleaned_reply = cls._ground_field_assertions(cleaned_reply, visible, task_state or {})
+        cleaned_reply = cls._ground_payload_assertions(cleaned_reply, visible, task_state or {})
+        scrubbed = cls._scrub_uncommitted_slot_assertions(
             cleaned_reply,
             visible, task_state or {},
         )
@@ -1327,12 +1321,24 @@ class WriteReplyGrounder:
         blocked_hard = has_hard or str(context.get("type", "")).startswith("hard")
         blocked_soft = has_soft or str(context.get("type", "")).startswith("soft")
         if blocked_hard or blocked_soft:
-            scrubbed = WriteReplyGrounder._ground_blocked_publish_instructions(scrubbed, hard=blocked_hard)
-            # The authoritative receipt below owns the gate status. Keep it
-            # out of echoed model receipts as well as the actionable step.
+            scrubbed = cls._ground_blocked_publish_instructions(scrubbed, hard=blocked_hard)
             if blocked_soft and not blocked_hard:
                 scrubbed = re.sub(r"任务尚未发布，仍有软警告待处理[。.]", "", scrubbed)
+        return scrubbed
 
+    @classmethod
+    def _clean_hallucinations_and_syntax(
+        cls,
+        scrubbed: str,
+        *,
+        actual_model_reply: str,
+        visible: dict,
+        task_state: dict | None,
+        violations: list,
+        labels: list[str],
+        missing_fields: list[dict] | None,
+    ) -> str:
+        """清洗越权发布、未提交更新臆造词及标点语法缺陷。"""
         # 1. 越权发布与下发清洗
         scrubbed = re.sub(r"(，|,)?(已成功发布任务?|可以立即发布|立即发布|任务已下发|指令已下发)", "", scrubbed)
 
@@ -1404,11 +1410,23 @@ class WriteReplyGrounder:
         scrubbed = re.sub(r"[，。；\s]+$", "。", scrubbed)
         scrubbed = re.sub(r"([。！？])\1+", r"\1", scrubbed)
         scrubbed = scrubbed.strip()
-        scrubbed = WriteReplyGrounder._repair_missing_field_block(
+        scrubbed = cls._repair_missing_field_block(
             scrubbed, missing_fields, visible, task_state or {},
         )
         scrubbed = re.sub(r'“([^“”"\n]+)"', r'“\1”', scrubbed)
+        return scrubbed
 
+    @classmethod
+    def _compose_final_reply(
+        cls,
+        scrubbed: str,
+        parts: list[str],
+        receipt: str,
+        *,
+        blocked_hard: bool,
+        blocked_soft: bool,
+    ) -> str:
+        """融合自然语言文本与权威客观回执。"""
         # A correction in model prose already carries the actionable step;
         # keep only the factual gate status in the appended receipt.
         if blocked_hard and "请先修正上述硬约束问题，再继续校验；当前不能确认发布。" in scrubbed:
@@ -1432,3 +1450,91 @@ class WriteReplyGrounder:
         combined = f"{scrubbed}\n{final_receipt}".strip()
         combined = re.sub(r"([。！？])\1+", r"\1", combined)
         return combined
+
+    @classmethod
+    def ground_write_reply(
+        cls,
+        self_or_reply: object = "",
+        model_reply: str = "",
+        *,
+        accepted_updates: dict,
+        unresolved_inputs: list,
+        missing_fields: list[dict] | None = None,
+        display_updates: dict | None = None,
+        task_state: dict | None = None,
+        constraint_context: dict | None = None,
+        payload_configuration: dict | None = None,
+    ) -> str:
+        """Render a grounded WRITE response combining conversational prose with factual receipts.
+
+        Design principles:
+        1. Model conversational prose is preserved to maintain human-like dialogue;
+        2. Uncommitted claims, unauthorized publications, and false health assurances are scrubbed;
+        3. Objective receipts (accepted, unresolved, retained, constraints, missing) serve as the ground truth;
+        4. When model prose is empty or purely false, safely degrades to deterministic receipt.
+        """
+        if isinstance(self_or_reply, str):
+            actual_model_reply = self_or_reply
+        else:
+            actual_model_reply = model_reply if isinstance(model_reply, str) else ""
+
+        # 1. 构建权威客观回执
+        (
+            receipt,
+            parts,
+            visible,
+            unresolved,
+            has_hard,
+            has_soft,
+            labels,
+            violations,
+        ) = cls._build_authoritative_receipt(
+            accepted_updates=accepted_updates,
+            unresolved_inputs=unresolved_inputs,
+            missing_fields=missing_fields,
+            display_updates=display_updates,
+            task_state=task_state,
+            constraint_context=constraint_context,
+            actual_model_reply=actual_model_reply,
+        )
+
+        # Clearing a list must not retain prose that claims a new payload was
+        # installed. The receipt already describes the committed empty value.
+        if (visible.get("payload") == [] or (not visible and not task_state)
+                or not actual_model_reply or not str(actual_model_reply).strip()):
+            return receipt
+
+        context = constraint_context or {}
+
+        # 2. 对自然语言断言进行事实接地
+        scrubbed = cls._ground_conversational_assertions(
+            actual_model_reply,
+            visible=visible,
+            task_state=task_state,
+            context=context,
+            payload_configuration=payload_configuration,
+            has_hard=has_hard,
+            has_soft=has_soft,
+        )
+
+        # 3. 越权声明、幻觉与语法排版清洗
+        scrubbed = cls._clean_hallucinations_and_syntax(
+            scrubbed,
+            actual_model_reply=actual_model_reply,
+            visible=visible,
+            task_state=task_state,
+            violations=violations,
+            labels=labels,
+            missing_fields=missing_fields,
+        )
+
+        # 4. 融合自然语言与权威回执
+        blocked_hard = has_hard or str(context.get("type", "")).startswith("hard")
+        blocked_soft = has_soft or str(context.get("type", "")).startswith("soft")
+        return cls._compose_final_reply(
+            scrubbed,
+            parts,
+            receipt,
+            blocked_hard=blocked_hard,
+            blocked_soft=blocked_soft,
+        )
