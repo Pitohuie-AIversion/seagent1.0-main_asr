@@ -919,3 +919,82 @@ class SlotFillingHandler(BaseDialogueHandler):
     apply_normalized_plan_in_transaction = _apply_normalized_plan_in_transaction
     apply_slot_update_in_transaction = _apply_slot_update_in_transaction
     normalize_and_validate_in_transaction = _normalize_and_validate_in_transaction
+
+    # ---------------------------------------------------------
+    # 显式委托方法定义：避免隐式 __getattr__ 反射乒乓与无限递归
+    # ---------------------------------------------------------
+
+    # Equipment Cascade 显式委托
+    def auto_collapse_robot_cascade(self, *args, **kwargs) -> Any:
+        return self.equipment_cascade.auto_collapse_robot_cascade(*args, **kwargs)
+
+    def project_equipment_updates_for_evaluation(self, *args, **kwargs) -> Any:
+        return self.equipment_cascade.project_equipment_updates_for_evaluation(*args, **kwargs)
+
+    def scope_confirmed_recommendation(self, *args, **kwargs) -> Any:
+        return self.equipment_cascade.scope_confirmed_recommendation(*args, **kwargs)
+
+    def scope_visible_ordinal_selections(self, *args, **kwargs) -> Any:
+        return self.equipment_cascade.scope_visible_ordinal_selections(*args, **kwargs)
+
+    @staticmethod
+    def source_for_resolution_method(resolution_method: str | None) -> str:
+        return EquipmentCascadeResolver.source_for_resolution_method(resolution_method)
+
+    def handle_equipment_updates_in_transaction(self, *args, **kwargs) -> Any:
+        return self.equipment_cascade.handle_equipment_updates_in_transaction(*args, **kwargs)
+
+    # Task Transition 显式委托
+    def build_task_transition_state(self, *args, **kwargs) -> Any:
+        return self.task_transition.build_task_transition_state(*args, **kwargs)
+
+    def clear_non_inherited_transition_slots(self, *args, **kwargs) -> Any:
+        return self.task_transition.clear_non_inherited_transition_slots(*args, **kwargs)
+
+    def merge_task_transition_extractions(self, *args, **kwargs) -> Any:
+        return self.task_transition.merge_task_transition_extractions(*args, **kwargs)
+
+    def normalize_transition_discovery_candidates(self, *args, **kwargs) -> Any:
+        return self.task_transition.normalize_transition_discovery_candidates(*args, **kwargs)
+
+    def record_task_type_update_error(self, *args, **kwargs) -> Any:
+        return self.task_transition.record_task_type_update_error(*args, **kwargs)
+
+    def resolve_task_type_target(self, *args, **kwargs) -> Any:
+        return self.task_transition.resolve_task_type_target(*args, **kwargs)
+
+    def resolve_task_type_update_context(self, *args, **kwargs) -> Any:
+        return self.task_transition.resolve_task_type_update_context(*args, **kwargs)
+
+    def task_selector_updates_from_extraction(self, *args, **kwargs) -> Any:
+        return self.task_transition.task_selector_updates_from_extraction(*args, **kwargs)
+
+    def task_transition_shared_field_keys(self, *args, **kwargs) -> Any:
+        return self.task_transition.task_transition_shared_field_keys(*args, **kwargs)
+
+    def handle_rov_description_in_transaction(self, *args, **kwargs) -> Any:
+        return self.task_transition.handle_rov_description_in_transaction(*args, **kwargs)
+
+    def handle_task_type_update_in_transaction(self, *args, **kwargs) -> Any:
+        return self.task_transition.handle_task_type_update_in_transaction(*args, **kwargs)
+
+    def build_post_update_evaluation_context(self, *args, **kwargs) -> Any:
+        return self.task_transition.build_post_update_evaluation_context(*args, **kwargs)
+
+    def dynamic_allowed_schema_keys(self, *args, **kwargs) -> Any:
+        return self.task_transition.dynamic_allowed_schema_keys(*args, **kwargs)
+
+    # Oilfield Confirmation 显式委托
+    @staticmethod
+    def merge_referential_candidates(extraction: dict, candidates: list[dict]) -> dict:
+        return OilfieldConfirmationHandler.merge_referential_candidates(extraction, candidates)
+
+    # 下划线别名映射（保持与旧代码及测试向下兼容）
+    _auto_collapse_robot_cascade = auto_collapse_robot_cascade
+    _project_equipment_updates_for_evaluation = project_equipment_updates_for_evaluation
+    _scope_confirmed_recommendation = scope_confirmed_recommendation
+    _scope_visible_ordinal_selections = scope_visible_ordinal_selections
+    _source_for_resolution_method = source_for_resolution_method
+    _handle_equipment_updates_in_transaction = handle_equipment_updates_in_transaction
+    _handle_rov_description_in_transaction = handle_rov_description_in_transaction
+    _handle_task_type_update_in_transaction = handle_task_type_update_in_transaction
