@@ -66,42 +66,18 @@ class SlotExtractionPipeline(BaseDialogueHandler):
     def handle(self, ctx: DialogueContext) -> HandlerResult:
         return HandlerResult.not_handled()
 
-    def run_pipeline(
+    def _extract_initial_updates(
         self,
         *,
-        ctx: DialogueContext,
+        user_message: str,
+        current_state: dict,
         task_type_key: str,
-        new_slots: Dict[str, Slot],
-        current_state: Dict[str, Any],
-        turn_unresolved: List[Any],
-        new_unresolved: List[Any],
-        merged_updates: Dict[str, Any],
-        merged_updates_meta: Dict[str, Any],
-        route: Any = None,
-        plan: Any = None,
-        has_acknowledge_action: bool = False,
-        task_patch_v2_active: bool = False,
-        norm_v2_active: bool = False,
-        expected_version: Optional[int] = None,
-        had_task_type_key_at_turn_start: bool = False,
-    ) -> ExtractionPipelineResult:
-        """执行第二阶段任务参数抽取、模式迁移、实体链接与候选变异预处理。"""
+        ctx: DialogueContext,
+        has_acknowledge_action: bool,
+        task_patch_v2_active: bool,
+    ) -> tuple[dict, list[dict], list[dict]]:
         manager = self.manager
         sf = self.slot_filling_handler or getattr(manager, "slot_handler", None)
-        user_message = ctx.user_message
-        request_id = ctx.request_id
-
-        def reply_write_without_candidates() -> str:
-            if sf and hasattr(sf, "reply_write_without_candidates"):
-                return sf.reply_write_without_candidates(
-                    user_message=user_message,
-                    request_id=request_id,
-                    turn_unresolved=turn_unresolved,
-                    task_type_key=task_type_key,
-                    has_acknowledge_action=has_acknowledge_action,
-                )
-            return "已接收您的输入。"
-
         field_defs = manager.builder.get_schema(task_type_key, manager.mode)
         required_field_defs = manager.builder.get_required(task_type_key, manager.mode, current_state)
         extraction_res = manager.extractor.extract_updates(
@@ -123,7 +99,25 @@ class SlotExtractionPipeline(BaseDialogueHandler):
             )
         if task_patch_v2_active:
             build_task_patch(extraction_res, allowed_keys=None)
+        return extraction_res, field_defs, required_field_defs
 
+    def _handle_task_type_transition_flow(
+        self,
+        *,
+        extraction_res: dict,
+        task_type_key: str,
+        current_state: dict,
+        new_slots: dict,
+        turn_unresolved: list,
+        new_unresolved: list,
+        user_message: str,
+        request_id: str,
+        expected_version: int | None,
+        has_acknowledge_action: bool,
+        task_patch_v2_active: bool,
+        reply_write_without_candidates: Any,
+    ) -> tuple[bool, Optional[ExtractionPipelineResult], dict, str, dict, bool, bool, str | None]:
+        manager = self.manager
         (
             extracted_task_type_updates,
             duplicate_task_selector_error,
@@ -160,7 +154,7 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                 request_id=request_id,
                 expected_version=expected_version,
             )
-            return ExtractionPipelineResult(early_return_reply=reply_write_without_candidates())
+            return True, ExtractionPipelineResult(early_return_reply=reply_write_without_candidates()), extraction_res, task_type_key, current_state, False, False, None
 
         effective_task_type_key = effective_task_type_key or task_type_key
         transition_state = dict(current_state)
@@ -215,10 +209,6 @@ class SlotExtractionPipeline(BaseDialogueHandler):
             ) = manager._task_selector_updates_from_extraction(
                 target_extraction,
             )
-            # A target pass may disagree with the selector-discovery pass. Do
-            # not return its direction mismatch yet: both passes must be
-            # merged so the shared preflight can report the stronger atomic
-            # cross-pass conflict instead of whichever pass ran first.
             defer_target_selector_error = bool(
                 target_selector_error
                 and "采油树阀门操作候选与用户明确方向不一致" in target_selector_error
@@ -238,7 +228,7 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                     request_id=request_id,
                     expected_version=expected_version,
                 )
-                return ExtractionPipelineResult(early_return_reply=reply_write_without_candidates())
+                return True, ExtractionPipelineResult(early_return_reply=reply_write_without_candidates()), extraction_res, effective_task_type_key, transition_state, False, task_type_change_locked, pending_task_type_key
             extraction_res = manager._merge_task_transition_extractions(
                 extraction_res,
                 target_extraction,
@@ -278,7 +268,7 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                     request_id=request_id,
                     expected_version=expected_version,
                 )
-                return ExtractionPipelineResult(early_return_reply=reply_write_without_candidates())
+                return True, ExtractionPipelineResult(early_return_reply=reply_write_without_candidates()), extraction_res, effective_task_type_key, transition_state, False, task_type_change_locked, pending_task_type_key
             effective_task_type_key = final_effective_task_type_key
             (
                 transition_updates,
@@ -293,6 +283,24 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                 transition_state.pop(touched_key, None)
             transition_state.update(transition_updates)
 
+        return False, None, extraction_res, effective_task_type_key, transition_state, transition_state_active, task_type_change_locked, pending_task_type_key
+
+    def _scope_and_ground_candidates(
+        self,
+        *,
+        extraction_res: dict,
+        effective_task_type_key: str,
+        transition_state: dict,
+        transition_state_active: bool,
+        plan: Any,
+        user_message: str,
+        new_slots: dict,
+        task_type_change_locked: bool,
+        pending_task_type_key: str | None,
+        task_type_key: str,
+    ) -> tuple[dict, list[dict], dict, dict, list[str], list[dict]]:
+        manager = self.manager
+        sf = self.slot_filling_handler or getattr(manager, "slot_handler", None)
         extraction_res = manager._scope_confirmed_recommendation(
             extraction_res,
             plan,
@@ -326,7 +334,6 @@ class SlotExtractionPipeline(BaseDialogueHandler):
             extraction_res, user_message, kb=manager.kb, fields=grounding_fields,
             current_state=transition_state, task_type=effective_task_type_key,
         )
-        # Pre-filter equipment_class candidates compatibility promotion
         raw_candidates = extraction_res.get("slot_candidates", [])
         filtered_candidates = []
         for candidate in raw_candidates:
@@ -404,9 +411,6 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                  and slot.value is not None and slot.source != "auto"),
                 default=-1,
             )
-            # Automatic selection is a consequence of the old requirements.
-            # Let a payload edit change those requirements before recomputing
-            # its automatic suffix; explicit model/unit choices still constrain it.
             automatic_payload_context = [
                 key for index, key in enumerate(cascade)
                 if index > explicit_level
@@ -415,12 +419,34 @@ class SlotExtractionPipeline(BaseDialogueHandler):
             for key in automatic_payload_context:
                 reset_slot_to_missing(evaluation_slots[key], source="system_candidate_recompute")
                 effective_state.pop(key, None)
-        required_field_defs = manager.builder.get_required(
-            effective_task_type_key,
-            manager.mode,
+
+        return (
+            extraction_res,
+            field_defs,
+            evaluation_slots,
             effective_state,
+            automatic_payload_context,
+            filtered_candidates,
         )
 
+    def _normalize_updates_and_mutations(
+        self,
+        *,
+        extraction_res: dict,
+        effective_task_type_key: str,
+        field_defs: list[dict],
+        effective_state: dict,
+        evaluation_slots: dict,
+        new_slots: dict,
+        automatic_payload_context: list[str],
+        turn_unresolved: list,
+        new_unresolved: list,
+        merged_updates: dict,
+        merged_updates_meta: dict,
+        task_patch_v2_active: bool,
+        norm_v2_active: bool,
+    ) -> tuple[dict, list[dict], NormalizationApplyPlan | None, bool, dict | None]:
+        manager = self.manager
         apply_plan: NormalizationApplyPlan | None = None
         list_mutations: List[Dict[str, Any]] = []
         stage2_updates: Dict[str, Any] = {}
@@ -592,11 +618,33 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                 if (slot := new_slots.get(key)) and slot.source == "auto":
                     reset_slot_to_missing(slot, source="system_candidate_recompute")
 
+        return stage2_updates, list_mutations, apply_plan, payload_mutation_failed, mutation_failure_result
+
+    def _link_entities_and_check_early_return(
+        self,
+        *,
+        has_acknowledge_action: bool,
+        current_state: dict,
+        merged_updates: dict,
+        merged_updates_meta: dict,
+        stage2_updates: dict,
+        turn_unresolved: list,
+        new_unresolved: list,
+        payload_mutation_failed: bool,
+        new_slots: dict,
+        apply_plan: NormalizationApplyPlan | None,
+        transition_state_active: bool,
+        filtered_candidates: list[dict],
+        user_message: str,
+        reply_write_without_candidates: Any,
+        request_id: str,
+        expected_version: int | None,
+        list_mutations: list[dict],
+    ) -> tuple[bool, Optional[ExtractionPipelineResult]]:
+        manager = self.manager
+        sf = self.slot_filling_handler or getattr(manager, "slot_handler", None)
+
         if has_acknowledge_action and manager.phase == "blocked_soft":
-            # A model may echo the warning identifier in unresolved even after
-            # the planner has accepted it. It is not a missing task parameter.
-            # Remove only exact references to displayed soft warnings; genuine
-            # unresolved fields and mixed parameter edits still block the action.
             warning_refs = {
                 str(value).strip()
                 for violation in manager._blocking_violations
@@ -616,10 +664,7 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                 and not any(slot.status == "conflict" for slot in new_slots.values())
                 and (apply_plan is None or not apply_plan.failures)
             ):
-                # Do this before automatic entity linking: resolving an already
-                # selected oilfield must not fabricate a parameter edit and
-                # swallow a model-confirmed warning acknowledgement.
-                return ExtractionPipelineResult(early_return_reply=reply_write_without_candidates())
+                return True, ExtractionPipelineResult(early_return_reply=reply_write_without_candidates())
 
         if transition_state_active:
             manager._clear_non_inherited_transition_slots(new_slots)
@@ -678,10 +723,8 @@ class SlotExtractionPipeline(BaseDialogueHandler):
             and all(key in current_state and isinstance(info, dict) and info.get("value") == current_state[key]
                     for key, info in stage2_updates.items())
         ):
-            # Extraction may replay the preceding turn's already committed
-            # values. Validated no-ops do not invalidate the user's explicit
-            # acknowledgement or require another parameter transaction.
-            return ExtractionPipelineResult(early_return_reply=reply_write_without_candidates())
+            return True, ExtractionPipelineResult(early_return_reply=reply_write_without_candidates())
+
         has_successful_mutation = any(m.get("field") == "payload" for m in list_mutations)
         if (
             not stage2_updates
@@ -698,9 +741,29 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                     request_id=request_id,
                     expected_version=expected_version,
                 )
-            return ExtractionPipelineResult(early_return_reply=reply_write_without_candidates())
+            return True, ExtractionPipelineResult(early_return_reply=reply_write_without_candidates())
 
-        # Scoped & Negation-Safe Conflict resolution check
+        return False, None
+
+    def _resolve_conflicts_and_apply(
+        self,
+        *,
+        stage2_updates: dict,
+        apply_plan: NormalizationApplyPlan | None,
+        new_slots: dict,
+        user_message: str,
+        had_task_type_key_at_turn_start: bool,
+        task_type_key: str,
+        effective_task_type_key: str,
+        transition_state_active: bool,
+        turn_unresolved: list,
+        extraction_res: dict,
+        list_mutations: list[dict],
+        payload_mutation_failed: bool,
+        mutation_failure_result: dict | None,
+        field_defs: list[dict],
+    ) -> ExtractionPipelineResult:
+        manager = self.manager
         slot_name_aliases = {
             "support_vessel": ["支持船", "船", "工作船", "母船"],
             "equipment_type": ["设备", "机器人", "rov", "auv"],
@@ -725,11 +788,8 @@ class SlotExtractionPipeline(BaseDialogueHandler):
         if not is_ambiguous_global_confirm:
             for k, slot in list(new_slots.items()):
                 if slot.status == "conflict" and slot.candidate_value is not None:
-                    # A new explicit value must go through the normal update and
-                    # validation path, not confirm a candidate from an older turn.
                     if k in explicit_update_keys:
                         continue
-
                     if has_explicit_upd and k not in stage2_updates and not any(alias in user_message for alias in slot_name_aliases.get(k, [k])):
                         continue
 
@@ -769,9 +829,6 @@ class SlotExtractionPipeline(BaseDialogueHandler):
                     if effective_task_type_key != task_type_key
                     else None
                 ),
-                # List mutations and explicit robot selectors are applied below.
-                # Final transaction validation recomputes equipment once all
-                # requirements are present, avoiding a selection from old values.
                 recompute_equipment=False,
             )
             task_type_updates = {
@@ -838,5 +895,163 @@ class SlotExtractionPipeline(BaseDialogueHandler):
             mutation_failure_result=mutation_failure_result,
             apply_plan=apply_plan,
             effective_task_type_key=effective_task_type_key,
+            field_defs=field_defs,
+        )
+
+    def run_pipeline(
+        self,
+        *,
+        ctx: DialogueContext,
+        task_type_key: str,
+        new_slots: Dict[str, Slot],
+        current_state: Dict[str, Any],
+        turn_unresolved: List[Any],
+        new_unresolved: List[Any],
+        merged_updates: Dict[str, Any],
+        merged_updates_meta: Dict[str, Any],
+        route: Any = None,
+        plan: Any = None,
+        has_acknowledge_action: bool = False,
+        task_patch_v2_active: bool = False,
+        norm_v2_active: bool = False,
+        expected_version: Optional[int] = None,
+        had_task_type_key_at_turn_start: bool = False,
+    ) -> ExtractionPipelineResult:
+        """执行第二阶段任务参数抽取、模式迁移、实体链接与候选变异预处理。"""
+        manager = self.manager
+        sf = self.slot_filling_handler or getattr(manager, "slot_handler", None)
+        user_message = ctx.user_message
+        request_id = ctx.request_id
+
+        def reply_write_without_candidates() -> str:
+            if sf and hasattr(sf, "reply_write_without_candidates"):
+                return sf.reply_write_without_candidates(
+                    user_message=user_message,
+                    request_id=request_id,
+                    turn_unresolved=turn_unresolved,
+                    task_type_key=task_type_key,
+                    has_acknowledge_action=has_acknowledge_action,
+                )
+            return "已接收您的输入。"
+
+        # 1. 初始参数抽取与指代消解
+        extraction_res, field_defs, required_field_defs = self._extract_initial_updates(
+            user_message=user_message,
+            current_state=current_state,
+            task_type_key=task_type_key,
+            ctx=ctx,
+            has_acknowledge_action=has_acknowledge_action,
+            task_patch_v2_active=task_patch_v2_active,
+        )
+
+        # 2. 任务类型前置校验与跨任务迁移检查
+        (
+            early_return,
+            early_result,
+            extraction_res,
+            effective_task_type_key,
+            transition_state,
+            transition_state_active,
+            task_type_change_locked,
+            pending_task_type_key,
+        ) = self._handle_task_type_transition_flow(
+            extraction_res=extraction_res,
+            task_type_key=task_type_key,
+            current_state=current_state,
+            new_slots=new_slots,
+            turn_unresolved=turn_unresolved,
+            new_unresolved=new_unresolved,
+            user_message=user_message,
+            request_id=request_id,
+            expected_version=expected_version,
+            has_acknowledge_action=has_acknowledge_action,
+            task_patch_v2_active=task_patch_v2_active,
+            reply_write_without_candidates=reply_write_without_candidates,
+        )
+        if early_return and early_result is not None:
+            return early_result
+
+        # 3. 候选范围限定、事实锚定与后验评估上下文构建
+        (
+            extraction_res,
+            field_defs,
+            evaluation_slots,
+            effective_state,
+            automatic_payload_context,
+            filtered_candidates,
+        ) = self._scope_and_ground_candidates(
+            extraction_res=extraction_res,
+            effective_task_type_key=effective_task_type_key,
+            transition_state=transition_state,
+            transition_state_active=transition_state_active,
+            plan=plan,
+            user_message=user_message,
+            new_slots=new_slots,
+            task_type_change_locked=task_type_change_locked,
+            pending_task_type_key=pending_task_type_key,
+            task_type_key=task_type_key,
+        )
+
+        # 4. 规范化补丁或传统更新解算
+        (
+            stage2_updates,
+            list_mutations,
+            apply_plan,
+            payload_mutation_failed,
+            mutation_failure_result,
+        ) = self._normalize_updates_and_mutations(
+            extraction_res=extraction_res,
+            effective_task_type_key=effective_task_type_key,
+            field_defs=field_defs,
+            effective_state=effective_state,
+            evaluation_slots=evaluation_slots,
+            new_slots=new_slots,
+            automatic_payload_context=automatic_payload_context,
+            turn_unresolved=turn_unresolved,
+            new_unresolved=new_unresolved,
+            merged_updates=merged_updates,
+            merged_updates_meta=merged_updates_meta,
+            task_patch_v2_active=task_patch_v2_active,
+            norm_v2_active=norm_v2_active,
+        )
+
+        # 5. 实体链接与无变更早退检查
+        early_return_link, early_result_link = self._link_entities_and_check_early_return(
+            has_acknowledge_action=has_acknowledge_action,
+            current_state=current_state,
+            merged_updates=merged_updates,
+            merged_updates_meta=merged_updates_meta,
+            stage2_updates=stage2_updates,
+            turn_unresolved=turn_unresolved,
+            new_unresolved=new_unresolved,
+            payload_mutation_failed=payload_mutation_failed,
+            new_slots=new_slots,
+            apply_plan=apply_plan,
+            transition_state_active=transition_state_active,
+            filtered_candidates=filtered_candidates,
+            user_message=user_message,
+            reply_write_without_candidates=reply_write_without_candidates,
+            request_id=request_id,
+            expected_version=expected_version,
+            list_mutations=list_mutations,
+        )
+        if early_return_link and early_result_link is not None:
+            return early_result_link
+
+        # 6. 冲突槽位消歧与事务写入
+        return self._resolve_conflicts_and_apply(
+            stage2_updates=stage2_updates,
+            apply_plan=apply_plan,
+            new_slots=new_slots,
+            user_message=user_message,
+            had_task_type_key_at_turn_start=had_task_type_key_at_turn_start,
+            task_type_key=task_type_key,
+            effective_task_type_key=effective_task_type_key,
+            transition_state_active=transition_state_active,
+            turn_unresolved=turn_unresolved,
+            extraction_res=extraction_res,
+            list_mutations=list_mutations,
+            payload_mutation_failed=payload_mutation_failed,
+            mutation_failure_result=mutation_failure_result,
             field_defs=field_defs,
         )
