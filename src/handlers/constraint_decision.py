@@ -220,7 +220,7 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
     def _existing_runtime_delivery_reply(self) -> str | None:
         """Reconcile delivery evidence before accepting a pre-dispatch review."""
         from mcp.core.bridge_service import DispatchOutcomeUnknown
-        from src.dispatch.task_dispatch import _result, _sent
+        from src.dispatch.task_dispatch import set_dispatch_result, set_dispatch_sent
 
         dm = self.manager
         previous = getattr(dm, "ros2_dispatch", None) or {}
@@ -229,15 +229,15 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
         try:
             record = reader(dm.final_result) if callable(reader) else None
             if isinstance(record, dict) and record.get("dispatch_state") == "SENT":
-                _sent(dm, int(record["task_id"]))
+                set_dispatch_sent(dm, int(record["task_id"]))
         except DispatchOutcomeUnknown as exc:
-            _result(dm, "UNKNOWN", str(exc), task_id=exc.task_id,
-                    task_id_hex=f"0x{exc.task_id:X}", error=str(exc))
+            set_dispatch_result(dm, "UNKNOWN", str(exc), task_id=exc.task_id,
+                                task_id_hex=f"0x{exc.task_id:X}", error=str(exc))
         except Exception as exc:
             # An unreadable transport record is not evidence of non-delivery.
             if previous.get("state") not in {"SENT", "UNKNOWN"}:
-                _result(dm, "UNKNOWN", "任务发送记录暂时无法核验，请核对机器人任务记录。",
-                        error=str(exc), retry_allowed=False)
+                set_dispatch_result(dm, "UNKNOWN", "任务发送记录暂时无法核验，请核对机器人任务记录。",
+                                    error=str(exc), retry_allowed=False)
 
         state = (getattr(dm, "ros2_dispatch", None) or {}).get("state")
         if state not in {"SENT", "UNKNOWN"}:

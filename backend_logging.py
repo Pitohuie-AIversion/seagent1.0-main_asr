@@ -12,7 +12,8 @@ import threading
 from typing import TextIO
 
 
-DEFAULT_LOG_DIR = Path("/root/autodl-tmp/log")
+REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_LOG_DIR = REPO_ROOT / "log"
 DEFAULT_APP_NAME = "seagent_backend"
 
 
@@ -70,9 +71,14 @@ def setup_backend_logging(
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
     except (PermissionError, OSError):
-        # 默认路径不可写时（如非 root 用户或非 AutoDL 环境），安全 fallback 到仓库根目录下的 log
-        target_dir = Path(__file__).resolve().parent / "log"
-        target_dir.mkdir(parents=True, exist_ok=True)
+        # 目标路径不可写时，安全 fallback 到仓库根目录下的 log 或临时目录
+        target_dir = REPO_ROOT / "log"
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except (PermissionError, OSError):
+            import tempfile
+            target_dir = Path(tempfile.gettempdir()) / "seagent_log"
+            target_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = target_dir / f"{app_name}_{timestamp}.log"

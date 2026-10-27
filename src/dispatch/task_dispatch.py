@@ -41,17 +41,24 @@ def _task_time(value: Any) -> datetime | None:
     return parsed.replace(tzinfo=BEIJING_TZ) if parsed.tzinfo is None else parsed
 
 
-def _result(manager: Any, state: str, message: str, **details: Any) -> dict:
+def set_dispatch_result(manager: Any, state: str, message: str, **details: Any) -> dict:
+    """Record ROS 2 dispatch outcome state on the dialogue manager."""
     result = {"state": state, "message": message,
               "retry_allowed": state != "SENT", **details}
     manager.ros2_dispatch = copy.deepcopy(result)
     return result
 
 
-def _sent(manager: Any, task_id: int) -> dict:
+def set_dispatch_sent(manager: Any, task_id: int) -> dict:
+    """Record successfully dispatched task transmission to ROS 2."""
     manager.dispatched_ros2_task_id = task_id
-    return _result(manager, "SENT", "任务已写入 ROS 2 传输，等待机器人遥测确认。",
-                   task_id=task_id, task_id_hex=f"0x{task_id:X}")
+    return set_dispatch_result(manager, "SENT", "任务已写入 ROS 2 传输，等待机器人遥测确认。",
+                              task_id=task_id, task_id_hex=f"0x{task_id:X}")
+
+
+# Backward-compatibility aliases for internal/legacy callers
+_result = set_dispatch_result
+_sent = set_dispatch_sent
 
 
 def is_runtime_risk_confirmation(message: str) -> bool:

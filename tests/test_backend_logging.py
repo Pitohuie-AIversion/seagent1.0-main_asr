@@ -62,3 +62,10 @@ def test_setup_backend_logging_unwritable_fallback(monkeypatch, tmp_path):
     log_path = setup_backend_logging(app_name="fallback_app")
     assert log_path.exists()
     assert "fallback_app_" in log_path.name
+
+
+def test_setup_backend_logging_default_repo_dir(monkeypatch):
+    import backend_logging
+    monkeypatch.delenv("SEAGENT_LOG_DIR", raising=False)
+    assert backend_logging.DEFAULT_LOG_DIR == backend_logging.REPO_ROOT / "log"
+    assert "/root/autodl-tmp" not in str(backend_logging.DEFAULT_LOG_DIR)
