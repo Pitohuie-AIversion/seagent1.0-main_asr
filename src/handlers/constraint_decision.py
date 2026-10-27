@@ -26,6 +26,30 @@ logger = logging.getLogger("src.dialogue_manager")
 class ConstraintDecisionHandler(BaseDialogueHandler):
     """约束决策与阻断处理生命周期处理器"""
 
+    @property
+    def _blocking_violations(self) -> list:
+        return self.manager._blocking_violations
+
+    @_blocking_violations.setter
+    def _blocking_violations(self, val: list) -> None:
+        self.manager._blocking_violations = val
+
+    @property
+    def _hard_refusal_counts(self) -> dict:
+        return self.manager._hard_refusal_counts
+
+    @_hard_refusal_counts.setter
+    def _hard_refusal_counts(self, val: dict) -> None:
+        self.manager._hard_refusal_counts = val
+
+    @property
+    def _soft_whitelist(self) -> set:
+        return self.manager._soft_whitelist
+
+    @_soft_whitelist.setter
+    def _soft_whitelist(self, val: set) -> None:
+        self.manager._soft_whitelist = val
+
     def _blocked_validation_purpose(self, user_message: str = "") -> str:
         previous = getattr(self.manager.slot_store, "validation_result", None)
         previous_purpose = getattr(previous, "purpose", "preview")
@@ -463,8 +487,155 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
         )
         return context
 
+    def _handle_blocked_soft_evaluation(
+        self,
+        current_hard: list[Violation],
+        current_soft: list[Violation],
+        current_blockers: list[Violation],
+        state_snap: Any,
+    ) -> dict:
+        """处理处于 blocked_soft 阶段时的阻断升级、维持或解除。"""
+        if current_hard:
+            self._transition_phase("blocked_hard", reason="soft_upgraded_to_hard")
+            self._blocking_violations = current_blockers
+            for v in current_hard:
+                if v.constraint_id not in self._hard_refusal_counts:
+                    self._hard_refusal_counts[v.constraint_id] = 0
+
+            return {
+                "type": "hard",
+                "violations": current_hard,
+                "hard_refusal_counts": dict(self._hard_refusal_counts),
+                "state_snapshot": state_snap,
+            }
+
+        if current_soft:
+            self._blocking_violations = current_soft
+            return {
+                "type": "soft",
+                "violations": current_soft,
+                "hard_refusal_counts": {},
+                "state_snapshot": state_snap,
+            }
+
+        self._blocking_violations = []
+        self._transition_phase("collecting", reason="soft_warning_resolved")
+        return {
+            "type": "none",
+            "violations": [],
+            "hard_refusal_counts": {},
+            "state_snapshot": state_snap,
+        }
+
+    def _handle_blocked_hard_evaluation(
+        self,
+        current_hard: list[Violation],
+        current_soft: list[Violation],
+        current_blockers: list[Violation],
+        state_snap: Any,
+        purpose: str,
+    ) -> dict:
+        """处理处于 blocked_hard 阶段时的阻断维持、降级或解除。"""
+        if current_hard:
+            self._blocking_violations = current_blockers
+            for v in current_hard:
+                self._hard_refusal_counts[v.constraint_id] = (
+                    self._hard_refusal_counts.get(v.constraint_id, 0) + 1
+                )
+
+            final_ids = {
+                cid for cid, cnt in self._hard_refusal_counts.items()
+                if cnt >= HARD_REFUSAL_LIMIT
+            }
+            if final_ids:
+                self._transition_phase("rejected", reason="hard_refusal_limit_reached")
+                self._blocking_violations = []
+                return {
+                    "type": "hard_rejected",
+                    "violations": current_hard,
+                    "hard_refusal_counts": dict(self._hard_refusal_counts),
+                    "state_snapshot": state_snap,
+                }
+
+            warn_ids = {
+                cid for cid, cnt in self._hard_refusal_counts.items()
+                if cnt == HARD_REFUSAL_LIMIT - 1
+            }
+            ctx_type = "hard_final_warning" if warn_ids else "hard"
+            return {
+                "type": ctx_type,
+                "violations": current_hard,
+                "hard_refusal_counts": dict(self._hard_refusal_counts),
+                "state_snapshot": state_snap,
+            }
+
+        # 硬约束解除，清除计数
+        resolved_ids = set(self._hard_refusal_counts.keys())
+        for cid in resolved_ids:
+            self._hard_refusal_counts.pop(cid, None)
+
+        if current_soft and purpose in ("preview", "publish"):
+            self._transition_phase("blocked_soft", reason="hard_downgraded_to_soft")
+            self._blocking_violations = current_soft
+            return {
+                "type": "soft",
+                "violations": current_soft,
+                "hard_refusal_counts": {},
+                "state_snapshot": state_snap,
+            }
+
+        self._transition_phase("collecting", reason="hard_constraint_resolved")
+        self._blocking_violations = []
+        return {
+            "type": "none",
+            "violations": [],
+            "hard_refusal_counts": {},
+            "state_snapshot": state_snap,
+        }
+
+    def _handle_normal_phase_evaluation(
+        self,
+        current_hard: list[Violation],
+        current_soft: list[Violation],
+        current_blockers: list[Violation],
+        state_snap: Any,
+        purpose: str,
+    ) -> dict:
+        """处理处于 collecting / confirming 阶段时检测到的新违规。"""
+        if current_hard:
+            self._transition_phase("blocked_hard", reason="hard_constraint_detected")
+            self._blocking_violations = current_blockers
+            for v in current_hard:
+                if v.constraint_id not in self._hard_refusal_counts:
+                    self._hard_refusal_counts[v.constraint_id] = 0
+            return {
+                "type": "hard",
+                "violations": current_hard,
+                "hard_refusal_counts": dict(self._hard_refusal_counts),
+                "state_snapshot": state_snap,
+            }
+
+        if current_soft:
+            # 统一规则：所有的软警告都在任务字段收集完毕进行统一检查（purpose in ("preview", "publish") 或 confirming 阶段）。
+            # 在字段收集阶段（collecting 且 purpose == "interactive"），软警告不中断槽位收集，只有硬约束可以在收集过程中即时触发阻断。
+            if self.phase != "collecting" or purpose in ("preview", "publish"):
+                self._transition_phase("blocked_soft", reason="soft_warning_detected")
+                self._blocking_violations = current_soft
+                return {
+                    "type": "soft",
+                    "violations": current_soft,
+                    "hard_refusal_counts": {},
+                    "kb_alternatives": self._get_kb_alternatives_for_violations(current_soft),
+                    "state_snapshot": state_snap,
+                }
+
+        res = {"type": "none", "violations": [], "hard_refusal_counts": {}, "state_snapshot": state_snap}
+        if current_blockers:
+            res["kb_alternatives"] = self._get_kb_alternatives_for_violations(current_blockers)
+        return res
+
     def _evaluate_constraint_context(self, changed_fields: set[str], purpose: str = "interactive") -> dict:
-        """执行约束检查，返回上下文。"""
+        """执行约束检查，分发给阶段子方法处理并返回上下文。"""
         if not changed_fields and self.phase not in ("blocked_hard", "blocked_soft") and not self._is_state_snapshot_stale():
             state_snap = getattr(self.slot_store.validation_result, "state_snapshot", None)
             return {"type": "none", "violations": [], "hard_refusal_counts": {}, "state_snapshot": state_snap}
@@ -483,126 +654,14 @@ class ConstraintDecisionHandler(BaseDialogueHandler):
         ]
         current_blockers = current_hard + current_soft
 
-        # 处理 soft 阻塞升级为 hard / 维持 / 解除
         if self.phase == "blocked_soft":
-            if current_hard:
-                self._transition_phase("blocked_hard", reason="soft_upgraded_to_hard")
-                self._blocking_violations = current_blockers
-                for v in current_hard:
-                    if v.constraint_id not in self._hard_refusal_counts:
-                        self._hard_refusal_counts[v.constraint_id] = 0
+            return self._handle_blocked_soft_evaluation(current_hard, current_soft, current_blockers, state_snap)
 
-                return {
-                    "type": "hard",
-                    "violations": current_hard,
-                    "hard_refusal_counts": dict(self._hard_refusal_counts),
-                    "state_snapshot": state_snap,
-                }
-
-            if current_soft:
-                self._blocking_violations = current_soft
-                return {
-                    "type": "soft",
-                    "violations": current_soft,
-                    "hard_refusal_counts": {},
-                    "state_snapshot": state_snap,
-                }
-
-            self._blocking_violations = []
-            self._transition_phase("collecting", reason="soft_warning_resolved")
-            return {
-                "type": "none",
-                "violations": [],
-                "hard_refusal_counts": {},
-                "state_snapshot": state_snap,
-            }
-
-        # 处理 hard 阻塞维持 / 降级为 soft / 解除
         if self.phase == "blocked_hard":
-            if current_hard:
-                self._blocking_violations = current_blockers
-                for v in current_hard:
-                    self._hard_refusal_counts[v.constraint_id] = \
-                        self._hard_refusal_counts.get(v.constraint_id, 0) + 1
+            return self._handle_blocked_hard_evaluation(current_hard, current_soft, current_blockers, state_snap, purpose)
 
-                final_ids = {
-                    cid for cid, cnt in self._hard_refusal_counts.items()
-                    if cnt >= HARD_REFUSAL_LIMIT
-                }
-                if final_ids:
-                    self._transition_phase("rejected", reason="hard_refusal_limit_reached")
-                    self._blocking_violations = []
-                    return {
-                        "type": "hard_rejected",
-                        "violations": current_hard,
-                        "hard_refusal_counts": dict(self._hard_refusal_counts),
-                        "state_snapshot": state_snap,
-                    }
-
-                warn_ids = {
-                    cid for cid, cnt in self._hard_refusal_counts.items()
-                    if cnt == HARD_REFUSAL_LIMIT - 1
-                }
-                ctx_type = "hard_final_warning" if warn_ids else "hard"
-                return {
-                    "type": ctx_type,
-                    "violations": current_hard,
-                    "hard_refusal_counts": dict(self._hard_refusal_counts),
-                    "state_snapshot": state_snap,
-                }
-            else:
-                # 硬约束解除，清除计数
-                resolved_ids = set(self._hard_refusal_counts.keys())
-                for cid in resolved_ids:
-                    self._hard_refusal_counts.pop(cid, None)
-
-                if current_soft and purpose in ("preview", "publish"):
-                    self._transition_phase("blocked_soft", reason="hard_downgraded_to_soft")
-                    self._blocking_violations = current_soft
-                    return {
-                        "type": "soft",
-                        "violations": current_soft,
-                        "hard_refusal_counts": {},
-                        "state_snapshot": state_snap,
-                    }
-
-                self._transition_phase("collecting", reason="hard_constraint_resolved")
-                self._blocking_violations = []
-                return {
-                    "type": "none",
-                    "violations": [],
-                    "hard_refusal_counts": {},
-                    "state_snapshot": state_snap,
-                }
-
-        # collecting / confirming 状态下的新违规
         if self.phase in ("collecting", "confirming"):
-            if current_hard:
-                self._transition_phase("blocked_hard", reason="hard_constraint_detected")
-                self._blocking_violations = current_blockers
-                for v in current_hard:
-                    if v.constraint_id not in self._hard_refusal_counts:
-                        self._hard_refusal_counts[v.constraint_id] = 0
-                return {
-                    "type": "hard",
-                    "violations": current_hard,
-                    "hard_refusal_counts": dict(self._hard_refusal_counts),
-                    "state_snapshot": state_snap,
-                }
-
-            if current_soft:
-                # 统一规则：所有的软警告都在任务字段收集完毕进行统一检查（purpose in ("preview", "publish") 或 confirming 阶段）。
-                # 在字段收集阶段（collecting 且 purpose == "interactive"），软警告不中断槽位收集，只有硬约束可以在收集过程中即时触发阻断。
-                if self.phase != "collecting" or purpose in ("preview", "publish"):
-                    self._transition_phase("blocked_soft", reason="soft_warning_detected")
-                    self._blocking_violations = current_soft
-                    return {
-                        "type": "soft",
-                        "violations": current_soft,
-                        "hard_refusal_counts": {},
-                        "kb_alternatives": self._get_kb_alternatives_for_violations(current_soft),
-                        "state_snapshot": state_snap,
-                    }
+            return self._handle_normal_phase_evaluation(current_hard, current_soft, current_blockers, state_snap, purpose)
 
         res = {"type": "none", "violations": [], "hard_refusal_counts": {}, "state_snapshot": state_snap}
         if current_blockers:
