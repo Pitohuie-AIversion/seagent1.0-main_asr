@@ -58,6 +58,7 @@
         </div>
         <button id="voiceCancelBtn" type="button" hidden data-ui="cancelRecording">取消录音</button>
         <div class="composer">
+          <button id="mobileTaskShortcut" type="button" class="mobile-task-shortcut" data-icon="arrow-down" aria-controls="taskWorksheet" aria-expanded="false" hidden>查看任务工作单</button>
           <div class="input-area">
             <label class="sr-only" for="messageInput" data-ui="inputLabel">作业需求或查询问题</label>
             <textarea id="messageInput" rows="2" placeholder="描述您的水下任务..." autocomplete="off" aria-describedby="composerHint"></textarea>
@@ -73,7 +74,7 @@
 
       <aside class="sidebar" id="sidebar" aria-label="任务与会话">
         <details class="clock-card">
-          <summary><span id="title-simtime" data-icon="clock">模拟时间</span><time id="simulatedTimeDisplay" class="time-display">--:--:--</time></summary>
+          <summary><span id="title-simtime" data-icon="clock">模拟时间</span><time id="simulatedTimeDisplay" class="time-display" aria-describedby="simulatedTimeZone">--:--:--</time><span id="simulatedTimeZone" class="time-zone" data-ui="timeZone">上海时间 · UTC+08:00</span></summary>
           <div class="clock-settings"><label class="sr-only" for="timePicker" data-ui="timeLabel">设置模拟基准时间</label><div class="time-control"><input type="datetime-local" id="timePicker" step="1"><button id="setTimeBtn" type="button">设置</button></div><p class="time-hint" id="hint-simtime">点击设置可自定义基准时间</p></div>
         </details>
         <details class="task-workspace" id="taskWorksheet" open>
@@ -90,11 +91,15 @@
           </div>
           <div id="taskDetails" hidden>
             <section class="info-card task-summary"><h3 class="info-title" id="title-curtask">当前任务</h3><div id="taskInfo">-</div></section>
+            <section id="taskNextStepCard" class="info-card task-next-step" aria-labelledby="taskNextStepTitle" hidden>
+              <h3 id="taskNextStepTitle" class="info-title">当前待办</h3>
+              <div id="taskNextStepBody"></div>
+            </section>
             <div id="worksheetCounts" class="worksheet-counts" aria-live="polite"></div>
             <section id="confirmationCard" class="info-card confirmation-card" hidden>
               <h3 data-ui="confirmTitle">任务已就绪，等待你的确认</h3>
               <p data-ui="confirmBody">请核对下方参数。确认后归档任务，发送结果将单独显示。</p>
-              <dl id="confirmationSummary" class="confirmation-summary"></dl>
+              <div id="confirmationSummary" class="confirmation-summary"></div>
               <div id="confirmationReview" class="confirmation-review"></div>
               <div class="confirmation-actions"><button id="publishTaskBtn" type="button" class="primary-button" disabled data-ui="publish" data-icon="publish">确认发布</button><button id="modifyTaskBtn" type="button" disabled data-ui="modify" data-icon="edit">修改参数</button></div>
             </section>

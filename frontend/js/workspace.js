@@ -9,7 +9,7 @@
       worksheet: '任务工作单', emptyTitle: '尚未创建任务', emptyBody: '描述作业需求后，任务参数、待补充信息和校验结果将在这里呈现。',
       emptyNote: '知识查询不会创建或修改任务', confirmTitle: '任务已就绪，等待你的确认',
       confirmBody: '请核对下方参数。确认后归档任务，发送结果将单独显示。', publish: '确认发布', modify: '修改参数',
-      timeLabel: '设置模拟基准时间（上海时间 UTC+08:00）', archiveNote: '任务归档、指令发送与执行结果分别记录',
+      timeLabel: '设置模拟基准时间（上海时间 UTC+08:00）', timeZone: '上海时间 · UTC+08:00', archiveNote: '任务归档、指令发送与执行结果分别记录',
       welcomeEyebrow: '面向深海作业的智能协作', welcomeTitle: '从一个问题，或一项任务开始。',
       welcomeBody: '描述你的作业需求，或查询机器人、设备与环境信息。',
       queryTitle: '知识与状态查询', queryBody: '了解机器人能力、设备参数与相关状态。', queryNote: '只读查询 · 不修改任务',
@@ -21,6 +21,8 @@
       blocked_soft: '待处理警告', blocked_hard: '条件未满足', steps: ['参数收集', '任务准入', '确认归档'],
       modifyPrompt: '修改任务参数：', waiting: '正在提交…', log: '对话记录', sidebar: '任务与会话', progress: '任务流程',
       changesTitle: '本轮参数变更', unavailable: '状态暂不可用', errorTitle: '任务状态暂不可用', errorBody: '当前返回的任务状态不完整，请恢复会话状态后再核对和发布。',
+      shortcutTask: '任务', shortcutView: '查看任务工作单', shortcutReadOnly: '只读', shortcutCollecting: '参数收集',
+      shortcutMissing: count => `待补充 ${count} 项`, shortcutReview: count => `待核对 ${count} 项`,
     },
     en: {
       skip: 'Skip to message input', workspace: 'Conversation', monitor: 'Monitor', language: 'Interface language',
@@ -29,7 +31,7 @@
       worksheet: 'Task worksheet', emptyTitle: 'No task yet', emptyBody: 'Describe an operation to see its parameters, missing information and validation results here.',
       emptyNote: 'Knowledge queries do not create or modify tasks', confirmTitle: 'Ready for your confirmation',
       confirmBody: 'Review the parameters below. Confirmation archives the task; dispatch is reported separately.', publish: 'Confirm publication', modify: 'Edit parameters',
-      timeLabel: 'Set simulation reference time (Shanghai UTC+08:00)', archiveNote: 'Archival, dispatch and execution are recorded separately',
+      timeLabel: 'Set simulation reference time (Shanghai UTC+08:00)', timeZone: 'Shanghai · UTC+08:00', archiveNote: 'Archival, dispatch and execution are recorded separately',
       welcomeEyebrow: 'INTELLIGENT SUBSEA OPERATIONS', welcomeTitle: 'Start with a question. Or a mission.',
       welcomeBody: 'Describe an operation, or ask about robots, equipment and conditions.',
       queryTitle: 'Knowledge & Status Query', queryBody: 'Explore robot capabilities, equipment specifications and status.', queryNote: 'Read-only · No task changes',
@@ -41,6 +43,8 @@
       blocked_soft: 'Warning to review', blocked_hard: 'Conditions not met', steps: ['Parameters', 'Admission', 'Confirmation'],
       modifyPrompt: 'Modify task parameters: ', waiting: 'Submitting…', log: 'Conversation history', sidebar: 'Task and session', progress: 'Task workflow',
       changesTitle: 'Changes this turn', unavailable: 'State unavailable', errorTitle: 'Task state unavailable', errorBody: 'The returned task state is incomplete. Recover the session state before reviewing or publishing.',
+      shortcutTask: 'Task', shortcutView: 'View task worksheet', shortcutReadOnly: 'Read-only', shortcutCollecting: 'Collecting',
+      shortcutMissing: count => `${count} missing`, shortcutReview: count => `${count} to review`,
     },
   };
   const byId = id => document.getElementById(id);
@@ -48,7 +52,10 @@
   let latestState = null;
   let hasConversation = false;
   let publishing = false;
+  let hadActiveTask = false;
   let interaction = { isSending: false, canSend: true, actions: {}, readOnly: false };
+  const compactQuery = typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 760px)') : null;
+  const isCompact = () => Boolean(compactQuery?.matches);
   const t = () => copy[language];
   const show = (id, visible) => { const el = byId(id); if (el) el.hidden = !visible; };
   const setText = (id, text) => { const el = byId(id); if (el) el.textContent = text; };
@@ -70,7 +77,10 @@
     byId('sidebar')?.setAttribute('aria-label', t().sidebar);
     byId('taskProgress')?.setAttribute('aria-label', t().progress);
     if (latestState) updateState(latestState, language, { origin: 'render' });
-    else setText('worksheetState', t().empty);
+    else {
+      setText('worksheetState', t().empty);
+      updateTaskShortcut();
+    }
     updateControls();
   }
 
@@ -140,6 +150,36 @@
     return Boolean(data?.task_type || data?.collected?.task_type || data?.collected?.task_id);
   }
 
+  function updateTaskShortcut() {
+    const shortcut = byId('mobileTaskShortcut');
+    if (!shortcut) return;
+    shortcut.hidden = !hasTask(latestState);
+    shortcut.setAttribute('aria-expanded', String(Boolean(byId('taskWorksheet')?.open)));
+    if (shortcut.hidden) {
+      shortcut.textContent = '';
+      shortcut.setAttribute('aria-label', t().shortcutView);
+      positionLatestButton();
+      return;
+    }
+    const ui = latestState.ui_state || {};
+    const phase = ui.phase || latestState.phase;
+    let state;
+    if (ui.state_status === 'error') state = t().unavailable;
+    else if (['done', 'rejected'].includes(phase)) state = t()[phase];
+    else if (ui.read_only) state = t().shortcutReadOnly;
+    else if (['blocked_soft', 'blocked_hard', 'confirming', 'validating'].includes(phase)) state = t()[phase];
+    else if (phase === 'collecting') {
+      const slots = Array.isArray(ui.slots) ? ui.slots : [];
+      const missing = slots.filter(slot => slot.status === 'missing').length;
+      const review = slots.filter(slot => !['valid', 'missing'].includes(slot.status)).length;
+      state = [missing ? t().shortcutMissing(missing) : '', review ? t().shortcutReview(review) : '']
+        .filter(Boolean).join(' · ') || t().shortcutCollecting;
+    } else state = t().shortcutView;
+    shortcut.textContent = `${t().shortcutTask} · ${state}`;
+    shortcut.setAttribute('aria-label', `${t().shortcutView}${language === 'zh' ? '：' : ': '}${state}`);
+    positionLatestButton();
+  }
+
   function renderProgress(ui) {
     const progress = byId('taskProgress');
     if (!progress) return;
@@ -160,6 +200,11 @@
     const ui = data.ui_state || {};
     const unavailable = ui.state_status === 'error';
     const active = !unavailable && hasTask(data);
+    if (isCompact() && active && !hadActiveTask) {
+      const sheet = byId('taskWorksheet');
+      if (sheet) sheet.open = false;
+    }
+    hadActiveTask = active;
     const slots = Array.isArray(ui.slots) ? ui.slots : [];
     show('taskEmptyState', !active);
     show('taskDetails', active);
@@ -181,6 +226,7 @@
     renderProgress(ui);
     show('confirmationCard', active && ui.phase === 'confirming' && !ui.read_only);
     window.SEAgentTaskInsights?.updateState(data, language, options);
+    updateTaskShortcut();
     updateControls();
   }
 
@@ -224,11 +270,14 @@
     hasConversation = false;
     publishing = false;
     latestState = null;
+    hadActiveTask = false;
+    const worksheet = byId('taskWorksheet');
+    if (worksheet) worksheet.open = true;
     window.SEAgentTaskInsights?.reset();
     interaction = { isSending: false, canSend: true, actions: {}, readOnly: false };
     document.querySelector('.chat-area')?.classList.remove('has-conversation');
     document.querySelectorAll('.message[data-message-kind="welcome"]').forEach(el => { el.hidden = false; });
-    ['taskDetails', 'confirmationCard', 'constraintsCard', 'missingCard', 'collectedCard', 'jumpToLatestBtn'].forEach(id => show(id, false));
+    ['taskDetails', 'confirmationCard', 'constraintsCard', 'missingCard', 'collectedCard', 'jumpToLatestBtn', 'mobileTaskShortcut'].forEach(id => show(id, false));
     show('taskEmptyState', true);
     byId('taskEmptyState')?.querySelector('.empty-task-note')?.removeAttribute('hidden');
     byId('messages').scrollTop = 0;
@@ -241,6 +290,15 @@
     if (!input) return;
     input.style.height = 'auto';
     input.style.height = `${Math.min(168, Math.max(52, input.scrollHeight))}px`;
+    positionLatestButton();
+  }
+
+  function positionLatestButton() {
+    const messages = byId('messages'), chat = document.querySelector('.chat-area');
+    if (!messages || !chat) return;
+    // Anchor above the current composer, including the task shortcut and ASR panels.
+    const offset = Math.max(10, chat.getBoundingClientRect().bottom - messages.getBoundingClientRect().bottom + 10);
+    chat.style.setProperty('--latest-offset', `${Math.ceil(offset)}px`);
   }
 
   function isNearBottom() {
@@ -256,8 +314,22 @@
 
   function init() {
     byId('messageInput')?.addEventListener('input', resizeComposer);
+    if (typeof ResizeObserver === 'function') {
+      const observer = new ResizeObserver(positionLatestButton);
+      [byId('messages'), document.querySelector('.composer')].filter(Boolean).forEach(el => observer.observe(el));
+    }
+    window.addEventListener('resize', positionLatestButton, { passive: true });
     byId('messages')?.addEventListener('scroll', () => show('jumpToLatestBtn', hasConversation && !isNearBottom()), { passive: true });
     byId('jumpToLatestBtn')?.addEventListener('click', () => followLatest(true));
+    byId('taskWorksheet')?.addEventListener('toggle', updateTaskShortcut);
+    byId('mobileTaskShortcut')?.addEventListener('click', () => {
+      const shortcut = byId('mobileTaskShortcut'), sheet = byId('taskWorksheet');
+      if (!sheet || !shortcut || shortcut.hidden || !shortcut.getClientRects().length || !hasTask(latestState)) return;
+      sheet.open = true;
+      updateTaskShortcut();
+      sheet.scrollIntoView({ block: 'start' });
+      sheet.querySelector('summary')?.focus({ preventScroll: true });
+    });
     byId('publishTaskBtn')?.addEventListener('click', async () => {
       if (!publicationAllowed() || typeof window.sendMessage !== 'function') return;
       publishing = true;
@@ -273,10 +345,12 @@
       input.focus();
       input.setSelectionRange(input.value.length, input.value.length);
     });
-    const compact = window.matchMedia('(max-width: 760px)');
-    const setCompact = () => { const sheet = byId('taskWorksheet'); if (sheet) sheet.open = !compact.matches; };
+    const setCompact = () => {
+      const sheet = byId('taskWorksheet');
+      if (sheet) sheet.open = !isCompact() || !hadActiveTask;
+    };
     setCompact();
-    compact.addEventListener('change', setCompact);
+    compactQuery?.addEventListener('change', setCompact);
     setLanguage('zh');
     resizeComposer();
   }

@@ -156,6 +156,53 @@ def test_late_translation_preserves_original_after_language_switch(workspace, ma
     pw.expect(message.locator(".bubble")).to_have_text("任务参数已记录，请核对。")
 
 
+def test_translation_is_keyboard_discoverable_and_preserves_avatar_and_icon(workspace):
+    page = workspace.page
+    pending = []
+    translated = "The current task parameters are ready for review."
+    original = "当前任务参数已整理，请核对。"
+    workspace.response = response_fixture()
+    workspace.response["reply"] = original
+    workspace.open()
+    page.route("**/api/translate", lambda route: pending.append(route))
+    send(workspace, "查询当前任务状态")
+    message = page.locator(".message.bot").last
+    button = message.locator(".msg-translate-bar")
+    avatar = message.locator(".bot-avatar-mark")
+    pw.expect(avatar).to_be_visible()
+    avatar.evaluate("el => { window.reviewTranslationAvatar = el; }")
+    page.mouse.move(0, 0)
+    pw.expect(button).to_have_css("opacity", "0")
+    page.locator("#langSelect").focus()
+    for _ in range(20):
+        page.keyboard.press("Tab")
+        if button.evaluate("el => el === document.activeElement"):
+            break
+    pw.expect(button).to_be_focused()
+    pw.expect(button).to_have_css("opacity", "1")
+    pw.expect(button).to_have_text("翻译")
+    pw.expect(button).to_have_attribute("data-icon", "language")
+    with page.expect_request("**/api/translate"):
+        button.press("Enter")
+    pw.expect(button).to_have_text("翻译中…")
+    page.locator("#messageInput").focus()
+    pw.expect(button).to_have_css("opacity", "1")
+    assert len(pending) == 1
+    pending[0].fulfill(json={"code": 200, "translated_text": translated})
+    pw.expect(message.locator(".bubble")).to_have_text(translated)
+    pw.expect(button).to_have_text("显示原文")
+    pw.expect(button).to_have_css("opacity", "1")
+    button.focus()
+    button.press("Enter")
+    pw.expect(message.locator(".bubble")).to_have_text(original)
+    pw.expect(button).to_have_text("翻译")
+    pw.expect(button).to_have_attribute("data-icon", "language")
+    assert avatar.evaluate("el => el === window.reviewTranslationAvatar && el.complete && el.naturalWidth > 0")
+    assert "language.svg" in button.evaluate("el => getComputedStyle(el, '::before').maskImage")
+    assert len(workspace.messages) == 1
+    assert len(pending) == 1
+
+
 @pytest.mark.parametrize("phase", ["confirming", "blocked_soft", "blocked_hard"])
 def test_modify_buttons_preserve_unsent_draft(workspace, phase):
     workspace.response = telemetry_response()
@@ -196,9 +243,21 @@ def test_time_editor_round_trip_preserves_shanghai_time_in_utc_browser(workspace
     ))
     workspace.page.on("dialog", lambda dialog: dialog.accept())
     workspace.open()
+    display = workspace.page.locator("#simulatedTimeDisplay")
+    zone = workspace.page.locator("#simulatedTimeZone")
+    pw.expect(display).to_have_attribute("datetime", "2026-10-20T10:30:45.000Z")
+    pw.expect(display).to_contain_text("18:30:45")
+    pw.expect(display).not_to_contain_text("UTC")
+    pw.expect(zone).to_contain_text("上海")
+    pw.expect(zone).to_contain_text("UTC+08:00")
+    assert zone.evaluate("el => !document.querySelector('#simulatedTimeDisplay').contains(el)")
     workspace.page.locator(".clock-card > summary").click()
     pw.expect(workspace.page.locator("#timePicker")).to_have_value("2026-10-20T18:30:45")
     pw.expect(workspace.page.locator("#hint-simtime")).to_contain_text("UTC+08:00")
+    workspace.page.locator("#langSelect").select_option("en")
+    pw.expect(zone).to_contain_text("Shanghai")
+    pw.expect(display).not_to_contain_text("UTC")
+    pw.expect(workspace.page.locator("#timePicker")).to_have_value("2026-10-20T18:30:45")
     workspace.page.locator("#setTimeBtn").click()
     workspace.page.wait_for_timeout(100)
     assert calls == [{"time": "2026-10-20T18:30:45+08:00"}]

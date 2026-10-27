@@ -402,6 +402,10 @@ def test_mobile_worksheet_can_be_opened_and_confirmed_with_keyboard(workspace):
     summary.focus()
     summary.press("Enter")
     pw.expect(page.locator("#confirmationCard")).to_be_visible()
+    guidance_links = page.locator("#taskNextStepCard button:visible:not(:disabled)")
+    for index in range(guidance_links.count()):
+        page.keyboard.press("Tab")
+        pw.expect(guidance_links.nth(index)).to_be_focused()
     field_links = page.locator("#confirmationSummary button[data-slot-key]")
     assert field_links.count() > 0
     for index in range(field_links.count()):
@@ -879,4 +883,243 @@ def test_insights_failed_context_transition_keeps_baseline_after_generation_chan
     workspace.state(unchanged_reply, origin="reply")
     pw.expect(workspace.page.locator("#taskChangesCard")).to_be_hidden()
     pw.expect(workspace.page.locator("#collectedFields")).to_contain_text("200")
+    assert not workspace.messages
+
+
+def expanded_review_response():
+    """Enough confirmed parameters to require a compact review, plus a proposal."""
+    return insight_response([
+        insight_slot("task_type", "管缆巡检", label="任务类型"),
+        insight_slot("equipment_type", "观察级深海机器人 75HP", label="设备型号"),
+        insight_slot("equipment_unit_id", "REVIEW-ROV-001", label="机器人编号"),
+        insight_slot("water_depth", 320, label="水深"),
+        insight_slot("start_time", "2026-10-27 10:00:00", label="开始时间"),
+        insight_slot("end_time", "2026-10-27 12:00:00", label="结束时间"),
+        insight_slot("oilfield_name", "REVIEW-OILFIELD", label="油田"),
+        insight_slot("extension_note", "EXTENSION-KEPT", label="扩展参数"),
+        insight_slot("cable_type", status="candidate", candidate="PROPOSAL-ONLY", label="管缆类型"),
+    ], phase="confirming")
+
+
+def test_task_guidance_locates_missing_and_review_fields_without_submitting(workspace):
+    workspace.open()
+    page = workspace.page
+    page.locator("#messageInput").fill("保留尚未发送的草稿")
+    for status in ("missing", "candidate"):
+        data = insight_response([
+            insight_slot("water_depth", 320, label="水深"),
+            insight_slot("end_time", status=status, candidate="PROPOSED-END" if status == "candidate" else None,
+                         label="结束时间"),
+        ])
+        workspace.state(data)
+        pw.expect(page.locator("#taskNextStepCard")).to_be_visible()
+        pw.expect(page.locator("#taskNextStepBody")).to_contain_text("结束时间")
+        link = page.locator('#taskNextStepBody button[data-slot-key="end_time"]')
+        link.focus()
+        link.press("Enter")
+        row = page.locator('.field-row[data-slot-key="end_time"]')
+        pw.expect(row).to_be_focused()
+        pw.expect(row).to_be_in_viewport()
+        pw.expect(page.locator("#messageInput")).to_have_value("保留尚未发送的草稿")
+    assert not workspace.messages
+
+
+def test_task_guidance_prioritizes_blockers_and_avoids_edit_prompts_for_archived_tasks(workspace):
+    workspace.open()
+    page = workspace.page
+    data = insight_response([
+        insight_slot("water_depth", 650, label="水深"),
+        insight_slot("end_time", status="missing", label="结束时间"),
+    ], phase="blocked_hard")
+    data["ui_state"]["workflow_phase"] = "validating"
+    data["ui_state"]["constraint_state"].update({
+        "source": "validation_result", "overall_status": "blocked_hard",
+        "hard_violations": [{"constraint_id": "GUIDANCE-DEPTH", "message": "工作水深超过设备允许范围。",
+                             "related_fields": ["water_depth"], "observed_value": 650, "threshold": 600}],
+    })
+    workspace.state(data, origin="reply")
+    card = page.locator("#taskNextStepCard")
+    pw.expect(card).to_have_attribute("data-tone", "danger")
+    warning_link = card.locator('button[data-section-id="constraintsCard"]')
+    pw.expect(warning_link).to_be_visible()
+    pw.expect(card.locator('button[data-slot-key="end_time"]')).to_have_count(0)
+    warning_link.click()
+    pw.expect(page.locator("#constraintsCard")).to_be_in_viewport()
+    pw.expect(page.locator("#publishTaskBtn")).to_be_disabled()
+
+    for phase in ("collecting", "done"):
+        archived = deepcopy(data)
+        archived["ui_state"].update(phase=phase, workflow_phase=phase, read_only=True)
+        archived["ui_state"]["actions"].update(can_modify=False, can_publish=False, can_confirm=False)
+        workspace.state(archived, origin="restore")
+        pw.expect(card.locator("button[data-slot-key]:visible:not(:disabled)")).to_have_count(0)
+        pw.expect(page.locator("#confirmationCard")).to_be_hidden()
+    assert not workspace.messages
+
+
+def test_compact_confirmation_keeps_key_parameters_and_risks_visible(workspace):
+    workspace.open()
+    page = workspace.page
+    data = expanded_review_response()
+    data["ui_state"]["constraint_state"].update({
+        "source": "validation_result", "overall_status": "pending_runtime_validation",
+        "ignored_soft_warnings": [{"constraint_id": "REVIEW-RISK", "message": "已接受的低温作业风险"}],
+    })
+    workspace.state(data, origin="reply")
+    summary = page.locator("#confirmationSummary")
+    more = summary.locator("details.confirmation-more")
+    assert more.evaluate("el => !el.open")
+    for key in ("task_type", "equipment_type", "equipment_unit_id", "water_depth", "start_time", "end_time"):
+        pw.expect(summary.locator(f'button[data-slot-key="{key}"]')).to_be_visible()
+    for key in ("oilfield_name", "extension_note"):
+        pw.expect(more.locator(f'button[data-slot-key="{key}"]')).to_be_hidden()
+    pw.expect(summary).not_to_contain_text("PROPOSAL-ONLY")
+    review = page.locator("#confirmationReview")
+    pw.expect(review).to_be_visible()
+    pw.expect(review).to_contain_text("等待运行条件校验")
+    pw.expect(review).to_contain_text("已接受的低温作业风险")
+    assert review.evaluate("el => !el.closest('details.confirmation-more')")
+    toggle = more.locator(":scope > summary")
+    toggle.focus()
+    toggle.press("Enter")
+    pw.expect(more.locator('button[data-slot-key="extension_note"]')).to_be_visible()
+    assert not workspace.messages
+
+
+def test_compact_confirmation_does_not_hide_a_short_parameter_list(workspace):
+    workspace.open()
+    page = workspace.page
+    data = expanded_review_response()
+    data["ui_state"]["slots"] = data["ui_state"]["slots"][2:8]
+    workspace.state(data)
+    summary = page.locator("#confirmationSummary")
+    pw.expect(summary.locator("details.confirmation-more")).to_have_count(0)
+    for slot in data["ui_state"]["slots"]:
+        pw.expect(summary.locator(f'button[data-slot-key="{slot["key"]}"]')).to_be_visible()
+    assert not workspace.messages
+
+
+def test_compact_confirmation_expansion_survives_locale_but_not_task_switch_or_reset(workspace):
+    workspace.open()
+    page = workspace.page
+    data = expanded_review_response()
+    workspace.state(data)
+    more = page.locator("#confirmationSummary details.confirmation-more")
+    more.locator(":scope > summary").click()
+    for lang in ("en", "zh"):
+        page.locator("#langSelect").select_option(lang)
+        assert more.evaluate("el => el.open")
+        pw.expect(more.locator('button[data-slot-key="extension_note"]')).to_be_visible()
+    changed = deepcopy(data)
+    changed["request_id"] = "review-same-task"
+    changed["ui_state"]["slot_version"] = 2
+    changed["ui_state"]["slots"][3]["value"] = 330
+    workspace.state(changed, origin="reply")
+    assert more.evaluate("el => el.open")
+
+    switched = deepcopy(data)
+    switched["ui_state"]["task_type_key"] = "tree_valve_operation"
+    workspace.state(switched, origin="reply")
+    assert more.evaluate("el => !el.open")
+    more.locator(":scope > summary").click()
+    page.locator("#resetBtn").click()
+    pw.expect(page.locator("#taskEmptyState")).to_be_visible()
+    workspace.state(switched)
+    assert more.evaluate("el => !el.open")
+    assert not workspace.messages
+
+
+def test_grouped_fields_preserve_unknown_parameters_and_reference_focus(workspace):
+    workspace.open()
+    page = workspace.page
+    data = expanded_review_response()
+    data["ui_state"]["slots"].extend([
+        insight_slot("equipment_family", status="missing", label="设备类别"),
+        insight_slot("new_required_parameter", status="missing", label="扩展必填参数"),
+    ])
+    workspace.state(data)
+    rows = page.locator("#collectedFields .field-row, #missingFields .field-row")
+    actual_keys = rows.evaluate_all("rows => rows.map(row => row.dataset.slotKey)")
+    expected_keys = [slot["key"] for slot in data["ui_state"]["slots"]]
+    assert sorted(actual_keys) == sorted(expected_keys)
+    assert page.locator("#collectedFields .field-group").count() >= 2
+    for key in ("extension_note", "new_required_parameter"):
+        row = page.locator(f'.field-row[data-slot-key="{key}"]')
+        assert row.evaluate("el => Boolean(el.closest('.field-group')?.querySelector('h4.field-group-title')?.textContent.trim())")
+    more = page.locator("#confirmationSummary details.confirmation-more")
+    more.locator(":scope > summary").click()
+    link = more.locator('button[data-slot-key="extension_note"]')
+    link.focus()
+    link.press("Enter")
+    row = page.locator('#collectedFields .field-row[data-slot-key="extension_note"]')
+    pw.expect(row).to_be_focused()
+    pw.expect(row).to_be_in_viewport()
+    pw.expect(row).to_contain_text("EXTENSION-KEPT")
+    pw.expect(page.locator('#collectedFields .field-row[data-slot-key="cable_type"]')).to_contain_text("PROPOSAL-ONLY")
+    assert not workspace.messages
+
+
+def test_mobile_task_shortcut_opens_current_work_without_submitting_or_losing_draft(workspace):
+    workspace.open(390)
+    page = workspace.page
+    shortcut = page.locator("#mobileTaskShortcut")
+    pw.expect(shortcut).to_be_hidden()
+    data = insight_response([
+        insight_slot("water_depth", 320, label="水深"),
+        insight_slot("start_time", status="missing", label="开始时间"),
+        insight_slot("end_time", status="missing", label="结束时间"),
+        insight_slot("equipment_unit_id", status="candidate", candidate="REVIEW-ROV", label="机器人编号"),
+    ])
+    workspace.state(data)
+    draft = "补充时间前先核对机器人编号"
+    page.locator("#messageInput").fill(draft)
+    pw.expect(shortcut).to_be_visible()
+    pw.expect(shortcut).to_contain_text("待补充 2 项")
+    pw.expect(shortcut).to_contain_text("待核对 1 项")
+    pw.expect(shortcut).to_have_attribute("aria-controls", "taskWorksheet")
+    pw.expect(shortcut).to_have_attribute("aria-expanded", "false")
+    shortcut.focus()
+    shortcut.press("Enter")
+    heading = page.locator("#taskWorksheet > summary")
+    pw.expect(heading).to_be_focused()
+    pw.expect(heading).to_be_in_viewport()
+    pw.expect(shortcut).to_have_attribute("aria-expanded", "true")
+    pw.expect(page.locator("#messageInput")).to_have_value(draft)
+    heading.press("Enter")
+    pw.expect(shortcut).to_have_attribute("aria-expanded", "false")
+    assert not workspace.messages
+    page.locator("#resetBtn").click()
+    pw.expect(shortcut).to_be_hidden()
+    pw.expect(page.locator("#taskEmptyState")).to_be_visible()
+    assert not workspace.messages
+
+
+def test_mobile_task_shortcut_reports_blocked_read_only_and_unavailable_states(workspace):
+    workspace.open(320)
+    page = workspace.page
+    shortcut = page.locator("#mobileTaskShortcut")
+    scenarios = [
+        ({"phase": "blocked_hard", "workflow_phase": "validating"}, "条件未满足", "Conditions not met"),
+        ({"phase": "blocked_soft", "workflow_phase": "validating"}, "待处理警告", "Warning to review"),
+        ({"read_only": True}, "只读", "Read-only"),
+        ({"state_status": "error"}, "状态暂不可用", "State unavailable"),
+    ]
+    for state, chinese, english in scenarios:
+        data = response_fixture(task=True)
+        data["ui_state"].update(state)
+        workspace.state(data)
+        for lang, expected in (("zh", chinese), ("en", english)):
+            page.locator("#langSelect").select_option(lang)
+            pw.expect(shortcut).to_be_visible()
+            pw.expect(shortcut).to_contain_text(expected)
+            shortcut.click()
+            pw.expect(page.locator("#taskWorksheet > summary")).to_be_focused()
+            pw.expect(page.locator("#publishTaskBtn")).to_be_hidden()
+    empty_error = response_fixture()
+    empty_error["ui_state"]["state_status"] = "error"
+    workspace.state(empty_error)
+    pw.expect(shortcut).to_be_hidden()
+    workspace.state(response_fixture(task=True))
+    page.set_viewport_size({"width": 1280, "height": 900})
+    pw.expect(shortcut).to_be_hidden()
     assert not workspace.messages

@@ -84,9 +84,9 @@
         sendBtn: "发送",
         none: "暂无",
         allCollected: "✅ 所有必填字段已齐全",
-        transTranslate: "翻译 (Translate)",
-        transOriginal: "显示原文 (Show Original)",
-        transTranslating: "正在翻译...",
+        transTranslate: "翻译",
+        transOriginal: "显示原文",
+        transTranslating: "翻译中…",
         transFailed: "翻译失败",
         transNetError: "网络错误",
         transRetrying: "翻译重试中...",
@@ -185,8 +185,8 @@
         none: "None",
         allCollected: "✅ All required fields collected",
         transTranslate: "Translate",
-        transOriginal: "Original",
-        transTranslating: "Translating...",
+        transOriginal: "Show original",
+        transTranslating: "Translating…",
         transFailed: "Translation failed",
         transNetError: "Network error",
         transRetrying: "Retrying translation...",
@@ -457,6 +457,7 @@ Please describe your operational requirements directly, or ask the question you 
             msgDiv.translationVersion = (msgDiv.translationVersion || 0) + 1;
             bubble.innerHTML = renderMessageContent(originalText, msgDiv.getAttribute('data-role'));
             btn.innerText = I18N[currentLang].transTranslate;
+            btn.setAttribute('data-translation-state', 'idle');
             btn.setAttribute('data-translated', 'false');
           }
         }
@@ -531,6 +532,7 @@ Please describe your operational requirements directly, or ask the question you 
         msgDiv.getAttribute('data-original') === originalText && msgDiv.isConnected;
 
       btn.innerText = I18N[currentLang].transTranslating;
+      btn.setAttribute('data-translation-state', 'loading');
       try {
         const { translated, warning } = await fetchTranslation(originalText, 'English');
         // A streaming reply may have replaced the text while translation was in flight.
@@ -540,9 +542,11 @@ Please describe your operational requirements directly, or ask the question you 
           bubble.innerHTML = renderMessageContent(translated, msgDiv.getAttribute('data-role'));
           if (warning === 'low_quality') {
             btn.innerText = I18N[currentLang].transFallback;
+            btn.setAttribute('data-translation-state', 'notice');
             btn.setAttribute('data-translated', 'warn');
           } else {
             btn.innerText = I18N[currentLang].transOriginal;
+            btn.setAttribute('data-translation-state', 'idle');
             btn.setAttribute('data-translated', 'true');
           }
         }
@@ -551,6 +555,7 @@ Please describe your operational requirements directly, or ask the question you 
         btn.innerText = err.name === 'AbortError'
           ? I18N[currentLang].transNetError
           : I18N[currentLang].transFailed;
+        btn.setAttribute('data-translation-state', 'notice');
       }
     }
 
@@ -571,10 +576,12 @@ Please describe your operational requirements directly, or ask the question you 
         // 显示原文
         bubble.innerHTML = renderMessageContent(originalText, messageDiv.getAttribute('data-role'));
         btn.innerText = I18N[currentLang].transTranslate;
+        btn.setAttribute('data-translation-state', 'idle');
         btn.setAttribute('data-translated', 'false');
       } else {
         const targetLang = hasChinese(originalText) ? 'English' : 'Chinese';
         btn.innerText = I18N[currentLang].transTranslating;
+        btn.setAttribute('data-translation-state', 'loading');
         try {
           const { translated, warning } = await fetchTranslation(originalText, targetLang);
           if (!isCurrentTranslation()) return;
@@ -582,9 +589,11 @@ Please describe your operational requirements directly, or ask the question you 
           bubble.innerHTML = renderMessageContent(translated, messageDiv.getAttribute('data-role'));
           if (warning === 'low_quality') {
             btn.innerText = I18N[currentLang].transFallback;
+            btn.setAttribute('data-translation-state', 'notice');
             btn.setAttribute('data-translated', 'warn');
           } else {
             btn.innerText = I18N[currentLang].transOriginal;
+            btn.setAttribute('data-translation-state', 'idle');
             btn.setAttribute('data-translated', 'true');
           }
         } catch (err) {
@@ -592,6 +601,7 @@ Please describe your operational requirements directly, or ask the question you 
           btn.innerText = err.name === 'AbortError'
             ? I18N[currentLang].transNetError
             : I18N[currentLang].transFailed;
+          btn.setAttribute('data-translation-state', 'notice');
         }
       }
     }
@@ -645,12 +655,8 @@ Please describe your operational requirements directly, or ask the question you 
       return valStr;
     }
 
-    // Brand-aligned, consistent line avatars.
-    const botAvatarSvg = `
-  <svg class="bot-avatar-svg" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
-    <path d="m12 2.5 8.25 4.75v9.5L12 21.5l-8.25-4.75v-9.5Z" />
-    <path class="visor-glow" d="m7 10 5-3 5 3-5 3-5-3Zm0 4 5 3 5-3M12 13v4" />
-  </svg>`;
+    // Reuse the existing SEALIEN mark for the assistant's decorative avatar.
+    const botAvatarHtml = '<img class="bot-avatar-mark" src="static/icons/sealien-mark-white.png" width="18" height="18" alt="" aria-hidden="true">';
     const userAvatarSvg = `
   <svg class="user-avatar-svg" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
     <circle cx="12" cy="8" r="4" />
@@ -667,7 +673,7 @@ Please describe your operational requirements directly, or ask the question you 
         div.dataset.messageKind = options.kind;
       }
       const isBot = (role === 'bot' || role === 'assistant');
-      const avatarHtml = isBot ? `<div class="avatar">${botAvatarSvg}</div>` : `<div class="avatar">${userAvatarSvg}</div>`;
+      const avatarHtml = isBot ? `<div class="avatar">${botAvatarHtml}</div>` : `<div class="avatar">${userAvatarSvg}</div>`;
 
       div.setAttribute('data-original', content);
       div.setAttribute('data-role', role);
@@ -677,7 +683,7 @@ Please describe your operational requirements directly, or ask the question you 
       let translateBtn = '';
       const streamingMessage = ['streaming', 'streaming-status'].includes(options.kind);
       if ((content.trim() || streamingMessage) && options.kind !== 'welcome' && options.kind !== 'system') {
-        translateBtn = `<button type="button" class="msg-translate-bar" data-action="translate-message"${streamingMessage ? ' hidden disabled' : ''}>${I18N[currentLang].transTranslate}</button>`;
+        translateBtn = `<button type="button" class="msg-translate-bar" data-action="translate-message" data-icon="language" data-translation-state="idle"${streamingMessage ? ' hidden disabled' : ''}>${I18N[currentLang].transTranslate}</button>`;
       }
 
       div.innerHTML = avatarHtml + `<div class="bubble-wrapper" style="display:flex; flex-direction:column; align-items: ${role === 'user' ? 'flex-end' : 'flex-start'};"><div class="bubble">${renderedContent}</div>${translateBtn}</div>`;
@@ -2842,8 +2848,10 @@ Please describe your operational requirements directly, or ask the question you 
           const dt = new Date(/[zZ]$|[+-]\d{2}:\d{2}$/.test(rawTime) ? rawTime : rawTime + '+08:00');
           if (Number.isNaN(dt.getTime())) return;
           const formatted = dt.toLocaleString(currentLang === 'zh' ? 'zh-CN' : 'en-US',
-            { timeZone: 'Asia/Shanghai', hourCycle: 'h23' }) + ' (UTC+08:00)';
-          document.getElementById('simulatedTimeDisplay').innerText = formatted;
+            { timeZone: 'Asia/Shanghai', hourCycle: 'h23' });
+          const display = document.getElementById('simulatedTimeDisplay');
+          display.innerText = formatted;
+          display.dateTime = dt.toISOString();
 
           const picker = document.getElementById('timePicker');
           if (picker && (isInit || !isTimePickerEditing)) {

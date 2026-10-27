@@ -1,6 +1,9 @@
 {
   "source": "Real Jinja template and local frontend assets; isolated API fixtures only. Not real robot data or a validated complete mission.",
+  "captured_on": "2026-10-27",
   "views": [
+    "task-next-step.png",
+    "confirmation-detail.png",
     "desktop.png",
     "mobile.png",
     "task-workspace.png",
