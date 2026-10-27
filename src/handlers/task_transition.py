@@ -19,6 +19,7 @@ from ..constants import (
     ROBOT_CASCADE_FIELDS,
     TASK_TRANSITION_NON_INHERITED_FIELDS,
 )
+from .equipment_scoping import EquipmentScopingHandler
 
 logger = logging.getLogger("src.dialogue_manager")
 
@@ -29,8 +30,25 @@ class TaskTransitionManager:
     def __init__(self, manager: Any) -> None:
         self.manager = manager
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.manager, name)
+    @property
+    def kb(self):
+        return getattr(self.manager, "kb", None)
+
+    @property
+    def builder(self):
+        return getattr(self.manager, "builder", None)
+
+    @property
+    def normalizer(self):
+        return getattr(self.manager, "normalizer", None)
+
+    @property
+    def extractor(self):
+        return getattr(self.manager, "extractor", None)
+
+    @property
+    def mode(self):
+        return getattr(self.manager, "mode", "normal")
 
     def _resolve_task_type_target(self, key: str, value: object) -> str | None:
         """Resolve either task selector field through one authoritative rule."""
@@ -168,14 +186,14 @@ class TaskTransitionManager:
                 "value": value,
                 "raw_value": candidate.get("raw_value", value),
                 "confidence": candidate.get("confidence", 1.0),
-                "source": self._source_for_resolution_method(
+                "source": EquipmentScopingHandler._source_for_resolution_method(
                     candidate.get("resolution_method")
                 ),
             }
 
         projected_equipment = False
         if equipment_updates:
-            projected_equipment = self._project_equipment_updates_for_evaluation(
+            projected_equipment = self.manager._project_equipment_updates_for_evaluation(
                 equipment_updates,
                 sandbox_slots,
                 target_task_type_key,
@@ -590,7 +608,7 @@ class TaskTransitionManager:
                 else:
                     new_slots[fkey].value_type = ftype
 
-            self._auto_collapse_robot_cascade(new_slots, allow_overwrite=True)
+            self.manager._auto_collapse_robot_cascade(new_slots, allow_overwrite=True)
 
     def _handle_rov_description_in_transaction(self, description: str, new_slots: dict):
         all_rovs = self.kb.get_all_rovs()
@@ -605,7 +623,7 @@ class TaskTransitionManager:
         candidates = self.extractor.resolve_rov_description(
             description, all_rovs, task_type_key
         )
-        self._pending_rov_candidates = candidates
+        self.manager._pending_rov_candidates = candidates
         if candidates:
             new_slots["_rov_candidates"].value = [
                 {"model": r["model"], "full_name": r["full_name"],
