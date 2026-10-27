@@ -64,7 +64,7 @@ class BaseDialogueHandler(ABC):
     """分层生命周期处理器抽象基类"""
 
     def __init__(self, manager: Any):
-        super().__setattr__("manager", manager)
+        self.manager = manager
 
     def __getattr__(self, name: str) -> Any:
         if name == "manager":
@@ -73,14 +73,6 @@ class BaseDialogueHandler(ABC):
         if manager is not None:
             return getattr(manager, name)
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if name == "manager":
-            super().__setattr__(name, value)
-        elif hasattr(self, "manager") and hasattr(self.manager, name):
-            setattr(self.manager, name, value)
-        else:
-            super().__setattr__(name, value)
 
     @abstractmethod
     def can_handle(self, ctx: DialogueContext) -> bool:
