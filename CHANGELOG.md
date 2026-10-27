@@ -10,6 +10,106 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added & Enhanced — 任务核对优化、移动端工作台与无障碍交互（2026-10-27）
+
+- **工作台字段分组与参数输入引导**：
+  - [frontend/js/task-insights.js](frontend/js/task-insights.js) 引入基于 Section 的参数分组聚合渲染（任务基础属性、时空与环境约束、机器人与执行负载），按业务重要性与填报状态动态排序与状态着色。
+  - 新增参数焦点引导机制（Parameter Focus Guidance），当关键参数缺失时高亮提示并联动输入框聚焦，引导用户高效补充缺失项。
+- **确认卡片紧凑摘要与折叠详情**：
+  - [frontend/js/task-insights.js](frontend/js/task-insights.js) 与 [frontend/css/workspace.css](frontend/css/workspace.css) 重构确认卡片：主区域紧凑展示核心决策字段（任务类型、作业区域、执行设备、启动与持续时间），次要参数与扩展元数据收拢至“查看完整参数详情”折叠面板中，降低用户决策认知负荷。
+- **移动端工作表快捷栏与状态深度同步**：
+  - [frontend/js/workspace.js](frontend/js/workspace.js) 新增移动端（`max-width: 760px`）底部快捷任务栏，引入 `hadActiveTask` 追踪机制，解决移动端初始化空白状态与任务进入时工作表展开/收起（`aria-expanded`）的可见性冲突；支持快速一键直达工作表标题而不丢失当前输入草稿。
+- **翻译条交互与键盘无障碍访问修复**：
+  - [frontend/css/workspace.css](frontend/css/workspace.css) 优化 `msg-translate-bar` CSS 选择器作用域为 `.message:not(:hover):not(:focus-within) .msg-translate-bar[data-translation-state="idle"]`，修复键盘 Tab 键焦点无法触发翻译工具栏显示的样式特异性（specificity）Bug。
+- **UI 资产更新与全量 Playwright 浏览器自动化回归**：
+  - 新增 `docs/ui-preview/task-next-step.png` 与 `docs/ui-preview/confirmation-detail.png` 等多端实测预览图；
+  - 新增 [tests/test_frontend_workspace_browser.py](tests/test_frontend_workspace_browser.py) 浏览器自动化测试套件；
+  - 经验证：Playwright 端到端浏览器测试 74 项用例 100% 通过（67.18s）。
+
+### Fixed & Enhanced — 真实遥测时效对齐与多轮事实锚定 Grounding（2026-10-26）
+
+- **统一遥测新鲜度门禁（Telemetry Freshness Grounding）**：
+  - 新增 [src/telemetry_evidence.py](src/telemetry_evidence.py) 与增强 [src/state/runtime_checker.py](src/state/runtime_checker.py)，建立全局统一遥测时效检查器；严格区分当前新鲜遥测（fresh ≤ 300s）、已过期遥测（stale）与未来预约任务（future scheduled），防止调度器将未来预约任务错误当作当前环境生效。
+- **大模型 Prompt 与回复事实硬锚定（Reply Grounding）**：
+  - [src/handlers/write_reply_grounder.py](src/handlers/write_reply_grounder.py) 与 [src/handlers/task_structure_grounding.py](src/handlers/task_structure_grounding.py) 强化写操作回复事实核验：仅当底层 SlotStore 存在已持久化的真实修改时，才允许模型回复确认或已保存；杜绝大模型在参数被拦截或未生效时回复幻觉。
+- **假设性时间预览与增量载荷解析**：
+  - 新增 [src/handlers/hypothetical_time_preview.py](src/handlers/hypothetical_time_preview.py)，支持“如果现在启动…预计何时结束”等假设性提问的推演预览，不污染当前会话的物理槽位。
+  - [src/handlers/payload_mutation.py](src/handlers/payload_mutation.py) 修复增量列表修改时的目录前缀同步。
+- **海博会演示脚本与现场记录归档**：
+  - 整理并新增 [docs/development/haibo-demo-dialogue.md](docs/development/haibo-demo-dialogue.md)、[docs/development/haibo-demo-dialogue-record-20261021.md](docs/development/haibo-demo-dialogue-record-20261021.md) 以及 [docs/development/haibo-demo-five-hour-submission.md](docs/development/haibo-demo-five-hour-submission.md)，记录 7 轮真实场景演练测试用例。
+
+### Added & Enhanced — 实体抽取稳定化、机器人可行性域选择与品牌资产（2026-10-21）
+
+- **多模态参数标量抽取与时序解析稳定化**：
+  - [src/temporal/temporal_parser.py](src/temporal/temporal_parser.py) 与 [src/temporal/relative_time_parser.py](src/temporal/relative_time_parser.py) 支持小数（如“1.5小时”）与复合持续时间解析。
+  - [src/extraction/coord_parser.py](src/extraction/coord_parser.py) 重构空间坐标提取，增强边界范围检测与起止点约束推断；支持 `water_depth` 水深与 `cable_type` 海缆类型等领域标量参数的精准绑定。
+- **机器人静态可行性硬过滤（Robot Feasibility Filtering）**：
+  - [src/dispatch/catalog_resolver.py](src/dispatch/catalog_resolver.py) 与 [src/knowledge/selection_engine.py](src/knowledge/selection_engine.py) 接入变体静态参数（作业水深上限、载荷承载阈值），在候选池初筛阶段剔除不符合物理条件的机器人型号或系列。
+- **写操作回复事实核验与子句级历史作用域隔离**：
+  - [src/handlers/explicit_value_grounding.py](src/handlers/explicit_value_grounding.py) 与 [src/handlers/oilfield_confirmation.py](src/handlers/oilfield_confirmation.py) 引入子句级撤回与冲突保护，用户在修改参数或否定旧参数时精确清除旧事实，避免历史槽位脏读。
+- **SEALIEN 品牌视觉资产与无损图标接入**：
+  - 引入 SEALIEN 官方蓝色/白色高保真 Logo、69x69 无损螺旋桨 Mark 图标与全套 favicon 资产，统一前端工作台视觉规范。
+  - 新增 [docs/architecture/session-confirmation-recovery.md](docs/architecture/session-confirmation-recovery.md) 文档。
+
+### Refactored — 机器人单机解析上下文增强与设备级联重构（2026-10-20）
+
+- **单机编号注入父级系列与型号上下文**：
+  - [src/knowledge/unit_resolver.py](src/knowledge/unit_resolver.py) 与 [src/handlers/equipment_cascade.py](src/handlers/equipment_cascade.py) 重构：在 Unit 单机编号解析（如“1号机/2号机”）时主动注入父级 Family（系列）和 Variant（型号）上下文，消除同名编号在不同型号间的歧义绑定。
+- **设备多级从属交互推导**：
+  - 优化 [src/knowledge/selection_engine.py](src/knowledge/selection_engine.py) 与 [src/knowledge/query_executor.py](src/knowledge/query_executor.py)，支持采油树（“深海1号”）级联推导相关水下阀门和机器人组别。
+
+### Added — 前端遥测仪表板与实时确认卡片集成（2026-10-19）
+
+- **前端遥测仪表板（LLM Telemetry Dashboard）**：
+  - [frontend/index.html](frontend/index.html) 与 [frontend/js/index.js](frontend/js/index.js) 集成模型性能与遥测状态看板，实时直观展示上下文预算（context tokens）、推理耗时、网络延迟与遥测新鲜度状态灯。
+- **结构化确认卡片交互组件**：
+  - 在消息流中提供结构化确认卡片，支持多行核对、约束状态展示与一键交互。
+- **矢量图标与现代 UI 资产扩充**：
+  - 新增 11 个现代纯矢量 SVG 图标（`clock.svg`, `edit.svg`, `history.svg`, `mic.svg`, `publish.svg`, `reset.svg`, `stop.svg`, `send.svg` 等），提升界面工程质感。
+
+### Added & Fixed — 整轮编辑保护、时序范围隔离与工作台增强（2026-10-19）
+
+- **整轮编辑保护与断言范围检测（Whole-Turn Edit Protection）**：
+  - 新增 [src/extraction/assertion_scope.py](src/extraction/assertion_scope.py)，在单轮多子句输入中识别撤销、修改与保持语句的作用域边界。
+- **时序与载荷跨轮隔离保护**：
+  - 在 [src/temporal/temporal_parser.py](src/temporal/temporal_parser.py) 和 [src/handlers/payload_mutation.py](src/handlers/payload_mutation.py) 中接入断言作用域，防止用户在一句话中提到“不要A只要B”时旧状态污染。
+- **会话竞态 HTTP 409 保护**：
+  - 在 [src/web/routes_chat.py](src/web/routes_chat.py) 中增加会话并发重置/查询互斥保护，当客户端在处理长请求期间重置或并发修改会话时，明确返回 HTTP 409 Conflict，防止会话状态被静默覆盖。
+- **工作台 UI、Task Insights HUD 与 ROS 2 监控升级**：
+  - 重构 [frontend/js/task-insights.js](frontend/js/task-insights.js) 和 [frontend/js/workspace.js](frontend/js/workspace.js)，引入专业海洋工程 HUD 界面、任务槽位实时生命周期展示与 ROS 2 执行进度看板。
+- **UI 预研与国际主流工业界面对标**：
+  - 撰写 [docs/ui-references/README.md](docs/ui-references/README.md)，对标 Palantir Workshop、Foxglove Agent、Kongsberg OceanView 与 Greensea Workspace 架构设计；新增 [docs/progress/2026-10-19-whole-turn-protection-fixes.md](docs/progress/2026-10-19-whole-turn-protection-fixes.md)。
+
+### Fixed — 空间约束 C033 管缆巡检起止重合端点强阻断（2026-10-19）
+
+- **空间硬约束 C033 规则落地**：
+  - [config/constraints.yaml](config/constraints.yaml) 补充定义 `C033` 规则（管缆巡检任务必须具有位移距离，起点与终点不能重合）。
+  - [src/validation/spatial_validator.py](src/validation/spatial_validator.py) 实现 `start_end_points_distinct` 校验方法并在 [src/validation/validator.py](src/validation/validator.py) 注册，彻底杜绝起点终点坐标相同时通过审核；约束失败直接硬阻断（`blocked_hard`），必须由用户修正坐标。
+
+### Added — 请求重放幂等缓存、SSE 进度流式通知与生命周期追踪（2026-10-16）
+
+- **有限请求重放缓存（ChatRequestCache）**：
+  - 新增 [src/web/chat_request_cache.py](src/web/chat_request_cache.py) 提供基于请求指纹的 bounded replay cache，杜绝网络重试引发的重复执行和状态重复漂移，提升接口幂等性。
+- **SSE 实时进度流式通知（Live Progress Streaming）**：
+  - 新增 [src/web/chat_stream.py](src/web/chat_stream.py)，支持在长耗时推理和校验阶段主动向前端推送阶段事件（`intent_routing` -> `slot_extraction` -> `constraint_checking` -> `done`），前端 [frontend/js/index.js](frontend/js/index.js) 接入全生命周期跟踪。
+
+### Fixed — 载荷显式删除保护与装备目录前缀同步（2026-10-16）
+
+- **载荷显式删除与保留子句同步（Payload Mutations）**：
+  - [src/handlers/payload_mutation.py](src/handlers/payload_mutation.py) 修复复合指令中“保留机械手但去掉声呐”场景下删除指令被保留子句覆盖的漏洞，确保删除与保留意图在同一轮处理中均生效，并同步目录前缀。
+
+### Fixed — 复合持续时间解析与显式时间回复事实锚定（2026-10-16）
+
+- **裸半数时长复合解析修复（Temporal Composite Parsing）**：
+  - [src/temporal/duration_parser.py](src/temporal/duration_parser.py) 与 [src/temporal/temporal_parser.py](src/temporal/temporal_parser.py) 修复“一个半小时”、“半天”等自然语言时长的复合提取缺陷。
+- **显式时间回复事实锚定**：
+  - [src/handlers/write_reply_grounder.py](src/handlers/write_reply_grounder.py) 增强时间回复事实证据比对，避免在用户指定绝对时间时回复未格式化或过时的时区推断。
+
+### Docs — 大模型真实边界复测记录与压力测试归档（2026-10-16）
+
+- **真实模型边界测试与压力验证归档**：
+  - 补充归档 [docs/progress/2026-10-15-real-model-followup.md](docs/progress/2026-10-15-real-model-followup.md)、[docs/progress/2026-10-15-stress-boundary-followup.md](docs/progress/2026-10-15-stress-boundary-followup.md) 及 [docs/progress/2026-10-15-stress-boundary-fixes.md](docs/progress/2026-10-15-stress-boundary-fixes.md)，记录基于本地真实 Qwen3.5-9B 模型的并发、压力测试与长对话评测事实。
+
 ### Refactored — Dispatch 领域 TaskIntent 上帝代码解耦与职责分治（2026-10-15）
 
 - **抽离底层原子文件锁与写入基础设施**：新增 [src/dispatch/atomic_task_storage.py](src/dispatch/atomic_task_storage.py)（83 行），专职负责 `TaskPublishLock`（跨进程排他锁）、`TaskCommitUncertainError`、`_write_all`（POSIX 完整写入保障）与 `_atomic_commit_noreplace`（`os.link` 原子无覆盖发布机制）。

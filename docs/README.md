@@ -1,6 +1,6 @@
 # 文档索引
 
-整理日期：2026-09-30。当前实现以代码、配置和实际测试结果为依据；历史报告中的用例数量、阈值和缺陷状态只对应记录时的版本。逐文件范围、修订状态和剩余证据缺口见[文档审查清单](documentation-audit.md)。
+整理日期：2026-10-27。当前实现以代码、配置和实际测试结果为依据；历史报告中的用例数量、阈值和缺陷状态只对应记录时的版本。逐文件范围、修订状态和剩余证据缺口见[文档审查清单](documentation-audit.md)。
 
 ## 当前使用与维护
 
@@ -8,8 +8,11 @@
 | --- | --- |
 | 安装与启动 | [项目 README](../README.md) |
 | 运行架构、模块状态、遥测门禁 | [架构总览](architecture/overview.md) |
+| 前端工作台、HUD 监控与移动端交互 | [前端工作台架构](architecture/frontend-workspace.md) |
+| 会话确认、快照恢复与生命周期 | [会话确认与恢复架构](architecture/session-confirmation-recovery.md) |
 | 路由、槽位、候选和持久化契约 | [当前设计契约](current_design_contract.md) |
 | 归档、发送状态与重试边界 | [执行下发契约](execution_dispatch_contract.md) |
+| 海博会演示脚本与多轮演练用例 | [海博会演示脚本](development/haibo-demo-dialogue.md) |
 | 自动化测试、CPU/GPU 环境与产物隔离 | [开发测试指南](development/testing.md) |
 | 治理场景与对应测试 | [验收矩阵](development/governance-acceptance-matrix.md) |
 | ROS 2 配置与集成 | [运行配置设计](architecture/ros2_runtime_configuration.md)、[ROS MCP 说明](../mcp/ros-mcp/README.md) |
@@ -27,6 +30,8 @@
 - [2026-10-15 真实用户压力与边界测试](progress/2026-10-15-stress-boundary-followup.md) 保留修复前的组合时长、载荷指令、并发、流式响应和发布边界实测结果。
 - [2026-10-15 压力与边界问题修复](progress/2026-10-15-stress-boundary-fixes.md) 记录后续时间/载荷修复、有限请求重放、实时进度，以及定向、全量、真实模型和归档恢复的独立验证证据与保留限制。
 - [2026-10-19 整轮限制与状态查询修复](progress/2026-10-19-whole-turn-protection-fixes.md) 记录任务、时间和载荷修改限制的作用范围、状态查询与重置竞态，以及本轮回归和真实模型验证结果。
+- [海博会 7 轮真实场景演示对话记录与 5 小时交付用例](development/haibo-demo-dialogue-record-20261021.md) 记录海博会实地演练多轮交互用例及验收。
+- [现代工业 UI 设计参考体系与端到端预览](ui-references/README.md) 对标 Palantir Workshop、Foxglove Agent、Kongsberg OceanView 与 Greensea Workspace。
 - [海流 MCP 设计与实现状态](../mcp/operation-time-window/DESIGN_SPEC.md) 描述独立模块的现状；[历史海流测试记录](../mcp/operation-time-window/evidence/current_status.json) 文件名中的 `current` 不代表实时结果。该模块尚未成为主 DialogueManager 的默认运行链路。
 - ROS MCP 的[当前协议报告](../mcp/ros-mcp/docs/adapter_specification_report.md)及[2026-09-30 协议核对 PDF](../mcp/ros-mcp/docs/SEAgent_ROS2_MCP_Protocol_Review_20260930.pdf)区分生产适配器和 stdio Mock；[原集成 PDF](../mcp/ros-mcp/docs/SEAgent_ROS2_MCP_Integration_Report.pdf)保留为历史材料，不能独立作为现行接口说明。
 - 时间调研的[来源核对与实现边界](../artifacts/temporal-research-source-review.md)及[PDF](../artifacts/temporal-research-source-review.pdf)补充本次核实的一手资料、当前代码对照和定向测试；[原草案](../artifacts/deep-research-report.md)仍保留历史方案属性，旧引用的原 URL 映射尚未恢复。
