@@ -132,19 +132,10 @@ class DialogueSnapshotManager:
         for field_name in runtime_fields:
             setattr(target, field_name, getattr(candidate, field_name))
 
-    def load_snapshot_in_place(
-        self,
-        candidate: Any,
-        snapshot: dict,
-        *,
-        session_state_v2_active: bool,
-    ) -> None:
-        """Restore and validate a snapshot on an isolated candidate manager."""
-        if session_state_v2_active:
-            contract_state = session_state_from_legacy_snapshot(snapshot)
-        else:
-            contract_state = None
-
+    def _validate_basics(
+        self, snapshot: dict, candidate: Any
+    ) -> Tuple[list, str, str, Any, Any]:
+        """校验快照基础元数据并设置隔离 candidate 初始属性。"""
         if not isinstance(snapshot, dict):
             raise ValueError("History snapshot must be a dictionary")
 
@@ -163,8 +154,6 @@ class DialogueSnapshotManager:
         if type(phase) is not str or phase not in VALID_PHASES:
             raise ValueError(f"Invalid task phase in snapshot: {phase}")
 
-        # Dispatch data is a display snapshot only. The execution service must
-        # reconcile transport outcomes with its persistent dispatch records.
         ros2_dispatch = snapshot.get("ros2_dispatch")
         if ros2_dispatch is not None and not isinstance(ros2_dispatch, dict):
             raise ValueError("ros2_dispatch must be a dictionary or null")
@@ -175,7 +164,12 @@ class DialogueSnapshotManager:
         candidate.ros2_dispatch = copy.deepcopy(ros2_dispatch)
         candidate._pending_published_intent = copy.deepcopy(pending_published)
 
-        # 校验模式与控制快照字段（原子校验，失败则不更改内存状态）
+        return conversation_history, mode, phase, ros2_dispatch, pending_published
+
+    def _validate_mode_and_control(
+        self, snapshot: dict
+    ) -> Tuple[str, str, list, Any, Any, Any]:
+        """校验会话模式、运行控制状态及其时序迁移历史。"""
         valid_modes = {"task_collection", "knowledge_qa", "emergency_intervention", "uncertain"}
         valid_control = {"idle", "stop_requested", "pause_requested", "abort_requested", "cancel_requested"}
 
@@ -261,13 +255,18 @@ class DialogueSnapshotManager:
                     f"Mismatched control_state '{control_state}' for action '{act}' (expected '{expected_state}')"
                 )
 
+        return dialogue_mode, control_state, validated_history, last_mode_transition, last_control_request, runtime_review
+
+    def _restore_and_validate_slot_store(
+        self, snapshot: dict, candidate: Any, mode: str
+    ) -> SlotStore:
+        """从结构化快照或遗留 task_state 反序列化构建并校验候选 SlotStore。"""
         candidate_store = None
 
         if "slot_store" in snapshot and isinstance(snapshot.get("slot_store"), dict):
             candidate_store = SlotStore.from_snapshot(snapshot["slot_store"], candidate.kb)
 
         if candidate_store is None:
-            # 兼容没有 snapshot_version/slot_store 的旧历史记录。
             legacy_state = snapshot.get("task_state", {})
             if not isinstance(legacy_state, dict):
                 raise ValueError("task_state must be a dictionary")
@@ -299,11 +298,6 @@ class DialogueSnapshotManager:
                     value_type="string",
                     source="snapshot_migration",
                 )
-            # Route the migrated flat state through SlotStore's authoritative
-            # snapshot validator before committing it to the candidate
-            # manager.  This keeps legacy restore behavior aligned with v2
-            # snapshots (including exact selector rules and alias migration)
-            # without mutating the live manager on failure.
             migrated_snapshot = candidate_store.export_snapshot()
             migrated_snapshot["snapshot_schema_version"] = None
             migrated_snapshot["slots"] = {
@@ -313,7 +307,7 @@ class DialogueSnapshotManager:
             migrated_snapshot["unresolved"] = []
             candidate_store.restore_snapshot(migrated_snapshot)
 
-        # 候选 SlotStore 校验系统标识合法性与互斥结构完整性
+        # 校验系统标识合法性与互斥结构完整性
         cand_internal_slot = candidate_store.slots.get("internal_id")
         cand_internal = cand_internal_slot.value if (cand_internal_slot and cand_internal_slot.status == "valid" and cand_internal_slot.value is not None) else None
 
@@ -339,43 +333,28 @@ class DialogueSnapshotManager:
             if cand_internal is None or cand_task_type_key is None:
                 raise SnapshotValidationError("v2 candidate snapshot with valid task_id must contain internal_id, task_id, and task_type_key simultaneously")
 
-        # 候选 SlotStore 完整校验通过后再一次性替换，避免半恢复状态泄漏。
-        candidate.conversation_history = copy.deepcopy(conversation_history)
-        candidate.runtime_execution_review = copy.deepcopy(runtime_review) if phase == "done" else None
-        candidate.slot_store = candidate_store
+        return candidate_store
+
+    def _ensure_valid_intent_id(self, candidate: Any) -> None:
+        """为没有合法有效 intent_id 的会话原子生成并提交新的 intent_id。"""
+        today = get_current_datetime().strftime("%Y%m%d")
+        task_dir = _ti_builder_module.get_task_dir(create=False)
+        new_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
+        new_slots = candidate.slot_store.clone_slots()
+        if "intent_id" not in new_slots:
+            new_slots["intent_id"] = Slot("intent_id")
+        new_slots["intent_id"].value = new_id
+        new_slots["intent_id"].value_type = "string"
+        new_slots["intent_id"].status = "valid"
+        new_slots["intent_id"].source = "auto"
+        candidate.slot_store.commit_transaction(new_slots, candidate.slot_store.unresolved)
         candidate.task_state = candidate.slot_store.get_task_state()
+        candidate._last_built_json = candidate.slot_store.get_built_json()
 
-        if session_state_v2_active and contract_state is not None:
-            candidate._apply_session_state_contract(contract_state)
-        else:
-            candidate.mode = mode
-            candidate._switch_dialogue_mode(
-                dialogue_mode,
-                source="snapshot_restore",
-                reason="restore validated snapshot state",
-                restore_transition_state=(last_mode_transition, validated_history),
-            )
-            candidate._set_execution_control_state(
-                control_state,
-                last_control_request,
-                source="snapshot_restore",
-                reason="restore validated snapshot state",
-            )
-
-        candidate.final_result = None
-        candidate.task_start_now = False
-        # 清空阻塞与白名单，重新构建缓存
-        candidate._blocking_violations = []
-        candidate._soft_whitelist = set()
-        candidate._hard_refusal_counts = {}
-        candidate._pending_rov_candidates = []
-        candidate._rebuild_cache(commit_derived=False)
-
-        # ── 快照 Intent ID 校验与 done 阶段完整性校验 ──
-        intent_slot = candidate.slot_store.slots.get("intent_id")
-        intent_id_val = intent_slot.value if (intent_slot and intent_slot.status == "valid") else None
-        is_valid_id = bool(intent_id_val and validate_intent_id(str(intent_id_val)))
-
+    def _reconcile_published_task_intent(
+        self, candidate: Any, phase: str, is_valid_id: bool, intent_id_val: Optional[str]
+    ) -> None:
+        """针对 done 阶段的快照与持久化任务文件进行一致性核验与状态调和。"""
         _REQUIRED_INTENT_KEYS = {
             "intent_id", "task_type", "priority", "time",
             "location", "task", "equipment", "conditions"
@@ -449,19 +428,7 @@ class DialogueSnapshotManager:
                     source="snapshot_restore",
                     reason="published task validation failed",
                 )
-                today = get_current_datetime().strftime("%Y%m%d")
-                task_dir = _ti_builder_module.get_task_dir(create=False)
-                new_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
-                new_slots = candidate.slot_store.clone_slots()
-                if "intent_id" not in new_slots:
-                    new_slots["intent_id"] = Slot("intent_id")
-                new_slots["intent_id"].value = new_id
-                new_slots["intent_id"].value_type = "string"
-                new_slots["intent_id"].status = "valid"
-                new_slots["intent_id"].source = "auto"
-                candidate.slot_store.commit_transaction(new_slots, candidate.slot_store.unresolved)
-                candidate.task_state = candidate.slot_store.get_task_state()
-                candidate._last_built_json = candidate.slot_store.get_built_json()
+                self._ensure_valid_intent_id(candidate)
         else:
             candidate._transition_phase(
                 phase,
@@ -469,19 +436,80 @@ class DialogueSnapshotManager:
                 reason="restore validated snapshot phase",
             )
             if not is_valid_id:
-                today = get_current_datetime().strftime("%Y%m%d")
-                task_dir = _ti_builder_module.get_task_dir(create=False)
-                new_id = next_daily_id("TI", today, 2, [(task_dir, "intent_id")])
-                new_slots = candidate.slot_store.clone_slots()
-                if "intent_id" not in new_slots:
-                    new_slots["intent_id"] = Slot("intent_id")
-                new_slots["intent_id"].value = new_id
-                new_slots["intent_id"].value_type = "string"
-                new_slots["intent_id"].status = "valid"
-                new_slots["intent_id"].source = "auto"
-                candidate.slot_store.commit_transaction(new_slots, candidate.slot_store.unresolved)
-                candidate.task_state = candidate.slot_store.get_task_state()
-                candidate._last_built_json = candidate.slot_store.get_built_json()
+                self._ensure_valid_intent_id(candidate)
+
+    def load_snapshot_in_place(
+        self,
+        candidate: Any,
+        snapshot: dict,
+        *,
+        session_state_v2_active: bool,
+    ) -> None:
+        """Restore and validate a snapshot on an isolated candidate manager."""
+        if session_state_v2_active:
+            contract_state = session_state_from_legacy_snapshot(snapshot)
+        else:
+            contract_state = None
+
+        # 1. 基础元数据校验
+        (
+            conversation_history,
+            mode,
+            phase,
+            ros2_dispatch,
+            pending_published,
+        ) = self._validate_basics(snapshot, candidate)
+
+        # 2. 模式与控制状态及历史迁移校验
+        (
+            dialogue_mode,
+            control_state,
+            validated_history,
+            last_mode_transition,
+            last_control_request,
+            runtime_review,
+        ) = self._validate_mode_and_control(snapshot)
+
+        # 3. 反序列化与校验 SlotStore
+        candidate_store = self._restore_and_validate_slot_store(snapshot, candidate, mode)
+
+        # 4. 候选 SlotStore 完整校验通过后再一次性替换，避免半恢复状态泄漏
+        candidate.conversation_history = copy.deepcopy(conversation_history)
+        candidate.runtime_execution_review = copy.deepcopy(runtime_review) if phase == "done" else None
+        candidate.slot_store = candidate_store
+        candidate.task_state = candidate.slot_store.get_task_state()
+
+        if session_state_v2_active and contract_state is not None:
+            candidate._apply_session_state_contract(contract_state)
+        else:
+            candidate.mode = mode
+            candidate._switch_dialogue_mode(
+                dialogue_mode,
+                source="snapshot_restore",
+                reason="restore validated snapshot state",
+                restore_transition_state=(last_mode_transition, validated_history),
+            )
+            candidate._set_execution_control_state(
+                control_state,
+                last_control_request,
+                source="snapshot_restore",
+                reason="restore validated snapshot state",
+            )
+
+        candidate.final_result = None
+        candidate.task_start_now = False
+        candidate._blocking_violations = []
+        candidate._soft_whitelist = set()
+        candidate._hard_refusal_counts = {}
+        candidate._pending_rov_candidates = []
+        candidate._rebuild_cache(commit_derived=False)
+
+        # 5. 快照 Intent ID 校验与 done 阶段任务文件一致性调和
+        intent_slot = candidate.slot_store.slots.get("intent_id")
+        intent_id_val = intent_slot.value if (intent_slot and intent_slot.status == "valid") else None
+        is_valid_id = bool(intent_id_val and validate_intent_id(str(intent_id_val)))
+
+        self._reconcile_published_task_intent(candidate, phase, is_valid_id, intent_id_val)
 
         if candidate.phase != "done":
             candidate.ros2_dispatch = None
