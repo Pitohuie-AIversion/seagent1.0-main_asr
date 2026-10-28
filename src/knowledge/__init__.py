@@ -2,6 +2,7 @@
 src/knowledge - SEAgent 领域知识检索、机器人拓扑选型与规格评估包
 """
 
+from .query import DeviceAliasIndexer, EnvironmentRetriever, TypedQueryEngine
 from .query_executor import QueryExecutor
 from .selection import (
     CONFIG_DIR,
@@ -28,6 +29,9 @@ from .selection import (
 
 __all__ = [
     "QueryExecutor",
+    "DeviceAliasIndexer",
+    "EnvironmentRetriever",
+    "TypedQueryEngine",
     "RobotSelectionEngine",
     "VariantEvaluator",
     "UnitResolver",

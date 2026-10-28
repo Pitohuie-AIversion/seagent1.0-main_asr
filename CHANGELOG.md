@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Refactored — 上帝代码深度治理、模块父子目录化与 Handlers/Dispatch/Web 领域解耦（2026-10-28）
 
+- **Knowledge 知识库查询执行器（QueryExecutor）上帝代码拆解与 query 子包父子化**：
+  - 将原单文件集中 1,011 行的 `query_executor.py` 拆解并下沉至二级专有子包 `src/knowledge/query/`：
+    * `src/knowledge/query/alias_indexer.py`（208 行）：负责机器人 4 级拓扑（Class/Family/Variant/Unit）别名索引构建、歧义词识别、安全设备词提取与实体候选解析；
+    * `src/knowledge/query/environment_retriever.py`（189 行）：负责海域油田、经纬度边界、禁入保护区、DVL 风险区别名匹配与机器人实时遥测状态/可用性检索；
+    * `src/knowledge/query/typed_query_engine.py`（482 行）：负责只读知识查询路由仲裁、载荷配置证据生成、水深条件正则解析与设备规格能力校验；
+  - 顶层 `src/knowledge/query_executor.py` 门面瘦身至 178 行（**减少 82.4%**），保留 100% 实例与静态方法对外契约；
+  - `src/knowledge/models.py` 升级为 `sys.modules[__name__] = _impl` 透明垫片，与 `src/knowledge/selection/` 形成对称的高内聚父子双领域树架构。
 - **Slots 槽位存储与契约消歧父子分层结构化**：
   - 将原平铺在 `src/slots/` 根目录的 7 个从属模块沉降至 3 大专有二级子包：
     * `src/slots/codec/`：负责槽位快照的原子反序列化、格式校验与多版本向后兼容迁移（`slot_snapshot_codec.py`）；
