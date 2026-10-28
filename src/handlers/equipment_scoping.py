@@ -36,10 +36,30 @@ class EquipmentScopingHandler:
     def __init__(self, manager: Any = None) -> None:
         self.manager = manager
 
-    def __getattr__(self, name: str) -> Any:
-        if "manager" in self.__dict__ and self.manager is not None:
-            return getattr(self.manager, name)
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+    @property
+    def kb(self) -> Any:
+        return getattr(self.manager, "kb", None)
+
+    @property
+    def task_state(self) -> Any:
+        return getattr(self.manager, "task_state", None)
+
+    @property
+    def builder(self) -> Any:
+        return getattr(self.manager, "builder", None)
+
+    @property
+    def conversation_history(self) -> Any:
+        return getattr(self.manager, "conversation_history", [])
+
+    @property
+    def mode(self) -> Any:
+        return getattr(self.manager, "mode", "normal")
+
+    def _missing_field_definition(self, key: str) -> dict | None:
+        if self.manager and hasattr(self.manager, "_missing_field_definition"):
+            return self.manager._missing_field_definition(key)
+        return None
 
     @staticmethod
     def _source_for_resolution_method(resolution_method: str | None) -> str:

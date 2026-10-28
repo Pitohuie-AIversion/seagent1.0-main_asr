@@ -100,8 +100,13 @@ _PENDING_PAYLOAD = re.compile(
 class PayloadMutationManager(BaseDialogueHandler):
     """载荷修改与列表变异管理器"""
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.manager, name)
+    @property
+    def kb(self) -> Any:
+        return getattr(self.manager, "kb", None)
+
+    @property
+    def task_state(self) -> Any:
+        return getattr(self.manager, "task_state", None)
 
 
     def can_handle(self, ctx: DialogueContext) -> bool:

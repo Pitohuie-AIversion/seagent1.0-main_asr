@@ -24,10 +24,13 @@ class SlotTransactionManager:
     def __init__(self, manager: Any = None) -> None:
         self.manager = manager
 
-    def __getattr__(self, name: str) -> Any:
-        if "manager" in self.__dict__ and self.manager is not None:
-            return getattr(self.manager, name)
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+    @property
+    def kb(self) -> Any:
+        return getattr(self.manager, "kb", None)
+
+    @property
+    def task_state(self) -> Any:
+        return getattr(self.manager, "task_state", None)
 
 
     def apply_updates_in_transaction(

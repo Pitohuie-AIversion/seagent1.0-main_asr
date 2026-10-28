@@ -57,9 +57,15 @@ class SlotFillingHandler(BaseDialogueHandler):
         self.slot_transaction = SlotTransactionManager(manager)
         self.extraction_pipeline = SlotExtractionPipeline(manager, slot_filling_handler=self)
 
+    @property
+    def kb(self) -> Any:
+        return getattr(self.manager, "kb", None)
+
+    @property
+    def task_state(self) -> Any:
+        return getattr(self.manager, "task_state", None)
+
     def __getattr__(self, name: str) -> Any:
-        if '_manager_resolving' in self.__dict__:
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
         for sub in (
             'equipment_cascade',
             'task_transition',
@@ -71,11 +77,7 @@ class SlotFillingHandler(BaseDialogueHandler):
         ):
             if sub in self.__dict__ and hasattr(self.__dict__[sub], name):
                 return getattr(self.__dict__[sub], name)
-        try:
-            self.__dict__['_manager_resolving'] = True
-            return getattr(self.manager, name)
-        finally:
-            self.__dict__.pop('_manager_resolving', None)
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def can_handle(self, ctx: DialogueContext) -> bool:
         """
@@ -289,6 +291,20 @@ class SlotFillingHandler(BaseDialogueHandler):
         return reply
 
 
+    @staticmethod
+    def _check_task_patch_v2_enabled() -> bool:
+        import sys
+        _dm_mod = sys.modules.get("src.dialogue_manager")
+        fn = getattr(_dm_mod, "is_task_patch_v2_enabled", is_task_patch_v2_enabled) if _dm_mod else is_task_patch_v2_enabled
+        return fn()
+
+    @staticmethod
+    def _check_normalization_contract_v2_enabled() -> bool:
+        import sys
+        _dm_mod = sys.modules.get("src.dialogue_manager")
+        fn = getattr(_dm_mod, "is_normalization_contract_v2_enabled", is_normalization_contract_v2_enabled) if _dm_mod else is_normalization_contract_v2_enabled
+        return fn()
+
     def execute_slot_filling(
         self,
         ctx: DialogueContext,
@@ -298,16 +314,52 @@ class SlotFillingHandler(BaseDialogueHandler):
         has_acknowledge_action: bool = False,
     ) -> str:
         """执行端到端槽位抽取、规范化过滤、消歧、原子事务提交与事实锚点回复落地。"""
+        turn_ctx = self._prepare_slot_filling_turn(ctx)
+
+        # Stage 1: 当初始没有 task_type_key 时执行任务类型提取
+        if turn_ctx["task_type_key"] is None:
+            early_reply = self._execute_stage1_task_type(
+                ctx=ctx,
+                turn_ctx=turn_ctx,
+                has_acknowledge_action=has_acknowledge_action,
+            )
+            if early_reply is not None:
+                return early_reply
+
+        # Stage 2: 参数抽取管道与默认坐标填充
+        early_pipeline_reply, pipeline_res = self._execute_parameter_pipeline_and_defaults(
+            ctx=ctx,
+            turn_ctx=turn_ctx,
+            route=route,
+            plan=plan,
+            has_acknowledge_action=has_acknowledge_action,
+        )
+        if early_pipeline_reply is not None:
+            return early_pipeline_reply
+
+        # Stage 3: 槽位事务预校验、自动 ID 生成与原子提交
+        eval_ctx = self._commit_turn_transaction(
+            ctx=ctx,
+            turn_ctx=turn_ctx,
+            pipeline_res=pipeline_res,
+        )
+
+        # Stage 4 & 5: 约束评估与回复生成
+        return self._evaluate_and_generate_reply(
+            ctx=ctx,
+            turn_ctx=turn_ctx,
+            pipeline_res=pipeline_res,
+            eval_ctx=eval_ctx,
+        )
+
+    def _prepare_slot_filling_turn(self, ctx: DialogueContext) -> dict:
         manager = self.manager
         user_message = ctx.user_message
         request_id = ctx.request_id
         old_phase = ctx.old_phase
 
-        # 3. Parameter Extraction & Processing Pipeline (Atomic Transaction with Optimistic Lock)
-        import sys
-        _dm_mod = sys.modules.get("src.dialogue_manager")
-        task_patch_v2_active = getattr(_dm_mod, "is_task_patch_v2_enabled", is_task_patch_v2_enabled)()
-        norm_v2_active = getattr(_dm_mod, "is_normalization_contract_v2_enabled", is_normalization_contract_v2_enabled)()
+        task_patch_v2_active = self._check_task_patch_v2_enabled()
+        norm_v2_active = self._check_normalization_contract_v2_enabled()
         validate_normalization_runtime_flags(task_patch_v2_active, norm_v2_active)
 
         new_slots, _previous_unresolved, expected_version = manager.slot_store.snapshot()
@@ -340,15 +392,44 @@ class SlotFillingHandler(BaseDialogueHandler):
                 if k and k not in new_slots:
                     new_slots[k] = Slot(slot_name=k, value_type=f.get("type", "string"), status="missing")
 
-        merged_updates = {}
-        merged_updates_meta = {}
-        payload_mutation_failed = False
-        mutation_failure_result = None
-        list_mutations = []
+        return {
+            "user_message": user_message,
+            "request_id": request_id,
+            "old_phase": old_phase,
+            "new_slots": new_slots,
+            "new_unresolved": new_unresolved,
+            "expected_version": expected_version,
+            "task_type_key": task_type_key,
+            "had_task_type_key_at_turn_start": had_task_type_key_at_turn_start,
+            "state_before_turn": state_before_turn,
+            "reference_candidates": reference_candidates,
+            "merged_updates": {},
+            "merged_updates_meta": {},
+            "turn_unresolved": [],
+            "proposed_pending_rov": list(manager._pending_rov_candidates),
+            "task_patch_v2_active": task_patch_v2_active,
+            "norm_v2_active": norm_v2_active,
+            "extraction_res": {},
+        }
 
-        extraction_res = {}
-        proposed_pending_rov = list(manager._pending_rov_candidates)
-        turn_unresolved: list = []
+    def _execute_stage1_task_type(
+        self,
+        ctx: DialogueContext,
+        turn_ctx: dict,
+        *,
+        has_acknowledge_action: bool,
+    ) -> str | None:
+        manager = self.manager
+        user_message = turn_ctx["user_message"]
+        request_id = turn_ctx["request_id"]
+        new_slots = turn_ctx["new_slots"]
+        new_unresolved = turn_ctx["new_unresolved"]
+        turn_unresolved = turn_ctx["turn_unresolved"]
+        expected_version = turn_ctx["expected_version"]
+        reference_candidates = turn_ctx["reference_candidates"]
+        current_state = turn_ctx["state_before_turn"]
+        merged_updates = turn_ctx["merged_updates"]
+        merged_updates_meta = turn_ctx["merged_updates_meta"]
 
         def record_unresolved(result: dict) -> None:
             for item in result.get("unresolved", []):
@@ -357,117 +438,130 @@ class SlotFillingHandler(BaseDialogueHandler):
                 if item not in new_unresolved:
                     new_unresolved.append(item)
 
-        def reply_write_without_candidates() -> str:
-            if task_type_key is None and reference_candidates:
+        def reply_without_candidates() -> str:
+            if turn_ctx["task_type_key"] is None and reference_candidates:
                 manager._pending_referential_candidates = copy.deepcopy(list(reference_candidates.values()))
                 turn_unresolved.append("已暂存所选对象，尚未写入任务参数；请先选择任务类型，再按该任务校验这些选择。")
             return self.reply_write_without_candidates(
                 user_message=user_message,
                 request_id=request_id,
                 turn_unresolved=turn_unresolved,
-                task_type_key=task_type_key,
+                task_type_key=turn_ctx["task_type_key"],
                 has_acknowledge_action=has_acknowledge_action,
             )
 
+        extraction_res = manager.extractor.extract_updates(
+            user_message, current_state,
+            task_type_key=None,
+            task_type_map=manager.kb.get_task_type_map(),
+            required=None,
+            conversation_history=manager.conversation_history,
+            allow_empty_for_side_effect=has_acknowledge_action,
+        )
+        extraction_res = self.merge_referential_candidates(
+            extraction_res,
+            [item for item in reference_candidates.values()
+             if item["canonical_key"] in {"task_type", "task_type_key"}],
+        )
+        turn_ctx["extraction_res"] = extraction_res
 
-        if task_type_key is None:
-            # Stage 1: Extract task type
-            extraction_res = manager.extractor.extract_updates(
-                user_message, current_state,
-                task_type_key=None,
-                task_type_map=manager.kb.get_task_type_map(),
-                required=None,
-                conversation_history=manager.conversation_history,
-                allow_empty_for_side_effect=has_acknowledge_action,
+        selectors, selector_error = manager._task_selector_updates_from_extraction(extraction_res)
+        _, _, _, context_error = manager._resolve_task_type_update_context(selectors, new_slots)
+        task_type_error = selector_error or context_error
+        if task_type_error:
+            record_unresolved(extraction_res)
+            record_unresolved({"unresolved": [task_type_error]})
+            manager._record_task_type_update_error(new_slots, task_type_error)
+            manager.slot_store.commit_transaction(
+                new_slots,
+                new_unresolved,
+                request_id=request_id,
+                expected_version=expected_version,
             )
-            extraction_res = self.merge_referential_candidates(
-                extraction_res,
-                [item for item in reference_candidates.values()
-                 if item["canonical_key"] in {"task_type", "task_type_key"}],
-            )
+            return reply_without_candidates()
 
-            # Stage one can trigger robot auto-selection as soon as a task is
-            # applied. Reject contradictory selectors before those mutations,
-            # rather than relying on the second extraction to notice them.
-            selectors, selector_error = manager._task_selector_updates_from_extraction(extraction_res)
-            _, _, _, context_error = manager._resolve_task_type_update_context(selectors, new_slots)
-            task_type_error = selector_error or context_error
-            if task_type_error:
+        if self._check_task_patch_v2_enabled():
+            allowed_stage1 = {"task_type", "task_type_key", "emergency_mode"}
+            patch = build_task_patch(extraction_res, allowed_keys=allowed_stage1)
+            stage1_updates, _, patch_unresolved = task_patch_to_legacy_updates(patch)
+            for u in patch_unresolved:
+                if u not in turn_unresolved:
+                    turn_unresolved.append(u)
+                if u not in new_unresolved:
+                    new_unresolved.append(u)
+            if not stage1_updates:
+                if new_unresolved:
+                    manager.slot_store.commit_transaction(
+                        new_slots,
+                        new_unresolved,
+                        request_id=request_id,
+                        expected_version=expected_version,
+                    )
+                return reply_without_candidates()
+            for k, cand_info in stage1_updates.items():
+                merged_updates[k] = cand_info["value"]
+                merged_updates_meta[k] = cand_info
+        else:
+            if not extraction_res.get("slot_candidates"):
                 record_unresolved(extraction_res)
-                record_unresolved({"unresolved": [task_type_error]})
-                manager._record_task_type_update_error(new_slots, task_type_error)
-                manager.slot_store.commit_transaction(
-                    new_slots,
-                    new_unresolved,
-                    request_id=request_id,
-                    expected_version=expected_version,
-                )
-                return reply_write_without_candidates()
+                if new_unresolved:
+                    manager.slot_store.commit_transaction(
+                        new_slots,
+                        new_unresolved,
+                        request_id=request_id,
+                        expected_version=expected_version,
+                    )
+                return reply_without_candidates()
 
-            if getattr(_dm_mod, "is_task_patch_v2_enabled", is_task_patch_v2_enabled)():
-                allowed_stage1 = {"task_type", "task_type_key", "emergency_mode"}
-                patch = build_task_patch(extraction_res, allowed_keys=allowed_stage1)
-                stage1_updates, _, patch_unresolved = task_patch_to_legacy_updates(patch)
-                for u in patch_unresolved:
-                    if u not in turn_unresolved:
-                        turn_unresolved.append(u)
-                    if u not in new_unresolved:
-                        new_unresolved.append(u)
-                if not stage1_updates:
-                    if new_unresolved:
-                        manager.slot_store.commit_transaction(
-                            new_slots,
-                            new_unresolved,
-                            request_id=request_id,
-                            expected_version=expected_version,
-                        )
-                    return reply_write_without_candidates()
-                for k, cand_info in stage1_updates.items():
-                    merged_updates[k] = cand_info["value"]
-                    merged_updates_meta[k] = cand_info
-            else:
-                if not extraction_res.get("slot_candidates"):
-                    record_unresolved(extraction_res)
-                    if new_unresolved:
-                        manager.slot_store.commit_transaction(
-                            new_slots,
-                            new_unresolved,
-                            request_id=request_id,
-                            expected_version=expected_version,
-                        )
-                    return reply_write_without_candidates()
+            stage1_updates = {}
+            for candidate in extraction_res.get("slot_candidates", []):
+                k = candidate["canonical_key"]
+                v = candidate["normalized_value"]
+                cand_info = {
+                    "value": v,
+                    "raw_value": candidate.get("raw_value"),
+                    "confidence": candidate.get("confidence", 1.0),
+                    "source": manager._source_for_resolution_method(candidate.get("resolution_method")),
+                }
+                stage1_updates[k] = cand_info
+                merged_updates[k] = v
+                merged_updates_meta[k] = cand_info
+            record_unresolved(extraction_res)
 
-                stage1_updates = {}
-                for candidate in extraction_res.get("slot_candidates", []):
-                    k = candidate["canonical_key"]
-                    v = candidate["normalized_value"]
-                    cand_info = {
-                        "value": v,
-                        "raw_value": candidate.get("raw_value"),
-                        "confidence": candidate.get("confidence", 1.0),
-                        "source": manager._source_for_resolution_method(candidate.get("resolution_method"))
-                    }
-                    stage1_updates[k] = cand_info
-                    merged_updates[k] = v
-                    merged_updates_meta[k] = cand_info
-                record_unresolved(extraction_res)
+        manager._apply_updates_in_transaction(stage1_updates, new_slots)
 
-            manager._apply_updates_in_transaction(stage1_updates, new_slots)
+        task_type_slot = new_slots.get("task_type_key")
+        turn_ctx["task_type_key"] = (
+            task_type_slot.value
+            if task_type_slot
+            and task_type_slot.status == "valid"
+            and task_type_slot.value is not None
+            else None
+        )
+        return None
 
-            task_type_slot = new_slots.get("task_type_key")
-            task_type_key = (
-                task_type_slot.value
-                if task_type_slot
-                and task_type_slot.status == "valid"
-                and task_type_slot.value is not None
-                else None
-            )
+    def _execute_parameter_pipeline_and_defaults(
+        self,
+        ctx: DialogueContext,
+        turn_ctx: dict,
+        *,
+        route: Any,
+        plan: Any,
+        has_acknowledge_action: bool,
+    ) -> tuple[str | None, Any]:
+        manager = self.manager
+        user_message = turn_ctx["user_message"]
+        new_slots = turn_ctx["new_slots"]
+        turn_unresolved = turn_ctx["turn_unresolved"]
+        new_unresolved = turn_ctx["new_unresolved"]
+        merged_updates = turn_ctx["merged_updates"]
+        merged_updates_meta = turn_ctx["merged_updates_meta"]
+        task_type_key = turn_ctx["task_type_key"]
+        expected_version = turn_ctx["expected_version"]
+        had_task_type_key_at_turn_start = turn_ctx["had_task_type_key_at_turn_start"]
 
-        # WRITE 已由 TurnPlanner 结合上下文判定。不要再根据原句关键词决定是否
-        # 调用参数抽取，否则自然表达会在模型判断后被第二道语义门静默丢弃。
         should_extract_task_parameters = bool(task_type_key)
-        apply_plan: NormalizationApplyPlan | None = None
-        field_defs = []
+        pipeline_res = None
 
         if should_extract_task_parameters:
             current_state = {k: s.value for k, s in new_slots.items() if s.status == "valid" and s.value is not None}
@@ -476,8 +570,8 @@ class SlotFillingHandler(BaseDialogueHandler):
                 task_type_key=task_type_key,
                 current_state=current_state,
                 has_acknowledge_action=has_acknowledge_action,
-                task_patch_v2_active=task_patch_v2_active,
-                norm_v2_active=norm_v2_active,
+                task_patch_v2_active=turn_ctx["task_patch_v2_active"],
+                norm_v2_active=turn_ctx["norm_v2_active"],
                 new_slots=new_slots,
                 turn_unresolved=turn_unresolved,
                 new_unresolved=new_unresolved,
@@ -489,24 +583,18 @@ class SlotFillingHandler(BaseDialogueHandler):
                 had_task_type_key_at_turn_start=had_task_type_key_at_turn_start,
             )
             if pipeline_res.early_return_reply is not None:
-                return pipeline_res.early_return_reply
+                return pipeline_res.early_return_reply, None
 
-            extraction_res = pipeline_res.extraction_res
-            stage2_updates = pipeline_res.stage2_updates
-            list_mutations = pipeline_res.list_mutations
-            proposed_pending_rov = pipeline_res.proposed_pending_rov
-            payload_mutation_failed = pipeline_res.payload_mutation_failed
-            mutation_failure_result = pipeline_res.mutation_failure_result
-            apply_plan = pipeline_res.apply_plan
-            task_type_key = pipeline_res.effective_task_type_key or task_type_key
-            field_defs = pipeline_res.field_defs
+            turn_ctx["proposed_pending_rov"] = pipeline_res.proposed_pending_rov
+            turn_ctx["task_type_key"] = pipeline_res.effective_task_type_key or task_type_key
         else:
+            extraction_res = turn_ctx.get("extraction_res", {})
             if extraction_res.get("unresolved"):
                 for u in extraction_res["unresolved"]:
                     if u not in new_unresolved:
                         new_unresolved.append(u)
 
-        # 同一油田保留已保存的有效人工坐标；其他情况下，本轮未给显式坐标时使用油田默认坐标。
+        # 填充油田默认坐标
         of_id_slot = new_slots.get("oilfield_entity_id")
         if of_id_slot and of_id_slot.status == "valid" and of_id_slot.value:
             saved_entity = manager.slot_store.slots.get("oilfield_entity_id")
@@ -533,14 +621,34 @@ class SlotFillingHandler(BaseDialogueHandler):
                 except Exception as exc:
                     logger.debug("Failed to populate oilfield default coordinates for %s: %s", of_id_slot.value, exc)
 
-        # Compute proposed mode change without mutating manager.mode before commit
+        return None, pipeline_res
+
+    def _commit_turn_transaction(
+        self,
+        ctx: DialogueContext,
+        turn_ctx: dict,
+        pipeline_res: Any,
+    ) -> dict:
+        manager = self.manager
+        request_id = turn_ctx["request_id"]
+        old_phase = turn_ctx["old_phase"]
+        new_slots = turn_ctx["new_slots"]
+        new_unresolved = turn_ctx["new_unresolved"]
+        expected_version = turn_ctx["expected_version"]
+        merged_updates = turn_ctx["merged_updates"]
+        state_before_turn = turn_ctx["state_before_turn"]
+        proposed_pending_rov = turn_ctx["proposed_pending_rov"]
+
+        apply_plan = getattr(pipeline_res, "apply_plan", None)
+        field_defs = getattr(pipeline_res, "field_defs", [])
+        payload_mutation_failed = getattr(pipeline_res, "payload_mutation_failed", False)
+
         proposed_mode = manager.mode
         if merged_updates.get("emergency_mode") is True:
             proposed_mode = "emergency"
         elif merged_updates.get("emergency_mode") is False:
             proposed_mode = "normal"
 
-        # Compute changed fields based on proposed updates
         changed_fields = set()
         for k, v in merged_updates.items():
             if k not in ("emergency_mode", "rov_description", "__clear_oilfield_name", "__clear_pending_oilfield") and v is not None and v != "":
@@ -550,7 +658,6 @@ class SlotFillingHandler(BaseDialogueHandler):
 
         proposed_whitelist = {item for item in manager._soft_whitelist if item[0] not in changed_fields}
 
-        # Normalize and validate inside transaction working dict new_slots
         curr_task_type_slot = new_slots.get("task_type_key")
         curr_task_type_key = (
             curr_task_type_slot.value
@@ -567,7 +674,6 @@ class SlotFillingHandler(BaseDialogueHandler):
 
         curr_task_type_key = new_slots.get("task_type_key").value if (new_slots.get("task_type_key") and new_slots.get("task_type_key").status == "valid") else None
 
-        # Auto-generate internal_id (UUIDv4) and task_id inside new_slots BEFORE commit
         if curr_task_type_key:
             internal_id_slot = new_slots.get("internal_id")
             if not internal_id_slot or internal_id_slot.status != "valid" or not internal_id_slot.value:
@@ -594,9 +700,7 @@ class SlotFillingHandler(BaseDialogueHandler):
                 except IdReservationError:
                     raise
                 except Exception as _preview_err:
-                    logger.warning(
-                        "[DM] non-fatal preview_task_id failed for %s: %s", curr_task_type_key, _preview_err
-                    )
+                    logger.warning("[DM] non-fatal preview_task_id failed for %s: %s", curr_task_type_key, _preview_err)
                     preview_id = None
                 if preview_id is not None:
                     if "task_id" not in new_slots:
@@ -611,7 +715,6 @@ class SlotFillingHandler(BaseDialogueHandler):
 
         proposed_phase = manager.phase
 
-        # Check required missing in working new_slots
         if curr_task_type_key:
             required_schema = manager.builder.get_schema(curr_task_type_key, proposed_mode)
             user_req_schema = [f for f in required_schema if f.get("type") not in ("auto", "fixed")]
@@ -633,10 +736,8 @@ class SlotFillingHandler(BaseDialogueHandler):
             manager._last_missing = missing
             cand_missing = missing
 
-        # 维持严格 SSOT：_last_built_json 完全由 manager.slot_store.get_built_json() 派生
         manager._last_built_json = built
 
-        # Auto-generate intent_id inside new_slots BEFORE commit when all required slots are present or when revising a done task
         if old_phase == "done" or (curr_task_type_key and not cand_missing):
             intent_id_slot = new_slots.get("intent_id")
             if old_phase == "done" or not intent_id_slot or intent_id_slot.status != "valid" or not intent_id_slot.value:
@@ -657,7 +758,6 @@ class SlotFillingHandler(BaseDialogueHandler):
         elif not cand_missing and proposed_phase not in ("blocked_hard", "blocked_soft", "confirming", "done"):
             proposed_phase = "confirming"
 
-        # Atomic single commit with optimistic version validation
         manager.slot_store.commit_transaction(
             new_slots,
             new_unresolved,
@@ -671,13 +771,11 @@ class SlotFillingHandler(BaseDialogueHandler):
             manager.ros2_dispatch = None
             manager._pending_published_intent = None
 
-        # Apply proposed instance state AFTER successful commit
         manager.mode = proposed_mode
         manager._transition_phase(proposed_phase, reason="task_modified")
         manager._soft_whitelist = proposed_whitelist
         manager._pending_rov_candidates = proposed_pending_rov
 
-        # Re-derive from slot_store (SSOT)
         manager.task_state = manager.slot_store.get_task_state()
         if getattr(manager, "editing_slot", None) == "payload":
             context_changed = any(
@@ -691,6 +789,7 @@ class SlotFillingHandler(BaseDialogueHandler):
             )
             if context_changed or payload_committed:
                 manager.editing_slot = None
+
         if curr_task_type_key:
             required_schema = manager.builder.get_schema(curr_task_type_key, manager.mode)
             user_req_schema = [f for f in required_schema if f.get("type") not in ("auto", "fixed")]
@@ -710,8 +809,30 @@ class SlotFillingHandler(BaseDialogueHandler):
                         "allowed_values": manager.kb.get_all_task_type_values()}]
             manager._last_missing = missing
         manager._last_built_json = built
-
         manager.task_start_now = manager.is_start_time_near_now()
+
+        return {
+            "changed_fields": changed_fields,
+            "missing": missing,
+            "built": built,
+            "curr_task_type_key": curr_task_type_key,
+        }
+
+    def _evaluate_and_generate_reply(
+        self,
+        ctx: DialogueContext,
+        turn_ctx: dict,
+        pipeline_res: Any,
+        eval_ctx: dict,
+    ) -> str:
+        manager = self.manager
+        user_message = turn_ctx["user_message"]
+        turn_unresolved = turn_ctx["turn_unresolved"]
+        merged_updates = turn_ctx["merged_updates"]
+        state_before_turn = turn_ctx["state_before_turn"]
+        changed_fields = eval_ctx["changed_fields"]
+        missing = eval_ctx["missing"]
+        built = eval_ctx["built"]
 
         pending_oilfield_reply = manager._build_pending_oilfield_reply()
         if pending_oilfield_reply:
@@ -720,11 +841,12 @@ class SlotFillingHandler(BaseDialogueHandler):
             manager.conversation_history.append({"role": "assistant", "content": pending_oilfield_reply})
             return pending_oilfield_reply
 
-        # 约束检查
-        ALL_FIELDS = {"task_type", "start_time", "end_time", "cable_position", "cable_type", "start_point", "end_point",
-                      "water_depth", "equipment_family", "equipment_type", "equipment_name", "equipment_unit_id",
-                      "payload", "support_vessel", "oilfield_name",
-                      "oilfield_coordinates", "wellhead_id"}
+        ALL_FIELDS = {
+            "task_type", "start_time", "end_time", "cable_position", "cable_type", "start_point", "end_point",
+            "water_depth", "equipment_family", "equipment_type", "equipment_name", "equipment_unit_id",
+            "payload", "support_vessel", "oilfield_name",
+            "oilfield_coordinates", "wellhead_id",
+        }
 
         if not missing and manager.phase not in ("blocked_hard", "blocked_soft"):
             constraint_context = manager._run_constraint_check(ALL_FIELDS, purpose="preview")
@@ -745,7 +867,6 @@ class SlotFillingHandler(BaseDialogueHandler):
                 reason="constraints_resolved_and_required_slots_complete",
             )
 
-        # 知识上下文
         knowledge_context = manager.kb.get_context_for_state(
             manager.task_state,
             include_runtime_state=not constraint_context.get("runtime_validation_deferred", False),
@@ -755,10 +876,9 @@ class SlotFillingHandler(BaseDialogueHandler):
             state_before_turn,
         )
 
+        payload_mutation_failed = getattr(pipeline_res, "payload_mutation_failed", False)
+        mutation_failure_result = getattr(pipeline_res, "mutation_failure_result", None)
         if payload_mutation_failed and mutation_failure_result:
-            # A failed write needs an authoritative result, not a second model
-            # summary which may describe the requested change as committed.
-            # Keep receipts for other fields successfully committed this turn.
             error = mutation_failure_result.get("error") or "载荷修改操作失败。"
             reply = self.ground_write_reply(
                 "",
@@ -776,7 +896,6 @@ class SlotFillingHandler(BaseDialogueHandler):
             ])
             return reply
 
-        # 生成回复
         messages = build_responder_messages(
             task_state=manager.task_state,
             built_json=built,
@@ -800,9 +919,7 @@ class SlotFillingHandler(BaseDialogueHandler):
             accepted_updates=accepted_updates,
             unresolved_inputs=turn_unresolved,
             missing_fields=missing,
-            display_updates=self.get_committed_update_display_values(
-                accepted_updates
-            ),
+            display_updates=self.get_committed_update_display_values(accepted_updates),
             task_state=manager.task_state,
             constraint_context=constraint_context,
             payload_configuration=self.reply_grounder.get_payload_configuration(),
@@ -812,6 +929,7 @@ class SlotFillingHandler(BaseDialogueHandler):
         manager.conversation_history.append({"role": "user", "content": user_message})
         manager.conversation_history.append({"role": "assistant", "content": reply})
         return reply
+
 
     def resolve_pending_oilfield_confirmation(
         self,

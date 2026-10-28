@@ -35,19 +35,35 @@ class EquipmentCascadeResolver:
         self.scoping = EquipmentScopingHandler(manager)
         self.collapse = EquipmentCollapseHandler(manager)
 
-    def __getattr__(self, name: str) -> Any:
-        if "_manager_resolving" in self.__dict__:
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
-        for sub in ("scoping", "collapse"):
-            if sub in self.__dict__ and hasattr(self.__dict__[sub], name):
-                return getattr(self.__dict__[sub], name)
-        if "manager" in self.__dict__ and self.manager is not None:
-            try:
-                self.__dict__["_manager_resolving"] = True
-                return getattr(self.manager, name)
-            finally:
-                self.__dict__.pop("_manager_resolving", None)
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+    @property
+    def kb(self) -> Any:
+        return getattr(self.manager, "kb", None)
+
+    @property
+    def slot_store(self) -> Any:
+        return getattr(self.manager, "slot_store", None)
+
+    @property
+    def conversation_history(self) -> Any:
+        return getattr(self.manager, "conversation_history", [])
+
+    def _apply_slot_update_in_transaction(self, *args, **kwargs):
+        return self.manager._apply_slot_update_in_transaction(*args, **kwargs)
+
+    def _handle_task_type_update_in_transaction(self, *args, **kwargs):
+        return self.manager._handle_task_type_update_in_transaction(*args, **kwargs)
+
+    def _scope_confirmed_recommendation(self, *args, **kwargs):
+        return self.scoping._scope_confirmed_recommendation(*args, **kwargs)
+
+    def _scope_visible_ordinal_selections(self, *args, **kwargs):
+        return self.scoping._scope_visible_ordinal_selections(*args, **kwargs)
+
+    def _auto_collapse_robot_cascade(self, *args, **kwargs):
+        return self.collapse._auto_collapse_robot_cascade(*args, **kwargs)
+
+    def auto_collapse_robot_cascade(self, *args, **kwargs):
+        return self.collapse._auto_collapse_robot_cascade(*args, **kwargs)
 
 
     # 委托及别名兼容
@@ -163,6 +179,10 @@ class EquipmentCascadeResolver:
         task_type_slot = new_slots.get("task_type_key")
         if task_type_slot and task_type_slot.status == "valid" and task_type_slot.value is not None:
             return task_type_slot.value
+
+        # 仅在 task_type 为 missing 时尝试根据设备自动补全唯一关联的任务类型，不得强改 candidate 状态
+        if not (not task_type_slot or task_type_slot.status == "missing" or task_type_slot.value is None):
+            return None
 
         inferred_tt_key = None
         fam_ctx = (
@@ -765,7 +785,7 @@ class EquipmentCascadeResolver:
             new_slots["payload"] = sandbox_slots["payload"]
 
         cur_tt_slot = new_slots.get("task_type_key")
-        if not cur_tt_slot or cur_tt_slot.status != "valid" or not cur_tt_slot.value:
+        if not cur_tt_slot or cur_tt_slot.status == "missing" or not cur_tt_slot.value:
             eq_cls_slot = new_slots.get("equipment_class")
             if eq_cls_slot and eq_cls_slot.status == "valid" and eq_cls_slot.value:
                 cls_id = self.kb._resolve_class_key(str(eq_cls_slot.value))

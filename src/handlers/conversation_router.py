@@ -54,11 +54,6 @@ class ConversationRouterHandler(BaseDialogueHandler):
         self.grounded_catalog = GroundedCatalogHandler(manager)
         self.telemetry_status = TelemetryStatusHandler(manager)
 
-    def __getattr__(self, name: str) -> Any:
-        for sub in ("grounded_catalog", "telemetry_status"):
-            if sub in self.__dict__ and hasattr(self.__dict__[sub], name):
-                return getattr(self.__dict__[sub], name)
-        return super().__getattr__(name)
 
     # --- 代理 DialogueManager 上下文属性，确保下沉逻辑零摩擦访问 ---
     @property
@@ -781,3 +776,22 @@ class ConversationRouterHandler(BaseDialogueHandler):
 
     def _align_status_reply_with_backend_facts(self, reply: str, state_dict: dict | None) -> str:
         return self.telemetry_status.align_status_reply_with_backend_facts(reply, state_dict)
+
+    # 显式别名导出（兼容不带下划线的前缀调用）
+    build_grounded_recommendation = _build_grounded_recommendation
+    resolve_project_robot_classes = _resolve_project_robot_classes
+    extract_robot_entity_from_text = _extract_robot_entity_from_text
+    extract_oilfield_entity_from_text = _extract_oilfield_entity_from_text
+    extract_payload_entity_from_text = _extract_payload_entity_from_text
+    extract_task_type_from_text = _extract_task_type_from_text
+    build_grounded_single_task_introduction = _build_grounded_single_task_introduction
+    build_grounded_fleet_introduction = _build_grounded_fleet_introduction
+    build_grounded_task_catalog_introduction = _build_grounded_task_catalog_introduction
+    build_grounded_tool_catalog_introduction = _build_grounded_tool_catalog_introduction
+    build_grounded_oilfield_catalog_introduction = _build_grounded_oilfield_catalog_introduction
+    build_grounded_rule_catalog_introduction = _build_grounded_rule_catalog_introduction
+    build_grounded_device_class_answer = _build_grounded_device_class_answer
+    is_environment_status_query = _is_environment_status_query
+    handle_status_query = _handle_status_query
+    build_environment_status_reply = _build_environment_status_reply
+    align_status_reply_with_backend_facts = _align_status_reply_with_backend_facts

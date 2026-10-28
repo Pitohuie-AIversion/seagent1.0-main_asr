@@ -29,13 +29,56 @@ logger = logging.getLogger("src.dialogue_manager")
 class EquipmentCollapseHandler:
     """四级设备级联自动收敛与推导处理器"""
 
+    CASCADE_KEYS = (
+        "equipment_class",
+        "equipment_family",
+        "equipment_type",
+        "equipment_unit_id",
+    )
+
     def __init__(self, manager: Any = None) -> None:
         self.manager = manager
 
-    def __getattr__(self, name: str) -> Any:
-        if "manager" in self.__dict__ and self.manager is not None:
-            return getattr(self.manager, name)
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+    @property
+    def kb(self) -> Any:
+        return getattr(self.manager, "kb", None)
+
+    @property
+    def task_state(self) -> Any:
+        return getattr(self.manager, "task_state", None)
+
+    @staticmethod
+    def _class_node(selection_domain: dict, class_id: str | None) -> dict | None:
+        return next(
+            (
+                item
+                for item in (selection_domain or {}).get("classes", [])
+                if item.get("class_id") == class_id
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _family_node(parent: dict | None, family_id: str | None) -> dict | None:
+        return next(
+            (
+                item
+                for item in (parent or {}).get("families", [])
+                if item.get("family_id") == family_id
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _variant_node(parent: dict | None, variant_id: str | None) -> dict | None:
+        return next(
+            (
+                item
+                for item in (parent or {}).get("variants", [])
+                if item.get("variant_id") == variant_id
+            ),
+            None,
+        )
 
     def _auto_collapse_robot_cascade(self, new_slots: dict, allow_overwrite: bool = False) -> None:
         """
@@ -53,6 +96,29 @@ class EquipmentCollapseHandler:
             return
 
         task_type_key = str(task_type_slot.value)
+        domains = self._build_domains_for_task(task_type_key, new_slots)
+        if domains is None:
+            return
+        domain, admission_domain = domains
+
+        deepest_explicit = self._reset_recomputed_slots(new_slots)
+
+        # ── 1. 前置校验：分离“静态归属”和“当前可行性” ──
+        self._invalidate_stale_or_infeasible_selectors(
+            new_slots=new_slots,
+            task_type_key=task_type_key,
+            domain=domain,
+            admission_domain=admission_domain,
+            deepest_explicit=deepest_explicit,
+        )
+
+        # ── 2. 祖先谱系回溯补全 ──
+        self._materialize_missing_ancestors(new_slots, task_type_key)
+
+        # ── 3. 逐级四级 auto-collapse ──
+        self._collapse_cascade_levels(new_slots, task_type_key, domain)
+
+    def _build_domains_for_task(self, task_type_key: str, new_slots: dict) -> tuple[dict, dict] | None:
         try:
             task_state = {
                 key: copy.deepcopy(slot.value)
@@ -64,15 +130,10 @@ class EquipmentCollapseHandler:
                 task_state,
                 purpose="auto_collapse",
             )
-            # The admission domain contains only task/class/capability and
-            # registry hierarchy rules.  It deliberately excludes mutable
-            # task facts (depth/payload) and runtime telemetry.  Keeping this
-            # second view lets us distinguish a structurally stale selector
-            # from an explicit, structurally valid selector that is currently
-            # infeasible and must remain visible to the Validator.
             admission_domain = self.kb.get_feasible_robot_selection_domain(
                 task_type_key,
             )
+            return domain, admission_domain
         except Exception as exc:
             logger.warning("[DialogueManager] Failed to build feasible robot domain for task '%s': %s", task_type_key, exc)
             if "equipment_class" not in new_slots:
@@ -82,20 +143,10 @@ class EquipmentCollapseHandler:
             slot.value = None
             slot.source = "system_candidate_resolution"
             slot.validation_error = str(exc)
-            return
+            return None
 
-        # Auto-bound values express candidate uniqueness, not a durable user
-        # preference. Recompute only the automatic suffix below the deepest
-        # explicit user choice. Automatic ancestors of an explicit family,
-        # variant, or unit must remain in place so that choice can still be
-        # validated against its parent chain.
-        cascade_keys = (
-            "equipment_class",
-            "equipment_family",
-            "equipment_type",
-            "equipment_unit_id",
-        )
-        for key in cascade_keys:
+    def _reset_recomputed_slots(self, new_slots: dict) -> int:
+        for key in self.CASCADE_KEYS:
             slot = new_slots.get(key)
             if (
                 slot
@@ -109,7 +160,7 @@ class EquipmentCollapseHandler:
 
         explicit_indices = [
             index
-            for index, key in enumerate(cascade_keys)
+            for index, key in enumerate(self.CASCADE_KEYS)
             if (
                 (slot := new_slots.get(key))
                 and slot.status == "valid"
@@ -118,7 +169,7 @@ class EquipmentCollapseHandler:
             )
         ]
         deepest_explicit = max(explicit_indices, default=-1)
-        for index, key in enumerate(cascade_keys):
+        for index, key in enumerate(self.CASCADE_KEYS):
             slot = new_slots.get(key)
             if (
                 index > deepest_explicit
@@ -127,12 +178,16 @@ class EquipmentCollapseHandler:
                 and slot.source == "auto"
             ):
                 reset_slot_to_missing(slot, source="system_candidate_recompute")
+        return deepest_explicit
 
-        # ── 1. 前置校验：分离“静态归属”和“当前可行性” ──
-        # 任务类型/父层切换后已不在 admission domain 的旧值必须清理，
-        # 无论其是否来自用户。但对仍在 admission domain、只因水深/
-        # 载荷/运行状态而不在 feasible domain 的明确用户选择，必须保留
-        # 给 Validator 产生硬约束；只重算 source=auto 的候选结论。
+    def _invalidate_stale_or_infeasible_selectors(
+        self,
+        new_slots: dict,
+        task_type_key: str,
+        domain: dict,
+        admission_domain: dict,
+        deepest_explicit: int,
+    ) -> None:
         def should_invalidate(
             slot: Any,
             *,
@@ -148,41 +203,12 @@ class EquipmentCollapseHandler:
                 and level_index > deepest_explicit
             )
 
-        def class_node(selection_domain: dict, class_id: str | None) -> dict | None:
-            return next(
-                (
-                    item
-                    for item in selection_domain.get("classes", [])
-                    if item.get("class_id") == class_id
-                ),
-                None,
-            )
-
-        def family_node(parent: dict | None, family_id: str | None) -> dict | None:
-            return next(
-                (
-                    item
-                    for item in (parent or {}).get("families", [])
-                    if item.get("family_id") == family_id
-                ),
-                None,
-            )
-
-        def variant_node(parent: dict | None, variant_id: str | None) -> dict | None:
-            return next(
-                (
-                    item
-                    for item in (parent or {}).get("variants", [])
-                    if item.get("variant_id") == variant_id
-                ),
-                None,
-            )
-
+        # Class selector validation
         cls_slot = new_slots.get("equipment_class")
         if cls_slot and cls_slot.status == "valid" and cls_slot.value:
             resolved_cls = self.kb._resolve_class_key(str(cls_slot.value))
-            admitted_cls = class_node(admission_domain, resolved_cls) is not None
-            feasible_cls = class_node(domain, resolved_cls) is not None
+            admitted_cls = self._class_node(admission_domain, resolved_cls) is not None
+            feasible_cls = self._class_node(domain, resolved_cls) is not None
             if should_invalidate(
                 cls_slot,
                 admitted=admitted_cls,
@@ -192,6 +218,7 @@ class EquipmentCollapseHandler:
                 invalidate_robot_cascade_dependents(new_slots, ["equipment_class"])
                 reset_slot_to_missing(cls_slot, source="system_dependency_invalidation")
 
+        # Family selector validation
         fam_slot = new_slots.get("equipment_family")
         if fam_slot and fam_slot.status == "valid" and fam_slot.value:
             cur_cls = new_slots.get("equipment_class")
@@ -216,12 +243,12 @@ class EquipmentCollapseHandler:
                 cur_cls_id = canonical_cls_id
 
             parent_matches = cur_cls_id is None or cur_cls_id == canonical_cls_id
-            admitted_fam = family_node(
-                class_node(admission_domain, canonical_cls_id),
+            admitted_fam = self._family_node(
+                self._class_node(admission_domain, canonical_cls_id),
                 resolved_fam_id,
             ) is not None and parent_matches
-            feasible_fam = family_node(
-                class_node(domain, canonical_cls_id),
+            feasible_fam = self._family_node(
+                self._class_node(domain, canonical_cls_id),
                 resolved_fam_id,
             ) is not None and parent_matches
             if should_invalidate(
@@ -233,6 +260,7 @@ class EquipmentCollapseHandler:
                 invalidate_robot_cascade_dependents(new_slots, ["equipment_family"])
                 reset_slot_to_missing(fam_slot, source="system_dependency_invalidation")
 
+        # Variant selector validation
         type_slot = new_slots.get("equipment_type")
         if type_slot and type_slot.status == "valid" and type_slot.value:
             cur_cls = new_slots.get("equipment_class")
@@ -290,16 +318,16 @@ class EquipmentCollapseHandler:
                 (cur_cls_id is None or cur_cls_id == canonical_cls_id)
                 and (cur_fam_id is None or cur_fam_id == canonical_fam_id)
             )
-            admitted_var = variant_node(
-                family_node(
-                    class_node(admission_domain, canonical_cls_id),
+            admitted_var = self._variant_node(
+                self._family_node(
+                    self._class_node(admission_domain, canonical_cls_id),
                     canonical_fam_id,
                 ),
                 resolved_variant_id,
             ) is not None and parents_match
-            feasible_var = variant_node(
-                family_node(
-                    class_node(domain, canonical_cls_id),
+            feasible_var = self._variant_node(
+                self._family_node(
+                    self._class_node(domain, canonical_cls_id),
                     canonical_fam_id,
                 ),
                 resolved_variant_id,
@@ -313,6 +341,7 @@ class EquipmentCollapseHandler:
                 invalidate_robot_cascade_dependents(new_slots, ["equipment_type"])
                 reset_slot_to_missing(type_slot, source="system_dependency_invalidation")
 
+        # Unit selector validation
         unit_slot = new_slots.get("equipment_unit_id")
         if unit_slot and unit_slot.status == "valid" and unit_slot.value:
             cur_cls = new_slots.get("equipment_class")
@@ -365,16 +394,16 @@ class EquipmentCollapseHandler:
                     or resolved_variant_id == canonical_unit_var_id
                 )
             )
-            admission_var = variant_node(
-                family_node(
-                    class_node(admission_domain, canonical_unit_cls_id),
+            admission_var = self._variant_node(
+                self._family_node(
+                    self._class_node(admission_domain, canonical_unit_cls_id),
                     canonical_unit_fam_id,
                 ),
                 canonical_unit_var_id,
             )
-            feasible_var_node = variant_node(
-                family_node(
-                    class_node(domain, canonical_unit_cls_id),
+            feasible_var_node = self._variant_node(
+                self._family_node(
+                    self._class_node(domain, canonical_unit_cls_id),
                     canonical_unit_fam_id,
                 ),
                 canonical_unit_var_id,
@@ -395,76 +424,97 @@ class EquipmentCollapseHandler:
             ):
                 reset_slot_to_missing(unit_slot, source="system_dependency_invalidation")
 
-        # A valid deeper selector has one authoritative registry lineage.
-        # Restore/migration callers may legitimately provide only Family,
-        # Variant, or Unit, so materialize only missing ancestors before the
-        # normal forward collapse.  Explicit ancestors were already checked
-        # above and are never overwritten here.
-        cascade_keys = (
-            "equipment_class",
-            "equipment_family",
-            "equipment_type",
-            "equipment_unit_id",
-        )
+    def _materialize_missing_ancestors(self, new_slots: dict, task_type_key: str) -> None:
         canonical_state = {
             key: copy.deepcopy(slot.value)
             for key, slot in new_slots.items()
-            if key in cascade_keys
+            if key in self.CASCADE_KEYS
             and slot.status == "valid"
             and slot.value is not None
         }
-        if canonical_state:
-            try:
-                canonical_selection = (
-                    self.kb.validate_robot_selection_from_task_state(
-                        {
-                            "task_type_key": task_type_key,
-                            **canonical_state,
-                        },
-                        require_unit=False,
-                    )
+        if not canonical_state:
+            return
+        try:
+            canonical_selection = (
+                self.kb.validate_robot_selection_from_task_state(
+                    {
+                        "task_type_key": task_type_key,
+                        **canonical_state,
+                    },
+                    require_unit=False,
                 )
-            except RobotSelectionDataError:
-                canonical_selection = None
+            )
+        except RobotSelectionDataError:
+            canonical_selection = None
 
-            if isinstance(canonical_selection, dict):
-                canonical_ancestors = (
-                    ("equipment_class", "robot_class"),
-                    ("equipment_family", "family_name"),
-                    ("equipment_type", "equipment_type"),
-                )
-                for slot_key, result_key in canonical_ancestors:
-                    canonical_value = canonical_selection.get(result_key)
-                    current_slot = new_slots.get(slot_key)
-                    if (
-                        isinstance(canonical_value, str)
-                        and canonical_value.strip()
-                        and (
-                            current_slot is None
-                            or (
-                                current_slot.status == "missing"
-                                and current_slot.value is None
-                            )
+        if isinstance(canonical_selection, dict):
+            canonical_ancestors = (
+                ("equipment_class", "robot_class"),
+                ("equipment_family", "family_name"),
+                ("equipment_type", "equipment_type"),
+            )
+            for slot_key, result_key in canonical_ancestors:
+                canonical_value = canonical_selection.get(result_key)
+                current_slot = new_slots.get(slot_key)
+                if (
+                    isinstance(canonical_value, str)
+                    and canonical_value.strip()
+                    and (
+                        current_slot is None
+                        or (
+                            current_slot.status == "missing"
+                            and current_slot.value is None
                         )
-                    ):
-                        if current_slot is None:
-                            current_slot = Slot(slot_key)
-                            new_slots[slot_key] = current_slot
-                        current_slot.value = canonical_value
-                        current_slot.status = "valid"
-                        current_slot.source = "auto"
-                        current_slot.raw_value = canonical_value
-                        current_slot.confidence = 1.0
-                        current_slot.candidate_value = None
-                        current_slot.validation_error = None
+                    )
+                ):
+                    if current_slot is None:
+                        current_slot = Slot(slot_key)
+                        new_slots[slot_key] = current_slot
+                    current_slot.value = canonical_value
+                    current_slot.status = "valid"
+                    current_slot.source = "auto"
+                    current_slot.raw_value = canonical_value
+                    current_slot.confidence = 1.0
+                    current_slot.candidate_value = None
+                    current_slot.validation_error = None
 
-        # ── 2. 逐级四级 auto-collapse ──
-
-        # Level 1: equipment_class
+    def _collapse_cascade_levels(self, new_slots: dict, task_type_key: str, domain: dict) -> None:
         classes = domain["classes"]
+        if not self._collapse_equipment_class(new_slots, task_type_key, classes):
+            return
+
+        cur_cls_val = str(new_slots["equipment_class"].value)
+        cur_cls_id = self.kb._resolve_class_key(cur_cls_val)
+        cls_node = next((c for c in classes if c["class_id"] == cur_cls_id), None)
+        if not cls_node:
+            return
+
+        families = cls_node["families"]
+        if not self._collapse_equipment_family(new_slots, task_type_key, cur_cls_id, families):
+            return
+
+        cur_fam_val = str(new_slots["equipment_family"].value)
+        cur_fam_id = self.kb.resolve_robot_family_id(cur_fam_val, task_type_key)
+        fam_node = next((f for f in families if f["family_id"] == cur_fam_id), None)
+        if not fam_node:
+            return
+
+        variants = fam_node["variants"]
+        if not self._collapse_equipment_type(new_slots, task_type_key, cur_fam_id, variants):
+            return
+
+        cur_type_val = str(new_slots["equipment_type"].value)
+        var_node = next((v for v in variants if v["full_name"] == cur_type_val or v["variant_id"] == cur_type_val), None)
+        if not var_node:
+            return
+
+        units = var_node["units"]
+        self._collapse_equipment_unit_id(new_slots, cur_type_val, units)
+
+    def _collapse_equipment_class(self, new_slots: dict, task_type_key: str, classes: list) -> bool:
         cls_slot = new_slots.get("equipment_class")
         if cls_slot and cls_slot.status in ("invalid", "conflict", "unresolved", "candidate"):
-            return
+            return False
         if not cls_slot or cls_slot.status != "valid" or not cls_slot.value:
             if len(classes) == 0:
                 if "equipment_class" not in new_slots:
@@ -475,7 +525,7 @@ class EquipmentCollapseHandler:
                     slot.value = None
                     slot.source = "system_candidate_resolution"
                     slot.validation_error = f"No feasible robot class for task '{task_type_key}'"
-                return
+                return False
             elif len(classes) == 1:
                 cls_info = classes[0]
                 if "equipment_class" not in new_slots:
@@ -487,21 +537,15 @@ class EquipmentCollapseHandler:
                 cls_slot.raw_value = cls_info["full_name"]
                 cls_slot.confidence = 1.0
                 cls_slot.validation_error = None
+                return True
             else:
-                # > 1 候选且未指定 -> 停止自动收敛
-                return
+                return False
+        return True
 
-        # Level 2: equipment_family
-        cur_cls_val = str(new_slots["equipment_class"].value)
-        cur_cls_id = self.kb._resolve_class_key(cur_cls_val)
-        cls_node = next((c for c in classes if c["class_id"] == cur_cls_id), None)
-        if not cls_node:
-            return
-
-        families = cls_node["families"]
+    def _collapse_equipment_family(self, new_slots: dict, task_type_key: str, cur_cls_id: str, families: list) -> bool:
         fam_slot = new_slots.get("equipment_family")
         if fam_slot and fam_slot.status in ("invalid", "conflict", "unresolved", "candidate"):
-            return
+            return False
         if not fam_slot or fam_slot.status != "valid" or not fam_slot.value:
             if len(families) == 0:
                 if "equipment_family" not in new_slots:
@@ -512,7 +556,7 @@ class EquipmentCollapseHandler:
                     slot.value = None
                     slot.source = "system_candidate_resolution"
                     slot.validation_error = f"No feasible robot family under class '{cur_cls_id}' for task '{task_type_key}'"
-                return
+                return False
             elif len(families) == 1:
                 fam_info = families[0]
                 if "equipment_family" not in new_slots:
@@ -524,21 +568,15 @@ class EquipmentCollapseHandler:
                 fam_slot.raw_value = fam_info["full_name"]
                 fam_slot.confidence = 1.0
                 fam_slot.validation_error = None
+                return True
             else:
-                # > 1 候选且未指定 -> 停止自动收敛
-                return
+                return False
+        return True
 
-        # Level 3: equipment_type
-        cur_fam_val = str(new_slots["equipment_family"].value)
-        cur_fam_id = self.kb.resolve_robot_family_id(cur_fam_val, task_type_key)
-        fam_node = next((f for f in families if f["family_id"] == cur_fam_id), None)
-        if not fam_node:
-            return
-
-        variants = fam_node["variants"]
+    def _collapse_equipment_type(self, new_slots: dict, task_type_key: str, cur_fam_id: str, variants: list) -> bool:
         type_slot = new_slots.get("equipment_type")
         if type_slot and type_slot.status in ("invalid", "conflict", "unresolved", "candidate"):
-            return
+            return False
         if not type_slot or type_slot.status != "valid" or not type_slot.value:
             if len(variants) == 0:
                 if "equipment_type" not in new_slots:
@@ -549,7 +587,7 @@ class EquipmentCollapseHandler:
                     slot.value = None
                     slot.source = "system_candidate_resolution"
                     slot.validation_error = f"No feasible robot variant under family '{cur_fam_id}' for task '{task_type_key}'"
-                return
+                return False
             elif len(variants) == 1:
                 var_info = variants[0]
                 if "equipment_type" not in new_slots:
@@ -561,20 +599,15 @@ class EquipmentCollapseHandler:
                 type_slot.raw_value = var_info["full_name"]
                 type_slot.confidence = 1.0
                 type_slot.validation_error = None
+                return True
             else:
-                # > 1 候选且未指定 -> 停止自动收敛
-                return
+                return False
+        return True
 
-        # Level 4: equipment_unit_id
-        cur_type_val = str(new_slots["equipment_type"].value)
-        var_node = next((v for v in variants if v["full_name"] == cur_type_val or v["variant_id"] == cur_type_val), None)
-        if not var_node:
-            return
-
-        units = var_node["units"]
+    def _collapse_equipment_unit_id(self, new_slots: dict, cur_type_val: str, units: list) -> bool:
         unit_slot = new_slots.get("equipment_unit_id")
         if unit_slot and unit_slot.status in ("invalid", "conflict", "unresolved", "candidate"):
-            return
+            return False
         if not unit_slot or unit_slot.status != "valid" or not unit_slot.value:
             if len(units) == 0:
                 if "equipment_unit_id" not in new_slots:
@@ -585,7 +618,7 @@ class EquipmentCollapseHandler:
                     slot.value = None
                     slot.source = "system_candidate_resolution"
                     slot.validation_error = f"No fleet units configured for variant '{cur_type_val}'"
-                return
+                return False
             elif len(units) == 1:
                 unit_info = units[0]
                 if "equipment_unit_id" not in new_slots:
@@ -597,9 +630,10 @@ class EquipmentCollapseHandler:
                 unit_slot.raw_value = unit_info["unit_id"]
                 unit_slot.confidence = 1.0
                 unit_slot.validation_error = None
+                return True
             else:
-                # > 1 候选且未指定 -> 停止自动收敛
-                return
+                return False
+        return True
 
     # 别名兼容
     auto_collapse_robot_cascade = _auto_collapse_robot_cascade
