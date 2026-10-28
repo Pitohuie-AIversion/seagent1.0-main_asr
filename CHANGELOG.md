@@ -10,13 +10,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### Refactored — 上帝代码深度解耦与 Handlers / Knowledge 父子目录层级重组（2026-10-28）
+### Refactored — 上帝代码深度治理、模块父子目录化与 Handlers/Dispatch/Web 领域解耦（2026-10-28）
 
+- **Dispatch 调度领域存储与模式校验父子分层结构化**：
+  - 将原平铺在 `src/dispatch/` 的 5 个从属底层模块按职责沉降至专有子包：
+    * `src/dispatch/storage/`：承载 POSIX link 原子持久化、跨进程文件锁、检疫区管理、统一产物路径与自增序号生成（`atomic_task_storage.py`, `result_paths.py`, `id_sequence.py`）；
+    * `src/dispatch/validation/`：承载 TaskIntent v1/v2 JSON 模式校验与机器人能力适配器（`task_intent_schema_validator.py`, `task_capability_adapter.py`）；
+  - `src/dispatch/` 根目录仅收敛保留 Level-1 任务意图编排主门面（`task_intent_builder.py`, `task_dispatch.py`, `catalog_resolver.py`, `output_builder.py`）；
+  - 保留 100% 透明动态兼容垫片（`sys.modules[__name__] = _impl`），平滑兼容历史猴子补丁打桩与外部模块引用。
+- **Web 控制器路由沉降至独立子包**：
+  - 创建 `src/web/routes/` 子包，将平铺在根目录的 8 个端点文件（`routes_asr.py`, `routes_chat.py`, `routes_dev.py`, `routes_mcp.py`, `routes_pages.py`, `routes_robot.py`, `routes_time_history.py`, `routes_translate.py`）整体迁移沉降为子模块；
+  - `src/web/` 根目录仅收敛保留服务端单例底座与流处理基础设施（`state.py`, `chat_stream.py`, `chat_request_cache.py`）；
+  - 原平铺路径保留完全透明的别名垫片，支持 `web_backend.py` 与各测试无感运行。
+- **WriteReplyGrounder 上帝模块（1,544 行）深度流水线拆解**：
+  - 将原单文件内聚的庞大逻辑按职责拆解为 3 大高内聚子模块：
+    * `assertion_scrubber.py`（411 行）：模型未提交断言、幻觉词及排版语法清洗；
+    * `field_grounder.py`（570 行）：槽位事实、时间窗口、水深与载荷断言对齐校验；
+    * `receipt_builder.py`（282 行）：权威客观回执构建、候选投影与回复组装；
+  - 主门面 `write_reply_grounder.py` 瘦身至 291 行（减少 81.1%），并保持对静态方法的类属性委托绑定，确保向后兼容。
 - **Handlers 领域 24 个扁平文件父子分层结构化**：
   - 将原平铺在 `src/handlers/` 根目录的 24 个文件按职责沉降划分为 5 大从属领域子包：
     * `equipment/`：设备 4 级拓扑级联推导、候选折叠与选项范围限定（`equipment_cascade.py`, `equipment_collapse.py`, `equipment_scoping.py`, `equipment_assertion_grounding.py`）；
     * `extraction/`：多轮槽位抽取主管道、事务控制、载荷变异、油田消歧与显式物理锚定（`slot_extraction_pipeline.py`, `slot_transaction.py`, `payload_mutation.py`, `oilfield_confirmation.py`, `explicit_value_grounding.py`）；
-    * `grounding/`：写操作回复多阶段事实证据比对与模版装配（`write_reply_grounder.py`）；
+    * `grounding/`：写操作回复多阶段事实证据比对与模版装配；
     * `lifecycle/`：任务生命周期阶段跃迁、紧急控制与命令意图确定性谓词（`task_transition.py`, `execution_control.py`, `command_predicates.py`）；
     * `routing/`：离题门禁、目录问答、实时遥测状态查询、拟态时间推演与准入放行解耦（`off_topic_gate.py`, `grounded_catalog.py`, `telemetry_status.py`, `hypothetical_time_preview.py`, `knowledge_reply_grounder.py`, `task_structure_grounding.py`）。
   - `src/handlers/` 根目录仅收敛保留 Level-1 HSM 核心状态机生命周期门面（`base.py`, `conversation_router.py`, `slot_filling.py`, `constraint_decision.py`, `task_commit.py`）。
@@ -28,7 +44,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - 分解 `equipment_cascade.py`（1300+ 行）、`slot_extraction_pipeline.py`（774 行）、`write_reply_grounder.py`（1500+ 行）中的超长单体方法为单一职责阶段流水线；
   - 彻底清除 `BaseDialogueHandler` 危险的 `__setattr__` 反向篡改宿主与 `TaskTransitionManager` 隐式 `__getattr__` 弹跳。
 - **多级全量回归验证**：
-  - 执行 13 套关键领域回归测试套件，累计 434 项测试 100% 通过（0 失败，耗时 159.83s）。
+  - 执行 13 套关键领域回归测试套件（434 项测试）、8 套 Web 路由测试（175 项测试）、7 套 Grounding 回归测试（845 项测试）、持久化与自增序号测试（73 项测试），累计超过 1,500 项测试 100% 通过（0 失败）。
 
 ### Added & Enhanced — 任务核对优化、移动端工作台与无障碍交互（2026-10-27）
 
