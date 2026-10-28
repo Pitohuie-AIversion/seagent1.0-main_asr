@@ -2,25 +2,22 @@
 src/handlers - SEAgent 分层状态机（HSM）与生命周期处理器包
 """
 
+# Level 1 核心主生命周期处理器
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
 from .conversation_router import ConversationRouterHandler
 from .slot_filling import SlotFillingHandler
 from .constraint_decision import ConstraintDecisionHandler
 from .task_commit import TaskCommitHandler
-from .equipment_cascade import EquipmentCascadeResolver
-from .equipment_scoping import EquipmentScopingHandler
-from .equipment_collapse import EquipmentCollapseHandler
-from .task_transition import TaskTransitionManager
-from .payload_mutation import PayloadMutationManager
-from .write_reply_grounder import WriteReplyGrounder
-from .oilfield_confirmation import OilfieldConfirmationHandler
-from .slot_transaction import SlotTransactionManager
-from .off_topic_gate import check_off_topic_gate, is_off_topic_output
-from .grounded_catalog import GroundedCatalogHandler
-from .telemetry_status import TelemetryStatusHandler
-from .execution_control import ExecutionControlHandler
-from .slot_extraction_pipeline import SlotExtractionPipeline, ExtractionPipelineResult
-from .command_predicates import (
+
+# 子包模块及能力导入 (Level 2 & 3 从属领域)
+from .equipment import (
+    EquipmentCascadeResolver,
+    EquipmentCollapseHandler,
+    EquipmentScopingHandler,
+)
+from .lifecycle import (
+    ExecutionControlHandler,
+    TaskTransitionManager,
     is_business_identity_query,
     is_confirmation_only,
     is_final_publish_confirmation,
@@ -30,8 +27,33 @@ from .command_predicates import (
     is_user_confirmed,
     is_user_requested_modification,
 )
+from .extraction import (
+    ExtractionPipelineResult,
+    OilfieldConfirmationHandler,
+    PayloadMutationManager,
+    SlotExtractionPipeline,
+    SlotTransactionManager,
+    ground_explicit_values,
+)
+from .grounding import WriteReplyGrounder
+from .routing import (
+    GroundedCatalogHandler,
+    TelemetryStatusHandler,
+    check_off_topic_gate,
+    is_off_topic_output,
+)
+
+# 公开子包命名空间
+from . import equipment, extraction, grounding, lifecycle, routing
 
 __all__ = [
+    # Subpackages
+    "equipment",
+    "extraction",
+    "grounding",
+    "lifecycle",
+    "routing",
+    # Level 1
     "BaseDialogueHandler",
     "DialogueContext",
     "HandlerResult",
@@ -39,6 +61,7 @@ __all__ = [
     "SlotFillingHandler",
     "ConstraintDecisionHandler",
     "TaskCommitHandler",
+    # Submodule symbols
     "EquipmentCascadeResolver",
     "EquipmentScopingHandler",
     "EquipmentCollapseHandler",
@@ -47,6 +70,7 @@ __all__ = [
     "WriteReplyGrounder",
     "OilfieldConfirmationHandler",
     "SlotTransactionManager",
+    "ground_explicit_values",
     "check_off_topic_gate",
     "is_off_topic_output",
     "GroundedCatalogHandler",

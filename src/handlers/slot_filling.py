@@ -19,13 +19,15 @@ import uuid
 from typing import Any, List, Optional
 
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
-from .equipment_cascade import EquipmentCascadeResolver
-from .task_transition import TaskTransitionManager
-from .payload_mutation import PayloadMutationManager
-from .write_reply_grounder import WriteReplyGrounder
-from .oilfield_confirmation import OilfieldConfirmationHandler
-from .slot_transaction import SlotTransactionManager
-from .slot_extraction_pipeline import SlotExtractionPipeline
+from .equipment import EquipmentCascadeResolver
+from .lifecycle import TaskTransitionManager
+from .extraction import (
+    OilfieldConfirmationHandler,
+    PayloadMutationManager,
+    SlotExtractionPipeline,
+    SlotTransactionManager,
+)
+from .grounding import WriteReplyGrounder
 from src.extraction.model_profile import (
     ModelRole,
     is_normalization_contract_v2_enabled,

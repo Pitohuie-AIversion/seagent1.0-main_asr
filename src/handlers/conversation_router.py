@@ -17,20 +17,18 @@ import logging
 import re
 from typing import Any
 
-from .knowledge_reply_grounder import ground_payload_requirement_reply
-from .hypothetical_time_preview import build_hypothetical_time_reply
-from .task_structure_grounding import (
-    answer_task_structure_query,
-    build_task_structure_evidence,
-    ground_task_structure_reply,
-)
 from .base import BaseDialogueHandler, DialogueContext, HandlerResult
-from .off_topic_gate import (
+from .routing import (
+    GroundedCatalogHandler,
+    TelemetryStatusHandler,
+    answer_task_structure_query,
+    build_hypothetical_time_reply,
+    build_task_structure_evidence,
     check_off_topic_gate,
+    ground_payload_requirement_reply,
+    ground_task_structure_reply,
     is_off_topic_output,
 )
-from .grounded_catalog import GroundedCatalogHandler
-from .telemetry_status import TelemetryStatusHandler
 from src.session.intent_router import IntentRouteResult
 from src.temporal.time_context import is_standalone_time_query, get_time_context
 from src.slots.visible_selection_provenance import parse_ordinal_reference
