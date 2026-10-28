@@ -12,6 +12,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Refactored — 上帝代码深度治理、模块父子目录化与 Handlers/Dispatch/Web 领域解耦（2026-10-28）
 
+- **Temporal 时间解析与时钟上下文父子分层结构化**：
+  - 将原平铺在 `src/temporal/` 根目录的 5 个从属模块划分为两大专有二级子包：
+    * `src/temporal/parsers/`：负责持续时长精准解析（`duration_parser.py`）与相对/绝对时刻语义抽取及歧义分类（`relative_time_parser.py`）；
+    * `src/temporal/context/`：负责虚拟仿真时间管理器（`simulated_time.py`）、对话会话时间上下文（`time_context.py`）与时间区间三元组约束推导计算引擎（`time_range_engine.py`）；
+  - 根目录保留 `temporal_parser.py`（时间表达式抽取与标准化总门面）与 5 个完全透明的模块别名垫片（`sys.modules[__name__] = _impl`）；
+  - 通过 PEP 562 动态属性路由彻底解耦了 `relative_time_parser` 与 `time_range_engine` 历史遗留的双向循环依赖，测试与全局状态打桩保持 100% 原生兼容。
 - **Knowledge 知识库查询执行器（QueryExecutor）上帝代码拆解与 query 子包父子化**：
   - 将原单文件集中 1,011 行的 `query_executor.py` 拆解并下沉至二级专有子包 `src/knowledge/query/`：
     * `src/knowledge/query/alias_indexer.py`（208 行）：负责机器人 4 级拓扑（Class/Family/Variant/Unit）别名索引构建、歧义词识别、安全设备词提取与实体候选解析；
