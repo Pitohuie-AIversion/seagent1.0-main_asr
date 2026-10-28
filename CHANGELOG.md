@@ -10,6 +10,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Refactored — 上帝代码深度解耦与 Handlers / Knowledge 父子目录层级重组（2026-10-28）
+
+- **Handlers 领域 24 个扁平文件父子分层结构化**：
+  - 将原平铺在 `src/handlers/` 根目录的 24 个文件按职责沉降划分为 5 大从属领域子包：
+    * `equipment/`：设备 4 级拓扑级联推导、候选折叠与选项范围限定（`equipment_cascade.py`, `equipment_collapse.py`, `equipment_scoping.py`, `equipment_assertion_grounding.py`）；
+    * `extraction/`：多轮槽位抽取主管道、事务控制、载荷变异、油田消歧与显式物理锚定（`slot_extraction_pipeline.py`, `slot_transaction.py`, `payload_mutation.py`, `oilfield_confirmation.py`, `explicit_value_grounding.py`）；
+    * `grounding/`：写操作回复多阶段事实证据比对与模版装配（`write_reply_grounder.py`）；
+    * `lifecycle/`：任务生命周期阶段跃迁、紧急控制与命令意图确定性谓词（`task_transition.py`, `execution_control.py`, `command_predicates.py`）；
+    * `routing/`：离题门禁、目录问答、实时遥测状态查询、拟态时间推演与准入放行解耦（`off_topic_gate.py`, `grounded_catalog.py`, `telemetry_status.py`, `hypothetical_time_preview.py`, `knowledge_reply_grounder.py`, `task_structure_grounding.py`）。
+  - `src/handlers/` 根目录仅收敛保留 Level-1 HSM 核心状态机生命周期门面（`base.py`, `conversation_router.py`, `slot_filling.py`, `constraint_decision.py`, `task_commit.py`）。
+- **Knowledge 机器人选型子领域实体下沉**：
+  - 将 `selection_engine.py` 内部实例化的变体规格评估器（`variant_evaluator.py`）、实体机消歧解析器（`unit_resolver.py`）、拓扑有向图（`hierarchy_graph.py`）及数据模型（`models.py`）整体下沉至 `src/knowledge/selection/` 专有子包。
+- **100% 透明动态模块别名兼容（sys.modules Aliasing）**：
+  - 所有原顶级平铺路径均保留轻量兼容别名模块，采用 `sys.modules[__name__] = _impl` 保证模块单例与 `monkeypatch` 打桩兼容，彻底杜绝已有测试断链。
+- **超长单体方法（God Methods）深度拆解**：
+  - 分解 `equipment_cascade.py`（1300+ 行）、`slot_extraction_pipeline.py`（774 行）、`write_reply_grounder.py`（1500+ 行）中的超长单体方法为单一职责阶段流水线；
+  - 彻底清除 `BaseDialogueHandler` 危险的 `__setattr__` 反向篡改宿主与 `TaskTransitionManager` 隐式 `__getattr__` 弹跳。
+- **多级全量回归验证**：
+  - 执行 13 套关键领域回归测试套件，累计 434 项测试 100% 通过（0 失败，耗时 159.83s）。
+
 ### Added & Enhanced — 任务核对优化、移动端工作台与无障碍交互（2026-10-27）
 
 - **工作台字段分组与参数输入引导**：
