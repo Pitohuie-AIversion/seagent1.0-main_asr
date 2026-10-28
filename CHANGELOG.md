@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Refactored — 上帝代码深度治理、模块父子目录化与 Handlers/Dispatch/Web 领域解耦（2026-10-28）
 
+- **Slots 槽位存储与契约消歧父子分层结构化**：
+  - 将原平铺在 `src/slots/` 根目录的 7 个从属模块沉降至 3 大专有二级子包：
+    * `src/slots/codec/`：负责槽位快照的原子反序列化、格式校验与多版本向后兼容迁移（`slot_snapshot_codec.py`）；
+    * `src/slots/mutation/`：负责载荷列表差量增删改、任务类型槽位过滤与任务补丁模型（`slot_list_mutation.py`, `task_patch.py`, `task_slot_filter.py`）；
+    * `src/slots/resolution/`：负责候选值多策略消歧仲裁、标准化契约定义与可见选项序号溯源（`candidate_resolver.py`, `normalization_contract.py`, `visible_selection_provenance.py`）；
+  - `src/slots/` 根目录收敛保留核心状态机读写视图门面（`slot_store.py`）；
+  - 原平铺路径保留完全透明的动态模块别名垫片（`sys.modules[__name__] = _impl`），保证外部调用与测试打桩 100% 兼容。
 - **Dispatch 调度领域存储与模式校验父子分层结构化**：
   - 将原平铺在 `src/dispatch/` 的 5 个从属底层模块按职责沉降至专有子包：
     * `src/dispatch/storage/`：承载 POSIX link 原子持久化、跨进程文件锁、检疫区管理、统一产物路径与自增序号生成（`atomic_task_storage.py`, `result_paths.py`, `id_sequence.py`）；
