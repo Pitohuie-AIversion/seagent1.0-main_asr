@@ -2389,6 +2389,90 @@ class DialogueManager:
             self.conversation_history.append({"role": "assistant", "content": reply})
             return reply
 
+
+    def _reply_write_without_candidates(
+        self,
+        has_acknowledge_action: bool,
+        user_message: str,
+        request_id: str,
+        turn_unresolved: list,
+        task_type_key: Optional[str]
+    ) -> str:
+        """依据事务结果回复，优先通过 LLM 依据处理事实向用户解释原因并引导。"""
+        if has_acknowledge_action:
+            self._switch_dialogue_mode(
+                "task_collection",
+                source="interaction_plan",
+                reason="无任务候选时执行结构化软警告确认",
+            )
+            if self.phase == "blocked_soft":
+                return self._handle_soft_warning_confirmation(
+                    user_message,
+                    request_id,
+                )
+            reply = (
+                "当前没有等待确认的软警告，未执行忽略操作。"
+                "任务状态和已填写参数均未改变。"
+            )
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
+
+        unresolved = list(turn_unresolved)
+        if not unresolved:
+            unresolved.append("模型没有返回可验证的任务字段候选")
+
+        req_fields = self.builder.get_required(task_type_key, self.mode, self.slot_store.get_task_state()) if task_type_key else []
+        missing = self.slot_store.get_missing_slots(req_fields) if task_type_key else []
+        knowledge_context = self.kb.get_context_for_state(self.task_state)
+        constraint_context = self._run_constraint_check(set(), purpose="interactive")
+
+        messages = build_responder_messages(
+            task_state=self.task_state,
+            built_json=self._last_built_json,
+            missing_fields=missing,
+            mode=self.mode,
+            phase=self.phase,
+            knowledge_context=knowledge_context,
+            constraint_context=constraint_context,
+            conversation_history=self.conversation_history,
+            latest_user_message=user_message,
+            ROV2type=self.kb.ROV2type,
+            support_task=self.kb.get_supported_task(),
+            slot_snapshot=self.slot_store.get_slot_snapshot(),
+            accepted_updates={},
+            unresolved_inputs=unresolved,
+        )
+        model_reply = self._safe_llm_chat(
+            messages,
+            temperature=0.7,
+            max_tokens=1500,
+            role=ModelRole.TASK_RESPONDER,
+        )
+        model_reply = self._safe_llm_filter_reply(model_reply, role=ModelRole.FILTER_REPLY)
+        if task_type_key and (not model_reply or "已就绪" in model_reply):
+            tv = self.kb.task_schemas.get("task_templates", {}).get(task_type_key, {})
+            task_name = tv.get("display_name") or tv.get("name") or task_type_key
+            model_reply = f"已为您开启【{task_name}】任务规划。请提供具体作业参数（如管缆类型、作业区域与执行机器人）。"
+
+        reply = self._ground_write_reply(
+            model_reply,
+            accepted_updates={},
+            unresolved_inputs=unresolved,
+            missing_fields=missing if missing else None,
+        )
+        if task_type_key is None:
+            supported = self.kb.get_all_task_type_values()
+            if (
+                supported
+                and "当前支持的任务类型" not in reply
+                and not any(st in reply for st in supported)
+            ):
+                reply += " 当前支持的任务类型：" + "、".join(supported) + "。"
+        self.conversation_history.append({"role": "user", "content": user_message})
+        self.conversation_history.append({"role": "assistant", "content": reply})
+        return reply
+
     def _process_internal(self, user_message: str, request_id: str = "req_default") -> str:
         old_phase = self.phase
 
@@ -2699,80 +2783,13 @@ class DialogueManager:
                     new_unresolved.append(item)
 
         def reply_write_without_candidates() -> str:
-            """依据事务结果回复，优先通过 LLM 依据处理事实向用户解释原因并引导。"""
-            if has_acknowledge_action:
-                self._switch_dialogue_mode(
-                    "task_collection",
-                    source="interaction_plan",
-                    reason="无任务候选时执行结构化软警告确认",
-                )
-                if self.phase == "blocked_soft":
-                    return self._handle_soft_warning_confirmation(
-                        user_message,
-                        request_id,
-                    )
-                reply = (
-                    "当前没有等待确认的软警告，未执行忽略操作。"
-                    "任务状态和已填写参数均未改变。"
-                )
-                self.conversation_history.append({"role": "user", "content": user_message})
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
-
-            unresolved = list(turn_unresolved)
-            if not unresolved:
-                unresolved.append("模型没有返回可验证的任务字段候选")
-
-            req_fields = self.builder.get_required(task_type_key, self.mode, self.slot_store.get_task_state()) if task_type_key else []
-            missing = self.slot_store.get_missing_slots(req_fields) if task_type_key else []
-            knowledge_context = self.kb.get_context_for_state(self.task_state)
-            constraint_context = self._run_constraint_check(set(), purpose="interactive")
-
-            messages = build_responder_messages(
-                task_state=self.task_state,
-                built_json=self._last_built_json,
-                missing_fields=missing,
-                mode=self.mode,
-                phase=self.phase,
-                knowledge_context=knowledge_context,
-                constraint_context=constraint_context,
-                conversation_history=self.conversation_history,
-                latest_user_message=user_message,
-                ROV2type=self.kb.ROV2type,
-                support_task=self.kb.get_supported_task(),
-                slot_snapshot=self.slot_store.get_slot_snapshot(),
-                accepted_updates={},
-                unresolved_inputs=unresolved,
+            return self._reply_write_without_candidates(
+                has_acknowledge_action=has_acknowledge_action,
+                user_message=user_message,
+                request_id=request_id,
+                turn_unresolved=turn_unresolved,
+                task_type_key=task_type_key,
             )
-            model_reply = self._safe_llm_chat(
-                messages,
-                temperature=0.7,
-                max_tokens=1500,
-                role=ModelRole.TASK_RESPONDER,
-            )
-            model_reply = self._safe_llm_filter_reply(model_reply, role=ModelRole.FILTER_REPLY)
-            if task_type_key and (not model_reply or "已就绪" in model_reply):
-                tv = self.kb.task_schemas.get("task_templates", {}).get(task_type_key, {})
-                task_name = tv.get("display_name") or tv.get("name") or task_type_key
-                model_reply = f"已为您开启【{task_name}】任务规划。请提供具体作业参数（如管缆类型、作业区域与执行机器人）。"
-
-            reply = self._ground_write_reply(
-                model_reply,
-                accepted_updates={},
-                unresolved_inputs=unresolved,
-                missing_fields=missing if missing else None,
-            )
-            if task_type_key is None:
-                supported = self.kb.get_all_task_type_values()
-                if (
-                    supported
-                    and "当前支持的任务类型" not in reply
-                    and not any(st in reply for st in supported)
-                ):
-                    reply += " 当前支持的任务类型：" + "、".join(supported) + "。"
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.conversation_history.append({"role": "assistant", "content": reply})
-            return reply
 
         if task_type_key is None:
             # Stage 1: Extract task type
