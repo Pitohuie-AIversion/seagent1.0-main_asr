@@ -281,14 +281,61 @@ def dev_reload_events():
 # =========================================
 
 
-@app.route("/api/robot/set-state-info", methods=["POST"])
-def set_robot_state_info():
-    supplied_request_id = request.headers.get("X-Request-ID", "")
-    request_id = (
+def _get_request_id(req) -> str:
+    """Extracts and validates X-Request-ID from headers, or generates a new one."""
+    supplied_request_id = req.headers.get("X-Request-ID", "")
+    return (
         supplied_request_id
         if re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", supplied_request_id)
         else f"req_{uuid.uuid4().hex[:12]}"
     )
+
+def _parse_robot_state_request(req):
+    """Extracts JSON from the request and validates robot_name and params."""
+    data = req.get_json(silent=True)
+    if not isinstance(data, dict):
+        raise ValueError("request body must be a JSON object")
+    robot_name = data.get("robot_name")
+    params = data.get("params")
+    expected_version = data.get("expected_version")
+
+    if not isinstance(robot_name, str) or not robot_name.strip():
+        raise ValueError("robot_name must be a non-empty string")
+    if not isinstance(params, dict) or not params:
+        raise ValueError("params must be a non-empty JSON object")
+
+    return robot_name, params, expected_version
+
+def _refresh_active_sessions(status_ref: str, request_id: str) -> list[dict]:
+    """Refreshes external state constraints for all active sessions and returns refreshed ones."""
+    refreshed_sessions = []
+    with _sessions_lock:
+        active_sessions = list(_sessions_manager.items())
+    for sid, mgr in active_sessions:
+        try:
+            with mgr._session_lock:
+                refresh = mgr.refresh_external_state_constraints(status_ref)
+            if refresh.get("refreshed"):
+                refreshed_sessions.append({
+                    "session_id": sid,
+                    "phase": refresh.get("phase"),
+                    "hard_violations": refresh.get("hard_violations", 0),
+                    "soft_violations": refresh.get("soft_violations", 0),
+                })
+        except Exception as refresh_exc:
+            logger.warning(
+                "Robot state session refresh failed: request_id=%s session_id=%s status_ref=%s err=%s",
+                request_id,
+                sid,
+                status_ref,
+                refresh_exc,
+            )
+    return refreshed_sessions
+
+
+@app.route("/api/robot/set-state-info", methods=["POST"])
+def set_robot_state_info():
+    request_id = _get_request_id(request)
     if _shared_kb is None:
         return jsonify({
             "ok": False,
@@ -304,17 +351,7 @@ def set_robot_state_info():
     status_ref = None
     current_version = None
     try:
-        data = request.get_json(silent=True)
-        if not isinstance(data, dict):
-            raise ValueError("request body must be a JSON object")
-        robot_name = data.get("robot_name")
-        params = data.get("params")
-        expected_version = data.get("expected_version")
-
-        if not isinstance(robot_name, str) or not robot_name.strip():
-            raise ValueError("robot_name must be a non-empty string")
-        if not isinstance(params, dict) or not params:
-            raise ValueError("params must be a non-empty JSON object")
+        robot_name, params, expected_version = _parse_robot_state_request(request)
 
         status_ref = _shared_kb.state_info.resolve_status_ref(robot_name)
         state_before = _shared_kb.state_info.get_robot_state(robot_name)
@@ -326,30 +363,8 @@ def set_robot_state_info():
             params,
             expected_version=expected_version,
         )
-        refreshed_sessions = []
-        with _sessions_lock:
-            active_sessions = list(_sessions_manager.items())
-        for sid, mgr in active_sessions:
-            try:
-                with mgr._session_lock:
-                    refresh = mgr.refresh_external_state_constraints(
-                        result["status_ref"],
-                    )
-                if refresh.get("refreshed"):
-                    refreshed_sessions.append({
-                        "session_id": sid,
-                        "phase": refresh.get("phase"),
-                        "hard_violations": refresh.get("hard_violations", 0),
-                        "soft_violations": refresh.get("soft_violations", 0),
-                    })
-            except Exception as refresh_exc:
-                logger.warning(
-                    "Robot state session refresh failed: request_id=%s session_id=%s status_ref=%s err=%s",
-                    request_id,
-                    sid,
-                    result["status_ref"],
-                    refresh_exc,
-                )
+        refreshed_sessions = _refresh_active_sessions(result["status_ref"], request_id)
+
         logger.info(
             "Robot state updated: request_id=%s status_ref=%s "
             "expected_version=%s current_version=%s",
