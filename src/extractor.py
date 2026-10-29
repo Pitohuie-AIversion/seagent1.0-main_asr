@@ -446,18 +446,8 @@ class ParameterExtractor:
             relation = extractor(messages, max_tokens=180)
         return relation if isinstance(relation, dict) else None
 
-    @staticmethod
-    def _materialize_time_relation(
-        candidates: list,
-        relation: object,
-        current_state: dict,
-        allowed_keys: set[str],
-        user_message: str = "",
-    ) -> tuple[list, list[str]]:
-        """Use the time module's unified range parser to derive or validate end_time."""
-        if "end_time" not in allowed_keys:
-            return candidates, []
-
+    @classmethod
+    def _find_time_candidates(cls, candidates: list) -> tuple[dict | None, dict | None]:
         start_cand = None
         end_cand = None
         for item in reversed(candidates):
@@ -466,7 +456,12 @@ class ParameterExtractor:
                     start_cand = item
                 elif item.get("canonical_key") == "end_time" and end_cand is None:
                     end_cand = item
+        return start_cand, end_cand
 
+    @classmethod
+    def _parse_relation_duration(
+        cls, relation: object, user_message: str, current_state: dict, start_cand: dict | None, end_cand: dict | None
+    ) -> tuple[str | None, str | None, float, list[str]]:
         raw_text = None
         confidence = 1.0
         duration_text = None
@@ -486,21 +481,20 @@ class ParameterExtractor:
             elif dur_sec is not None and isinstance(dur_sec, (int, float)) and math.isfinite(dur_sec) and dur_sec > 0:
                 duration_text = f"{dur_sec}秒"
             elif dur_sec is not None and isinstance(dur_sec, (int, float)) and not math.isfinite(dur_sec):
-                return candidates, ["持续时长必须为有限数值，未写入结束时间。"]
+                return raw_text, duration_text, confidence, ["持续时长必须为有限数值，未写入结束时间。"]
             elif raw_text and raw_text not in ("持续时长", "持续时间", "时长"):
                 duration_text = raw_text
             elif relation.get("keep_existing_duration"):
                 duration_text = "持续时间不变"
 
-        user_duration_delta = ParameterExtractor._extract_duration_delta_text(user_message)
+        user_duration_delta = cls._extract_duration_delta_text(user_message)
         if user_duration_delta:
             duration_text = user_duration_delta
             raw_text = user_duration_delta
-            end_cand = None
 
         end_unchanged = (
             end_cand is None
-            and ParameterExtractor._mentions_end_time_keep(user_message)
+            and cls._mentions_end_time_keep(user_message)
             and current_state.get("end_time")
         )
 
@@ -508,6 +502,143 @@ class ParameterExtractor:
             if current_state.get("start_time") and current_state.get("end_time"):
                 duration_text = "持续时间不变"
                 raw_text = raw_text or "保持原持续时长"
+
+        return raw_text, duration_text, confidence, []
+
+    @classmethod
+    def _update_start_time_candidate(cls, start_cand: dict | None, range_result) -> None:
+        if start_cand is not None and range_result.start_time.iso_string:
+            original_start_norm = str(start_cand.get("normalized_value") or "").strip()
+            start_cand["normalized_value"] = range_result.start_time.iso_string
+            if (
+                range_result.start_time.parse_method != "absolute_iso"
+                or original_start_norm != range_result.start_time.iso_string
+            ):
+                start_cand["resolution_method"] = "relative_date_parsed"
+
+    @classmethod
+    def _apply_duration_arithmetic(
+        cls,
+        relation: object,
+        range_result,
+        previous_start,
+        previous_end,
+        updated_candidates: list
+    ) -> tuple[str, str]:
+        target = str(relation.get("target") or "duration").lower() if isinstance(relation, dict) else "duration"
+        action = str(relation.get("action") or "SET").upper() if isinstance(relation, dict) else "SET"
+
+        final_end_iso = range_result.end_time.iso_string
+        res_method = "duration_arithmetic"
+
+        dur_sec = relation.get("duration_seconds") if isinstance(relation, dict) else None
+        if dur_sec is None and range_result.duration:
+            dur_sec = range_result.duration.total_seconds
+
+        if action in ("ADD", "SUB") and dur_sec:
+            from datetime import timedelta
+            delta_sec = float(dur_sec) if action == "ADD" else -float(dur_sec)
+            if target in ("duration", "end_time") and previous_end:
+                derived_dt = previous_end + timedelta(seconds=delta_sec)
+                final_end_iso = derived_dt.strftime("%Y-%m-%dT%H:%M:%S")
+                res_method = "duration_incremental_arithmetic"
+            elif target == "start_time" and previous_start:
+                derived_start = previous_start + timedelta(seconds=delta_sec)
+                for item in updated_candidates:
+                    if isinstance(item, dict) and item.get("canonical_key") == "start_time":
+                        item["normalized_value"] = derived_start.strftime("%Y-%m-%dT%H:%M:%S")
+                        item["resolution_method"] = "start_time_shifted"
+                if previous_end:
+                    derived_dt = previous_end + timedelta(seconds=delta_sec)
+                    final_end_iso = derived_dt.strftime("%Y-%m-%dT%H:%M:%S")
+                    res_method = "start_and_end_shifted"
+        return final_end_iso, res_method
+
+    @classmethod
+    def _apply_end_time_and_relation(
+        cls,
+        end_cand: dict | None,
+        end_unchanged: bool,
+        has_relation: bool,
+        range_result,
+        relation: object,
+        confidence: float,
+        raw_text: str | None,
+        duration_text: str | None,
+        previous_start,
+        previous_end,
+        updated_candidates: list,
+    ) -> list:
+        if range_result.end_time.iso_string:
+            if end_cand is not None and not has_relation:
+                end_cand["normalized_value"] = range_result.end_time.iso_string
+                if range_result.end_time.parse_method == "range_cross_midnight":
+                    end_cand["resolution_method"] = "cross_day_auto_corrected"
+                elif range_result.end_time.parse_method != "absolute_iso":
+                    end_cand["resolution_method"] = "relative_date_parsed"
+            elif end_unchanged:
+                updated_candidates.append(
+                    {
+                        "raw_key": "结束时间",
+                        "canonical_key": "end_time",
+                        "raw_value": "结束时间不变",
+                        "normalized_value": range_result.end_time.iso_string,
+                        "confidence": confidence,
+                        "resolution_method": "end_time_unchanged",
+                    }
+                )
+            else:
+                final_end_iso, res_method = cls._apply_duration_arithmetic(
+                    relation, range_result, previous_start, previous_end, updated_candidates
+                )
+
+                updated_candidates = [
+                    item for item in updated_candidates
+                    if not (isinstance(item, dict) and item.get("canonical_key") == "end_time")
+                ]
+                updated_candidates.append(
+                    {
+                        "raw_key": "持续时长",
+                        "canonical_key": "end_time",
+                        "raw_value": raw_text or duration_text or "持续时长",
+                        "normalized_value": final_end_iso,
+                        "confidence": confidence,
+                        "resolution_method": res_method,
+                    }
+                )
+        return updated_candidates
+
+    @classmethod
+    def _materialize_time_relation(
+        cls,
+        candidates: list,
+        relation: object,
+        current_state: dict,
+        allowed_keys: set[str],
+        user_message: str = "",
+    ) -> tuple[list, list[str]]:
+        """Use the time module's unified range parser to derive or validate end_time."""
+        if "end_time" not in allowed_keys:
+            return candidates, []
+
+        start_cand, end_cand = cls._find_time_candidates(candidates)
+
+        raw_text, duration_text, confidence, errors = cls._parse_relation_duration(
+            relation, user_message, current_state, start_cand, end_cand
+        )
+        if errors:
+            return candidates, errors
+
+        # user_duration_delta sets end_cand to None implicitly in original logic, let's keep that sync
+        user_duration_delta = cls._extract_duration_delta_text(user_message)
+        if user_duration_delta:
+            end_cand = None
+
+        end_unchanged = (
+            end_cand is None
+            and cls._mentions_end_time_keep(user_message)
+            and current_state.get("end_time")
+        )
 
         has_relation = bool(duration_text)
         has_end_candidate = end_cand is not None
@@ -518,21 +649,21 @@ class ParameterExtractor:
         from .simulated_time import get_current_datetime
         base_dt = get_current_datetime()
 
-        start_text = ParameterExtractor._select_time_range_start_text(
+        start_text = cls._select_time_range_start_text(
             start_cand,
             current_state,
             user_message,
             base_dt,
         )
-        end_text = ParameterExtractor._select_time_range_end_text(
+        end_text = cls._select_time_range_end_text(
             end_cand,
             user_message,
             has_relation,
         )
         if end_unchanged:
             end_text = current_state.get("end_time")
-        previous_start = ParameterExtractor._parse_state_datetime(current_state.get("start_time"))
-        previous_end = ParameterExtractor._parse_state_datetime(current_state.get("end_time"))
+        previous_start = cls._parse_state_datetime(current_state.get("start_time"))
+        previous_end = cls._parse_state_datetime(current_state.get("end_time"))
 
         range_result = parse_time_range(
             start_text,
@@ -554,76 +685,22 @@ class ParameterExtractor:
             return candidates, []
 
         updated_candidates = list(candidates)
-        if start_cand is not None and range_result.start_time.iso_string:
-            original_start_norm = str(start_cand.get("normalized_value") or "").strip()
-            start_cand["normalized_value"] = range_result.start_time.iso_string
-            if (
-                range_result.start_time.parse_method != "absolute_iso"
-                or original_start_norm != range_result.start_time.iso_string
-            ):
-                start_cand["resolution_method"] = "relative_date_parsed"
+        cls._update_start_time_candidate(start_cand, range_result)
 
-        if range_result.end_time.iso_string:
-            if end_cand is not None and not has_relation:
-                end_cand["normalized_value"] = range_result.end_time.iso_string
-                if range_result.end_time.parse_method == "range_cross_midnight":
-                    end_cand["resolution_method"] = "cross_day_auto_corrected"
-                elif range_result.end_time.parse_method != "absolute_iso":
-                    end_cand["resolution_method"] = "relative_date_parsed"
-            elif end_unchanged:
-                updated_candidates.append(
-                    {
-                        "raw_key": "结束时间",
-                        "canonical_key": "end_time",
-                        "raw_value": "结束时间不变",
-                        "normalized_value": range_result.end_time.iso_string,
-                        "confidence": confidence,
-                        "resolution_method": "end_time_unchanged",
-                    }
-                )
-            else:
-                target = str(relation.get("target") or "duration").lower() if isinstance(relation, dict) else "duration"
-                action = str(relation.get("action") or "SET").upper() if isinstance(relation, dict) else "SET"
+        updated_candidates = cls._apply_end_time_and_relation(
+            end_cand,
+            bool(end_unchanged),
+            has_relation,
+            range_result,
+            relation,
+            confidence,
+            raw_text,
+            duration_text,
+            previous_start,
+            previous_end,
+            updated_candidates,
+        )
 
-                final_end_iso = range_result.end_time.iso_string
-                res_method = "duration_arithmetic"
-
-                dur_sec = relation.get("duration_seconds") if isinstance(relation, dict) else None
-                if dur_sec is None and range_result.duration:
-                    dur_sec = range_result.duration.total_seconds
-
-                if action in ("ADD", "SUB") and dur_sec:
-                    from datetime import timedelta
-                    delta_sec = float(dur_sec) if action == "ADD" else -float(dur_sec)
-                    if target in ("duration", "end_time") and previous_end:
-                        derived_dt = previous_end + timedelta(seconds=delta_sec)
-                        final_end_iso = derived_dt.strftime("%Y-%m-%dT%H:%M:%S")
-                        res_method = "duration_incremental_arithmetic"
-                    elif target == "start_time" and previous_start:
-                        derived_start = previous_start + timedelta(seconds=delta_sec)
-                        for item in updated_candidates:
-                            if isinstance(item, dict) and item.get("canonical_key") == "start_time":
-                                item["normalized_value"] = derived_start.strftime("%Y-%m-%dT%H:%M:%S")
-                                item["resolution_method"] = "start_time_shifted"
-                        if previous_end:
-                            derived_dt = previous_end + timedelta(seconds=delta_sec)
-                            final_end_iso = derived_dt.strftime("%Y-%m-%dT%H:%M:%S")
-                            res_method = "start_and_end_shifted"
-
-                updated_candidates = [
-                    item for item in updated_candidates
-                    if not (isinstance(item, dict) and item.get("canonical_key") == "end_time")
-                ]
-                updated_candidates.append(
-                    {
-                        "raw_key": "持续时长",
-                        "canonical_key": "end_time",
-                        "raw_value": raw_text or duration_text or "持续时长",
-                        "normalized_value": final_end_iso,
-                        "confidence": confidence,
-                        "resolution_method": res_method,
-                    }
-                )
         return updated_candidates, []
 
 
