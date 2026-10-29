@@ -600,6 +600,81 @@ def _dispatch_ros2_on_done_transition(mgr, phase_before):
         logging.error("自动下发至 ROS 2 失败: %s", bridge_err, exc_info=True)
         return {"state": "FAILED", "error": str(bridge_err)}
 
+def _process_chat_request(sid, request_id, msg):
+    mgr = get_or_create_manager(sid)
+
+    with mgr._session_lock:
+        with _sessions_lock:
+            if _sessions_manager.get(sid) is not mgr:
+                return {
+                    "ok": False,
+                    "code": 409,
+                    "error": "SessionReset",
+                    "msg": "当前会话已重新开始，请在新会话中重试。",
+                    "request_id": request_id,
+                    "retryable": True,
+                }, 409
+        with _sess_lock:
+            if sid not in _sessions:
+                _sessions[sid] = Session(sid)
+        phase_before = mgr.phase
+        reply = mgr.process(
+            msg,
+            request_id=request_id,
+        )
+        print_status(mgr)
+        ros2_dispatch = None
+        if mgr.phase == "done":
+            try:
+                save_conversation(
+                    session_id=sid,
+                    conversation_history=mgr.conversation_history,
+                    task_state=mgr.task_state,
+                    built_json=mgr._last_built_json,
+                    mode=mgr.mode,
+                    phase=mgr.phase,
+                    intent_id=mgr.task_state.get('intent_id'),
+                    slot_store=mgr.slot_store,
+                    dialogue_mode=mgr.dialogue_mode,
+                    last_mode_transition=mgr.last_mode_transition,
+                    mode_transition_history=mgr.mode_transition_history,
+                    control_state=mgr.control_state,
+                    last_control_request=mgr.last_control_request,
+                )
+            except Exception as e:
+                logging.error("保存历史快照失败: %s", e, exc_info=True)
+
+            # 只有首次进入 done 才触发自动下发；重复确认不会再次发布。
+            ros2_dispatch = _dispatch_ros2_on_done_transition(mgr, phase_before)
+
+        ui_state = build_frontend_ui_state(mgr)
+        resp_data = {
+            "code": 200,
+            "session_id": sid,
+            "request_id": request_id,
+            "reply": reply,
+            # ui_state: 统一前端状态契约（Issue #31）
+            "ui_state": ui_state,
+            # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
+            "done": mgr.phase == "done",
+            "rejected": mgr.phase == "rejected",
+            "collected": mgr._last_built_json,
+            "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
+            "task_type": mgr.task_state.get("task_type_key"),
+            "task_id": mgr.task_state.get("task_id"),
+            "task_id_preview": mgr.task_id_preview,
+            "emergency": mgr.mode == "emergency",
+            "final_json": mgr._last_built_json if mgr.phase == "done" else None,
+            "ros2_dispatch": ros2_dispatch,
+        }
+    for k, v in resp_data.items():
+        try:
+            json.dumps(v)
+        except Exception as e:
+            raise TypeError(f"Field '{k}' is not JSON serializable: {type(v)} -> {v}") from e
+
+    return resp_data, 200
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     try:
@@ -617,79 +692,8 @@ def api_chat():
                 "retryable": False
             }), 400
 
-        mgr = get_or_create_manager(sid)
-
-        with mgr._session_lock:
-            with _sessions_lock:
-                if _sessions_manager.get(sid) is not mgr:
-                    return jsonify({
-                        "ok": False,
-                        "code": 409,
-                        "error": "SessionReset",
-                        "msg": "当前会话已重新开始，请在新会话中重试。",
-                        "request_id": request_id,
-                        "retryable": True,
-                    }), 409
-            with _sess_lock:
-                if sid not in _sessions:
-                    _sessions[sid] = Session(sid)
-            phase_before = mgr.phase
-            reply = mgr.process(
-                msg,
-                request_id=request_id,
-            )
-            print_status(mgr)
-            ros2_dispatch = None
-            if mgr.phase == "done":
-                try:
-                    save_conversation(
-                        session_id=sid,
-                        conversation_history=mgr.conversation_history,
-                        task_state=mgr.task_state,
-                        built_json=mgr._last_built_json,
-                        mode=mgr.mode,
-                        phase=mgr.phase,
-                        intent_id=mgr.task_state.get('intent_id'),
-                        slot_store=mgr.slot_store,
-                        dialogue_mode=mgr.dialogue_mode,
-                        last_mode_transition=mgr.last_mode_transition,
-                        mode_transition_history=mgr.mode_transition_history,
-                        control_state=mgr.control_state,
-                        last_control_request=mgr.last_control_request,
-                    )
-                except Exception as e:
-                    logging.error("保存历史快照失败: %s", e, exc_info=True)
-
-                # 只有首次进入 done 才触发自动下发；重复确认不会再次发布。
-                ros2_dispatch = _dispatch_ros2_on_done_transition(mgr, phase_before)
-
-            ui_state = build_frontend_ui_state(mgr)
-            resp_data = {
-                "code": 200,
-                "session_id": sid,
-                "request_id": request_id,
-                "reply": reply,
-                # ui_state: 统一前端状态契约（Issue #31）
-                "ui_state": ui_state,
-                # compat fields: 旧字段保留兼容，前端新逻辑应使用 ui_state
-                "done": mgr.phase == "done",
-                "rejected": mgr.phase == "rejected",
-                "collected": mgr._last_built_json,
-                "missing": [miss["key"] if isinstance(miss, dict) else str(miss) for miss in mgr._last_missing],
-                "task_type": mgr.task_state.get("task_type_key"),
-                "task_id": mgr.task_state.get("task_id"),
-                "task_id_preview": mgr.task_id_preview,
-                "emergency": mgr.mode == "emergency",
-                "final_json": mgr._last_built_json if mgr.phase == "done" else None,
-                "ros2_dispatch": ros2_dispatch,
-            }
-        for k, v in resp_data.items():
-            try:
-                json.dumps(v)
-            except Exception as e:
-                raise TypeError(f"Field '{k}' is not JSON serializable: {type(v)} -> {v}") from e
-
-        return jsonify(resp_data)
+        resp_data, status_code = _process_chat_request(sid, request_id, msg)
+        return jsonify(resp_data), status_code
     except SlotVersionConflict as svc:
         logging.error(f"Slot version conflict in /api/chat: {svc}", exc_info=True)
         return jsonify({
