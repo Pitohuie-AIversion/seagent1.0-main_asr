@@ -2,7 +2,7 @@ name: SEAgent CI & Regression Verification
 
 on:
   push:
-    branches: [ main, "phase*", "fix/*", "feature/*" ]
+    branches: [ main, "phase*", "fix/*", "feat/*", "feature/*" ]
     paths-ignore:
       - 'docs/**'
       - '*.md'
