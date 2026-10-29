@@ -27,7 +27,6 @@ import re
 import threading
 import uuid
 from typing import Any, Dict, List, Optional, Set, Tuple
-from zoneinfo import ZoneInfo
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
