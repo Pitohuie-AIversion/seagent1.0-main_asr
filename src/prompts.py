@@ -4,9 +4,10 @@ prompts.py — 对话响应 LLM 的 system prompt 构建
 """
 
 import json
-from .simulated_time import get_current_datetime
+
 from . import coord_parser
 from .knowledge_retriever import format_telemetry_value
+from .simulated_time import get_current_datetime
 
 # ── 统一对外身份 ────────────────────────────────────────────────────────────
 
@@ -344,13 +345,9 @@ def build_responder_messages(
         )
     }
 
-    def _fmt_coord(val: object) -> str | None:
-        """将 {'lat': x, 'lon': y} 或坐标对象/JSON字符串转为用户友好的经纬度描述，非坐标对象返回 None。"""
-        return coord_parser.format_coord_display(val)
-
     # 坐标字段格式化：start_point / end_point / oilfield_coordinates 等包含 {lat, lon} 的字段
     for _coord_key in list(display_built.keys()):
-        _fmt = _fmt_coord(display_built.get(_coord_key))
+        _fmt = coord_parser.format_coord_display(display_built.get(_coord_key))
         if _fmt is not None:
             display_built[_coord_key] = _fmt
 
@@ -441,7 +438,7 @@ def build_responder_messages(
             )
         else:
             field_dependency_instruction = (
-                f"\n【字段依赖提示】前三级机器人信息已确认。"
+                "\n【字段依赖提示】前三级机器人信息已确认。"
                 "当前分支暂无可用具体机器人编号，请如实告知用户。"
             )
 
@@ -529,7 +526,7 @@ def build_responder_messages(
         # 对 accepted_updates 中的坐标字段同样做格式化，避免大模型看到原始 {lat, lon} JSON
         display_accepted = {}
         for _k, _v in (accepted_updates or {}).items():
-            _f = _fmt_coord(_v)
+            _f = coord_parser.format_coord_display(_v)
             display_accepted[_k] = _f if _f is not None else _v
         accepted_json = json.dumps(
             display_accepted,
