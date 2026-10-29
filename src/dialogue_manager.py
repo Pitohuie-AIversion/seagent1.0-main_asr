@@ -32,6 +32,15 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
+_PATTERN_VELOCITY = re.compile(r"(海流流速|水流速度|海流速度|流速)\s*[:：]\s*(\d+(?:\.\d+)?)\s*(?:\([^)]*\)|[a-zA-Z/米秒]*)")
+_PATTERN_TURBIDITY = re.compile(r"(水体浑浊度|浑浊度)\s*[:：]\s*(\d+(?:\.\d+)?)\s*(?:\([^)]*\)|[a-zA-Z/]*)")
+_PATTERN_OBSTACLE = re.compile(r"(障碍物密度)\s*[:：]\s*[\w\u4e00-\u9fa5\(\)\s]+")
+_PATTERN_MOTHERSHIP = re.compile(r"(母船支持|母船支持能力)\s*[:：]\s*[\w\u4e00-\u9fa5\(\)\s]+")
+_PATTERN_OVERALL = re.compile(r"(整体状态|设备整体状态|当前整体状态)\s*[:：]\s*[\w\u4e00-\u9fa5\(\)\s]+")
+_PATTERN_SURVIVAL = re.compile(r"(生存状态|设备生存状态)\s*[:：]\s*[\w\u4e00-\u9fa5\(\)\s]+")
+_PATTERN_VERSION = re.compile(r"(状态版本号|版本号|version)\s*[:：]\s*\d+")
+_PATTERN_UPDATE = re.compile(r"(最后更新时间|更新时间)\s*[:：]\s*[\d\-\:\.\+T\s]+")
+
 from .llm_client import LLMClient
 from .model_profile import (
     ModelRole,
@@ -1670,8 +1679,6 @@ class DialogueManager:
         if not isinstance(state_dict, dict) or not reply:
             return reply
 
-        import re
-
         # 1. 强制水流速度对齐 (water_current_velocity / current_velocity)
         vel = state_dict.get("water_current_velocity")
         if vel is None:
@@ -1680,11 +1687,10 @@ class DialogueManager:
             try:
                 vel_val = float(vel)
                 vel_str = f"{vel_val:.2f}".rstrip("0").rstrip(".") if vel_val % 1 != 0 else str(int(vel_val))
-                pattern = r"(海流流速|水流速度|海流速度|流速)\s*[:：]\s*(\d+(?:\.\d+)?)\s*(?:\([^)]*\)|[a-zA-Z/米秒]*)"
                 def replace_vel(match):
                     prefix = match.group(1)
                     return f"{prefix}：{vel_str} m/s"
-                reply = re.sub(pattern, replace_vel, reply)
+                reply = _PATTERN_VELOCITY.sub(replace_vel, reply)
             except Exception:
                 pass
 
@@ -1696,11 +1702,10 @@ class DialogueManager:
             try:
                 turb_val = float(turb)
                 turb_str = f"{turb_val:.1f}".rstrip("0").rstrip(".") if turb_val % 1 != 0 else str(int(turb_val))
-                pattern = r"(水体浑浊度|浑浊度)\s*[:：]\s*(\d+(?:\.\d+)?)\s*(?:\([^)]*\)|[a-zA-Z/]*)"
                 def replace_turb(match):
                     prefix = match.group(1)
                     return f"{prefix}：{turb_str} NTU"
-                reply = re.sub(pattern, replace_turb, reply)
+                reply = _PATTERN_TURBIDITY.sub(replace_turb, reply)
             except Exception:
                 pass
 
@@ -1709,40 +1714,35 @@ class DialogueManager:
         if obs is not None:
             obs_map = {"low": "低 (low)", "medium": "中 (medium)", "high": "高 (high)"}
             obs_str = obs_map.get(str(obs).lower(), str(obs))
-            pattern = r"(障碍物密度)\s*[:：]\s*[\w\u4e00-\u9fa5\(\)\s]+"
-            reply = re.sub(pattern, f"\\1：{obs_str}", reply)
+            reply = _PATTERN_OBSTACLE.sub(f"\\g<1>：{obs_str}", reply)
 
         # 4. 强制母船支持对齐 (mothership_support)
         ship = state_dict.get("mothership_support")
         if ship is not None:
             ship_map = {"strong": "强 (strong)", "weak": "弱 (weak)", "none": "无 (none)"}
             ship_str = ship_map.get(str(ship).lower(), str(ship))
-            pattern = r"(母船支持|母船支持能力)\s*[:：]\s*[\w\u4e00-\u9fa5\(\)\s]+"
-            reply = re.sub(pattern, f"\\1：{ship_str}", reply)
+            reply = _PATTERN_MOTHERSHIP.sub(f"\\g<1>：{ship_str}", reply)
 
         # 5. 强制整体状态对齐 (overall_status / status)
         ov = state_dict.get("overall_status") or state_dict.get("status")
         if ov is not None:
             ov_map = {"available": "可用 (available)", "busy": "繁忙 (busy)", "maintenance": "维护中 (maintenance)", "offline": "离线 (offline)"}
             ov_str = ov_map.get(str(ov).lower(), str(ov))
-            pattern = r"(整体状态|设备整体状态|当前整体状态)\s*[:：]\s*[\w\u4e00-\u9fa5\(\)\s]+"
-            reply = re.sub(pattern, f"\\1：{ov_str}", reply)
+            reply = _PATTERN_OVERALL.sub(f"\\g<1>：{ov_str}", reply)
 
         # 6. 强制生存状态对齐 (survival_status)
         surv = state_dict.get("survival_status")
         if surv is not None:
             surv_map = {"normal": "正常 (normal)", "warning": "预警 (warning)", "critical": "危急 (critical)"}
             surv_str = surv_map.get(str(surv).lower(), str(surv))
-            pattern = r"(生存状态|设备生存状态)\s*[:：]\s*[\w\u4e00-\u9fa5\(\)\s]+"
-            reply = re.sub(pattern, f"\\1：{surv_str}", reply)
+            reply = _PATTERN_SURVIVAL.sub(f"\\g<1>：{surv_str}", reply)
 
         # 7. 强制状态版本号对齐 (version)
         ver = state_dict.get("version")
         if ver is not None:
             try:
                 ver_str = str(ver)
-                pattern = r"(状态版本号|版本号|version)\s*[:：]\s*\d+"
-                reply = re.sub(pattern, rf"\1：{ver_str}", reply)
+                reply = _PATTERN_VERSION.sub(rf"\g<1>：{ver_str}", reply)
             except Exception:
                 pass
 
@@ -1750,8 +1750,7 @@ class DialogueManager:
         up_time = state_dict.get("updated_at") or state_dict.get("update_timestamp")
         if up_time is not None:
             up_str = str(up_time)
-            pattern = r"(最后更新时间|更新时间)\s*[:：]\s*[\d\-\:\.\+T\s]+"
-            reply = re.sub(pattern, f"\\1：{up_str}", reply)
+            reply = _PATTERN_UPDATE.sub(f"\\g<1>：{up_str}", reply)
 
         return reply
 
