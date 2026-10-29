@@ -5433,21 +5433,19 @@ class DialogueManager:
                 and prior_slot.status in ("valid", "conflict")
                 and prior_slot.value is not None
             )
-            if force_conflict or has_prior_valid_value:
+            is_conflict = force_conflict or has_prior_valid_value
+            if is_conflict:
                 target_slot = copy.deepcopy(prior_slot) if prior_slot else Slot(slot_name=target_key)
-                target_slot.status = "conflict"
-                target_slot.candidate_value = candidate_val
-                target_slot.validation_error = error_msg
-                new_slots[target_key] = target_slot
             else:
                 default_vtype = BASE_SLOT_TYPES.get(target_key, "string")
                 target_slot = copy.deepcopy(prior_slot) if prior_slot else Slot(slot_name=target_key, value_type=default_vtype)
-                target_slot.status = "invalid"
                 target_slot.value = None
                 target_slot.value_type = default_vtype
-                target_slot.candidate_value = candidate_val
-                target_slot.validation_error = error_msg
-                new_slots[target_key] = target_slot
+
+            target_slot.status = "conflict" if is_conflict else "invalid"
+            target_slot.candidate_value = candidate_val
+            target_slot.validation_error = error_msg
+            new_slots[target_key] = target_slot
 
         if not task_type:
             # 仅在 task_type 为 missing 时尝试根据设备自动补全唯一关联的任务类型，不得强改 candidate 状态
