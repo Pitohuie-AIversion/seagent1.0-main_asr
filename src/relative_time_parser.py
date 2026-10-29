@@ -25,7 +25,6 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time as dtime, timedelta
 from enum import Enum
 from typing import Any, Optional
-from zoneinfo import ZoneInfo
 
 from .duration_parser import (
     DurationSpec,
