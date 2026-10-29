@@ -2520,9 +2520,9 @@ class DialogueManager:
         )
         if is_robot_ref and self._last_discussed_robot:
             r_val = self._last_discussed_robot
-            if any(f in r_val for f in ["座", "天鹰", "金牛", "御夫", "奇点", "双子", "凤凰"]):
+            if any(f in r_val for f in {"座", "天鹰", "金牛", "御夫", "奇点", "双子", "凤凰"}):
                 self.slot_store.slots["robot_family"] = Slot(slot_name="robot_family", value=r_val, value_type="string", status="valid", source="user")
-            elif any(c in r_val for c in ["观察级", "工作级", "履带式"]):
+            elif any(c in r_val for c in {"观察级", "工作级", "履带式"}):
                 self.slot_store.slots["robot_class"] = Slot(slot_name="robot_class", value=r_val, value_type="string", status="valid", source="user")
             else:
                 self.slot_store.slots["specific_robot_id"] = Slot(slot_name="specific_robot_id", value=r_val, value_type="string", status="valid", source="user")
