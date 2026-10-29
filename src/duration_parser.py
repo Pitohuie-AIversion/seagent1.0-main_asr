@@ -13,7 +13,7 @@ duration_parser.py — 中文与常用口语时长确定性解析器 v2.0
 import math
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
