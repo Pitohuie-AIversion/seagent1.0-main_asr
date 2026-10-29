@@ -625,28 +625,14 @@ class TemporalIntentExtractor:
                 return total
         return None
 
-    # --------------------------------------------------------- main extractor
-    def extract(
+    # --------------------------------------------------------- extractor helpers
+    def _extract_date(
         self,
-        text: str,
+        text_norm: str,
+        full_norm: str,
         ctx: TemporalContext,
-        full_user_message: Optional[str] = None,
-    ) -> Optional[TemporalIR]:
-        """主入口：文本 → TemporalIR"""
-        if not text or not isinstance(text, str):
-            return None
-        text_norm = self._preprocess(text)
-        full_norm = self._preprocess(full_user_message or "")
-        combined = f"{text_norm} {full_norm}".strip()
-        if not text_norm and not full_norm:
-            return None
-        ir = TemporalIR(
-            kind=TemporalKind.INSTANT,
-            source_text=text,
-            timezone_id=ctx.timezone_id,
-            reference_instant_iso=ctx.reference_instant.isoformat(),
-        )
-        ref_local = ctx.local_reference
+        ir: TemporalIR,
+    ) -> Optional[date]:
         found_date = None
         # 绝对 ISO 开头 → 不走相对路径
         if re.match(r"^\d{4}[-/]\d{2}[-/]\d{2}", text_norm):
@@ -673,18 +659,28 @@ class TemporalIntentExtractor:
                     found_date = d
                     ir.resolution_method = parser_name
                     break
+        return found_date
+
+    def _validate_date(
+        self,
+        found_date: Optional[date],
+        combined: str,
+        ir: TemporalIR,
+    ) -> Optional[date]:
+        if found_date is None:
+            return None
         # 日期验证：月日合法？闰年？
-        if found_date is not None:
-            try:
-                # 验证月日合法性（date构造时已做，但再次检查闰年情况）
-                _ = date(found_date.year, found_date.month, found_date.day)
-            except ValueError as e:
-                if "day is out of range" in str(e) or "day must be in" in str(e):
-                    if found_date.month == 2 and found_date.day == 29:
-                        ir.ambiguities.append(AmbiguityCode.LEAP_YEAR_INVALID)
-                    else:
-                        ir.ambiguities.append(AmbiguityCode.MONTH_DAY_INVALID)
-                    found_date = None
+        try:
+            # 验证月日合法性（date构造时已做，但再次检查闰年情况）
+            _ = date(found_date.year, found_date.month, found_date.day)
+        except ValueError as e:
+            if "day is out of range" in str(e) or "day must be in" in str(e):
+                if found_date.month == 2 and found_date.day == 29:
+                    ir.ambiguities.append(AmbiguityCode.LEAP_YEAR_INVALID)
+                else:
+                    ir.ambiguities.append(AmbiguityCode.MONTH_DAY_INVALID)
+                found_date = None
+
         # 日期 vs 星期 冲突检测
         if found_date is not None:
             # 提取文本中声明的星期
@@ -697,7 +693,15 @@ class TemporalIntentExtractor:
                             f"文本声明{wk}({wd_val})与实际日期{found_date}的星期({actual_wd})不一致"
                         )
                     break
-        # 解析时间
+        return found_date
+
+    def _extract_time(
+        self,
+        text_norm: str,
+        combined: str,
+        ref_local: datetime,
+        ir: TemporalIR,
+    ) -> bool:
         search_text = text_norm if re.search(r"(?:点|时|[:：])|现在|当前|立即|此时", text_norm) else combined
         time_result = self._parse_time(search_text)
         is_am, is_pm = self._detect_meridiem(search_text)
@@ -733,12 +737,15 @@ class TemporalIntentExtractor:
             ir.local_time_minute = ref_local.minute
             ir.local_time_second = ref_local.second
             has_explicit_time = True
-        # 如果有日期无时间 → 保留 kind=DATE_ONLY；如果无日期但有时间 → 用参考日期
-        if found_date is None and has_explicit_time:
-            found_date = ref_local.date()
-            ir.resolution_method = ir.resolution_method + "+default_today"
-        ir.local_date = found_date
-        # 夜间跨天纠偏：基准>=18点且说"凌晨/明早/次日"自动+1天
+        return has_explicit_time
+
+    def _apply_night_shift(
+        self,
+        combined: str,
+        ref_local: datetime,
+        ir: TemporalIR,
+        found_date: Optional[date],
+    ) -> None:
         if (
             found_date is not None
             and ir.local_time_hour is not None
@@ -747,7 +754,13 @@ class TemporalIntentExtractor:
         ):
             if found_date == ref_local.date() and 0 <= ir.local_time_hour <= 10:
                 ir.local_date = found_date + timedelta(days=1)
-        # 时长表达：X小时/分钟后
+
+    def _apply_elapsed_duration_offset(
+        self,
+        combined: str,
+        ref_local: datetime,
+        ir: TemporalIR,
+    ) -> None:
         m_offset = re.search(
             r"([\d零一二三四五六七八九十两半点]+)\s*(?:个)?\s*(?:小时|钟头|分钟|分|秒|秒钟)\s*(后|之后|以后)",
             combined,
@@ -778,10 +791,51 @@ class TemporalIntentExtractor:
                     ir.local_time_minute = new_dt.minute
                     ir.local_time_second = new_dt.second
                     ir.resolution_method = "elapsed_duration_offset"
+
+    # --------------------------------------------------------- main extractor
+    def extract(
+        self,
+        text: str,
+        ctx: TemporalContext,
+        full_user_message: Optional[str] = None,
+    ) -> Optional[TemporalIR]:
+        """主入口：文本 → TemporalIR"""
+        if not text or not isinstance(text, str):
+            return None
+        text_norm = self._preprocess(text)
+        full_norm = self._preprocess(full_user_message or "")
+        combined = f"{text_norm} {full_norm}".strip()
+        if not text_norm and not full_norm:
+            return None
+        ir = TemporalIR(
+            kind=TemporalKind.INSTANT,
+            source_text=text,
+            timezone_id=ctx.timezone_id,
+            reference_instant_iso=ctx.reference_instant.isoformat(),
+        )
+        ref_local = ctx.local_reference
+
+        found_date = self._extract_date(text_norm, full_norm, ctx, ir)
+        found_date = self._validate_date(found_date, combined, ir)
+        has_explicit_time = self._extract_time(text_norm, combined, ref_local, ir)
+
+        # 如果有日期无时间 → 保留 kind=DATE_ONLY；如果无日期但有时间 → 用参考日期
+        if found_date is None and has_explicit_time:
+            found_date = ref_local.date()
+            ir.resolution_method = ir.resolution_method + "+default_today"
+        ir.local_date = found_date
+
+        # 夜间跨天纠偏：基准>=18点且说"凌晨/明早/次日"自动+1天
+        self._apply_night_shift(combined, ref_local, ir, found_date)
+
+        # 时长表达：X小时/分钟后
+        self._apply_elapsed_duration_offset(combined, ref_local, ir)
+
         # 时长
         dur = self.parse_duration(combined)
         if dur is not None and dur > 0:
             ir.duration_seconds = dur
+
         # 确定kind
         if ir.local_date is None and ir.duration_seconds is None and ir.local_time_hour is None:
             return None
@@ -793,6 +847,7 @@ class TemporalIntentExtractor:
             ir.kind = TemporalKind.DURATION
         else:
             return None
+
         # 去重 NONE ambiguity
         ir.ambiguities = [a for a in ir.ambiguities if a != AmbiguityCode.NONE]
         ir.ambiguities = list(dict.fromkeys(ir.ambiguities))  # 去重保留顺序
