@@ -5362,7 +5362,6 @@ class DialogueManager:
         """统一处理机器人类别、系列、型号和单机编号的四级层级联动与依赖失效。"""
         import copy
         from src.slot_store import (
-            ROBOT_CASCADE_DEPENDENCIES,
             reset_slot_to_missing,
             invalidate_robot_cascade_dependents,
         )
