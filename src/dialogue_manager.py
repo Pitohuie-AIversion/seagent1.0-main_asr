@@ -4906,35 +4906,24 @@ class DialogueManager:
                 and level_index > deepest_explicit
             )
 
-        def class_node(selection_domain: dict, class_id: str | None) -> dict | None:
+        def _get_node(parent: dict | None, list_key: str, id_key: str, node_id: str | None) -> dict | None:
             return next(
                 (
                     item
-                    for item in selection_domain.get("classes", [])
-                    if item.get("class_id") == class_id
+                    for item in (parent or {}).get(list_key, [])
+                    if item.get(id_key) == node_id
                 ),
                 None,
             )
+
+        def class_node(selection_domain: dict, class_id: str | None) -> dict | None:
+            return _get_node(selection_domain, "classes", "class_id", class_id)
 
         def family_node(parent: dict | None, family_id: str | None) -> dict | None:
-            return next(
-                (
-                    item
-                    for item in (parent or {}).get("families", [])
-                    if item.get("family_id") == family_id
-                ),
-                None,
-            )
+            return _get_node(parent, "families", "family_id", family_id)
 
         def variant_node(parent: dict | None, variant_id: str | None) -> dict | None:
-            return next(
-                (
-                    item
-                    for item in (parent or {}).get("variants", [])
-                    if item.get("variant_id") == variant_id
-                ),
-                None,
-            )
+            return _get_node(parent, "variants", "variant_id", variant_id)
 
         cls_slot = new_slots.get("equipment_class")
         if cls_slot and cls_slot.status == "valid" and cls_slot.value:
