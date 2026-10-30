@@ -14,15 +14,50 @@ import json
 import re
 from datetime import datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
-from .duration_parser import (
-    is_keep_duration_expression, parse_duration_evidence, parse_duration_spec,
-)
 from src.extraction.assertion_scope import task_edits_are_paused
 from src.extraction.model_profile import ModelRole, _is_unsupported_role_keyword_error
+
+from .duration_parser import (
+    is_keep_duration_expression,
+    parse_duration_evidence,
+    parse_duration_spec,
+)
 from .relative_time_parser import parse_time_range
 
+_DATE_SEMANTICS = re.compile(
+    r"今天|今晚|今早|明天|明晚|明早|后天|大后天|昨天|前天|次日|"
+    r"\d{4}[年/-]|\d{1,2}[月/-]\d{1,2}|[一二三四五六七八九十]{1,3}月|"
+    r"周[一二三四五六日天12345670]|星期[一二三四五六日天12345670]|"
+    r"[一二两三四五六七八九十0-9]+天[后前]|[一二两三四五六七八九十0-9]+周[后前]|"
+    r"月底|月末|月初|年底|年末|年初"
+)
+
+
+_PRESENT_INSTRUCTION = re.compile(r"\s*(?:(?:请|任务|作业)\s*)*(?:现在|目前|当前|本次|这次|本轮)")
+_PAST_CONTEXT = re.compile(r"\s*(?:此前|之前|昨天|昨日|前天|曾经|上次|上一轮|过去|历史|原先)")
+_CONDITIONAL_CONTEXT = re.compile(r"如果|假如|假设|要是|倘若|除非|若|只要|只有|仅当")
+_TIME_SUBJECTS = (re.compile(r"开始|起始|开工"), re.compile(r"结束|终止|截止|完工|收工"), re.compile(r"持续|时长"))
+_DEPENDENT_QUESTION = re.compile(
+    r"(?:这样|这个(?:修改|设置|开始时间|结束时间|持续时间|持续时长|时长|时间)?|这么)?"
+    r"(?:可以|行吗|是否|能否|可否|合适|安全|会怎样|会怎么样|好吗|对吗)"
+)
+_DEPENDENT_QUESTION_TAIL = re.compile(r"[？?]|吗|呢|是否|能否|可否|会怎样|会怎么样")
+_TIME_SUBJECT_FOLLOWING = re.compile(
+    r"水深|机器人|设备|ROV|AUV|支持船|母船|船只|井口|管缆|电缆|起点|终点|"
+    r"坐标|经纬度|载荷|工具", re.IGNORECASE
+)
+_WITHDRAWAL = re.compile(
+    r"不要|暂不|暂时不|不必|无需|不需要|不能|禁止|不允许|"
+    r"别(?:把|将|再|修改|改|调整|设置|动|推迟|提前|延长|缩短)|勿"
+)
+_CANCELLATION = re.compile(r"取消|撤销")
+_QUESTION_ONLY = re.compile(r"(?<!不)(?:只|仅)(?:是|想|要)?(?:讨论|咨询|了解|询问|问问|假设|举例)")
+_QUESTION_GENERAL = re.compile(r"是否|能否|会不会")
+_QUESTION_END = re.compile(r"[？?]|(?:吗|么)\s*$|会怎样|会怎么样|会有什么")
+
+_END_TIME_KEEP_RE = re.compile(r"(?:结束|终止|截止|完工|收工)\s*时间\s*(?:保持)?不变")
+_START_TIME_KEEP_RE = re.compile(r"(?:开始|起始|开工)时间\s*(?:保持)?不变")
 
 _RANGE_DATE = r"(?:大后天|后天|明天|今天|\d{4}-\d{1,2}-\d{1,2})"
 _RANGE_PART = r"(?:凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜间)"
@@ -86,7 +121,7 @@ class TemporalParser:
             if value is None:
                 return None
         elif hasattr(value, "value") and not isinstance(value, (str, bytes)):
-            value = getattr(value, "value")
+            value = value.value
 
         text = str(value).strip()
         if not text or text.lower() in ("none", "null"):
@@ -110,23 +145,14 @@ class TemporalParser:
         """探测文本是否含有显式日期、相对日或星期语义"""
         if not text:
             return False
-        return bool(
-            re.search(
-                r"今天|今晚|今早|明天|明晚|明早|后天|大后天|昨天|前天|次日|"
-                r"\d{4}[年/-]|\d{1,2}[月/-]\d{1,2}|[一二三四五六七八九十]{1,3}月|"
-                r"周[一二三四五六日天12345670]|星期[一二三四五六日天12345670]|"
-                r"[一二两三四五六七八九十0-9]+天[后前]|[一二两三四五六七八九十0-9]+周[后前]|"
-                r"月底|月末|月初|年底|年末|年初",
-                text,
-            )
-        )
+        return bool(_DATE_SEMANTICS.search(text))
 
     @staticmethod
     def mentions_end_time_keep(text: str) -> bool:
         """探测文本是否明确提及结束时间保持不变"""
         if not text:
             return False
-        return bool(re.search(r"(?:结束|终止|截止|完工|收工)\s*时间\s*(?:保持)?不变", text))
+        return bool(_END_TIME_KEEP_RE.search(text))
 
     @staticmethod
     def extract_duration_delta_text(text: str) -> str | None:
@@ -149,11 +175,11 @@ class TemporalParser:
         sentence_start = max((text.rfind(mark, 0, start) for mark in "。；;！!？?\n"), default=-1) + 1
         historical = conditional = False
         for context in re.split(r"[，,]", text[sentence_start:end]):
-            if re.match(r"\s*(?:(?:请|任务|作业)\s*)*(?:现在|目前|当前|本次|这次|本轮)", context):
+            if _PRESENT_INSTRUCTION.match(context):
                 historical = False
-            if re.match(r"\s*(?:此前|之前|昨天|昨日|前天|曾经|上次|上一轮|过去|历史|原先)", context):
+            if _PAST_CONTEXT.match(context):
                 historical = True
-            conditional |= bool(re.search(r"如果|假如|假设|要是|倘若|除非|若|只要|只有|仅当", context))
+            conditional |= bool(_CONDITIONAL_CONTEXT.search(context))
         return historical, conditional
 
     @staticmethod
@@ -174,30 +200,21 @@ class TemporalParser:
             following = re.match(r"[^，,。；;！!？?\n]*(?:[？?])?", text[clause_end + 1:])[0].strip()
             # "可以吗" qualifies this edit; "可以把水深改为300米吗"
             # is an independent question with its own named subject.
-            has_subject = re.search(
-                r"水深|机器人|设备|ROV|AUV|支持船|母船|船只|井口|管缆|电缆|起点|终点|"
-                r"坐标|经纬度|载荷|工具", following,
-                re.IGNORECASE,
-            )
-            time_subjects = (r"开始|起始|开工", r"结束|终止|截止|完工|收工", r"持续|时长")
-            current_subjects = {index for index, pattern in enumerate(time_subjects) if re.search(pattern, clause)}
-            following_subjects = {index for index, pattern in enumerate(time_subjects) if re.search(pattern, following)}
+            has_subject = _TIME_SUBJECT_FOLLOWING.search(following)
+            current_subjects = {index for index, pattern in enumerate(_TIME_SUBJECTS) if pattern.search(clause)}
+            following_subjects = {index for index, pattern in enumerate(_TIME_SUBJECTS) if pattern.search(following)}
             has_subject = has_subject or bool(following_subjects and not current_subjects & following_subjects)
             dependent_question = not has_subject and bool(
-                re.match(
-                    r"(?:这样|这个(?:修改|设置|开始时间|结束时间|持续时间|持续时长|时长|时间)?|这么)?"
-                    r"(?:可以|行吗|是否|能否|可否|合适|安全|会怎样|会怎么样|好吗|对吗)", following,
-                )
-                and re.search(r"[？?]|吗|呢|是否|能否|可否|会怎样|会怎么样", following)
+                _DEPENDENT_QUESTION.match(following)
+                and _DEPENDENT_QUESTION_TAIL.search(following)
             )
         return bool(
             historical or conditional or dependent_question
-            or re.search(r"不要|暂不|暂时不|不必|无需|不需要|不能|禁止|不允许|"
-                      r"别(?:把|将|再|修改|改|调整|设置|动|推迟|提前|延长|缩短)|勿", clause)
-            or (not allow_withdrawal and re.search(r"取消|撤销", clause))
-            or re.search(r"(?<!不)(?:只|仅)(?:是|想|要)?(?:讨论|咨询|了解|询问|问问|假设|举例)", clause)
-            or re.search(r"是否|能否|会不会", clause)
-            or re.search(r"[？?]|(?:吗|么)\s*$|会怎样|会怎么样|会有什么", clause)
+            or _WITHDRAWAL.search(clause)
+            or (not allow_withdrawal and _CANCELLATION.search(clause))
+            or _QUESTION_ONLY.search(clause)
+            or _QUESTION_GENERAL.search(clause)
+            or _QUESTION_END.search(clause)
         )
 
     @staticmethod
@@ -622,6 +639,7 @@ class TemporalParser:
             return candidates, []
 
         import math
+
         from .relative_time_parser import RELATIVE_OFFSET_PATTERN
         from .simulated_time import get_current_datetime
 
@@ -709,7 +727,7 @@ class TemporalParser:
         ]
         asserted_text = "，".join(asserted_clauses)
         keep_duration = "duration" not in cancelled_targets and is_keep_duration_expression(asserted_text)
-        keep_start = "start_time" not in cancelled_targets and bool(re.search(r"(?:开始|起始|开工)时间\s*(?:保持)?不变", asserted_text))
+        keep_start = "start_time" not in cancelled_targets and bool(_START_TIME_KEEP_RE.search(asserted_text))
         keep_end = ("end_time" in cancelled_targets and previous_end is not None) or (
             "end_time" not in cancelled_targets and TemporalParser.mentions_end_time_keep(asserted_text)
         )
