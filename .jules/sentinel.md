@@ -1,0 +1,4 @@
+## 2025-02-14 - [Critical] Missing Authentication on Session State Endpoints
+**Vulnerability:** Several sensitive GET endpoints (`/api/session/state`, `/api/history/list`) lacked the `@_require_api_token` decorator.
+**Learning:** In this Flask architecture, authentication is handled via a custom decorator (`@_require_api_token` from `src.web.state`). It was applied inconsistently, mostly to POST endpoints, while GET endpoints returning highly sensitive internal IDs and conversational history were left unprotected, leading to an Information Exposure/IDOR vulnerability chain. The frontend already handles token injection on all `/api/` endpoints via `window.SEAgentAuth.fetch`.
+**Prevention:** Always verify that newly added endpoints, regardless of HTTP method (GET/POST), have the `@_require_api_token` decorator applied. Wait, also ensure the decorator is placed *after* the `@app.route` decorator (closer to the function) to properly wrap the route handler.
