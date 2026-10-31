@@ -7,10 +7,11 @@ import json
 import logging
 import uuid
 from typing import Any
+
 from flask import Blueprint, current_app, jsonify, request
+
 import src.web.state as state
-from src.web.chat_request_cache import ChatRequestCache, RequestIdConflict, RequestReplayUnavailable
-from src.web.chat_stream import StreamCapacityError, start_chat_stream
+from src.dispatch.task_dispatch import dispatch_completed_task, save_dispatch_history
 from src.exceptions import (
     ContextBudgetError,
     IdReservationError,
@@ -18,11 +19,12 @@ from src.exceptions import (
     TaskPersistenceError,
     TaskRollbackError,
 )
-from src.session.history_manager import save_conversation
-from src.dispatch.task_dispatch import dispatch_completed_task, save_dispatch_history
-from src.slots.slot_store import SlotVersionConflict
 from src.handlers.command_predicates import is_final_publish_confirmation
+from src.session.history_manager import save_conversation
 from src.session.ui_state_builder import build_frontend_ui_state, confirmation_conflict
+from src.slots.slot_store import SlotVersionConflict
+from src.web.chat_request_cache import ChatRequestCache, RequestIdConflict, RequestReplayUnavailable
+from src.web.chat_stream import StreamCapacityError, start_chat_stream
 from src.web.state import (
     _require_api_token,
     get_mcp_bridge,
@@ -342,6 +344,7 @@ def api_reset():
 
 
 @chat_bp.route("/api/session/state", methods=["GET"])
+@_require_api_token
 def get_session_state():
     sid = request.args.get("session_id")
     if not sid:

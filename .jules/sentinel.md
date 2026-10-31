@@ -1,0 +1,4 @@
+## 2024-10-31 - [Missing Authentication on Session and Telemetry Endpoints]
+**Vulnerability:** Found sensitive endpoints (`/api/session/state`, `/api/history/list`, `/api/time/current`, `/api/telemetry`) that lacked authentication checks, leaking session IDs, states, and history identifiers, and potentially exposing internal ROS telemetry to unauthenticated actors.
+**Learning:** Certain endpoints were omitted from being protected by the `@_require_api_token` decorator, a standard authentication layer within the `Flask` application blueprint for `/api/` endpoints in this repository.
+**Prevention:** Always verify that newly added or existing endpoints, especially those under a restricted `/api/` namespace or exposing sensitive internal state and telemetry, have the `@_require_api_token` decorator applied where appropriate in `src/web/routes/`.
