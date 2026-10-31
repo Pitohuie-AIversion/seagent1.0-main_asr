@@ -4,14 +4,17 @@ src/knowledge/models.py — 数据契约、异常定义与载荷规范化工具
 
 from __future__ import annotations
 
-import yaml
+import functools
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
 
 
+@functools.lru_cache(maxsize=None)
 def _load(filename: str) -> dict | list:
     with open(CONFIG_DIR / filename, encoding="utf-8") as f:
         return yaml.safe_load(f)
