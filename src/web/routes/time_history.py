@@ -7,15 +7,16 @@ import uuid
 from contextlib import nullcontext
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
 from flask import Blueprint, jsonify, request
 
-from src.session.history_manager import list_history, load_history, save_conversation
-from src.dispatch.task_dispatch import save_dispatch_history
-from src.dialogue_manager import DialogueManager
-from src.temporal.simulated_time import get_simulated_time
-from src.session.ui_state_builder import build_frontend_ui_state
 import src.web.state as state
-from src.web.state import _require_api_token, get_or_create_manager
+from src.dialogue_manager import DialogueManager
+from src.dispatch.task_dispatch import save_dispatch_history
+from src.session.history_manager import list_history, load_history, save_conversation
+from src.session.ui_state_builder import build_frontend_ui_state
+from src.temporal.simulated_time import get_simulated_time
+from src.web.state import _require_api_token
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ time_history_bp = Blueprint("time_history", __name__)
 
 
 @time_history_bp.route("/api/time/current", methods=["GET"])
+@_require_api_token
 def get_current_time():
     sim = get_simulated_time()
     current = sim.get_current_time()
@@ -64,6 +66,7 @@ def set_current_time():
 
 
 @time_history_bp.route("/api/history/list", methods=["GET"])
+@_require_api_token
 def api_history_list():
     """返回历史记录列表"""
     try:
