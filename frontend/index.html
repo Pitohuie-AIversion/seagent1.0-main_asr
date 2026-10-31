@@ -51,7 +51,7 @@
           <div id="turnReceiptBody" class="turn-receipt-body"></div>
         </details>
         <div class="messages" id="messages" role="log" aria-label="对话记录" aria-live="polite" aria-relevant="additions"></div>
-        <button id="jumpToLatestBtn" type="button" class="jump-latest" hidden data-ui="latest" data-icon="arrow-down">回到最新消息</button>
+        <button id="jumpToLatestBtn" type="button" class="jump-latest" hidden data-ui="latest" data-icon="arrow-down" aria-label="回到最新消息">回到最新消息</button>
         <div class="audio-waveform-wrapper" id="audioWaveformWrapper" style="display:none;" role="status">
           <span class="recording-dot" aria-hidden="true"></span>
           <span data-ui="recording">正在录音</span><span id="voiceElapsed">00:00</span>
@@ -64,7 +64,7 @@
             <textarea id="messageInput" rows="2" placeholder="描述您的水下任务..." autocomplete="off" aria-describedby="composerHint"></textarea>
             <div class="composer-actions">
               <button id="voiceBtn" type="button" class="voice-btn" data-icon="mic" aria-pressed="false" aria-label="开始录音">语音</button>
-              <button id="sendBtn" type="button" data-icon="send">发送</button>
+              <button id="sendBtn" type="button" data-icon="send" aria-label="发送消息">发送</button>
             </div>
           </div>
           <div class="composer-hint" id="composerHint"><span data-ui="inputHint">支持自然语言描述与语音输入</span><span data-ui="keyboardHint">Enter 发送 · Shift＋Enter 换行</span></div>
@@ -113,14 +113,14 @@
             <section class="info-card" id="collectedCard" hidden><div class="card-heading"><h3 class="info-title" id="title-collected">已收集字段</h3><span id="fieldCount" class="field-count"></span></div><div id="collectedFields">暂无</div></section>
             <section class="info-card" id="dispatchCard" hidden>
               <h3 class="info-title" id="dispatchTitle">任务发送状态</h3><div id="dispatchStatus" role="status" aria-live="polite"></div><div id="dispatchDetail"></div>
-              <button id="dispatchRetryBtn" type="button" data-icon="send" hidden>重新检查并下发</button><button id="dispatchRefreshBtn" type="button" data-icon="reset">刷新发送状态</button>
+              <button id="dispatchRetryBtn" type="button" data-icon="send" aria-label="重新下发任务" hidden>重新检查并下发</button><button id="dispatchRefreshBtn" type="button" data-icon="reset" aria-label="刷新发送状态">刷新发送状态</button>
             </section>
             <details class="info-card result-details" id="resultCard" style="display:none;"><summary class="info-title" id="title-finaljson">最终任务JSON</summary><div id="finalJson" class="final-json"></div></details>
           </div>
         </details>
 
-        <section class="history-card"><div class="card-heading"><h3 class="info-title" id="title-history">历史记录</h3><button id="historyBtn" type="button" data-icon="history">查看历史</button></div><div id="historyList" style="display:none;"></div></section>
-        <button class="reset-btn" id="resetBtn" type="button" data-icon="reset">重新开始</button>
+        <section class="history-card"><div class="card-heading"><h3 class="info-title" id="title-history">历史记录</h3><button id="historyBtn" type="button" data-icon="history" aria-label="查看历史记录">查看历史</button></div><div id="historyList" style="display:none;"></div></section>
+        <button class="reset-btn" id="resetBtn" type="button" data-icon="reset" aria-label="重新开始对话">重新开始</button>
         <p class="sidebar-note" data-ui="archiveNote">任务归档、指令发送与执行结果分别记录</p>
       </aside>
     </main>
