@@ -4,6 +4,8 @@ src/knowledge/models.py — 数据契约、异常定义与载荷规范化工具
 
 from __future__ import annotations
 
+import copy
+import functools
 import yaml
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,9 +14,14 @@ from typing import Any
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
 
 
-def _load(filename: str) -> dict | list:
+@functools.lru_cache(maxsize=128)
+def _load_cached(filename: str) -> dict | list:
     with open(CONFIG_DIR / filename, encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+def _load(filename: str) -> dict | list:
+    """⚡ Bolt: Use deepcopy of cached parsed YAML object to prevent mutation of shared cache"""
+    return copy.deepcopy(_load_cached(filename))
 
 
 def _norm(value: object) -> str:
