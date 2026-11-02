@@ -23,6 +23,7 @@ time_history_bp = Blueprint("time_history", __name__)
 
 
 @time_history_bp.route("/api/time/current", methods=["GET"])
+@_require_api_token
 def get_current_time():
     sim = get_simulated_time()
     current = sim.get_current_time()
@@ -64,6 +65,7 @@ def set_current_time():
 
 
 @time_history_bp.route("/api/history/list", methods=["GET"])
+@_require_api_token
 def api_history_list():
     """返回历史记录列表"""
     try:
