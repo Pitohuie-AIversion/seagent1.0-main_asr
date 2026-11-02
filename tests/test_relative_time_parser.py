@@ -1,6 +1,7 @@
 from datetime import datetime
 from src.temporal.duration_parser import DurationState
 from src.temporal.relative_time_parser import TimeFieldState, parse_relative_datetime, parse_time_range
+from src.temporal.context.time_range_engine import _parse_iso_datetime
 
 
 def test_parse_relative_datetime_today_and_tomorrow():
@@ -206,3 +207,47 @@ def test_parse_time_range_fails_when_all_three_fields_conflict():
 
     assert result.success is False
     assert result.error_code == "TIME_RANGE_CONFLICT"
+
+
+def test_parse_iso_datetime_valid():
+    dt = _parse_iso_datetime("2026-10-21T09:00:00")
+    assert dt == datetime(2026, 10, 21, 9, 0, 0)
+
+
+def test_parse_iso_datetime_with_timezone():
+    dt = _parse_iso_datetime("2026-10-21T09:00:00+08:00")
+    assert dt is not None
+    assert dt.year == 2026
+    assert dt.hour == 9
+    assert dt.tzinfo is not None
+
+
+def test_parse_iso_datetime_z_suffix():
+    dt = _parse_iso_datetime("2026-10-21T09:00:00Z")
+    assert dt is not None
+    assert dt.year == 2026
+    assert dt.month == 10
+    assert dt.day == 21
+    assert dt.hour == 9
+    assert dt.tzinfo is not None
+    assert dt.utcoffset().total_seconds() == 0
+
+
+def test_parse_iso_datetime_whitespace_stripping():
+    dt = _parse_iso_datetime("  2026-10-21T09:00:00  ")
+    assert dt == datetime(2026, 10, 21, 9, 0, 0)
+
+    dt2 = _parse_iso_datetime("  2026-10-21T09:00:00Z  ")
+    assert dt2 is not None
+    assert dt2.tzinfo is not None
+    assert dt2.utcoffset().total_seconds() == 0
+
+
+def test_parse_iso_datetime_empty_string():
+    assert _parse_iso_datetime("") is None
+    assert _parse_iso_datetime("   ") is None
+
+
+def test_parse_iso_datetime_invalid():
+    assert _parse_iso_datetime("not a date") is None
+    assert _parse_iso_datetime("2026-99-99T99:99:99") is None
