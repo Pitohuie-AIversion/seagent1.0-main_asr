@@ -156,7 +156,7 @@ SEAGENT_TO_ROS2_TASK_TYPE: Dict[str, TaskType] = {
     "task_manage":          TaskType.TASK_MANAGE,    # 任务管理
 }
 
-# AI 生成任务 ID 前缀（UI接口协议.md：0x8XXXX 是 AI，0x9XXXX 是 UI）
+# AI 生成任务 ID 前缀（UI接口协议.md：0x8xxxx 是 AI，0x9xxxx 是 UI）
 _AI_TASK_ID_BASE = 0x80000
 _task_id_counter = 0
 _task_id_lock = threading.Lock()
