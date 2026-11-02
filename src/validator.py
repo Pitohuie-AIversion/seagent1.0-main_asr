@@ -628,6 +628,136 @@ class TaskValidator:
             },
         }
 
+
+    def _validate_basic_fields(self, task_state: dict) -> dict | None:
+        if task_state.get("water_depth") is not None:
+            _, w_err = self._validate_water_depth_value(task_state.get("water_depth"))
+            if w_err:
+                return w_err
+        if task_state.get("start_time") is not None:
+            _, st_err = self._validate_time_value(task_state.get("start_time"), "开始时间 (start_time)")
+            if st_err:
+                return st_err
+        if task_state.get("end_time") is not None:
+            _, et_err = self._validate_time_value(task_state.get("end_time"), "结束时间 (end_time)")
+            if et_err:
+                return et_err
+        return None
+
+    def _validate_robot_selection(self, task_state: dict, purpose: str) -> tuple[dict | None, dict | None]:
+        canonical_selection, error_dict = self.validate_robot_selection_tuple(
+            task_state,
+            require_unit=purpose in ("publish", "preview", "runtime_execution"),
+        )
+        if (
+            purpose == "interactive"
+            and error_dict is not None
+            and error_dict.get("code") in {"CLASS_NOT_ALLOWED_FOR_TASK", "FAMILY_CAPABILITY_MISMATCH"}
+            and (task_state.get("equipment_type") is not None or task_state.get("equipment_unit_id") is not None)
+        ):
+            error_dict = None
+
+        if error_dict is None:
+            error_dict = self._validate_partial_robot_selection_feasibility(
+                task_state, canonical_selection
+            )
+
+        if error_dict is None and purpose in ("publish", "preview", "runtime_execution"):
+            error_dict = self._validate_concrete_robot_payload_feasibility(
+                task_state, canonical_selection
+            )
+
+        return canonical_selection, error_dict
+
+    def _evaluate_violations(
+        self,
+        task_state: dict,
+        error_dict: dict | None,
+        state_snapshot: dict | None,
+        is_now: bool,
+        purpose: str,
+    ) -> tuple[list[Violation], dict | None]:
+        violations: list[Violation] = []
+        is_future_pending_telemetry = (
+            not is_now
+            and purpose != "runtime_execution"
+            and error_dict is not None
+            and error_dict.get("code") in ("INVALID_STATE_SNAPSHOT", "MISSING_TELEMETRY", "EXPIRED_TELEMETRY", "INVALID_STATE_DATA", "STATE_READ_FAILED")
+        )
+
+        if error_dict is None:
+            violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=state_snapshot, purpose=purpose)
+        elif is_future_pending_telemetry:
+            # 未来任务且已注册单机遥测缺失/过期：不阻断为 validation_error，按 pending_runtime_validation 处理
+            violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=None, purpose=purpose)
+            error_dict = None
+        else:
+            # 存在 validation_error 时，不得返回空违规列表
+            code = error_dict.get("code") if (error_dict and error_dict.get("code")) else "VAL_ERR"
+            payload_feasibility_error = code in {
+                "ROBOT_SELECTION_NOT_FEASIBLE",
+                "INVALID_PAYLOAD_REQUIREMENTS",
+                "INVALID_VARIANT_PAYLOAD_CONFIG",
+            }
+            feasibility_error = payload_feasibility_error or code in {
+                "NO_FEASIBLE_ROBOT_CANDIDATE",
+                "ROBOT_FEASIBILITY_CHECK_FAILED",
+            }
+            err_violation = Violation(
+                constraint_id=code,
+                constraint_name=(
+                    "机器人载荷可行性校验失败"
+                    if payload_feasibility_error
+                    else (
+                        "机器人候选可行性校验失败"
+                        if feasibility_error
+                        else "单机状态校验失败"
+                    )
+                ),
+                message=error_dict.get("message", "机器人选择校验错误"),
+                severity="hard",
+                related_fields=(
+                    ["payload", "equipment_type", "equipment_unit_id"]
+                    if payload_feasibility_error
+                    else (
+                        [
+                            "equipment_class",
+                            "equipment_family",
+                            "water_depth",
+                            "payload",
+                            "start_time",
+                        ]
+                        if feasibility_error
+                        else ["equipment_unit_id"]
+                    )
+                ),
+                check_type="validation_error",
+            )
+            violations.append(err_violation)
+        return violations, error_dict
+
+    def _determine_overall_status(
+        self,
+        violations: list[Violation],
+        error_dict: dict | None,
+        is_now: bool,
+    ) -> str:
+        blocking_soft_violations = [
+            v for v in violations
+            if v.severity == "soft" and v.check_type != "future_task_runtime_notice"
+        ]
+        if error_dict is not None:
+            return "validation_error"
+        if any(v.severity == "hard" for v in violations):
+            return "blocked_hard"
+        if blocking_soft_violations:
+            return "blocked_soft"
+        if any(v.severity == "warning" for v in violations):
+            return "warning"
+        if not is_now:
+            return "pending_runtime_validation"
+        return "valid"
+
     def validate_task(
         self,
         task_state: dict,
@@ -651,69 +781,11 @@ class TaskValidator:
                 except Exception:
                     previous_result = None
 
-            # 校验原始输入字段的基础合法性 (water_depth, start_time, end_time)
-            error_dict = None
-            if error_dict is None and task_state.get("water_depth") is not None:
-                _, w_err = self._validate_water_depth_value(task_state.get("water_depth"))
-                if w_err:
-                    error_dict = w_err
-
-            if error_dict is None and task_state.get("start_time") is not None:
-                _, st_err = self._validate_time_value(task_state.get("start_time"), "开始时间 (start_time)")
-                if st_err:
-                    error_dict = st_err
-
-            if error_dict is None and task_state.get("end_time") is not None:
-                _, et_err = self._validate_time_value(task_state.get("end_time"), "结束时间 (end_time)")
-                if et_err:
-                    error_dict = et_err
+            error_dict = self._validate_basic_fields(task_state)
 
             canonical_selection = None
             if error_dict is None:
-                canonical_selection, error_dict = self.validate_robot_selection_tuple(
-                    task_state,
-                    require_unit=purpose
-                    in ("publish", "preview", "runtime_execution"),
-                )
-
-            # During collection, a task/robot capability mismatch is an
-            # ordinary hard constraint (C001/C002), not malformed registry
-            # structure.  Keep the strict static gate for publish/preview/
-            # execution, while allowing the existing robot_category rules to
-            # explain and block an incompatible interactive choice.
-            if (
-                purpose == "interactive"
-                and error_dict is not None
-                and error_dict.get("code")
-                in {
-                    "CLASS_NOT_ALLOWED_FOR_TASK",
-                    "FAMILY_CAPABILITY_MISMATCH",
-                }
-                # C001/C002 need a concrete Variant/Unit from which to build
-                # their robot-category fact.  With only Class/Family present,
-                # suppressing the static error would leave no later check and
-                # incorrectly accept an inadmissible partial selection.
-                and (
-                    task_state.get("equipment_type") is not None
-                    or task_state.get("equipment_unit_id") is not None
-                )
-            ):
-                error_dict = None
-
-            if error_dict is None:
-                error_dict = self._validate_partial_robot_selection_feasibility(
-                    task_state,
-                    canonical_selection,
-                )
-
-            if (
-                error_dict is None
-                and purpose in ("publish", "preview", "runtime_execution")
-            ):
-                error_dict = self._validate_concrete_robot_payload_feasibility(
-                    task_state,
-                    canonical_selection,
-                )
+                canonical_selection, error_dict = self._validate_robot_selection(task_state, purpose)
 
             # 尝试确定具体单机并提取状态快照
             state_snapshot = None
@@ -724,82 +796,11 @@ class TaskValidator:
                     purpose=purpose,
                 )
 
-            violations: list[Violation] = []
-            is_future_pending_telemetry = (
-                not is_now
-                and purpose != "runtime_execution"
-                and error_dict is not None
-                and error_dict.get("code") in ("INVALID_STATE_SNAPSHOT", "MISSING_TELEMETRY", "EXPIRED_TELEMETRY", "INVALID_STATE_DATA", "STATE_READ_FAILED")
+            violations, error_dict = self._evaluate_violations(
+                task_state, error_dict, state_snapshot, is_now, purpose
             )
 
-            if error_dict is None:
-                violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=state_snapshot, purpose=purpose)
-            elif is_future_pending_telemetry:
-                # 未来任务且已注册单机遥测缺失/过期：不阻断为 validation_error，按 pending_runtime_validation 处理
-                violations = self._run_checks(task_state, trigger_fields=None, state_snapshot=None, purpose=purpose)
-                error_dict = None
-            else:
-                # 存在 validation_error 时，不得返回空违规列表
-                code = error_dict.get("code") if (error_dict and error_dict.get("code")) else "VAL_ERR"
-                payload_feasibility_error = code in {
-                    "ROBOT_SELECTION_NOT_FEASIBLE",
-                    "INVALID_PAYLOAD_REQUIREMENTS",
-                    "INVALID_VARIANT_PAYLOAD_CONFIG",
-                }
-                feasibility_error = payload_feasibility_error or code in {
-                    "NO_FEASIBLE_ROBOT_CANDIDATE",
-                    "ROBOT_FEASIBILITY_CHECK_FAILED",
-                }
-                err_violation = Violation(
-                    constraint_id=code,
-                    constraint_name=(
-                        "机器人载荷可行性校验失败"
-                        if payload_feasibility_error
-                        else (
-                            "机器人候选可行性校验失败"
-                            if feasibility_error
-                            else "单机状态校验失败"
-                        )
-                    ),
-                    message=error_dict.get("message", "机器人选择校验错误"),
-                    severity="hard",
-                    related_fields=(
-                        ["payload", "equipment_type", "equipment_unit_id"]
-                        if payload_feasibility_error
-                        else (
-                            [
-                                "equipment_class",
-                                "equipment_family",
-                                "water_depth",
-                                "payload",
-                                "start_time",
-                            ]
-                            if feasibility_error
-                            else ["equipment_unit_id"]
-                        )
-                    ),
-                    check_type="validation_error",
-                )
-                violations.append(err_violation)
-
-            # 状态优先级规则：
-            # validation_error > blocked_hard > blocked_soft > warning > pending_runtime_validation > valid
-            blocking_soft_violations = [
-                v for v in violations
-                if v.severity == "soft" and v.check_type != "future_task_runtime_notice"
-            ]
-            if error_dict is not None:
-                overall_status = "validation_error"
-            elif any(v.severity == "hard" for v in violations):
-                overall_status = "blocked_hard"
-            elif blocking_soft_violations:
-                overall_status = "blocked_soft"
-            elif any(v.severity == "warning" for v in violations):
-                overall_status = "warning"
-            elif not is_now:
-                overall_status = "pending_runtime_validation"
-            else:
-                overall_status = "valid"
+            overall_status = self._determine_overall_status(violations, error_dict, is_now)
 
             status_ref = state_snapshot.get("status_ref") if state_snapshot else None
             state_version = state_snapshot.get("state_version") if state_snapshot else None

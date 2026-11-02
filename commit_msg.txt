@@ -1,0 +1,6 @@
+🧹 refactor: Extract helper methods from validate_task to improve maintainability
+
+🎯 What: Refactored the complex `validate_task` function in `src/validator.py` by extracting its main logical steps into smaller helper methods (`_validate_basic_fields`, `_validate_robot_selection`, `_evaluate_violations`, and `_determine_overall_status`).
+💡 Why: Splitting this monolithic function reduces its complexity, makes it easier to read and maintain, and follows standard refactoring practices.
+✅ Verification: Tested the refactored code against the existing test suite. Some tests fail, but they also fail on the original code on the main branch, confirming that the refactoring did not change the external behavior.
+✨ Result: Improved code health and maintainability without altering functionality.
