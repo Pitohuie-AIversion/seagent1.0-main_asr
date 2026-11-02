@@ -8,7 +8,7 @@ test_coord_and_payload_normalization_fix.py
 """
 
 import pytest
-from src.extraction.coord_parser import parse_coord_value
+from src.extraction.coord_parser import parse_coord_value, is_coord_value
 from src.extraction.normalizer import FieldNormalizer
 from src.knowledge_retriever import KnowledgeBase
 from src.slots.slot_store import SlotStore, Slot
@@ -138,3 +138,31 @@ class TestPayloadListNormalizationAndOnboardFiltering:
         assert new_slots["payload"].status in ("candidate", "valid")
         assert new_slots["payload"].validation_error is None
 
+
+class TestIsCoordValue:
+    def test_is_coord_value_valid(self):
+        assert is_coord_value({"lat": 11.2, "lon": 113.4}) is True
+        assert is_coord_value({"lat": "11.2", "lon": "113.4"}) is True
+
+    def test_is_coord_value_invalid_types(self):
+        assert is_coord_value(None) is False
+        assert is_coord_value("11.2, 113.4") is False
+        assert is_coord_value([11.2, 113.4]) is False
+
+    def test_is_coord_value_missing_keys(self):
+        # Trigger TypeError: float(None)
+        assert is_coord_value({"lat": 11.2}) is False
+        assert is_coord_value({"lon": 113.4}) is False
+        assert is_coord_value({}) is False
+
+    def test_is_coord_value_unparseable_values(self):
+        # Trigger ValueError: float("abc")
+        assert is_coord_value({"lat": "abc", "lon": 113.4}) is False
+        assert is_coord_value({"lat": 11.2, "lon": "def"}) is False
+        assert is_coord_value({"lat": "abc", "lon": "def"}) is False
+
+    def test_is_coord_value_out_of_bounds(self):
+        assert is_coord_value({"lat": 91.0, "lon": 113.4}) is False
+        assert is_coord_value({"lat": -91.0, "lon": 113.4}) is False
+        assert is_coord_value({"lat": 11.2, "lon": 181.0}) is False
+        assert is_coord_value({"lat": 11.2, "lon": -181.0}) is False
