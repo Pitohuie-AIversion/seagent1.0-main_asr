@@ -550,3 +550,7 @@ class TestRealBusinessScenarioRegressions:
             full_user_message="我想明天出发，上午11点开始",
         )
         assert start == "2026-08-19T11:00:00"
+
+def test_parse_iso_datetime_invalid_returns_none():
+    from src.temporal.context.time_range_engine import _parse_iso_datetime
+    assert _parse_iso_datetime("not a valid date") is None
