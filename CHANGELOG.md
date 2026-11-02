@@ -10,6 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Refactored — 时间关系长方法分段与兼容契约补齐（2026-10-29）
+
+- 将 `TemporalParser.materialize_time_relation` 从 399 行拆为 29 行编排入口和 8 个处理阶段，分别承担候选证据过滤、保持策略解析、未授权推断清理、时长解码、增量应用、区间计算、上下文修复及结果回写。
+- 使用本次调用内的证据、保持策略和时长数据对象传递阶段结果；保留候选复制、撤销字段过滤顺序、错误返回、候选元数据及旧时钟打桩入口。此项完成长方法分段，时间解析文件本身尚未做模块级拆分。
+- 将兼容测试的显式清单从 3 对扩至全部 50 对别名模块，覆盖模块/导出同一性、模块属性双向打桩、Temporal 冷启动导入及共享时钟状态；新增时间修改成功与拒绝时的输入不变性、重复候选来源和顺序回归测试。
+- 清理 `EquipmentCascadeResolver` 中被后续定义覆盖的三组委托方法、公开包装及重复别名，保留最终生效实现和公开名称；文件从 1,014 行降至 992 行。
+- 核对并修正下方 QueryExecutor 与 WriteReplyGrounder 拆分记录的行数；行数以 `splitlines()` 计，包含空行和注释。
+
 ### Refactored — 上帝代码深度治理、模块父子目录化与 Handlers/Dispatch/Web 领域解耦（2026-10-28）
 
 - **Temporal 时间解析与时钟上下文父子分层结构化**：
@@ -19,11 +27,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - 根目录保留 `temporal_parser.py`（时间表达式抽取与标准化总门面）与 5 个完全透明的模块别名垫片（`sys.modules[__name__] = _impl`）；
   - 通过 PEP 562 动态属性路由彻底解耦了 `relative_time_parser` 与 `time_range_engine` 历史遗留的双向循环依赖，测试与全局状态打桩保持 100% 原生兼容。
 - **Knowledge 知识库查询执行器（QueryExecutor）上帝代码拆解与 query 子包父子化**：
-  - 将原单文件集中 1,011 行的 `query_executor.py` 拆解并下沉至二级专有子包 `src/knowledge/query/`：
-    * `src/knowledge/query/alias_indexer.py`（208 行）：负责机器人 4 级拓扑（Class/Family/Variant/Unit）别名索引构建、歧义词识别、安全设备词提取与实体候选解析；
-    * `src/knowledge/query/environment_retriever.py`（189 行）：负责海域油田、经纬度边界、禁入保护区、DVL 风险区别名匹配与机器人实时遥测状态/可用性检索；
-    * `src/knowledge/query/typed_query_engine.py`（482 行）：负责只读知识查询路由仲裁、载荷配置证据生成、水深条件正则解析与设备规格能力校验；
-  - 顶层 `src/knowledge/query_executor.py` 门面瘦身至 178 行（**减少 82.4%**），保留 100% 实例与静态方法对外契约；
+  - 将原单文件集中 1,010 行的 `query_executor.py` 拆解并下沉至二级专有子包 `src/knowledge/query/`：
+    * `src/knowledge/query/alias_indexer.py`（214 行）：负责机器人 4 级拓扑（Class/Family/Variant/Unit）别名索引构建、歧义词识别、安全设备词提取与实体候选解析；
+    * `src/knowledge/query/environment_retriever.py`（237 行）：负责海域油田、经纬度边界、禁入保护区、DVL 风险区别名匹配与机器人实时遥测状态/可用性检索；
+    * `src/knowledge/query/typed_query_engine.py`（593 行）：负责只读知识查询路由仲裁、载荷配置证据生成、水深条件正则解析与设备规格能力校验；
+  - 顶层 `src/knowledge/query_executor.py` 门面瘦身至 195 行（**减少 80.7%**），保留实例与静态方法对外契约；
   - `src/knowledge/models.py` 升级为 `sys.modules[__name__] = _impl` 透明垫片，与 `src/knowledge/selection/` 形成对称的高内聚父子双领域树架构。
 - **Slots 槽位存储与契约消歧父子分层结构化**：
   - 将原平铺在 `src/slots/` 根目录的 7 个从属模块沉降至 3 大专有二级子包：
@@ -42,10 +50,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - 创建 `src/web/routes/` 子包，将平铺在根目录的 8 个端点文件（`routes_asr.py`, `routes_chat.py`, `routes_dev.py`, `routes_mcp.py`, `routes_pages.py`, `routes_robot.py`, `routes_time_history.py`, `routes_translate.py`）整体迁移沉降为子模块；
   - `src/web/` 根目录仅收敛保留服务端单例底座与流处理基础设施（`state.py`, `chat_stream.py`, `chat_request_cache.py`）；
   - 原平铺路径保留完全透明的别名垫片，支持 `web_backend.py` 与各测试无感运行。
-- **WriteReplyGrounder 上帝模块（1,544 行）深度流水线拆解**：
+- **WriteReplyGrounder 上帝模块（1,543 行）深度流水线拆解**：
   - 将原单文件内聚的庞大逻辑按职责拆解为 3 大高内聚子模块：
     * `assertion_scrubber.py`（411 行）：模型未提交断言、幻觉词及排版语法清洗；
-    * `field_grounder.py`（570 行）：槽位事实、时间窗口、水深与载荷断言对齐校验；
+    * `field_grounder.py`（576 行）：槽位事实、时间窗口、水深与载荷断言对齐校验；
     * `receipt_builder.py`（282 行）：权威客观回执构建、候选投影与回复组装；
   - 主门面 `write_reply_grounder.py` 瘦身至 291 行（减少 81.1%），并保持对静态方法的类属性委托绑定，确保向后兼容。
 - **Handlers 领域 24 个扁平文件父子分层结构化**：
@@ -61,7 +69,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **100% 透明动态模块别名兼容（sys.modules Aliasing）**：
   - 所有原顶级平铺路径均保留轻量兼容别名模块，采用 `sys.modules[__name__] = _impl` 保证模块单例与 `monkeypatch` 打桩兼容，彻底杜绝已有测试断链。
 - **超长单体方法（God Methods）深度拆解**：
-  - 分解 `equipment_cascade.py`（1300+ 行）、`slot_extraction_pipeline.py`（774 行）、`write_reply_grounder.py`（1500+ 行）中的超长单体方法为单一职责阶段流水线；
+  - 将设备级联主方法（769 行）与槽位抽取主方法（774 行）拆成阶段流水线，并拆分 `write_reply_grounder.py` 中的回复处理流程；
   - 彻底清除 `BaseDialogueHandler` 危险的 `__setattr__` 反向篡改宿主与 `TaskTransitionManager` 隐式 `__getattr__` 弹跳。
 - **多级全量回归验证**：
   - 执行 13 套关键领域回归测试套件（434 项测试）、8 套 Web 路由测试（175 项测试）、7 套 Grounding 回归测试（845 项测试）、持久化与自增序号测试（73 项测试），累计超过 1,500 项测试 100% 通过（0 失败）。

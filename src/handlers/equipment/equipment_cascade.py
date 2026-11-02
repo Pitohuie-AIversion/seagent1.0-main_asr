@@ -53,41 +53,19 @@ class EquipmentCascadeResolver:
     def _handle_task_type_update_in_transaction(self, *args, **kwargs):
         return self.manager._handle_task_type_update_in_transaction(*args, **kwargs)
 
-    def _scope_confirmed_recommendation(self, *args, **kwargs):
-        return self.scoping._scope_confirmed_recommendation(*args, **kwargs)
-
-    def _scope_visible_ordinal_selections(self, *args, **kwargs):
-        return self.scoping._scope_visible_ordinal_selections(*args, **kwargs)
-
-    def _auto_collapse_robot_cascade(self, *args, **kwargs):
-        return self.collapse._auto_collapse_robot_cascade(*args, **kwargs)
-
-    def auto_collapse_robot_cascade(self, *args, **kwargs):
-        return self.collapse._auto_collapse_robot_cascade(*args, **kwargs)
-
-
-    # 委托及别名兼容
+    # 显式委托；兼容公开名称集中定义在类末尾。
     @staticmethod
     def _source_for_resolution_method(resolution_method: str | None) -> str:
         return EquipmentScopingHandler._source_for_resolution_method(resolution_method)
 
-    source_for_resolution_method = _source_for_resolution_method
-
-
     def _scope_confirmed_recommendation(self, *args, **kwargs):
         return self.scoping._scope_confirmed_recommendation(*args, **kwargs)
-
-    scope_confirmed_recommendation = _scope_confirmed_recommendation
 
     def _scope_visible_ordinal_selections(self, *args, **kwargs):
         return self.scoping._scope_visible_ordinal_selections(*args, **kwargs)
 
-    scope_visible_ordinal_selections = _scope_visible_ordinal_selections
-
     def _auto_collapse_robot_cascade(self, *args, **kwargs):
         return self.collapse._auto_collapse_robot_cascade(*args, **kwargs)
-
-    auto_collapse_robot_cascade = _auto_collapse_robot_cascade
 
     EQUIPMENT_KEYS = (
         "equipment_class",
