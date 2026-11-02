@@ -11,6 +11,8 @@ src/state/fleet_selector.py - 机器人机队配置加载与选择器解析模�
 
 from __future__ import annotations
 
+import copy
+import functools
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -30,7 +32,8 @@ def unit_status_ref(unit: Dict[str, Any]) -> Optional[str]:
     return str(status_ref) if status_ref else None
 
 
-def load_fleet(fleet_file: Path | str) -> Dict[str, Any]:
+@functools.lru_cache(maxsize=128)
+def _load_fleet_cached(fleet_file: Path | str) -> Dict[str, Any]:
     """读取并解析机队 YAML 配置文件，确保其存在且顶层为映射字典。"""
     path = Path(fleet_file)
     try:
@@ -44,6 +47,10 @@ def load_fleet(fleet_file: Path | str) -> Dict[str, Any]:
             "Robot fleet selector configuration must be a mapping"
         )
     return fleet
+
+def load_fleet(fleet_file: Path | str) -> Dict[str, Any]:
+    """⚡ Bolt: Use deepcopy of cached parsed YAML object to prevent mutation of shared cache"""
+    return copy.deepcopy(_load_fleet_cached(fleet_file))
 
 
 def matching_unit_refs(units: list, needle: str) -> set[str]:
