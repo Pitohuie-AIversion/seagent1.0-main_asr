@@ -56,7 +56,31 @@ class WriteReplyGrounder:
 
     # 导出静态与类方法以维持 100% 单元测试及外部调用兼容
     filter_robot_selection_unresolved = staticmethod(filter_robot_selection_unresolved)
-    project_legacy_equipment_class_candidate = staticmethod(project_legacy_equipment_class_candidate)
+
+    def project_legacy_equipment_class_candidate(
+        self_or_candidate: Any,
+        candidate_or_task_type: Any = None,
+        task_type_key: str | None = None,
+        task_state: dict | None = None,
+        kb: Any = None,
+    ) -> dict | None:
+        if isinstance(self_or_candidate, WriteReplyGrounder):
+            inst = self_or_candidate
+            cand = candidate_or_task_type
+            t_key = task_type_key
+            t_state = task_state
+            active_kb = kb or getattr(getattr(inst, "manager", None), "kb", None) or getattr(inst, "kb", None)
+            return project_legacy_equipment_class_candidate(
+                cand, task_type_key=t_key, task_state=t_state, kb=active_kb,
+            )
+        cand = self_or_candidate
+        t_key = candidate_or_task_type if isinstance(candidate_or_task_type, str) else None
+        t_state = task_type_key if isinstance(task_type_key, dict) else None
+        active_kb = task_state if hasattr(task_state, "get_robot_classes") else kb
+        return project_legacy_equipment_class_candidate(
+            cand, task_type_key=t_key, task_state=t_state, kb=active_kb,
+        )
+
     _remove_model_receipts = staticmethod(remove_model_receipts)
     _ground_payload_classification = staticmethod(ground_payload_classification)
     _ground_water_depth_assertions = staticmethod(ground_water_depth_assertions)

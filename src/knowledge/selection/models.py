@@ -15,13 +15,18 @@ CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
 
 
 @functools.lru_cache(maxsize=128)
-def _load_cached(filename: str) -> dict | list:
-    with open(CONFIG_DIR / filename, encoding="utf-8") as f:
+def _load_cached(filepath_str: str, mtime_ns: int) -> dict | list:
+    with open(filepath_str, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 def _load(filename: str) -> dict | list:
     """⚡ Bolt: Use deepcopy of cached parsed YAML object to prevent mutation of shared cache"""
-    return copy.deepcopy(_load_cached(filename))
+    full_path = (CONFIG_DIR / filename).resolve()
+    try:
+        mtime = full_path.stat().st_mtime_ns
+    except OSError:
+        mtime = 0
+    return copy.deepcopy(_load_cached(str(full_path), mtime))
 
 
 def _norm(value: object) -> str:

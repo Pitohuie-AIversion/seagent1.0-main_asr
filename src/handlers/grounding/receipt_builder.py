@@ -34,15 +34,25 @@ def filter_robot_selection_unresolved(
             "equipment_name",
         }:
             continue
-        if isinstance(info, dict):
-            raw = info.get("raw") or info.get("raw_value")
-            if raw:
-                accepted_raws.add(str(raw).strip().lower())
+        raw = info.get("raw_value") if isinstance(info, dict) else (info.get("raw") if isinstance(info, dict) else None)
+        value = info.get("value") if isinstance(info, dict) else info
+        for val in (raw, value):
+            if val is not None and str(val).strip():
+                accepted_raws.add(str(val).strip().lower())
 
-    filtered = []
+    filtered: list = []
     for item in unresolved_items:
+        text = str(item)
+        if "equipment_class" in text:
+            continue
         key = getattr(item, "field", None) or (item.get("field") if isinstance(item, dict) else None)
         if key == "equipment_class":
+            continue
+        match = re.search(
+            r"(equipment_family|equipment_type|equipment_unit_id|equipment_name) 表达“([^”]+)”",
+            text,
+        )
+        if match and match.group(2).strip().lower() in accepted_raws:
             continue
         raw = getattr(item, "raw", None) or (item.get("raw") if isinstance(item, dict) else None)
         raw_str = str(raw or "").strip().lower()
@@ -52,29 +62,86 @@ def filter_robot_selection_unresolved(
             "equipment_unit_id",
         }:
             continue
-        filtered.append(item)
+        if item not in filtered:
+            filtered.append(item)
     return filtered
 
 
-def project_legacy_equipment_class_candidate(candidate: dict, kb: Any) -> dict:
+def project_legacy_equipment_class_candidate(
+    candidate: dict,
+    task_type_key: str | None = None,
+    task_state: dict | None = None,
+    kb: Any = None,
+) -> dict | None:
     """将旧 equipment_class 候选安全投影为 family 候选，保留原始决策元数据。"""
     if not isinstance(candidate, dict):
         return candidate
-    raw_class = candidate.get("value") or candidate.get("candidate")
-    classes = kb.get_robot_classes() if kb else {}
-    class_info = classes.get(str(raw_class), {}) if raw_class else {}
-    families = class_info.get("families", [])
-    if len(families) != 1:
-        return candidate
+    raw_value = candidate.get("raw_value", candidate.get("normalized_value"))
+    normalized_value = candidate.get("normalized_value", raw_value)
 
-    family_key = families[0]
-    family_config = kb.get_robot_families().get(family_key, {}) if kb else {}
+    if kb is None and hasattr(task_type_key, "get_robot_classes"):
+        kb, task_type_key = task_type_key, None
+
+    class_id = None
+    if kb and hasattr(kb, "_resolve_class_key"):
+        class_id = kb._resolve_class_key(str(normalized_value or ""))
+        if not class_id and raw_value is not None:
+            class_id = kb._resolve_class_key(str(raw_value))
+    elif kb and hasattr(kb, "get_robot_classes"):
+        raw_class = candidate.get("value") or candidate.get("candidate") or normalized_value
+        classes = kb.get_robot_classes() if kb else {}
+        class_info = classes.get(str(raw_class), {}) if raw_class else {}
+        families = class_info.get("families", [])
+        if len(families) == 1:
+            family_key = families[0]
+            family_config = (
+                kb.get_robot_families().get(family_key, {})
+                if hasattr(kb, "get_robot_families")
+                else {}
+            )
+            projected = dict(candidate)
+            projected["canonical_key"] = "equipment_family"
+            projected["target_field"] = "equipment_family"
+            projected["candidate"] = family_key
+            projected["value"] = family_key
+            projected["normalized_value"] = (
+                family_config.get("name")
+                or family_config.get("full_name")
+                or family_key
+            )
+            projected["display_name"] = family_config.get("name") or family_key
+            projected["canonical_class"] = raw_class
+            projected["resolution_method"] = "legacy_class_to_single_family"
+            return projected
+        return None
+
+    if not class_id or not task_type_key or not kb:
+        return None
+
+    try:
+        domain = kb.get_feasible_robot_selection_domain(
+            task_type_key,
+            task_state,
+        )
+    except Exception:
+        return None
+
+    class_node = next(
+        (
+            item
+            for item in domain.get("classes", [])
+            if item.get("class_id") == class_id
+        ),
+        None,
+    )
+    families = class_node.get("families", []) if class_node else []
+    if len(families) != 1:
+        return None
+    family = families[0]
     projected = dict(candidate)
-    projected["target_field"] = "equipment_family"
-    projected["candidate"] = family_key
-    projected["value"] = family_key
-    projected["display_name"] = family_config.get("name") or family_key
-    projected["canonical_class"] = raw_class
+    projected["canonical_key"] = "equipment_family"
+    projected["normalized_value"] = family.get("full_name") or family.get("family_id")
+    projected.setdefault("raw_value", raw_value)
     projected["resolution_method"] = "legacy_class_to_single_family"
     return projected
 

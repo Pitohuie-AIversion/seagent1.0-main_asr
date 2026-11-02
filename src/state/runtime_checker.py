@@ -35,8 +35,11 @@ def inspect_state_timestamp(
     result = {"reason_code": "AVAILABLE", "age_seconds": None, "timestamp_error": None}
     if not timestamp:
         return {**result, "reason_code": "STATE_EXPIRED", "timestamp_error": "missing"}
+    ts_str = str(timestamp).strip()
+    if ts_str.endswith("Z"):
+        ts_str = ts_str[:-1] + "+00:00"
     try:
-        updated_dt = datetime.fromisoformat(str(timestamp))
+        updated_dt = datetime.fromisoformat(ts_str)
         if updated_dt.tzinfo is None:
             updated_dt = updated_dt.replace(tzinfo=now_dt.tzinfo)
         else:

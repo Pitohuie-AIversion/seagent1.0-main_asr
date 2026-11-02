@@ -33,9 +33,9 @@ def unit_status_ref(unit: Dict[str, Any]) -> Optional[str]:
 
 
 @functools.lru_cache(maxsize=128)
-def _load_fleet_cached(fleet_file: Path | str) -> Dict[str, Any]:
+def _load_fleet_cached(fleet_file_str: str, mtime_ns: int) -> Dict[str, Any]:
     """读取并解析机队 YAML 配置文件，确保其存在且顶层为映射字典。"""
-    path = Path(fleet_file)
+    path = Path(fleet_file_str)
     try:
         fleet = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
@@ -50,7 +50,12 @@ def _load_fleet_cached(fleet_file: Path | str) -> Dict[str, Any]:
 
 def load_fleet(fleet_file: Path | str) -> Dict[str, Any]:
     """⚡ Bolt: Use deepcopy of cached parsed YAML object to prevent mutation of shared cache"""
-    return copy.deepcopy(_load_fleet_cached(fleet_file))
+    path = Path(fleet_file).resolve()
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        mtime = 0
+    return copy.deepcopy(_load_fleet_cached(str(path), mtime))
 
 
 def matching_unit_refs(units: list, needle: str) -> set[str]:
