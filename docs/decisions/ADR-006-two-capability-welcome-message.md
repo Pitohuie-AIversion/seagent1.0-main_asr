@@ -4,6 +4,8 @@
 
 Accepted on 2026-08-12.
 
+Implementation reviewed on 2026-09-30: the welcome text is defined in [frontend/js/index.js](../../frontend/js/index.js), with static assertions in [test_frontend_welcome_message.py](../../tests/test_frontend_welcome_message.py). The acceptance requirements below are not a new browser test result.
+
 ## Understanding Summary
 
 - The frontend opening message introduces the SEAgent system to its users.

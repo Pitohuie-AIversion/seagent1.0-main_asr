@@ -36,7 +36,8 @@ hardcore_*.py
 .agents/README-summary.md
 config/.state.yaml.lock
 config/*.lock
-*.lock
+.*.lock
+*.filelock
 
 
 

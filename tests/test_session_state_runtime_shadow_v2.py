@@ -33,10 +33,10 @@ from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.model_profile import is_session_state_v2_enabled
-from src.session_state_shadow import compare_session_state_shadow
-from src.slot_store import Slot
-from src.validator import ValidationResult
+from src.extraction.model_profile import is_session_state_v2_enabled
+from src.session.session_state_shadow import compare_session_state_shadow
+from src.slots.slot_store import Slot
+from src.validation.validator import ValidationResult
 from tests.interaction_plan_support import (
     ScriptedLLM,
     extraction_result,
@@ -232,7 +232,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         task_dir = self.tmp_path / "t05_tasks"
         task_dir.mkdir(parents=True, exist_ok=True)
         with patch("src.dialogue_manager.is_shadow_compare_enabled", return_value=True), \
-             patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+             patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
             schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
             dm.slot_store.init_task_slots(schema)
             slots = dm.slot_store.clone_slots()
@@ -276,7 +276,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         task_dir.mkdir(parents=True, exist_ok=True)
         dm.llm.queue_plan(make_plan("CONTROL", emergency_action="stop"))
         with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
-             patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+             patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
             _helper_setup_published_task(dm, task_dir, "TI202608100001")
             dm.process("停止当前任务", request_id="req_t06")
             self.assertEqual(dm.control_state, "stop_requested")
@@ -347,7 +347,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
             "control_state": "idle",
             "last_control_request": None,
         }
-        with patch("src.session_state_shadow.session_state_to_legacy_fields") as mock_v2_fields:
+        with patch("src.session.session_state_shadow.session_state_to_legacy_fields") as mock_v2_fields:
             mock_v2_fields.return_value = {
                 "snapshot_version": 2,
                 "phase": "confirming",
@@ -395,7 +395,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         dm = _make_dm(self.tmp_path / "t14")
         task_dir = self.tmp_path / "t14_tasks"
         with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
-             patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+             patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
             _process_scripted_read(dm, "什么是DVL？", request_id="req_t14")
             files = list(task_dir.glob("*.json")) if task_dir.exists() else []
             self.assertEqual(len(files), 0)
@@ -418,7 +418,7 @@ class TestSessionStateRuntimeShadowV2(unittest.TestCase):
         sensitive_task_id = "PI-20260810-001"
 
         with patch("src.dialogue_manager.should_run_session_state_shadow", return_value=True), \
-             patch("src.session_state_shadow.session_state_to_legacy_fields") as mock_v2_fields, \
+             patch("src.session.session_state_shadow.session_state_to_legacy_fields") as mock_v2_fields, \
              patch("src.dialogue_manager.logger.warning") as mock_warn:
 
             mock_v2_fields.return_value = {

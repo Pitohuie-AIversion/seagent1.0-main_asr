@@ -23,7 +23,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.knowledge_retriever import KnowledgeBase
-from src.task_intent_builder import TaskIntentBuilder
+from src.dispatch.task_intent_builder import TaskIntentBuilder
 from src.exceptions import TaskPersistenceError
 
 
@@ -63,7 +63,7 @@ class StagingContentAndSuffixValidationTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(forged_intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link") as mock_link:
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
@@ -85,7 +85,7 @@ class StagingContentAndSuffixValidationTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(mismatched_json, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link") as mock_link:
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
@@ -100,7 +100,7 @@ class StagingContentAndSuffixValidationTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump([intent], f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link") as mock_link:
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
@@ -115,7 +115,7 @@ class StagingContentAndSuffixValidationTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 f.write("{corrupted json content...")
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link") as mock_link:
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
@@ -130,7 +130,7 @@ class StagingContentAndSuffixValidationTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link") as mock_link:
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
@@ -145,7 +145,7 @@ class StagingContentAndSuffixValidationTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link") as mock_link:
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
@@ -160,7 +160,7 @@ class StagingContentAndSuffixValidationTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link") as mock_link:
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
@@ -178,7 +178,7 @@ class StagingContentAndSuffixValidationTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(forged_intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link") as mock_link:
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
@@ -194,7 +194,7 @@ class StagingContentAndSuffixValidationTest(unittest.TestCase):
         intent = self._make_valid_intent("TI2026072101")
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 staging_file = self.builder.create_staging(intent)
                 self.assertTrue(staging_file.exists())
 
@@ -216,7 +216,7 @@ class StagingContentAndSuffixValidationTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link") as mock_link:
                 original_open = open
 

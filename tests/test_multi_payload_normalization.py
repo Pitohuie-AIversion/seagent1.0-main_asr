@@ -86,7 +86,7 @@ class TestMultiPayloadNormalization:
         assert items == ["前视声呐系统"]
 
     def test_normalize_python_stringified_list_in_field_normalizer(self):
-        from src.normalizer import FieldNormalizer
+        from src.extraction.normalizer import FieldNormalizer
 
         fn = FieldNormalizer()
         allowed = [

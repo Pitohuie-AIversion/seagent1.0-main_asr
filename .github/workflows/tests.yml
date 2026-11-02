@@ -2,44 +2,82 @@ name: SEAgent CI & Regression Verification
 
 on:
   push:
-    branches: [ main, "phase*", "fix/*" ]
+    branches: [ main, "phase*", "fix/*", "feat/*", "feature/*" ]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'LICENSE'
+      - '.agents/**'
+      - 'artifacts/**'
+      - 'record/**'
+      - 'scratch/**'
+      - '.vscode/**'
+      - '.gitignore'
   pull_request:
     branches: [ main ]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'LICENSE'
+      - '.agents/**'
+      - 'artifacts/**'
+      - 'record/**'
+      - 'scratch/**'
+      - '.vscode/**'
+      - '.gitignore'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   full-suite-tests:
     name: Mandatory Full Test Suite & Regression Audit Gate
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       PYTHONPATH: .
-      SEAGENT_TEST_RESULT_DIR: ${{ runner.temp }}/seagent-tests-${{ github.run_id }}
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Set up Test Artifact Isolation Directory
+        run: |
+          test_dir="${RUNNER_TEMP}/seagent-tests-${{ github.run_id }}"
+          mkdir -p "${test_dir}"
+          echo "SEAGENT_TEST_RESULT_DIR=${test_dir}" >> $GITHUB_ENV
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
       - name: Install CPU Test Dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements/test.txt
+          uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install --system -e ".[test]"
+
+      - name: Set up Node.js for Frontend Regression Tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
       - name: 1. Python Syntax & Compilation Check
-        run: python -m compileall -q src tests
+        run: python -m compileall -q src tests mcp/ros-mcp mcp/operation-time-window
 
       - name: 2. Run Full Test Suite & Enforce Audit Gate
         run: |
           set +e
-          TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m unittest discover -s tests -t . -v 2>&1 | tee full_test.log
+          TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q --durations=10 --junitxml=pytest-results.xml 2>&1 | tee full_test.log
           test_exit=${PIPESTATUS[0]}
           set -e
-          
-          python scratch/parse_tests.py
-          python scratch/generate_report.py
           
           if [ "${test_exit}" -ne 0 ]; then
             echo "Full test suite failed with exit code ${test_exit}"
@@ -52,6 +90,5 @@ jobs:
         with:
           name: regression-audit-report
           path: |
-            docs/regression_report.md
+            pytest-results.xml
             full_test.log
-            /tmp/test_records.json

@@ -2,6 +2,8 @@
 
 本文档提供 SEAgent 系统开发环境搭建、依赖区别、单元测试与全量回归测试命令、CI 对应的测试阶段以及测试排错指南。
 
+核对日期：2026-09-30。以下描述的是当前测试入口；历史报告中的通过数不是本次工作区的测试结果。
+
 ---
 
 ## 1. Python 环境与依赖配置
@@ -12,9 +14,14 @@
 
 | 环境类型 | 适用场景 | 依赖配置文件 | 安装命令 |
 | :--- | :--- | :--- | :--- |
-| **CPU 测试依赖** | 本地单元测试、回归测试、CI 运行 | [requirements/test.txt](file:///root/mzy/seagent1.0-main_asr/requirements/test.txt) | `pip install -r requirements/test.txt` |
-| **基础运行依赖** | 系统核心推理与对话服务 | [requirements/base.txt](file:///root/mzy/seagent1.0-main_asr/requirements/base.txt) | `pip install -r requirements/base.txt` |
-| **GPU ASR 依赖** | 本地加载 Qwen ASR 语音模型运行 | [requirements/gpu.txt](file:///root/mzy/seagent1.0-main_asr/requirements/gpu.txt) | `pip install -r requirements/gpu.txt` |
+| **CPU 测试依赖** | 本地回归、CI | [pyproject.toml](../../pyproject.toml) 的 `test` extra | 先安装 CPU torch，再执行 `python -m pip install -e '.[test]'` |
+| **基础运行依赖** | 核心 Python 包，不含真实模型引擎 | [pyproject.toml](../../pyproject.toml) | `python -m pip install -e .` |
+| **GPU 推理依赖** | 真实本地 LLM | [pyproject.toml](../../pyproject.toml) 的 `gpu` extra | 在独立 GPU 环境执行 `python -m pip install -e '.[test,gpu]'` |
+
+普通 CI 先执行 `python -m pip install torch --index-url https://download.pytorch.org/whl/cpu`。
+`requirements/test.txt` 未包含完整音频测试依赖，`requirements/base.txt` 仅列出部分基础库；
+上表使用与 CI 对齐的安装入口。真实 ASR 还需要提供 `qwen_asr.Qwen3ASRModel` 的包及
+`config/asr.yaml` 指向的模型文件；这些不随 `gpu` extra 完整安装。
 
 ---
 
@@ -24,16 +31,16 @@
 
 ### 2.1 Python 语法与编译检查
 
-在运行单元测试前，首先使用 `compileall` 检查所有 `src/` 和 `tests/` 文件的 Python 语法正确性：
+在运行单元测试前，使用 `compileall` 检查核心代码和两个 MCP 子项目的 Python 语法：
 
 ```bash
-python -m compileall -q src tests
+python -m compileall -q src tests mcp/ros-mcp mcp/operation-time-window
 ```
 
 ### 2.2 核心单元测试
 
 运行项目全量单元测试与集成测试套件。pytest 会在收集测试模块前自动创建与用户
-运行目录分离的一次性 result/task/history 目录：
+运行目录分离的一次性 result/task/history 目录和遥测 `state.yaml` 副本：
 
 ```bash
 TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q
@@ -45,39 +52,59 @@ TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q
 TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -v
 ```
 
-CI 审计仍需 unittest 原生计数器时，必须使用包级发现，使 `tests/__init__.py`
-在业务测试模块之前启动同一隔离器：
+默认 pytest 收集 `tests/`、`mcp/ros-mcp/tests/`、
+`mcp/operation-time-window/tests_unit/` 和 `mcp/operation-time-window/tests_mcp/`。
+`test` extra 包含海流协议、音频及异步测试依赖。前端回归还需要 Node.js；CI 使用 Node.js 20。
+本地 MCP 兼容层使用 SDK 1.x，依赖限定为 `mcp>=1.27,<2`、`fastmcp>=2,<4`；
+升级到 MCP SDK 2.x 前需同步适配导出符号并运行协议回归。
+CI 使用同一入口并保存原生 JUnit 报告：
 
 ```bash
-python -m unittest discover -s tests -t . -v
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q --junitxml=pytest-results.xml
 ```
+
+默认测试使用本地 mock/synthetic 数据，不访问真实海流服务。真实 Copernicus 测试需安装
+海流子项目的 `copernicus` 可选依赖、配置服务凭据，并设置 `RUN_COPERNICUS_LIVE_TEST=1`：
+
+```bash
+RUN_COPERNICUS_LIVE_TEST=1 python -m pytest -q mcp/operation-time-window/tests_mcp/test_live_copernicus.py
+```
+
+`outside/` 中的第三方 ROS 库未纳入版本控制。其比较测试默认跳过；准备好这些源码和依赖后，
+可设置 `SEAGENT_RUN_EXTERNAL_COMPARISON=1` 运行。仓库自身的适配器和模拟下发测试始终默认运行。
+
+显式开启 Copernicus 实测后，缺少凭据或提供方失败会使该测试失败，不会降为模拟通过。真实模型、ASR 和浏览器验收由 [.github/workflows/real-e2e.yml](../../.github/workflows/real-e2e.yml) 使用独立 GPU Runner 执行；普通 pytest 通过不代表这条真实链路已验证。
 
 ### 2.3 常用单测试模块运行
 
-如果开发过程中只需要针对特定子模块进行调试，可直接指定模块文件：
+如果开发过程中只需要针对特定子模块进行调试，可直接通过 `pytest` 指定模块文件：
 
 - 意图路由测试：
   ```bash
-  python -m unittest tests/test_intent_routing.py
+  python -m pytest tests/test_intent_routing_matrix.py -v
   ```
 - SlotStore 状态测试：
   ```bash
-  python -m unittest tests/test_slot_consistency.py
+  python -m pytest tests/test_slot_consistency.py -v
   ```
 - TaskIntent 原子发布测试：
   ```bash
-  python -m unittest tests/test_phase1_atomic_publish_final_closeout.py
+  python -m pytest tests/test_phase1_atomic_publish_final_closeout.py -v
   ```
 - ASR 规范化测试：
   ```bash
-  python -m unittest tests/test_asr_normalizer.py
+  python -m pytest tests/test_asr_normalizer.py -v
+  ```
+- 领域子包按需加载测试：
+  ```bash
+  python -m pytest tests/test_package_imports.py -v
   ```
 
 ---
 
 ## 3. GitHub Actions CI 测试阶段
 
-系统的 CI 流水线配置文件位于 [.github/workflows/tests.yml](file:///root/mzy/seagent1.0-main_asr/.github/workflows/tests.yml)，在代码 `push` 或提交 `pull_request` 时自动触发。
+系统的 CI 流水线配置文件位于 [.github/workflows/tests.yml](../../.github/workflows/tests.yml)，在配置匹配的分支 `push` 或面向 `main` 的 `pull_request` 时触发。该文件设置了文档等路径的 `paths-ignore`；仅修改被忽略路径不保证触发测试，也不能据此宣称 CI 通过。
 
 ### 3.1 CI 阶段与本地命令对照表
 
@@ -85,25 +112,25 @@ python -m unittest discover -s tests -t . -v
 flowchart LR
     CI_Start[CI 触发 Event] --> Step1[1. Python 语法编译检查]
     Step1 --> Step2[2. 离线环境变量设置]
-    Step2 --> Step3[3. unittest 全量测试套件]
+    Step2 --> Step3[3. pytest 全量测试套件]
     Step3 --> Step4[4. 生成并归档回归报告]
 ```
 
 | CI 阶段步骤 | CI 执行命令 | 本地等效验证命令 |
 | :--- | :--- | :--- |
-| **语法编译检查** | `python -m compileall -q src tests` | `python -m compileall -q src tests` |
+| **语法编译检查** | `python -m compileall -q src tests mcp/ros-mcp mcp/operation-time-window` | 同 CI 命令 |
 | **环境与离线设置** | `export TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1` | `export TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1` |
-| **全量回归测试** | `python -m unittest discover -s tests -t . -v` | `python -m pytest -q` |
-| **测试报告解析** | `python scratch/parse_tests.py` | `python scratch/parse_tests.py` |
+| **全量回归测试** | `python -m pytest -q --junitxml=pytest-results.xml` | `python -m pytest -q` |
+| **测试报告** | 上传 `pytest-results.xml` 和 `full_test.log` | 可添加 `--junitxml=pytest-results.xml` |
 
 ---
 
 ## 4. 测试新增与命名规范
 
 ### 4.1 测试文件命名规范
-- 新增单元测试必须存放在 `tests/` 目录下。
+- 核心单元测试存放在 `tests/`，MCP 测试存放在对应子项目的测试目录下。
 - 测试文件名必须以 `test_` 开头，例如 `tests/test_new_feature.py`。
-- 测试类需继承自 `unittest.TestCase`，测试方法须以 `test_` 开头。
+- 支持 pytest 的 `test_*` 函数、`Test*` 类和 `unittest.TestCase`；测试方法以 `test_` 开头，不要求所有测试继承 unittest。
 
 ### 4.2 回归测试与边界闭环命名
 对于阶段性 P0/P1 问题修复与边界闭环，推荐遵循既有命名模式：
@@ -116,11 +143,13 @@ flowchart LR
 
 ### 5.1 排查方式
 1. **优先查看完整 Traceback**：单元测试失败时，避免仅根据 Assertion 报错诊断，应结合终端日志查看完整的异常调用栈。
-2. **检查输出日志**：CI 运行会保留并上传 `full_test.log` 和 `docs/regression_report.md`，可作为审计对比。
+2. **检查输出日志**：CI 运行会保留并上传 `full_test.log` 和 `pytest-results.xml`，可作为审计对比。
+3. **区分结果类型**：收集错误、进程 `Killed`、超时或中断均不等于套件通过。记录退出码、已执行范围与完整日志；仅有 `Killed` 不足以断定具体资源原因。`Unknown config option: asyncio_mode` 通常意味着当前 Python 环境缺少 `pytest-asyncio`，应核对 `test` extra 是否完整安装。
 
 ### 5.2 运行输出与持久化路径处理
-测试运行过程中生成的中间文件与任务 Intent 输出目录通过 [src/result_paths.py](file:///root/mzy/seagent1.0-main_asr/src/result_paths.py) 统一管理：
-- 用户运行优先读取 `SEAGENT_RESULT_DIR`，未配置时使用 `/root/autodl-tmp/result`。
+测试运行过程中生成的中间文件与任务 Intent 输出目录通过 [src/dispatch/result_paths.py](../../src/dispatch/result_paths.py) 统一管理：
+- 用户运行优先读取 `SEAGENT_RESULT_DIR`；未配置时优先使用 `/root/autodl-tmp/result`，默认目录不可写时按 helper 规则回退至仓库 `result/`。显式配置不可写时直接失败。
 - pytest 和包级 unittest 在导入业务模块前统一覆盖 result/task/history 为测试专用目录。
+- 引导逻辑同时将原遥测文件复制进测试目录，并覆盖 `SEAGENT_STATE_FILE` 指向副本；不会把继承的真实状态文件当作测试写入目标。
 - 子进程继承同一测试目录；未设置 `SEAGENT_TEST_RESULT_DIR` 时，测试结束自动清理。
 - 需要保留测试产物时，可显式设置 `SEAGENT_TEST_RESULT_DIR`，不得指向用户运行目录。

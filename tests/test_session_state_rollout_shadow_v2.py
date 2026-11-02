@@ -29,12 +29,12 @@ from unittest.mock import patch
 from web_backend import app, DialogueManager as WebDialogueManager
 from src.dialogue_manager import DialogueManager
 from src.exceptions import TaskPersistenceError, IntentIdConflict
-from src.id_sequence import validate_intent_id, validate_uuid4
+from src.dispatch.id_sequence import validate_intent_id, validate_uuid4
 from src.knowledge_retriever import KnowledgeBase
-from src.session_state import StateContractError, session_state_from_legacy_snapshot
-from src.slot_store import Slot, SlotStore, SnapshotValidationError
-from src.task_intent_builder import TaskIntentBuilder, get_task_dir
-from src.validator import ValidationResult, Violation
+from src.session.session_state import StateContractError, session_state_from_legacy_snapshot
+from src.slots.slot_store import Slot, SlotStore, SnapshotValidationError
+from src.dispatch.task_intent_builder import TaskIntentBuilder, get_task_dir
+from src.validation.validator import ValidationResult, Violation
 from tests.interaction_plan_support import (
     ScriptedLLM,
     extraction_result,
@@ -236,10 +236,10 @@ def execute_shadow_side(
     side_task_dir.mkdir(parents=True, exist_ok=True)
 
     with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=strict), \
-         patch("src.task_intent_builder.get_task_dir", return_value=side_task_dir), \
-         patch("src.id_sequence._get_counter_file_path", return_value=side_dir / "counter.json"), \
-         patch("src.id_sequence._get_lock_file_path", return_value=side_dir / "counter.lock"), \
-         patch("src.id_sequence._COUNTERS", {}):
+         patch("src.dispatch.task_intent_builder.get_task_dir", return_value=side_task_dir), \
+         patch("src.dispatch.id_sequence._get_counter_file_path", return_value=side_dir / "counter.json"), \
+         patch("src.dispatch.id_sequence._get_lock_file_path", return_value=side_dir / "counter.lock"), \
+         patch("src.dispatch.id_sequence._COUNTERS", {}):
 
         dm = _make_dm(side_dir)
 
@@ -1181,7 +1181,7 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
         task_dir = self.tmp_path / "inv07_task_dir"
         task_dir.mkdir(parents=True, exist_ok=True)
         with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True), \
-             patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+             patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
             schema = dm.builder.get_schema("pipeline_inspection", dm.mode)
             dm.slot_store.init_task_slots(schema)
             slots = dm.slot_store.clone_slots()
@@ -1223,7 +1223,7 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
         dm = _make_dm(self.tmp_path / "inv08")
         task_dir = self.tmp_path / "inv08_task_dir"
         with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True), \
-             patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+             patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
             _helper_setup_published_task(dm, task_dir, "TI202608090001")
             dm.process("确认", request_id="req_inv08")
             self.assertEqual(dm.phase, "done")
@@ -1244,7 +1244,7 @@ class TestSessionStateRolloutShadowV2(unittest.TestCase):
         task_dir.mkdir(parents=True, exist_ok=True)
         intent_id = "TI202608090001"
         with patch("src.dialogue_manager.is_session_state_v2_enabled", return_value=True), \
-             patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+             patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
             _helper_setup_published_task(dm, task_dir, intent_id)
             final_file = task_dir / f"task_intent_{intent_id}.json"
             self.assertTrue(final_file.exists())

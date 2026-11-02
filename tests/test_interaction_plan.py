@@ -4,12 +4,12 @@ tests/test_interaction_plan.py - InteractionPlan ä¸Ž validate_interaction_plan å
 
 import math
 import unittest
-from src.interaction_plan import (
+from src.session.interaction_plan import (
     InteractionPlan,
     build_clarify_fallback_plan,
     validate_interaction_plan,
 )
-from src.intent_router import IntentRouteResult
+from src.session.intent_router import IntentRouteResult
 
 
 class TestInteractionPlanSchemaAndValidation(unittest.TestCase):

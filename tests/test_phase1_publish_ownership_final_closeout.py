@@ -11,12 +11,13 @@ import unittest
 import multiprocessing as mp
 import threading
 from pathlib import Path
+from queue import Empty
 from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
-from src.task_intent_builder import TaskIntentBuilder, TaskPublishLock
+from src.dispatch.task_intent_builder import TaskIntentBuilder, TaskPublishLock
 from src.exceptions import TaskPersistenceError, IntentIdConflict
 from tests.test_slot_consistency import seed_complete_valid_pipeline_task
 
@@ -43,7 +44,7 @@ def _mp_worker_same_intent(tmp_dir_str, intent, res_queue, start_event):
     task_dir = Path(tmp_dir_str) / "task"
     start_event.wait(timeout=5)
     try:
-        with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+        with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
             st = builder.create_staging(intent)
             pub_name = builder.publish_staging(st, intent)
             res_queue.put(("success", pub_name, os.getpid()))
@@ -58,7 +59,7 @@ def _mp_worker_diff_intent(tmp_dir_str, intent, res_queue, start_event):
     task_dir = Path(tmp_dir_str) / "task"
     start_event.wait(timeout=5)
     try:
-        with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+        with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
             st = builder.create_staging(intent)
             pub_name = builder.publish_staging(st, intent)
             res_queue.put(("success", pub_name, os.getpid()))
@@ -69,26 +70,40 @@ def _mp_worker_diff_intent(tmp_dir_str, intent, res_queue, start_event):
 def _mp_worker_lock_holder(tmp_dir_str, hold_event, ready_event):
     """持锁 worker"""
     task_dir = Path(tmp_dir_str) / "task"
-    with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+    with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
         lock = TaskPublishLock(task_dir)
         with lock:
             ready_event.set()
-            hold_event.wait(timeout=5)
+            # Only the parent may end the blocked phase; process startup can
+            # take longer than a fixed hold timeout under full-suite load.
+            hold_event.wait()
 
 
-def _mp_worker_lock_contender(tmp_dir_str, res_queue):
+def _observe_lock_attempt(attempt_event):
+    original_enter = TaskPublishLock.__enter__
+
+    def observed_enter(lock):
+        attempt_event.set()
+        return original_enter(lock)
+
+    return patch.object(TaskPublishLock, "__enter__", observed_enter)
+
+
+def _mp_worker_lock_contender(tmp_dir_str, res_queue, attempt_event):
     """争锁 worker"""
     task_dir = Path(tmp_dir_str) / "task"
-    with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+    with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
+         _observe_lock_attempt(attempt_event):
         lock = TaskPublishLock(task_dir)
         with lock:
             res_queue.put(("acquired", os.getpid()))
 
 
-def _mp_worker_create_staging(tmp_dir_s, intent_d, q):
+def _mp_worker_create_staging(tmp_dir_s, intent_d, q, attempt_event):
     t_dir = Path(tmp_dir_s) / "task"
     b = TaskIntentBuilder(KnowledgeBase())
-    with patch("src.task_intent_builder.get_task_dir", return_value=t_dir):
+    with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=t_dir), \
+         _observe_lock_attempt(attempt_event):
         st = b.create_staging(intent_d)
         q.put(("acquired", st.name))
 
@@ -126,7 +141,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(forged, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -145,7 +160,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st = self.builder.create_staging(intent)
 
                 real_rename = os.rename
@@ -175,7 +190,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st = self.builder.create_staging(intent)
 
                 def hook_commit_fail_and_replace_temp(temp_file, final_file):
@@ -183,7 +198,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
                         json.dump(forged, f)
                     raise OSError("Disk failure during commit")
 
-                with patch("src.task_intent_builder._atomic_commit_noreplace", side_effect=hook_commit_fail_and_replace_temp):
+                with patch("src.dispatch.task_intent_builder._atomic_commit_noreplace", side_effect=hook_commit_fail_and_replace_temp):
                     with self.assertRaises(TaskPersistenceError):
                         self.builder.publish_staging(st, intent)
 
@@ -208,7 +223,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(tampered_intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -229,7 +244,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises((TaskPersistenceError, IntentIdConflict)):
                     self.builder.publish_staging(staging_file, intent)
 
@@ -322,8 +337,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             self.assertEqual(res1[0], "success")
             self.assertEqual(res2[0], "success")
 
-    def test_09_process_a_holds_lock_blocks_process_b(self):
-        """9. 进程 A 持锁时进程 B 确实阻塞"""
+    def _assert_lock_blocks_contender(self, worker, worker_args=()):
         ctx = mp.get_context("spawn")
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
@@ -332,52 +346,55 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             res_queue = ctx.Queue()
             ready_event = ctx.Event()
             hold_event = ctx.Event()
+            attempt_event = ctx.Event()
 
             p_holder = ctx.Process(target=_mp_worker_lock_holder, args=(tmp_dir, hold_event, ready_event))
-            p_holder.start()
+            p_contender = ctx.Process(target=worker, args=(tmp_dir, *worker_args, res_queue, attempt_event))
+            try:
+                p_holder.start()
+                self.assertTrue(ready_event.wait(timeout=30), "Process A must acquire TaskPublishLock")
+                p_contender.start()
+                self.assertTrue(attempt_event.wait(timeout=30), "Process B must reach TaskPublishLock.__enter__")
 
-            ready_event.wait(timeout=5)
+                # A live process alone might still be importing modules.  The
+                # handshake proves it reached the lock before checking that
+                # no acquisition result can arrive while A owns the lock.
+                self.assertTrue(p_holder.is_alive(), "Process A must still hold the lock")
+                with self.assertRaises(Empty, msg="Process B must not acquire the held lock"):
+                    res_queue.get(timeout=0.2)
+                self.assertTrue(p_contender.is_alive(), "Process B must be blocked while Process A holds lock")
 
-            p_contender = ctx.Process(target=_mp_worker_lock_contender, args=(tmp_dir, res_queue))
-            p_contender.start()
+                hold_event.set()
+                res = res_queue.get(timeout=30)
+                self.assertEqual(res[0], "acquired")
+                p_holder.join(timeout=30)
+                p_contender.join(timeout=30)
+                self.assertEqual(p_holder.exitcode, 0)
+                self.assertEqual(p_contender.exitcode, 0)
+            finally:
+                hold_event.set()
+                for process in (p_holder, p_contender):
+                    if process.pid is None:
+                        continue
+                    process.join(timeout=5)
+                    if process.is_alive():
+                        process.terminate()
+                        process.join(timeout=5)
+                    if process.is_alive():
+                        process.kill()
+                        process.join(timeout=5)
+                    process.close()
+                res_queue.close()
+                res_queue.join_thread()
 
-            p_contender.join(timeout=0.5)
-            self.assertTrue(p_contender.is_alive())
-
-            hold_event.set()
-            p_holder.join(timeout=5)
-            p_contender.join(timeout=5)
-
-            res = res_queue.get(timeout=2)
-            self.assertEqual(res[0], "acquired")
+    def test_09_process_a_holds_lock_blocks_process_b(self):
+        """9. 进程 A 持锁时进程 B 确实阻塞"""
+        self._assert_lock_blocks_contender(_mp_worker_lock_contender)
 
     def test_10_create_staging_follows_same_lock_protocol(self):
         """10. create_staging 遵循同一锁协议：进程 A 持锁时，进程 B 的 create_staging 被真实阻塞"""
         intent = self._make_valid_intent("TI2026072101")
-        ctx = mp.get_context("spawn")
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            task_dir = Path(tmp_dir) / "task"
-            task_dir.mkdir(parents=True, exist_ok=True)
-
-            res_queue = ctx.Queue()
-            ready_event = ctx.Event()
-            hold_event = ctx.Event()
-
-            p_holder = ctx.Process(target=_mp_worker_lock_holder, args=(tmp_dir, hold_event, ready_event))
-            p_holder.start()
-            ready_event.wait(timeout=5)
-
-            p_contender = ctx.Process(target=_mp_worker_create_staging, args=(tmp_dir, intent, res_queue))
-            p_contender.start()
-
-            p_contender.join(timeout=0.5)
-            self.assertTrue(p_contender.is_alive(), "create_staging in Process B must be blocked when Process A holds lock")
-
-            hold_event.set()
-            p_holder.join(timeout=5)
-            p_contender.join(timeout=5)
-            res = res_queue.get(timeout=2)
-            self.assertEqual(res[0], "acquired")
+        self._assert_lock_blocks_contender(_mp_worker_create_staging, (intent,))
 
     def test_11_load_snapshot_follows_same_lock_protocol(self):
         """11. load_snapshot 遵循同一锁协议与完整 TaskIntent 结构校验：拒绝残缺 2 字段 final，接受完整 final"""
@@ -410,9 +427,9 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             }
 
             with patch("src.dialogue_manager.get_task_dir", return_value=task_dir), \
-                 patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("src.result_paths.get_task_dir", return_value=task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+                 patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
+                 patch("src.dispatch.result_paths.get_task_dir", return_value=task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 dm_bad.load_snapshot(snap_bad)
 
             self.assertNotEqual(dm_bad.phase, "done", "Consumer must reject incomplete 2-field final JSON")
@@ -440,9 +457,9 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             }
 
             with patch("src.dialogue_manager.get_task_dir", return_value=task_dir), \
-                 patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("src.result_paths.get_task_dir", return_value=task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+                 patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
+                 patch("src.dispatch.result_paths.get_task_dir", return_value=task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 dm_good.load_snapshot(snap_good)
 
             self.assertEqual(dm_good.phase, "done")
@@ -460,7 +477,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             sym = task_dir / "task_intent_TI2026072101.staging_1234_5678_abcd1234"
             os.symlink(target, sym)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(sym, intent)
 
@@ -496,8 +513,8 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
                 }
             }
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 dm.load_snapshot(snap)
 
             self.assertNotEqual(dm.phase, "done")
@@ -508,7 +525,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st = self.builder.create_staging(intent)
                 pub_name = self.builder.publish_staging(st, intent)
                 final_file = task_dir / pub_name
@@ -521,7 +538,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st = self.builder.create_staging(intent)
                 pub_name = self.builder.publish_staging(st, intent)
                 final_file = task_dir / pub_name
@@ -535,7 +552,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.fsync") as mock_fsync:
                 st = self.builder.create_staging(intent)
                 self.builder.publish_staging(st, intent)
@@ -548,7 +565,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st = self.builder.create_staging(intent)
                 self.builder.publish_staging(st, intent)
 
@@ -561,7 +578,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st = self.builder.create_staging(intent)
                 self.builder.publish_staging(st, intent)
 
@@ -580,13 +597,13 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("src.task_intent_builder._atomic_commit_noreplace", side_effect=OSError("Disk failure")):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
+                 patch("src.dispatch.task_intent_builder._atomic_commit_noreplace", side_effect=OSError("Disk failure")):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(staging_file, intent)
 
             # 19b: fsync 失败
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st = self.builder.create_staging(intent)
                 with patch("os.fsync", side_effect=OSError("fsync error")):
                     with self.assertRaises(TaskPersistenceError):
@@ -599,7 +616,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st = self.builder.create_staging(intent)
                 self.builder.publish_staging(st, intent)
 

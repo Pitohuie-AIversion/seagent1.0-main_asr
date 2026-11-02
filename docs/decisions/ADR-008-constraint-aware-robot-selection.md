@@ -4,13 +4,21 @@
 
 已确认，2026-08-13。
 
+2026-10-20 更新：候选入口现已复用 `evaluate_static_robot_variant()`，按已确认的 `water_depth`、`payload` 排除不兼容型号，并返回排除原因及需额外安装的载荷。系列候选、型号候选和自动收敛使用同一可行域；不传任务条件的静态准入域继续用于识别并保留用户明确选择，由 Validator 报告具体冲突。海床过滤与软警告排序仍未接入。新增回归见 [任务条件与候选旅程](../../tests/test_constraint_candidate_journey.py)。
+
+2026-09-30 历史复核：当时本 ADR 的完整约束驱动候选过滤尚未体现在候选域入口，`rejected_variants` 为空列表；该历史缺口中的水深与载荷部分已由上述更新补齐。
+
+原方案中的“十分钟内按实时状态预选”也已调整：当前开始时间窗口为未来 0～60 分钟，且仅 `purpose != "interactive"` 时执行 Unit 运行过滤；默认交互候选不会因当前忙闲而消失。仅因无可用 Unit 的型号仍保留并标记 `has_available_units=false`，没有按本 ADR 目标向上删除所有运行空分支；因水深或载荷不兼容而产生的空系列与类别会被裁剪。以下保留原始决策与验收要求；当前行为以上述更新及代码为准，发布和派发仍需 Validator / 遥测门禁独立校验。
+
+当前依据：[selection_engine.py](../../src/knowledge/selection_engine.py)、[交互候选回归](../../tests/test_interactive_robot_selection_no_hard_violation.py)、[当前设计契约](../current_design_contract.md)。
+
 ## 背景与问题
 
-当前机器人选择已经能够根据任务模板中的 `allowed_robot_classes` 和
+决策提出时，机器人选择已经能够根据任务模板中的 `allowed_robot_classes` 和
 `required_capabilities` 构造 `Class -> Family -> Variant -> Unit` 静态候选树，
 并按每层候选数执行“0 个失败关闭、1 个自动绑定、多个等待消歧”。
 
-但是候选树尚未使用已经收集的任务条件，也没有在即时任务中使用 Unit 的
+当时的候选树尚未使用已经收集的任务条件，也没有在即时任务中使用 Unit 的
 在线、空闲和状态时效信息。因此系统可能在已有条件足以唯一确定机器人时仍要求
 用户选择，也可能把当前不可用的 Unit 暴露为候选。
 

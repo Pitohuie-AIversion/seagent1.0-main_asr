@@ -1,6 +1,6 @@
 from datetime import datetime
-from src.duration_parser import DurationState
-from src.relative_time_parser import TimeFieldState, parse_relative_datetime, parse_time_range
+from src.temporal.duration_parser import DurationState
+from src.temporal.relative_time_parser import TimeFieldState, parse_relative_datetime, parse_time_range
 
 
 def test_parse_relative_datetime_today_and_tomorrow():

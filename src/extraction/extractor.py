@@ -1,0 +1,984 @@
+"""
+extractor.py — 参数提取器主调度门面 (解耦重构版)
+
+职责：
+1. 每轮对话后，用 LLM 从最新用户消息中提取或更新任务参数结构；
+2. 调度 TemporalParser (src/temporal/temporal_parser.py) 进行相对时间、区间物化与时长算术推导；
+3. 调度 CandidateResolver (src/slots/candidate_resolver.py) 进行实体候选消歧、口语清洗与语义匹配；
+4. 维持全套向后兼容公共 API 契约与方法代理。
+"""
+
+from __future__ import annotations
+
+import json
+import inspect
+import re
+from copy import deepcopy
+from datetime import datetime
+from typing import Any
+
+from src.slots.candidate_resolver import (
+    CandidateResolver,
+    CANDIDATE_RESOLUTION_JSON_SCHEMA,
+    MAX_EXTRACTION_USER_HISTORY,
+)
+from src.temporal.duration_parser import (
+    parse_chinese_number,
+    parse_duration_spec,
+)
+from src.llm_client import LLMClient, SLOT_EXTRACTION_JSON_SCHEMA, complete_extraction_schema_branches
+from .model_profile import ModelRole, _is_unsupported_role_keyword_error, get_feature_flag
+from .normalizer import FieldNormalizer
+from src.temporal.relative_time_parser import parse_relative_datetime, parse_time_range
+from src.temporal.temporal_parser import TemporalParser
+
+FULL_TURN_EXTRACTION_MAX_TOKENS = 1600
+
+# Stage one chooses a task. Parameter candidates belong to stage two, where
+# their schema and the current date are available. Constrain generation rather
+# than silently dropping an otherwise nonempty model result after inference.
+TASK_SELECTION_JSON_SCHEMA = deepcopy(SLOT_EXTRACTION_JSON_SCHEMA)
+TASK_SELECTION_JSON_SCHEMA["properties"]["slot_candidates"]["items"]["properties"]["canonical_key"] = {
+    "type": "string", "enum": ["task_type", "task_type_key", "emergency_mode"],
+}
+TASK_SELECTION_JSON_SCHEMA["properties"]["list_mutations"] = {"type": "array", "maxItems": 0}
+TASK_SELECTION_JSON_SCHEMA["properties"]["time_relation"] = {"type": "null"}
+TASK_SELECTION_JSON_SCHEMA["anyOf"] = [
+    {"properties": {"slot_candidates": {"minItems": 1}}, "required": ["slot_candidates"]},
+    {"properties": {"unresolved": {"minItems": 1}}, "required": ["unresolved"]},
+]
+TASK_SELECTION_JSON_SCHEMA = complete_extraction_schema_branches(TASK_SELECTION_JSON_SCHEMA)
+
+EXTRACTION_TASK = """\
+你是一个严格的任务参数候选抽取器。
+
+【极重要：输出边界】
+你当前不是对话助手，而是结构化候选抽取器。
+- 只允许输出一个 JSON object，不得输出任何自然语言解释。
+- 必须严格遵守以下输出 JSON 结构。
+- 可能提供的最近历史消息用于理解上下文；编号选择只能引用紧邻上一条 assistant 消息中明确展示的有序候选，不能利用 required/allowed_values 的后台顺序；只有最新 user 消息能授权本轮字段更新。
+- 用户本轮明确接受上一轮助手给出的单一推荐时，可以从紧邻的上一条 assistant 消息复制被接受的推荐值；助手之前自行提到的值不能在没有本轮用户授权时写入。
+- 如果无法识别到支持的任务字段，严禁猜测候选；仅当用户明确提出了不支持的具体任务时才将任务描述写入 unresolved，严禁在 unresolved 中输出规则说明或思考过程。
+
+【输出格式】
+{{
+  "slot_candidates": [
+    {{
+      "raw_key": "作业类型",
+      "canonical_key": "task_type",
+      "raw_value": "巡检",
+      "normalized_value": "管缆巡检",
+      "confidence": 0.95
+    }},
+    {{
+      "raw_key": "作业类型标识",
+      "canonical_key": "task_type_key",
+      "raw_value": "巡检",
+      "normalized_value": "pipeline_inspection",
+      "confidence": 0.95
+    }}
+  ],
+  "list_mutations": [],
+  "time_relation": null,
+  "unresolved": []
+}}
+
+【提取规则】
+1. 对于任务类型：
+{task_type_rules}
+2. 如果无法识别任何任务字段，不得猜测候选；将无法落实的变更写入 unresolved。
+3. 只支持上述任务；用户明确描述了不支持的任务时，不提取 task_type，并把任务描述写入 unresolved。
+4. 如果最新用户消息中对同一字段多次修正，以最后出现的候选为准。
+5. 最新用户消息选择编号时，只能根据紧邻上一条 assistant 消息中明确编号展示的选项映射；即使 allowed_values 有固定顺序，只要该顺序未向用户展示就必须写入 unresolved。接受单一推荐时只能使用紧邻助手明确推荐的值；不得猜测。
+6. 仅当用户明确提及无歧义的紧急词汇（如"紧急"、"加急"、"应急救援"、"应急抢修"等）时，才提取 canonical_key: "emergency_mode" 且 normalized_value: true。严禁因语气词、标点符号（如感叹号）或"赶紧/优先"等泛化词语擅自判断为紧急模式。
+7. 若用户明确表示"取消紧急"、"非紧急"、"正常模式"、"按普通模式"、"不紧急"等，提取 canonical_key: "emergency_mode" 且 normalized_value: false。
+8. 本阶段只允许输出 task_type、task_type_key、emergency_mode。
+9. 本阶段仅用于确定任务类型。用户同时提到的作业时间、时长、水深、管缆类型、地点或设备等具体参数将在下一阶段自动抽取；本阶段严禁将时间、时长、水深等参数输出为 task_type 或 task_type_key。
+"""
+
+EXTRACTION_SYSTEM = """\
+你是一个严格的参数候选抽取器，专门从用户的自然语言中提取水下ROV作业任务参数。
+
+【极重要：输出边界】
+你当前不是对话助手，而是结构化候选抽取器。
+- 只允许输出一个 JSON object，不得输出任何自然语言解释。
+- 即使当前任务已确认、已发布、已锁定，只要用户本轮明确补充、修改或确认字段，也必须抽取为候选列表。
+- 如果用户本轮没有任何有效字段更新（如确认、取消、问候或闲聊），返回 slot_candidates 为空列表 []，且 unresolved 也必须保持为空列表 []。
+- 当用户输入中提及具体作业对象（如海底油气管道、电力电缆、光纤通信缆）时，必须抽取其对应的 canonical_key（如 cable_type）并填入 slot_candidates。
+- 可能提供的最近历史消息用于理解上下文；编号选择只能引用紧邻上一条 assistant 消息中明确展示的有序候选，不能利用 required/allowed_values 的后台顺序；只有最新 user 消息能授权本轮字段更新。
+- 用户本轮明确接受上一轮助手给出的单一推荐时，可以从紧邻的上一条 assistant 消息复制被接受的推荐值；助手之前自行提到的值不能在没有本轮用户授权时写入。
+- 当本轮用户既配置了载荷（产生 list_mutations），又给出了其他常规字段（如具体机器人编号 equipment_unit_id、支持船 support_vessel 等）时，二者必须同时输出：载荷变更填入 list_mutations，其他字段必须填入 slot_candidates，严禁因为有 list_mutations 就遗漏或清空 slot_candidates 中的其他字段！
+- 【严禁在 unresolved 中输出元解释或推理】unresolved 严格仅用于记录用户实际提出、但系统不支持或无法识别的业务需求（例如不支持的任务类型、超出极限的深度等）；严禁在 unresolved 中填写任何规则引用（如“根据规则X”）、元解释说明（如“用户输入为确认”、“未包含参数修改”、“slot_candidates 应为空”）或思考过程。如果无法识别到任何有效变更，unresolved 必须保持为空列表 []。
+
+【输出格式】
+{{
+  "slot_candidates": [
+    {{
+      "raw_key": "管缆类型",
+      "canonical_key": "cable_type",
+      "raw_value": "海底油气管道",
+      "normalized_value": "海底油气管道",
+      "confidence": 0.95
+    }},
+    {{
+      "raw_key": "水深",
+      "canonical_key": "water_depth",
+      "raw_value": "大约三百米",
+      "normalized_value": "300",
+      "confidence": 0.95
+    }}
+  ],
+  "list_mutations": [],
+  "time_relation": null,
+  "unresolved": []
+}}
+
+【提取规则】
+1. 只抽取用户当前已明确表达的参数；如果用户未提及某字段，绝不要在 slot_candidates 中输出该字段。
+   【必须抽取复合短语中的具体作业对象】
+   当用户在复合任务短语或语句中提及具体的作业对象类型时（例如“海底油气管道巡检”中的“海底油气管道”、“电力电缆埋设”中的“电力电缆”、“光纤通信缆巡检”中的“光纤通信缆”），必须提取对应的对象参数（如 canonical_key: "cable_type", normalized_value: "海底油气管道"）！绝不能因为识别了任务大类（管缆巡检/埋设）就遗漏已被明示的具体作业对象类型。不得从任务常识推测用户未说的值。
+2. 对于任务类型，必须同时提取 task_type 与 task_type_key 两个字段：
+{task_type_rules}
+3. 如果当前状态中已有某字段值，但用户在本轮给出了新的值（包括修改、订正、补充），必须提取新值。
+4. 如果最新用户消息中对同一字段多次修正，以最后出现的候选为准。
+5. 常规字段只允许提取 required 中存在的 canonical_key；任务类型选择器（task_type, task_type_key）、emergency_mode、设备辅助选择器（equipment_class, equipment_model, equipment_name, rov_description）和油田名称（oilfield_name）可以额外输出。即使当前模板没有油田字段，也必须将明确的油田地点保留为 oilfield_name，由后端决定是否接受并给出坐标引导；不得将地点强行映射到其他字段。
+6. 如果用户的输入不是修改已有字段，而是提问、闲聊或确认，slot_candidates 返回空列表 []。
+6.1 【水深（water_depth）特别规则】
+    - water_depth 严格指海洋作业海况水深（即海平面至海床底部的垂直水柱深度，例如“水深120米”、“作业水深300m”）。
+    - 严禁将管缆/管道施工中的“埋设深度”、“掩埋深度”、“开沟深度”、“埋深”（通常0.5~3米）提取为 water_depth！此类工程指标非海水水深槽位，当前模板未定义埋设深度槽位时必须放入 unresolved，严禁覆写或填入 water_depth。
+7. 【列表字段特别规则】对于 payload 字段：
+   - 用户明确表达"增加/还要/再带/装载/搭载/配备/加装/添加 [工具]"时，输出 list_mutations: [{{"field": "payload", "operation": "add", "items": ["工具名称"], "target_items": [], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]
+   - 用户明确表达"删除/不要/卸下/去掉/移除/取消 [工具]"时，输出 list_mutations: [{{"field": "payload", "operation": "remove", "items": ["工具名称"], "target_items": [], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]
+   - 用户明确表达"清空/全不要/什么都不带/不带任何工具/全部卸下/清空工具"时，输出 list_mutations: [{{"field": "payload", "operation": "clear", "items": [], "target_items": [], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]
+   - 首次配置完整工具清单或明确全量替换时（如"只要A和B"、"改成带A和B"、"载荷设置为A、B"），输出 list_mutations: [{{"field": "payload", "operation": "set", "items": ["A", "B"], "target_items": [], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]
+   - 只替换指定旧工具而保留其他工具时（如"把A换成B"），输出 list_mutations: [{{"field": "payload", "operation": "replace", "items": ["B"], "target_items": ["A"], "raw_text": "用户原句", "confidence": 0.95, "source": "user_input"}}]；replace 必须提供非空 target_items。
+   - raw_text 必须填写本轮用户原句，confidence 为 0 到 1 的数值，source 固定为 user_input。
+   - 产生 list_mutations 时，仅针对 payload 字段不要在 slot_candidates 中重复输出；若用户在本轮同时给出了其他字段（如具体机器人编号 equipment_unit_id、支持船编号 support_vessel、水深、坐标等），必须正常抽取并输出到 slot_candidates 中！
+8. 【时间区间与时长规则】对于 start_time / end_time / 持续时长：
+   - 用户表达"两小时后开始"、"明天上午九点"等相对时间，或表达"现在开始"、"即刻开始"、"立刻开始"等即时开始意图时，直接根据今天日期和当前时刻 {today} 换算为绝对 ISO 时间 "YYYY-MM-DDTHH:MM:SS" 输出为 start_time。
+   - 用户明确表达持续时长或时长增量变动时（如"干2小时"、"作业持续3天"、"时长再延长1小时"、"提前半小时结束"、"结束时间保持不变"），除尽量换算 end_time 外，必须在 time_relation 中输出：
+     {{"has_duration": true, "raw_text": "用户时长原词", "duration_seconds": 换算秒数, "target": "duration/start_time/end_time", "action": "SET/ADD/SUB", "confidence": 0.95}}
+9. 【设备选择器特别规则】用户明确指定的机器人编号必须保留为 equipment_unit_id 候选；即使该设备不在当前任务允许列表中，也不得遗漏、替换成其他机器人或当作支持船。保留 raw_value，交由后端验证设备与任务是否兼容；无法确定具体编号时使用 rov_description。
+ROV设备可根据以下关联信息进行辅助推导：
+{ROV2type}
+10. 【选项编号与单一推荐】最新用户消息选择编号时，只能根据紧邻上一条 assistant 消息中明确编号展示的选项映射；即使 allowed_values 有固定顺序，只要该顺序未向用户展示就必须写入 unresolved。接受单一推荐时只能使用紧邻助手明确推荐的值；不得猜测。
+11. 【紧急模式识别】仅当用户明确提及"紧急"、"加急"、"应急"等词汇时提取 emergency_mode: true；明确取消时提取 emergency_mode: false。
+12. 【地点与支持船分别抽取】油田名称或油田简称表示作业地点，不是支持船名称。只有用户选择了船只时才提取 support_vessel。例如“到流花11-1执行巡检”中的“流花11-1”应提取为 oilfield_name，不能提取为 support_vessel，也不能猜测巡检起止坐标；“使用海洋石油681支持船”才提取 support_vessel。
+
+当前任务状态：
+{current_state}
+
+字段规范定义（包含类型、合法值列表、别名映射与证据线索）：
+{required}
+"""
+
+
+def _build_task_type_rules(task_type_map: dict[str, str]) -> str:
+    """根据任务类型映射字典生成 Prompt 规则文本"""
+    groups: dict[str, list[str]] = {}
+    for display, tkey in task_type_map.items():
+        groups.setdefault(tkey, []).append(display)
+
+    lines = []
+    for tkey, values in groups.items():
+        values_str = " / ".join(f'"{v}"' for v in values)
+        lines.append(
+            f'   - 识别为 {tkey} 类任务时 → task_type_key: "{tkey}"，'
+            f'并根据用户描述推断 task_type 为 {values_str} 其中之一'
+        )
+    lines.append(
+        '   - 无法确定具体 task_type 值时只输出 task_type_key，'
+        '不要猜测或伪造 task_type'
+    )
+    lines.append(
+        '   - 用户描述的任务类型不在上述范围内时，不提取任何 task_type 字段'
+    )
+    return "\n".join(lines)
+
+
+def _load_payload_catalog() -> dict:
+    """容错加载载荷目录（兼容历史调用）"""
+    return {}
+
+
+class ParameterExtractor:
+    """水下任务参数抽取器主门面调度器"""
+
+    def __init__(self, llm: LLMClient):
+        self.llm = llm
+        self.temporal_parser = TemporalParser(llm)
+        self.candidate_resolver = CandidateResolver(llm)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 主抽取调度方法
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def extract_updates(
+        self,
+        user_message: str,
+        current_state: dict,
+        task_type_key: str | None,
+        task_type_map: dict[str, str] | None = None,
+        required: list[dict] | None = None,
+        ROV2type: list[dict] | None = None,
+        conversation_history: list[dict] | None = None,
+        allow_empty_for_side_effect: bool = False,
+        allow_task_type_transition: bool = False,
+    ) -> dict:
+        from src.temporal.simulated_time import get_current_datetime
+        now = get_current_datetime()
+        today_str = now.isoformat()
+
+        known = {k: v for k, v in current_state.items() if v is not None}
+        task_type_rules = _build_task_type_rules(task_type_map or {})
+        extraction_required = required or []
+        if allow_task_type_transition and task_type_key is not None:
+            extraction_required = self._with_task_type_transition_values(
+                extraction_required,
+                task_type_map or {},
+            )
+
+        if task_type_key is None:
+            system_prompt = EXTRACTION_TASK.format(
+                task_type_rules=task_type_rules,
+            )
+        else:
+            required_json = (
+                json.dumps(extraction_required, ensure_ascii=False, indent=2)
+                if extraction_required
+                else "[]"
+            )
+            system_prompt = EXTRACTION_SYSTEM.format(
+                today=today_str,
+                current_state=json.dumps(known, ensure_ascii=False, indent=2),
+                task_type_rules=task_type_rules,
+                required=required_json,
+                ROV2type=ROV2type,
+            )
+
+        if allow_empty_for_side_effect:
+            system_prompt += (
+                "\n\n【同轮次级动作探测】上游计划还声明了一个非字段副作用。"
+                "仍须优先抽取最新用户消息中的全部任务字段；若确实没有任何任务字段，"
+                "允许返回空 slot_candidates、空 list_mutations、null time_relation 和空 unresolved，"
+                "由执行器随后处理该次级动作。不得为了满足非空要求伪造字段或 unresolved。"
+                "警告编号和名称（例如C032、未来任务环境与遥测延后校验提示）不是任务参数，"
+                "仅确认警告时不得把这些编号或名称写入 unresolved。"
+            )
+
+        extraction_context = self._select_extraction_history(
+            user_message,
+            extraction_required,
+            conversation_history,
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            *extraction_context,
+            {"role": "user", "content": user_message},
+        ]
+
+        # 方案A性能优化：首轮无歧义任务类型快路径判断（跳过 Stage 1 同步 LLM 调用）
+        fast_result = None
+        if task_type_key is None and get_feature_flag("task_type_fast_path"):
+            fast_result = self._try_fast_extract_task_type(
+                user_message,
+                task_type_map or {},
+            )
+
+        if fast_result is not None:
+            result = fast_result
+        else:
+            schema_kwargs = {}
+            if task_type_key is None:
+                # Legacy clients may not expose a schema argument. Preserve their
+                # calling convention; production LLMClient supports constrained JSON.
+                try:
+                    parameters = inspect.signature(self.llm.extract_json).parameters
+                except (TypeError, ValueError):
+                    parameters = {}
+                if "json_schema" in parameters or any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+                ):
+                    schema_kwargs["json_schema"] = TASK_SELECTION_JSON_SCHEMA
+
+            try:
+                result = self.llm.extract_json(
+                    messages,
+                    max_tokens=FULL_TURN_EXTRACTION_MAX_TOKENS,
+                    role=ModelRole.EXTRACTOR,
+                    **schema_kwargs,
+                )
+            except TypeError as exc:
+                if not _is_unsupported_role_keyword_error(exc):
+                    raise
+                result = self.llm.extract_json(
+                    messages,
+                    max_tokens=FULL_TURN_EXTRACTION_MAX_TOKENS,
+                    **schema_kwargs,
+                )
+
+        if not isinstance(result, dict):
+            result = {}
+
+        allowed_keys = self._allowed_candidate_keys(
+            task_type_key,
+            extraction_required,
+        )
+        raw_candidates = result.get("slot_candidates")
+        if not isinstance(raw_candidates, list):
+            raw_candidates = [
+                {
+                    "raw_key": key,
+                    "canonical_key": key,
+                    "raw_value": value,
+                    "normalized_value": value,
+                    "confidence": 1.0,
+                }
+                for key, value in result.items()
+                if key not in ("intent", "unresolved", "slot_candidates")
+            ]
+
+        unresolved = result.get("unresolved")
+        if not isinstance(unresolved, list):
+            unresolved = []
+
+        # 调度 TemporalParser 处理时间关系与物化
+        time_relation = result.get("time_relation")
+        if time_relation is None and "end_time" in allowed_keys:
+            time_relation = self.temporal_parser.extract_temporal_relation(
+                user_message,
+                current_state,
+            )
+        raw_candidates, time_unresolved = self.temporal_parser.materialize_time_relation(
+            raw_candidates,
+            time_relation,
+            current_state,
+            allowed_keys,
+            user_message=user_message,
+        )
+
+        # 调度 CandidateResolver 进行候选清洗与规范化消歧
+        normalized_candidates, resolver_unresolved = self._normalize_candidates(
+            raw_candidates,
+            allowed_keys,
+            extraction_required,
+            current_state,
+            conversation_history or [],
+            user_message=user_message,
+            task_type_map=task_type_map,
+        )
+
+        raw_mutations = result.get("list_mutations", [])
+        list_mutations = raw_mutations if isinstance(raw_mutations, list) else []
+        mutation_unresolved = []
+
+        if list_mutations:
+            normalized_candidates = [
+                cand for cand in normalized_candidates
+                if cand.get("canonical_key") != "payload"
+            ]
+
+        selector_values: dict[str, object] = {}
+        for candidate in normalized_candidates:
+            key = candidate.get("canonical_key")
+            if key not in {"task_type", "task_type_key"}:
+                continue
+            value = candidate.get("normalized_value")
+            if key in selector_values and selector_values[key] != value:
+                unresolved.append(
+                    "同轮具体任务类型互相冲突，请只指定一种任务操作。"
+                )
+            else:
+                selector_values[str(key)] = value
+
+        all_unresolved = [
+            *unresolved,
+            *time_unresolved,
+            *resolver_unresolved,
+            *mutation_unresolved,
+        ]
+        cleaned_unresolved = self._filter_meta_unresolved(all_unresolved)
+
+        # The model may return an arbitrary unresolved explanation (or even a
+        # seemingly concrete selector) for a tree-valve utterance.  Validate
+        # the selector against the user's words here so that committing this
+        # operation never depends on one particular explanation string.
+        tree_valve_error = self._tree_valve_selector_error(
+            user_message,
+            normalized_candidates,
+            task_type_map or {},
+        )
+        if tree_valve_error:
+            # Keep the candidate in the extraction result. The dialogue
+            # manager preflight owns the atomic decision and must see the
+            # original selector for cross-pass conflict reporting.
+            if tree_valve_error not in cleaned_unresolved:
+                cleaned_unresolved.append(tree_valve_error)
+
+        return {
+            "slot_candidates": normalized_candidates,
+            "unresolved": [
+                str(item).strip()
+                for item in cleaned_unresolved
+                if str(item).strip()
+            ],
+            "list_mutations": list_mutations,
+        }
+
+    @staticmethod
+    def _tree_valve_selector_error(
+        user_message: str,
+        candidates: list[dict],
+        task_type_map: dict[str, str],
+    ) -> str | None:
+        """Reject a tree-valve selector unless its direction is explicit.
+
+        Only the complete operation words are accepted.  A single ``插`` or
+        ``拔`` is too ambiguous in Chinese ASR text (for example ``插槽`` or
+        ``拔管``), so it must not silently select one side of the operation.
+        """
+        tree_selected = False
+        for candidate in candidates:
+            key = candidate.get("canonical_key")
+            value = candidate.get("normalized_value")
+            if key == "task_type" and isinstance(value, str):
+                if task_type_map.get(value) == "tree_valve_operation":
+                    tree_selected = True
+                    break
+        if not tree_selected:
+            return None
+
+        text = str(user_message or "")
+        # A model may echo the existing task selector while the user only
+        # changes another field (for example, water depth).  In that case the
+        # selector is not being re-selected this turn.
+        if not any(term in text for term in ("阀门操作", "控制面板", "插入", "拔出")) \
+                and not ("采油树" in text and "操作" in text):
+            return None
+
+        direction = ParameterExtractor._explicit_tree_valve_direction(text)
+        if direction is None:
+            return "采油树阀门操作存在歧义，请明确说明‘插入’或‘拔出’。"
+
+        for candidate in candidates:
+            if candidate.get("canonical_key") != "task_type":
+                continue
+            value = str(candidate.get("normalized_value") or "")
+            candidate_direction = (
+                "insert" if "插入" in value and "拔出" not in value
+                else "withdraw" if "拔出" in value and "插入" not in value
+                else None
+            )
+            if candidate_direction and candidate_direction != direction:
+                return "采油树阀门操作候选与用户明确方向不一致，请重新指定‘插入’或‘拔出’。"
+        return None
+
+    @staticmethod
+    def _explicit_tree_valve_direction(text: str) -> str | None:
+        """Return one positive complete operation word, if unambiguous."""
+        positive: list[str] = []
+        source = str(text or "")
+        previous_operation_end = 0
+        for match in re.finditer(r"插入|拔出", source):
+            # Negation belongs to this operation only when it appears after
+            # the previous operation word. This keeps "不是拔出，是插入"
+            # positive for the final insertion while rejecting
+            # "不要采油树控制面板插入".
+            prefix = source[previous_operation_end:match.start()]
+            if re.search(r"(?:不|不要|别|取消|撤销|不想|不是|并非|未|没)\s*", prefix):
+                previous_operation_end = match.end()
+                continue
+            positive.append("insert" if match.group() == "插入" else "withdraw")
+            previous_operation_end = match.end()
+        return positive[0] if len(positive) == 1 else None
+
+    @staticmethod
+    def _filter_meta_unresolved(items: list[Any]) -> list[str]:
+        """过滤模型在 unresolved 中输出的元规则解释、COT思考与说明性免责文本。
+
+        真正的 unresolved 应为具体的工程字段解析异常、超限或不支持的业务项，
+        而非模型对'未抽取到槽位'、'本轮为确认'、'根据规则X'等规则解释。
+        系统生成的合法业务引导（如当前任务类型未包含油田槽位）绝不误伤。
+        """
+        meta_patterns = [
+            re.compile(r"根据规则"),
+            re.compile(r"根据第[0-9一二三四五六七八九十]+条"),
+            re.compile(r"slot_candidates"),
+            re.compile(r"(?:用户|本轮|输入|消息|当前轮次).*未(?:包含|提供|提及).*(?:参数|槽位|修改|新增|补充|更新|字段)"),
+            re.compile(r"未(?:包含|提供|提及)任何.*(?:参数|槽位|修改|新增|补充|更新|字段)"),
+            re.compile(r"未提取到.*(?:参数|槽位|字段)"),
+            re.compile(r"无.*(?:新参数|新槽位|参数修改|参数更新|字段变更)"),
+            re.compile(r"本轮(?:输入|消息).*(?:确认|发布|取消|指令)"),
+            re.compile(r"用户(?:本轮|输入|指令|意图)?.*(?:为|是)?.*(?:确认|发布|取消|指令|忽略警告|本轮无字段更新)"),
+            re.compile(r"本轮无(?:字段|参数)更新"),
+            re.compile(r"无需更新"),
+            re.compile(r"无需修改"),
+            re.compile(r"无法自动将.*映射为.*(?:时间|ISO)"),
+            re.compile(r"缺少.*等必要(?:参数|槽位|字段)"),
+            re.compile(r"当前系统时间为"),
+        ]
+        cleaned = []
+        for item in items:
+            s = str(item).strip()
+            if not s:
+                continue
+            if "未包含油田槽位" in s or "当前任务类型" in s:
+                cleaned.append(s)
+                continue
+            if any(p.search(s) for p in meta_patterns):
+                continue
+            cleaned.append(s)
+        return cleaned
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 候选过滤与消歧装配
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _try_fast_extract_task_type(
+        self,
+        user_message: str,
+        task_type_map: dict[str, str],
+    ) -> dict | None:
+        """方案A性能优化：尝试通过无歧义规则快速识别首轮任务类型，跳过 Stage 1 的 LLM 同步调用。
+
+        若用户输入模糊、包含冲突任务类型或不支持任务，返回 None 优雅回退到 LLM 抽取。
+        """
+        if not user_message or not task_type_map:
+            return None
+
+        # 检查是否包含明确的不支持任务类型，此时应让 LLM 抽取并显式输出 unresolved
+        unsupported_keywords = ["打捞", "拆除", "爆破", "焊接", "搜寻", "救援"]
+        for ukw in unsupported_keywords:
+            if ukw in user_message and "应急救援" not in user_message and "应急抢修" not in user_message:
+                return None
+
+        matched_keys: dict[str, str] = {}
+
+        # 1. 精确匹配 task_type_map 中的所有合法别名
+        for val, t_key in task_type_map.items():
+            if val in user_message:
+                matched_keys[t_key] = val
+
+        # 2. 规则关键词匹配与归一化
+        kw_mappings = [
+            ("巡检", "pipeline_inspection", "管缆巡检"),
+            ("管道巡检", "pipeline_inspection", "管缆巡检"),
+            ("管缆巡检", "pipeline_inspection", "管缆巡检"),
+            ("管线巡检", "pipeline_inspection", "管缆巡检"),
+            ("电缆巡检", "pipeline_inspection", "管缆巡检"),
+            ("埋设", "pipeline_burial", "管缆埋设"),
+            ("管缆埋设", "pipeline_burial", "管缆埋设"),
+            ("开沟埋设", "pipeline_burial", "管缆埋设"),
+            ("埋缆", "pipeline_burial", "管缆埋设"),
+            ("采油树", "tree_valve_operation", "采油树控制面板插入"),
+            ("阀门操作", "tree_valve_operation", "采油树控制面板插入"),
+            ("控制面板", "tree_valve_operation", "采油树控制面板插入"),
+        ]
+        for kw, t_key, disp_name in kw_mappings:
+            if kw in user_message:
+                if t_key not in matched_keys:
+                    matched_keys[t_key] = disp_name
+
+        # 若未命中或命中多于 1 个不同模板类型，说明存在任务类型冲突或歧义，回退到 LLM 处理
+        if len(matched_keys) != 1:
+            return None
+
+        t_key, disp_name = next(iter(matched_keys.items()))
+
+        # 采油树特殊插入/拔出逻辑：若未明确指定插入或拔出，具体操作存疑，必须回退到 LLM 进行歧义澄清
+        if t_key == "tree_valve_operation":
+            # Do not treat a single character as an operation.  ASR text can
+            # contain unrelated words such as 插槽/插管 or 拔管; only the
+            # complete operation terms disambiguate this task type.
+            direction = self._explicit_tree_valve_direction(user_message)
+            if direction == "withdraw":
+                disp_name = "采油树控制面板拔出"
+            elif direction == "insert":
+                disp_name = "采油树控制面板插入"
+            else:
+                return None
+
+        candidates = [
+            {
+                "raw_key": "作业类型",
+                "canonical_key": "task_type",
+                "raw_value": disp_name,
+                "normalized_value": disp_name,
+                "confidence": 1.0,
+                "resolution_method": "rule_exact",
+            },
+            {
+                "raw_key": "作业类型标识",
+                "canonical_key": "task_type_key",
+                "raw_value": t_key,
+                "normalized_value": t_key,
+                "confidence": 1.0,
+                "resolution_method": "rule_exact",
+            },
+        ]
+
+        # 检查是否包含明确的紧急模式词
+        if any(w in user_message for w in ["紧急", "加急", "应急救援", "应急抢修"]):
+            candidates.append({
+                "raw_key": "紧急模式",
+                "canonical_key": "emergency_mode",
+                "raw_value": "紧急",
+                "normalized_value": True,
+                "confidence": 1.0,
+                "resolution_method": "rule_exact",
+            })
+        elif any(w in user_message for w in ["取消紧急", "非紧急", "正常模式", "按普通模式", "不紧急"]):
+            candidates.append({
+                "raw_key": "紧急模式",
+                "canonical_key": "emergency_mode",
+                "raw_value": "普通",
+                "normalized_value": False,
+                "confidence": 1.0,
+                "resolution_method": "rule_exact",
+            })
+
+        return {
+            "slot_candidates": candidates,
+            "list_mutations": [],
+            "time_relation": None,
+            "unresolved": [],
+        }
+
+    def _with_task_type_transition_values(
+        self,
+        required: list[dict],
+        task_type_map: dict[str, str],
+    ) -> list[dict]:
+        all_task_values = sorted(set(task_type_map.keys()))
+        if not all_task_values:
+            return required
+
+        expanded: list[dict] = []
+        task_field = None
+        for item in required:
+            copied = dict(item)
+            if copied.get("key") == "task_type":
+                task_field = copied
+            expanded.append(copied)
+
+        if task_field is None:
+            expanded.append({
+                "key": "task_type",
+                "label": "任务类型",
+                "type": "string",
+                "required": True,
+                "allowed_values": all_task_values,
+            })
+        else:
+            task_field["allowed_values"] = all_task_values
+        return expanded
+
+    @staticmethod
+    def _allowed_candidate_keys(
+        task_type_key: str | None,
+        required: list[dict],
+    ) -> set[str]:
+        if task_type_key is None:
+            return {"task_type", "task_type_key", "emergency_mode"}
+
+        keys = {
+            str(field.get("key"))
+            for field in required or []
+            if field.get("key")
+        }
+        keys.update(
+            {
+                "task_type",
+                "task_type_key",
+                "emergency_mode",
+                "equipment_class",
+                "equipment_model",
+                "rov_description",
+                "equipment_name",
+                "raw_oilfield_name",
+                "oilfield_name",
+            }
+        )
+        return keys
+
+    def _normalize_candidates(
+        self,
+        candidates: list,
+        allowed_keys: set[str],
+        required: list[dict],
+        current_state: dict,
+        conversation_history: list[dict],
+        user_message: str = "",
+        task_type_map: dict[str, str] | None = None,
+    ) -> tuple[list[dict], list[str]]:
+        """校验候选结构；同一字段多次出现时保留最后一次修正。"""
+        aliases = {
+            "equipment_model": "equipment_type",
+            "raw_oilfield_name": "oilfield_name",
+        }
+        required_by_key = {
+            str(field.get("key")): field
+            for field in required or []
+            if field.get("key")
+        }
+        normalized_by_key: dict[str, dict] = {}
+        task_selector_candidates: list[dict] = []
+        task_selector_values: dict[str, object] = {}
+        unresolved: list[str] = []
+
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+
+            key = str(candidate.get("canonical_key") or "").strip()
+            key = aliases.get(key, key)
+            if not key or key not in allowed_keys:
+                continue
+
+            value = candidate.get("normalized_value")
+            if value is None or value == "":
+                continue
+
+            try:
+                confidence = float(candidate.get("confidence", 1.0))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            confidence = min(1.0, max(0.0, confidence))
+
+            raw_value = candidate.get("raw_value", value)
+            trusted_candidate = {
+                "raw_key": str(candidate.get("raw_key") or key),
+                "canonical_key": key,
+                "raw_value": raw_value,
+                "normalized_value": value,
+                "confidence": confidence,
+            }
+            resolution_method = candidate.get("resolution_method")
+            if isinstance(resolution_method, str) and resolution_method.strip():
+                trusted_candidate["resolution_method"] = resolution_method.strip()
+
+            # 调度 CandidateResolver 解析单一候选值
+            resolved_candidate, unresolved_reason = self.candidate_resolver.resolve_candidate_value(
+                trusted_candidate,
+                required_by_key,
+                allowed_keys,
+                current_state,
+                conversation_history,
+                user_message=user_message,
+            )
+            if resolved_candidate is None:
+                if unresolved_reason:
+                    unresolved.append(unresolved_reason)
+                continue
+
+            canonical_k = resolved_candidate["canonical_key"]
+            if canonical_k in {"task_type", "task_type_key"}:
+                selector_value = resolved_candidate.get("normalized_value")
+                if canonical_k not in task_selector_values:
+                    task_selector_values[canonical_k] = selector_value
+                    task_selector_candidates.append(resolved_candidate)
+                elif task_selector_values[canonical_k] != selector_value:
+                    task_selector_candidates.append(resolved_candidate)
+                continue
+
+            field_def = required_by_key.get(canonical_k)
+            is_list_field = (field_def and field_def.get("type") == "list") or canonical_k == "payload"
+
+            if is_list_field:
+                def _split_list_items(source: Any) -> list[Any]:
+                    if isinstance(source, str):
+                        s = source.strip(" \t\n\r[]()")
+                        parts = [p.strip(" \t\n\r'\"") for p in re.split(r"[,，、\n]+", s) if p.strip(" \t\n\r'\"")]
+                        return parts if parts else ([source] if source else [])
+                    elif isinstance(source, (list, tuple, set)):
+                        res = []
+                        for x in source:
+                            if isinstance(x, str):
+                                s = x.strip(" \t\n\r[]()")
+                                parts = [p.strip(" \t\n\r'\"") for p in re.split(r"[,，、\n]+", s) if p.strip(" \t\n\r'\"")]
+                                if parts:
+                                    res.extend(parts)
+                                else:
+                                    res.append(x)
+                            else:
+                                res.append(x)
+                        return res
+                    elif source is not None:
+                        return [source]
+                    return []
+
+                val = resolved_candidate["normalized_value"]
+                val_list = _split_list_items(val)
+                raw_v = resolved_candidate["raw_value"]
+                raw_list = _split_list_items(raw_v)
+
+
+                if canonical_k in normalized_by_key:
+                    existing = normalized_by_key[canonical_k]
+                    existing_vals = existing["normalized_value"] if isinstance(existing["normalized_value"], list) else [existing["normalized_value"]]
+                    existing_raws = existing["raw_value"] if isinstance(existing["raw_value"], list) else [existing["raw_value"]]
+                    for item in val_list:
+                        if item not in existing_vals:
+                            existing_vals.append(item)
+                    for item in raw_list:
+                        if item not in existing_raws:
+                            existing_raws.append(item)
+                    existing["normalized_value"] = existing_vals
+                    existing["raw_value"] = existing_raws
+                else:
+                    resolved_candidate["normalized_value"] = val_list
+                    resolved_candidate["raw_value"] = raw_list
+                    normalized_by_key[canonical_k] = resolved_candidate
+            else:
+                normalized_by_key[canonical_k] = resolved_candidate
+
+        return [
+            *normalized_by_key.values(),
+            *task_selector_candidates,
+        ], unresolved
+
+    def _select_extraction_history(
+        self,
+        user_message: str,
+        required: list[dict] | None,
+        conversation_history: list[dict] | None,
+    ) -> list[dict]:
+        """始终提供有界最近历史，让模型自行判断是否存在指代或省略。"""
+        del user_message, required
+        recent = []
+        for message in (conversation_history or [])[-MAX_EXTRACTION_USER_HISTORY:]:
+            role = message.get("role")
+            content = str(message.get("content") or "").strip()
+            if role in ("user", "assistant") and content:
+                recent.append({"role": role, "content": content})
+        return recent
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 向后兼容代理方法 (Delegated Proxies)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _extract_temporal_relation(self, user_message: str, current_state: dict) -> dict | None:
+        return self.temporal_parser.extract_temporal_relation(user_message, current_state)
+
+    @staticmethod
+    def _materialize_time_relation(
+        candidates: list,
+        relation: object,
+        current_state: dict,
+        allowed_keys: set[str],
+        user_message: str = "",
+    ) -> tuple[list, list[str]]:
+        return TemporalParser.materialize_time_relation(candidates, relation, current_state, allowed_keys, user_message=user_message)
+
+    @staticmethod
+    def _parse_state_datetime(value: object) -> datetime | None:
+        return TemporalParser.parse_state_datetime(value)
+
+    @staticmethod
+    def _looks_like_iso_datetime(value: object) -> bool:
+        return TemporalParser.looks_like_iso_datetime(value)
+
+    @staticmethod
+    def _has_date_semantics(text: str) -> bool:
+        return TemporalParser.has_date_semantics(text)
+
+    @staticmethod
+    def _mentions_end_time_keep(text: str) -> bool:
+        return TemporalParser.mentions_end_time_keep(text)
+
+    @staticmethod
+    def _extract_duration_delta_text(text: str) -> str | None:
+        return TemporalParser.extract_duration_delta_text(text)
+
+    @staticmethod
+    def _select_time_range_start_text(start_cand: dict | None, current_state: dict, user_message: str, base_dt: datetime) -> object:
+        return TemporalParser.select_time_range_start_text(start_cand, current_state, user_message, base_dt)
+
+    @staticmethod
+    def _select_time_range_end_text(end_cand: dict | None, user_message: str, has_relation: bool) -> object:
+        return TemporalParser.select_time_range_end_text(end_cand, user_message, has_relation)
+
+    @staticmethod
+    def _strip_colloquial_prefixes(raw_text: str) -> str:
+        return CandidateResolver.strip_colloquial_prefixes(raw_text)
+
+    @staticmethod
+    def _strip_colloquial_suffixes(raw_text: str) -> str:
+        return CandidateResolver.strip_colloquial_suffixes(raw_text)
+
+    @classmethod
+    def _candidate_match_inputs(cls, candidate: dict) -> list[object]:
+        return CandidateResolver.candidate_match_inputs(candidate)
+
+    @classmethod
+    def _match_allowed_value(cls, value: object, allowed_values: list) -> object | None:
+        return CandidateResolver.match_allowed_value(value, allowed_values)
+
+    @classmethod
+    def _match_alias_value(cls, value: object, field_def: dict) -> object | None:
+        return CandidateResolver.match_alias_value(value, field_def)
+
+    @staticmethod
+    def _extract_numbered_options_from_assistant_message(conversation_history: list[dict]) -> list[str]:
+        return CandidateResolver.extract_numbered_options_from_assistant_message(conversation_history)
+
+    @staticmethod
+    def _match_numbered_option_by_user_input(raw_value: object, shown_options: list[str]) -> str | None:
+        return CandidateResolver.match_numbered_option_by_user_input(raw_value, shown_options)
+
+    def _resolve_candidate_value(
+        self,
+        candidate: dict,
+        required_by_key: dict[str, dict],
+        allowed_keys: set[str],
+        current_state: dict,
+        conversation_history: list[dict],
+        user_message: str = "",
+    ) -> tuple[dict | None, str | None]:
+        return self.candidate_resolver.resolve_candidate_value(
+            candidate, required_by_key, allowed_keys, current_state, conversation_history, user_message=user_message
+        )
+
+    def _resolve_candidate_semantically(
+        self,
+        raw_value: object,
+        proposed_key: str,
+        required: list[dict],
+        current_state: dict,
+        conversation_history: list[dict],
+    ) -> dict | None:
+        return self.candidate_resolver.resolve_candidate_semantically(
+            raw_value, proposed_key, required, current_state, conversation_history
+        )
+
+    def resolve_allowed_candidate(
+        self,
+        raw_value: object,
+        field_key: str,
+        field_def: dict,
+        current_state: dict | None = None,
+        conversation_history: list[dict] | None = None,
+    ) -> object | None:
+        return self.candidate_resolver.resolve_allowed_candidate(
+            raw_value, field_key, field_def, current_state, conversation_history
+        )
+
+    def resolve_rov_description(
+        self,
+        description: str,
+        all_rovs: list[dict],
+        task_type_key: str | None,
+    ) -> list[dict]:
+        return self.candidate_resolver.resolve_rov_description(description, all_rovs, task_type_key)
+
+    @staticmethod
+    def _validate_resolved_candidate(key: str, value: object, required_by_key: dict[str, dict], allowed_keys: set[str]) -> bool:
+        return CandidateResolver.validate_resolved_candidate(key, value, required_by_key, allowed_keys)
+
+    @staticmethod
+    def _coerce_confidence(value: object, fallback: object = 1.0) -> float:
+        return CandidateResolver.coerce_confidence(value, fallback)
+
+    @staticmethod
+    def _format_unresolved(candidate: dict, reason: str) -> str:
+        return CandidateResolver.format_unresolved(candidate, reason)

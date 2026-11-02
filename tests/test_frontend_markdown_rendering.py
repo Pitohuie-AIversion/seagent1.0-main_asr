@@ -91,7 +91,14 @@ class TestFrontendMarkdownRendering(unittest.TestCase):
     def test_all_message_repaints_use_role_aware_renderer(self):
         self.assertNotIn("function renderMarkdown", self.index_js)
         self.assertNotIn("renderMarkdown(", self.index_js)
-        self.assertEqual(self.index_js.count("renderMessageContent("), 7)
+        repaints = re.findall(r"bubble\.innerHTML\s*=\s*([^;]+);", self.index_js)
+        self.assertTrue(repaints, "No message bubble repaint paths found")
+        for repaint in repaints:
+            with self.subTest(repaint=repaint):
+                self.assertRegex(
+                    repaint,
+                    r"^renderMessageContent\([^,]+,\s*(?:'bot'|\w+\.getAttribute\('data-role'\))\)",
+                )
         self.assertIn(
             "renderMessageContent(originalText, msgDiv.getAttribute('data-role'))",
             self.index_js,

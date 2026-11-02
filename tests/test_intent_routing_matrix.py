@@ -12,9 +12,9 @@ import unittest
 from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
-from src.intent_router import IntentRouter
+from src.session.intent_router import IntentRouter
 from src.knowledge_retriever import KnowledgeBase
-from src.slot_store import Slot
+from src.slots.slot_store import Slot
 from tests.interaction_plan_support import ScriptedLLM, make_plan
 
 

@@ -1,11 +1,10 @@
 """
-hot_reload.py - 业务逻辑与配置热重载管理器
+hot_reload.py - 配置热重载管理器
 
-支持在 vLLM/ASR 模型常驻显存的情况下，动态重载 src/ 业务代码和 config/ 配置，
-无需重启 Python 进程或重新加载大模型权重。
+在 vLLM/ASR 模型常驻显存时刷新配置与会话。
+Python 源码变动必须重启：处理器的缓存导入绑定无法通过局部 reload 安全更新。
 """
 
-import importlib
 import logging
 import os
 import sys
@@ -22,32 +21,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SRC_DIR = BASE_DIR / "src"
 CONFIG_DIR = BASE_DIR / "config"
 
-# 需要热重载的模块列表（按依赖拓扑顺序排序）
-RELOAD_MODULE_ORDER = [
-    "src.exceptions",
-    "src.result_paths",
-    "src.simulated_time",
-    "src.environment_info",
-    "src.state_info",
-    "src.asr_normalizer",
-    "src.coord_parser",
-    "src.prompts",
-    "src.oilfield_linker",
-    "src.model_profile",
-    "src.session_state",
-    "src.session_state_shadow",
-    "src.knowledge_retriever",
-    "src.normalizer",
-    "src.validator",
-    "src.extractor",
-    "src.slot_store",
-    "src.constraint_checker",
-    "src.task_intent_builder",
-    "src.dialogue_manager",
-    "src.ui_state_builder",
-    "src.history_manager",
-    "src.asr_service",
-]
+# These files are reread by KnowledgeBase and its state readers. Other
+# configuration (models, transports, ASR) has a separate startup lifecycle.
+RELOADABLE_CONFIG_FILES = {
+    "task_schemas.yaml", "robot_fleet.yaml", "assets.yaml",
+    "constraints.yaml", "oilfield.yaml", "state.yaml",
+}
 
 _reload_lock = threading.Lock()
 _file_mtimes: Dict[str, float] = {}
@@ -111,21 +90,21 @@ def _scan_monitored_files() -> Dict[str, float]:
         for p in SRC_DIR.rglob("*.py"):
             try:
                 current_mtimes[str(p.resolve())] = p.stat().st_mtime
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug("[Hot-Reload] 读取源码文件 mtime 失败: %s (%s)", p, exc)
 
     # 扫描 config
     if CONFIG_DIR.exists():
         for p in CONFIG_DIR.rglob("*.yaml"):
             try:
                 current_mtimes[str(p.resolve())] = p.stat().st_mtime
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug("[Hot-Reload] 读取配置文件 mtime 失败: %s (%s)", p, exc)
         for p in CONFIG_DIR.rglob("*.yml"):
             try:
                 current_mtimes[str(p.resolve())] = p.stat().st_mtime
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug("[Hot-Reload] 读取配置文件 mtime 失败: %s (%s)", p, exc)
 
     return current_mtimes
 
@@ -163,23 +142,27 @@ def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str
     start_time = time.perf_counter()
     reloaded_mods = []
     refreshed_sessions: List[Dict[str, Any]] = []
+    failed_sessions: List[str] = []
 
     with _reload_lock:
+        # Manual reload must observe unsupported changes too. Validate the
+        # entire change set before touching any module or migrating sessions.
+        if changed_files is None:
+            changed_files = check_changed_files()
+        unsupported = [str(Path(filename).resolve()) for filename in changed_files
+                       if Path(filename).suffix == ".py"
+                       or Path(filename).name not in RELOADABLE_CONFIG_FILES]
+        if unsupported:
+            msg = "以下文件变更不支持热重载，需要重启服务：" + ", ".join(unsupported)
+            _record_reload_event(
+                ok=False, message=msg, changed_files=changed_files,
+                reloaded_modules=[], refreshed_sessions=[],
+            )
+            logger.warning("[Hot-Reload] %s", msg)
+            return False, msg, []
         try:
-            # 1. 按顺序 reload 模块
-            for mod_name in RELOAD_MODULE_ORDER:
-                if mod_name in sys.modules:
-                    mod = sys.modules[mod_name]
-                    importlib.reload(mod)
-                    reloaded_mods.append(mod_name)
-                else:
-                    try:
-                        mod = importlib.import_module(mod_name)
-                        reloaded_mods.append(mod_name)
-                    except Exception:
-                        pass
-
-            # 2. 刷新 web_backend 模块内的引用
+            # Rebuild configuration-backed instances using the existing class
+            # identities. Reloading Python here would split cached imports.
             if "web_backend" in sys.modules:
                 web_mod = sys.modules["web_backend"]
                 
@@ -190,20 +173,27 @@ def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str
                     web_mod._shared_kb = new_kb_cls()
                 if "src.dialogue_manager" in sys.modules:
                     web_mod.DialogueManager = sys.modules["src.dialogue_manager"].DialogueManager
-                if "src.asr_normalizer" in sys.modules:
-                    web_mod.normalize_terminology = sys.modules["src.asr_normalizer"].normalize_terminology
-                if "src.ui_state_builder" in sys.modules:
-                    web_mod.build_frontend_ui_state = sys.modules["src.ui_state_builder"].build_frontend_ui_state
-                if "src.history_manager" in sys.modules:
-                    web_mod.save_conversation = sys.modules["src.history_manager"].save_conversation
-                    web_mod.list_history = sys.modules["src.history_manager"].list_history
-                    web_mod.load_history = sys.modules["src.history_manager"].load_history
+                if "src.asr.asr_normalizer" in sys.modules:
+                    web_mod.normalize_terminology = sys.modules["src.asr.asr_normalizer"].normalize_terminology
+                if "src.session.ui_state_builder" in sys.modules:
+                    web_mod.build_frontend_ui_state = sys.modules["src.session.ui_state_builder"].build_frontend_ui_state
+                if "src.session.history_manager" in sys.modules:
+                    web_mod.save_conversation = sys.modules["src.session.history_manager"].save_conversation
+                    web_mod.list_history = sys.modules["src.session.history_manager"].list_history
+                    web_mod.load_history = sys.modules["src.session.history_manager"].load_history
 
                 # 3. 平滑迁移活跃会话的 DialogueManager 实例（保持会话状态）
                 if hasattr(web_mod, "_sessions_lock") and hasattr(web_mod, "_sessions_manager"):
                     with web_mod._sessions_lock:
-                        new_dm_cls = sys.modules["src.dialogue_manager"].DialogueManager
-                        for sid, old_mgr in list(web_mod._sessions_manager.items()):
+                        sessions = list(web_mod._sessions_manager.items())
+                    new_dm_cls = sys.modules["src.dialogue_manager"].DialogueManager
+                    for sid, old_mgr in sessions:
+                        # Match chat/reset ordering: never hold the registry
+                        # lock while waiting for an accepted session transaction.
+                        with old_mgr._session_lock:
+                            with web_mod._sessions_lock:
+                                if web_mod._sessions_manager.get(sid) is not old_mgr:
+                                    continue
                             try:
                                 snap = old_mgr.export_snapshot()
                                 new_mgr = new_dm_cls(
@@ -226,26 +216,34 @@ def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str
                                             })
                                     except Exception as exc:
                                         logger.warning("[Hot-Reload] 会话 %s 强刷新外部约束失败: %s", sid, exc)
-                                web_mod._sessions_manager[sid] = new_mgr
+                                # A response lost around reload must replay the
+                                # original outcome instead of repeating a delta.
+                                if hasattr(old_mgr, "_http_request_cache"):
+                                    new_mgr._http_request_cache = old_mgr._http_request_cache
+                                # Confirmation epochs intentionally do not
+                                # migrate: changed configuration needs review.
+                                with web_mod._sessions_lock:
+                                    if web_mod._sessions_manager.get(sid) is old_mgr:
+                                        web_mod._sessions_manager[sid] = new_mgr
                             except Exception as err:
                                 logger.warning(
-                                    "[Hot-Reload] 会话 %s 迁移失败，已重置为空会话: %s",
+                                    "[Hot-Reload] 会话 %s 迁移失败，已保留原会话: %s",
                                     sid,
                                     err,
                                 )
-                                new_mgr = new_dm_cls(
-                                    web_mod._shared_llm,
-                                    web_mod._shared_kb,
-                                    session_id=sid,
-                                )
-                                if new_kb_cls and hasattr(new_mgr, "kb"):
-                                    new_mgr.kb.__class__ = new_kb_cls
-                                web_mod._sessions_manager[sid] = new_mgr
+                                failed_sessions.append(sid)
 
             # 更新记录的文件时间戳
             _file_mtimes = _scan_monitored_files()
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-            msg = f"热重载成功，耗时 {elapsed_ms:.1f}ms，重载模块: {len(reloaded_mods)} 个"
+            if failed_sessions:
+                msg = f"配置已读取，但 {len(failed_sessions)} 个会话迁移失败；原会话已保留，请稍后重试。"
+                _record_reload_event(
+                    ok=False, message=msg, changed_files=changed_files,
+                    reloaded_modules=reloaded_mods, refreshed_sessions=refreshed_sessions,
+                )
+                return False, msg, reloaded_mods
+            msg = f"配置刷新成功，耗时 {elapsed_ms:.1f}ms"
             _record_reload_event(
                 ok=True,
                 message=msg,
@@ -258,7 +256,7 @@ def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str
 
         except Exception as exc:
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-            err_msg = f"热重载失败 (保留上一稳定版本): {exc}"
+            err_msg = f"配置刷新失败，可能已有部分实例更新，请重启服务: {exc}"
             logger.error("[Hot-Reload] %s", err_msg, exc_info=True)
             _record_reload_event(
                 ok=False,
@@ -271,13 +269,21 @@ def perform_reload(changed_files: Optional[List[str]] = None) -> Tuple[bool, str
             return False, err_msg, reloaded_mods
 
 
+def code_reload_enabled() -> bool:
+    """Code replacement is an explicit development capability."""
+    return (
+        os.environ.get("SEAGENT_ENABLE_CODE_RELOAD") == "1"
+        and os.environ.get("DISABLE_HOT_RELOAD") != "1"
+    )
+
+
 def maybe_auto_reload() -> Optional[Tuple[bool, str]]:
     """
     检查文件变动并自动执行热重载（若有变更）。
     通常在 Flask @app.before_request 中调用。
     """
     # 允许通过环境变量禁用热重载（如测试环境）
-    if os.environ.get("DISABLE_HOT_RELOAD") == "1":
+    if not code_reload_enabled():
         return None
 
     changed = check_changed_files()
@@ -294,7 +300,7 @@ def maybe_auto_reload() -> Optional[Tuple[bool, str]]:
 
 
 def force_reload() -> Dict[str, Any]:
-    """手动强制重载所有业务模块"""
+    """手动刷新支持的配置；源码变动必须重启。"""
     success, msg, reloaded = perform_reload()
     return {
         "ok": success,

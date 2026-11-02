@@ -1,14 +1,14 @@
 # SEAgent Current Design Contract & Architecture Specification
 
-This document defines the authoritative system design contract for SEAgent (Phase 2, commit 8254b37, 2026-08-13). All dialogue management, intent routing, slot extraction, validation, snapshot persistence, and robot candidate selection logic must conform to these rules.
+This document describes the design contract and implementation boundaries checked on 2026-09-30. Requirements marked MUST describe intended invariants; the explicit implementation notes below identify known gaps rather than claiming every requirement is implemented or newly verified.
 
 ---
 
 ## 1. Routing & Interaction Types
 
 ### 1.1 InteractionPlan Semantic Authority (ADR-005)
-- Every turn, the LLM produces a structured `InteractionPlan` with an `operation` field: `READ`, `WRITE`, `CONTROL`, or `CLARIFY`.
-- `operation` is the **sole routing authority**. Backend deterministic code MUST NOT override the operation type based on keyword heuristics.
+- The semantic router requests a structured `InteractionPlan` with `operation`: `READ`, `WRITE`, `CONTROL`, or `CLARIFY`. Deterministic control paths may be handled before a model call.
+- ADR-005 intends `operation` to be the semantic routing authority. **Current exception:** `_call_llm_router()` still promotes some `READ` / `CLARIFY` results to `WRITE` for grounded candidate/alias selections, list selections and fixed task-start expressions, then revalidates the plan. See [ADR-005's implementation note](decisions/ADR-005-llm-semantic-authority.md); the target of no heuristic operation changes is not fully implemented.
 - If the LLM returns an invalid protocol or is unavailable, the system MUST fall back to `CLARIFY` — it MUST NOT guess a write operation.
 - Low-confidence `WRITE` or `CONTROL` operations MUST be demoted to `CLARIFY` to prevent uncertain semantics from producing state side effects.
 
@@ -23,17 +23,20 @@ The system classifies all natural language user inputs into two primary interact
 - `READ` interactions bypass `Extractor` field extraction and validation commits.
 
 ### 1.4 Write Pipeline
-- A `WRITE` / `CONTROL` interaction routes through `Extractor` for canonical slot extraction, followed by `Validator` constraint checking, `SlotStore` state commit, and optional `TaskIntentBuilder` atomic publication.
-- Model returning `WRITE` does not guarantee write success — the result still passes through Extractor → Validator → SlotStore.
+- `WRITE` produces candidates through extraction, grounding and normalization; schema-accepted values update SlotStore before task-level constraint validation. Violations preserve a correction context and prevent publication.
+- **Immediate Task Start Grounding**: Explicit expressions requesting immediate startup (e.g., `"任务现在开始"`, `"立刻开始"`, `"即刻开始"`) are deterministically anchored to absolute current system time (`get_current_datetime()`) without ambiguity or relative shift errors.
+- `CONTROL` is handled by the relevant phase handler for confirmation, cancellation or warning acknowledgement; not every control action runs the extractor.
+- A model returning `WRITE` does not guarantee a field commit or publication.
+
 
 ---
 
 ## 2. Control Commands & Negation Syntax
 
 ### 2.1 Control Intent Definitions
-- **Confirm (`TASK_CONFIRM` / `"确认发布"`, `"确认"`):** When phase is `confirming`, triggers atomic persistence of finalized `TaskIntent_TI*.json` and history snapshot.
-- **Cancel (`TASK_CANCEL` / `"取消任务"`, `"放弃"`):** Resets current task state and sets phase to `rejected`.
-- **Continue / Ignore Warning (`"继续"`, `"忽略预警"`):** Overrides `blocked_soft` warnings and proceeds to next state.
+- **Publish (`TASK_CONFIRM` / `"确认发布"`):** In `confirming`, explicit publication intent triggers TaskIntent persistence and history snapshot handling. A generic `"确认"` alone requests final publication confirmation; it does not itself publish.
+- **Cancel (`TASK_CANCEL` / `"取消任务"`, `"放弃"`):** During collection, resets current task state and sets phase to `rejected`. Archived tasks retain their immutable plan and use persistent execution controls; see [the execution dispatch contract](execution_dispatch_contract.md).
+- **Accept warning (`"忽略警告"`, `"接受风险"`):** Explicit acceptance in `blocked_soft` records acknowledgement against the current validation context and proceeds after revalidation. `"继续"` alone is not explicit risk acceptance, and acceptance is separate from publication.
 
 ### 2.2 Negation Handling Rules
 - **Cancel Negation (`"不要取消"`, `"别取消"`, `"不取消"`):** MUST NOT trigger task cancellation or phase transition to `rejected`.
@@ -42,6 +45,12 @@ The system classifies all natural language user inputs into two primary interact
 
 ### 2.3 Control Command Processing Order
 - Control commands (e.g., confirm, cancel, continue/ignore warning) MUST be evaluated and processed BEFORE passing user inputs to standard WRITE extractor.
+
+### 2.4 Explicit Edit Restrictions (2026-10-19)
+- A standalone task-wide restriction such as `"不要修改任务"`, `"先别修改"` or `"只是讨论"` applies across the current message. Before processing model-proposed writes or pending selections, the manager preserves task fields, slot metadata, validation state and phase; its reply uses saved constraint context without revalidation. Emergency controls retain their existing route.
+- Domain-wide restrictions such as `"不要改任何时间"` or `"工具不要改"` suppress that domain's model candidates and deterministic recovery, while independent changes to other fields remain available. `"不要修改任务编号"` and `"先不发布"` are not task-wide edit restrictions.
+- Discussion or negation limited to one operation does not suppress a separate affirmative operation: `"只是讨论删除A，新增B"` may add B while retaining A. Time recovery applies the same nonassertive-context checks to explicit endpoints, ranges and duration relations.
+- These guards cover the explicit expressions tested in the [October 19 verification record](progress/2026-10-19-whole-turn-protection-fixes.md). They do not establish complete natural-language negation coverage.
 
 ---
 
@@ -60,14 +69,17 @@ The system classifies all natural language user inputs into two primary interact
 ## 4. Snapshot Persistence & Rollback Rules
 
 ### 4.1 Atomic Publishing & Locking
-- Publishing requires acquiring an atomic process lock (`TaskPublishLock`).
-- Staging files (`TI*_staging.json`) are validated before atomic symlink/atomic rename publishing to final destination `/root/autodl-tmp/result/task`.
+- Publishing requires acquiring the cross-process lock (`TaskPublishLock`).
+- The builder writes and validates a temporary JSON file, then uses a no-overwrite hard-link commit (`os.link`) to create the final file. It does not publish through a symlink.
+- The task directory is resolved by `SEAGENT_TASK_DIR` when set, otherwise by `SEAGENT_RESULT_DIR/task`; the default result root may fall back to the repository `result/` directory when the production default is not writable.
 
-### 4.2 Failure Rollback Guarantee
-- If a persistence or symlink error occurs during publishing (`TaskPersistenceError`), the system MUST roll back `SlotStore`, `task_state`, and disk artifacts to their pre-transaction snapshot.
+### 4.2 Failure and Uncertain-Commit Semantics
+- Before the final file is committed, a `TaskPersistenceError` must restore the in-memory transaction and retain any uncertain staging evidence safely.
+- If the final file has already been linked but a later durability step fails, the system returns `TaskCommitUncertainError`, preserves the exact published intent, and requires a later confirmation/reconciliation. It must not report ordinary publication success or allocate a replacement ID.
 
-### 4.3 Intent ID Inheritance & Invalidation
-- Modifying a slot in `done` phase invalidates the published intent and generates a new daily sequence `intent_id`.
+### 4.3 Terminal Task Protection
+- A `done` task cannot be modified in place. Read-only conversation remains available; a new task must use the new-task/reset workflow, preserving the existing published file.
+- Repeated confirmation does not create a second file. An uncertain commit is reconciled against its original intent ID.
 
 ---
 
@@ -128,13 +140,13 @@ If **any** condition fails, the provenance check MUST delete the write candidate
 ### 8.1 Single Authority Entry Point
 - `KnowledgeBase.get_feasible_robot_selection_domain()` is the **sole authority** for computing robot candidates. Both `DialogueManager` and `OutputBuilder` MUST consume the same domain result.
 
-### 8.2 Filtering Layers
-The candidate tree is pruned in the following order:
-1. `allowed_robot_classes` and `required_capabilities` (task type gate).
-2. Confirmed `water_depth` vs. `Variant.hard_params.max_depth_m` (strict `<=` semantics).
-3. Confirmed `payload` vs. `onboard_payloads ∪ supported_payloads` of each Variant.
-4. For immediate tasks (confirmed `start_time` within current 10-minute window): filter Units by online, idle, and telemetry validity.
-5. Prune empty Variants, Families, and Classes after filtering.
+### 8.2 Current Filtering and Unimplemented Layers
+1. The current entry point matches template `required_capabilities` against family capabilities. Class is grouping metadata; legacy `allowed_robot_classes` is not the hard task-compatibility authority.
+2. With the default `purpose="interactive"`, it keeps runtime-unavailable units visible. Other purposes filter units only when the task starts within the next 0–60 minutes, using online, idle and telemetry-validity checks. This candidate-window predicate is distinct from the validator's handling of ongoing tasks.
+3. Variants without remaining units are retained with `has_available_units=false`; empty families/classes are pruned while assembling the tree.
+4. The entry point filters variants by confirmed water depth and payload through `VariantEvaluator`, records reasons in `rejected_variants`, and reports payload installation requirements. Family and model choices share this feasible domain. The condition-free admission domain remains available to preserve explicit user choices for specific validation errors. Seabed filtering and soft-warning ranking remain [ADR-008 targets](decisions/ADR-008-constraint-aware-robot-selection.md).
+
+Candidate membership therefore does not imply that all task constraints pass. Publication and runtime execution require their own validation.
 
 ### 8.3 Three-Segment Decision Rule
 After filtering:
@@ -144,6 +156,7 @@ After filtering:
 
 ### 8.4 Auto-Bound Value Revocation
 - Auto-bound (`source="auto"`) selections are **not** user preferences. If task conditions change and the candidate domain changes, the auto-bound value and its downstream selections MUST be cleared and re-converged.
+- Payload edits evaluate against explicit equipment choices, then recompute the automatic suffix only after successful updates. Apply scalar, list and explicit equipment updates before candidate convergence so old payloads cannot constrain their replacements.
 - User-explicit selections are retained even if incompatible with current conditions; `Validator` MUST produce a hard constraint block in that case.
 
 ### 8.5 Four-Level Relationship Validation
@@ -152,3 +165,34 @@ After filtering:
 
 ### 8.6 Validation Fallback Prohibition
 - Constraint validation failures (`blocked_hard`, `blocked_soft`) MUST NOT fall back to `CLARIFY`. The system MUST return an explicit constraint reason and require the user to correct task parameters.
+
+### 8.7 Telemetry and Dispatch
+- C019 is currently a soft warning after 1800 seconds. Runtime availability has a separate age limit and invalid-state checks; see [the architecture overview](architecture/overview.md).
+- Future-task archival may defer dynamic telemetry validation. Dispatch uses `purpose="runtime_execution"` and fresh validation; archival alone is not execution authorization.
+- Archived tasks may acknowledge a new runtime soft warning against its displayed evidence, then dispatch separately. Evidence changes require another review; hard violations remain blocking and archived parameters remain unchanged.
+- Sending, scheduling, uncertain results and unsupported valve withdrawal follow [the execution dispatch contract](execution_dispatch_contract.md).
+
+## 9. HTTP Retry and Streaming Boundaries
+
+### 9.1 Recent Request Replay
+
+- `/api/chat` and `/api/chat/stream` share the same replay records within a live session manager. An explicit `request_id` plus the same trimmed message replays the original outcome without re-running extraction, mutation, publication or dispatch. Concurrent duplicates serialize behind the same session lock.
+- Reusing a retained ID with different message content returns `RequestIdConflict` (409; an SSE `error` event for the streaming transport). The first result is not overwritten. IDs are scoped to the session, not globally.
+- Records last at most 10 minutes from completion, with at most 128 entries and a 4 MiB serialized-response budget per manager; older records may be evicted earlier by either budget. Oversized responses retain a bounded tombstone returning `RequestReplayUnavailable` instead of executing again while that record remains.
+- This is process-local, bounded retry protection. Configuration migration preserves the replay cache; reset, history forks, process restart, expiry or eviction end that protection. It is not durable exactly-once processing. Clients must check current session state before retrying an old or uncertain incremental command.
+- Publication and runtime risk acceptance also require the current `expected_confirmation_token`. Successful request replay precedes that check. Stale confirmation, history forks and configuration migration follow [the session confirmation and recovery contract](architecture/session-confirmation-recovery.md).
+- Errors reached during processing are also replayed because an error may follow a state mutation. To intentionally attempt an operation again, inspect current state first and use a new request ID; the `retryable` flag does not invalidate a retained outcome. Input validation and streaming-capacity rejection occur before processing and are not recorded as completed turns.
+- Replayed responses contain the original snapshot. They do not revert newer session state; use `/api/session/state` for the latest state. A missing request ID creates a new logical turn. The browser supplies one ID per send and keeps it across its supported transport fallback; interrupted streams are still not automatically resent.
+
+### 9.2 Live Progress and Committed Results
+
+- An accepted stream starts an independent worker and immediately emits `ping` and `queued` progress, then live `step` events and a heartbeat while waiting. These events do not imply that a field is saved or a task published.
+- Slot/warning events, reply `delta`, final `result` and `end` wait until the session transaction, persistence/dispatch handling and response serialization finish. Reply deltas remain chunks of the validated final reply, not unvalidated model token streaming.
+- A disconnected observer stops receiving events but does not cancel an accepted transaction. Reset continues to acquire the session lock before removing/resetting the manager.
+- Each process allows at most 8 active streaming workers, with a 64-event advisory progress buffer per worker. Saturation returns HTTP 503 `ServerBusy` with `Retry-After: 1`; a slow/disconnected reader cannot block the worker by filling the progress queue. This worker bound does not remove the shared model lock or bound the ordinary JSON endpoint's request queue.
+- Invalid transport input still returns HTTP 400 before streaming. Processing failures after stream acceptance are represented by an SSE `error` event carrying the application code, without a success `result`.
+
+### 9.3 State Reads Concurrent with Reset
+
+- `/api/session/state` rechecks manager identity after acquiring the session lock. If reset removed or replaced that manager while the read waited, the endpoint returns HTTP 409 `SessionReset` with `retryable=true`; it neither exposes nor refreshes the detached manager.
+- A subsequent read observes the current manager or `exists=false`. Successful response fields remain unchanged. This check does not make reset interrupt in-progress generation; reset still waits for the session lock.

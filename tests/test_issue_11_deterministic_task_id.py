@@ -16,9 +16,9 @@ from zoneinfo import ZoneInfo
 
 from src.dialogue_manager import DialogueManager
 from src.exceptions import IdReservationError, TaskPersistenceError
-from src.slot_store import SnapshotValidationError
-from src import id_sequence
-from src.id_sequence import (
+from src.slots.slot_store import SnapshotValidationError
+from src.dispatch import id_sequence
+from src.dispatch.id_sequence import (
     next_daily_task_id,
     validate_intent_id,
     validate_task_id,
@@ -27,9 +27,9 @@ from src.id_sequence import (
 )
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
-from src.output_builder import OutputBuilder
-from src.result_paths import get_history_dir, get_task_dir
-from src.simulated_time import (
+from src.dispatch.output_builder import OutputBuilder
+from src.dispatch.result_paths import get_history_dir, get_task_dir
+from src.temporal.simulated_time import (
     SimulatedTime,
     get_business_date,
     get_business_datetime,
@@ -37,8 +37,8 @@ from src.simulated_time import (
     get_current_datetime,
     get_simulated_time,
 )
-from src.slot_store import Slot
-from src.task_intent_builder import TaskIntentBuilder, validate_task_intent
+from src.slots.slot_store import Slot
+from src.dispatch.task_intent_builder import TaskIntentBuilder, validate_task_intent
 from tests.interaction_plan_support import (
     ScriptedLLM,
     extraction_result,
@@ -139,7 +139,7 @@ def _worker_reserve_task_id(result_queue, prefix, date_text, width, tmp_dir):
 class Issue11DeterministicTaskIdTest(unittest.TestCase):
     def setUp(self):
         self._sim_time_patcher = patch(
-            "src.simulated_time._simulated_time",
+            "src.temporal.simulated_time._simulated_time",
             SimulatedTime(),
         )
         self._sim_time_patcher.start()
@@ -741,7 +741,7 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
 
     def test_26_internal_id_is_uuid_and_immutable(self):
         import uuid
-        from src.task_intent_builder import validate_uuid4
+        from src.dispatch.task_intent_builder import validate_uuid4
 
         task_type = _task_type_candidate("pipeline_inspection")
         llm = ScriptedLLM(
@@ -866,8 +866,8 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
 
             dm = create_dialogue_manager()
             with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+                 patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 dm.load_snapshot(snap)
 
             self.assertEqual(dm.phase, "done")
@@ -877,7 +877,7 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
     def test_29_snapshot_restore_identifier_validation_and_3id_match(self):
         """Invalid internal_id UUIDv4 in snapshot candidate raises SnapshotValidationError without mutating memory state.
         Mismatched internal_id or task_id between snapshot and final rejects done phase."""
-        from src.slot_store import SnapshotValidationError
+        from src.slots.slot_store import SnapshotValidationError
         dm = create_dialogue_manager()
         dm.process("我要做管缆巡检")
         orig_phase = dm.phase
@@ -940,8 +940,8 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
             }
 
             with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+                 patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 dm.load_snapshot(mismatched_snap)
 
             self.assertNotEqual(dm.phase, "done")
@@ -1061,8 +1061,8 @@ class Issue11DeterministicTaskIdTest(unittest.TestCase):
 
             dm = create_dialogue_manager()
             with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+                 patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 dm.load_snapshot(snap_v2)
 
             self.assertNotEqual(dm.phase, "done")
@@ -1088,7 +1088,7 @@ class TestPreviewReserve(unittest.TestCase):
     """Tests 31-43: preview/reserve 生命周期、SSOT 事务、双 DM 并发与发布失败三重回滚真实端到端测试套件。"""
 
     def setUp(self):
-        from src.id_sequence import peek_daily_task_id
+        from src.dispatch.id_sequence import peek_daily_task_id
         self.peek = peek_daily_task_id
         self._tmp = tempfile.mkdtemp()
         self._tmp_task_dir = Path(self._tmp) / "task"
@@ -1104,17 +1104,17 @@ class TestPreviewReserve(unittest.TestCase):
             },
         )
         self._patcher_paths.start()
-        self._patcher_result = patch("src.id_sequence.get_result_dir", return_value=Path(self._tmp))
+        self._patcher_result = patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(self._tmp))
         self._patcher_result.start()
         # 隔离内存计数器
-        import src.id_sequence as _idseq
+        import src.dispatch.id_sequence as _idseq
         self._orig_counters = dict(_idseq._COUNTERS)
         _idseq._COUNTERS.clear()
 
     def tearDown(self):
         self._patcher_result.stop()
         self._patcher_paths.stop()
-        import src.id_sequence as _idseq
+        import src.dispatch.id_sequence as _idseq
         _idseq._COUNTERS.clear()
         _idseq._COUNTERS.update(self._orig_counters)
         import shutil
@@ -1186,9 +1186,9 @@ class TestPreviewReserve(unittest.TestCase):
         tmp_task_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
-             patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-             patch("src.result_paths.get_task_dir", return_value=tmp_task_dir), \
-             patch("src.id_sequence.get_result_dir", return_value=Path(self._tmp)):
+             patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.dispatch.result_paths.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(self._tmp)):
 
             dm_a = create_dialogue_manager()
             dm_b = create_dialogue_manager()
@@ -1254,8 +1254,8 @@ class TestPreviewReserve(unittest.TestCase):
 
         def _worker(q, tmp):
             try:
-                with patch("src.id_sequence.get_result_dir", return_value=Path(tmp)):
-                    import src.id_sequence as _idseq
+                with patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp)):
+                    import src.dispatch.id_sequence as _idseq
                     _idseq._COUNTERS.clear()
                     result = next_daily_task_id("PI", date, 3, (), prefixes_list)
                     q.put(("ok", result))
@@ -1357,8 +1357,8 @@ class TestPreviewReserve(unittest.TestCase):
         tmp_task_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
-             patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-             patch("src.id_sequence.get_result_dir", return_value=Path(self._tmp)):
+             patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(self._tmp)):
 
             dm = create_dialogue_manager()
             dm.process("新建管缆巡检任务")
@@ -1434,8 +1434,8 @@ class TestPreviewReserve(unittest.TestCase):
         tmp_task_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
-             patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-             patch("src.id_sequence.get_result_dir", return_value=Path(self._tmp)):
+             patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(self._tmp)):
 
             dm = create_dialogue_manager()
             dm.process("新建管缆巡检任务")
@@ -1454,7 +1454,7 @@ class TestPreviewReserve(unittest.TestCase):
             hist_before = copy.deepcopy(dm.conversation_history)
 
             with patch(
-                "src.task_intent_builder.TaskIntentBuilder.prepare",
+                "src.dispatch.task_intent_builder.TaskIntentBuilder.prepare",
                 side_effect=TaskPersistenceError("Mock prepare error"),
             ) as mock_prepare:
                 with self.assertRaises(TaskPersistenceError):
@@ -1482,8 +1482,8 @@ class TestPreviewReserve(unittest.TestCase):
         tmp_task_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
-             patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-             patch("src.id_sequence.get_result_dir", return_value=Path(self._tmp)):
+             patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(self._tmp)):
 
             dm = create_dialogue_manager()
             dm.process("新建管缆巡检任务")
@@ -1502,7 +1502,7 @@ class TestPreviewReserve(unittest.TestCase):
             hist_before = copy.deepcopy(dm.conversation_history)
 
             with patch(
-                "src.task_intent_builder.TaskIntentBuilder.create_staging",
+                "src.dispatch.task_intent_builder.TaskIntentBuilder.create_staging",
                 side_effect=TaskPersistenceError("Mock staging error"),
             ) as mock_create_staging:
                 with self.assertRaises(TaskPersistenceError):
@@ -1529,8 +1529,8 @@ class TestPreviewReserve(unittest.TestCase):
         tmp_task_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("src.dialogue_manager.get_task_dir", return_value=tmp_task_dir), \
-             patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-             patch("src.id_sequence.get_result_dir", return_value=Path(self._tmp)):
+             patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+             patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(self._tmp)):
 
             dm = create_dialogue_manager()
             dm.process("新建管缆巡检任务")
@@ -1549,7 +1549,7 @@ class TestPreviewReserve(unittest.TestCase):
             hist_before = copy.deepcopy(dm.conversation_history)
 
             with patch(
-                "src.task_intent_builder.TaskIntentBuilder.publish_staging",
+                "src.dispatch.task_intent_builder.TaskIntentBuilder.publish_staging",
                 side_effect=TaskPersistenceError("Mock publish error"),
             ) as mock_publish_staging:
                 with self.assertRaises(TaskPersistenceError):

@@ -19,8 +19,8 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scratch.generate_report import generate_report
-from scratch.parse_tests import AuditTestResult
+from scripts.generate_report import generate_report
+from scripts.parse_tests import AuditTestResult
 
 
 class RegressionReportParserTest(unittest.TestCase):
@@ -91,7 +91,7 @@ class RegressionReportParserTest(unittest.TestCase):
             report_path = Path(tmp_dir) / "regression_report.md"
             rec_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-            with patch("scratch.generate_report.Path") as mock_path:
+            with patch("scripts.generate_report.Path") as mock_path:
                 def mock_path_factory(p):
                     if str(p) == "/tmp/test_records.json":
                         return rec_path

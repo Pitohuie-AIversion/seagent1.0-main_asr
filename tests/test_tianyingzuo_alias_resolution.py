@@ -1,5 +1,5 @@
 import unittest
-from src.extractor import ParameterExtractor
+from src.extraction.extractor import ParameterExtractor
 
 class TestTianyingzuoAliasResolution(unittest.TestCase):
     def setUp(self):

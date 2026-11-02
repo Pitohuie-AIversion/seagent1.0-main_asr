@@ -19,7 +19,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from src.duration_parser import (
+from src.temporal.duration_parser import (
     DurationParseResult,
     _parse_cn_integer,
     is_keep_duration_expression,
@@ -27,7 +27,7 @@ from src.duration_parser import (
     parse_duration_to_seconds,
     parse_duration_with_detail,
 )
-from src.relative_time_parser import (
+from src.temporal.relative_time_parser import (
     AmbiguityCode,
     DateTimeParseResult,
     TemporalIR,
@@ -481,7 +481,7 @@ class TestDurationParserV2:
         import sys
         monkeypatch.setitem(sys.modules, "cn2an", None)  # type: ignore[assignment]
         # 删除已导入的缓存以便重新走 fallback 路径
-        import src.duration_parser as dp
+        import src.temporal.duration_parser as dp
         import importlib
         importlib.reload(dp)
 

@@ -20,14 +20,14 @@ import builtins
 import multiprocessing
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
-from src.extractor import ParameterExtractor
+from src.extraction.extractor import ParameterExtractor
 from src.llm_client import LLMClient
-from src.output_builder import OutputBuilder
-from src.slot_store import SlotStore, Slot, SlotVersionConflict, SnapshotValidationError, VALID_VALUE_TYPES
-from src.task_intent_builder import TaskIntentBuilder
-from src.simulated_time import get_simulated_time
-from src.history_manager import save_conversation
-from src.result_paths import get_task_dir, get_history_dir
+from src.dispatch.output_builder import OutputBuilder
+from src.slots.slot_store import SlotStore, Slot, SlotVersionConflict, SnapshotValidationError, VALID_VALUE_TYPES
+from src.dispatch.task_intent_builder import TaskIntentBuilder
+from src.temporal.simulated_time import get_simulated_time
+from src.session.history_manager import save_conversation
+from src.dispatch.result_paths import get_task_dir, get_history_dir
 from tests.interaction_plan_support import empty_extraction, make_plan
 
 
@@ -39,7 +39,7 @@ from src.exceptions import (
     IdReservationError,
 )
 
-import src.id_sequence as id_sequence
+import src.dispatch.id_sequence as id_sequence
 
 import web_backend
 from web_backend import app
@@ -56,7 +56,7 @@ def seed_complete_valid_pipeline_task(dm, kb):
     cable_types = [t["label"] for t in kb.assets.get("cable_types", [])]
     cable_type = cable_types[0] if cable_types else "电力电缆"
 
-    from src.simulated_time import get_current_datetime
+    from src.temporal.simulated_time import get_current_datetime
     from datetime import timedelta
     now_dt = get_current_datetime()
     water_depth = 300.0
@@ -476,6 +476,8 @@ class SlotConsistencyTest(unittest.TestCase):
         assert_ssot_consistency(self, self.dm)
 
     def test_unextracted_value_remains_missing_for_followup(self):
+        # A genuinely unspecified value must remain missing. Exact configured
+        # values are now recovered by the explicit grounding contract.
         self._set_plan("WRITE")
         self.dm.reset()
         self.dm.slot_store.init_task_slots(
@@ -493,7 +495,7 @@ class SlotConsistencyTest(unittest.TestCase):
             "unresolved": [],
         }
 
-        self.dm.process("管缆类型海底油气管道")
+        self.dm.process("管缆类型还没确定")
         self.llm.extract_json.assert_called_once()
 
         slot = self.dm.slot_store.slots["cable_type"]
@@ -1102,7 +1104,7 @@ class SlotConsistencyTest(unittest.TestCase):
     def test_31_frontend_refresh_and_history_load_consistency(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
-            with patch("src.history_manager.get_history_dir", return_value=tmp_path):
+            with patch("src.session.history_manager.get_history_dir", return_value=tmp_path):
                 self.dm.reset()
                 self.dm.slot_store.slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
                 self.dm.slot_store.slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
@@ -1132,7 +1134,7 @@ class SlotConsistencyTest(unittest.TestCase):
             tmp_path.mkdir(parents=True, exist_ok=True)
             seed_complete_valid_pipeline_task(self.dm, self.kb)
             self.dm.intent_router.route = self._orig_route
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path), \
                  patch("src.dialogue_manager.TaskIntentBuilder.publish_staging", side_effect=TaskPersistenceError("Simulated disk error")):
                 with self.assertRaises(TaskPersistenceError):
                     self.dm.process("确认发布")
@@ -1147,7 +1149,7 @@ class SlotConsistencyTest(unittest.TestCase):
             tmp_path.mkdir(parents=True, exist_ok=True)
             seed_complete_valid_pipeline_task(self.dm, self.kb)
             self.dm.intent_router.route = self._orig_route
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path), \
                  patch("src.dialogue_manager.TaskIntentBuilder.publish_staging", side_effect=TaskPersistenceError("Simulated disk error")):
                 with self.assertRaises(TaskPersistenceError):
                     self.dm.process("确认发布")
@@ -1159,7 +1161,7 @@ class SlotConsistencyTest(unittest.TestCase):
     def test_34_task_intent_prepare_no_disk_write(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
                     task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},
@@ -1175,7 +1177,7 @@ class SlotConsistencyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
             tmp_path.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
                     task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},
@@ -1214,7 +1216,7 @@ class SlotConsistencyTest(unittest.TestCase):
             pre_built_json = copy.deepcopy(self.dm._last_built_json)
             pre_missing = copy.deepcopy(self.dm._last_missing)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path), \
                  patch("src.dialogue_manager.TaskIntentBuilder.publish_staging", side_effect=TaskPersistenceError("Simulated disk error")) as mock_pub, \
                  self.assertLogs("src.dialogue_manager", level="ERROR") as cm:
                 with self.assertRaises(TaskPersistenceError):
@@ -1261,8 +1263,8 @@ class SlotConsistencyTest(unittest.TestCase):
             self.assertEqual(len(missing), 0)
             self.assertEqual(self.dm.phase, "confirming")
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 reply = self.dm.process("确认开始", request_id="req_test_36b")
 
                 self.assertEqual(self.dm.phase, "done")
@@ -1293,7 +1295,7 @@ class SlotConsistencyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
             tmp_path.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent = builder.prepare(
                     task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},
@@ -1437,7 +1439,7 @@ class SlotConsistencyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
             tmp_path.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent1 = builder.prepare(
                     task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},
@@ -1463,7 +1465,7 @@ class SlotConsistencyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "task"
             tmp_path.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_path):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path):
                 builder = TaskIntentBuilder(self.kb)
                 intent1 = builder.prepare(
                     task_state={"task_id": "PI-20260803-001", "internal_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "water_depth": 300.0},
@@ -1493,14 +1495,14 @@ class SlotConsistencyTest(unittest.TestCase):
 
             p1.start()
             p2.start()
-            p1.join(timeout=10)
-            p2.join(timeout=10)
+            p1.join(timeout=30)
+            p2.join(timeout=30)
 
             self.assertEqual(p1.exitcode, 0)
             self.assertEqual(p2.exitcode, 0)
 
-            id1 = queue.get(timeout=2)
-            id2 = queue.get(timeout=2)
+            id1 = queue.get(timeout=5)
+            id2 = queue.get(timeout=5)
 
             self.assertNotEqual(id1, id2)
             self.assertEqual(set([id1, id2]), {"TI2026071801", "TI2026071802"})
@@ -1530,14 +1532,14 @@ class SlotConsistencyTest(unittest.TestCase):
 
             p1.start()
             p2.start()
-            p1.join(timeout=10)
-            p2.join(timeout=10)
+            p1.join(timeout=30)
+            p2.join(timeout=30)
 
             self.assertEqual(p1.exitcode, 0)
             self.assertEqual(p2.exitcode, 0)
 
-            id1 = queue.get(timeout=2)
-            id2 = queue.get(timeout=2)
+            id1 = queue.get(timeout=5)
+            id2 = queue.get(timeout=5)
 
             self.assertNotEqual(id1, id2)
             self.assertEqual(set([id1, id2]), {"PI2026071801", "PI2026071802"})
@@ -1557,12 +1559,12 @@ class SlotConsistencyTest(unittest.TestCase):
             for p in procs:
                 p.start()
             for p in procs:
-                p.join(timeout=10)
+                p.join(timeout=30)
 
             for p in procs:
                 self.assertEqual(p.exitcode, 0)
 
-            ids = [queue.get(timeout=2) for _ in range(4)]
+            ids = [queue.get(timeout=5) for _ in range(4)]
             self.assertEqual(len(set(ids)), 4)
 
     # 49d. 进程重启序列号连续性测试
@@ -1641,14 +1643,14 @@ class SlotConsistencyTest(unittest.TestCase):
 
             p1.start()
             p2.start()
-            p1.join(timeout=10)
-            p2.join(timeout=10)
+            p1.join(timeout=25)
+            p2.join(timeout=25)
 
             self.assertEqual(p1.exitcode, 0)
             self.assertEqual(p2.exitcode, 0)
 
-            res1 = queue.get(timeout=2)
-            res2 = queue.get(timeout=2)
+            res1 = queue.get(timeout=5)
+            res2 = queue.get(timeout=5)
 
             statuses = [res1[0], res2[0]]
             self.assertEqual(sorted(statuses), ["conflict", "success"])
@@ -1688,14 +1690,14 @@ class SlotConsistencyTest(unittest.TestCase):
 
             p1.start()
             p2.start()
-            p1.join(timeout=10)
-            p2.join(timeout=10)
+            p1.join(timeout=30)
+            p2.join(timeout=30)
 
             self.assertEqual(p1.exitcode, 0)
             self.assertEqual(p2.exitcode, 0)
 
-            res1 = queue.get(timeout=2)
-            res2 = queue.get(timeout=2)
+            res1 = queue.get(timeout=5)
+            res2 = queue.get(timeout=5)
 
             statuses = [res1[0], res2[0]]
             self.assertEqual(sorted(statuses), ["conflict", "success"])

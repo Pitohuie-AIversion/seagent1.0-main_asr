@@ -1,5 +1,5 @@
 import unittest
-from src.coord_parser import format_coord_display, format_slot_display_value
+from src.extraction.coord_parser import format_coord_display, format_slot_display_value
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
 

@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import yaml
 
-from src.task_patch import (
+from src.slots.task_patch import (
     SlotPatch,
     ListMutationPatch,
     TaskPatch,
@@ -18,12 +18,12 @@ from src.task_patch import (
     build_task_patch,
     task_patch_to_legacy_updates,
 )
-from src.model_profile import (
+from src.extraction.model_profile import (
     is_task_patch_v2_enabled,
     ModelProfileConfigError,
 )
 from src.dialogue_manager import DialogueManager
-from src.slot_store import Slot
+from src.slots.slot_store import Slot
 from tests.interaction_plan_support import make_plan
 
 
@@ -265,6 +265,45 @@ class TestTaskPatchUnit(unittest.TestCase):
         }
         with self.assertRaises(TaskPatchValidationError):
             build_task_patch(res)
+
+    def test_payload_mutation_accepts_serialized_item_lists(self):
+        cases = [
+            ('["机械手", "声呐"]', ("机械手", "声呐")),
+            ("['机械手', '声呐']", ("机械手", "声呐")),
+            ("('机械手', '声呐')", ("机械手", "声呐")),
+            ("机械手，声呐", ("机械手", "声呐")),
+            (["机械手", "声呐"], ("机械手", "声呐")),
+        ]
+        for items, expected in cases:
+            for target_items in ([], "[]", ""):
+                with self.subTest(items=items, target_items=target_items):
+                    result = build_task_patch({
+                        "slot_candidates": [],
+                        "list_mutations": [{
+                            "field": "payload", "operation": "add",
+                            "items": items, "target_items": target_items,
+                            "raw_text": "增加机械手和声呐",
+                            "confidence": 1.0, "source": "user_input",
+                        }],
+                        "unresolved": [],
+                    })
+                    self.assertEqual(result.list_mutations[0].items, expected)
+                    self.assertEqual(result.list_mutations[0].target_items, ())
+
+    def test_payload_replacement_parses_serialized_targets(self):
+        result = build_task_patch({
+            "slot_candidates": [],
+            "list_mutations": [{
+                "field": "payload", "operation": "replace",
+                "items": '["声呐"]', "target_items": '["机械手"]',
+                "raw_text": "将机械手换成声呐",
+                "confidence": 1.0, "source": "user_input",
+            }],
+            "unresolved": [],
+        })
+        mutation = result.list_mutations[0]
+        self.assertEqual(mutation.items, ("声呐",))
+        self.assertEqual(mutation.target_items, ("机械手",))
 
     # Negative List Mutation Contract Tests
     def test_reject_mutation_missing_field(self):

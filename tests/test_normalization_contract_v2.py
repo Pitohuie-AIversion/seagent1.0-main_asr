@@ -6,15 +6,15 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from src.knowledge_retriever import KnowledgeBase
-from src.output_builder import OutputBuilder
-from src.task_patch import (
+from src.dispatch.output_builder import OutputBuilder
+from src.slots.task_patch import (
     ListMutationPatch,
     SlotPatch,
     TaskPatch,
     TaskPatchValidationError,
 )
-from src.normalizer import FieldNormalizer
-from src.normalization_contract import (
+from src.extraction.normalizer import FieldNormalizer
+from src.slots.normalization_contract import (
     NormalizedTaskPatch,
     NormalizationContractError,
     SlotNormalizationOutcome,

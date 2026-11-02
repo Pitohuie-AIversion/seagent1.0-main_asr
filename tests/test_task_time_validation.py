@@ -12,8 +12,8 @@ pkg = types.ModuleType("src")
 pkg.__path__ = [str(PROJECT_ROOT / "src")]
 sys.modules.setdefault("src", pkg)
 
-simulated_time = importlib.import_module("src.simulated_time")
-validator_module = importlib.import_module("src.validator")
+simulated_time = importlib.import_module("src.temporal.simulated_time")
+validator_module = importlib.import_module("src.validation.validator")
 get_simulated_time = simulated_time.get_simulated_time
 TaskValidator = validator_module.TaskValidator
 

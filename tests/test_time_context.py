@@ -12,8 +12,8 @@ pkg = types.ModuleType("src")
 pkg.__path__ = [str(PROJECT_ROOT / "src")]
 sys.modules.setdefault("src", pkg)
 
-simulated_time = importlib.import_module("src.simulated_time")
-time_context = importlib.import_module("src.time_context")
+simulated_time = importlib.import_module("src.temporal.simulated_time")
+time_context = importlib.import_module("src.temporal.time_context")
 
 
 class TimeContextTest(unittest.TestCase):

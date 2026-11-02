@@ -14,7 +14,7 @@ sys.modules['transformers'] = MagicMock()
 import unittest
 from flask import json
 import web_backend
-from src.asr_service import ASRUnavailableError
+from src.asr.asr_service import ASRUnavailableError
 
 class TestASRAPI(unittest.TestCase):
     def setUp(self):

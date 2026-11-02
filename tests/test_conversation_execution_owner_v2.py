@@ -13,8 +13,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
-from src.session_state import StateContractError
-from src.slot_store import Slot, SlotStore
+from src.session.session_state import StateContractError
+from src.slots.slot_store import Slot, SlotStore
 from tests.interaction_plan_support import (
     ScriptedLLM,
     extraction_result,

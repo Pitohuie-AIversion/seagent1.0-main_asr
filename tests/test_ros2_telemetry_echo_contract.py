@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from scratch import run_ros2_telemetry_echo_node as simulator
+from scripts import run_ros2_telemetry_echo_node as simulator
 
 
 @pytest.fixture(autouse=True)

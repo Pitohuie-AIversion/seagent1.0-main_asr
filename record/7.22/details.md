@@ -1,5 +1,7 @@
 # 2026-07-22 工作详细记录
 
+> **历史记录说明（2026-09-30）**：正文保留 2026-07-22 的分支合并、代码摘录、调试及测试记录，不作为当前接口或操作指南。旧路由协议、规则门禁、工作目录和函数位置可能已被后续重构替代；现行边界见 [架构总览](../../docs/architecture/overview.md)与 [ADR-005](../../docs/decisions/ADR-005-llm-semantic-authority.md)。本轮未重新执行文中的测试或改写原始记录。
+
 ## 一、背景
 
 今天的工作集中在 `seagent1.0-main_asr_LHL` 目录。目标不是修改 main，而是在 LHL 分支里完成与 main 的功能合并，并修复合并后出现的接口不稳定问题。
@@ -77,7 +79,7 @@ CONTROL
 
 ---
 
-### 2. `src/intent_router.py`
+### 2. `src/session/intent_router.py`
 
 #### 修改内容
 
@@ -156,7 +158,7 @@ LLM 先判断用户是在提交信息还是询问信息
 
 ---
 
-### 3. `src/extractor.py`
+### 3. `src/extraction/extractor.py`
 
 #### 修改内容
 
@@ -255,7 +257,7 @@ ParameterExtractor -> extract_json() -> extract_slots()
 
 ---
 
-### 5. `src/prompts.py`
+### 5. `src/extraction/prompts.py`
 
 #### 修改内容
 
@@ -283,7 +285,7 @@ equipment_unit_id -> 具体编号/实例候选
 
 ---
 
-### 6. `src/normalizer.py`
+### 6. `src/extraction/normalizer.py`
 
 #### 修改内容
 
@@ -299,7 +301,7 @@ equipment_unit_id -> 具体编号/实例候选
 
 ---
 
-### 7. `src/output_builder.py`
+### 7. `src/dispatch/output_builder.py`
 
 #### 修改内容
 
@@ -327,7 +329,7 @@ equipment_family
 
 ---
 
-### 8. `src/slot_store.py`
+### 8. `src/slots/slot_store.py`
 
 #### 修改内容
 
@@ -348,7 +350,7 @@ SlotStore 成为任务状态的权威来源。
 
 ---
 
-### 9. `src/task_intent_builder.py`
+### 9. `src/dispatch/task_intent_builder.py`
 
 #### 修改内容
 
@@ -373,7 +375,7 @@ prepare
 
 ---
 
-### 10. `src/history_manager.py`
+### 10. `src/session/history_manager.py`
 
 #### 修改内容
 
@@ -387,7 +389,7 @@ prepare
 
 ---
 
-### 11. `src/id_sequence.py`
+### 11. `src/dispatch/id_sequence.py`
 
 #### 修改内容
 
@@ -421,7 +423,7 @@ prepare
 
 ---
 
-### 13. `src/validator.py`
+### 13. `src/validation/validator.py`
 
 #### 修改内容
 
@@ -459,7 +461,7 @@ prepare
 
 ---
 
-### 16. 新增 `src/result_paths.py`
+### 16. 新增 `src/dispatch/result_paths.py`
 
 #### 修改内容
 
@@ -646,9 +648,9 @@ route.interaction_type == "WRITE"
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 /root/miniconda3/envs/seagent/bin/python -m py_compile \
-  src/intent_router.py \
+  src/session/intent_router.py \
   src/llm_client.py \
-  src/extractor.py \
+  src/extraction/extractor.py \
   src/dialogue_manager.py \
   tests/test_dialogue_manager_rov.py
 ```

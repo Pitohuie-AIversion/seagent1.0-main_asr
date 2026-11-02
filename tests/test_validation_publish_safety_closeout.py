@@ -20,11 +20,11 @@ from unittest.mock import MagicMock
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.session_state import SessionState
-from src.slot_store import ValidationAcknowledgement
-from src.simulated_time import get_current_datetime
-from src.task_intent_builder import TaskIntentBuilder
-from src.validator import TaskValidator, ValidationResult, Violation
+from src.session.session_state import SessionState
+from src.slots.slot_store import ValidationAcknowledgement
+from src.temporal.simulated_time import get_current_datetime
+from src.dispatch.task_intent_builder import TaskIntentBuilder
+from src.validation.validator import TaskValidator, ValidationResult, Violation
 
 
 class TestValidationPublishSafetyCloseout(unittest.TestCase):

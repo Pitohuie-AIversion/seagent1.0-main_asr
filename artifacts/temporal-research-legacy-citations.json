@@ -1,0 +1,339 @@
+{
+  "status": "unresolved_original_url_mapping",
+  "reviewed_on": "2026-09-30",
+  "source_document": "deep-research-report.md",
+  "note": "Original exported tokens are retained for provenance. Independently reviewed sources are documented separately and are not inferred mappings for these IDs.",
+  "citation_blocks": [
+    {
+      "label": "旧引文01",
+      "original_token": "citeturn16search0turn18search0turn16search1turn16search5turn11search1turn17search1turn15search0",
+      "reference_ids": [
+        "turn16search0",
+        "turn18search0",
+        "turn16search1",
+        "turn16search5",
+        "turn11search1",
+        "turn17search1",
+        "turn15search0"
+      ],
+      "preceding_context": "ion Calling 和多轮状态，Meta 的 Llama 官方 prompt format 明确支持工具调用并在系统上下文中注入“Today Date”，Microsoft 则进一步提供了 `TimePlugin` 和 Recognizers-Text 这样的确定性时间组件。"
+    },
+    {
+      "label": "旧引文02",
+      "original_token": "citeturn18search2turn18search0turn16search0",
+      "reference_ids": [
+        "turn18search2",
+        "turn18search0",
+        "turn16search0"
+      ],
+      "preceding_context": "对”**。Google 的官方 Structured Output 文档甚至明确要求应用对 schema-compliant 的输出继续做语义校验；OpenAI 的 Structured Outputs/strict function calling 同样解决的是模式符合性问题。"
+    },
+    {
+      "label": "旧引文03",
+      "original_token": "citeturn17search2turn17search3",
+      "reference_ids": [
+        "turn17search2",
+        "turn17search3"
+      ],
+      "preceding_context": "UTC instant，同时保留原始 local datetime 和 IANA timezone；\n5. 重复事件以 **本地墙钟时间 + TZID + RFC 5545 RRULE** 为主语义，不能把无限重复提前压平成 UTC，也不应把 cron 当用户日历语义的唯一表示；"
+    },
+    {
+      "label": "旧引文04",
+      "original_token": "citeturn20view0",
+      "reference_ids": [
+        "turn20view0"
+      ],
+      "preceding_context": "00Z` 是它在时间轴上的投影。**\n\nRFC 3339 定义的是互联网协议中的“时间点 timestamp”，要求时间具有明确 UTC 关系，并明确指出它**不覆盖时间区间**；RFC 也强调本地时区/DST 法规可能变化，数字 offset 比模糊的字母时区缩写更适合互操作。"
+    },
+    {
+      "label": "旧引文05",
+      "original_token": "citeturn17search2turn17search6",
+      "reference_ids": [
+        "turn17search2",
+        "turn17search6"
+      ],
+      "preceding_context": "合互操作。citeturn20view0 RFC 5545 iCalendar 则针对日历事件和重复规则定义了 `DTSTART`、`RRULE` 等语义，因此对“每周一上午 9 点”这一类表达，RRULE 比单一 RFC 3339 timestamp 更接近真实领域模型。"
+    },
+    {
+      "label": "旧引文06",
+      "original_token": "citeturn17search3turn17search7",
+      "reference_ids": [
+        "turn17search3",
+        "turn17search7"
+      ],
+      "preceding_context": "ithmetic，即本地日历日期加一天、尽量维持墙钟时间。跨 DST 时，两者可能产生不同的真实经过时长。IANA 时区数据库会随着各国政治决策修改 UTC offset 和 DST 规则，因此不能用一个固定的 `-08:00` 代替 `America/Los_Angeles`。"
+    },
+    {
+      "label": "旧引文07",
+      "original_token": "citeturn19search0turn19search1",
+      "reference_ids": [
+        "turn19search0",
+        "turn19search1"
+      ],
+      "preceding_context": "es` 的秋季回拨展示了同一个 `01:00` 可对应两个不同 offset，并通过 `fold=0/1` 区分。TC39 Temporal 同样显式设计了 `earlier / later / compatible / reject` 四种 disambiguation 策略。"
+    },
+    {
+      "label": "旧引文08",
+      "original_token": "citeturn16search0turn18search0",
+      "reference_ids": [
+        "turn16search0",
+        "turn18search0"
+      ],
+      "preceding_context": "enAI 的 Function Calling 文档明确推荐启用 `strict:true`；严格模式借助 Structured Outputs 使工具参数服从 schema，并要求关闭额外字段等约束。OpenAI 同时明确区分模型生成函数参数和**应用真正执行函数**这一边界。"
+    },
+    {
+      "label": "旧引文09",
+      "original_token": "citeturn16search4turn16search1turn18search2",
+      "reference_ids": [
+        "turn16search4",
+        "turn16search1",
+        "turn18search2"
+      ],
+      "preceding_context": "I；官方文档说明可以利用 `previous_interaction_id` 保留会话历史，而 `tools`、system instruction 等仍需要按 interaction 配置。Function Calling 与 Structured Output 也可组合使用。"
+    },
+    {
+      "label": "旧引文10",
+      "original_token": "citeturn18search2",
+      "reference_ids": [
+        "turn18search2"
+      ],
+      "preceding_context": "ed Output 也可组合使用。citeturn16search4turn16search1turn18search2 更关键的是 Google 官方 Structured Output 文档直接提醒：**结构合法不等于值的语义正确，最终结果应在应用代码中验证。** "
+    },
+    {
+      "label": "旧引文11",
+      "original_token": "citeturn16search2turn16search5turn16search12",
+      "reference_ids": [
+        "turn16search2",
+        "turn16search5",
+        "turn16search12"
+      ],
+      "preceding_context": "级共识之一。\n\nAnthropic 的工具由 `input_schema` 定义，可以补充 `input_examples`，而 `strict:true` 能用于严格工具 schema；Claude 生成 `tool_use`，真正的 client-side 工具仍由应用执行。"
+    },
+    {
+      "label": "旧引文12",
+      "original_token": "citeturn16search16",
+      "reference_ids": [
+        "turn16search16"
+      ],
+      "preceding_context": "h5turn16search12 Anthropic 的 fine-grained tool streaming 还有一个值得时间写入系统特别警惕的细节：流式工具参数在完整结束前可能是**不完整甚至暂时无效的 JSON**，因此绝不能边流边执行“创建日程”这样的有副作用操作。"
+    },
+    {
+      "label": "旧引文13",
+      "original_token": "citeturn17search0turn17search4turn11search1",
+      "reference_ids": [
+        "turn17search0",
+        "turn17search4",
+        "turn11search1"
+      ],
+      "preceding_context": "ta 的开放模型更能看出这条边界。Llama 官方仓库明确给出了 zero-shot function calling 格式，而工具本身由外部 executor 执行；Llama 3 系列官方 prompt format 还显式包含当前日期上下文，例如 `Today Date`。"
+    },
+    {
+      "label": "旧引文14",
+      "original_token": "citeturn17search1turn17search5",
+      "reference_ids": [
+        "turn17search1",
+        "turn17search5"
+      ],
+      "preceding_context": "除 Azure Structured Outputs 之外还有一个值得特别借鉴的组件设计：Semantic Kernel 的 `TimePlugin` 明确暴露 `Now`、`UtcNow`、`Today`、`TimeZoneName`、`TimeZoneOffset` 等函数。"
+    },
+    {
+      "label": "旧引文15",
+      "original_token": "citeturn15search0",
+      "reference_ids": [
+        "turn15search0"
+      ],
+      "preceding_context": "t` 等函数。citeturn17search1turn17search5 Microsoft Recognizers-Text 则专门做 numbers/date-time 等实体的 recognition + resolution，官方项目列出的完整支持语言包含中文。"
+    },
+    {
+      "label": "旧引文16",
+      "original_token": "citeturn15search4",
+      "reference_ids": [
+        "turn15search4"
+      ],
+      "preceding_context": "“用户想创建/修改什么”  \n> + 确定性组件解析“这段文本对应什么时间”  \n> + 应用程序决定最终怎么写。\n\n但不要因此假定 Microsoft 的 parser 可以解决全部中文问题；其项目 issue 中有直接例子显示，“下个星期/下星期”等中文表达曾存在未识别问题。"
+    },
+    {
+      "label": "旧引文17",
+      "original_token": "citeturn15search2turn15search6",
+      "reference_ids": [
+        "turn15search2",
+        "turn15search6"
+      ],
+      "preceding_context": "ultilingual, domain-sensitive temporal tagger**，从文档中抽取时间表达并归一化为 TIMEX3，同时包含手工中文资源；它的架构把 pattern、normalization data 和 rules 分离，因此很适合做可解释规则扩展。"
+    },
+    {
+      "label": "旧引文18",
+      "original_token": "citeturn15search3turn15search10",
+      "reference_ids": [
+        "turn15search3",
+        "turn15search10"
+      ],
+      "preceding_context": "同样非常清楚：它是一个 deterministic rule-based system，用 reference time 将类似 “next Wednesday at 3pm” 的表达映射成具体时间，同时输出 DATE、TIME、DURATION、SET 等 TIMEX3 类型。"
+    },
+    {
+      "label": "旧引文19",
+      "original_token": "citeturn15search1",
+      "reference_ids": [
+        "turn15search1"
+      ],
+      "preceding_context": "README 明确表示规则由 **name + pattern + production** 组成；pattern 可以对字符 regex 或 token 概念进行匹配，production 将匹配结果生成新的语义 token。Time 维度可以输出带 grain 的归一化时间。"
+    },
+    {
+      "label": "旧引文20",
+      "original_token": "citeturn15search1",
+      "reference_ids": [
+        "turn15search1"
+      ],
+      "preceding_context": "n15search1 它很适合做：\n\n```text\n简单可确定表达\n    ↓\nDuckling / 自研规则 fast path\n    ↓\nTemporal IR\n```\n\n但官方也明确说明不同语言并非支持所有维度，因此“支持中文”绝不能理解成“中文所有时间表达都正确”。"
+    },
+    {
+      "label": "旧引文21",
+      "original_token": "citeturn19search2turn19search5",
+      "reference_ids": [
+        "turn19search2",
+        "turn19search5"
+      ],
+      "preceding_context": "文所有时间表达都正确”。citeturn15search1\n\nChronyk 的设计明显不适合承担现代时区系统核心职责：官方仓库示例主要使用 `timezone=0` 或以“秒数 offset”修改 timezone，其 setup 元数据仍面向早期 Python 3.x。"
+    },
+    {
+      "label": "旧引文22",
+      "original_token": "citeturn19search3",
+      "reference_ids": [
+        "turn19search3"
+      ],
+      "preceding_context": "从零解析 | 不知道修改哪个时间对象 | 高 |\n| **LLM confidence 当真概率** | `0.92 → 自动写` | 未校准概率造成误执行 | 中高 |\n\nPython 官方文档明确指出 naive datetime 本身没有足够信息确定它相对于其他时间的位置。"
+    },
+    {
+      "label": "旧引文23",
+      "original_token": "citeturn20view0",
+      "reference_ids": [
+        "turn20view0"
+      ],
+      "preceding_context": "中一个，而应返回：\n\n```json\n{\n  \"status\": \"AMBIGUOUS\",\n  \"reason\": \"DATE_WEEKDAY_CONFLICT\"\n}\n```\n\n这类冗余字段冲突问题与 RFC 3339 对日期中加入 weekday 造成不一致风险的讨论本质相同。"
+    },
+    {
+      "label": "旧引文24",
+      "original_token": "citeturn17search3",
+      "reference_ids": [
+        "turn17search3"
+      ],
+      "preceding_context": "：\n\n```text\nstart_at_utc = ...\nutc_offset = +08:00\n```\n\nIANA tzdb 会根据政治决策更新时区边界、UTC offsets 和夏令时规则，所以 IANA zone ID 才能表达用户的 civil-time intent。"
+    },
+    {
+      "label": "旧引文25",
+      "original_token": "citeturn17search2",
+      "reference_ids": [
+        "turn17search2"
+      ],
+      "preceding_context": "db 会根据政治决策更新时区边界、UTC offsets 和夏令时规则，所以 IANA zone ID 才能表达用户的 civil-time intent。citeturn17search3\n\nRFC 5545 的 recurrence model 则适合表示用户日历语义。"
+    },
+    {
+      "label": "旧引文26",
+      "original_token": "citeturn19search0turn19search1",
+      "reference_ids": [
+        "turn19search0",
+        "turn19search1"
+      ],
+      "preceding_context": "ndidates),\n    )\n```\n\nPython 官方 `zoneinfo` 的 `fold` 就是为了表示 DST 回拨造成的重复时间；这一思路与 TC39 Temporal 对 `earlier/later/reject` 的显式 disambiguation 一致。"
+    },
+    {
+      "label": "旧引文27",
+      "original_token": "citeturn19search1",
+      "reference_ids": [
+        "turn19search1"
+      ],
+      "preceding_context": "和 timezone 是否一致\n```\n\n而不是 Temporal 默认的 `compatible` 静默修复，因为“自动帮用户把 02:30 改成 03:30”在日程领域很难被认为是安全语义。TC39 Temporal 提供 `reject` 正说明这种策略应该由应用明确决定。"
+    },
+    {
+      "label": "旧引文28",
+      "original_token": "citeturn19search0",
+      "reference_ids": [
+        "turn19search0"
+      ],
+      "preceding_context": "04 下午3点 | locale ambiguity | 不依赖隐式美式/欧式日期格式 |\n\nPython 官方文档直接使用 2020 年 11 月 1 日 Los Angeles 的 `01:00` 展示两个不同 offset，因此这个 DST fold 是很好的永久回归样本。"
+    },
+    {
+      "label": "旧引文29",
+      "original_token": "citeturn20view0",
+      "reference_ids": [
+        "turn20view0"
+      ],
+      "preceding_context": " Los Angeles 的 `01:00` 展示两个不同 offset，因此这个 DST fold 是很好的永久回归样本。citeturn19search0 RFC 3339 也专门指出类似 `10/11/1996` 的本地日期格式不适合全球互操作，因为不同地区解释不同。"
+    },
+    {
+      "label": "旧引文30",
+      "original_token": "citeturn16search0",
+      "reference_ids": [
+        "turn16search0"
+      ],
+      "preceding_context": "nfirmation\",\n    \"ambiguity_code\"\n  ]\n}\n```\n\nOpenAI strict function calling 要求对象 schema 对额外字段和 required 字段进行严格约束，因此这种 IR 也天然适合 OpenAI 的工具接口。"
+    },
+    {
+      "label": "旧引文31",
+      "original_token": "citeturn18search2turn16search5",
+      "reference_ids": [
+        "turn18search2",
+        "turn16search5"
+      ],
+      "preceding_context": "象 schema 对额外字段和 required 字段进行严格约束，因此这种 IR 也天然适合 OpenAI 的工具接口。citeturn16search0 Google、Anthropic 也支持 JSON-schema 型 structured/tool output。"
+    },
+    {
+      "label": "旧引文32",
+      "original_token": "citeturn20view0",
+      "reference_ids": [
+        "turn20view0"
+      ],
+      "preceding_context": "one_id` 而不是：\n\n```text\ntimezone_offset\n```\n\n也不要只让模型输出：\n\n```text\nPST\nCST\nIST\n```\n\n缩写在全球语境中可能有多义性，而且 RFC 3339 也指出字母形式 local offset 在互操作历史上存在问题。"
+    },
+    {
+      "label": "旧引文33",
+      "original_token": "citeturn19search0",
+      "reference_ids": [
+        "turn19search0"
+      ],
+      "preceding_context": " zh-CN temporal rules\n+ LLM structured output\n+ RRULE/iCalendar library\n```\n\nPython `zoneinfo` 是标准库对 IANA 时区数据库的支持，并且可以依赖系统数据或 `tzdata` 数据包。"
+    },
+    {
+      "label": "旧引文34",
+      "original_token": "citeturn19search1turn19search9",
+      "reference_ids": [
+        "turn19search1",
+        "turn19search9"
+      ],
+      "preceding_context": "9 Temporal 的 `ZonedDateTime` 明确把 exact time、wall-clock datetime 和 timezone 关联在一起，并且对 DST 冲突提供显式策略，因此比在新系统中继续大规模堆叠 legacy `Date` 更适合作为时间领域模型。"
+    },
+    {
+      "label": "旧引文35",
+      "original_token": "citeturn16search0turn16search2",
+      "reference_ids": [
+        "turn16search0",
+        "turn16search2"
+      ],
+      "preceding_context": "schema 也应尽量避免每次动态生成完全不同的结构。OpenAI 的 function/structured schema 机制以及 Anthropic 的 schema/grammar 类机制都存在 schema 处理与缓存相关的工程考量；稳定 schema 更适合生产调用。"
+    },
+    {
+      "label": "旧引文36",
+      "original_token": "citeturn17search3turn20view0",
+      "reference_ids": [
+        "turn17search3",
+        "turn20view0"
+      ],
+      "preceding_context": "calendar semantics\n+ deterministic normalization rules\n```\n\nIANA 明确说明时区数据库会随各地政治机构对 UTC offset、边界和夏令时规则的变更而更新；RFC 3339 也明确指出本地时区规则存在这种不可预测性。"
+    },
+    {
+      "label": "旧引文37",
+      "original_token": "citeturn16search0turn18search2turn16search5turn17search0turn17search1turn15search3turn15search2turn15search1",
+      "reference_ids": [
+        "turn16search0",
+        "turn18search2",
+        "turn16search5",
+        "turn17search0",
+        "turn17search1",
+        "turn15search3",
+        "turn15search2",
+        "turn15search1"
+      ],
+      "preceding_context": "oft 的公开工程接口，到 SUTime、HeidelTime、Duckling、Recognizers-Text 等传统时间 NLP 系统，最一致的结论都是：**自然语言时间理解可以是概率性的，但产生实际提醒和日程之前的时间归一化必须尽可能确定性、可审计、可回放、可回归。** "
+    }
+  ]
+}

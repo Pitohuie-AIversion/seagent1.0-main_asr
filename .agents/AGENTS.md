@@ -24,7 +24,7 @@ Current major components include:
 - Soft and hard constraint handling;
 - Task confirmation and modification;
 - Task staging, snapshot, publication, and recovery;
-- Future robot execution adapters.
+- An optional ROS 2 MCP execution bridge with dispatch tracking; a general robot gateway remains planned.
 
 The current priority is to stabilize the existing software workflow before adding large new capabilities.
 
@@ -259,7 +259,7 @@ A validation failure must not be converted into success merely to allow publicat
 
 ## 10. Persistence and File Safety
 
-Changes involving `src/task_intent_builder.py` or task persistence require special care.
+Changes involving `src/dispatch/task_intent_builder.py` or task persistence require special care.
 
 Relevant artifacts may include:
 
@@ -281,9 +281,9 @@ Required properties:
 
 ### Required rules
 
-- Write to a temporary file before atomic replacement.
+- Write to a temporary file before committing a TaskIntent with atomic no-overwrite publication (`os.link`); an existing final artifact must not be replaced.
 - Flush and `fsync` file contents where durability is required.
-- `fsync` the parent directory where required for durable rename operations.
+- `fsync` the parent directory where required to confirm publication durability.
 - Use the project lock consistently across publish, load, and recovery operations.
 - Do not use unsafe `stat -> unlink` sequences.
 - Do not delete paths inferred only from filename guesses.
@@ -726,7 +726,7 @@ Future capabilities such as:
 - Multi-robot allocation;
 - Weak-communication coordination;
 - Dynamic replanning;
-- Execution-feedback loops.
+- General execution-feedback-driven replanning (the ROS 2 bridge already tracks task status).
 
 Every roadmap task should include:
 

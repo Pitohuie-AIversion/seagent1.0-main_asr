@@ -13,9 +13,9 @@ import unittest
 from unittest.mock import MagicMock
 
 from src.dialogue_manager import DialogueManager
-from src.extractor import ParameterExtractor
+from src.extraction.extractor import ParameterExtractor
 from src.knowledge_retriever import KnowledgeBase
-from src.output_builder import OutputBuilder
+from src.dispatch.output_builder import OutputBuilder
 
 
 class TestLLMEquipmentUnitNormalization(unittest.TestCase):

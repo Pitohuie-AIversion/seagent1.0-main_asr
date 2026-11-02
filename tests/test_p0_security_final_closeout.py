@@ -13,11 +13,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.id_sequence import validate_intent_id
+from src.dispatch.id_sequence import validate_intent_id
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
-from src.task_intent_builder import TaskIntentBuilder
+from src.dispatch.task_intent_builder import TaskIntentBuilder
 from src.exceptions import TaskPersistenceError
 
 
@@ -96,8 +96,8 @@ class IntentIdUnicodeSecurityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_task_dir = Path(tmp_dir) / "task"
             tmp_task_dir.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 self.dm.load_snapshot(snap)
 
         new_id = self.dm.slot_store.slots["intent_id"].value
@@ -121,8 +121,8 @@ class IntentIdUnicodeSecurityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_task_dir = Path(tmp_dir) / "task"
             tmp_task_dir.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                 self.dm.load_snapshot(snap)
 
         self.assertNotEqual(self.dm.phase, "done")
@@ -138,7 +138,7 @@ class IntentIdUnicodeSecurityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_task_dir = Path(tmp_dir) / "task"
             tmp_task_dir.mkdir(parents=True, exist_ok=True)
-            with patch("src.task_intent_builder.get_task_dir", return_value=tmp_task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_task_dir):
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.prepare({}, {"intent_id": unicode_id}, "normal", "pipeline_inspection", intent_id=unicode_id)
                 with self.assertRaises(TaskPersistenceError):
@@ -171,7 +171,7 @@ class StagingSourceValidationTest(unittest.TestCase):
             with open(outside_file, "w", encoding="utf-8") as f:
                 f.write("external secret content")
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link") as mock_link:
 
                 with self.assertRaises(TaskPersistenceError):
@@ -206,7 +206,7 @@ class StagingSourceValidationTest(unittest.TestCase):
             except OSError:
                 self.skipTest("Symlinks not supported on this platform")
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link") as mock_link:
 
                 with self.assertRaises(TaskPersistenceError):
@@ -227,7 +227,7 @@ class StagingSourceValidationTest(unittest.TestCase):
             with open(mismatched_staging, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link") as mock_link:
 
                 with self.assertRaises(TaskPersistenceError):
@@ -248,7 +248,7 @@ class StagingSourceValidationTest(unittest.TestCase):
             with open(impostor_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link") as mock_link:
 
                 with self.assertRaises(TaskPersistenceError):
@@ -273,7 +273,7 @@ class StagingSourceValidationTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp_task_dir_str:
             task_dir = Path(tmp_task_dir_str)
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 staging_file = self.builder.create_staging(intent)
                 self.assertTrue(staging_file.exists())
                 self.assertEqual(staging_file.parent.resolve(), task_dir.resolve())
@@ -303,7 +303,7 @@ class StagingSourceValidationTest(unittest.TestCase):
             invalid_staging = task_dir / "directory_as_staging.staging_123"
             invalid_staging.mkdir(parents=True, exist_ok=True)  # 目录而非文件
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
                  patch("os.link") as mock_link:
                 with self.assertRaises(TaskPersistenceError):
                     self.builder.publish_staging(invalid_staging, intent)

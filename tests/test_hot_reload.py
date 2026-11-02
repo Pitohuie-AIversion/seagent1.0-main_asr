@@ -20,12 +20,12 @@ from src.hot_reload import (
 
 
 def test_force_reload_success():
-    """测试强制热重载能够成功执行并返回重载模块列表"""
-    with patch("importlib.reload", side_effect=lambda m: m):
+    """配置刷新不创建与处理器缓存绑定冲突的新模块类型。"""
+    with patch("importlib.reload", side_effect=AssertionError("must not replace code")):
         res = force_reload()
         assert res["ok"] is True
-        assert "src.prompts" in res["reloaded_modules"]
-        assert "src.dialogue_manager" in res["reloaded_modules"]
+        assert res["reloaded_modules"] == []
+        assert "配置刷新" in res["msg"]
 
 
 def test_maybe_auto_reload_without_changes():
@@ -75,15 +75,17 @@ def test_session_state_migration_during_reload():
         web_backend._sessions_manager.pop(sid, None)
 
 
-def test_api_dev_reload_endpoint():
+def test_api_dev_reload_endpoint(monkeypatch):
     """测试 /api/dev/reload 接口返回正确 JSON"""
+    monkeypatch.setenv("SEAGENT_ENABLE_CODE_RELOAD", "1")
+    monkeypatch.delenv("DISABLE_HOT_RELOAD", raising=False)
     with patch("importlib.reload", side_effect=lambda m: m):
         with web_backend.app.test_client() as client:
             resp = client.get("/api/dev/reload")
             assert resp.status_code == 200
             data = resp.get_json()
             assert data["ok"] is True
-            assert "src.dialogue_manager" in data["reloaded_modules"]
+            assert data["reloaded_modules"] == []
 
 
 def test_perform_reload_records_frontend_event():
@@ -122,11 +124,13 @@ def test_api_dev_reload_events_endpoint_returns_new_events():
 def test_reload_preserves_state_contract_exception_identity():
     """Reload must not break already-imported contract exception handlers."""
     import src.exceptions as exc_mod
-    import src.session_state as session_mod
-    import src.slot_store as slot_mod
+    import src.session.session_state as session_mod
+    import src.slots.slot_store as slot_mod
 
     old_slot_conflict = slot_mod.SlotVersionConflict
     old_snapshot_error = slot_mod.SnapshotValidationError
+    old_slot = slot_mod.Slot
+    old_val_ack = slot_mod.ValidationAcknowledgement
     old_state_error = session_mod.StateContractError
     old_conversation_state = session_mod.ConversationState
     old_task_state = session_mod.TaskLifecycleState
@@ -135,6 +139,10 @@ def test_reload_preserves_state_contract_exception_identity():
     old_persistence_error = exc_mod.TaskPersistenceError
     old_intent_conflict = exc_mod.IntentIdConflict
     old_id_reservation_error = exc_mod.IdReservationError
+    state_errors = {
+        name: getattr(exc_mod, name)
+        for name in ("StatePersistenceError", "StateVersionConflict", "StateSnapshotValidationError", "StateSelectorError")
+    }
 
     reloaded_exc = importlib.reload(exc_mod)
     reloaded_session = importlib.reload(session_mod)
@@ -142,6 +150,8 @@ def test_reload_preserves_state_contract_exception_identity():
 
     assert reloaded_slot.SlotVersionConflict is old_slot_conflict
     assert reloaded_slot.SnapshotValidationError is old_snapshot_error
+    assert reloaded_slot.Slot is old_slot
+    assert reloaded_slot.ValidationAcknowledgement is old_val_ack
     assert reloaded_session.StateContractError is old_state_error
     assert reloaded_session.ConversationState is old_conversation_state
     assert reloaded_session.TaskLifecycleState is old_task_state
@@ -150,3 +160,40 @@ def test_reload_preserves_state_contract_exception_identity():
     assert reloaded_exc.TaskPersistenceError is old_persistence_error
     assert reloaded_exc.IntentIdConflict is old_intent_conflict
     assert reloaded_exc.IdReservationError is old_id_reservation_error
+    for name, old_type in state_errors.items():
+        assert getattr(reloaded_exc, name) is old_type
+
+
+def test_model_profile_reload_preserves_error_handlers():
+    import src.extraction.model_profile as profiles
+    error_types = {name: getattr(profiles, name) for name in (
+        "ModelProfileError", "ModelProfileConfigError", "ModelProfileNotFoundError",
+    )}
+    importlib.reload(profiles)
+    for name, old_type in error_types.items():
+        assert getattr(profiles, name) is old_type
+
+
+def test_builder_reload_preserves_commit_uncertain_handler():
+    # Keep this direct module-reload probe isolated: production configuration
+    # refresh no longer reloads code, and other tests patch cached builder types.
+    import subprocess
+
+    result = subprocess.run([sys.executable, "-c", """
+import importlib
+import src.dispatch.task_intent_builder as builder
+from src.handlers.task_commit import TaskCommitUncertainError as handler_error
+importlib.reload(builder)
+assert builder.TaskCommitUncertainError is handler_error
+"""], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_code_reload_requires_explicit_opt_in(monkeypatch):
+    monkeypatch.delenv("SEAGENT_ENABLE_CODE_RELOAD", raising=False)
+    with patch("src.hot_reload.perform_reload") as reload, patch("src.hot_reload.check_changed_files") as scan:
+        assert maybe_auto_reload() is None
+        with web_backend.app.test_client() as client:
+            assert client.post("/api/dev/reload").status_code == 403
+        scan.assert_not_called()
+        reload.assert_not_called()

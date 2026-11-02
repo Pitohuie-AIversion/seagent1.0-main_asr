@@ -1,6 +1,6 @@
 # Debug Session: design-qa-write-failure
 
-**Status**: [OPEN]
+**Status**: [ARCHIVED — historical investigation; not the current defect tracker]
 **Created**: 2026-08-11
 **Session ID**: design-qa-write-failure
 
@@ -23,13 +23,13 @@
 4. 针对性构造设计问答场景复现问题
 
 ## 运行时证据
-_(待填充：日志、栈追踪、变量快照)_
+原始会话未保存可复核的日志、栈追踪或变量快照。本记录不再作为当前缺陷已复现或已修复的证据。
 
 ## 分析结论
-_(待填充：各假设确认/否决状态)_
+本记录中的 H1-H5 是 2026-08-11 的待验证假设，不能直接映射到当前代码状态。当前路由与写入行为应以 [ADR-001](decisions/ADR-001-write-query-routing.md)、[ADR-005](decisions/ADR-005-llm-semantic-authority.md) 以及现行回归测试为准。
 
 ## 修复方案
-_(待填充：最小修复 Patch)_
+该历史会话没有关联可核验的最小修复补丁。本记录仅保留问题背景和排查边界；新的复现应创建带测试、日志和提交引用的独立记录。
 
 ## 前后对比证据
-_(待填充：pre-fix vs post-fix 日志对比)_
+未保存前后对比日志，不能据此宣称设计问答问题已闭环。

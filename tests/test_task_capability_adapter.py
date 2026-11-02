@@ -6,7 +6,7 @@ TestTaskCapabilityAdapter Unit Tests
 """
 
 import unittest
-from src.task_capability_adapter import TaskCapabilityAdapter
+from src.dispatch.task_capability_adapter import TaskCapabilityAdapter
 
 
 class TestTaskCapabilityAdapter(unittest.TestCase):

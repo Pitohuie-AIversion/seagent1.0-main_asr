@@ -1,5 +1,7 @@
 # Equipment Unit ID Candidate Chain Implementation Plan
 
+> Historical plan dated 2026-07-17, retained for design context. The checkboxes, source line numbers, commands, skill reference and session-specific Git restrictions below describe that session; they are not the current backlog or instructions authorizing work in a new session. The referenced `superpowers:executing-plans` skill is not available in the current workspace skill catalog. Current implementation lives in the domain packages, including `src/dispatch/catalog_resolver.py`; use the [testing guide](../../development/testing.md) for current verification commands. This review did not execute the historical plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ensure `equipment_unit_id` candidates are resolved from the selected robot model and delivered intact to extraction and response prompts.
@@ -35,7 +37,7 @@
 ### Task 2: Preserve dynamic candidates through SlotStore
 
 **Files:**
-- Modify: `src/slot_store.py:121`
+- Modify: `src/slots/slot_store.py:121`
 - Test: `tests/test_equipment_unit_candidates.py`
 
 **Interfaces:**
@@ -50,7 +52,7 @@
 ### Task 3: Bind current task state to candidate resolution
 
 **Files:**
-- Modify: `src/output_builder.py:36`
+- Modify: `src/dispatch/output_builder.py:36`
 - Modify: `src/dialogue_manager.py:156`
 - Modify: `src/dialogue_manager.py:240`
 - Test: `tests/test_equipment_unit_candidates.py`
@@ -68,7 +70,7 @@
 ### Task 4: Add deterministic equipment-unit prompt behavior
 
 **Files:**
-- Modify: `src/prompts.py:177`
+- Modify: `src/extraction/prompts.py:177`
 - Test: `tests/test_equipment_unit_candidates.py`
 
 **Interfaces:**
@@ -83,10 +85,10 @@
 ### Task 5: Verify the repair
 
 **Files:**
-- Verify: `src/slot_store.py`
-- Verify: `src/output_builder.py`
+- Verify: `src/slots/slot_store.py`
+- Verify: `src/dispatch/output_builder.py`
 - Verify: `src/dialogue_manager.py`
-- Verify: `src/prompts.py`
+- Verify: `src/extraction/prompts.py`
 - Verify: `tests/test_equipment_unit_candidates.py`
 
 - [ ] Run the focused test module.

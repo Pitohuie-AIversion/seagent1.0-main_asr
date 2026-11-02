@@ -5,7 +5,7 @@ import unittest
 import yaml
 
 from src.knowledge_retriever import KnowledgeBase
-from src.oilfield_linker import OilfieldEntityLinker
+from src.extraction.oilfield_linker import OilfieldEntityLinker
 
 
 ROOT = Path(__file__).resolve().parents[1]

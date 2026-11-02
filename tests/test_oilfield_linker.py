@@ -6,7 +6,7 @@ import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = PROJECT_ROOT / "src" / "oilfield_linker.py"
+MODULE_PATH = PROJECT_ROOT / "src" / "extraction" / "oilfield_linker.py"
 spec = importlib.util.spec_from_file_location("oilfield_linker", MODULE_PATH)
 oilfield_linker = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = oilfield_linker

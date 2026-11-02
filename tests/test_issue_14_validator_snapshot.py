@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from src.knowledge_retriever import KnowledgeBase
-from src.validator import TaskValidator, ValidationResult, Violation
+from src.validation.validator import TaskValidator, ValidationResult, Violation
 from src.exceptions import StateSelectorError, StateSnapshotValidationError
 
 

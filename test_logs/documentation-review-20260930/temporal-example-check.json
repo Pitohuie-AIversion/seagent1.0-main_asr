@@ -1,0 +1,187 @@
+{
+  "checked_at_utc": "2026-09-30T07:00:03.012904+00:00",
+  "interpreter": {
+    "executable": "/root/miniconda3/bin/python",
+    "version": "3.12.3 | packaged by Anaconda, Inc. | (main, May  6 2024, 19:46:43) [GCC 11.2.0]",
+    "isolated": true
+  },
+  "execution_command": "python -I /tmp/seagent-temporal-example-check.py",
+  "source_blocks": [
+    {
+      "source_file": "artifacts/deep-research-report.md",
+      "fence_line": 500,
+      "sha256": "70f37c2740e6f82a443db443f637966f2a6d0b4af2fdffbfeefe8a3766b0097b"
+    },
+    {
+      "source_file": "artifacts/deep-research-report.md",
+      "fence_line": 595,
+      "sha256": "2853e0e95eac8cba2b5e581c0b2680f39504be0bdf26f45be5f2f9df42f3a3c4"
+    }
+  ],
+  "pre_execution_review": {
+    "performed": true,
+    "imports": [
+      "__future__",
+      "dataclasses",
+      "datetime",
+      "enum",
+      "zoneinfo"
+    ],
+    "top_level": "imports, dataclass/enum definitions, function definitions",
+    "project_business_imports": false,
+    "production_tasks_created": false
+  },
+  "timezone_search_paths": [
+    "/root/miniconda3/share/zoneinfo",
+    "/root/miniconda3/share/tzinfo"
+  ],
+  "checks": [
+    {
+      "name": "shanghai_ordinary",
+      "input": {
+        "local": "2026-08-26T15:00:00",
+        "timezone_id": "Asia/Shanghai"
+      },
+      "expected": {
+        "status": "VALID",
+        "utc": [
+          "2026-08-26T07:00:00+00:00"
+        ],
+        "folds": [
+          0
+        ]
+      },
+      "actual": {
+        "status": "VALID",
+        "candidates": [
+          {
+            "local": "2026-08-26T15:00:00+08:00",
+            "utc": "2026-08-26T07:00:00+00:00",
+            "timezone_id": "Asia/Shanghai",
+            "fold": 0
+          }
+        ]
+      },
+      "passed": true
+    },
+    {
+      "name": "los_angeles_gap",
+      "input": {
+        "local": "2020-03-08T02:30:00",
+        "timezone_id": "America/Los_Angeles"
+      },
+      "expected": {
+        "status": "NONEXISTENT",
+        "utc": [],
+        "folds": []
+      },
+      "actual": {
+        "status": "NONEXISTENT",
+        "candidates": []
+      },
+      "passed": true
+    },
+    {
+      "name": "los_angeles_fold",
+      "input": {
+        "local": "2020-11-01T01:30:00",
+        "timezone_id": "America/Los_Angeles"
+      },
+      "expected": {
+        "status": "AMBIGUOUS",
+        "utc": [
+          "2020-11-01T08:30:00+00:00",
+          "2020-11-01T09:30:00+00:00"
+        ],
+        "folds": [
+          0,
+          1
+        ]
+      },
+      "actual": {
+        "status": "AMBIGUOUS",
+        "candidates": [
+          {
+            "local": "2020-11-01T01:30:00-07:00",
+            "utc": "2020-11-01T08:30:00+00:00",
+            "timezone_id": "America/Los_Angeles",
+            "fold": 0
+          },
+          {
+            "local": "2020-11-01T01:30:00-08:00",
+            "utc": "2020-11-01T09:30:00+00:00",
+            "timezone_id": "America/Los_Angeles",
+            "fold": 1
+          }
+        ]
+      },
+      "passed": true
+    },
+    {
+      "name": "aware_input_rejected",
+      "input": {
+        "local": "2026-08-26T15:00:00+00:00",
+        "timezone_id": "Asia/Shanghai"
+      },
+      "expected": {
+        "exception": "ValueError",
+        "message_contains": "local_naive 必须是不带 tzinfo"
+      },
+      "passed": true,
+      "actual": {
+        "exception": "ValueError",
+        "message": "local_naive 必须是不带 tzinfo 的本地墙钟时间"
+      }
+    },
+    {
+      "name": "require_gap_rejected",
+      "input": {
+        "local": "2020-03-08T02:30:00",
+        "timezone_id": "America/Los_Angeles"
+      },
+      "expected": {
+        "exception": "ValueError",
+        "message_contains": "NONEXISTENT_LOCAL_TIME"
+      },
+      "passed": true,
+      "actual": {
+        "exception": "ValueError",
+        "message": "NONEXISTENT_LOCAL_TIME: 该本地时间可能落在夏令时跳过区间"
+      }
+    },
+    {
+      "name": "require_fold_rejected",
+      "input": {
+        "local": "2020-11-01T01:30:00",
+        "timezone_id": "America/Los_Angeles"
+      },
+      "expected": {
+        "exception": "ValueError",
+        "message_contains": "AMBIGUOUS_LOCAL_TIME"
+      },
+      "passed": true,
+      "actual": {
+        "exception": "ValueError",
+        "message": "AMBIGUOUS_LOCAL_TIME: 该本地时间对应两个真实时刻，需要 disambiguation policy"
+      }
+    },
+    {
+      "name": "require_ordinary_returns_candidate",
+      "expected": {
+        "utc": "2026-08-26T07:00:00+00:00",
+        "fold": 0
+      },
+      "actual": {
+        "utc": "2026-08-26T07:00:00+00:00",
+        "fold": 0
+      },
+      "passed": true
+    }
+  ],
+  "summary": {
+    "total": 7,
+    "passed": 7,
+    "failed": 0
+  },
+  "scope_limit": "Only the listed fixed examples were executed using available system time-zone data. This is not proof of complete date/time correctness or project integration; no application or repository tests were run."
+}

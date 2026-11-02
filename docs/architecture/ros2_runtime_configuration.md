@@ -1,9 +1,11 @@
 # ROS 2 动态订阅与展示配置设计
 
+状态：已实现；2026-09-30 对照运行配置、加载器与桥接服务复核。实现入口为 [runtime_config.py](../../mcp/ros-mcp/core/runtime_config.py) 和 [bridge_service.py](../../mcp/ros-mcp/core/bridge_service.py)。文中的 6006、8088 和 9090 为默认部署端口，实际值以服务启动参数及 [ros2_runtime.yaml](../../config/ros2_runtime.yaml) 为准。
+
 ## 理解摘要
 
 - `config/ros2_protocol_spec.yaml` 继续作为 UI 接口协议、核心话题、消息结构、枚举和任务映射的静态权威规范。
-- 新增独立运行配置，控制当前 rosbridge 网关、启用的订阅、消息解析方式和 8088 展示字段。
+- 独立运行配置控制当前 rosbridge 网关、启用的订阅、消息解析方式和 8088 展示字段。
 - 修改运行配置后无需重启 6006；系统自动加载新增、删除或修改后的订阅。
 - 6006 仍是 rosbridge 连接和实时状态的唯一所有者，8088 只代理并展示 6006 的快照。
 - `/task/system_status` 仍是任务闭环的核心订阅，必须与静态协议规范交叉校验。
@@ -13,7 +15,7 @@
 ## 假设与非功能要求
 
 - 单个运行实例连接一个 rosbridge 网关，配置规模为几十个订阅。
-- 运行配置每秒检查一次，前端默认每秒刷新一次。
+- 当前配置自动重载检查间隔为 1 秒、前端刷新周期为 1000 毫秒；二者分别由 `reload.check_interval_seconds` 和 `dashboard.refresh_interval_ms` 控制。
 - 配置错误时保留上一份有效订阅和连接，并通过状态 API 暴露错误。
 - 配置重载采用“新连接准备成功后再替换旧连接”，避免中途丢失核心订阅。
 - 图像等大消息默认禁用；原始 JSON 必须受字节上限保护。
@@ -72,6 +74,8 @@ ros2_runtime.yaml
 
 ## 测试策略
 
+现有回归入口：[test_ros2_runtime_config.py](../../mcp/ros-mcp/tests/test_ros2_runtime_config.py)、[test_bridge_service.py](../../mcp/ros-mcp/tests/test_bridge_service.py)。以下真实链路项目需要运行中的 ROS 环境；本次文档复核不构成现场联调通过结论。
+
 - 配置加载：合法配置、非法端口、重复 ID、核心协议漂移、大消息上限。
 - 客户端：同 topic 多回调和退订行为。
 - 桥接服务：配置驱动订阅、通用快照、热重载成功、非法配置保留旧运行态。
@@ -128,7 +132,7 @@ ros2_runtime.yaml
 
 - 单实例连接单个 rosbridge，传感器频率和数量处于现有几十路订阅能力范围内。
 - 本地 YAML 为可信运维输入；8088 保持只读，不新增设备控制入口。
-- 热加载检查和前端刷新仍为一秒，不为传感器单独建立轮询或持久化任务。
+- 热加载检查和前端刷新沿用统一运行配置，默认均为一秒，不为传感器单独建立轮询或持久化任务。
 
 ### 扩展决策记录
 

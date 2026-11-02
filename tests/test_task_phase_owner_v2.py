@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
-from src.session_state import StateContractError, VALID_PHASES
+from src.session.session_state import StateContractError, VALID_PHASES
 
 
 class TestTaskPhaseOwnerV2(unittest.TestCase):

@@ -11,12 +11,12 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
-from src.model_profile import is_session_state_v2_enabled
-from src.session_state import (
+from src.extraction.model_profile import is_session_state_v2_enabled
+from src.session.session_state import (
     SessionState,
     StateContractError,
 )
-from src.slot_store import SlotStore
+from src.slots.slot_store import SlotStore
 
 
 class TestSessionStateRuntimeV2(unittest.TestCase):

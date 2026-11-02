@@ -1,0 +1,28 @@
+{
+  "captured_at_utc": "2026-10-19T07:17:47.054867+00:00",
+  "browser": "Chromium /opt/google/chrome/chrome",
+  "source": "Real Jinja template and assets; intercepted API fixtures; no server, robot or persisted state contacted",
+  "fixture_host": "review-gateway.test",
+  "fixture_intents_prefix": "UI-FIXTURE-",
+  "checked": [
+    "empty bridge state",
+    "send and execution feedback are distinct",
+    "no mapped percentage bars",
+    "network failure preserves values, task rows and both timestamps",
+    "recovery clears retention notice",
+    "390px viewport has no page overflow"
+  ],
+  "requests": [
+    "empty",
+    "live",
+    "failure",
+    "live"
+  ],
+  "javascript_errors": [],
+  "screenshots": [
+    "dashboard-empty.png",
+    "dashboard-desktop.png",
+    "dashboard-snapshot-retained.png",
+    "dashboard-mobile.png"
+  ]
+}

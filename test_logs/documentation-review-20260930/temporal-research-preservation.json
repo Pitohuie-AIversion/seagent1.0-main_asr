@@ -1,0 +1,763 @@
+{
+  "interpreter": "3.12.3 | packaged by Anaconda, Inc. | (main, May  6 2024, 19:46:43) [GCC 11.2.0]",
+  "source_sha256": {
+    "before": "f535295fb5fea1028559519892eb7077d2d89adb2f5e62ad6a7b229a6ccad36a",
+    "current": "171ec9ec2e90070a7992de3f5226d125c78acdca527bf4ca50cee5de811bb32f"
+  },
+  "citation_preservation": {
+    "original_blocks": 37,
+    "archived_blocks": 37,
+    "unique_original_ids": 32,
+    "unique_archived_ids": 32,
+    "per_block": [
+      {
+        "number": 1,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 2,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 3,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 4,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 5,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 6,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 7,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 8,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 9,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 10,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 11,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 12,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 13,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 14,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 15,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 16,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 17,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 18,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 19,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 20,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 21,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 22,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 23,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 24,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 25,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 26,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 27,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 28,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 29,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 30,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 31,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 32,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 33,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 34,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 35,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 36,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      },
+      {
+        "number": 37,
+        "token_exact": true,
+        "ids_exact": true,
+        "label_exact": true,
+        "preceding_context_exact_suffix": true
+      }
+    ],
+    "link_count": 37,
+    "link_order_and_targets_exact": true,
+    "raw_export_tokens_remaining": 0
+  },
+  "python_examples": {
+    "before_count": 2,
+    "current_count": 2,
+    "blocks": [
+      {
+        "number": 1,
+        "unchanged": true,
+        "sha256": "70f37c2740e6f82a443db443f637966f2a6d0b4af2fdffbfeefe8a3766b0097b",
+        "matches_execution_evidence": true
+      },
+      {
+        "number": 2,
+        "unchanged": true,
+        "sha256": "2853e0e95eac8cba2b5e581c0b2680f39504be0bdf26f45be5f2f9df42f3a3c4",
+        "matches_execution_evidence": true
+      }
+    ],
+    "historical_execution_summary": {
+      "total": 7,
+      "passed": 7,
+      "failed": 0
+    }
+  },
+  "json_fences": [
+    {
+      "number": 1,
+      "fence_line": 49,
+      "valid_json": true
+    },
+    {
+      "number": 2,
+      "fence_line": 124,
+      "valid_json": true
+    },
+    {
+      "number": 3,
+      "fence_line": 135,
+      "valid_json": true
+    },
+    {
+      "number": 4,
+      "fence_line": 245,
+      "valid_json": true
+    },
+    {
+      "number": 5,
+      "fence_line": 310,
+      "valid_json": true
+    },
+    {
+      "number": 6,
+      "fence_line": 325,
+      "valid_json": true
+    },
+    {
+      "number": 7,
+      "fence_line": 346,
+      "valid_json": true
+    },
+    {
+      "number": 8,
+      "fence_line": 357,
+      "valid_json": true
+    },
+    {
+      "number": 9,
+      "fence_line": 673,
+      "valid_json": true
+    }
+  ],
+  "time_fields": {
+    "local_time": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$"
+    },
+    "end_local_time": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$"
+    }
+  },
+  "scope": "Read-only repository inspection; no project imports or provider API calls; regex engine checks are not provider-schema acceptance.",
+  "time_pattern_verification": {
+    "engine": "v18.20.8",
+    "executable": "/usr/bin/node",
+    "method": "ECMAScript RegExp.test without flags",
+    "fields": [
+      "local_time",
+      "end_local_time"
+    ],
+    "total": 48,
+    "passed": 48,
+    "failed": 0,
+    "cases": [
+      {
+        "field": "local_time",
+        "case": "lower_boundary",
+        "input": "00:00:00",
+        "expected": true,
+        "actual": true,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "upper_boundary",
+        "input": "23:59:59",
+        "expected": true,
+        "actual": true,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "leading_zero",
+        "input": "07:08:09",
+        "expected": true,
+        "actual": true,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "hour_twenty",
+        "input": "20:00:00",
+        "expected": true,
+        "actual": true,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "hour_24",
+        "input": "24:00:00",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "minute_60",
+        "input": "12:60:00",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "second_60",
+        "input": "12:00:60",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "short_hour",
+        "input": "7:08:09",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "short_minute",
+        "input": "07:8:09",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "short_second",
+        "input": "07:08:9",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "missing_seconds",
+        "input": "07:08",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "fractional_second",
+        "input": "07:08:09.1",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "utc_designator",
+        "input": "07:08:09Z",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "numeric_offset",
+        "input": "07:08:09+08:00",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "date_prefix",
+        "input": "2026-08-26T07:08:09",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "leading_space",
+        "input": " 07:08:09",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "trailing_space",
+        "input": "07:08:09 ",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "trailing_lf",
+        "input": "07:08:09\n",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "trailing_crlf",
+        "input": "07:08:09\r\n",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "trailing_line_separator",
+        "input": "07:08:09 ",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "leading_lf",
+        "input": "\n07:08:09",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "unicode_digits",
+        "input": "０７:０８:０９",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "negative_hour",
+        "input": "-1:08:09",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "local_time",
+        "case": "empty",
+        "input": "",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "lower_boundary",
+        "input": "00:00:00",
+        "expected": true,
+        "actual": true,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "upper_boundary",
+        "input": "23:59:59",
+        "expected": true,
+        "actual": true,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "leading_zero",
+        "input": "07:08:09",
+        "expected": true,
+        "actual": true,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "hour_twenty",
+        "input": "20:00:00",
+        "expected": true,
+        "actual": true,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "hour_24",
+        "input": "24:00:00",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "minute_60",
+        "input": "12:60:00",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "second_60",
+        "input": "12:00:60",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "short_hour",
+        "input": "7:08:09",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "short_minute",
+        "input": "07:8:09",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "short_second",
+        "input": "07:08:9",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "missing_seconds",
+        "input": "07:08",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "fractional_second",
+        "input": "07:08:09.1",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "utc_designator",
+        "input": "07:08:09Z",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "numeric_offset",
+        "input": "07:08:09+08:00",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "date_prefix",
+        "input": "2026-08-26T07:08:09",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "leading_space",
+        "input": " 07:08:09",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "trailing_space",
+        "input": "07:08:09 ",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "trailing_lf",
+        "input": "07:08:09\n",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "trailing_crlf",
+        "input": "07:08:09\r\n",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "trailing_line_separator",
+        "input": "07:08:09 ",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "leading_lf",
+        "input": "\n07:08:09",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "unicode_digits",
+        "input": "０７:０８:０９",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "negative_hour",
+        "input": "-1:08:09",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      },
+      {
+        "field": "end_local_time",
+        "case": "empty",
+        "input": "",
+        "expected": false,
+        "actual": false,
+        "passed": true
+      }
+    ],
+    "limitations": "String pattern checks only; no provider API or full JSON Schema implementation was exercised. Null remains an allowed type, outside the string pattern domain."
+  }
+}

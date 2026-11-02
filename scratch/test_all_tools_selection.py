@@ -1,4 +1,4 @@
-from src.normalizer import FieldNormalizer
+from src.extraction.normalizer import FieldNormalizer
 
 normalizer = FieldNormalizer()
 allowed = ["高清水下摄像机", "LED水下照明灯", "前视声呐", "成像声呐", "TSS管缆跟踪传感器"]

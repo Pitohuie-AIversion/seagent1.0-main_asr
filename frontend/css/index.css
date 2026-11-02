@@ -155,7 +155,7 @@
     /* ==================== 两栏 主区域 ==================== */
     .main-panel {
       display: grid;
-      grid-template-columns: 1fr 320px;
+      grid-template-columns: minmax(0, 1fr) 320px;
       gap: 1rem;
       flex: 1;
       overflow: hidden;
@@ -870,6 +870,7 @@
 
     .input-area input {
       flex: 1;
+      min-width: 0;
       background: rgba(0, 10, 25, 0.85);
       border: 1px solid rgba(0, 240, 255, 0.25);
       border-radius: 4px;
@@ -887,6 +888,8 @@
     }
 
     .input-area button {
+      flex-shrink: 0;
+      white-space: nowrap;
       background: rgba(0, 240, 255, 0.12);
       border: 1px solid var(--accent-cyan);
       color: var(--accent-cyan);
@@ -1623,4 +1626,637 @@
 
     ::-webkit-scrollbar-thumb:hover {
       background: var(--accent-cyan);
+    }
+
+    /* SSE 流式细粒度步骤微状态指示器 */
+    .message[data-message-kind="streaming-status"] .bubble {
+      background: rgba(0, 229, 255, 0.08);
+      border: 1px dashed rgba(0, 229, 255, 0.35);
+      color: #9fe8f7;
+      font-style: italic;
+      letter-spacing: 0.2px;
+      animation: pulseStreamingStatus 2s infinite ease-in-out;
+    }
+
+    @keyframes pulseStreamingStatus {
+      0%, 100% {
+        opacity: 0.85;
+        border-color: rgba(0, 229, 255, 0.3);
+      }
+      50% {
+        opacity: 1;
+        border-color: rgba(0, 255, 196, 0.6);
+        box-shadow: 0 0 10px rgba(0, 229, 255, 0.15);
+      }
+    }
+
+    /* ==================== SSE 细粒度打字机与光标 ==================== */
+    .streaming-cursor {
+      display: inline-block;
+      width: 2px;
+      height: 1.1em;
+      vertical-align: -0.15em;
+      background: var(--accent-cyan, #00f0ff);
+      box-shadow: 0 0 8px var(--accent-cyan, #00f0ff);
+      margin-left: 2px;
+      animation: blinkCursor 0.8s infinite cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    @keyframes blinkCursor {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.15; }
+    }
+
+    /* 气泡内实时动态提取槽位指示条 */
+    .bubble-slot-tags-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+      padding-top: 6px;
+      border-top: 1px dashed rgba(0, 240, 255, 0.2);
+    }
+
+    .bubble-slot-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.78rem;
+      background: rgba(0, 240, 255, 0.1);
+      border: 1px solid rgba(0, 240, 255, 0.35);
+      color: var(--accent-cyan, #00f0ff);
+      font-family: var(--font-mono, monospace);
+      animation: slotTagSlideIn 0.3s ease-out;
+    }
+
+    @keyframes slotTagSlideIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* 侧边栏槽位填报高亮脉冲动画 */
+    .slot-fill-highlight {
+      animation: slotFillPulse 1.4s ease-out !important;
+    }
+
+    @keyframes slotFillPulse {
+      0% {
+        box-shadow: 0 0 0 rgba(0, 240, 255, 0);
+        background-color: rgba(0, 240, 255, 0.35);
+      }
+      30% {
+        box-shadow: 0 0 16px rgba(0, 255, 196, 0.6);
+        background-color: rgba(0, 255, 196, 0.25);
+        border-color: rgba(0, 255, 196, 0.9);
+      }
+      100% {
+        box-shadow: 0 0 0 rgba(0, 240, 255, 0);
+      }
+    }
+
+    /* 气泡内流式即时警告指示条 */
+    .bubble-warning-notice {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      background: rgba(255, 157, 0, 0.12);
+      border: 1px solid rgba(255, 157, 0, 0.4);
+      color: #ffe6b0;
+      animation: slotTagSlideIn 0.3s ease-out;
+    }
+
+    .bubble-warning-notice-badge {
+      font-size: 0.72rem;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: rgba(255, 157, 0, 0.25);
+      color: var(--accent-amber, #ff9d00);
+      font-weight: 700;
+    }
+
+    /* ==================== 软警告即时确认卡片 ==================== */
+    .warning-decision-card {
+      margin-top: 10px;
+      border-radius: 8px;
+      padding: 12px 16px;
+      background: linear-gradient(135deg, rgba(255, 157, 0, 0.12) 0%, rgba(15, 23, 42, 0.92) 100%);
+      border: 1px solid rgba(255, 157, 0, 0.45);
+      box-shadow: 0 4px 20px rgba(255, 157, 0, 0.15), inset 0 0 12px rgba(255, 157, 0, 0.05);
+      backdrop-filter: blur(12px);
+      width: 100%;
+      max-width: 580px;
+      animation: cardFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: all 0.3s ease;
+    }
+
+    .warning-card-resolving {
+      border-color: rgba(0, 240, 255, 0.6) !important;
+      box-shadow: 0 0 20px rgba(0, 240, 255, 0.25) !important;
+      opacity: 0.9;
+    }
+
+    @keyframes cardFadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .warning-card-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .warning-card-badge {
+      font-size: 0.75rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(255, 157, 0, 0.2);
+      border: 1px solid var(--accent-amber, #ff9d00);
+      color: var(--accent-amber, #ff9d00);
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+
+    .warning-card-title {
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: #ffe6b0;
+      letter-spacing: 0.3px;
+    }
+
+    .warning-items-list {
+      list-style: none;
+      margin: 8px 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .warning-item-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      font-size: 0.84rem;
+      line-height: 1.4;
+      color: #fce8cc;
+      background: rgba(0, 0, 0, 0.2);
+      padding: 6px 10px;
+      border-radius: 4px;
+      border-left: 3px solid var(--accent-amber, #ff9d00);
+    }
+
+    .warning-item-code {
+      font-family: var(--font-mono, monospace);
+      font-weight: 700;
+      color: var(--accent-amber, #ff9d00);
+      font-size: 0.8rem;
+    }
+
+    .warning-card-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(255, 157, 0, 0.2);
+    }
+
+    .btn-ignore-warning-confirm {
+      background: linear-gradient(135deg, rgba(255, 157, 0, 0.25) 0%, rgba(255, 157, 0, 0.45) 100%);
+      border: 1px solid var(--accent-amber, #ff9d00);
+      color: #fff;
+      font-weight: 600;
+      padding: 7px 16px;
+      border-radius: 6px;
+      font-size: 0.84rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 0 10px rgba(255, 157, 0, 0.3);
+      transition: all 0.25s ease;
+    }
+
+    .btn-ignore-warning-confirm:hover:not(:disabled) {
+      background: linear-gradient(135deg, rgba(255, 157, 0, 0.4) 0%, rgba(255, 157, 0, 0.65) 100%);
+      box-shadow: 0 0 18px rgba(255, 157, 0, 0.6);
+      transform: translateY(-1px);
+    }
+
+    .btn-ignore-warning-confirm:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      transform: none !important;
+      box-shadow: none !important;
+    }
+
+    .btn-modify-warning-task {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: var(--text-secondary, #7b89b6);
+      padding: 7px 14px;
+      border-radius: 6px;
+      font-size: 0.84rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .btn-modify-warning-task:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: var(--text-primary, #eef2ff);
+      border-color: rgba(255, 255, 255, 0.4);
+    }
+
+    .warning-card-resolved {
+      background: linear-gradient(135deg, rgba(0, 255, 196, 0.08) 0%, rgba(15, 23, 42, 0.85) 100%) !important;
+      border-color: rgba(0, 255, 196, 0.35) !important;
+      box-shadow: 0 2px 10px rgba(0, 255, 196, 0.1) !important;
+    }
+
+    /* ==================== 硬约束严重阻断卡片 ==================== */
+    .hard-blocked-card {
+      margin-top: 10px;
+      border-radius: 8px;
+      padding: 12px 16px;
+      background: linear-gradient(135deg, rgba(255, 0, 60, 0.15) 0%, rgba(20, 10, 15, 0.95) 100%);
+      border: 1px solid rgba(255, 0, 60, 0.5);
+      box-shadow: 0 4px 25px rgba(255, 0, 60, 0.2);
+      backdrop-filter: blur(12px);
+      width: 100%;
+      max-width: 580px;
+      animation: cardFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .hard-card-badge {
+      font-size: 0.75rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(255, 0, 60, 0.25);
+      border: 1px solid var(--accent-red, #ff003c);
+      color: #ff4d73;
+      font-weight: 700;
+    }
+
+    .hard-card-title {
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: #ff99aa;
+    }
+
+    .hard-item-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      font-size: 0.84rem;
+      line-height: 1.4;
+      color: #ffd6dc;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 6px 10px;
+      border-radius: 4px;
+      border-left: 3px solid var(--accent-red, #ff003c);
+    }
+
+    /* Keep chat controls and task details reachable on compact screens. */
+    @media (max-width: 760px) {
+      body {
+        height: auto;
+        overflow: auto;
+      }
+
+      .app {
+        height: auto;
+        min-height: 100vh;
+        padding: 0 0.75rem;
+      }
+
+      .header {
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        padding: 1rem;
+      }
+
+      .header-left {
+        min-width: 0;
+      }
+
+      .header-right {
+        margin-left: auto;
+      }
+
+      .main-panel {
+        grid-template-columns: minmax(0, 1fr);
+        overflow: visible;
+      }
+
+      .chat-area {
+        height: 70vh;
+        min-height: 360px;
+      }
+
+      .sidebar {
+        overflow: visible;
+      }
+
+      .input-area {
+        padding: 0.75rem;
+        gap: 0.5rem;
+      }
+
+      .input-area input {
+        padding: 0.75rem;
+      }
+
+      .input-area button {
+        padding: 0 0.85rem;
+      }
+    }
+
+    /* ==================== 机器人实时遥测与环境核验看板卡片 ==================== */
+    .telemetry-decision-card {
+      margin-top: 12px;
+      border-radius: 12px;
+      padding: 14px 18px;
+      background: linear-gradient(135deg, rgba(0, 160, 255, 0.12) 0%, rgba(10, 25, 47, 0.94) 100%);
+      border: 1px solid rgba(0, 210, 255, 0.45);
+      box-shadow: 0 4px 24px rgba(0, 150, 255, 0.16), inset 0 0 16px rgba(0, 210, 255, 0.05);
+      backdrop-filter: blur(12px);
+      width: 100%;
+      max-width: 620px;
+      animation: cardFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: all 0.3s ease;
+    }
+
+    .telemetry-card-header {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 12px;
+      border-bottom: 1px solid rgba(0, 210, 255, 0.2);
+      padding-bottom: 10px;
+    }
+
+    .telemetry-card-badge-group {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .telemetry-card-badge {
+      font-size: 0.72rem;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: rgba(0, 210, 255, 0.2);
+      border: 1px solid #00f0ff;
+      color: #00f0ff;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+    }
+
+    .telemetry-status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.75rem;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+
+    .status-pill-ok {
+      background: rgba(0, 255, 170, 0.15);
+      border: 1px solid rgba(0, 255, 170, 0.4);
+      color: #00ffaa;
+    }
+
+    .status-pill-warn {
+      background: rgba(255, 184, 48, 0.15);
+      border: 1px solid rgba(255, 184, 48, 0.4);
+      color: #ffb830;
+    }
+
+    .status-indicator-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 6px currentColor;
+      animation: pulseDot 2s infinite ease-in-out;
+    }
+
+    @keyframes pulseDot {
+      0%, 100% { opacity: 0.6; transform: scale(0.9); }
+      50% { opacity: 1; transform: scale(1.2); }
+    }
+
+    .telemetry-card-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #e2f1ff;
+      letter-spacing: 0.2px;
+    }
+
+    /* 4 宫格环境指标 */
+    .telemetry-metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .telemetry-metric-box {
+      background: rgba(0, 20, 40, 0.45);
+      border: 1px solid rgba(0, 210, 255, 0.22);
+      border-radius: 8px;
+      padding: 8px 10px;
+      text-align: center;
+      transition: all 0.2s ease;
+    }
+
+    .telemetry-metric-box:hover {
+      border-color: rgba(0, 210, 255, 0.45);
+      background: rgba(0, 30, 60, 0.55);
+    }
+
+    .metric-label {
+      font-size: 0.72rem;
+      color: #8bb2d9;
+      margin-bottom: 4px;
+      white-space: nowrap;
+    }
+
+    .metric-value {
+      font-size: 0.88rem;
+      font-weight: 700;
+      font-family: var(--font-mono, monospace);
+      color: #d8ecff;
+    }
+
+    .metric-val-ok {
+      color: #38ef7d;
+    }
+
+    .metric-val-warn {
+      color: #ffb830;
+      font-weight: 800;
+    }
+
+    /* 子系统健康矩阵 */
+    .telemetry-subsystems-section {
+      background: rgba(0, 15, 30, 0.35);
+      border: 1px solid rgba(0, 210, 255, 0.15);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+    }
+
+    .telemetry-section-title {
+      font-size: 0.76rem;
+      color: #79a6d2;
+      font-weight: 600;
+      margin-bottom: 8px;
+      letter-spacing: 0.4px;
+    }
+
+    .telemetry-subsys-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+    }
+
+    .telemetry-subsys-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.74rem;
+      padding: 4px 6px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .subsys-indicator {
+      font-size: 0.68rem;
+      line-height: 1;
+    }
+
+    .subsys-name {
+      color: #c0d8f0;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .subsys-status-text {
+      font-size: 0.7rem;
+      color: #78a2cc;
+    }
+
+    .subsys-ok .subsys-status-text {
+      color: #52e5a5;
+    }
+
+    .subsys-warn .subsys-status-text {
+      color: #ffb830;
+    }
+
+    .subsys-err .subsys-status-text {
+      color: #ff4d73;
+    }
+
+    /* 元数据栏 */
+    .telemetry-card-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.73rem;
+      color: #6a8fae;
+      margin-top: 6px;
+      padding-top: 6px;
+    }
+
+    .telemetry-verified-tag {
+      color: #00f0ff;
+      font-weight: 600;
+      margin-left: auto;
+    }
+
+    /* 操作栏 */
+    .telemetry-card-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(0, 210, 255, 0.2);
+    }
+
+    .btn-telemetry-confirm-publish {
+      background: linear-gradient(135deg, rgba(0, 210, 255, 0.35) 0%, rgba(0, 150, 255, 0.6) 100%);
+      border: 1px solid #00f0ff;
+      color: #fff;
+      font-weight: 700;
+      padding: 8px 18px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 0 14px rgba(0, 210, 255, 0.35);
+      transition: all 0.25s ease;
+    }
+
+    .btn-telemetry-confirm-publish:hover:not(:disabled) {
+      background: linear-gradient(135deg, rgba(0, 210, 255, 0.5) 0%, rgba(0, 170, 255, 0.8) 100%);
+      box-shadow: 0 0 22px rgba(0, 210, 255, 0.65);
+      transform: translateY(-1px);
+    }
+
+    .btn-telemetry-confirm-publish:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none !important;
+      box-shadow: none !important;
+    }
+
+    .btn-telemetry-refresh {
+      background: rgba(0, 210, 255, 0.08);
+      border: 1px solid rgba(0, 210, 255, 0.3);
+      color: #a8d5ff;
+      font-weight: 600;
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 0.84rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.2s ease;
+    }
+
+    .btn-telemetry-refresh:hover:not(:disabled) {
+      background: rgba(0, 210, 255, 0.18);
+      border-color: rgba(0, 210, 255, 0.6);
+      color: #ffffff;
+    }
+
+    @media (max-width: 640px) {
+      .telemetry-metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .telemetry-subsys-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .telemetry-card-actions {
+        flex-wrap: wrap;
+      }
     }

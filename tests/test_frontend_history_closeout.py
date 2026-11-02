@@ -20,8 +20,8 @@ from unittest.mock import MagicMock, patch
 
 from web_backend import app, init_manager, get_or_create_manager, _sessions_manager
 from src.dialogue_manager import DialogueManager
-from src.history_manager import save_conversation, list_history, load_history
-from src.ui_state_builder import build_frontend_ui_state
+from src.session.history_manager import save_conversation, list_history, load_history
+from src.session.ui_state_builder import build_frontend_ui_state
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
 
@@ -259,7 +259,7 @@ class TestFrontendHistoryCloseout(unittest.TestCase):
             self.assertEqual(ui_state["dialogue_mode"], "knowledge_qa")
     def test_09_list_history_filters_internal_and_non_history_files(self):
         """9. list_history 过滤内部 session 文件、点文件与无 conversation_history 的非快照文件"""
-        from src.result_paths import get_history_dir
+        from src.dispatch.result_paths import get_history_dir
         hist_dir = get_history_dir(create=True)
 
         internal_head = hist_dir / ".session_head_test_mock.json"

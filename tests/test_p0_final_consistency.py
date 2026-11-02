@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.slot_store import SlotVersionConflict
+from src.slots.slot_store import SlotVersionConflict
 from tests.interaction_plan_support import (
     ScriptedLLM,
     extraction_result,
@@ -115,8 +115,8 @@ class P0FinalConsistencyDefectTest(unittest.TestCase):
                             )
 
             with (
-                patch("src.task_intent_builder.get_task_dir", return_value=tmp_path),
-                patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)),
+                patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path),
+                patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)),
             ):
                 self.dm.process("确认发布")
                 self.assertEqual(self.dm.phase, "done")
@@ -160,8 +160,8 @@ class P0FinalConsistencyDefectTest(unittest.TestCase):
             seed_complete_valid_pipeline_task(self.dm, self.kb)
 
             with (
-                patch("src.task_intent_builder.get_task_dir", return_value=task_dir),
-                patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)),
+                patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir),
+                patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)),
             ):
                 self.dm.process("确认发布")
                 self.assertEqual(self.dm.phase, "done")
@@ -209,8 +209,8 @@ class P0FinalConsistencyDefectTest(unittest.TestCase):
                             )
 
             with (
-                patch("src.task_intent_builder.get_task_dir", return_value=tmp_path),
-                patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)),
+                patch("src.dispatch.task_intent_builder.get_task_dir", return_value=tmp_path),
+                patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)),
             ):
                 self.dm.process("确认发布")
                 self.assertEqual(self.dm.phase, "done")

@@ -1,8 +1,8 @@
 import pytest
 from src.dialogue_manager import DialogueManager
 from src.knowledge_retriever import KnowledgeBase
-from src.intent_router import IntentRouteResult
-from src.interaction_plan import InteractionPlan
+from src.session.intent_router import IntentRouteResult
+from src.session.interaction_plan import InteractionPlan
 
 
 class DummyLLM:
@@ -113,7 +113,6 @@ def test_broad_device_list_query(manager):
             ),
         )
         reply = manager._handle_knowledge_query(q, route, request_id="test_req")
-        print(f"\n[DEBUG_TEST] query={q!r} -> reply={reply!r}")
         assert "项目知识库中未找到该设备信息" not in reply
         assert ("观察级" in reply or "工作级" in reply or "机器人" in reply)
 
@@ -134,7 +133,7 @@ def test_referential_task_initiation_carryover():
 
 
 def test_referential_all_entities_carryover():
-    """测试四大实体（任务类型、机器人、油田海域、载荷工具）的上下文暂存与口语指代继承。"""
+    """未选任务时保留指代候选，不能跳过任务 schema 写成有效槽位。"""
     llm = DummyLLM()
     kb = KnowledgeBase()
 
@@ -143,20 +142,55 @@ def test_referential_all_entities_carryover():
     dm_robot.process("系统支持金牛座机器人吗")
     assert dm_robot._last_discussed_robot is not None
     dm_robot.process("就用这个机器人")
-    assert dm_robot.slot_store.get_task_state().get("robot_class") is not None or dm_robot.slot_store.get_task_state().get("robot_family") is not None
+    assert dm_robot._pending_referential_candidates[0]["canonical_key"] == "equipment_family"
+    assert not dm_robot.slot_store.get_task_state()
 
     # 2. 油田海域指代继承
     dm_oil = DialogueManager(llm=llm, kb=kb)
     dm_oil.process("介绍一下流花11-1油田")
     assert dm_oil._last_discussed_oilfield == "流花11-1油田"
     dm_oil.process("就去这个油田")
-    assert dm_oil.slot_store.get_task_state().get("raw_oilfield_name") == "流花11-1油田" or dm_oil.slot_store.get_task_state().get("oilfield_name") == "流花11-1油田"
+    assert dm_oil._pending_referential_candidates[0]["normalized_value"] == "流花11-1油田"
+    assert not dm_oil.slot_store.get_task_state()
 
     # 3. 载荷工具指代继承
     dm_payload = DialogueManager(llm=llm, kb=kb)
     dm_payload.process("系统支持水下摄像机载荷吗")
     assert dm_payload._last_discussed_payload == "高清水下摄像机"
     dm_payload.process("就带这个工具")
-    assert "高清水下摄像机" in dm_payload.slot_store.get_task_state().get("onboard_payloads", [])
+    assert dm_payload._pending_referential_candidates[0]["canonical_key"] == "payload"
+    assert dm_payload._pending_referential_candidates[0]["normalized_value"] == ["高清水下摄像机"]
+    assert not dm_payload.slot_store.get_task_state()
 
+
+def test_concept_and_method_qa_not_intercepted_by_fleet_catalog(manager):
+    """测试询问水下机器人常用导航方式、作业风险等技术概念问题，绝不能被误拦截为机队列表。"""
+    queries = [
+        "水下机器人常用的导航方式有哪些？",
+        "ROV水下作业常见的风险有哪些？",
+    ]
+    for q in queries:
+        route = IntentRouteResult(
+            interaction_type="QUERY",
+            confidence=0.9,
+            reason="general_knowledge_query",
+            query_intent="KNOWLEDGE_QA",
+            interaction_plan=InteractionPlan(
+                schema_version=1,
+                operation="READ",
+                dialogue_mode="knowledge_qa",
+                query_intent="KNOWLEDGE_QA",
+                subject_type="general_concept",
+                subject_text="underwater navigation",
+                relation="list",
+                source_policy="project_kb",
+                needs_clarification=False,
+                clarification_reason=None,
+                emergency_action=None,
+                confidence=0.9,
+                reason_code="general_knowledge_query",
+            ),
+        )
+        reply = manager.router_handler._handle_non_task_route(q, route, request_id="test_qa_req")
+        assert "本系统当前支持以下水下机器人与作业装备阵列" not in reply, f"查询 '{q}' 被误拦截为机队列表！"
 

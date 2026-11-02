@@ -8,7 +8,7 @@
 <!-- 列出受影响的模块、配置文件或测试脚本 -->
 
 ## 关键代码位置
-<!-- 列出本次修改的关键文件与类/函数，格式示例：src/intent_router.py (IntentRouter) -->
+<!-- 列出本次修改的关键文件与类/函数，格式示例：src/session/intent_router.py (IntentRouter) -->
 
 ## 核心逻辑变化
 <!-- 简述本次修改的核心逻辑调整与实现方式 -->
@@ -18,8 +18,8 @@
 
 ## 测试结果
 <!-- 附上本地测试或 CI 运行结果 -->
-- `python -m compileall -q src tests`: Pass
-- `python -m pytest -q`: Pass
+- `python -m compileall -q src tests mcp/ros-mcp mcp/operation-time-window`：待填写实际结果
+- `python -m pytest -q`：待填写通过/失败/跳过数量；未执行或中断请注明
 
 ## 文档更新
 <!-- 说明已同步更新的文档，如 README.md, docs/architecture/overview.md 等 -->

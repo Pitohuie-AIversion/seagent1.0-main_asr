@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..interaction_plan import InteractionPlan
+    from ..session.interaction_plan import InteractionPlan
 
 InteractionType = Literal["WRITE", "QUERY"]
 DialogueMode = Literal[

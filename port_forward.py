@@ -23,7 +23,7 @@ async def pipe(reader, writer):
                 break
             writer.write(data)
             await writer.drain()
-    except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+    except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, OSError, asyncio.CancelledError):
         pass
     finally:
         try:

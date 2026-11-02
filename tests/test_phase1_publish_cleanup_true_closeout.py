@@ -7,6 +7,7 @@ import copy
 import json
 import multiprocessing as mp
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,8 +17,8 @@ from src.dialogue_manager import DialogueManager
 from src.exceptions import IntentIdConflict, TaskPersistenceError
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
-from src.slot_store import Slot
-from src.task_intent_builder import TaskIntentBuilder, TaskPublishLock
+from src.slots.slot_store import Slot
+from src.dispatch.task_intent_builder import TaskIntentBuilder, TaskPublishLock
 
 
 class DummyLLM(LLMClient):
@@ -38,7 +39,7 @@ class DummyLLM(LLMClient):
 def _mp_lock_holder_create_staging(tmp_dir_str, hold_event, ready_event):
     """持锁 worker，用于测试 create_staging 被阻塞"""
     task_dir = Path(tmp_dir_str) / "task"
-    with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+    with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
         lock = TaskPublishLock(task_dir)
         with lock:
             ready_event.set()
@@ -59,7 +60,7 @@ def _mp_contender_create_staging(tmp_dir_str, intent, res_queue, attempting_even
     else:
         patch_enter = patch("sys.path", sys.path)
 
-    with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), patch_enter:
+    with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), patch_enter:
         try:
             st = builder.create_staging(intent)
             res_queue.put(("acquired", st.name, os.getpid()))
@@ -81,7 +82,7 @@ def _mp_contender_publish_staging(tmp_dir_str, intent, res_queue, attempting_eve
     else:
         patch_enter = patch("sys.path", sys.path)
 
-    with patch("src.task_intent_builder.get_task_dir", return_value=task_dir), patch_enter:
+    with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), patch_enter:
         try:
             st = builder.create_staging(intent)
             pub_name = builder.publish_staging(st, intent)
@@ -106,9 +107,9 @@ def _mp_contender_load_snapshot(tmp_dir_str, snap_dict, res_queue, attempting_ev
         patch_enter = patch("sys.path", sys.path)
 
     with patch("src.dialogue_manager.get_task_dir", return_value=task_dir), \
-         patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-         patch("src.result_paths.get_task_dir", return_value=task_dir), \
-         patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir_str)), \
+         patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
+         patch("src.dispatch.result_paths.get_task_dir", return_value=task_dir), \
+         patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir_str)), \
          patch_enter:
         try:
             dm.load_snapshot(snap_dict)
@@ -135,9 +136,9 @@ def _mp_load_snapshot_holder_pause_read(tmp_dir_str, snap_dict, in_read_event, r
         return real_open(file, *args, **kwargs)
 
     with patch("src.dialogue_manager.get_task_dir", return_value=task_dir), \
-         patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-         patch("src.result_paths.get_task_dir", return_value=task_dir), \
-         patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir_str)), \
+         patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
+         patch("src.dispatch.result_paths.get_task_dir", return_value=task_dir), \
+         patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir_str)), \
          patch("builtins.open", side_effect=hooked_open):
         try:
             dm.load_snapshot(snap_dict)
@@ -207,7 +208,7 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st = self.builder.create_staging(intent)
 
                 real_rename = os.rename
@@ -239,7 +240,7 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
             task_dir = Path(tmp_dir) / "task"
             task_dir.mkdir(parents=True, exist_ok=True)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 st = self.builder.create_staging(intent)
 
                 def hook_commit_fail_and_replace_temp(temp_file, final_file):
@@ -247,7 +248,7 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
                         json.dump(forged, f)
                     raise OSError("Disk failure during commit")
 
-                with patch("src.task_intent_builder._atomic_commit_noreplace", side_effect=hook_commit_fail_and_replace_temp):
+                with patch("src.dispatch.task_intent_builder._atomic_commit_noreplace", side_effect=hook_commit_fail_and_replace_temp):
                     with self.assertRaises(TaskPersistenceError):
                         self.builder.publish_staging(st, intent)
 
@@ -278,7 +279,7 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
             with open(staging_file, "w", encoding="utf-8") as f:
                 json.dump(intent, f)
 
-            with patch("src.task_intent_builder.get_task_dir", return_value=task_dir):
+            with patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir):
                 with open(staging_file, "w", encoding="utf-8") as f:
                     json.dump(forged_staging, f)
 
@@ -321,8 +322,8 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
                 raise TaskPersistenceError("Simulated publish failure")
 
             with patch("src.dialogue_manager.get_task_dir", return_value=task_dir), \
-                 patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("src.task_intent_builder.TaskIntentBuilder.publish_staging", side_effect=fake_publish_fail_and_replace_staging):
+                 patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
+                 patch("src.dispatch.task_intent_builder.TaskIntentBuilder.publish_staging", side_effect=fake_publish_fail_and_replace_staging):
 
                 with self.assertRaises(TaskPersistenceError):
                     dm.process("确认发布")
@@ -374,9 +375,9 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
                 }
 
                 with patch("src.dialogue_manager.get_task_dir", return_value=task_dir), \
-                     patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                     patch("src.result_paths.get_task_dir", return_value=task_dir), \
-                     patch("src.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
+                     patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
+                     patch("src.dispatch.result_paths.get_task_dir", return_value=task_dir), \
+                     patch("src.dispatch.id_sequence.get_result_dir", return_value=Path(tmp_dir)):
                     dm.load_snapshot(snap)
 
                 self.assertNotEqual(
@@ -571,9 +572,9 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
             llm = DummyLLM()
 
             with patch("src.dialogue_manager.get_task_dir", return_value=task_dir), \
-                 patch("src.task_intent_builder.get_task_dir", return_value=task_dir), \
-                 patch("src.result_paths.get_task_dir", return_value=task_dir), \
-                 patch("src.id_sequence.get_result_dir", return_value=res_dir):
+                 patch("src.dispatch.task_intent_builder.get_task_dir", return_value=task_dir), \
+                 patch("src.dispatch.result_paths.get_task_dir", return_value=task_dir), \
+                 patch("src.dispatch.id_sequence.get_result_dir", return_value=res_dir):
                 dm = DialogueManager(llm, kb)
 
                 # 1. 种子灌入合法的 pipeline_burial 任务槽位
@@ -582,7 +583,7 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
                 allowed_rovs = kb.get_task_allowed_robot_variants(task_type_key)
                 selected_rov = allowed_rovs[0] if allowed_rovs else kb.get_all_rovs()[0]
 
-                from src.simulated_time import get_current_datetime
+                from src.temporal.simulated_time import get_current_datetime
                 from datetime import timedelta
                 now_dt = get_current_datetime()
                 slots_to_seed = {
@@ -602,7 +603,7 @@ class PublishCleanupTrueCloseoutTest(unittest.TestCase):
                     "equipment_specification": ({"type": "power_hp", "value": 1600, "unit": "hp", "display_value": "1600HP", "variant_id": selected_rov.get("variant_id", "crawler_heavy_seabed_robot_1600hp")}, "object"),
                     "equipment_type": (selected_rov["full_name"], "string"),
                     "equipment_unit_id": (selected_rov.get("unit_ids", ["WCROV-STD-001"])[0], "string"),
-                    "payload": (["高清水下摄像机"], "list"),
+                    "payload": (["单目水下成像系统"], "list"),
                     "support_vessel": ("DSV-Oceanic", "string"),
                     "intent_id": ("TI2026063002", "string"),
                 }

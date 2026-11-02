@@ -3,7 +3,7 @@ import unittest
 
 from src.dialogue_manager import DialogueManager, sanitize_user_facing_json
 from src.knowledge_retriever import KnowledgeBase
-from src.slot_store import SlotStore, Slot
+from src.slots.slot_store import SlotStore, Slot
 
 
 class FakeLLM:

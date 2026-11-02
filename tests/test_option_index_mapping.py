@@ -1,5 +1,5 @@
 from tests.interaction_plan_support import ScriptedLLM, slot_candidate
-from src.extractor import ParameterExtractor
+from src.extraction.extractor import ParameterExtractor
 
 
 def test_option_index_exact_mapping():

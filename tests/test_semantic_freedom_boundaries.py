@@ -5,15 +5,15 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from src.dialogue_manager import DialogueManager
-from src.extractor import ParameterExtractor
-from src.interaction_plan import validate_interaction_plan
+from src.extraction.extractor import ParameterExtractor
+from src.session.interaction_plan import validate_interaction_plan
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
-from src.model_profile import ModelRole
-from src.output_builder import OutputBuilder
-from src.prompts import RESPONDER_SYSTEM
-from src.task_request_guard import analyze_task_request
-from src.ui_state_builder import _compute_actions, _compute_read_only
+from src.extraction.model_profile import ModelRole
+from src.dispatch.output_builder import OutputBuilder
+from src.extraction.prompts import RESPONDER_SYSTEM
+from src.validation.task_request_guard import analyze_task_request
+from src.session.ui_state_builder import _compute_actions, _compute_read_only
 from tests.interaction_plan_support import (
     ScriptedLLM,
     extraction_result,
@@ -318,11 +318,11 @@ def test_robot_class_candidates_include_authoritative_semantic_evidence() -> Non
         "pipeline_inspection",
         task_state={"task_type_key": "pipeline_inspection"},
     )
-    class_field = next(item for item in required if item["key"] == "equipment_class")
+    class_field = next(item for item in required if item["key"] in ("equipment_class", "equipment_family"))
     auv = next(
         item
         for item in class_field["candidate_evidence"]
-        if item["canonical_value"] == "AUV"
+        if item["canonical_value"] in ("AUV", "水下无人自主航行器")
     )
 
     assert "AUV" in auv["aliases"]

@@ -1,0 +1,14 @@
+<button id="apiCredentialsButton" type="button" class="api-credentials-button" hidden>连接凭据 / Credentials</button>
+<dialog id="apiCredentialsDialog" class="api-credentials-dialog">
+  <form id="apiCredentialsForm">
+    <h2>API Token</h2>
+    <p id="apiCredentialsMessage">凭据仅在当前标签页保存。保存后请重试操作。<br>Stored in this tab only. Retry your action after saving.</p>
+    <label for="apiTokenInput">连接凭据 / Access token</label>
+    <input id="apiTokenInput" type="password" autocomplete="off" spellcheck="false">
+    <div class="api-credentials-actions">
+      <button type="button" id="apiCredentialsCancel">取消 / Cancel</button>
+      <button type="button" id="apiCredentialsClear">清除 / Clear</button>
+      <button type="submit">保存 / Save</button>
+    </div>
+  </form>
+</dialog>

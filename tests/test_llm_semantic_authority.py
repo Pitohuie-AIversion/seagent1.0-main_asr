@@ -4,9 +4,9 @@ from unittest.mock import MagicMock
 
 import src.llm_client as llm_client_module
 from src.dialogue_manager import DialogueManager
-from src.extractor import EXTRACTION_SYSTEM, ParameterExtractor
-from src.intent_router import INTENT_ROUTER_SYSTEM, IntentRouteResult, IntentRouter
-from src.interaction_plan import (
+from src.extraction.extractor import EXTRACTION_SYSTEM, ParameterExtractor
+from src.session.intent_router import INTENT_ROUTER_SYSTEM, IntentRouteResult, IntentRouter
+from src.session.interaction_plan import (
     VALID_EMERGENCY_ACTIONS,
     VALID_PENDING_ACTIONS,
     VALID_RELATIONS,
@@ -15,8 +15,8 @@ from src.interaction_plan import (
 )
 from src.knowledge_retriever import KnowledgeBase
 from src.llm_client import LLMClient
-from src.prompts import build_responder_messages
-from src.validator import Violation
+from src.extraction.prompts import build_responder_messages
+from src.validation.validator import Violation
 from tests.interaction_plan_support import (
     ScriptedLLM,
     empty_extraction,
@@ -211,6 +211,16 @@ def test_blocked_soft_accepts_prompted_ignore_warning_continue_phrases() -> None
 
 def test_ignore_warning_continue_negation_is_not_acknowledgement() -> None:
     assert DialogueManager._is_ignore_warning("不忽略警告继续") is False
+    assert DialogueManager._is_ignore_warning("不要忽略软警告") is False
+    assert DialogueManager._is_ignore_warning("不能接受软性警告") is False
+    assert DialogueManager._is_ignore_warning("忽略软警告，继续确认任务。") is True
+    assert DialogueManager._is_ignore_warning("忽略警告确认任务") is True
+    assert DialogueManager._is_ignore_warning("忽略排期软警告，进入发布。") is True
+    assert DialogueManager._is_ignore_warning("忽略未来任务环境与遥测延后校验提示") is True
+    assert DialogueManager._is_ignore_warning("接受软警告并发布") is True
+    assert DialogueManager._is_ignore_warning("忽略软警告修改水深300米") is False
+    assert DialogueManager._is_ignore_warning("把水深修改为300米，忽略之前设置") is False
+
 
 
 def test_blocked_hard_rejects_ignore_warning() -> None:
@@ -229,8 +239,8 @@ def test_blocked_hard_rejects_ignore_warning() -> None:
 
 def test_state_timestamp_whitelist_preserved_across_slot_updates() -> None:
     """验证 check_type='state_timestamp' (如 C019) 警告在同一环境观察值下，跨槽位补充时不会因 task_version 跳变而再次跳出。"""
-    from src.validator import Violation
-    from src.slot_store import ValidationAcknowledgement
+    from src.validation.validator import Violation
+    from src.slots.slot_store import ValidationAcknowledgement
 
     llm = ScriptedLLM()
     dm = DialogueManager(llm, KnowledgeBase())
@@ -1374,7 +1384,7 @@ def test_ensure_constraint_details_deduplicates_paraphrased_warning() -> None:
 def test_duration_relation_corrects_chinese_two_and_half_hours() -> None:
     # 模拟大模型将“两个半小时”误换算为 5400 秒 (1.5小时)
     from datetime import datetime
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     get_simulated_time().set_current_time(datetime(2026, 8, 14, 10, 0, 0))
     try:
         llm = ScriptedLLM(
@@ -1431,7 +1441,7 @@ def test_duration_relation_corrects_chinese_two_and_half_hours() -> None:
 
 
 def test_cross_day_end_time_auto_correction() -> None:
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     from datetime import datetime
     from zoneinfo import ZoneInfo
     get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
@@ -1485,7 +1495,7 @@ def test_cross_day_end_time_auto_correction() -> None:
 
 
 def test_change_start_time_inherits_duration() -> None:
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     from datetime import datetime
     from zoneinfo import ZoneInfo
     get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
@@ -1545,7 +1555,7 @@ def test_change_start_time_inherits_duration() -> None:
 
 
 def test_change_start_time_inherits_duration_after_many_turns() -> None:
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     from datetime import datetime
     from zoneinfo import ZoneInfo
     get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
@@ -1605,7 +1615,7 @@ def test_change_start_time_inherits_duration_after_many_turns() -> None:
 
 
 def test_change_start_time_with_end_time_unchanged_preserves_previous_end() -> None:
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     from datetime import datetime
     from zoneinfo import ZoneInfo
     get_simulated_time().set_current_time(datetime(2026, 8, 26, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
@@ -1657,7 +1667,7 @@ def test_change_start_time_with_end_time_unchanged_preserves_previous_end() -> N
 
 
 def test_duration_delta_from_user_text_overrides_misclassified_end_time_candidate() -> None:
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
@@ -1710,103 +1720,115 @@ def test_duration_delta_from_user_text_overrides_misclassified_end_time_candidat
 def test_august_31_explicit_date_and_duration() -> None:
     # 场景：用户说“任务从8月31号早上6点开始，任务持续8个小时”
     # 模拟大模型在 start_time 误选了当前日期 (2026-08-18)，但 raw_value 保留了 "8月31号早上6点"
-    llm = ScriptedLLM(
-        extractions=[
-            {
-                "slot_candidates": [
-                    slot_candidate(
-                        "start_time",
-                        "2026-08-18T06:00:00",  # 模型误选了当天
-                        raw_key="开始时间",
-                        raw_value="8月31号早上6点",
-                    ),
-                ],
-                "list_mutations": [],
-                "time_relation": {
-                    "has_duration": True,
-                    "duration_seconds": 28800,  # 8小时
-                    "raw_text": "持续8个小时",
-                    "confidence": 0.95,
-                },
-                "unresolved": [],
-            }
-        ]
-    )
-    extractor = ParameterExtractor(llm)
+    from datetime import datetime
+    from src.temporal.simulated_time import get_simulated_time
+    get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0))
+    try:
+        llm = ScriptedLLM(
+            extractions=[
+                {
+                    "slot_candidates": [
+                        slot_candidate(
+                            "start_time",
+                            "2026-08-18T06:00:00",  # 模型误选了当天
+                            raw_key="开始时间",
+                            raw_value="8月31号早上6点",
+                        ),
+                    ],
+                    "list_mutations": [],
+                    "time_relation": {
+                        "has_duration": True,
+                        "duration_seconds": 28800,  # 8小时
+                        "raw_text": "持续8个小时",
+                        "confidence": 0.95,
+                    },
+                    "unresolved": [],
+                }
+            ]
+        )
+        extractor = ParameterExtractor(llm)
 
-    result = extractor.extract_updates(
-        "任务从8月31号早上6点开始，任务持续8个小时",
-        current_state={"task_type_key": "pipeline_inspection"},
-        task_type_key="pipeline_inspection",
-        required=[
-            {"key": "start_time", "type": "datetime"},
-            {"key": "end_time", "type": "datetime"},
-        ],
-    )
+        result = extractor.extract_updates(
+            "任务从8月31号早上6点开始，任务持续8个小时",
+            current_state={"task_type_key": "pipeline_inspection"},
+            task_type_key="pipeline_inspection",
+            required=[
+                {"key": "start_time", "type": "datetime"},
+                {"key": "end_time", "type": "datetime"},
+            ],
+        )
 
-    candidates = {
-        item["canonical_key"]: item
-        for item in result["slot_candidates"]
-    }
-    # 1. 验证 Python 后端相对/绝对时间解析器覆盖模型误选，确定性算出 2026-08-31T06:00:00
-    assert candidates["start_time"]["normalized_value"] == "2026-08-31T06:00:00"
-    assert candidates["start_time"]["resolution_method"] == "relative_date_parsed"
-    # 2. 验证 Python 后端根据 2026-08-31T06:00:00 + 8小时得出 2026-08-31T14:00:00
-    assert candidates["end_time"]["normalized_value"] == "2026-08-31T14:00:00"
-    assert candidates["end_time"]["resolution_method"] == "duration_arithmetic"
+        candidates = {
+            item["canonical_key"]: item
+            for item in result["slot_candidates"]
+        }
+        # 1. 验证 Python 后端相对/绝对时间解析器覆盖模型误选，确定性算出 2026-08-31T06:00:00
+        assert candidates["start_time"]["normalized_value"] == "2026-08-31T06:00:00"
+        assert candidates["start_time"]["resolution_method"] == "relative_date_parsed"
+        # 2. 验证 Python 后端根据 2026-08-31T06:00:00 + 8小时得出 2026-08-31T14:00:00
+        assert candidates["end_time"]["normalized_value"] == "2026-08-31T14:00:00"
+        assert candidates["end_time"]["resolution_method"] == "duration_arithmetic"
+    finally:
+        get_simulated_time().reset()
 
 
 def test_august_31_truncated_raw_value_recovers_from_full_user_message() -> None:
     # 场景：大模型 LLM 将 raw_value 截断为 "早上6点"（丢失了 8月31号），但用户原话为 "任务从8月31号早上6点开始，任务持续12个小时"
-    llm = ScriptedLLM(
-        extractions=[
-            {
-                "slot_candidates": [
-                    slot_candidate(
-                        "start_time",
-                        "2026-08-18T06:00:00",  # 模型误算当天
-                        raw_key="开始时间",
-                        raw_value="早上6点",  # 截断的 raw_value
-                    ),
-                ],
-                "list_mutations": [],
-                "time_relation": {
-                    "has_duration": True,
-                    "duration_seconds": 43200,  # 12小时
-                    "raw_text": "持续12个小时",
-                    "confidence": 0.95,
-                },
-                "unresolved": [],
-            }
-        ]
-    )
-    extractor = ParameterExtractor(llm)
+    from datetime import datetime
+    from src.temporal.simulated_time import get_simulated_time
+    get_simulated_time().set_current_time(datetime(2026, 8, 18, 10, 0, 0))
+    try:
+        llm = ScriptedLLM(
+            extractions=[
+                {
+                    "slot_candidates": [
+                        slot_candidate(
+                            "start_time",
+                            "2026-08-18T06:00:00",  # 模型误算当天
+                            raw_key="开始时间",
+                            raw_value="早上6点",  # 截断的 raw_value
+                        ),
+                    ],
+                    "list_mutations": [],
+                    "time_relation": {
+                        "has_duration": True,
+                        "duration_seconds": 43200,  # 12小时
+                        "raw_text": "持续12个小时",
+                        "confidence": 0.95,
+                    },
+                    "unresolved": [],
+                }
+            ]
+        )
+        extractor = ParameterExtractor(llm)
 
-    result = extractor.extract_updates(
-        "任务从8月31号早上6点开始，任务持续12个小时",
-        current_state={"task_type_key": "pipeline_inspection"},
-        task_type_key="pipeline_inspection",
-        required=[
-            {"key": "start_time", "type": "datetime"},
-            {"key": "end_time", "type": "datetime"},
-        ],
-    )
+        result = extractor.extract_updates(
+            "任务从8月31号早上6点开始，任务持续12个小时",
+            current_state={"task_type_key": "pipeline_inspection"},
+            task_type_key="pipeline_inspection",
+            required=[
+                {"key": "start_time", "type": "datetime"},
+                {"key": "end_time", "type": "datetime"},
+            ],
+        )
 
-    candidates = {
-        item["canonical_key"]: item
-        for item in result["slot_candidates"]
-    }
-    # 1. 验证即使 LLM 给出的 raw_value 只有 "早上6点"，后端依然从整句中救出 "8月31号"，得出 2026-08-31T06:00:00
-    assert candidates["start_time"]["normalized_value"] == "2026-08-31T06:00:00"
-    # 2. 验证 06:00 + 12h 确定性计算得 2026-08-31T18:00:00
-    assert candidates["end_time"]["normalized_value"] == "2026-08-31T18:00:00"
+        candidates = {
+            item["canonical_key"]: item
+            for item in result["slot_candidates"]
+        }
+        # 1. 验证即使 LLM 给出的 raw_value 只有 "早上6点"，后端依然从整句中救出 "8月31号"，得出 2026-08-31T06:00:00
+        assert candidates["start_time"]["normalized_value"] == "2026-08-31T06:00:00"
+        # 2. 验证 06:00 + 12h 确定性计算得 2026-08-31T18:00:00
+        assert candidates["end_time"]["normalized_value"] == "2026-08-31T18:00:00"
+    finally:
+        get_simulated_time().reset()
 
 
 def test_today_am_11_and_three_hours() -> None:
     # 场景：用户原话为 "起始于今天上午十一点 持续三个小时"
     # 模拟大模型 LLM 在 start_time 误算归零输出 00:00:00
     from datetime import datetime
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     get_simulated_time().set_current_time(datetime(2026, 8, 19, 10, 39, 44))
     try:
         llm = ScriptedLLM(
@@ -1858,7 +1880,7 @@ def test_today_am_11_and_three_hours() -> None:
 def test_today_pm_one_quarter_and_four_quarter() -> None:
     # 场景：用户原话为 "任务从今天下午一点一刻开始，持续 12 小时"
     from datetime import datetime
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     get_simulated_time().set_current_time(datetime(2026, 8, 19, 15, 43, 35))
     try:
         llm = ScriptedLLM(
@@ -1984,7 +2006,7 @@ def test_incremental_duration_add_sub() -> None:
     # 场景：测试图片中的案例 "任务开始时间为明天早上8点开始，任务持续时间增加半个小时"
     # 原任务起始时间为 2026-08-27T08:00:00，结束时间为 2026-08-27T16:00:00 (8小时)
     from datetime import datetime
-    from src.simulated_time import get_simulated_time
+    from src.temporal.simulated_time import get_simulated_time
     get_simulated_time().set_current_time(datetime(2026, 8, 26, 10, 0, 0))
     try:
         llm = ScriptedLLM(
@@ -2141,16 +2163,22 @@ def test_incremental_duration_add_sub() -> None:
         get_simulated_time().reset()
 
 
-def test_no_candidates_invokes_llm_model_for_natural_response() -> None:
-    """无有效任务候选时，系统应通过 LLM 模型生成自然语言回复告诉用户，而不是直接输出硬编码静态字符串。"""
+def test_no_candidates_reply_reports_actual_result_despite_model_success_claim() -> None:
+    """WRITE 回执由真实结果生成，未验证的模型主体不能宣称成功。"""
     llm = ScriptedLLM(
         plans=[make_plan("WRITE")],
         extractions=[empty_extraction()],
-        replies=["抱歉，我没有识别到具体的任务类型候选。请问您需要执行管缆巡检还是采油树控制面板插入？"],
+        replies=["任务已创建，指令已下发。"],
     )
     dm = DialogueManager(llm, KnowledgeBase())
+    before = dm.slot_store.get_task_state()
+    version = dm.slot_store.version
     reply = dm.process("随便看看")
 
-    assert "抱歉，我没有识别到具体的任务类型候选" in reply
-    assert not reply.startswith("本轮没有任务字段通过验证，因此未写入任务状态。")
-
+    assert llm.chat_calls
+    assert dm.slot_store.get_task_state() == before
+    assert dm.slot_store.version == version
+    assert "任务已创建" not in reply and "指令已下发" not in reply
+    assert "未写入任务状态" in reply
+    assert "当前支持的任务类型" in reply
+    assert "管缆巡检" in reply and "采油树控制面板插入" in reply

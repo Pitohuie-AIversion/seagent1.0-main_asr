@@ -3,7 +3,7 @@ from datetime import timedelta
 import sys
 import unittest
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -11,15 +11,15 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.knowledge_retriever import KnowledgeBase
 from src.dialogue_manager import DialogueManager
 from src.llm_client import LLMClient
-from src.output_builder import OutputBuilder
-from src.prompts import (
+from src.dispatch.output_builder import OutputBuilder
+from src.extraction.prompts import (
     build_general_chat_messages,
     build_knowledge_responder_messages,
     build_responder_messages,
     build_status_responder_messages,
 )
-from src.task_intent_builder import TaskIntentBuilder
-from src.simulated_time import get_current_datetime
+from src.dispatch.task_intent_builder import TaskIntentBuilder
+from src.temporal.simulated_time import get_current_datetime
 from tests.interaction_plan_support import (
     ScriptedLLM,
     empty_extraction,
@@ -268,10 +268,11 @@ class DialogueManagerROVTest(unittest.TestCase):
         )
         dm = DialogueManager(llm, self.kb)
         version_before = dm.slot_store.version
-        dm.process(
-            "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆类型海底油气管道",
-            request_id="compound_create_test",
-        )
+        with patch("src.temporal.simulated_time.get_current_datetime", return_value=start_time):
+            dm.process(
+                "我想做管缆巡检，开始时间现在，结束时间五小时后，管缆类型海底油气管道",
+                request_id="compound_create_test",
+            )
 
         state = dm.slot_store.get_task_state()
         self.assertGreater(dm.slot_store.version, version_before)
@@ -846,7 +847,7 @@ class DialogueManagerROVTest(unittest.TestCase):
 
 
     def test_preflight_check_candidates(self):
-        from src.validator import TaskValidator
+        from src.validation.validator import TaskValidator
         validator = TaskValidator(self.kb)
         violations = validator.preflight_check_candidates(
             {"task_type_key": "pipeline_inspection", "equipment_class": "观察级深海机器人"},

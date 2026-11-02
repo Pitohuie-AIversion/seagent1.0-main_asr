@@ -10,8 +10,8 @@ import unittest
 from pathlib import Path
 
 from src.knowledge_retriever import KnowledgeBase
-from src.slot_store import SlotStore, Slot, ValidationAcknowledgement
-from src.validator import TaskValidator, ValidationResult, Violation
+from src.slots.slot_store import SlotStore, Slot, ValidationAcknowledgement
+from src.validation.validator import TaskValidator, ValidationResult, Violation
 from src.dialogue_manager import DialogueManager
 
 

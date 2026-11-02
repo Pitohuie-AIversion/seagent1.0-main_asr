@@ -10,13 +10,13 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from src.dialogue_manager import DialogueManager
-from src.session_state import (
+from src.session.session_state import (
     StateContractError,
     VALID_DIALOGUE_MODES,
     VALID_CONTROL_STATES,
     session_state_from_legacy_snapshot,
 )
-from src.slot_store import Slot
+from src.slots.slot_store import Slot
 from tests.interaction_plan_support import ScriptedLLM, make_plan
 
 

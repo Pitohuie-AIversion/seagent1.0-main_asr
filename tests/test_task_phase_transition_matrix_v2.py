@@ -10,13 +10,13 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from src.dialogue_manager import DialogueManager
-from src.session_state import (
+from src.session.session_state import (
     StateContractError,
     TASK_PHASE_TRANSITIONS,
     VALID_PHASES,
     validate_task_phase_transition,
 )
-from src.slot_store import Slot
+from src.slots.slot_store import Slot
 
 
 class TestTaskPhaseTransitionMatrixV2(unittest.TestCase):

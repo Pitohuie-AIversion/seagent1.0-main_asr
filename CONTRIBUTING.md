@@ -10,11 +10,12 @@
    - Python 版本：Python 3.10 或更高版本。
    - 基础与测试依赖安装：
      ```bash
-     pip install -r requirements/test.txt
+     python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+     python -m pip install -e '.[test]'
      ```
-   - 若需本地运行 ASR 语音识别服务，安装 GPU 扩展依赖：
+   - 若需真实本地模型，安装 GPU 扩展依赖并准备模型文件：
      ```bash
-     pip install -r requirements/gpu.txt
+     python -m pip install -e '.[test,gpu]'
      ```
 
 2. **环境变量与离线运行**：
@@ -33,7 +34,7 @@
 - 所有代码变更必须通过 **Pull Request (PR)** 提交。
 - PR 合并的强制条件：
   1. **Require Pull Request**：不允许直接提交至 `main`。
-  2. **Require CI Status Checks**：全量自动化测试套件（Unit Test & Chrome E2E）必须全部 PASS。
+  2. **Require CI Status Checks**：普通 PR 运行离线 pytest 全量套件；真实模型、ASR 和 Chrome E2E 由独立 GPU 工作流定时或手动执行。
   3. **Require Conversation Resolution**：所有 Reviewer 提出的 Discussion/Comment 必须标记为 Resolved。
   4. **Prevent Direct Push**：对所有贡献者（包括管理员）生效。
 
@@ -63,7 +64,7 @@
 
 ### 3.1 语法与编译检查
 ```bash
-python -m compileall -q src tests web_backend.py run.py
+python -m compileall -q src tests mcp/ros-mcp mcp/operation-time-window web_backend.py run.py
 ```
 
 ### 3.2 定向前端单元测试
@@ -101,10 +102,10 @@ git ls-files | grep -E 'port_forward\.log|chrome_e2e_screenshot\.png'
 
 ### 3.5 全量自动化测试与 E2E 检查
 ```bash
-# 全量单元测试（离线环境）
-TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m unittest discover tests -v
+# 全量 pytest 套件（离线环境；包含两个 MCP 子项目）
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q
 
-# Chrome E2E 端到端自动化测试
+# Chrome E2E 端到端自动化测试（需要浏览器和后端）
 python tests/run_chrome_e2e.py
 
 # Git diff 空行与格式校验
@@ -121,7 +122,7 @@ git status --short
    - [ ] 基于最新 `main` 分支拉取
    - [ ] 无未解决的 merge conflict
    - [ ] `compileall` 编译通过
-   - [ ] 全量 unittest 及 Chrome E2E 测试 100% 通过
+   - [ ] 全量 pytest 测试通过；涉及真实模型或浏览器流程时补充对应 E2E 结果或说明环境限制
    - [ ] 未降低核心安全校验与约束规则（特别是 `DialogueManager`, `SlotStore`, `TaskPublishLock`）
    - [ ] 文档与注释已同步更新
 3. **Code Review 要求**：
@@ -135,4 +136,4 @@ git status --short
 - **禁止吞掉异常**：不得添加无视根因的空 `except Exception: pass`。
 - **禁止硬编码跳过测试**：不得通过修测试断言或强行 `skip` 掩盖缺陷。
 - **禁止绕过硬约束**：硬约束违反必须阻断发布，不得被 generic confirmation（如“确认/继续”）绕过。
-- **禁止非原子持久化**：涉及落盘操作必须使用 `TaskPublishLock` 与原子重命名策略。
+- **禁止非原子持久化**：TaskIntent 发布必须使用 `TaskPublishLock` 与无覆盖硬链接提交；状态、历史文件使用各自已有的锁和原子替换流程。

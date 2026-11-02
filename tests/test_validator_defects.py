@@ -7,8 +7,8 @@ from zoneinfo import ZoneInfo
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.validator import TaskValidator, Violation
-from src.simulated_time import get_simulated_time
+from src.validation.validator import TaskValidator, Violation
+from src.temporal.simulated_time import get_simulated_time
 
 
 class FakeKnowledgeBaseForDefects:

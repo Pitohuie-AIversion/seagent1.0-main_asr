@@ -9,8 +9,8 @@ End-to-End Real Dialogue Flow Integration Tests
 import unittest
 from unittest.mock import MagicMock
 from src.dialogue_manager import DialogueManager
-from src.slot_store import Slot
-from src.intent_router import IntentRouteResult
+from src.slots.slot_store import Slot
+from src.session.intent_router import IntentRouteResult
 from web_backend import app, init_manager, get_or_create_manager
 
 
@@ -153,6 +153,51 @@ class TestEndToEndDialogueFlow(unittest.TestCase):
         self.assertEqual(json_data.get("code"), 200)
         reply_text = json_data.get("reply", "")
         self.assertIn("当前任务类型‘管缆巡检’未包含油田槽位", reply_text)
+
+    def test_ambiguous_tree_valve_operation_not_committed_and_requires_clarification(self):
+        """当采油树操作未明确插入或拔出且 unresolved 提示时，严禁静默提交单向拔出操作，必须返回澄清。"""
+        dm = self.dm
+        dm.intent_router.route = MagicMock(
+            return_value=IntentRouteResult(
+                interaction_type="WRITE",
+                confidence=1.0,
+                reason="test",
+            )
+        )
+        extraction_res = {
+            "slot_candidates": [
+                {
+                    "canonical_key": "water_depth",
+                    "normalized_value": 50.0,
+                    "raw_value": "50米",
+                    "confidence": 1.0,
+                },
+                {
+                    "canonical_key": "task_type",
+                    "normalized_value": "采油树控制面板拔出",
+                    "raw_value": "采油树阀门操作",
+                    "confidence": 0.5,
+                },
+            ],
+            "list_mutations": [],
+            "unresolved": ["用户描述为'水面采油树阀门操作'，未明确是'插入'还是'拔出'，无法确定具体 task_type 值。"],
+        }
+        dm.extractor.extract_updates = MagicMock(return_value=extraction_res)
+
+        reply = dm.process("在崖城13-1气田进行水面采油树阀门操作，水深50米")
+
+        # 校验：严禁将单向的拔出操作写入 task_type
+        task_type_val = dm.task_state.get("task_type")
+        self.assertNotEqual(task_type_val, "采油树控制面板拔出")
+        committed = dm.slot_store.get_task_state()
+        self.assertNotIn("task_type", committed)
+        self.assertNotIn("task_type_key", committed)
+        self.assertNotIn("water_depth", committed)
+        dm.extractor.extract_updates.assert_called_once()
+        # 校验：回复包含明确未写入或澄清指引
+        self.assertTrue(
+            "未明确是'插入'还是'拔出'" in reply or "同轮具体任务类型互相冲突" in reply or "无法确定具体 task_type" in reply
+        )
 
 
 if __name__ == "__main__":
