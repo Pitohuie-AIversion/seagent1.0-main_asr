@@ -1,14 +1,29 @@
-import yaml
+import copy
+import functools
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
+
+import yaml
+
+
+@functools.lru_cache(maxsize=128)
+def _load_oilfield_config_cached(config_path_str: str, mtime_ns: int) -> Dict[str, Any]:
+    """Cache the parsed YAML to avoid redundant I/O and parsing overhead."""
+    with open(config_path_str, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
 class EnvironmentInfo:
     def __init__(self):
         config_path = Path(__file__).parent.parent / "config" / "oilfield.yaml"
-        # 读取YAML配置文件
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = yaml.safe_load(f)
+
+        try:
+            mtime = config_path.stat().st_mtime_ns
+        except OSError:
+            mtime = 0
+
+        # ⚡ Bolt: deepcopy the cached configuration dictionary to prevent callers from mutating the shared cache
+        self.config = copy.deepcopy(_load_oilfield_config_cached(str(config_path), mtime))
 
         # 提取三大区域数据
         self.oil_fields = self.config.get("oil_fields", [])
