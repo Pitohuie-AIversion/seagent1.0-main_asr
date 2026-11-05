@@ -7,11 +7,14 @@
 
 from __future__ import annotations
 
+import copy
+import functools
+import math
 from dataclasses import dataclass
 from enum import Enum
-import math
 from pathlib import Path
 from typing import Any, Literal
+
 import yaml
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
@@ -28,16 +31,19 @@ class ModelRole(str, Enum):
 
 
 if "ModelProfileError" not in globals():
+
     class ModelProfileError(RuntimeError):
         """ModelProfile 基础异常。"""
 
 
 if "ModelProfileConfigError" not in globals():
+
     class ModelProfileConfigError(ModelProfileError):
         """ModelProfile 配置不合法异常。"""
 
 
 if "ModelProfileNotFoundError" not in globals():
+
     class ModelProfileNotFoundError(ModelProfileError):
         """ModelProfile 缺失异常。"""
 
@@ -73,9 +79,7 @@ def validate_profile(data: dict[str, Any], profile_name: str) -> ModelProfile:
     try:
         role = ModelRole(role_raw)
     except Exception as exc:
-        raise ModelProfileConfigError(
-            f"Profile '{profile_name}' 的 role '{role_raw}' 不合法: {exc}"
-        ) from exc
+        raise ModelProfileConfigError(f"Profile '{profile_name}' 的 role '{role_raw}' 不合法: {exc}") from exc
 
     enable_thinking = data.get("enable_thinking")
     if not isinstance(enable_thinking, bool):
@@ -90,9 +94,7 @@ def validate_profile(data: dict[str, Any], profile_name: str) -> ModelProfile:
         )
     temperature = float(temp_raw)
     if not math.isfinite(temperature) or math.isnan(temperature):
-        raise ModelProfileConfigError(
-            f"Profile '{profile_name}' 的 temperature 必须为有限数值，收到 {temperature}"
-        )
+        raise ModelProfileConfigError(f"Profile '{profile_name}' 的 temperature 必须为有限数值，收到 {temperature}")
     if not (0.0 <= temperature <= 2.0):
         raise ModelProfileConfigError(
             f"Profile '{profile_name}' 的 temperature 必须在 0.0 至 2.0 之间，收到 {temperature}"
@@ -111,14 +113,10 @@ def validate_profile(data: dict[str, Any], profile_name: str) -> ModelProfile:
 
     stop_raw = data.get("stop", [])
     if not isinstance(stop_raw, (list, tuple)):
-        raise ModelProfileConfigError(
-            f"Profile '{profile_name}' 的 stop 必须为 list 或 tuple，收到 {type(stop_raw)}"
-        )
+        raise ModelProfileConfigError(f"Profile '{profile_name}' 的 stop 必须为 list 或 tuple，收到 {type(stop_raw)}")
     for elem in stop_raw:
         if not isinstance(elem, str):
-            raise ModelProfileConfigError(
-                f"Profile '{profile_name}' 的 stop 元素必须为 str，收到 {type(elem)}"
-            )
+            raise ModelProfileConfigError(f"Profile '{profile_name}' 的 stop 元素必须为 str，收到 {type(elem)}")
     stop = tuple(stop_raw)
 
     response_mode_raw = data.get("response_mode")
@@ -167,9 +165,7 @@ def load_model_profiles(config_path: Path | None = None) -> dict[ModelRole, Mode
 
     schema_version = content.get("schema_version")
     if schema_version != 1:
-        raise ModelProfileConfigError(
-            f"仅支持 schema_version=1，收到 schema_version={schema_version}"
-        )
+        raise ModelProfileConfigError(f"仅支持 schema_version=1，收到 schema_version={schema_version}")
 
     profiles_data = content.get("profiles")
     if not isinstance(profiles_data, dict):
@@ -181,9 +177,7 @@ def load_model_profiles(config_path: Path | None = None) -> dict[ModelRole, Mode
     for name, p_data in profiles_data.items():
         profile = validate_profile(p_data, name)
         if profile.role in seen_roles:
-            raise ModelProfileConfigError(
-                f"存在重复的角色配置映射: 角色 '{profile.role.value}' 被多个 Profile 定义"
-            )
+            raise ModelProfileConfigError(f"存在重复的角色配置映射: 角色 '{profile.role.value}' 被多个 Profile 定义")
         seen_roles.add(profile.role)
         role_to_profile[profile.role] = profile
 
@@ -196,6 +190,13 @@ def _is_unsupported_role_keyword_error(exc: TypeError) -> bool:
     return "unexpected keyword argument" in msg and "role" in msg
 
 
+@functools.lru_cache(maxsize=128)
+def _load_features_cached(filepath_str: str, mtime_ns: int) -> dict:
+    """内部缓存方法，避免重复解析 features.yaml 造成高额开销"""
+    with open(filepath_str, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
 def get_feature_flag(name: str, features_path: Path | None = None, default: bool = False) -> bool:
     """唯一权威 Read-only Feature Flag Loader：读取 config/features.yaml 中指定 Flag。"""
     path = features_path or (CONFIG_DIR / "features.yaml")
@@ -203,8 +204,11 @@ def get_feature_flag(name: str, features_path: Path | None = None, default: bool
         return default
 
     try:
-        with open(path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+        try:
+            mtime = path.stat().st_mtime_ns
+        except OSError:
+            mtime = 0
+        data = _load_features_cached(str(path), mtime)
     except Exception as exc:
         raise ModelProfileConfigError(f"解析 features.yaml 配置文件失败 ({path}): {exc}") from exc
 
@@ -220,9 +224,7 @@ def get_feature_flag(name: str, features_path: Path | None = None, default: bool
 
     val = features[name]
     if type(val) is not bool:
-        raise ModelProfileConfigError(
-            f"features.{name} 必须为 bool 类型，收到 {type(val)}: {val!r}"
-        )
+        raise ModelProfileConfigError(f"features.{name} 必须为 bool 类型，收到 {type(val)}: {val!r}")
     return val
 
 
@@ -246,8 +248,6 @@ def is_session_state_v2_enabled(features_path: Path | None = None) -> bool:
 def is_shadow_compare_enabled(features_path: Path | None = None) -> bool:
     """查询 shadow_compare_enabled Feature Flag 是否开启。"""
     return get_feature_flag("shadow_compare_enabled", features_path=features_path, default=False)
-
-
 
 
 class ModelProfileRegistry:
