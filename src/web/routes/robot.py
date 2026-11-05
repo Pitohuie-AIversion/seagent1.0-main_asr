@@ -5,6 +5,7 @@ src/web/routes_robot.py - 机器人状态更新与实时遥测快照端点
 import logging
 import re
 import uuid
+
 from flask import Blueprint, jsonify, request
 
 import src.web.state as state
@@ -186,6 +187,7 @@ def set_robot_state_info():
 
 
 @robot_bp.route("/api/telemetry", methods=["GET"])
+@_require_api_token
 def get_telemetry_snapshot():
     """Compatibility view backed by live ROS telemetry, never by protocol YAML."""
     bridge = get_mcp_bridge()

@@ -1,0 +1,4 @@
+## 2024-11-05 - Missing API Token Authorization on Flask Routes
+**Vulnerability:** Several sensitive Flask API routes (e.g., `/api/session/state`, `/api/telemetry`, `/api/history/list`, `/api/time/current`) were missing the `@_require_api_token` decorator, allowing unauthenticated access.
+**Learning:** In this codebase, the Flask application relies on a custom `@_require_api_token` decorator (from `src.web.state`) to enforce API token authorization. It is not applied globally by default. Developers must explicitly add this decorator to any new route that handles sensitive data or operations.
+**Prevention:** Always verify that newly added Flask API routes include the `@_require_api_token` decorator when returning sensitive information (telemetry, session history) or performing impactful actions, unless they are intentionally public. Check for this pattern during code reviews.
