@@ -342,6 +342,7 @@ def api_reset():
 
 
 @chat_bp.route("/api/session/state", methods=["GET"])
+@_require_api_token
 def get_session_state():
     sid = request.args.get("session_id")
     if not sid:
