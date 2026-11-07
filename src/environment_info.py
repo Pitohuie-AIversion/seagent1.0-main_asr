@@ -1,14 +1,25 @@
+import copy
+import functools
 import yaml
 from pathlib import Path
 from typing import Dict, Any
+
+@functools.lru_cache(maxsize=128)
+def _load_oilfield_cached(path_str: str, mtime_ns: int) -> dict:
+    with open(path_str, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
 class EnvironmentInfo:
     def __init__(self):
         config_path = Path(__file__).parent.parent / "config" / "oilfield.yaml"
         # 读取YAML配置文件
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = yaml.safe_load(f)
+        try:
+            mtime = config_path.stat().st_mtime_ns
+        except OSError:
+            mtime = 0
+
+        self.config = copy.deepcopy(_load_oilfield_cached(str(config_path), mtime))
 
         # 提取三大区域数据
         self.oil_fields = self.config.get("oil_fields", [])
