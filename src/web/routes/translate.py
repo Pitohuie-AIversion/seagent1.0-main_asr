@@ -5,8 +5,8 @@ src/web/routes_translate.py - 文本翻译服务路由与长文本分块缓存�
 import logging
 import re
 import sys
-import threading
 import uuid
+
 from flask import Blueprint, jsonify, request
 
 import src.web.state as state
@@ -32,7 +32,7 @@ TRANSLATION_USE_CACHE = True
 def _use_cache() -> bool:
     backend = sys.modules.get("web_backend")
     if backend is not None and hasattr(backend, "TRANSLATION_USE_CACHE"):
-        return getattr(backend, "TRANSLATION_USE_CACHE")
+        return backend.TRANSLATION_USE_CACHE
     return TRANSLATION_USE_CACHE
 
 
@@ -269,7 +269,7 @@ def api_translate():
             "request_id": req_id,
             "retryable": True
         }), 503
-    except Exception as e:
+    except Exception:
         logging.exception("[translate] Unexpected error in api_translate")
         return jsonify({
             "ok": False,
