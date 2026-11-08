@@ -1,0 +1,4 @@
+## 2024-05-24 - [Missing API Token Verification on Internal Views]
+**Vulnerability:** Several sensitive Flask API endpoints (e.g., `/api/telemetry`, `/api/session/state`, `/api/time/current`, `/api/history/list`) were missing the `@_require_api_token` decorator, allowing unauthenticated read access to internal telemetry, chat session state, and system time configurations.
+**Learning:** In Flask architectures relying on decorator-based authentication, newly added endpoints or less "obvious" read endpoints (like GET views) are easily overlooked during code review, exposing sensitive internal state.
+**Prevention:** Always verify that every route under the `/api/` prefix (excluding explicit public paths) uses the `@_require_api_token` decorator. Consider implementing a middleware or global hook that defaults to deny-by-default for API prefixes, rather than relying on explicit decorator presence per view function.
