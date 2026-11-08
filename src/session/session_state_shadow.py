@@ -16,6 +16,8 @@ Zero side-effects, zero state mutation, zero double-execution of business logic.
 """
 
 from __future__ import annotations
+import functools
+import copy
 
 import copy
 import hashlib
@@ -74,6 +76,15 @@ def reset_shadow_metrics() -> None:
             _shadow_metrics[k] = 0
 
 
+
+@functools.lru_cache(maxsize=128)
+def _load_features_for_shadow_cached(path_str: str, mtime_ns: int) -> dict:
+    try:
+        with open(path_str, encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    except Exception:
+        return {}
+
 def should_run_session_state_shadow(
     session_id: str | None,
     features_path: Path | None = None,
@@ -94,10 +105,11 @@ def should_run_session_state_shadow(
         return False
 
     try:
-        with open(path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    except Exception:
-        return False
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        mtime = 0
+
+    data = copy.deepcopy(_load_features_for_shadow_cached(str(path), mtime))
 
     if not isinstance(data, dict):
         return False

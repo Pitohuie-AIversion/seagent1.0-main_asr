@@ -6,6 +6,8 @@
 """
 
 from __future__ import annotations
+import functools
+import copy
 
 from dataclasses import dataclass
 from enum import Enum
@@ -196,6 +198,15 @@ def _is_unsupported_role_keyword_error(exc: TypeError) -> bool:
     return "unexpected keyword argument" in msg and "role" in msg
 
 
+
+@functools.lru_cache(maxsize=128)
+def _load_features_cached(path_str: str, mtime_ns: int) -> dict:
+    try:
+        with open(path_str, encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    except Exception as exc:
+        raise ModelProfileConfigError(f"解析 features.yaml 配置文件失败 ({path_str}): {exc}") from exc
+
 def get_feature_flag(name: str, features_path: Path | None = None, default: bool = False) -> bool:
     """唯一权威 Read-only Feature Flag Loader：读取 config/features.yaml 中指定 Flag。"""
     path = features_path or (CONFIG_DIR / "features.yaml")
@@ -203,10 +214,10 @@ def get_feature_flag(name: str, features_path: Path | None = None, default: bool
         return default
 
     try:
-        with open(path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    except Exception as exc:
-        raise ModelProfileConfigError(f"解析 features.yaml 配置文件失败 ({path}): {exc}") from exc
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        mtime = 0
+    data = copy.deepcopy(_load_features_cached(str(path), mtime))
 
     if not isinstance(data, dict):
         raise ModelProfileConfigError(f"features.yaml 配置文件根节点必须为 dict，收到 {type(data)}")
