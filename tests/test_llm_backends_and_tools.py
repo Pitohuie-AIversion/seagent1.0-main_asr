@@ -159,6 +159,37 @@ class TestBuiltinTools:
         assert "current_speed_knots" in res or "surface_current_knots" in res
         assert res["status"] == "safe"
 
+    def test_calculate_hydrostatic_pressure(self):
+        """测试水深静水压强计算与法兰等级推荐。"""
+        from src.tools.builtin_tools import calculate_hydrostatic_pressure
+
+        res = calculate_hydrostatic_pressure(water_depth_m=1500.0)
+        assert res["status"] == "success"
+        assert res["depth_m"] == 1500.0
+        assert 145.0 <= res["hydrostatic_pressure_bar"] <= 155.0
+        assert 14.5 <= res["hydrostatic_pressure_mpa"] <= 15.5
+        assert "超深水" in res["depth_classification"]
+
+    def test_calculate_cable_catenary(self):
+        """测试脐带缆受力与悬链线漂移物理计算。"""
+        from src.tools.builtin_tools import calculate_cable_catenary
+
+        res = calculate_cable_catenary(water_depth_m=500.0, current_speed_knots=1.5)
+        assert res["water_depth_m"] == 500.0
+        assert res["top_tension_kn"] > 0
+        assert res["horizontal_drag_kn"] > 0
+        assert res["estimated_bottom_drift_m"] > 0
+        assert res["catenary_status"] in ("safe", "warning")
+
+    def test_check_marine_operation_window(self):
+        """测试海况平流作业窗口查询。"""
+        from src.tools.builtin_tools import check_marine_operation_window
+
+        res = check_marine_operation_window(field_name="陵水17-2", target_date="2026-11-10")
+        assert res["field_name"] == "陵水17-2"
+        assert res["window_status"] == "AVAILABLE"
+        assert len(res["recommended_windows"]) >= 1
+
 
 class TestBackends:
     """测试各个计算后端的一致性。"""
