@@ -240,13 +240,43 @@ class LLMClient:
             self.backends.setdefault("default", LocalVllmBackend(llm_instance, tokenizer, self.lock))
             self.backends.setdefault("local", self.backends["default"])
             self.backends.setdefault("gpu0_fast", self.backends["default"])
+            self._init_configured_remote_backends()
         else:
             self.backends.setdefault("default", MockBackend())
             self.backends.setdefault("mock", self.backends["default"])
+            self.backends.setdefault("gpu0_fast", self.backends["default"])
+            self.backends.setdefault("gpu1_heavy", self.backends["default"])
+
+    def _init_configured_remote_backends(self) -> None:
+        """从 model_profiles.yaml 读取并自动装配配置的远端/异构计算后端。"""
+        try:
+            from src.extraction.model_profile import load_backend_configs
+            from src.llm_backends.openai_http import OpenAICompatibleBackend
+            configs = load_backend_configs()
+            for b_name, b_info in configs.items():
+                if b_name in self.backends:
+                    continue
+                b_type = b_info.get("type")
+                if b_type == "openai_http":
+                    self.backends[b_name] = OpenAICompatibleBackend(
+                        base_url=b_info.get("base_url", "http://127.0.0.1:8001/v1"),
+                        model=b_info.get("model", "qwen-27b"),
+                        api_key=b_info.get("api_key", "EMPTY"),
+                        timeout=float(b_info.get("timeout", 60.0)),
+                    )
+                    logger.info(
+                        "[LLMClient] Auto-registered remote backend '%s' -> %s (%s)",
+                        b_name,
+                        b_info.get("base_url"),
+                        b_info.get("model"),
+                    )
+        except Exception as exc:
+            logger.warning("[LLMClient] Auto-registering remote backends skipped: %s", exc)
 
     def register_backend(self, name: str, backend: BaseLLMBackend) -> None:
         """注册或更新指定的计算后端。"""
         self.backends[name] = backend
+
 
     def get_backend(
         self,

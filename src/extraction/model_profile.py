@@ -210,6 +210,21 @@ def load_model_profiles(config_path: Path | None = None) -> dict[ModelRole, Mode
     return role_to_profile
 
 
+def load_backend_configs(config_path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """读取并返回 model_profiles.yaml 中的 backends 计算节点拓扑配置。"""
+    path = config_path or (CONFIG_DIR / "model_profiles.yaml")
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            content = yaml.safe_load(f) or {}
+        backends = content.get("backends", {})
+        return backends if isinstance(backends, dict) else {}
+    except Exception:
+        return {}
+
+
+
 def _is_unsupported_role_keyword_error(exc: TypeError) -> bool:
     """判断 TypeError 是否是因为旧版接口签名不支持 'role' 关键字参数引发。"""
     msg = str(exc)

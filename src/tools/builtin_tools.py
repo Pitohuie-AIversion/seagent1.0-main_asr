@@ -225,9 +225,148 @@ def check_marine_operation_window(
     }
 
 
+def convert_usbl_acoustic_to_geodetic(
+    vessel_lat: float,
+    vessel_lon: float,
+    vessel_heading_deg: float = 0.0,
+    dx_forward_m: float = 0.0,
+    dy_starboard_m: float = 0.0,
+    depth_m: float = 0.0,
+    slant_range_m: float | None = None,
+    relative_bearing_deg: float | None = None,
+) -> dict[str, Any]:
+    """将母船 USBL 超短基线声学定位相对测距/方位转换为大地经纬度坐标与三维斜距。"""
+    import math
+
+    v_lat = float(vessel_lat)
+    v_lon = float(vessel_lon)
+    heading_rad = math.radians(float(vessel_heading_deg))
+    depth = max(0.0, float(depth_m))
+
+    if slant_range_m is not None and relative_bearing_deg is not None:
+        sr = max(depth, float(slant_range_m))
+        brg_rad = math.radians(float(relative_bearing_deg))
+        horiz_dist = math.sqrt(max(0.0, sr**2 - depth**2))
+        dx_fwd = horiz_dist * math.cos(brg_rad)
+        dy_stbd = horiz_dist * math.sin(brg_rad)
+    else:
+        dx_fwd = float(dx_forward_m)
+        dy_stbd = float(dy_starboard_m)
+        horiz_dist = math.hypot(dx_fwd, dy_stbd)
+        sr = math.hypot(horiz_dist, depth)
+
+    # 船体坐标系（船艏 Forward，右舷 Starboard）旋转至地心北东（ENU）坐标系
+    dx_north = dx_fwd * math.cos(heading_rad) - dy_stbd * math.sin(heading_rad)
+    dy_east = dx_fwd * math.sin(heading_rad) + dy_stbd * math.cos(heading_rad)
+
+    # WGS-84 地球椭球子午圈与卯酉圈近似：1度纬度约 111320m
+    meters_per_deg_lat = 111320.0
+    meters_per_deg_lon = 111320.0 * math.cos(math.radians(v_lat))
+    if meters_per_deg_lon == 0:
+        meters_per_deg_lon = 1.0
+
+    target_lat = v_lat + (dx_north / meters_per_deg_lat)
+    target_lon = v_lon + (dy_east / meters_per_deg_lon)
+
+    # 1-sigma 声学测量精度估算（常规高精度 USBL 测距精度的 0.2% 斜距 + 0.5m 基础底噪）
+    acc_est = max(0.5, 0.002 * sr)
+
+    return {
+        "target_lat": round(target_lat, 6),
+        "target_lon": round(target_lon, 6),
+        "depth_m": round(depth, 1),
+        "horizontal_range_m": round(horiz_dist, 2),
+        "slant_range_m": round(sr, 2),
+        "north_offset_m": round(dx_north, 2),
+        "east_offset_m": round(dy_east, 2),
+        "acoustic_accuracy_estimate_m": round(acc_est, 2),
+        "status": "success",
+    }
+
+
+def check_manipulator_payload_envelope(
+    manipulator_model: str,
+    reach_distance_m: float,
+    payload_in_water_kg: float,
+    operation_type: str = "general",
+) -> dict[str, Any]:
+    """核算水下机械臂作业包络面伸展半径与水下有效负载安全裕度。"""
+    model_lower = manipulator_model.strip().lower()
+    reach = max(0.0, float(reach_distance_m))
+    payload = max(0.0, float(payload_in_water_kg))
+
+    # 根据资产库标准参数映射
+    if any(k in model_lower for k in ("7", "七", "titan", "多功能", "工作级")):
+        canonical_model = "多功能液压机械臂 (7-Function)"
+        max_reach = 1.9
+        min_reach = 0.3
+        base_lift = 450.0
+        full_reach_lift = 125.0
+        max_torque_nm = 170.0
+    elif any(k in model_lower for k in ("5", "五", "rigmaster", "抓持")):
+        canonical_model = "五自由度机械臂 (5-Function Grabber)"
+        max_reach = 1.5
+        min_reach = 0.2
+        base_lift = 270.0
+        full_reach_lift = 180.0
+        max_torque_nm = 120.0
+    else:
+        canonical_model = "轻型多功能电液机械臂"
+        max_reach = 1.3
+        min_reach = 0.2
+        base_lift = 180.0
+        full_reach_lift = 60.0
+        max_torque_nm = 80.0
+
+    reach_percent = (reach / max_reach) * 100.0
+
+    if reach > max_reach:
+        return {
+            "manipulator_model": canonical_model,
+            "reach_distance_m": reach,
+            "max_reach_m": max_reach,
+            "reach_envelope_percent": round(reach_percent, 1),
+            "payload_in_water_kg": payload,
+            "allowable_payload_kg": 0.0,
+            "safety_factor": 0.0,
+            "is_safe": False,
+            "status": "out_of_reach",
+            "message": f"作业半径 {reach:.2f}m 超出机械臂最大工作包络面半径 ({max_reach:.2f}m)，无法触达目标！",
+        }
+
+    # 线性插值计算当前伸展半径下的许用吊重
+    span = max_reach - min_reach
+    clamped_reach = max(min_reach, min(reach, max_reach))
+    fraction = (clamped_reach - min_reach) / span if span > 0 else 1.0
+    allowable_lift = base_lift - fraction * (base_lift - full_reach_lift)
+
+    safety_factor = allowable_lift / max(payload, 0.1)
+    is_safe = payload <= allowable_lift
+
+    return {
+        "manipulator_model": canonical_model,
+        "operation_type": operation_type,
+        "reach_distance_m": round(reach, 2),
+        "max_reach_m": max_reach,
+        "reach_envelope_percent": round(reach_percent, 1),
+        "payload_in_water_kg": round(payload, 1),
+        "allowable_payload_kg": round(allowable_lift, 1),
+        "safety_factor": round(safety_factor, 2),
+        "wrist_torque_limit_nm": max_torque_nm,
+        "is_safe": is_safe,
+        "status": "safe" if is_safe else "overload_risk",
+        "advisory": (
+            f"机械臂伸展 {reach:.2f}m (包络占用 {reach_percent:.1f}%)，允许水下负载 {allowable_lift:.1f}kg，"
+            f"当前负载 {payload:.1f}kg，安全系数 {safety_factor:.2f}。"
+            + ("" if is_safe else " ⚠️ 超过额定载荷，存在液压失压或关节过载风险！")
+        ),
+    }
+
+
 def register_builtin_tools(registry: ToolRegistry | None = None) -> None:
     """显式幂等注册内置工具。"""
     reg = registry or ToolRegistry.get_instance()
+
 
     reg.register(
         func=query_robot_specs,
@@ -351,6 +490,73 @@ def register_builtin_tools(registry: ToolRegistry | None = None) -> None:
         roles=("extractor", "auditor", "knowledge_qa"),
     )
 
+    reg.register(
+        func=convert_usbl_acoustic_to_geodetic,
+        name="convert_usbl_acoustic_to_geodetic",
+        description="将母船 USBL 超短基线声学相对探测数据(船首/右舷偏移或斜距方位)结合母船艏向解算为水下机器人绝对大地经纬度与三维空间位置",
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "vessel_lat": {
+                    "type": "number",
+                    "description": "母船基准纬度(度)，例如 17.512345",
+                },
+                "vessel_lon": {
+                    "type": "number",
+                    "description": "母船基准经度(度)，例如 115.123456",
+                },
+                "vessel_heading_deg": {
+                    "type": "number",
+                    "description": "母船艏向真北角(度)，默认 0.0",
+                },
+                "dx_forward_m": {
+                    "type": "number",
+                    "description": "沿船艏向相对位移(米)，默认 0.0",
+                },
+                "dy_starboard_m": {
+                    "type": "number",
+                    "description": "沿右舷向相对位移(米)，默认 0.0",
+                },
+                "depth_m": {
+                    "type": "number",
+                    "description": "水下目标水深(米)",
+                },
+            },
+            "required": ["vessel_lat", "vessel_lon", "depth_m"],
+        },
+        roles=("extractor", "auditor", "knowledge_qa"),
+    )
+
+    reg.register(
+        func=check_manipulator_payload_envelope,
+        name="check_manipulator_payload_envelope",
+        description="核算水下机械臂(7功能/5功能/轻型)在指定伸展距离下的工作包络面触达能力、许用吊重与过载安全系数",
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "manipulator_model": {
+                    "type": "string",
+                    "description": "机械臂型号或类型，例如 '多功能液压机械臂'、'五自由度机械臂'、'Titan 4'",
+                },
+                "reach_distance_m": {
+                    "type": "number",
+                    "description": "机械臂基座至目标作业点的直线距离(米)，例如 1.2",
+                },
+                "payload_in_water_kg": {
+                    "type": "number",
+                    "description": "作业对象在水中的等效重量(kg)，例如 45.0",
+                },
+                "operation_type": {
+                    "type": "string",
+                    "description": "作业类型，例如 'turn_valve'、'pick_payload'、'hot_stab'",
+                },
+            },
+            "required": ["manipulator_model", "reach_distance_m", "payload_in_water_kg"],
+        },
+        roles=("extractor", "auditor", "knowledge_qa"),
+    )
+
 
 # 模块导入时自动执行初次注册
 register_builtin_tools()
+

@@ -190,6 +190,54 @@ class TestBuiltinTools:
         assert res["window_status"] == "AVAILABLE"
         assert len(res["recommended_windows"]) >= 1
 
+    def test_convert_usbl_acoustic_to_geodetic(self):
+        """测试 USBL 声学定位相对坐标转换为大地经纬度与三维斜距。"""
+        from src.tools.builtin_tools import convert_usbl_acoustic_to_geodetic
+
+        # 母船在南海 (17.5°N, 115.0°E)，艏向真北 0°，目标在船艏前 100m，右舷 50m，水深 1200m
+        res = convert_usbl_acoustic_to_geodetic(
+            vessel_lat=17.5,
+            vessel_lon=115.0,
+            vessel_heading_deg=0.0,
+            dx_forward_m=100.0,
+            dy_starboard_m=50.0,
+            depth_m=1200.0,
+        )
+        assert res["status"] == "success"
+        assert res["target_lat"] > 17.5  # 船艏正北前进，纬度增加
+        assert res["target_lon"] > 115.0  # 右舷正东，经度增加
+        assert res["depth_m"] == 1200.0
+        assert 111.0 <= res["horizontal_range_m"] <= 112.0
+        assert res["slant_range_m"] > 1200.0
+        assert res["acoustic_accuracy_estimate_m"] > 0
+
+    def test_check_manipulator_payload_envelope(self):
+        """测试机械臂工作包络面与有效负载安全系数核算。"""
+        from src.tools.builtin_tools import check_manipulator_payload_envelope
+
+        # 1. 正常作业：7功能机械臂在 1.2m 伸展距离下搬运 40kg
+        res_safe = check_manipulator_payload_envelope(
+            manipulator_model="多功能液压机械臂",
+            reach_distance_m=1.2,
+            payload_in_water_kg=40.0,
+        )
+        assert res_safe["status"] == "safe"
+        assert res_safe["is_safe"] is True
+        assert res_safe["reach_distance_m"] == 1.2
+        assert res_safe["allowable_payload_kg"] > 40.0
+        assert res_safe["safety_factor"] > 1.0
+
+        # 2. 超出包络面半径
+        res_out = check_manipulator_payload_envelope(
+            manipulator_model="五自由度机械臂",
+            reach_distance_m=2.5,  # 5功能机械臂最大 1.5m
+            payload_in_water_kg=10.0,
+        )
+        assert res_out["status"] == "out_of_reach"
+        assert res_out["is_safe"] is False
+        assert "超出机械臂最大工作包络面半径" in res_out["message"]
+
+
 
 class TestBackends:
     """测试各个计算后端的一致性。"""
@@ -336,10 +384,13 @@ class TestDevToolsEndpoints:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["ok"] is True
-        assert data["tools_count"] >= 6
+        assert data["tools_count"] >= 8
         tool_names = [t["name"] for t in data["tools"]]
         assert "calculate_hydrostatic_pressure" in tool_names
         assert "query_robot_specs" in tool_names
+        assert "convert_usbl_acoustic_to_geodetic" in tool_names
+        assert "check_manipulator_payload_envelope" in tool_names
+
 
     def test_list_tools_with_role_filter(self):
         """测试按角色筛选工具。"""
