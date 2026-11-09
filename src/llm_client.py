@@ -374,16 +374,23 @@ class LLMClient:
         # 若配置了独立的远程/OpenAICompatibleBackend，通过后端路由执行
         target_backend = self.get_backend(role=role)
         if isinstance(target_backend, OpenAICompatibleBackend):
-            resp = target_backend.generate(
-                messages,
-                temperature=options.temperature,
-                max_tokens=options.max_tokens,
-                stop=list(options.stop),
-                response_mode=options.response_mode,
-                response_schema=response_schema,
-                enable_thinking=options.enable_thinking,
-            )
-            return resp.text
+            try:
+                resp = target_backend.generate(
+                    messages,
+                    temperature=options.temperature,
+                    max_tokens=options.max_tokens,
+                    stop=list(options.stop),
+                    response_mode=options.response_mode,
+                    response_schema=response_schema,
+                    enable_thinking=options.enable_thinking,
+                )
+                return resp.text
+            except Exception as exc:
+                logger.warning(
+                    "[LLMClient] 远程后端 %s 调用异常 (%s)，降级使用本地计算引擎处理",
+                    target_backend.base_url,
+                    exc,
+                )
 
         if self.is_mock:
             return self._mock_generate_text(messages)
