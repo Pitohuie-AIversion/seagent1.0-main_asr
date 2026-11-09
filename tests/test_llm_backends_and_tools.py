@@ -321,3 +321,58 @@ class TestLLMClientToolCallingLoop:
         profile_backend = client.get_backend(name="gpu1_heavy")
         resp = profile_backend.generate([{"role": "user", "content": "做安全推演"}])
         assert resp.text == "[来自 GPU 1 深度思考结果]"
+
+
+class TestDevToolsEndpoints:
+    """测试 /api/dev/tools 与 /api/dev/tools/execute 开发者调试路由。"""
+
+    def setup_method(self):
+        import web_backend
+        self.client = web_backend.app.test_client()
+
+    def test_list_tools_endpoint(self):
+        """测试获取全部已注册工具列表及 Schema。"""
+        resp = self.client.get("/api/dev/tools")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["tools_count"] >= 6
+        tool_names = [t["name"] for t in data["tools"]]
+        assert "calculate_hydrostatic_pressure" in tool_names
+        assert "query_robot_specs" in tool_names
+
+    def test_list_tools_with_role_filter(self):
+        """测试按角色筛选工具。"""
+        resp = self.client.get("/api/dev/tools?role=auditor")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["role_filter"] == "auditor"
+        for t in data["tools"]:
+            assert "auditor" in t["roles"] or "all" in t["roles"]
+
+    def test_execute_tool_success(self):
+        """测试成功调用计算水压工具。"""
+        payload = {
+            "tool_name": "calculate_hydrostatic_pressure",
+            "arguments": {"water_depth_m": 1500.0},
+        }
+        resp = self.client.post("/api/dev/tools/execute", json=payload)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["tool_name"] == "calculate_hydrostatic_pressure"
+        assert data["result"]["depth_m"] == 1500.0
+        assert data["result"]["hydrostatic_pressure_bar"] == 150.78
+
+
+    def test_execute_tool_validation_errors(self):
+        """测试缺少 tool_name 与不存在的工具。"""
+        resp = self.client.post("/api/dev/tools/execute", json={})
+        assert resp.status_code == 400
+        assert "缺少 tool_name" in resp.get_json()["msg"]
+
+        resp = self.client.post("/api/dev/tools/execute", json={"tool_name": "non_existent_tool"})
+        assert resp.status_code == 404
+        assert "未找到" in resp.get_json()["msg"]
+

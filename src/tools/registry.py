@@ -26,6 +26,15 @@ class ToolDefinition:
     schema: dict[str, Any]
     roles: tuple[str, ...] = ("all",)
 
+    @property
+    def parameters_schema(self) -> dict[str, Any]:
+        return self.schema.get("function", {}).get("parameters", {})
+
+    @property
+    def is_read_only(self) -> bool:
+        return True
+
+
 
 def _python_type_to_json_type(py_type: Any) -> str:
     """将基础 Python 类型映射为 JSON Schema 类型字符串。"""
@@ -125,6 +134,10 @@ class ToolRegistry:
     def get_tool(self, name: str) -> ToolDefinition | None:
         return self._tools.get(name)
 
+    def list_tools(self) -> list[ToolDefinition]:
+        """返回所有已注册工具定义列表。"""
+        return list(self._tools.values())
+
     def get_schemas(self, role: str | None = None, tool_names: list[str] | None = None) -> list[dict[str, Any]]:
         """按角色或指定名称列表导出 OpenAI 标准工具 JSON 结构。"""
         schemas: list[dict[str, Any]] = []
@@ -135,6 +148,14 @@ class ToolRegistry:
                 continue
             schemas.append(tool.schema)
         return schemas
+
+    def execute_tool(self, name: str, arguments: dict[str, Any] | str) -> Any:
+        """执行指定工具并直接返回其返回值；若执行失败则抛出 RuntimeError。"""
+        res = self.execute(name, arguments)
+        if res.get("status") == "error":
+            raise RuntimeError(res.get("message", "Tool execution error"))
+        return res.get("result")
+
 
     def execute(self, name: str, arguments: dict[str, Any] | str) -> dict[str, Any]:
         """执行指定工具并统一返回 dict 结果，异常时 fail-closed 返回错误信息。"""
