@@ -96,3 +96,74 @@ def dev_reload_events_stream():
             "Connection": "keep-alive",
         },
     )
+
+
+@dev_bp.route("/api/dev/tools", methods=["GET"])
+@_require_api_token
+def dev_list_tools():
+    """返回当前已注册的所有工具元数据与 JSON Schema"""
+    from src.tools.registry import ToolRegistry
+
+    registry = ToolRegistry.get_instance()
+    role = request.args.get("role")
+
+    schemas = registry.get_schemas(role=role)
+    tools_list = []
+    for defn in registry.list_tools():
+        if role and role not in defn.roles and "all" not in defn.roles:
+            continue
+        tools_list.append({
+            "name": defn.name,
+            "description": defn.description,
+            "roles": list(defn.roles),
+            "is_read_only": defn.is_read_only,
+            "parameters": defn.parameters_schema,
+        })
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "role_filter": role,
+        "tools_count": len(tools_list),
+        "tools": tools_list,
+        "openai_schemas": schemas,
+    })
+
+
+@dev_bp.route("/api/dev/tools/execute", methods=["POST"])
+@_require_api_token
+def dev_execute_tool():
+    """开发者调试直接执行注册工具接口"""
+    from src.tools.registry import ToolRegistry
+
+    registry = ToolRegistry.get_instance()
+
+    body = request.get_json(silent=True) or {}
+    tool_name = body.get("tool_name")
+    if not tool_name:
+        return jsonify({"ok": False, "code": 400, "msg": "缺少 tool_name 参数"}), 400
+
+    arguments = body.get("arguments", {})
+    if not isinstance(arguments, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "arguments 必须为 dict"}), 400
+
+    tool_defn = registry.get_tool(tool_name)
+    if tool_defn is None:
+        return jsonify({"ok": False, "code": 404, "msg": f"未找到名为 '{tool_name}' 的工具"}), 404
+
+    try:
+        result = registry.execute_tool(tool_name, arguments)
+        return jsonify({
+            "ok": True,
+            "code": 200,
+            "tool_name": tool_name,
+            "result": result,
+        })
+    except Exception as exc:
+        logger.exception("[DevTools] 执行工具 '%s' 失败: %s", tool_name, exc)
+        return jsonify({
+            "ok": False,
+            "code": 500,
+            "tool_name": tool_name,
+            "error": str(exc),
+        }), 500
+

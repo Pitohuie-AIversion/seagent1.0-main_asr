@@ -28,6 +28,16 @@ from src.extraction.model_profile import (
     ModelProfileConfigError,
 )
 
+from src.llm_backends import (
+    BaseLLMBackend,
+    LLMResponse,
+    ToolCall,
+    LocalVllmBackend,
+    OpenAICompatibleBackend,
+    MockBackend,
+)
+from src.tools.registry import ToolRegistry
+
 logger = logging.getLogger(__name__)
 
 
@@ -208,7 +218,13 @@ SLOT_EXTRACTION_JSON_SCHEMA: dict[str, Any] = complete_extraction_schema_branche
 class LLMClient:
     """仅负责推理、JSON 解码与协议级分流，不处理业务字段映射。"""
 
-    def __init__(self, llm_instance: Any = None, tokenizer: Any = None):
+    def __init__(
+        self,
+        llm_instance: Any = None,
+        tokenizer: Any = None,
+        backends: dict[str, BaseLLMBackend] | None = None,
+        default_backend_name: str = "default",
+    ):
         if (llm_instance is None) != (tokenizer is None):
             raise ValueError("llm_instance and tokenizer must be provided together")
         if llm_instance is not None and SamplingParams is None:
@@ -217,6 +233,73 @@ class LLMClient:
         self.llm = llm_instance
         self.tok = tokenizer
         self.lock = threading.Lock()
+        self.backends: dict[str, BaseLLMBackend] = dict(backends or {})
+        self.default_backend_name = default_backend_name
+
+        if llm_instance is not None:
+            self.backends.setdefault("default", LocalVllmBackend(llm_instance, tokenizer, self.lock))
+            self.backends.setdefault("local", self.backends["default"])
+            self.backends.setdefault("gpu0_fast", self.backends["default"])
+            self._init_configured_remote_backends()
+        else:
+            self.backends.setdefault("default", MockBackend())
+            self.backends.setdefault("mock", self.backends["default"])
+            self.backends.setdefault("gpu0_fast", self.backends["default"])
+            self.backends.setdefault("gpu1_heavy", self.backends["default"])
+
+    def _init_configured_remote_backends(self) -> None:
+        """从 model_profiles.yaml 读取并自动装配配置的远端/异构计算后端。"""
+        try:
+            from src.extraction.model_profile import load_backend_configs
+            from src.llm_backends.openai_http import OpenAICompatibleBackend
+            configs = load_backend_configs()
+            for b_name, b_info in configs.items():
+                if b_name in self.backends:
+                    continue
+                b_type = b_info.get("type")
+                if b_type == "openai_http":
+                    self.backends[b_name] = OpenAICompatibleBackend(
+                        base_url=b_info.get("base_url", "http://127.0.0.1:8001/v1"),
+                        model=b_info.get("model", "qwen-27b"),
+                        api_key=b_info.get("api_key", "EMPTY"),
+                        timeout=float(b_info.get("timeout", 60.0)),
+                    )
+                    logger.info(
+                        "[LLMClient] Auto-registered remote backend '%s' -> %s (%s)",
+                        b_name,
+                        b_info.get("base_url"),
+                        b_info.get("model"),
+                    )
+        except Exception as exc:
+            logger.warning("[LLMClient] Auto-registering remote backends skipped: %s", exc)
+
+    def register_backend(self, name: str, backend: BaseLLMBackend) -> None:
+        """注册或更新指定的计算后端。"""
+        self.backends[name] = backend
+
+
+    def get_backend(
+        self,
+        name: str | None = None,
+        role: ModelRole | str | None = None,
+    ) -> BaseLLMBackend:
+        """解析并返回适用的计算后端。"""
+        if name and name in self.backends:
+            return self.backends[name]
+
+        if role is not None and is_model_profiles_v2_enabled():
+            try:
+                profile = ModelProfileRegistry.get_instance().get_profile(role)
+                if profile.backend and profile.backend in self.backends:
+                    return self.backends[profile.backend]
+            except Exception:
+                pass
+
+        if self.default_backend_name in self.backends:
+            return self.backends[self.default_backend_name]
+        if "default" in self.backends:
+            return self.backends["default"]
+        return MockBackend()
 
     @property
     def is_mock(self) -> bool:
@@ -252,6 +335,8 @@ class LLMClient:
                 response_mode=default_response_mode,
                 profile_name="legacy",
                 role=r_enum,
+                backend="default",
+                tools_enabled=False,
             )
 
         # V2 Mode (model_profiles_v2=true): 根据 ModelRole 解析并校验 Profile
@@ -277,6 +362,8 @@ class LLMClient:
             response_mode=profile.response_mode,
             profile_name=profile.name,
             role=profile.role,
+            backend=profile.backend,
+            tools_enabled=profile.tools_enabled,
         )
 
         logger.debug(
@@ -313,6 +400,27 @@ class LLMClient:
             caller_max_tokens=max_tokens,
             caller_stop=stop,
         )
+
+        # 若配置了独立的远程/OpenAICompatibleBackend，通过后端路由执行
+        target_backend = self.get_backend(role=role)
+        if isinstance(target_backend, OpenAICompatibleBackend):
+            try:
+                resp = target_backend.generate(
+                    messages,
+                    temperature=options.temperature,
+                    max_tokens=options.max_tokens,
+                    stop=list(options.stop),
+                    response_mode=options.response_mode,
+                    response_schema=response_schema,
+                    enable_thinking=options.enable_thinking,
+                )
+                return resp.text
+            except Exception as exc:
+                logger.warning(
+                    "[LLMClient] 远程后端 %s 调用异常 (%s)，降级使用本地计算引擎处理",
+                    target_backend.base_url,
+                    exc,
+                )
 
         if self.is_mock:
             return self._mock_generate_text(messages)
@@ -555,6 +663,114 @@ class LLMClient:
             json_schema=TEMPORAL_RELATION_JSON_SCHEMA,
         )
         return result if isinstance(result, dict) else None
+
+    def generate_with_tools(
+        self,
+        messages: list[dict],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        stop: list[str] | None = None,
+        role: ModelRole | str | None = None,
+        tools: list[dict] | None = None,
+        tool_names: list[str] | None = None,
+        max_tool_rounds: int = 3,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """原生 Function Calling / Tool Calling 调度循环。
+
+        机制：
+        1. 自动从 ToolRegistry 获取指定角色或名称的工具 JSON Schema；
+        2. 模型识别并输出结构化 tool_calls 后，调用本地工具函数执行；
+        3. 将工具执行结果构造为标准 tool 角色消息回填入上下文；
+        4. 最多执行 max_tool_rounds 轮循环，严格防止死循环与风暴调用；
+        5. 最终返回整合事实后的 LLMResponse。
+        """
+        self._validate_request(messages, max_tokens or 1500)
+        options = self._resolve_generation_options(
+            role=role,
+            default_temp=0.1,
+            default_max_tokens=1500,
+            default_stop=stop,
+            default_response_mode="text",
+            caller_temp=temperature,
+            caller_max_tokens=max_tokens,
+            caller_stop=stop,
+        )
+
+        role_str = role.value if isinstance(role, ModelRole) else (str(role) if role else None)
+        tool_schemas = tools
+        if tool_schemas is None:
+            tool_schemas = ToolRegistry.get_instance().get_schemas(
+                role=role_str,
+                tool_names=tool_names,
+            )
+
+        backend = self.get_backend(role=role)
+        current_messages = [dict(m) for m in messages]
+
+        last_resp = LLMResponse(text="")
+        for round_idx in range(max_tool_rounds):
+            resp = backend.generate(
+                current_messages,
+                temperature=options.temperature,
+                max_tokens=options.max_tokens,
+                stop=list(options.stop),
+                tools=tool_schemas,
+                response_mode=options.response_mode,
+                enable_thinking=options.enable_thinking,
+                **kwargs,
+            )
+            last_resp = resp
+            if not resp.tool_calls:
+                return resp
+
+            # 记录 assistant 的工具调用请求
+            assistant_turn = {
+                "role": "assistant",
+                "content": resp.text,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.arguments,
+                        },
+                    }
+                    for tc in resp.tool_calls
+                ],
+            }
+            current_messages.append(assistant_turn)
+
+            # 逐个调用本地只读沙箱工具并填充结果
+            for tc in resp.tool_calls:
+                exec_result = ToolRegistry.get_instance().execute(tc.name, tc.arguments)
+                tool_turn = {
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "name": tc.name,
+                    "content": json.dumps(exec_result, ensure_ascii=False),
+                }
+                current_messages.append(tool_turn)
+                logger.info(
+                    "[LLMClient] Executed tool '%s' (call_id=%s) status=%s in round %d",
+                    tc.name,
+                    tc.id,
+                    exec_result.get("status"),
+                    round_idx + 1,
+                )
+
+        # 达到最大轮数限制后，强制进行最后一次无 tools 的生成以获得确定结论
+        final_resp = backend.generate(
+            current_messages,
+            temperature=options.temperature,
+            max_tokens=options.max_tokens,
+            stop=list(options.stop),
+            tools=None,
+            response_mode=options.response_mode,
+            enable_thinking=options.enable_thinking,
+        )
+        return final_resp
 
     # ------------------------------------------------------------------
     # Backward-compatible entry points

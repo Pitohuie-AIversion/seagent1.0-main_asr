@@ -51,6 +51,8 @@ class ModelProfile:
     max_tokens: int
     stop: tuple[str, ...]
     response_mode: Literal["text", "json"]
+    backend: str = "default"
+    tools_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,8 @@ class GenerationOptions:
     response_mode: Literal["text", "json"]
     profile_name: str
     role: ModelRole
+    backend: str = "default"
+    tools_enabled: bool = False
 
 
 def validate_profile(data: dict[str, Any], profile_name: str) -> ModelProfile:
@@ -139,6 +143,20 @@ def validate_profile(data: dict[str, Any], profile_name: str) -> ModelProfile:
                 f"结构化角色 '{role.value}' 的 enable_thinking 必须为 False，Profile '{profile_name}' 配置为 True"
             )
 
+    backend_raw = data.get("backend", "default")
+    if not isinstance(backend_raw, str):
+        raise ModelProfileConfigError(
+            f"Profile '{profile_name}' 的 backend 必须为字符串，收到 {type(backend_raw)}"
+        )
+    backend = backend_raw
+
+    tools_enabled_raw = data.get("tools_enabled", False)
+    if not isinstance(tools_enabled_raw, bool):
+        raise ModelProfileConfigError(
+            f"Profile '{profile_name}' 的 tools_enabled 必须为 bool 类型，收到 {type(tools_enabled_raw)}"
+        )
+    tools_enabled = tools_enabled_raw
+
     return ModelProfile(
         name=profile_name,
         role=role,
@@ -147,6 +165,8 @@ def validate_profile(data: dict[str, Any], profile_name: str) -> ModelProfile:
         max_tokens=max_tokens,
         stop=stop,
         response_mode=response_mode,
+        backend=backend,
+        tools_enabled=tools_enabled,
     )
 
 
@@ -188,6 +208,21 @@ def load_model_profiles(config_path: Path | None = None) -> dict[ModelRole, Mode
         role_to_profile[profile.role] = profile
 
     return role_to_profile
+
+
+def load_backend_configs(config_path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """读取并返回 model_profiles.yaml 中的 backends 计算节点拓扑配置。"""
+    path = config_path or (CONFIG_DIR / "model_profiles.yaml")
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            content = yaml.safe_load(f) or {}
+        backends = content.get("backends", {})
+        return backends if isinstance(backends, dict) else {}
+    except Exception:
+        return {}
+
 
 
 def _is_unsupported_role_keyword_error(exc: TypeError) -> bool:
@@ -267,10 +302,13 @@ class ModelProfileRegistry:
 
     def get_profile(self, role: ModelRole | str, features_path: Path | None = None) -> ModelProfile:
         if isinstance(role, str):
-            try:
-                role_enum = ModelRole(role)
-            except Exception as exc:
-                raise ModelProfileNotFoundError(f"未知的 ModelRole: '{role}'") from exc
+            if role.lower() == "auditor":
+                role_enum = ModelRole.GENERAL_REASONING
+            else:
+                try:
+                    role_enum = ModelRole(role)
+                except Exception as exc:
+                    raise ModelProfileNotFoundError(f"未知的 ModelRole: '{role}'") from exc
         else:
             role_enum = role
 
