@@ -285,6 +285,7 @@ def dev_validate_task_graph():
         "execution_batches": batches,
         "ready_nodes": ready_nodes,
         "allocations": allocations,
+        "mermaid": graph.to_mermaid(),
     })
 
 

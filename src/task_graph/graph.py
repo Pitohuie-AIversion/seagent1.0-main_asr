@@ -158,6 +158,30 @@ class TaskGraph:
             "edges": [{"from": u, "to": v} for u, v in self._graph.edges()],
         }
 
+    def to_mermaid(self) -> str:
+        """Export the task graph as a Mermaid flowchart diagram with status styling."""
+        lines = ["flowchart TD"]
+        status_styles = {
+            TaskNodeStatus.COMPLETED: "fill:#10b981,stroke:#059669,color:#fff",
+            TaskNodeStatus.RUNNING: "fill:#3b82f6,stroke:#2563eb,color:#fff",
+            TaskNodeStatus.READY: "fill:#f59e0b,stroke:#d97706,color:#fff",
+            TaskNodeStatus.PENDING: "fill:#334155,stroke:#475569,color:#94a3b8",
+            TaskNodeStatus.FAILED: "fill:#ef4444,stroke:#dc2626,color:#fff",
+            TaskNodeStatus.BLOCKED: "fill:#881337,stroke:#9f1239,color:#fda4af",
+            TaskNodeStatus.SKIPPED: "fill:#64748b,stroke:#475569,color:#cbd5e1",
+        }
+        for node_id, node in self._nodes.items():
+            robot_label = f" [{node.assigned_robot_id}]" if node.assigned_robot_id else ""
+            lines.append(f'    {node_id}["{node_id}: {node.task_type}{robot_label}"]')
+            style = status_styles.get(node.status)
+            if style:
+                lines.append(f'    style {node_id} {style}')
+
+        for u, v in self._graph.edges():
+            lines.append(f"    {u} --> {v}")
+
+        return "\n".join(lines)
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TaskGraph:
         """Deserialize a TaskGraph from a dictionary with strict validation."""

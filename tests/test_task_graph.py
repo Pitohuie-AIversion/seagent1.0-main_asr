@@ -246,6 +246,8 @@ def test_api_dev_validate_task_graph():
     assert data["execution_batches"] == [["step1"], ["step2"]]
     assert len(data["ready_nodes"]) == 1
     assert data["ready_nodes"][0]["node_id"] == "step1"
+    assert "flowchart TD" in data["mermaid"]
+    assert "step1 --> step2" in data["mermaid"]
 
 
 def test_api_dev_validate_task_graph_cycle_rejected():
@@ -269,4 +271,20 @@ def test_api_dev_validate_task_graph_cycle_rejected():
     data = resp.get_json()
     assert data["ok"] is False
     assert data["error_type"] == "CyclicDependencyError"
+
+
+def test_task_graph_to_mermaid():
+    graph = TaskGraph("mermaid_test")
+    graph.add_node(TaskNode("n1", "pipeline_inspection", assigned_robot_id="OBSROV-001"))
+    graph.add_node(TaskNode("n2", "pipeline_burial"))
+    graph.add_dependency("n1", "n2")
+
+    graph.update_node_status("n1", TaskNodeStatus.COMPLETED)
+
+    mermaid_code = graph.to_mermaid()
+    assert "flowchart TD" in mermaid_code
+    assert 'n1["n1: pipeline_inspection [OBSROV-001]"]' in mermaid_code
+    assert "style n1 fill:#10b981" in mermaid_code
+    assert "n1 --> n2" in mermaid_code
+
 
