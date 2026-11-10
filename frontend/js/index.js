@@ -1859,6 +1859,46 @@ Please describe your operational requirements directly, or ask the question you 
       });
     }
 
+    function renderToolTracesInBubble(botMsgDiv, toolTraces) {
+      if (!botMsgDiv || !Array.isArray(toolTraces) || !toolTraces.length) return;
+      const wrapper = botMsgDiv.querySelector('.bubble-wrapper');
+      if (!wrapper) return;
+      const existing = wrapper.querySelector('.tool-trace-card');
+      if (existing) existing.remove();
+
+      const details = document.createElement('details');
+      details.className = 'tool-trace-card';
+
+      const summary = document.createElement('summary');
+      summary.className = 'tool-trace-summary';
+      summary.innerHTML = `<span>🛠️ 模型已调用 ${toolTraces.length} 项水下工程工具 (事实推演)</span><span class="tool-trace-count">${toolTraces.length} 次</span>`;
+      details.appendChild(summary);
+
+      const body = document.createElement('div');
+      body.className = 'tool-trace-body';
+
+      toolTraces.forEach(trace => {
+        const item = document.createElement('div');
+        item.className = 'tool-trace-item';
+        const name = trace.name || 'unknown_tool';
+        const round = trace.round || 1;
+        const argsStr = JSON.stringify(trace.arguments || {}, null, 2);
+        const resStr = JSON.stringify(trace.result || {}, null, 2);
+
+        item.innerHTML = `
+          <div class="tool-trace-item-head">
+            <span class="tool-trace-name">第 ${round} 轮: ${name}</span>
+            <span class="status success">EXECUTED</span>
+          </div>
+          <div class="tool-trace-details"><strong>参数:</strong>\n${escapeHtml(argsStr)}\n\n<strong>计算事实:</strong>\n${escapeHtml(resStr)}</div>
+        `;
+        body.appendChild(item);
+      });
+
+      details.appendChild(body);
+      wrapper.appendChild(details);
+    }
+
     function renderDecisionCardInBubble(botMsgDiv, uiState) {
       if (!botMsgDiv || !uiState) return;
       const wrapper = botMsgDiv.querySelector('.bubble-wrapper');
@@ -3619,6 +3659,9 @@ Please describe your operational requirements directly, or ask the question you 
                 if (data.ui_state && botMsgDiv) {
                   renderDecisionCardInBubble(botMsgDiv, data.ui_state);
                 }
+                if (data.tool_traces && botMsgDiv) {
+                  renderToolTracesInBubble(botMsgDiv, data.tool_traces);
+                }
                 if (shouldFollow) messageContainer.scrollTop = messageContainer.scrollHeight;
                 globalThis.window?.SEAgentWorkspace?.followLatest?.(shouldFollow);
                 return;
@@ -3714,6 +3757,9 @@ Please describe your operational requirements directly, or ask the question you 
           updateSidebar(data, { origin: 'reply' });
           if (data.ui_state && syncBotDiv) {
             renderDecisionCardInBubble(syncBotDiv, data.ui_state);
+          }
+          if (data.tool_traces && syncBotDiv) {
+            renderToolTracesInBubble(syncBotDiv, data.tool_traces);
           }
         } catch (err) {
           if (err.name === 'AbortError') return;

@@ -426,3 +426,65 @@ button[data-icon], a[data-icon] { justify-content: center; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* Tool Call Trace Card in Bubble */
+.tool-trace-card {
+  margin-top: 10px;
+  width: 100%;
+  border: 1px solid #23374d;
+  border-radius: 8px;
+  background: #0d1726;
+  overflow: hidden;
+  font-size: 13px;
+}
+.tool-trace-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  color: var(--accent-cyan);
+  font-weight: 500;
+  user-select: none;
+  background: rgba(87, 209, 223, 0.05);
+}
+.tool-trace-summary:hover {
+  background: rgba(87, 209, 223, 0.1);
+}
+.tool-trace-body {
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #1c2c3e;
+}
+.tool-trace-item {
+  border: 1px solid #1e2e42;
+  border-radius: 6px;
+  background: #111e30;
+  padding: 8px 10px;
+}
+.tool-trace-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.tool-trace-name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: #8be0ba;
+  font-size: 12px;
+}
+.tool-trace-details {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: #09121d;
+  padding: 6px 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  margin-top: 4px;
+}
+

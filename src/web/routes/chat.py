@@ -196,6 +196,7 @@ def _chat_result(mgr, sid, request_id, reply, ros2_dispatch):
         'final_json': mgr._last_built_json if mgr.phase == 'done' else None,
         'ros2_dispatch': ros2_dispatch,
         'persistence_warning': persistence_warning,
+        'tool_traces': getattr(mgr, '_last_tool_traces', []) or getattr(mgr.llm, '_last_tool_traces', []),
     }
 
 
