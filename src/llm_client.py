@@ -9,14 +9,28 @@ import threading
 from copy import deepcopy
 from typing import Any, Literal
 
+LLM = Any
+SamplingParams = None
+StructuredOutputsParams = None
+
+
 def _get_vllm_components():
     """按需动态加载 vLLM 关键类，避免顶层导入瞬间霸占 700MB+ 内存导致容器 OOM"""
+    global LLM, SamplingParams, StructuredOutputsParams
+    if SamplingParams is not None and LLM is not Any:
+        return LLM, SamplingParams, StructuredOutputsParams
     try:
-        from vllm import LLM, SamplingParams
-        from vllm.sampling_params import StructuredOutputsParams
+        from vllm import LLM as _LLM, SamplingParams as _SP
+        from vllm.sampling_params import StructuredOutputsParams as _SOP
+        if LLM is Any:
+            LLM = _LLM
+        if SamplingParams is None:
+            SamplingParams = _SP
+        if StructuredOutputsParams is None:
+            StructuredOutputsParams = _SOP
         return LLM, SamplingParams, StructuredOutputsParams
     except ImportError:
-        return Any, None, None
+        return LLM, SamplingParams, StructuredOutputsParams
 
 
 
@@ -230,8 +244,9 @@ class LLMClient:
         if (llm_instance is None) != (tokenizer is None):
             raise ValueError("llm_instance and tokenizer must be provided together")
         if llm_instance is not None:
-            _, SamplingParams, _ = _get_vllm_components()
-            if SamplingParams is None:
+            _llm_cls, _sp_cls, _ = _get_vllm_components()
+            effective_sp = SamplingParams if SamplingParams is not None else _sp_cls
+            if effective_sp is None:
                 raise RuntimeError("vllm is not installed")
 
         self.llm = llm_instance
@@ -264,7 +279,7 @@ class LLMClient:
                 if b_type == "openai_http":
                     self.backends[b_name] = OpenAICompatibleBackend(
                         base_url=b_info.get("base_url", "http://127.0.0.1:8001/v1"),
-                        model=b_info.get("model", "qwen-27b"),
+                        model_name=b_info.get("model", "qwen-27b"),
                         api_key=b_info.get("api_key", "EMPTY"),
                         timeout=float(b_info.get("timeout", 60.0)),
                     )
@@ -428,8 +443,10 @@ class LLMClient:
 
         if self.is_mock:
             return self._mock_generate_text(messages)
-        _, SamplingParams, StructuredOutputsParams = _get_vllm_components()
-        if SamplingParams is None:
+        _llm_cls, _sp_cls, _sop_cls = _get_vllm_components()
+        effective_sp = SamplingParams if SamplingParams is not None else _sp_cls
+        effective_sop = StructuredOutputsParams if StructuredOutputsParams is not None else _sop_cls
+        if effective_sp is None:
             raise RuntimeError("vllm is not installed")
         if self.tok is None:
             raise RuntimeError("Tokenizer is not initialized")
@@ -441,13 +458,13 @@ class LLMClient:
             "stop": list(options.stop),
         }
         if options.response_mode == "json":
-            if StructuredOutputsParams is None:
+            if effective_sop is None:
                 raise RuntimeError("vLLM structured output support is unavailable for a JSON request")
             if response_schema is None:
-                sampling_kwargs["structured_outputs"] = StructuredOutputsParams(json_object=True)
+                sampling_kwargs["structured_outputs"] = effective_sop(json_object=True)
             else:
-                sampling_kwargs["structured_outputs"] = StructuredOutputsParams(json=response_schema)
-        sampling_params = SamplingParams(**sampling_kwargs)
+                sampling_kwargs["structured_outputs"] = effective_sop(json=response_schema)
+        sampling_params = effective_sp(**sampling_kwargs)
         with self.lock:
             outputs = self.llm.generate([prompt], sampling_params)
 

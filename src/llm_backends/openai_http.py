@@ -25,12 +25,13 @@ class OpenAICompatibleBackend(BaseLLMBackend):
         base_url: str = "http://127.0.0.1:8001/v1",
         api_key: str = "EMPTY",
         model_name: str = "default",
+        model: str | None = None,
         timeout: float = 60.0,
         extra_client_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self.model_name = model_name
+        self.model_name = model or model_name
         self.timeout = timeout
         self._extra_client_kwargs = extra_client_kwargs or {}
         self._client: Any = None
