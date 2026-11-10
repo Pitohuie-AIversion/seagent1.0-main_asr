@@ -9,13 +9,15 @@ import threading
 from copy import deepcopy
 from typing import Any, Literal
 
-try:
-    from vllm import LLM, SamplingParams
-    from vllm.sampling_params import StructuredOutputsParams
-except ImportError:
-    LLM = Any
-    SamplingParams = None
-    StructuredOutputsParams = None
+def _get_vllm_components():
+    """按需动态加载 vLLM 关键类，避免顶层导入瞬间霸占 700MB+ 内存导致容器 OOM"""
+    try:
+        from vllm import LLM, SamplingParams
+        from vllm.sampling_params import StructuredOutputsParams
+        return LLM, SamplingParams, StructuredOutputsParams
+    except ImportError:
+        return Any, None, None
+
 
 
 from src.exceptions import ContextBudgetError
@@ -227,8 +229,10 @@ class LLMClient:
     ):
         if (llm_instance is None) != (tokenizer is None):
             raise ValueError("llm_instance and tokenizer must be provided together")
-        if llm_instance is not None and SamplingParams is None:
-            raise RuntimeError("vllm is not installed")
+        if llm_instance is not None:
+            _, SamplingParams, _ = _get_vllm_components()
+            if SamplingParams is None:
+                raise RuntimeError("vllm is not installed")
 
         self.llm = llm_instance
         self.tok = tokenizer
@@ -424,6 +428,7 @@ class LLMClient:
 
         if self.is_mock:
             return self._mock_generate_text(messages)
+        _, SamplingParams, StructuredOutputsParams = _get_vllm_components()
         if SamplingParams is None:
             raise RuntimeError("vllm is not installed")
         if self.tok is None:

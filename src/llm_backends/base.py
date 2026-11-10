@@ -78,3 +78,7 @@ class BaseLLMBackend(ABC):
             LLMResponse 统一响应结构
         """
         raise NotImplementedError
+
+    def health_check(self) -> tuple[bool, str]:
+        """轻量健康探测接口，默认返回可用状态。"""
+        return True, "ready"

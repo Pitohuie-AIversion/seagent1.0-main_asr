@@ -13,12 +13,14 @@ from typing import Any
 
 from src.llm_backends.base import BaseLLMBackend, LLMResponse, ToolCall
 
-try:
-    from vllm import SamplingParams
-    from vllm.sampling_params import StructuredOutputsParams
-except ImportError:
-    SamplingParams = None
-    StructuredOutputsParams = None
+def _load_vllm_classes():
+    """按需延迟加载 vLLM 组件，避免在模块导入时强占 700MB+ 内存引发 cgroup OOM"""
+    try:
+        from vllm import SamplingParams
+        from vllm.sampling_params import StructuredOutputsParams
+        return SamplingParams, StructuredOutputsParams
+    except ImportError:
+        return None, None
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,7 @@ class LocalVllmBackend(BaseLLMBackend):
     ) -> LLMResponse:
         if self.engine is None or self.tokenizer is None:
             raise RuntimeError("LocalVllmBackend 引擎或 Tokenizer 未初始化")
+        SamplingParams, StructuredOutputsParams = _load_vllm_classes()
         if SamplingParams is None:
             raise RuntimeError("未安装 vllm 依赖")
 

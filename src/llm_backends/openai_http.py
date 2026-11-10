@@ -133,3 +133,24 @@ class OpenAICompatibleBackend(BaseLLMBackend):
             finish_reason=finish_reason,
             raw_response=resp,
         )
+
+    def health_check(self) -> tuple[bool, str]:
+        """轻量健康探测接口，探测远程端点连通性。"""
+        import urllib.request
+        import urllib.error
+        try:
+            req = urllib.request.Request(
+                f"{self.base_url}/models",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                if resp.status == 200:
+                    return True, "online"
+                return False, f"HTTP {resp.status}"
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403, 404):
+                return True, f"online (HTTP {exc.code})"
+            return False, f"HTTP {exc.code}"
+        except Exception as exc:
+            return False, f"unreachable ({type(exc).__name__})"
+

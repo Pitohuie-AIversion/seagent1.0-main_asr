@@ -427,3 +427,15 @@ class TestDevToolsEndpoints:
         assert resp.status_code == 404
         assert "未找到" in resp.get_json()["msg"]
 
+    def test_list_backends_endpoint(self):
+        """测试获取已装配的推理后端列表与健康探测。"""
+        resp = self.client.get("/api/dev/backends")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert "backends" in data
+        assert "default_backend" in data
+        assert isinstance(data["backends"], list)
+        assert data["backends_count"] >= 1
+
+

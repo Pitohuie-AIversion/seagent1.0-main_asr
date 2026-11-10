@@ -30,6 +30,8 @@ def dashboard():
     })
 
 
+
+
 @pages_bp.route("/favicon.ico")
 def favicon():
     return "", 204

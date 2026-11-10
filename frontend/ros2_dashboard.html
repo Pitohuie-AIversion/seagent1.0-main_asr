@@ -3,21 +3,28 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SEAgent ROS 2 Bridge Monitor</title>
+  <title>SEAgent 运行监控与水下工程中心 - Mission Control</title>
   <style>
     :root {
       color-scheme: dark;
       --page: #080d16;
       --surface: #111b2a;
       --surface-muted: #0d1623;
+      --surface-card: #152236;
       --ink: #e7edf5;
       --muted: #9aaac0;
       --line: #253449;
+      --line-bright: #354a66;
       --cyan: #39c6d9;
+      --cyan-glow: rgba(57, 198, 217, 0.25);
       --green: #74d6af;
+      --green-glow: rgba(116, 214, 175, 0.25);
       --amber: #f0c17b;
+      --amber-glow: rgba(240, 193, 123, 0.25);
       --red: #f39b9b;
       --focus: #72deeb;
+      --radius: 12px;
+      --radius-sm: 8px;
     }
 
     * { box-sizing: border-box; }
@@ -25,65 +32,126 @@
       margin: 0;
       min-height: 100vh;
       color: var(--ink);
-      background: radial-gradient(ellipse at 20% 0, #102239 0, transparent 50%), var(--page);
+      background: radial-gradient(ellipse at 20% 0, #102239 0, transparent 50%),
+                  radial-gradient(ellipse at 80% 80%, #0d1e33 0, transparent 40%),
+                  var(--page);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
       font-size: 14px;
       line-height: 1.5;
       letter-spacing: 0;
     }
-    button, input, select { font: inherit; }
+    button, input, select, textarea { font: inherit; }
     button { cursor: pointer; }
     button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible, summary:focus-visible, .table-wrap:focus-visible {
       outline: 2px solid var(--focus);
       outline-offset: 2px;
     }
-    button:disabled { cursor: wait; opacity: .55; }
+    button:disabled { cursor: not-allowed; opacity: .55; }
     ::selection { color: var(--ink); background: #25546a; }
 
+    /* ========== 顶部导航与品牌栏 ========== */
     .topbar {
-      min-height: 84px;
+      min-height: 80px;
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      padding: 18px 28px;
+      padding: 16px 28px;
       color: var(--ink);
-      background: rgb(8 13 22 / 88%);
+      background: rgb(8 13 22 / 92%);
       border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
     }
-    .brand { min-width: 0; }
-    .brand h1 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -.3px; }
-    .brand p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .brand { min-width: 0; display: flex; align-items: center; gap: 14px; }
+    .brand-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #1b3858, #0e2238);
+      border: 1px solid var(--cyan);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--cyan);
+      box-shadow: 0 0 16px var(--cyan-glow);
+    }
+    .brand-icon svg { width: 22px; height: 22px; }
+    .brand h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.3px; }
+    .brand p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+
+    /* ========== 导航分段标签页 (Tabs) ========== */
+    .tab-nav {
+      display: inline-flex;
+      background: var(--surface-muted);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 3px;
+      gap: 4px;
+    }
+    .tab-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 500;
+      transition: all .18s ease;
+    }
+    .tab-btn:hover { color: var(--ink); background: rgba(255, 255, 255, 0.05); }
+    .tab-btn.active {
+      color: #042129;
+      background: var(--cyan);
+      font-weight: 600;
+      box-shadow: 0 2px 10px var(--cyan-glow);
+    }
+    .tab-btn svg { width: 16px; height: 16px; }
+
     .top-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
     .btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      min-height: 40px;
+      min-height: 38px;
       border: 1px solid #33465e;
-      border-radius: 10px;
+      border-radius: 8px;
       padding: 8px 14px;
       color: var(--ink);
       background: #142133;
       text-decoration: none;
       white-space: nowrap;
-      transition: background .18s ease, border-color .18s ease;
+      font-size: 13px;
+      transition: all .18s ease;
     }
     .btn:hover { background: #1b2d43; border-color: #4f6b84; }
-    .btn.primary { color: #06242b; border-color: var(--cyan); background: var(--cyan); font-weight: 650; }
+    .btn.primary { color: #06242b; border-color: var(--cyan); background: var(--cyan); font-weight: 600; }
     .btn.primary:hover { background: #72deeb; border-color: #72deeb; }
     .btn.nav-link { color: var(--muted); background: transparent; border-color: transparent; }
     .btn.nav-link:hover { color: var(--ink); background: #142133; border-color: var(--line); }
 
-    main { width: min(1480px, 100%); margin: 0 auto; padding: 24px 28px 40px; }
+    /* ========== 主区域容器 ========== */
+    main { width: min(1520px, 100%); margin: 0 auto; padding: 24px 28px 40px; }
+    .tab-pane { animation: fadeIn .2s ease; }
+    .tab-pane[hidden] { display: none !important; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
     .scope-summary { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 20px; margin: 0 0 16px; }
     .scope-summary h2 { margin: 0; font-size: 16px; font-weight: 600; }
     .scope-summary p { margin: 0; color: var(--muted); font-size: 12px; }
+
+    /* ========== 遥测状态条 ========== */
     .connection-strip {
       display: grid;
       grid-template-columns: minmax(160px, 1fr) minmax(175px, 1fr) minmax(130px, .8fr) repeat(2, minmax(170px, 1fr));
       border: 1px solid var(--line);
-      border-radius: 14px;
+      border-radius: var(--radius);
       background: var(--surface);
       overflow: hidden;
     }
@@ -91,11 +159,11 @@
     .strip-cell { border-left: 1px solid var(--line); }
     .label { color: var(--muted); font-size: 12px; font-weight: 500; letter-spacing: .4px; }
     .value { margin-top: 7px; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
-    .value.small { font-size: 14px; overflow-wrap: anywhere; }
+    .value.small { font-size: 13px; overflow-wrap: anywhere; }
     .state-line { display: flex; align-items: center; gap: 9px; margin-top: 7px; overflow-wrap: anywhere; }
     .state-dot { width: 9px; height: 9px; border-radius: 50%; background: #8d989d; flex: 0 0 auto; }
-    .state-dot.good { background: var(--green); }
-    .state-dot.warn { background: var(--amber); }
+    .state-dot.good { background: var(--green); box-shadow: 0 0 8px var(--green-glow); }
+    .state-dot.warn { background: var(--amber); box-shadow: 0 0 8px var(--amber-glow); }
     .state-dot.bad { background: var(--red); }
     .data-notice { margin: 14px 0 0; padding: 12px 16px; border: 1px solid #635039; border-radius: 10px; color: var(--amber); background: #29251f; font-size: 13px; }
     .data-notice[hidden] { display: none; }
@@ -105,13 +173,13 @@
       grid-template-columns: repeat(4, minmax(0, 1fr));
       margin-top: 16px;
       border: 1px solid var(--line);
-      border-radius: 14px;
+      border-radius: var(--radius);
       background: var(--surface);
       overflow: hidden;
     }
-    .metric { padding: 20px; min-height: 116px; }
+    .metric { padding: 20px; min-height: 110px; }
     .metric + .metric { border-left: 1px solid var(--line); }
-    .metric-number { margin-top: 8px; font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.6px; overflow-wrap: anywhere; }
+    .metric-number { margin-top: 8px; font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.6px; overflow-wrap: anywhere; }
     .metric-unit { margin-left: 4px; color: var(--muted); font-size: 13px; font-weight: 500; }
 
     .workspace {
@@ -120,15 +188,16 @@
       gap: 16px;
       margin-top: 16px;
     }
-    .panel { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); min-width: 0; overflow: hidden; }
+    .panel { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); min-width: 0; overflow: hidden; }
     .panel-head {
-      min-height: 58px;
+      min-height: 56px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
       padding: 14px 18px;
       border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.015);
     }
     .panel-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
     .counter { color: var(--muted); font-size: 12px; }
@@ -146,20 +215,20 @@
       font-weight: 500;
       text-align: left;
     }
-    td { height: 62px; padding: 10px 14px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+    td { height: 62px; padding: 10px 14px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; font-size: 13px; }
     tbody tr:hover { background: #152235; }
     tr:last-child td { border-bottom: 0; }
     .mono { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; }
     .status {
       display: inline-flex;
       align-items: center;
-      min-height: 26px;
-      padding: 3px 9px;
+      min-height: 24px;
+      padding: 2px 8px;
       border: 1px solid #3c4e66;
       border-radius: 6px;
       color: #bac9dc;
       background: #1c2a3b;
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
       overflow-wrap: anywhere;
     }
@@ -168,16 +237,16 @@
     .status.success { color: #8ae0ba; background: #17382e; border-color: #2a5948; }
     .status.warn { color: #f0c98b; background: #382e21; border-color: #635039; }
     .status.fail { color: #f3aaaa; background: #3b242c; border-color: #65404a; }
-    .task-note { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.5; }
-    .task-legend { margin: 0; padding: 14px 18px; color: var(--muted); border-top: 1px solid var(--line); font-size: 12px; line-height: 1.8; }
-    .empty { padding: 48px 20px; color: var(--muted); text-align: center; line-height: 1.7; }
+    .task-note { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+    .task-legend { margin: 0; padding: 14px 18px; color: var(--muted); border-top: 1px solid var(--line); font-size: 12px; line-height: 1.7; }
+    .empty { padding: 44px 20px; color: var(--muted); text-align: center; line-height: 1.7; }
 
     .detail-list { margin: 0; }
     .detail-row {
       display: grid;
       grid-template-columns: 105px minmax(0, 1fr);
       gap: 12px;
-      padding: 14px 18px;
+      padding: 13px 18px;
       border-bottom: 1px solid var(--line);
     }
     .detail-row:last-child { border-bottom: 0; }
@@ -200,6 +269,118 @@
     .raw-message summary:hover { color: var(--cyan); }
     .raw-message pre { max-height: 280px; margin: 10px 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 
+    /* ========== 异构双模型拓扑面板样式 (Tab 2) ========== */
+    .backend-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; margin-top: 16px; }
+    .backend-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    }
+    .backend-card.primary { border-color: rgba(57, 198, 217, 0.4); }
+    .backend-card-head {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--surface-muted);
+    }
+    .backend-title { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; }
+    .backend-body { padding: 18px 20px; display: grid; gap: 12px; flex: 1; }
+    .backend-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; }
+    .backend-row dt { color: var(--muted); }
+    .backend-row dd { margin: 0; font-family: "SFMono-Regular", Consolas, monospace; }
+
+    .topology-flow {
+      margin-top: 20px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-muted);
+    }
+    .topology-flow h3 { margin: 0 0 12px; font-size: 14px; font-weight: 600; color: var(--muted); }
+    .flow-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .flow-step {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+    }
+    .flow-step-num { font-size: 11px; font-weight: 700; color: var(--cyan); letter-spacing: 0.5px; }
+    .flow-step-title { font-size: 13px; font-weight: 600; margin: 4px 0 6px; }
+    .flow-step-desc { font-size: 12px; color: var(--muted); line-height: 1.4; }
+
+    /* ========== 水下工程工具箱与试验台样式 (Tab 3) ========== */
+    .tools-list-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; padding: 18px; }
+    .tool-item {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: var(--surface-muted);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .tool-item-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .tool-name { font-weight: 600; font-size: 14px; font-family: "SFMono-Regular", Consolas, monospace; color: var(--cyan); }
+    .tool-desc { color: var(--muted); font-size: 12px; line-height: 1.5; flex: 1; }
+    .tool-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+    .tool-tag { font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(255, 255, 255, 0.06); color: #c4d3e8; }
+
+    .sim-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; margin-top: 16px; }
+    .sim-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .sim-card-head {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .sim-card-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
+    .sim-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; flex: 1; }
+    .sim-field { display: flex; flex-direction: column; gap: 6px; }
+    .sim-field label { font-size: 12px; color: var(--muted); font-weight: 500; }
+    .sim-field input, .sim-field select {
+      border: 1px solid var(--line-bright);
+      background: var(--surface-muted);
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: var(--ink);
+      font-size: 13px;
+    }
+    .sim-field input:focus, .sim-field select:focus {
+      border-color: var(--cyan);
+      box-shadow: 0 0 8px var(--cyan-glow);
+    }
+    .sim-result {
+      margin-top: 6px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface-muted);
+      padding: 12px;
+      font-size: 12px;
+      display: none;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-family: "SFMono-Regular", Consolas, monospace;
+    }
+    .sim-result.show { display: block; }
+    .sim-result.success { border-color: rgba(116, 214, 175, 0.4); background: #0c1c1a; color: #a1ebd0; }
+    .sim-result.error { border-color: rgba(243, 155, 155, 0.4); background: #26141a; color: #f8b4b4; }
+
+    /* ========== 弹窗样式 ========== */
     dialog { width: min(440px, calc(100vw - 28px)); max-height: calc(100dvh - 32px); border: 1px solid #3b506a; border-radius: 14px; padding: 0; color: var(--ink); background: var(--surface); box-shadow: 0 24px 80px rgb(0 0 0 / 45%); }
     dialog::backdrop { background: rgb(3 8 15 / 76%); backdrop-filter: blur(5px); }
     .dialog-head { display: flex; justify-content: space-between; align-items: center; padding: 15px 18px; border-bottom: 1px solid var(--line); }
@@ -223,111 +404,302 @@
       .workspace { grid-template-columns: 1fr; }
     }
     @media (max-width: 600px) {
-      .topbar { flex-direction: column; align-items: stretch; gap: 14px; padding: 18px 16px; }
-      .brand h1 { font-size: 18px; }
+      .topbar { flex-direction: column; align-items: stretch; gap: 14px; padding: 16px; }
       .top-actions { justify-content: flex-start; gap: 6px; }
-      .top-actions .btn { padding: 8px 11px; font-size: 13px; }
+      .tab-nav { width: 100%; overflow-x: auto; }
       main { padding: 12px; }
       .connection-strip { grid-template-columns: 1fr; }
       .connection-main { grid-column: auto; }
       .strip-cell, .strip-cell:nth-child(odd) { border-left: 0; border-top: 1px solid var(--line); }
       .connection-main, .strip-cell { min-height: 68px; padding: 12px 16px; }
-      .metric { min-height: 100px; padding: 16px; }
-      .metric-number { font-size: 26px; }
+      .metric { min-height: 90px; padding: 16px; }
+      .metric-number { font-size: 24px; }
       .table-wrap table { min-width: 760px; }
       .table-scroll-hint { display: block; margin: 0; padding: 8px 16px; color: var(--muted); background: var(--surface-muted); font-size: 12px; }
-      .panel-head { padding: 13px 16px; }
-      .dialog-actions { flex-wrap: wrap; }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
     }
   </style>
   <link rel="stylesheet" href="static/css/api-auth.css">
 </head>
 <body>
+  <!-- ========== 顶部导航与控制栏 ========== -->
   <header class="topbar">
     <div class="brand">
-      <h1>SEAgent ROS 2 Bridge Monitor</h1>
-      <p>Task transport and robot execution telemetry</p>
+      <div class="brand-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="9"/>
+          <path d="M12 3v18M3 12h18"/>
+          <circle cx="12" cy="12" r="3" fill="currentColor"/>
+        </svg>
+      </div>
+      <div>
+        <h1>SEAgent 运行监控与水下工程中心</h1>
+        <p>Mission Control & Subsea Robotics Engineering Hub</p>
+      </div>
     </div>
+
+    <!-- 中部选项卡导航 -->
+    <nav class="tab-nav" aria-label="监控视图选择">
+      <button class="tab-btn active" id="tabBtnBridge" type="button" data-tab="paneBridge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/><rect x="4" y="10" width="16" height="12" rx="2"/><circle cx="9" cy="16" r="1.5"/><circle cx="15" cy="16" r="1.5"/></svg>
+        机器人调度网关
+      </button>
+      <button class="tab-btn" id="tabBtnBackends" type="button" data-tab="paneBackends">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="8" x2="6" y2="8.01"/><line x1="6" y1="18" x2="6" y2="18.01"/></svg>
+        AI 异构推理引擎拓扑
+      </button>
+      <button class="tab-btn" id="tabBtnTools" type="button" data-tab="paneTools">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        ROV 物理工程工具箱
+      </button>
+    </nav>
+
+    <!-- 右侧动作按钮 -->
     <div class="top-actions">
       {% if dashboard_api.status.endswith('/api/mcp/status') %}
       <a class="btn nav-link" href="./">返回对话</a>
       {% endif %}
       {% include 'auth_controls.html' %}
-      <button class="btn" id="refreshButton" type="button">刷新</button>
+      <button class="btn" id="refreshButton" type="button">立即刷新</button>
       <button class="btn primary" id="gatewayButton" type="button">网关设置</button>
     </div>
   </header>
 
+  <!-- ========== 主内容区域 ========== -->
   <main>
-    <div class="scope-summary">
-      <h2>监控范围 · 当前网关全部 ROS 任务</h2>
-      <p>按 ROS task ID 与 Intent ID 对照任务</p>
-    </div>
-    <section class="connection-strip" aria-label="连接状态">
-      <div class="connection-main">
-        <div class="label">网关连接</div>
-        <div class="state-line"><span class="state-dot" id="bridgeDot"></span><strong id="bridgeState">检查中</strong></div>
+    <!-- TAB 1: 机器人调度网关与遥测 (ROS 2 Bridge) -->
+    <div class="tab-pane" id="paneBridge">
+      <div class="scope-summary">
+        <h2>监控范围 · 当前网关全部 ROS 任务与设备遥测</h2>
+        <p>按 ROS task ID 与 Intent ID 对照任务状态，实时捕获下潜水深与姿态</p>
       </div>
-      <div class="strip-cell"><div class="label">当前网关</div><div class="value small" id="gatewayValue">--</div></div>
-      <div class="strip-cell"><div class="label">遥测有效性</div><div class="value small" id="telemetryState">等待状态</div></div>
-      <div class="strip-cell"><div class="label">服务端接收遥测</div><div class="value small" id="lastUpdate">--</div></div>
-      <div class="strip-cell"><div class="label">浏览器最近成功拉取</div><div class="value small" id="lastSuccessfulPull">--</div></div>
-    </section>
-    <p class="data-notice" id="dataNotice" role="status" hidden></p>
 
-    <section class="metrics" aria-label="机器人遥测指标">
-      <div class="metric"><div class="label">Water depth</div><div class="metric-number"><span id="depthValue">--</span><span class="metric-unit">m</span></div></div>
-      <div class="metric"><div class="label">Altitude</div><div class="metric-number"><span id="altitudeValue">--</span><span class="metric-unit">m</span></div></div>
-      <div class="metric"><div class="label">Control mode</div><div class="metric-number" id="controlMode">--</div></div>
-      <div class="metric"><div class="label">Active tasks</div><div class="metric-number" id="taskCount">--</div></div>
-    </section>
+      <section class="connection-strip" aria-label="连接状态">
+        <div class="connection-main">
+          <div class="label">网关连接</div>
+          <div class="state-line"><span class="state-dot" id="bridgeDot"></span><strong id="bridgeState">检查中</strong></div>
+        </div>
+        <div class="strip-cell"><div class="label">当前网关</div><div class="value small" id="gatewayValue">--</div></div>
+        <div class="strip-cell"><div class="label">遥测有效性</div><div class="value small" id="telemetryState">等待状态</div></div>
+        <div class="strip-cell"><div class="label">服务端接收遥测</div><div class="value small" id="lastUpdate">--</div></div>
+        <div class="strip-cell"><div class="label">浏览器最近成功拉取</div><div class="value small" id="lastSuccessfulPull">--</div></div>
+      </section>
+      <p class="data-notice" id="dataNotice" role="status" hidden></p>
 
-    <section class="workspace">
-      <div class="panel">
-        <div class="panel-head"><h2>当前活动任务</h2><span class="counter" id="taskCounter">等待状态</span></div>
+      <section class="metrics" aria-label="机器人遥测指标">
+        <div class="metric"><div class="label">Water depth</div><div class="metric-number"><span id="depthValue">--</span><span class="metric-unit">m</span></div></div>
+        <div class="metric"><div class="label">Altitude</div><div class="metric-number"><span id="altitudeValue">--</span><span class="metric-unit">m</span></div></div>
+        <div class="metric"><div class="label">Control mode</div><div class="metric-number" id="controlMode">--</div></div>
+        <div class="metric"><div class="label">Active tasks</div><div class="metric-number" id="taskCount">--</div></div>
+      </section>
+
+      <section class="workspace">
+        <div class="panel">
+          <div class="panel-head"><h2>当前活动任务</h2><span class="counter" id="taskCounter">等待状态</span></div>
+          <p class="table-scroll-hint">左右滑动查看发送记录与执行反馈</p>
+          <div class="table-wrap" tabindex="0" role="region" aria-label="当前活动任务表格，可横向滚动">
+            <table>
+              <thead><tr><th scope="col" style="width:15%">ROS task ID</th><th scope="col" style="width:23%">Intent ID</th><th scope="col" style="width:16%">Type</th><th scope="col" style="width:21%">发送记录</th><th scope="col" style="width:25%">执行反馈</th></tr></thead>
+              <tbody id="taskRows"></tbody>
+            </table>
+            <div class="empty" id="emptyTasks">正在获取任务状态…</div>
+          </div>
+        </div>
+
+        <aside class="panel">
+          <div class="panel-head"><h2>姿态快照</h2></div>
+          <dl class="detail-list">
+            <div class="detail-row"><dt>X</dt><dd id="poseX">--</dd></div>
+            <div class="detail-row"><dt>Y</dt><dd id="poseY">--</dd></div>
+            <div class="detail-row"><dt>Z</dt><dd id="poseZ">--</dd></div>
+            <div class="detail-row"><dt>System health</dt><dd id="systemHealth">--</dd></div>
+            <div class="detail-row"><dt>时间含义</dt><dd>服务端接收时间</dd></div>
+          </dl>
+          <div class="error-box" id="errorBox"></div>
+        </aside>
+      </section>
+
+      <section class="panel dynamic-panel" aria-label="历史与待确认任务">
+        <div class="panel-head"><h2>历史与待确认任务</h2><span class="counter" id="historyCounter">等待状态</span></div>
         <p class="table-scroll-hint">左右滑动查看发送记录与执行反馈</p>
-        <div class="table-wrap" tabindex="0" role="region" aria-label="当前活动任务表格，可横向滚动">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="历史与待确认任务表格，可横向滚动">
           <table>
-            <thead><tr><th scope="col" style="width:15%">ROS task ID</th><th scope="col" style="width:23%">Intent ID</th><th scope="col" style="width:16%">Type</th><th scope="col" style="width:21%">发送记录</th><th scope="col" style="width:25%">执行反馈</th></tr></thead>
-            <tbody id="taskRows"></tbody>
+            <thead><tr><th scope="col">ROS task ID</th><th scope="col">Intent ID</th><th scope="col">Type</th><th scope="col">发送记录</th><th scope="col">执行反馈</th></tr></thead>
+            <tbody id="historyRows"></tbody>
           </table>
-          <div class="empty" id="emptyTasks">正在获取任务状态…</div>
+          <div class="empty" id="emptyHistory">正在获取历史与待确认任务…</div>
+        </div>
+        <p class="task-legend">工作单归档仅表示任务已保存；SENT 表示已写入传输；FINISH 才表示执行完成。</p>
+      </section>
+
+      <section class="panel dynamic-panel" aria-label="配置驱动的ROS订阅">
+        <div class="panel-head"><h2>动态 ROS 订阅通道</h2><span class="counter" id="subscriptionCounter">等待状态</span></div>
+        <div class="subscription-grid" id="dynamicSubscriptions"></div>
+        <div class="empty" id="emptySubscriptions">正在获取订阅状态…</div>
+      </section>
+    </div>
+
+    <!-- TAB 2: AI 异构推理引擎拓扑 (Dual-GPU Backends) -->
+    <div class="tab-pane" id="paneBackends" hidden>
+      <div class="scope-summary">
+        <h2>AI 异构推理后端拓扑 · 双 GPU 协同与故障转移</h2>
+        <p>本地高速单卡推理与远端/双卡深度推理负载协同，支持透明回退保底</p>
+      </div>
+
+      <div class="backend-grid" id="backendCardsContainer">
+        <!-- 动态由 JS 填充 -->
+        <div class="empty">正在获取推理后端状态…</div>
+      </div>
+
+      <div class="topology-flow">
+        <h3>异构双卡架构与多轮调度策略 (Dual-GPU Heterogeneous Engine Lifecycle)</h3>
+        <div class="flow-steps">
+          <div class="flow-step">
+            <div class="flow-step-num">LAYER 01</div>
+            <div class="flow-step-title">高速提取与路由 (GPU 0)</div>
+            <div class="flow-step-desc">默认使用进程内单卡轻量化推理，50ms 内完成意图分流、槽位解析与常规对话。</div>
+          </div>
+          <div class="flow-step">
+            <div class="flow-step-num">LAYER 02</div>
+            <div class="flow-step-title">深度审计与推理 (GPU 1)</div>
+            <div class="flow-step-desc">遇到复杂多步规划或深度安全审计时，通过 HTTP 协议调度独立推理卡（port 8001）。</div>
+          </div>
+          <div class="flow-step">
+            <div class="flow-step-num">LAYER 03</div>
+            <div class="flow-step-title">原生 Tool Calling 循环</div>
+            <div class="flow-step-desc">支持与内置物理仿真工具无缝多轮交互，并附带 3 轮死循环硬阻断安全保护。</div>
+          </div>
+          <div class="flow-step">
+            <div class="flow-step-num">LAYER 04</div>
+            <div class="flow-step-title">无缝故障转移 (Failover)</div>
+            <div class="flow-step-desc">若 GPU 1 远端服务超时或异常，系统自动平滑回退至 GPU 0 本地引擎，保证服务零中断。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: 水下 ROV 物理工程工具箱 (Subsea Engineering Tools) -->
+    <div class="tab-pane" id="paneTools" hidden>
+      <div class="scope-summary">
+        <h2>水下 ROV 物理与工程工具箱 (Subsea Engineering & Physics Simulator)</h2>
+        <p>深海水动力学、声学定位、脐带缆张力与机械臂作业安全因子仿真试验台</p>
+      </div>
+
+      <!-- 4 大交互式物理试验台 -->
+      <div class="sim-grid">
+        <!-- 试验台 1: 静水压强与 API 法兰等级 -->
+        <div class="sim-card">
+          <div class="sim-card-head">
+            <h3>静水压力与 API 6A 法兰选型</h3>
+            <span class="status active">物理仿真</span>
+          </div>
+          <form class="sim-body" id="formHydrostatic">
+            <div class="sim-field">
+              <label for="inputDepth">作业水深 (m)</label>
+              <input type="number" id="inputDepth" value="1500" step="10" min="0" max="11000" required>
+            </div>
+            <div class="sim-field">
+              <label for="inputWaterDensity">海水密度 (kg/m³)</label>
+              <input type="number" id="inputWaterDensity" value="1025" step="1" min="1000" max="1050">
+            </div>
+            <button type="submit" class="btn primary">立即试算压强</button>
+            <div class="sim-result" id="resHydrostatic"></div>
+          </form>
+        </div>
+
+        <!-- 试验台 2: 脐带缆悬链线张力 -->
+        <div class="sim-card">
+          <div class="sim-card-head">
+            <h3>脐带缆悬链线动张力与漂移</h3>
+            <span class="status active">力学计算</span>
+          </div>
+          <form class="sim-body" id="formCatenary">
+            <div class="sim-field">
+              <label for="inputCatDepth">水深 (m)</label>
+              <input type="number" id="inputCatDepth" value="800" step="10" min="10" required>
+            </div>
+            <div class="sim-field">
+              <label for="inputCatLength">放缆长度 (m)</label>
+              <input type="number" id="inputCatLength" value="1000" step="10" min="10" required>
+            </div>
+            <div class="sim-field">
+              <label for="inputCatWeight">缆线水中单重 (kg/m)</label>
+              <input type="number" id="inputCatWeight" value="4.5" step="0.1" min="0.1" required>
+            </div>
+            <button type="submit" class="btn primary">试算悬链线张力</button>
+            <div class="sim-result" id="resCatenary"></div>
+          </form>
+        </div>
+
+        <!-- 试验台 3: USBL 声学定位解算 -->
+        <div class="sim-card">
+          <div class="sim-card-head">
+            <h3>USBL 超短基线大地坐标反演</h3>
+            <span class="status active">声学导航</span>
+          </div>
+          <form class="sim-body" id="formUsbl">
+            <div class="sim-field">
+              <label for="inputVesselLat">母船纬度 (°N)</label>
+              <input type="number" id="inputVesselLat" value="20.0" step="0.0001" required>
+            </div>
+            <div class="sim-field">
+              <label for="inputVesselLon">母船经度 (°E)</label>
+              <input type="number" id="inputVesselLon" value="115.5" step="0.0001" required>
+            </div>
+            <div class="sim-field">
+              <label for="inputSlantRange">声学斜距 (m)</label>
+              <input type="number" id="inputSlantRange" value="850" step="1" min="1" required>
+            </div>
+            <div class="sim-field">
+              <label for="inputAzimuth">方位角 (°)</label>
+              <input type="number" id="inputAzimuth" value="45.0" step="0.1" min="0" max="360" required>
+            </div>
+            <button type="submit" class="btn primary">反演海底目标坐标</button>
+            <div class="sim-result" id="resUsbl"></div>
+          </form>
+        </div>
+
+        <!-- 试验台 4: 机械臂作业包络 -->
+        <div class="sim-card">
+          <div class="sim-card-head">
+            <h3>机械臂负载能力与包络校验</h3>
+            <span class="status active">作业安全</span>
+          </div>
+          <form class="sim-body" id="formArm">
+            <div class="sim-field">
+              <label for="inputArmModel">机械臂型号</label>
+              <select id="inputArmModel">
+                <option value="Schilling Titan 4">Schilling Titan 4 (7功能高负载)</option>
+                <option value="Orion 7P">Orion 7P (位置反馈型)</option>
+              </select>
+            </div>
+            <div class="sim-field">
+              <label for="inputPayloadKg">末端夹持质量 (kg)</label>
+              <input type="number" id="inputPayloadKg" value="80" step="5" min="0" required>
+            </div>
+            <div class="sim-field">
+              <label for="inputReachM">作业伸展半径 (m)</label>
+              <input type="number" id="inputReachM" value="1.2" step="0.1" min="0.1" max="2.5" required>
+            </div>
+            <button type="submit" class="btn primary">校验作业安全包络</button>
+            <div class="sim-result" id="resArm"></div>
+          </form>
         </div>
       </div>
 
-      <aside class="panel">
-        <div class="panel-head"><h2>姿态快照</h2></div>
-        <dl class="detail-list">
-          <div class="detail-row"><dt>X</dt><dd id="poseX">--</dd></div>
-          <div class="detail-row"><dt>Y</dt><dd id="poseY">--</dd></div>
-          <div class="detail-row"><dt>Z</dt><dd id="poseZ">--</dd></div>
-          <div class="detail-row"><dt>System health</dt><dd id="systemHealth">--</dd></div>
-          <div class="detail-row"><dt>时间含义</dt><dd>服务端接收时间，非设备采集时间</dd></div>
-        </dl>
-        <div class="error-box" id="errorBox"></div>
-      </aside>
-    </section>
-
-    <section class="panel dynamic-panel" aria-label="历史与待确认任务">
-      <div class="panel-head"><h2>历史与待确认任务</h2><span class="counter" id="historyCounter">等待状态</span></div>
-      <p class="table-scroll-hint">左右滑动查看发送记录与执行反馈</p>
-      <div class="table-wrap" tabindex="0" role="region" aria-label="历史与待确认任务表格，可横向滚动"><table>
-        <thead><tr><th scope="col">ROS task ID</th><th scope="col">Intent ID</th><th scope="col">Type</th><th scope="col">发送记录</th><th scope="col">执行反馈</th></tr></thead>
-        <tbody id="historyRows"></tbody>
-      </table><div class="empty" id="emptyHistory">正在获取历史与待确认任务…</div></div>
-      <p class="task-legend">工作单归档仅表示任务已保存；SENT 表示已写入传输；FINISH 才表示执行完成。删除请求仍需确认，历史记录也可能尚无有效执行反馈。</p>
-    </section>
-
-    <section class="panel dynamic-panel" aria-label="配置驱动的ROS订阅">
-      <div class="panel-head"><h2>动态 ROS 订阅</h2><span class="counter" id="subscriptionCounter">等待状态</span></div>
-      <div class="subscription-grid" id="dynamicSubscriptions"></div>
-      <div class="empty" id="emptySubscriptions">正在获取订阅状态…</div>
-    </section>
+      <!-- 已注册工具清单展示 -->
+      <section class="panel dynamic-panel" style="margin-top:20px;">
+        <div class="panel-head">
+          <h2>已注册原生工具清单 (Tool Registry Catalog)</h2>
+          <span class="counter" id="toolsCounter">8 tools available</span>
+        </div>
+        <div class="tools-list-grid" id="toolsListContainer">
+          <div class="empty">正在加载注册工具…</div>
+        </div>
+      </section>
+    </div>
   </main>
 
+  <!-- 网关设置弹窗 -->
   <dialog id="gatewayDialog">
     <form id="gatewayForm">
       <div class="dialog-head"><h2>ROS 2 网关设置</h2><button class="close-btn" id="closeDialog" type="button" aria-label="关闭">×</button></div>
@@ -340,13 +712,17 @@
     </form>
   </dialog>
 
+  <!-- 引入公共鉴权脚本 -->
   <script src="static/js/api-auth.js"></script>
   <script>
     const fetch = (...args) => window.SEAgentAuth.fetch(...args);
+    const dashboardApi = {{ dashboard_api | tojson }};
+
     const taskTypeNames = {0: 'TASK_MANAGE', 1: 'CLAMP_CABLE', 2: 'SEARCH_CABLE', 3: 'CLAMP_PIN', 4: 'INSERT_PLUG', 5: 'MOVE_TASK', 6: 'CTRL_TASK', 10: 'AUV_TASK'};
     const statusClasses = {READY: '', PLAN: 'active', ENTER: 'active', ONGOING: 'active', EXIT: 'active', FINISH: 'success', PAUSE: 'warn', FAIL: 'fail', FAILED: 'fail', SENT: ''};
     const executionNames = {READY: '准备就绪', PLAN: '规划中', ENTER: '进入作业', ONGOING: '执行中', EXIT: '退出作业', FINISH: '执行完成', PAUSE: '已暂停', FAIL: '执行失败'};
     const dispatchNames = {SENT: '已写入传输', SENDING: '发送结果待核实', FAILED: '发送失败'};
+
     let pollTimer = null;
     let pollIntervalMs = 1000;
     let statusRequestSeq = 0;
@@ -354,7 +730,7 @@
     let isSavingGateway = false;
     let lastSuccessfulPullAt = null;
 
-    const text = (id, value) => { document.getElementById(id).textContent = value ?? '--'; };
+    const text = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value ?? '--'; };
     const number = value => value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? '--' : Number(value).toFixed(1);
     const formatTime = value => {
       if (value === null || value === undefined || value === '') return '--';
@@ -362,6 +738,25 @@
       return Number.isNaN(date.getTime()) ? '--' : date.toLocaleString('zh-CN', {hour12: false, timeZoneName: 'short'});
     };
 
+    /* ========== 选项卡切换控制 ========== */
+    const tabButtons = document.querySelectorAll('.tab-btn');
+    const tabPanes = document.querySelectorAll('.tab-pane');
+    tabButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        tabButtons.forEach(b => b.classList.remove('active'));
+        tabPanes.forEach(p => p.hidden = true);
+        btn.classList.add('active');
+        const targetId = btn.dataset.tab;
+        const targetPane = document.getElementById(targetId);
+        if (targetPane) targetPane.hidden = false;
+
+        // 切至特定页面时自动加载
+        if (targetId === 'paneBackends') loadBackends();
+        if (targetId === 'paneTools') loadTools();
+      });
+    });
+
+    /* ========== 机器人与网关遥测渲染 ========== */
     function taskBadge(cell, label, style = '') {
       const badge = document.createElement('span');
       badge.className = `status ${style}`;
@@ -378,12 +773,16 @@
 
     function renderTasks(tasks, history = false) {
       const rows = document.getElementById(history ? 'historyRows' : 'taskRows');
+      if (!rows) return;
       rows.replaceChildren();
       const empty = document.getElementById(history ? 'emptyHistory' : 'emptyTasks');
-      empty.style.display = tasks.length ? 'none' : 'block';
-      empty.textContent = history ? '暂无历史或待确认任务' : '暂无当前活动任务';
+      if (empty) {
+        empty.style.display = tasks.length ? 'none' : 'block';
+        empty.textContent = history ? '暂无历史或待确认任务' : '暂无当前活动任务';
+      }
       if (!history) text('taskCount', tasks.length);
       text(history ? 'historyCounter' : 'taskCounter', `${tasks.length} records`);
+
       tasks.forEach(task => {
         const row = document.createElement('tr');
         const values = [task.task_id, task.intent_id || '--', taskTypeNames[task.task_type] || String(task.task_type)];
@@ -427,6 +826,7 @@
     function renderDynamicSubscriptions(subscriptions) {
       const container = document.getElementById('dynamicSubscriptions');
       const empty = document.getElementById('emptySubscriptions');
+      if (!container || !empty) return;
       container.replaceChildren();
       empty.style.display = subscriptions.length ? 'none' : 'block';
       empty.textContent = '当前没有启用的动态订阅';
@@ -474,11 +874,6 @@
           raw.textContent = JSON.stringify(subscription.raw_message, null, 2);
           details.append(summary, raw);
           card.appendChild(details);
-        } else if (subscription.raw_truncated) {
-          const truncated = document.createElement('div');
-          truncated.className = 'subscription-meta';
-          truncated.textContent = '原始消息超过 YAML 配置的大小上限，已省略。';
-          card.appendChild(truncated);
         }
         container.appendChild(card);
       });
@@ -500,16 +895,18 @@
       lastSuccessfulPullAt = new Date();
       text('lastSuccessfulPull', formatTime(lastSuccessfulPullAt));
       const dot = document.getElementById('bridgeDot');
-      dot.className = `state-dot ${connected && fresh ? 'good' : connected ? 'warn' : 'bad'}`;
+      if (dot) dot.className = `state-dot ${connected && fresh ? 'good' : connected ? 'warn' : 'bad'}`;
       text('bridgeState', connected ? '已连接' : '未连接');
       text('gatewayValue', data.host && data.port ? `ws://${data.host}:${data.port}` : '--');
       text('telemetryState', fresh ? '有效遥测' : snapshot.last_update ? '已过期 · 最近快照' : '尚未收到遥测');
       text('lastUpdate', formatTime(snapshot.last_update));
       const notice = document.getElementById('dataNotice');
-      notice.hidden = connected && fresh;
-      notice.textContent = !connected
-        ? (snapshot.last_update ? '网关未连接。下方保留服务端最近快照，当前执行状态可能已变化。' : '网关未连接，尚未收到遥测。发送记录不能证明机器人已执行任务。')
-        : '网关已连接，但尚无有效遥测。下方数值如有显示，为服务端保留的最近快照。';
+      if (notice) {
+        notice.hidden = connected && fresh;
+        notice.textContent = !connected
+          ? (snapshot.last_update ? '网关未连接。保留最近快照。' : '网关未连接，尚未收到遥测。')
+          : '网关已连接，但尚无有效遥测。';
+      }
       text('depthValue', number(snapshot.water_depth_m));
       text('altitudeValue', number(snapshot.altitude_m));
       text('controlMode', snapshot.ctr_mode || '--');
@@ -524,30 +921,28 @@
       schedulePolling(data.runtime_config?.dashboard?.refresh_interval_ms);
       const errorBox = document.getElementById('errorBox');
       const error = data.runtime_config?.last_error || data.last_error || (!connected ? data.msg : '');
-      errorBox.textContent = error || '';
-      errorBox.style.display = error ? 'block' : 'none';
+      if (errorBox) {
+        errorBox.textContent = error || '';
+        errorBox.style.display = error ? 'block' : 'none';
+      }
     }
 
     function showStatusFailure(error) {
       text('bridgeState', '连接状态未确认');
-      document.getElementById('bridgeDot').className = 'state-dot warn';
+      const dot = document.getElementById('bridgeDot');
+      if (dot) dot.className = 'state-dot warn';
       text('telemetryState', lastSuccessfulPullAt ? '更新中断 · 保留快照' : '尚未获取状态');
       const notice = document.getElementById('dataNotice');
-      notice.hidden = false;
-      notice.textContent = lastSuccessfulPullAt
-        ? '状态拉取失败。保留上次成功获取的快照；下方信息不代表当前状态，最近成功拉取时间保持不变。'
-        : '状态拉取失败，尚未获取监控数据。请检查连接后刷新。';
-      if (!lastSuccessfulPullAt) {
-        text('emptyTasks', '尚未获取任务状态');
-        text('emptyHistory', '尚未获取历史与待确认任务');
-        text('emptySubscriptions', '尚未获取订阅状态');
+      if (notice) {
+        notice.hidden = false;
+        notice.textContent = '状态拉取异常，请检查网关配置。';
       }
       const errorBox = document.getElementById('errorBox');
-      errorBox.textContent = String(error.message || error);
-      errorBox.style.display = 'block';
+      if (errorBox) {
+        errorBox.textContent = String(error.message || error);
+        errorBox.style.display = 'block';
+      }
     }
-
-    const dashboardApi = {{ dashboard_api | tojson }};
 
     async function refreshStatus() {
       const requestSeq = ++statusRequestSeq;
@@ -557,7 +952,6 @@
         if (requestSeq < renderedStatusSeq) return;
         renderedStatusSeq = requestSeq;
         if (!response.ok) throw new Error(data.msg || `HTTP ${response.status}`);
-        if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('状态响应格式无效');
         renderStatus(data);
       } catch (error) {
         if (requestSeq < renderedStatusSeq) return;
@@ -566,6 +960,148 @@
       }
     }
 
+    /* ========== 异构推理引擎拓扑加载 (Tab 2) ========== */
+    async function loadBackends() {
+      const container = document.getElementById('backendCardsContainer');
+      const url = dashboardApi.backends || '/api/dev/backends';
+      if (!container) return;
+      try {
+        const resp = await fetch(url, {cache: 'no-store'});
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.msg || `HTTP ${resp.status}`);
+        const backends = data.backends || [];
+        if (!backends.length) {
+          container.innerHTML = '<div class="empty">暂未检测到装配的推理后端</div>';
+          return;
+        }
+        container.replaceChildren();
+        backends.forEach(b => {
+          const card = document.createElement('div');
+          card.className = `backend-card ${b.is_default ? 'primary' : ''}`;
+
+          const head = document.createElement('div');
+          head.className = 'backend-card-head';
+          head.innerHTML = `
+            <div class="backend-title">
+              <span class="state-dot ${b.healthy ? 'good' : 'warn'}"></span>
+              <strong>${b.name}</strong>
+              ${b.is_default ? '<span class="status active">DEFAULT</span>' : ''}
+            </div>
+            <span class="status ${b.healthy ? 'success' : 'warn'}">${b.status_note || (b.healthy ? 'READY' : 'OFFLINE')}</span>
+          `;
+
+          const body = document.createElement('dl');
+          body.className = 'backend-body';
+          body.innerHTML = `
+            <div class="backend-row"><dt>Backend Class</dt><dd>${b.type}</dd></div>
+            <div class="backend-row"><dt>Model Name</dt><dd>${b.model_name || '--'}</dd></div>
+            <div class="backend-row"><dt>API Endpoint</dt><dd>${b.api_base || 'In-Process (Local)'}</dd></div>
+            <div class="backend-row"><dt>Role Scope</dt><dd>${b.is_default ? 'Fast Routing & Extraction' : 'Deep Reasoning & Audit'}</dd></div>
+          `;
+
+          card.append(head, body);
+          container.appendChild(card);
+        });
+      } catch (err) {
+        container.innerHTML = `<div class="data-notice">加载后端列表失败: ${err.message}</div>`;
+      }
+    }
+
+    /* ========== 工具清单与交互式试验台 (Tab 3) ========== */
+    async function loadTools() {
+      const container = document.getElementById('toolsListContainer');
+      const counter = document.getElementById('toolsCounter');
+      const url = dashboardApi.tools || '/api/dev/tools';
+      if (!container) return;
+      try {
+        const resp = await fetch(url, {cache: 'no-store'});
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.msg || `HTTP ${resp.status}`);
+        const tools = data.tools || [];
+        if (counter) counter.textContent = `${tools.length} tools registered`;
+        container.replaceChildren();
+        tools.forEach(t => {
+          const item = document.createElement('div');
+          item.className = 'tool-item';
+          const roles = (t.roles || []).map(r => `<span class="tool-tag">${r}</span>`).join('');
+          item.innerHTML = `
+            <div class="tool-item-head">
+              <span class="tool-name">${t.name}</span>
+              ${t.is_read_only ? '<span class="status success">READ ONLY</span>' : '<span class="status warn">MUTATION</span>'}
+            </div>
+            <div class="tool-desc">${t.description || '暂无描述'}</div>
+            <div class="tool-tags">${roles}</div>
+          `;
+          container.appendChild(item);
+        });
+      } catch (err) {
+        container.innerHTML = `<div class="data-notice">加载工具清单失败: ${err.message}</div>`;
+      }
+    }
+
+    /* 工具执行通用封装 */
+    async function executeToolCall(toolName, args, resultEl) {
+      const url = dashboardApi.tools_execute || '/api/dev/tools/execute';
+      resultEl.className = 'sim-result show';
+      resultEl.textContent = '正在计算中…';
+      try {
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({tool_name: toolName, arguments: args}),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          resultEl.className = 'sim-result show error';
+          resultEl.textContent = `❌ 执行失败: ${data.error || data.msg || ('HTTP ' + resp.status)}`;
+          return;
+        }
+        resultEl.className = 'sim-result show success';
+        resultEl.textContent = JSON.stringify(data.result, null, 2);
+      } catch (err) {
+        resultEl.className = 'sim-result show error';
+        resultEl.textContent = `❌ 网络/系统异常: ${err.message}`;
+      }
+    }
+
+    // 绑定 4 大试验台表单提交
+    document.getElementById('formHydrostatic')?.addEventListener('submit', e => {
+      e.preventDefault();
+      executeToolCall('calculate_hydrostatic_pressure', {
+        water_depth_m: parseFloat(document.getElementById('inputDepth').value),
+        density_kg_m3: parseFloat(document.getElementById('inputWaterDensity').value),
+      }, document.getElementById('resHydrostatic'));
+    });
+
+    document.getElementById('formCatenary')?.addEventListener('submit', e => {
+      e.preventDefault();
+      executeToolCall('calculate_cable_catenary', {
+        water_depth_m: parseFloat(document.getElementById('inputCatDepth').value),
+        cable_length_m: parseFloat(document.getElementById('inputCatLength').value),
+        cable_unit_weight_in_water_kg_m: parseFloat(document.getElementById('inputCatWeight').value),
+      }, document.getElementById('resCatenary'));
+    });
+
+    document.getElementById('formUsbl')?.addEventListener('submit', e => {
+      e.preventDefault();
+      executeToolCall('convert_usbl_acoustic_to_geodetic', {
+        vessel_lat: parseFloat(document.getElementById('inputVesselLat').value),
+        vessel_lon: parseFloat(document.getElementById('inputVesselLon').value),
+        slant_range_m: parseFloat(document.getElementById('inputSlantRange').value),
+        azimuth_deg: parseFloat(document.getElementById('inputAzimuth').value),
+      }, document.getElementById('resUsbl'));
+    });
+
+    document.getElementById('formArm')?.addEventListener('submit', e => {
+      e.preventDefault();
+      executeToolCall('check_manipulator_payload_envelope', {
+        manipulator_model: document.getElementById('inputArmModel').value,
+        payload_mass_kg: parseFloat(document.getElementById('inputPayloadKg').value),
+        reach_distance_m: parseFloat(document.getElementById('inputReachM').value),
+      }, document.getElementById('resArm'));
+    });
+
+    /* ========== 网关设置弹窗 ========== */
     async function loadGateway() {
       const response = await fetch(dashboardApi.gateway, {cache: 'no-store'});
       const data = await response.json();
@@ -576,10 +1112,14 @@
       document.getElementById('gatewayMode').value = gateway.mode || 'real';
     }
 
-    document.getElementById('refreshButton').addEventListener('click', refreshStatus);
+    document.getElementById('refreshButton').addEventListener('click', () => {
+      refreshStatus();
+      loadBackends();
+      loadTools();
+    });
     document.getElementById('gatewayButton').addEventListener('click', async () => {
       try { await loadGateway(); document.getElementById('gatewayDialog').showModal(); }
-      catch (error) { window.alert(`读取网关设置失败：${error.message || error}。当前监控快照保持不变。`); }
+      catch (error) { window.alert(`读取网关设置失败：${error.message || error}`); }
     });
     document.getElementById('closeDialog').addEventListener('click', () => document.getElementById('gatewayDialog').close());
     document.getElementById('cancelDialog').addEventListener('click', () => document.getElementById('gatewayDialog').close());
@@ -601,7 +1141,7 @@
         document.getElementById('gatewayDialog').close();
         await refreshStatus();
       } catch (error) {
-        window.alert(`网关保存失败：${error.message || error}。请核对当前连接状态后重试。`);
+        window.alert(`网关保存失败：${error.message || error}`);
       } finally {
         isSavingGateway = false;
         saveButton.disabled = false;
@@ -609,7 +1149,7 @@
     });
 
     refreshStatus();
-    schedulePolling(1000);
+    pollTimer = window.setInterval(refreshStatus, 1000);
     window.addEventListener('seagent-auth-change', refreshStatus);
   </script>
 </body>

@@ -167,3 +167,68 @@ def dev_execute_tool():
             "error": str(exc),
         }), 500
 
+
+@dev_bp.route("/api/dev/backends", methods=["GET"])
+@_require_api_token
+def dev_list_backends():
+    """返回当前已装配的模型推理后端列表、拓扑配置与健康探测状态"""
+    from src.web.state import _shared_llm, _sessions_manager
+
+    llm = _shared_llm
+    if llm is None and _sessions_manager:
+        for mgr in _sessions_manager.values():
+            if getattr(mgr, "llm", None) is not None:
+                llm = mgr.llm
+                break
+
+    if llm is None:
+        try:
+            from src.llm_client import LLMClient
+            llm = LLMClient()
+        except Exception as exc:
+            logger.warning("[DevBackends] 无法获取或初始化 LLMClient: %s", exc)
+            return jsonify({
+                "ok": True,
+                "code": 200,
+                "backends_count": 0,
+                "backends": [],
+                "default_backend": "none",
+            })
+
+    backends_info = []
+    backends_dict = getattr(llm, "backends", {})
+    default_backend_name = getattr(llm, "default_backend_name", "default")
+
+    for b_name, b_inst in backends_dict.items():
+        b_type = b_inst.__class__.__name__
+        model_name = getattr(b_inst, "model_name", "local-engine")
+        api_base = getattr(b_inst, "base_url", None)
+
+        is_healthy = True
+        health_note = "ready"
+        if hasattr(b_inst, "health_check"):
+            try:
+                is_healthy, health_note = b_inst.health_check()
+            except Exception as exc:
+                is_healthy = False
+                health_note = str(exc)
+
+        backends_info.append({
+            "name": b_name,
+            "type": b_type,
+            "model_name": model_name,
+            "api_base": api_base,
+            "is_default": (b_name == default_backend_name),
+            "healthy": is_healthy,
+            "status_note": health_note,
+        })
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "default_backend": default_backend_name,
+        "backends_count": len(backends_info),
+        "backends": backends_info,
+    })
+
+
