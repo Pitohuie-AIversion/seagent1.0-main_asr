@@ -355,6 +355,11 @@ class TestLLMClientToolCallingLoop:
         assert resp.text == "已达到上限，强制返回总结"
         # 3 轮带 tools + 1 轮强制无 tools = 4 次调用
         assert loop_backend.calls_count == 4
+        assert resp.tool_traces is not None
+        assert len(resp.tool_traces) == 3
+        assert resp.tool_traces[0]["name"] == "query_environmental_telemetry"
+        assert resp.tool_traces[0]["round"] == 1
+        assert resp.tool_traces[2]["round"] == 3
 
     def test_custom_backend_routing_by_role(self):
         """测试根据 Profile/Role 路由至不同后端 (如 Auditor -> GPU 1 HTTP 后端)。"""

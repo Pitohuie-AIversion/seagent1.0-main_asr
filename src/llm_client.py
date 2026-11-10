@@ -713,6 +713,7 @@ class LLMClient:
         backend = self.get_backend(role=role)
         current_messages = [dict(m) for m in messages]
 
+        executed_traces: list[dict[str, Any]] = []
         last_resp = LLMResponse(text="")
         for round_idx in range(max_tool_rounds):
             resp = backend.generate(
@@ -727,6 +728,7 @@ class LLMClient:
             )
             last_resp = resp
             if not resp.tool_calls:
+                resp.tool_traces = executed_traces
                 return resp
 
             # 记录 assistant 的工具调用请求
@@ -750,6 +752,13 @@ class LLMClient:
             # 逐个调用本地只读沙箱工具并填充结果
             for tc in resp.tool_calls:
                 exec_result = ToolRegistry.get_instance().execute(tc.name, tc.arguments)
+                executed_traces.append({
+                    "call_id": tc.id,
+                    "name": tc.name,
+                    "arguments": tc.get_arguments_dict(),
+                    "result": exec_result,
+                    "round": round_idx + 1,
+                })
                 tool_turn = {
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -775,6 +784,7 @@ class LLMClient:
             response_mode=options.response_mode,
             enable_thinking=options.enable_thinking,
         )
+        final_resp.tool_traces = executed_traces
         return final_resp
 
     # ------------------------------------------------------------------

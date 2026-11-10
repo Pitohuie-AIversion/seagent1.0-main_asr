@@ -39,6 +39,7 @@ class LLMResponse:
     tool_calls: Optional[list[ToolCall]] = None
     finish_reason: str = "stop"
     raw_response: Any = None
+    tool_traces: Optional[list[dict[str, Any]]] = None
 
     @property
     def has_tool_calls(self) -> bool:
