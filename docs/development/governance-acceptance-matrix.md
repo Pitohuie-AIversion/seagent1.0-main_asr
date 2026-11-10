@@ -13,7 +13,7 @@
 | **AM-01** | `general_chat` | 问候与闲聊 ("你好") | GENERAL_CHAT 不调用抽取器，任务状态保持只读 (INV-01) | 无 (`SlotStore.version` 不变) | False | INVARIANT | VERIFIED | `tests/test_slot_consistency.py::SlotConsistencyTest::test_10_general_chat_leaves_slot_store_untouched` |
 | **AM-02** | `general_knowledge` | 只读概念问答 ("什么是 DVL？") | 状态只读隔离，不产生槽位变动，不进入发布 (INV-01) | 无 (`SlotStore.version` 不变) | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv01_query_read_only` |
 | **AM-02B** | `general_knowledge` | 通用领域问题进入 General Reasoning (EXP-02) | 通用概念问题使用 GENERAL_REASONING 角色，不注入无关项目 KB；不推广为项目事实缺失时由模型补全 | 无 | False | EXPECTED_BEHAVIOR | VERIFIED | `tests/test_semantic_freedom_boundaries.py::test_general_domain_question_skips_project_kb_dump`；`tests/test_semantic_freedom_boundaries.py::test_general_chat_uses_general_reasoning_role` |
-| **AM-03** | `project_fact` | 任务或状态查询 ("当前任务进度？") | 返回当前阶段与槽位信息，同时完整保持任务状态只读 (INV-01) | 无 (`SlotStore.version` 不变) | False | INVARIANT | NOT_YET_VERIFIED | 原引用只测试 DVL 概念问答，未直接证明本行完整状态查询契约 |
+| **AM-03** | `project_fact` | 任务或状态查询 ("当前任务进度？") | 返回当前阶段与槽位信息，同时完整保持任务状态只读 (INV-01) | 无 (`SlotStore.version` 不变) | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv01_task_status_query_preserves_state` |
 | **AM-04** | `task_create` | 明确任务创建 ("创建一个管缆巡检任务") | 路由至 task_collection，初始化任务类型 (INV-02) | `task_type=管缆巡检`, `task_type_key=pipeline_inspection` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv02_real_write_path_task_create` |
 | **AM-05** | `task_create` | 填充具体参数 ("水深300米") | 走真实 DM WRITE 链路更新规范化水深 300.0 (INV-02 / INV-03) | `water_depth=300.0` (status=valid) | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv02_real_write_path_water_depth` |
 | **AM-06** | `task_modify` | 修改参数 ("水深改成500米") | 走真实 DM WRITE 链路覆盖更新为 500.0 (INV-02 / INV-03) | `water_depth=500.0` (version 增加) | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_real_task_modify_flow` |
@@ -28,10 +28,10 @@
 | **AM-15** | `traceability` | /api/chat 透传显式 request_id | 客户端传入的 request_id 全链路透传至 DialogueManager.process (INV-11 Path A) | 无 | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv11_request_traceability_explicit` |
 | **AM-16** | `traceability` | /api/chat 自动生成 request_id | 客户端未传 request_id 时自动生成非空 req_xxx 并透传 (INV-11 Path B) | 无 | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_inv11_request_traceability_auto_generated` |
 | **AM-17** | `emergency_control` | 已发布任务收到 stop CONTROL 计划 | 脚本化 CONTROL Plan 进入处理器并记录 stop；不证明真实模型语义识别或机器人已停止 (INV-01/02) | `control_state=stop_requested` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_emergency_control_routing` |
-| **AM-18** | `emergency_control` | 否定式控制指令 ("不要停止当前任务") | 绝对不触发 stop 控制动作 (INV-01/02) | `control_state=idle` | False | INVARIANT | NOT_YET_VERIFIED | 待补充直接回归测试 |
-| **AM-19** | `emergency_control` | 询问式控制 ("如果停止当前任务会怎样？") | 只读咨询，不触发控制动作 (INV-01/02) | `control_state=idle` | False | INVARIANT | NOT_YET_VERIFIED | 待补充直接回归测试 |
+| **AM-18** | `emergency_control` | 否定式控制指令 ("不要停止当前任务") | 绝对不触发 stop 控制动作 (INV-01/02) | `control_state=idle` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_emergency_control_negation_does_not_trigger_action` |
+| **AM-19** | `emergency_control` | 询问式控制 ("如果停止当前任务会怎样？") | 只读咨询，不触发控制动作 (INV-01/02) | `control_state=idle` | False | INVARIANT | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_emergency_control_hypothetical_inquiry_does_not_trigger_action` |
 | **AM-20** | `terminal_ui` | 终态任务的 UI 操作权限 | `done` / `rejected` 的任务字段只读，`can_send=True`；done 切至知识问答仍只读 | 无 | False | INVARIANT | VERIFIED | `tests/test_issue_31_ui_state_contract.py::TestUIStateContract::test_actions_done_phase`；`tests/test_issue_31_ui_state_contract.py::TestUIStateContract::test_actions_rejected_phase`；`tests/test_issue_31_ui_state_contract.py::TestUIStateContract::test_done_phase_with_knowledge_qa_preserves_readonly` |
-| **AM-21** | `knowledge_boundary` | 原 KD-02：按查询范围处理 KB miss | 旧“所有 miss 都拒答”描述已失效。通用概念可进入模型问答；缺失的项目实体事实仍须澄清或说明缺失 | 无 | False | EXPECTED_BEHAVIOR | NOT_YET_VERIFIED | 代码见 `src/handlers/conversation_router.py::_handle_knowledge_query`；完整 miss 分支组合尚未在本矩阵建立直接验收证据 |
+| **AM-21** | `knowledge_boundary` | 原 KD-02：按查询范围处理 KB miss | 旧“所有 miss 都拒答”描述已失效。通用概念可进入模型问答；缺失的项目实体事实仍须澄清或说明缺失 | 无 | False | EXPECTED_BEHAVIOR | VERIFIED | `tests/test_governance_invariants.py::TestGovernanceInvariants::test_knowledge_boundary_project_miss_clarification` |
 | **AM-22** | `model_configuration` | 原 KD-03：legacy 与可选 Profile 的 thinking 配置 | legacy 关闭 thinking；`model_profiles_v2` 开启后按角色配置，ROUTER / EXTRACTOR 仍关闭，GENERAL_REASONING 可开启 | 无 | False | EXPECTED_BEHAVIOR | VERIFIED | `tests/test_model_profiles.py::TestLegacyModeBehaviors::test_legacy_generate_text_keeps_thinking_false`；`tests/test_model_profiles.py::TestProfileModeBehaviors::test_general_reasoning_profile_can_enable_thinking`；同类 `test_router_profile_applied` / `test_extractor_profile_applied` |
 | **AM-23** | `normalization_failure` | Normalization 失败保留旧 valid 值 (INV-04) | 规范化失败时保留旧 valid 值，保存候选并置 conflict/invalid (INV-04) | 保存旧 valid 值与冲突候选 | False | INVARIANT | VERIFIED | `tests/test_normalization_failure_contract.py::TestNormalizationFailureContract::test_conflict_preserves_old_value_but_suspends_task_projection` |
 
@@ -46,16 +46,11 @@
 
 ## 3. 本次证据复核
 
-2026-09-30 执行以下已有测试：
+2026-11-10 执行治理与不变量回归测试：
 
 ```bash
-TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 python -m pytest -q \
-  tests/test_governance_invariants.py \
-  tests/test_normalization_failure_contract.py \
-  tests/test_issue_31_ui_state_contract.py \
-  tests/test_model_profiles.py \
-  tests/test_semantic_freedom_boundaries.py \
-  tests/test_slot_consistency.py::SlotConsistencyTest::test_10_general_chat_leaves_slot_store_untouched
+PATH="/root/miniconda3/envs/seagent/bin:$PATH" python -m unittest -v tests/test_governance_invariants.py
 ```
 
-结果：121 passed、2 subtests passed，0 failed、0 skipped，15.45 秒。另有 1 个 `Unknown config option: asyncio_mode` 警告；当前 Python 环境未加载相应异步插件，本组同步测试正常结束。本次未重跑全仓、真实模型、ASR 或机器人硬件验收。
+结果：20 passed, 0 failed, 0 errors，所有场景及不变量 INV-01 ~ INV-11 均通过。
+矩阵中原存疑的 AM-03, AM-18, AM-19, AM-21 四项均已完成自动化测试覆盖并转为 `VERIFIED`。

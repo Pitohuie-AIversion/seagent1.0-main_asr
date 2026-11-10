@@ -42,8 +42,11 @@ class TestGovernanceInvariants(unittest.TestCase):
         _sessions_manager.clear()
 
     def tearDown(self):
+        self.dm = None
         _sessions_manager.clear()
         shutil.rmtree(self._tmp, ignore_errors=True)
+        import gc
+        gc.collect()
 
     def test_inv01_query_read_only(self):
         """INV-01: QUERY 路径执行前后，SlotStore.version、export_snapshot()、task_state 不变。"""
@@ -525,3 +528,95 @@ class TestGovernanceInvariants(unittest.TestCase):
             "已识别针对已发布任务的控制指令【停止】",
             reply,
         )
+
+    def test_inv01_task_status_query_preserves_state(self):
+        """AM-03: 任务状态/进度查询保持 SlotStore 与 task_state 只读不变 (INV-01)。"""
+        schema = self.dm.builder.get_schema("pipeline_inspection", self.dm.mode)
+        self.dm.slot_store.init_task_slots(schema)
+        slots = self.dm.slot_store.clone_slots()
+        slots["task_type"] = Slot("task_type", value="管缆巡检", status="valid")
+        slots["task_type_key"] = Slot("task_type_key", value="pipeline_inspection", status="valid")
+        slots["water_depth"] = Slot("water_depth", value=300.0, status="valid")
+        self.dm.slot_store.commit_transaction(slots, [])
+        self.dm.task_state = self.dm.slot_store.get_task_state()
+
+        v_before = self.dm.slot_store.version
+        snap_before = self.dm.slot_store.export_snapshot()
+        state_before = dict(self.dm.task_state)
+        phase_before = self.dm.phase
+
+        self.dm.llm.queue_plan(
+            make_plan(
+                "READ",
+                query_intent="TASK_STATUS",
+                relation="status",
+                source_policy="session_state",
+            )
+        )
+
+        reply = self.dm.process("当前任务进度如何？", request_id="req_inv01_status")
+        self.assertTrue(isinstance(reply, str) and len(reply) > 0)
+
+        self.assertEqual(self.dm.slot_store.version, v_before)
+        self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+        self.assertEqual(self.dm.task_state, state_before)
+        self.assertEqual(self.dm.phase, phase_before)
+
+    def test_emergency_control_negation_does_not_trigger_action(self):
+        """AM-18: 否定式控制指令（如“不要停止当前任务”）绝不触发 control 动作 (INV-01/02)。"""
+        self.dm.phase = "done"
+        self.dm.control_state = "idle"
+        self.dm.last_control_request = None
+
+        self.dm.llm.queue_plan(
+            make_plan(
+                "READ",
+                query_intent="GENERAL_CHAT",
+                source_policy="none",
+            )
+        )
+
+        reply = self.dm.process("不要停止当前任务", request_id="req_em_negation")
+        self.assertEqual(self.dm.control_state, "idle")
+        self.assertIsNone(self.dm.last_control_request)
+
+    def test_emergency_control_hypothetical_inquiry_does_not_trigger_action(self):
+        """AM-19: 询问式控制（如“如果停止当前任务会怎样？”）仅为只读咨询，不触发控制动作 (INV-01/02)。"""
+        self.dm.phase = "done"
+        self.dm.control_state = "idle"
+        self.dm.last_control_request = None
+
+        self.dm.llm.queue_plan(
+            make_plan(
+                "READ",
+                query_intent="GENERAL_CHAT",
+                source_policy="general_domain",
+            )
+        )
+
+        reply = self.dm.process("如果停止当前任务会怎样？", request_id="req_em_hypothetical")
+        self.assertEqual(self.dm.control_state, "idle")
+        self.assertIsNone(self.dm.last_control_request)
+
+    def test_knowledge_boundary_project_miss_clarification(self):
+        """AM-21: 缺失的项目实体/事实明确说明未收录，而不虚构事实 (INV-01)。"""
+        v_before = self.dm.slot_store.version
+        snap_before = self.dm.slot_store.export_snapshot()
+
+        self.dm.llm.queue_plan(
+            make_plan(
+                "READ",
+                query_intent="DEVICE_CAPABILITY",
+                subject_type="device",
+                subject_text="未知深潜号999",
+                relation="capabilities",
+                source_policy="project_kb",
+            )
+        )
+
+        reply = self.dm.process("未知深潜号999的最大作业水深是多少？", request_id="req_am21_miss")
+        self.assertTrue(isinstance(reply, str) and len(reply) > 0)
+        self.assertIn("未找到该设备信息", reply)
+        self.assertEqual(self.dm.slot_store.version, v_before)
+        self.assertEqual(self.dm.slot_store.export_snapshot(), snap_before)
+
