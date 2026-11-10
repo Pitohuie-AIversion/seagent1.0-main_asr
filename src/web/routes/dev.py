@@ -232,3 +232,60 @@ def dev_list_backends():
     })
 
 
+@dev_bp.route("/api/dev/task-graph/validate", methods=["POST"])
+@_require_api_token
+def dev_validate_task_graph():
+    """验证并分析 TaskGraph DAG 拓扑、并行执行分代及机器人候选分配"""
+    from src.task_graph import TaskGraph, CyclicDependencyError, TaskGraphAllocator
+    from src.web.state import _shared_kb
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "请求体必须为 JSON 对象"}), 400
+
+    try:
+        graph = TaskGraph.from_dict(payload)
+    except CyclicDependencyError as exc:
+        return jsonify({
+            "ok": False,
+            "code": 400,
+            "error_type": "CyclicDependencyError",
+            "msg": f"任务图中存在循环依赖: {exc}",
+        }), 400
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "code": 400,
+            "error_type": "SchemaError",
+            "msg": f"解析任务图失败: {exc}",
+        }), 400
+
+    batches = graph.get_execution_batches()
+    ready_nodes = [n.to_dict() for n in graph.get_ready_nodes()]
+
+    robots = []
+    if _shared_kb is not None and hasattr(_shared_kb, "units"):
+        units = getattr(_shared_kb, "units", {})
+        for u_id, u_info in units.items():
+            robots.append({
+                "unit_id": u_id,
+                "family": u_info.get("family", ""),
+                "max_depth_m": u_info.get("max_depth_m", 3000),
+                "capabilities": u_info.get("capabilities", ["visual_inspection", "cable_burial", "manipulator_operation"]),
+            })
+    allocator = TaskGraphAllocator(robots)
+    allocations = allocator.allocate_ready_nodes(graph)
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "graph_id": graph.graph_id,
+        "node_count": graph.node_count,
+        "edge_count": graph.edge_count,
+        "execution_batches": batches,
+        "ready_nodes": ready_nodes,
+        "allocations": allocations,
+    })
+
+
+

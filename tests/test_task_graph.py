@@ -221,3 +221,52 @@ def test_task_graph_allocator():
     # OBSROV cannot do deep burial (depth 1500 > 1000 and missing burial capability)
     # WROV should be assigned to node_deep_burial
     assert assignments.get("node_deep_burial") == "WROV-150-001"
+
+
+def test_api_dev_validate_task_graph():
+    from web_backend import app
+    client = app.test_client()
+
+    valid_payload = {
+        "graph_id": "api_test_dag",
+        "description": "Subsea inspection then burial",
+        "nodes": [
+            {"node_id": "step1", "task_type": "pipeline_inspection", "parameters": {"water_depth": 300.0}},
+            {"node_id": "step2", "task_type": "pipeline_burial", "parameters": {"water_depth": 300.0}},
+        ],
+        "edges": [{"from": "step1", "to": "step2"}],
+    }
+
+    resp = client.post("/api/dev/task-graph/validate", json=valid_payload)
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert data["node_count"] == 2
+    assert data["edge_count"] == 1
+    assert data["execution_batches"] == [["step1"], ["step2"]]
+    assert len(data["ready_nodes"]) == 1
+    assert data["ready_nodes"][0]["node_id"] == "step1"
+
+
+def test_api_dev_validate_task_graph_cycle_rejected():
+    from web_backend import app
+    client = app.test_client()
+
+    cycle_payload = {
+        "graph_id": "cyclic_dag",
+        "nodes": [
+            {"node_id": "A", "task_type": "pipeline_inspection"},
+            {"node_id": "B", "task_type": "pipeline_burial"},
+        ],
+        "edges": [
+            {"from": "A", "to": "B"},
+            {"from": "B", "to": "A"},
+        ],
+    }
+
+    resp = client.post("/api/dev/task-graph/validate", json=cycle_payload)
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert data["ok"] is False
+    assert data["error_type"] == "CyclicDependencyError"
+
