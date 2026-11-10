@@ -7,15 +7,17 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+import yaml
 from flask import Blueprint, jsonify, request
 from werkzeug.utils import secure_filename
-import yaml
 
 import src.web.state as state
 from src.asr.asr_normalizer import normalize_terminology
 from src.asr.asr_service import ASRInputError, ASRUnavailableError
-from .translate import _translate_text_internal
 from src.web.state import CONFIG_DIR, _require_api_token
+
+from .translate import _translate_text_internal
 
 logger = logging.getLogger(__name__)
 

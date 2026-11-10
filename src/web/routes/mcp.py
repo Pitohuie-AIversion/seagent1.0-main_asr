@@ -6,21 +6,20 @@ import logging
 import math
 import os
 import struct
+import sys
 import threading
+from pathlib import Path
+
 import yaml
 from flask import Blueprint, current_app, jsonify, request
+
 import src.web.state as state
 from src.dispatch.task_dispatch import dispatch_completed_task, save_dispatch_history
-
 from src.web.state import (
     CONFIG_DIR,
     _require_api_token,
     get_mcp_bridge,
-    get_or_create_manager,
 )
-
-import sys
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +49,7 @@ def _command_integer(value, field, minimum=0, maximum=None):
 def _get_config_dir() -> Path:
     backend = sys.modules.get("web_backend")
     if backend is not None and hasattr(backend, "CONFIG_DIR"):
-        return Path(getattr(backend, "CONFIG_DIR"))
+        return Path(backend.CONFIG_DIR)
     return CONFIG_DIR
 
 
@@ -134,7 +133,7 @@ def dispatch_mcp_task():
             return jsonify({"code": 400, "msg": f"当前会话 {sid} 尚未处于 done 阶段，无可下发的任务"}), 400
         if custom_intent and custom_intent != mgr.final_result:
             return jsonify({"code": 403, "msg": "task_intent 必须与会话已确认归档的任务完全一致。"}), 403
-        from src.session.ui_state_builder import confirmation_conflict, build_frontend_ui_state
+        from src.session.ui_state_builder import build_frontend_ui_state, confirmation_conflict
         conflict = confirmation_conflict(mgr, data.get("expected_confirmation_token"))
         if conflict:
             return jsonify(conflict), 409
