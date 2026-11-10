@@ -10,6 +10,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added & Feat — 多推理后端、Tool Calling 闭环、Mission Control 中控与 Task Graph 拓扑任务图（2026-11-10）
+
+- **异构多推理后端与毫秒级容灾 (Multi-Backend Engine)**：
+  - 构建统一抽象 `BaseLLMBackend`，提供基于 HTTP 的 `OpenAIHTTPBackend`（完全兼容 FastChat / vLLM / Ollama 等服务端点）与进程内 `LocalTransformersBackend`；
+  - 实现多后端引擎 `MultiBackendEngine`，当远端推理端点发生网络波动或服务离线时，毫秒级平滑降级（Failover）至本地进程引擎，防止单点故障阻塞任务主流程；
+  - 针对 2GB 容器 cgroup 限制，对大型权重与 vLLM 实施延迟按需加载（Lazy Loading），并在 `src/llm_client.py` 顶层暴露桩对象接口，杜绝内存 OOM 与单元测试打桩失败。
+- **深水 ROV 物理工程计算工具库与原生 Tool Calling**：
+  - 实现原生 Tool Calling 循环驱动引擎，在 `generate_with_tools` 中完整维护会话上下文与工具执行轨迹（`tool_traces`）；
+  - 注册并实现 5 大深水 ROV 水下工程物理计算工具：
+    * `calculate_hydrostatic_pressure`：流体静压与压强梯度验算；
+    * `calculate_cable_catenary`：脐带缆悬链线张力与弯曲半径计算；
+    * `evaluate_marine_operation_window`：风速、波高、海流综合窗口准入评估；
+    * `convert_usbl_acoustic_to_geodetic`：USBL 水声测距方位向 WGS84 经纬度声速折射修正；
+    * `check_manipulator_payload_envelope`：机械臂工作包络与额定力矩校验。
+- **Mission Control 监控中控台与交互式试验台**：
+  - 前端气泡交互原生支持工具调用轨迹收据（Tool Trace Receipt）与交互式折叠抽屉渲染；
+  - 仪表盘新增双 GPU 异构推理引擎拓扑监控卡片、ROV 工具清单与 4 大试验台交互式仿真；
+  - 重构 `frontend/ros2_dashboard.html` 脚本结构，完美满足 Node.js CJS 沙箱生命周期与请求恢复回归切片要求。
+- **治理验收矩阵 100% 达成与历史缺陷清零**：
+  - 复核并验证 [governance-acceptance-matrix.md](docs/development/governance-acceptance-matrix.md) 全部 23 项场景（AM-01 ~ AM-23），原存疑项 AM-03, AM-18, AM-19, AM-21 补齐测试用例并全量通过，所有项均转为 `VERIFIED`。
+- **Task Graph 有向无环任务图与多机分配引擎 (`src/task_graph/`)**：
+  - 基于 `networkx.DiGraph` 实现原子子任务节点模型 `TaskNode`（完整生命周期状态机：`PENDING`, `READY`, `RUNNING`, `COMPLETED`, `FAILED`, `BLOCKED`, `SKIPPED`）；
+  - 实现 DAG 环路自动检测（`CyclicDependencyError`）、拓扑分代最大并行批次计算（`get_execution_batches`）与上下游状态级联自动传播；
+  - 实现多机器人能力匹配分配引擎 `TaskGraphAllocator`；
+  - 在 Web 后端暴露 `/api/dev/task-graph/validate` POST 分析端点，支持外部编排器提交图定义并获得拓扑分代与机器人匹配建议。
+
 ### Refactored — 时间关系长方法分段与兼容契约补齐（2026-10-29）
 
 - 将 `TemporalParser.materialize_time_relation` 从 399 行拆为 29 行编排入口和 8 个处理阶段，分别承担候选证据过滤、保持策略解析、未授权推断清理、时长解码、增量应用、区间计算、上下文修复及结果回写。
