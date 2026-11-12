@@ -375,6 +375,83 @@ def dev_world_model_check_safety():
     })
 
 
+@dev_bp.route("/api/dev/weak-comm/encode-task", methods=["POST"])
+@_require_api_token
+def dev_weak_comm_encode_task():
+    """将 JSON 任务计划压缩编码为 32 字节水声微弱通信二进制数据包"""
+    import json
+    from src.weak_comm import encode_task_intent, decode_task_intent
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "请求体必须为 JSON 对象"}), 400
+
+    intent = payload.get("intent", payload)
+    raw_json_bytes = json.dumps(intent, ensure_ascii=False).encode("utf-8")
+    original_size = len(raw_json_bytes)
+
+    binary_frame = encode_task_intent(intent, seq=int(payload.get("seq", 1)))
+    compressed_size = len(binary_frame)
+    compression_ratio = round(original_size / max(compressed_size, 1), 1)
+
+    decoded = decode_task_intent(binary_frame)
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "original_size_bytes": original_size,
+        "compressed_size_bytes": compressed_size,
+        "compression_ratio": f"{compression_ratio}x",
+        "frame_hex": binary_frame.hex(),
+        "decoded_verification": decoded,
+    })
+
+
+@dev_bp.route("/api/dev/weak-comm/simulate", methods=["POST"])
+@_require_api_token
+def dev_weak_comm_simulate():
+    """模拟水下声学高丢包率信道与 ARQ 自适应重传"""
+    from src.weak_comm import (
+        AcousticARQSession,
+        AcousticChannelSimulator,
+        encode_task_intent,
+    )
+
+    payload = request.get_json(silent=True) or {}
+    loss_rate = float(payload.get("packet_loss_rate", 0.3))
+    packet_count = int(payload.get("packet_count", 5))
+
+    sim = AcousticChannelSimulator(packet_loss_rate=loss_rate, random_seed=42)
+    session = AcousticARQSession()
+
+    results = []
+    for i in range(1, packet_count + 1):
+        test_intent = {
+            "intent_id": f"TI_WEAK_{i}",
+            "task_type": "pipeline_inspection",
+            "water_depth": 150.0 + i * 10,
+        }
+        frame = encode_task_intent(test_intent, seq=i)
+        delivered_frame = sim.transmit(frame)
+        if delivered_frame:
+            decoded, ack = session.receive_frame(delivered_frame)
+            results.append({"seq": i, "status": "DELIVERED", "crc_ok": decoded is not None})
+        else:
+            results.append({"seq": i, "status": "DROPPED", "crc_ok": False})
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "simulation_stats": {
+            "packets_transmitted": sim.packets_transmitted,
+            "packets_dropped": sim.packets_dropped,
+            "loss_rate_simulated": loss_rate,
+            "results": results,
+        },
+    })
+
+
+
 
 
 
