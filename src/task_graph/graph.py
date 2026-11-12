@@ -36,6 +36,11 @@ class TaskGraph:
     def edge_count(self) -> int:
         return self._graph.number_of_edges()
 
+    @property
+    def nodes(self) -> dict[str, TaskNode]:
+        return self._nodes
+
+
     def add_node(self, node: TaskNode) -> None:
         """Add a subtask node to the graph."""
         if node.node_id in self._nodes:

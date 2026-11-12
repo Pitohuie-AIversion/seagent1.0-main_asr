@@ -451,7 +451,85 @@ def dev_weak_comm_simulate():
     })
 
 
+@dev_bp.route("/api/dev/replanning/evaluate", methods=["POST"])
+@_require_api_token
+def dev_replanning_evaluate():
+    """根据任务执行反馈或故障触发器，动态推演并重构 TaskGraph DAG"""
+    from src.replanning import (
+        DynamicReplanningEngine,
+        ReplanningTrigger,
+        ReplanningTriggerType,
+    )
+    from src.task_graph import CyclicDependencyError, TaskGraph
+    from src.web.state import _shared_kb
 
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "请求体必须为 JSON 对象"}), 400
 
+    graph_data = payload.get("graph")
+    trigger_data = payload.get("trigger")
+    if not graph_data or not isinstance(graph_data, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "缺少 graph 数据对象"}), 400
+    if not trigger_data or not isinstance(trigger_data, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "缺少 trigger 数据对象"}), 400
 
+    try:
+        graph = TaskGraph.from_dict(graph_data)
+    except CyclicDependencyError as exc:
+        return jsonify({"ok": False, "code": 400, "msg": f"任务图初始状态含有循环依赖: {exc}"}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "code": 400, "msg": f"任务图解析失败: {exc}"}), 400
+
+    try:
+        t_type = ReplanningTriggerType(trigger_data.get("trigger_type"))
+    except ValueError:
+        return jsonify({
+            "ok": False,
+            "code": 400,
+            "msg": f"无效的 trigger_type: {trigger_data.get('trigger_type')}",
+        }), 400
+
+    trigger = ReplanningTrigger(
+        trigger_type=t_type,
+        node_id=trigger_data.get("node_id"),
+        unit_id=trigger_data.get("unit_id"),
+        reason=str(trigger_data.get("reason", "")),
+        context=trigger_data.get("context") or {},
+    )
+
+    available_robots = payload.get("available_robots")
+    if available_robots is None:
+        available_robots = []
+        if _shared_kb is not None and hasattr(_shared_kb, "units"):
+            for u_id, u_info in getattr(_shared_kb, "units", {}).items():
+                available_robots.append({
+                    "unit_id": u_id,
+                    "max_depth_m": u_info.get("max_depth_m", 3000),
+                    "capabilities": u_info.get("capabilities", []),
+                })
+
+    engine = DynamicReplanningEngine()
+    plan = engine.evaluate_failure(trigger, graph, available_robots=available_robots)
+
+    apply_plan = bool(payload.get("apply", True))
+    if apply_plan and plan.actions:
+        try:
+            graph = engine.apply_replanning_plan(plan, graph)
+        except Exception as exc:
+            return jsonify({
+                "ok": False,
+                "code": 500,
+                "msg": f"应用重规划方案失败: {exc}",
+                "plan": plan.to_dict(),
+            }), 500
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "plan": plan.to_dict(),
+        "graph": graph.to_dict(),
+        "mermaid": graph.to_mermaid(),
+        "execution_batches": graph.get_execution_batches(),
+    })
 

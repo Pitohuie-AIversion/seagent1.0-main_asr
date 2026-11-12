@@ -41,6 +41,23 @@ class TaskNode:
             "metadata": self.metadata,
         }
 
+    @property
+    def water_depth(self) -> float:
+        val = self.parameters.get("water_depth", self.metadata.get("water_depth", 0.0))
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return 0.0
+
+    @property
+    def name(self) -> str:
+        return str(self.metadata.get("name") or self.parameters.get("name") or self.node_id)
+
+    @property
+    def properties(self) -> dict[str, Any]:
+        return self.metadata
+
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TaskNode:
         status_val = data.get("status", TaskNodeStatus.PENDING.value)
@@ -48,13 +65,21 @@ class TaskNode:
             status = TaskNodeStatus(status_val)
         else:
             status = status_val
+        meta = dict(data.get("metadata") or {})
+        if "properties" in data and isinstance(data["properties"], dict):
+            meta.update(data["properties"])
+        if "name" in data and "name" not in meta:
+            meta["name"] = data["name"]
+        params = dict(data.get("parameters") or {})
+        if "water_depth" in data and "water_depth" not in params:
+            params["water_depth"] = data["water_depth"]
         return cls(
             node_id=data["node_id"],
             task_type=data["task_type"],
-            parameters=dict(data.get("parameters") or {}),
+            parameters=params,
             status=status,
             assigned_robot_id=data.get("assigned_robot_id"),
             result=data.get("result"),
             error=data.get("error"),
-            metadata=dict(data.get("metadata") or {}),
+            metadata=meta,
         )
