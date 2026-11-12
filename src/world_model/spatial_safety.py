@@ -18,15 +18,24 @@ logger = logging.getLogger(__name__)
 class SpatialSafetyEngine:
     """Evaluates spatial-temporal safety for subsea robot operations."""
 
-    def __init__(self, geofences: Sequence[GeofenceZone] | None = None, assets: Sequence[SubseaAsset] | None = None):
+    def __init__(
+        self,
+        geofences: Sequence[GeofenceZone] | None = None,
+        assets: Sequence[SubseaAsset] | None = None,
+        obstacles: Sequence[Any] | None = None,
+    ):
         self._geofences: list[GeofenceZone] = list(geofences or [])
         self._assets: list[SubseaAsset] = list(assets or [])
+        self._obstacles: list[Any] = list(obstacles or [])
 
     def set_geofences(self, geofences: Sequence[GeofenceZone]) -> None:
         self._geofences = list(geofences)
 
     def set_assets(self, assets: Sequence[SubseaAsset]) -> None:
         self._assets = list(assets)
+
+    def set_obstacles(self, obstacles: Sequence[Any]) -> None:
+        self._obstacles = list(obstacles)
 
     def evaluate_geodetic_point(
         self,
@@ -111,6 +120,37 @@ class SpatialSafetyEngine:
                     "limit_mps": round(limit, 2),
                     "message": f"流速 {spd:.2f} m/s 略微超过建议流速上限 {limit:.2f} m/s，建议微调下潜时机或启用高推力模式",
                 })
+
+        # 4. Check dynamic moving obstacles / support vessels
+        for obs in self._obstacles:
+            if getattr(obs, "geodetic", None):
+                obs_geo = obs.geodetic
+                d_lat = (lat - obs_geo.latitude) * 111320.0
+                d_lon = (lon - obs_geo.longitude) * 111320.0 * 0.939
+                d_depth = depth_m - obs_geo.depth_m
+                dist_m = (d_lat**2 + d_lon**2 + d_depth**2) ** 0.5
+                radius = getattr(obs, "safety_radius_m", 30.0)
+
+                if dist_m < radius * 0.5:
+                    violations.append({
+                        "type": "dynamic_obstacle_collision_hazard",
+                        "severity": "hard",
+                        "obstacle_id": obs.obstacle_id,
+                        "obstacle_name": obs.name,
+                        "distance_m": round(dist_m, 2),
+                        "safety_radius_m": radius,
+                        "message": f"距离动态船舶/障碍物 '{obs.name}' 极近 ({dist_m:.1f}m < 紧急规避距离 {radius * 0.5:.1f}m)，触发紧急防碰撞硬约束阻断",
+                    })
+                elif dist_m < radius:
+                    warnings.append({
+                        "type": "dynamic_obstacle_proximity_warning",
+                        "severity": "soft",
+                        "obstacle_id": obs.obstacle_id,
+                        "obstacle_name": obs.name,
+                        "distance_m": round(dist_m, 2),
+                        "safety_radius_m": radius,
+                        "message": f"距离动态船舶/障碍物 '{obs.name}' 较近 ({dist_m:.1f}m)，位于外圈安全警戒区内 ({radius:.1f}m)",
+                    })
 
         is_safe = len(violations) == 0
         current_dict = current_data.to_dict() if hasattr(current_data, "to_dict") else None

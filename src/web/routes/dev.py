@@ -734,3 +734,29 @@ def dev_clear_observability_spans():
         "msg": "已清空内存中的链路追踪记录",
     })
 
+
+@dev_bp.route("/api/dev/asr/normalize", methods=["POST"])
+@_require_api_token
+def dev_normalize_asr_text():
+    """测试 ASR 油田专业术语上下文归一化与同音词纠错"""
+    from src.asr.asr_normalizer import normalize_terminology
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "请求体必须为 JSON 对象"}), 400
+
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return jsonify({"ok": False, "code": 400, "msg": "缺少 text 字段"}), 400
+
+    normalization = normalize_terminology(text)
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "raw_text": text,
+        "corrected_text": normalization["corrected_text"],
+        "normalization_changed": normalization["normalization_changed"],
+        "replacements": normalization["replacements"],
+        "warnings": normalization["warnings"],
+    })
+

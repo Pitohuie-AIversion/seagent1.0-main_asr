@@ -1,6 +1,7 @@
 """Subsea 4D World Model and Spatial Safety Package."""
 
 from .models import (
+    DynamicObstacle,
     GeodeticPoint,
     GeofenceSeverity,
     GeofenceZone,
@@ -15,6 +16,7 @@ from .spatial_safety import SpatialSafetyEngine
 from .world_model import SubseaWorldModel
 
 __all__ = [
+    "DynamicObstacle",
     "GeodeticPoint",
     "GeofenceSeverity",
     "GeofenceZone",

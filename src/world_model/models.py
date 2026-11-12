@@ -147,3 +147,31 @@ class OceanCurrentData:
             "shear_per_100m": round(self.shear_per_100m, 3),
             "source": self.source,
         }
+
+
+@dataclass
+class DynamicObstacle:
+    obstacle_id: str
+    name: str
+    obstacle_type: str = "surface_vessel"  # surface_vessel, support_ship, autonomous_drone, floating_debris
+    point: Point3D = field(default_factory=Point3D)
+    geodetic: GeodeticPoint | None = None
+    velocity_mps: Point3D = field(default_factory=Point3D)
+    safety_radius_m: float = 30.0
+    updated_at: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "obstacle_id": self.obstacle_id,
+            "name": self.name,
+            "obstacle_type": self.obstacle_type,
+            "point": {"x": self.point.x, "y": self.point.y, "z": self.point.z, "depth_m": self.point.depth_m},
+            "geodetic": (
+                {"lat": self.geodetic.latitude, "lon": self.geodetic.longitude, "depth_m": self.geodetic.depth_m}
+                if self.geodetic
+                else None
+            ),
+            "velocity_mps": {"vx": self.velocity_mps.x, "vy": self.velocity_mps.y, "vz": self.velocity_mps.z},
+            "safety_radius_m": self.safety_radius_m,
+            "updated_at": self.updated_at,
+        }

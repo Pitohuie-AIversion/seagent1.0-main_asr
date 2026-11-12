@@ -217,3 +217,51 @@ def test_geodetic_safety_check_high_current_limit_hard_and_soft():
     assert res_safe.is_safe is True
     assert not any(v.get("type") == "high_current_hazard" for v in res_safe.violations)
     assert not any(w.get("type") == "high_current_warning" for w in res_safe.warnings)
+
+
+def test_dynamic_obstacle_registration_and_proximity_safety():
+    from src.world_model import DynamicObstacle, GeodeticPoint, Point3D
+
+    wm = SubseaWorldModel.get_instance()
+    vessel = DynamicObstacle(
+        obstacle_id="TEST-SURFACE-VESSEL",
+        name="测试深水工程支持驳船",
+        obstacle_type="support_vessel",
+        point=Point3D(x=0.0, y=0.0, z=0.0),
+        geodetic=GeodeticPoint(latitude=21.000, longitude=115.000, depth_m=0.0),
+        safety_radius_m=50.0,
+    )
+    wm.add_dynamic_obstacle(vessel)
+    assert len(wm.list_dynamic_obstacles()) >= 2
+    assert wm.get_dynamic_obstacle("TEST-SURFACE-VESSEL") is not None
+
+    # Point 1: 10m below vessel (depth=10m < 25m = safety_radius * 0.5) -> HARD hazard
+    res_hard = wm.check_point_safety(lat=21.000, lon=115.000, depth_m=10.0)
+    assert res_hard.is_safe is False
+    assert any(v.get("type") == "dynamic_obstacle_collision_hazard" for v in res_hard.violations)
+
+    # Point 2: 35m below vessel (25m <= 35m < 50m) -> SOFT warning
+    res_soft = wm.check_point_safety(lat=21.000, lon=115.000, depth_m=35.0)
+    assert res_soft.is_safe is True
+    assert any(w.get("type") == "dynamic_obstacle_proximity_warning" for w in res_soft.warnings)
+
+    # Point 3: deep seabed at 300m -> completely clear of surface vessel
+    res_deep = wm.check_point_safety(lat=21.000, lon=115.000, depth_m=300.0)
+    assert res_deep.is_safe is True
+    assert not any(v.get("type") == "dynamic_obstacle_collision_hazard" for v in res_deep.violations)
+    assert not any(w.get("type") == "dynamic_obstacle_proximity_warning" for w in res_deep.warnings)
+
+
+def test_api_dev_asr_normalize_endpoint():
+    from web_backend import app
+    client = app.test_client()
+
+    resp = client.post("/api/dev/asr/normalize", json={
+        "text": "在流花油田使用柴油树控制面板进行翼阀操作"
+    })
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert data["normalization_changed"] is True
+    assert "采油树" in data["corrected_text"]
+    assert any(r["target"] == "采油树" for r in data["replacements"])

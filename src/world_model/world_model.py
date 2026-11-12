@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from .models import (
+    DynamicObstacle,
     GeodeticPoint,
     GeofenceSeverity,
     GeofenceZone,
@@ -35,6 +36,7 @@ class SubseaWorldModel:
         self._rw_lock = threading.RLock()
         self._assets: dict[str, SubseaAsset] = {}
         self._geofences: dict[str, GeofenceZone] = {}
+        self._obstacles: dict[str, DynamicObstacle] = {}
         self._robot_positions: dict[str, dict[str, Any]] = {}
         self._current_override: OceanCurrentData | None = None
         self._safety_engine = SpatialSafetyEngine()
@@ -131,9 +133,21 @@ class SubseaWorldModel:
         for a in default_assets:
             self._assets[a.asset_id] = a
 
+        # Default offshore support vessel
+        self._obstacles["VESSEL-HAIYANG-681"] = DynamicObstacle(
+            obstacle_id="VESSEL-HAIYANG-681",
+            name="海洋石油681 深水工程支持船",
+            obstacle_type="support_vessel",
+            point=Point3D(x=0.0, y=0.0, z=0.0),
+            geodetic=GeodeticPoint(latitude=20.815, longitude=115.735, depth_m=0.0),
+            safety_radius_m=60.0,
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+
     def _sync_safety_engine(self) -> None:
         self._safety_engine.set_geofences(list(self._geofences.values()))
         self._safety_engine.set_assets(list(self._assets.values()))
+        self._safety_engine.set_obstacles(list(self._obstacles.values()))
 
     # ================= Asset Operations =================
     def register_asset(self, asset: SubseaAsset) -> None:
@@ -177,6 +191,27 @@ class SubseaWorldModel:
     def list_geofences(self) -> list[GeofenceZone]:
         with self._rw_lock:
             return list(self._geofences.values())
+
+    # ================= Dynamic Obstacle & Vessel Operations =================
+    def add_dynamic_obstacle(self, obstacle: DynamicObstacle) -> None:
+        with self._rw_lock:
+            self._obstacles[obstacle.obstacle_id] = obstacle
+            self._sync_safety_engine()
+
+    def remove_dynamic_obstacle(self, obstacle_id: str) -> bool:
+        with self._rw_lock:
+            removed = bool(self._obstacles.pop(obstacle_id, None))
+            if removed:
+                self._sync_safety_engine()
+            return removed
+
+    def list_dynamic_obstacles(self) -> list[DynamicObstacle]:
+        with self._rw_lock:
+            return list(self._obstacles.values())
+
+    def get_dynamic_obstacle(self, obstacle_id: str) -> DynamicObstacle | None:
+        with self._rw_lock:
+            return self._obstacles.get(obstacle_id)
 
     # ================= Robot Pose Tracking =================
     def update_robot_pose(
@@ -319,7 +354,9 @@ class SubseaWorldModel:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "assets_count": len(self._assets),
                 "geofences_count": len(self._geofences),
+                "obstacles_count": len(self._obstacles),
                 "assets": [a.to_dict() for a in self._assets.values()],
                 "geofences": [g.to_dict() for g in self._geofences.values()],
+                "dynamic_obstacles": [o.to_dict() for o in self._obstacles.values()],
                 "robots": list(self._robot_positions.values()),
             }
