@@ -619,3 +619,39 @@ def dev_mission_step():
         "summary": summary.to_dict(),
     })
 
+
+@dev_bp.route("/api/dev/observability/spans", methods=["GET"])
+@_require_api_token
+def dev_get_observability_spans():
+    """获取内存环形缓冲区中记录的 OpenTelemetry 分布式追踪 Span 列表"""
+    from src.observability import export_spans_as_dicts, is_tracing_available
+
+    limit_str = request.args.get("limit", "50")
+    try:
+        limit = max(1, min(200, int(limit_str)))
+    except ValueError:
+        limit = 50
+
+    spans = export_spans_as_dicts(limit=limit)
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "is_available": is_tracing_available(),
+        "spans_count": len(spans),
+        "spans": spans,
+    })
+
+
+@dev_bp.route("/api/dev/observability/clear", methods=["POST"])
+@_require_api_token
+def dev_clear_observability_spans():
+    """清空内存中的 OpenTelemetry 链路追踪 Span 记录"""
+    from src.observability import clear_recorded_spans
+
+    clear_recorded_spans()
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "msg": "已清空内存中的链路追踪记录",
+    })
+

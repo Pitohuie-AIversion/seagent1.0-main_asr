@@ -126,3 +126,37 @@ def test_system_components_emit_spans():
     assert sched_spans[0].attributes["node_count"] == 2
     assert sched_spans[0].attributes["batch_count"] == 2
 
+
+def test_export_spans_as_dicts_and_dev_endpoints():
+    from src.observability import clear_recorded_spans, export_spans_as_dicts, trace_span
+    from web_backend import app
+
+    clear_recorded_spans()
+    with trace_span("seagent.test.export_op", attributes={"attr1": "val1", "num": 42}):
+        pass
+
+    dicts = export_spans_as_dicts(limit=10)
+    assert len(dicts) == 1
+    assert dicts[0]["name"] == "seagent.test.export_op"
+    assert dicts[0]["attributes"]["attr1"] == "val1"
+    assert dicts[0]["attributes"]["num"] == 42
+    assert dicts[0]["trace_id"] != ""
+    assert dicts[0]["span_id"] != ""
+
+    # Test dev API endpoints
+    client = app.test_client()
+    resp = client.get("/api/dev/observability/spans?limit=10")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert data["spans_count"] >= 1
+    assert data["spans"][0]["name"] == "seagent.test.export_op"
+
+    # Test clear endpoint
+    resp_clear = client.post("/api/dev/observability/clear")
+    assert resp_clear.status_code == 200
+    assert resp_clear.get_json()["ok"] is True
+
+    # Spans should now be empty
+    assert len(export_spans_as_dicts()) == 0
+

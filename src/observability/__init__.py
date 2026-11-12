@@ -2,6 +2,7 @@
 
 from .tracer import (
     clear_recorded_spans,
+    export_spans_as_dicts,
     get_recorded_spans,
     get_tracer,
     is_tracing_available,
@@ -11,6 +12,7 @@ from .tracer import (
 
 __all__ = [
     "clear_recorded_spans",
+    "export_spans_as_dicts",
     "get_recorded_spans",
     "get_tracer",
     "is_tracing_available",

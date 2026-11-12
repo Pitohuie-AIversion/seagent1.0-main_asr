@@ -90,6 +90,43 @@ def clear_recorded_spans() -> None:
         _in_memory_exporter.clear()
 
 
+def export_spans_as_dicts(limit: int = 50) -> list[dict[str, Any]]:
+    """Export recorded in-memory spans as JSON-serializable dictionaries."""
+    spans = get_recorded_spans()
+    result = []
+    for s in spans[-limit:]:
+        trace_id = f"{s.context.trace_id:032x}" if getattr(s, "context", None) else ""
+        span_id = f"{s.context.span_id:016x}" if getattr(s, "context", None) else ""
+        parent_id = None
+        if getattr(s, "parent", None) and hasattr(s.parent, "span_id"):
+            parent_id = f"{s.parent.span_id:016x}"
+
+        duration_ms = None
+        if getattr(s, "start_time", None) and getattr(s, "end_time", None):
+            duration_ms = round((s.end_time - s.start_time) / 1e6, 2)
+
+        status_str = "OK"
+        if getattr(s, "status", None):
+            if hasattr(s.status, "status_code"):
+                status_str = str(s.status.status_code.name)
+            else:
+                status_str = str(s.status)
+
+        result.append({
+            "name": getattr(s, "name", "unknown"),
+            "trace_id": trace_id,
+            "span_id": span_id,
+            "parent_id": parent_id,
+            "start_time_ns": getattr(s, "start_time", None),
+            "end_time_ns": getattr(s, "end_time", None),
+            "duration_ms": duration_ms,
+            "status": status_str,
+            "attributes": dict(getattr(s, "attributes", None) or {}),
+        })
+    return result
+
+
+
 @contextmanager
 def trace_span(
     name: str,
