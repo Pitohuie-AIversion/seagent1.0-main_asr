@@ -459,6 +459,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M10 6.5h4"/><path d="M6.5 10v4"/><path d="M17.5 10v4"/></svg>
         DAG 任务编排
       </button>
+      <button class="tab-btn" id="tabBtnWorldModel" type="button" data-tab="paneWorldModel">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+        4D 数字孪生与航线规划
+      </button>
     </nav>
 
     <!-- 右侧动作按钮 -->
@@ -835,6 +839,111 @@
         <div style="padding:16px;">
           <div id="otelSpansList" style="font-family:monospace; font-size:12px; background:var(--surface-muted); border:1px solid var(--line); border-radius:6px; padding:12px; max-height:220px; overflow:auto;">
             暂无记录的追踪链路。执行上方编排任务后点击“刷新链路”。
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- TAB 6: 4D 数字孪生与避障路径规划 (Subsea 4D World Model & Path Planner) -->
+    <div class="tab-pane" id="paneWorldModel" hidden>
+      <div class="scope-summary">
+        <h2>水下 4D 世界模型 · 数字孪生设施、空间地理围栏、实时海流流场与 3D/4D 避障路径规划</h2>
+        <p>基于南海流花油田 (LH11-1) 真实水下井口采油树与管汇群坐标，提供微米级设施物理包络、徐闻珊瑚礁生态红线区、DVL声学测速黑障区空间校验，以及多阶段避障轨迹生成。</p>
+      </div>
+
+      <!-- 数字孪生快照面板 -->
+      <section class="panel dynamic-panel" style="margin-top:20px;">
+        <div class="panel-head" style="display:flex; justify-content:space-between; align-items:center;">
+          <h2>水下数字孪生全景快照 (Digital Twin Assets & Geofences)</h2>
+          <button type="button" class="btn" id="btnRefreshWorldModel" style="padding:4px 12px; font-size:12px;">拉取最新快照</button>
+        </div>
+        <div style="padding:16px;">
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:12px; margin-bottom:16px;">
+            <div style="background:var(--surface-muted); border:1px solid var(--line); border-radius:8px; padding:12px;">
+              <div style="color:var(--muted); font-size:12px;">水下物理设施 (Assets)</div>
+              <div id="statWmAssetsCount" style="font-size:20px; font-weight:700; color:var(--cyan); margin-top:4px;">--</div>
+            </div>
+            <div style="background:var(--surface-muted); border:1px solid var(--line); border-radius:8px; padding:12px;">
+              <div style="color:var(--muted); font-size:12px;">空间地理围栏 (Geofences)</div>
+              <div id="statWmGeofencesCount" style="font-size:20px; font-weight:700; color:var(--amber); margin-top:4px;">--</div>
+            </div>
+            <div style="background:var(--surface-muted); border:1px solid var(--line); border-radius:8px; padding:12px;">
+              <div style="color:var(--muted); font-size:12px;">动态水面船只 (Vessels)</div>
+              <div id="statWmObstaclesCount" style="font-size:20px; font-weight:700; color:var(--green); margin-top:4px;">--</div>
+            </div>
+            <div style="background:var(--surface-muted); border:1px solid var(--line); border-radius:8px; padding:12px;">
+              <div style="color:var(--muted); font-size:12px;">流场剖面 (SCS Current)</div>
+              <div id="statWmCurrentInfo" style="font-size:14px; font-weight:600; color:var(--ink); margin-top:6px;">0.15~1.20 m/s</div>
+            </div>
+          </div>
+          <div id="worldModelSnapshotContent" style="font-family:monospace; font-size:12px; background:var(--surface-muted); border:1px solid var(--line); border-radius:6px; padding:12px; max-height:200px; overflow:auto;">
+            点击“拉取最新快照”加载水下设施与地理围栏详情。
+          </div>
+        </div>
+      </section>
+
+      <!-- 3D/4D 避障路径规划工作台 -->
+      <section class="panel dynamic-panel" style="margin-top:20px;">
+        <div class="panel-head">
+          <h2>3D/4D 水下碰撞规避与安全旁通路径规划器 (Subsea Path Planner)</h2>
+        </div>
+        <div style="padding:16px;">
+          <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px;">
+            <button type="button" class="btn" id="btnPresetDetour" style="padding:5px 12px; font-size:12px;">预设 1: 穿透流花水下管汇 (强制触发 3D 避障旁通)</button>
+            <button type="button" class="btn" id="btnPresetOpenWater" style="padding:5px 12px; font-size:12px;">预设 2: 空旷深水区直航</button>
+          </div>
+
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px;">
+            <div style="background:var(--surface-muted); border:1px solid var(--line); border-radius:8px; padding:12px;">
+              <div style="font-weight:600; font-size:13px; color:var(--cyan); margin-bottom:8px;">起点坐标 (Start Geodetic Point)</div>
+              <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
+                <div><label style="font-size:11px; color:var(--muted);">纬度 (Lat)</label><input type="number" step="0.0001" id="pathStartLat" value="20.8140" style="width:100%; background:var(--surface); border:1px solid var(--line); color:var(--ink); border-radius:4px; padding:4px;"></div>
+                <div><label style="font-size:11px; color:var(--muted);">经度 (Lon)</label><input type="number" step="0.0001" id="pathStartLon" value="115.7350" style="width:100%; background:var(--surface); border:1px solid var(--line); color:var(--ink); border-radius:4px; padding:4px;"></div>
+                <div><label style="font-size:11px; color:var(--muted);">水深 (Depth m)</label><input type="number" step="0.1" id="pathStartDepth" value="305.0" style="width:100%; background:var(--surface); border:1px solid var(--line); color:var(--ink); border-radius:4px; padding:4px;"></div>
+              </div>
+            </div>
+
+            <div style="background:var(--surface-muted); border:1px solid var(--line); border-radius:8px; padding:12px;">
+              <div style="font-weight:600; font-size:13px; color:var(--green); margin-bottom:8px;">终点坐标 (Goal Geodetic Point)</div>
+              <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
+                <div><label style="font-size:11px; color:var(--muted);">纬度 (Lat)</label><input type="number" step="0.0001" id="pathGoalLat" value="20.8160" style="width:100%; background:var(--surface); border:1px solid var(--line); color:var(--ink); border-radius:4px; padding:4px;"></div>
+                <div><label style="font-size:11px; color:var(--muted);">经度 (Lon)</label><input type="number" step="0.0001" id="pathGoalLon" value="115.7350" style="width:100%; background:var(--surface); border:1px solid var(--line); color:var(--ink); border-radius:4px; padding:4px;"></div>
+                <div><label style="font-size:11px; color:var(--muted);">水深 (Depth m)</label><input type="number" step="0.1" id="pathGoalDepth" value="305.0" style="width:100%; background:var(--surface); border:1px solid var(--line); color:var(--ink); border-radius:4px; padding:4px;"></div>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:16px; margin-bottom:16px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <label style="font-size:12px; color:var(--muted);">安全裕度 (m):</label>
+              <input type="number" id="pathMinClearance" value="10.0" step="1.0" style="width:70px; background:var(--surface); border:1px solid var(--line); color:var(--ink); border-radius:4px; padding:4px;">
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <label style="font-size:12px; color:var(--muted);">巡航流速 (m/s):</label>
+              <input type="number" id="pathCruiseSpeed" value="1.0" step="0.1" style="width:70px; background:var(--surface); border:1px solid var(--line); color:var(--ink); border-radius:4px; padding:4px;">
+            </div>
+            <button type="button" class="btn primary" id="btnExecutePathPlan" style="padding:6px 16px;">🚀 执行 3D 避障规划</button>
+          </div>
+
+          <div id="pathPlanResultBadge" style="margin-bottom:8px; font-weight:600; font-size:13px; color:var(--ink-muted);">状态: 待规划</div>
+          <div id="pathPlanOutput" style="font-family:monospace; font-size:12px; background:var(--surface-muted); border:1px solid var(--line); border-radius:6px; padding:12px; max-height:220px; overflow:auto;">
+            设定起终点坐标并点击“执行 3D 避障规划”。
+          </div>
+        </div>
+      </section>
+
+      <!-- ASR 专业术语语义归一化测试面板 -->
+      <section class="panel dynamic-panel" style="margin-top:20px;">
+        <div class="panel-head">
+          <h2>ASR 水下工程专业术语同音纠错与语义归一化 (Domain Terminology Normalizer)</h2>
+        </div>
+        <div style="padding:16px;">
+          <div style="display:flex; gap:12px; margin-bottom:12px;">
+            <input type="text" id="asrInputText" value="在流花油田使用柴油树控制面板进行翼阀操作" style="flex:1; background:var(--surface); border:1px solid var(--line); color:var(--ink); border-radius:6px; padding:8px 12px; font-size:13px;">
+            <button type="button" class="btn primary" id="btnTestAsrNormalize">纠错归一化</button>
+          </div>
+          <div id="asrNormalizeOutput" style="font-family:monospace; font-size:12px; background:var(--surface-muted); border:1px solid var(--line); border-radius:6px; padding:12px; max-height:160px; overflow:auto;">
+            输入包含语音识别同音偏差的口语指令（如“柴油树”➔“采油树”），测试上下文校正引擎。
           </div>
         </div>
       </section>
@@ -1684,6 +1793,165 @@
       });
     }
 
+    /* ========== Subsea 4D World Model & Path Planner UI ========== */
+    function initWorldModelUI() {
+      const btnRefresh = document.getElementById('btnRefreshWorldModel');
+      const snapContent = document.getElementById('worldModelSnapshotContent');
+      const statAssets = document.getElementById('statWmAssetsCount');
+      const statGeofences = document.getElementById('statWmGeofencesCount');
+      const statObstacles = document.getElementById('statWmObstaclesCount');
+
+      async function loadSnapshot() {
+        try {
+          const resp = await fetch('/api/dev/world-model/snapshot');
+          const data = await resp.json();
+          if (!resp.ok || !data.ok) {
+            if (snapContent) snapContent.textContent = `❌ 获取世界模型快照失败: ${data.msg || 'HTTP ' + resp.status}`;
+            return;
+          }
+          const wm = data.world_model || {};
+          if (statAssets) statAssets.textContent = wm.assets_count ?? '--';
+          if (statGeofences) statGeofences.textContent = wm.geofences_count ?? '--';
+          if (statObstacles) statObstacles.textContent = wm.obstacles_count ?? '--';
+
+          let out = `【4D 水下数字孪生全景快照 (更新时间: ${wm.timestamp || '最新'})】\n`;
+          out += `\n▶ 水下物理设施 (Assets: ${wm.assets_count || 0}):\n`;
+          (wm.assets || []).forEach(a => {
+            out += `  • [${a.asset_id}] ${a.name} (${a.asset_type}) | 包络半径: ${a.bounding_radius_m}m\n`;
+            if (a.geodetic) {
+              out += `    经纬度: (${a.geodetic.latitude.toFixed(4)}, ${a.geodetic.longitude.toFixed(4)}) | 深度: ${a.geodetic.depth_m}m\n`;
+            }
+          });
+          out += `\n▶ 空间地理围栏 (Geofences: ${wm.geofences_count || 0}):\n`;
+          (wm.geofences || []).forEach(g => {
+            const sevBadge = g.severity === 'hard' ? '🛑 硬阻断' : '⚠️ 软预警';
+            out += `  • [${sevBadge}] ${g.name} (${g.zone_type}) | 纬度范围: [${g.lat_range}] | 经度范围: [${g.lon_range}]\n`;
+          });
+          out += `\n▶ 动态水面与水下避碰目标 (Obstacles: ${wm.obstacles_count || 0}):\n`;
+          (wm.dynamic_obstacles || []).forEach(o => {
+            out += `  • [${o.obstacle_id}] ${o.name} (${o.obstacle_type}) | 安全半径: ${o.safety_radius_m}m\n`;
+          });
+          if (snapContent) snapContent.textContent = out;
+        } catch (err) {
+          if (snapContent) snapContent.textContent = `❌ 快照请求异常: ${err.message}`;
+        }
+      }
+
+      btnRefresh?.addEventListener('click', loadSnapshot);
+
+      document.getElementById('btnPresetDetour')?.addEventListener('click', () => {
+        document.getElementById('pathStartLat').value = '20.8140';
+        document.getElementById('pathStartLon').value = '115.7350';
+        document.getElementById('pathStartDepth').value = '305.0';
+        document.getElementById('pathGoalLat').value = '20.8160';
+        document.getElementById('pathGoalLon').value = '115.7350';
+        document.getElementById('pathGoalDepth').value = '305.0';
+      });
+
+      document.getElementById('btnPresetOpenWater')?.addEventListener('click', () => {
+        document.getElementById('pathStartLat').value = '20.8300';
+        document.getElementById('pathStartLon').value = '115.7500';
+        document.getElementById('pathStartDepth').value = '280.0';
+        document.getElementById('pathGoalLat').value = '20.8350';
+        document.getElementById('pathGoalLon').value = '115.7550';
+        document.getElementById('pathGoalDepth').value = '290.0';
+      });
+
+      const btnPlan = document.getElementById('btnExecutePathPlan');
+      const badgePlan = document.getElementById('pathPlanResultBadge');
+      const outPlan = document.getElementById('pathPlanOutput');
+
+      btnPlan?.addEventListener('click', async () => {
+        try {
+          const payload = {
+            start: {
+              lat: parseFloat(document.getElementById('pathStartLat').value),
+              lon: parseFloat(document.getElementById('pathStartLon').value),
+              depth_m: parseFloat(document.getElementById('pathStartDepth').value),
+            },
+            goal: {
+              lat: parseFloat(document.getElementById('pathGoalLat').value),
+              lon: parseFloat(document.getElementById('pathGoalLon').value),
+              depth_m: parseFloat(document.getElementById('pathGoalDepth').value),
+            },
+            min_clearance_m: parseFloat(document.getElementById('pathMinClearance').value) || 10.0,
+            cruise_speed_mps: parseFloat(document.getElementById('pathCruiseSpeed').value) || 1.0,
+          };
+          if (badgePlan) {
+            badgePlan.textContent = '状态: 正在执行 3D/4D 碰撞规避航线规划...';
+            badgePlan.style.color = '#38bdf8';
+          }
+          const resp = await fetch('/api/dev/world-model/plan-path', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data.ok) {
+            if (outPlan) outPlan.textContent = `❌ 规划失败: ${data.msg || 'HTTP ' + resp.status}`;
+            if (badgePlan) {
+              badgePlan.textContent = '状态: 规划失败';
+              badgePlan.style.color = '#ef4444';
+            }
+            return;
+          }
+          const plan = data.path_plan;
+          if (badgePlan) {
+            badgePlan.textContent = plan.is_feasible ? '状态: 规划成功 · 航线安全可行' : '状态: 规划受阻 · 硬约束不可逾越';
+            badgePlan.style.color = plan.is_feasible ? '#10b981' : '#ef4444';
+          }
+          let text = `【3D/4D 水下航线规划计算结果】\n`;
+          text += `  可行性 (Feasible): ${plan.is_feasible ? '✓ 是 (SAFE)' : '✗ 否 (BLOCKED)'}\n`;
+          text += `  航程总长: ${plan.total_distance_m} m | 预估航行耗时: ${plan.estimated_duration_s} 秒\n`;
+          text += `  遭遇最大海流: ${plan.max_current_mps} m/s | 绕避障碍物: ${plan.bypassed_obstacles.length > 0 ? plan.bypassed_obstacles.join(', ') : '无 (直航)'}\n`;
+          text += `  规划说明: ${plan.notes}\n`;
+          text += `\n【生成航点轨迹列表 (共 ${plan.waypoints_count} 点)】:\n`;
+          plan.waypoints.forEach(wp => {
+            const tag = wp.detour ? ' [⚡ 旁通避障航点]' : '';
+            text += `  • Step ${wp.step}: Lat ${wp.lat.toFixed(6)}, Lon ${wp.lon.toFixed(6)}, 深度 ${wp.depth_m.toFixed(1)}m | 段间距: ${wp.segment_distance_m}m${tag}\n`;
+          });
+          if (outPlan) outPlan.textContent = text;
+        } catch (err) {
+          if (outPlan) outPlan.textContent = `❌ 规划异常: ${err.message}`;
+        }
+      });
+
+      const btnAsr = document.getElementById('btnTestAsrNormalize');
+      const outAsr = document.getElementById('asrNormalizeOutput');
+      btnAsr?.addEventListener('click', async () => {
+        try {
+          const textVal = document.getElementById('asrInputText').value.trim();
+          const resp = await fetch('/api/dev/asr/normalize', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({text: textVal}),
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data.ok) {
+            if (outAsr) outAsr.textContent = `❌ ASR 归一化失败: ${data.msg || 'HTTP ' + resp.status}`;
+            return;
+          }
+          let resText = `【ASR 水下工程专业术语归一化结果】\n`;
+          resText += `  原始转写: "${data.raw_text}"\n`;
+          resText += `  纠错归一: "${data.corrected_text}"\n`;
+          resText += `  发生变更: ${data.normalization_changed ? '✓ 已校正同音词/语义' : '无变更'}\n`;
+          if (data.replacements && data.replacements.length > 0) {
+            resText += `\n【词条替换明细】:\n`;
+            data.replacements.forEach(r => {
+              resText += `  • "${r.source}" ➔ "${r.target}" (规则: ${r.reason})\n`;
+            });
+          }
+          if (data.warnings && data.warnings.length > 0) {
+            resText += `\n⚠️ 提示警告: ${data.warnings.join('; ')}\n`;
+          }
+          if (outAsr) outAsr.textContent = resText;
+        } catch (err) {
+          if (outAsr) outAsr.textContent = `❌ 请求异常: ${err.message}`;
+        }
+      });
+
+      loadSnapshot();
+    }
 
     // 初始加载后端拓扑与工具清单
     loadBackends();
@@ -1691,6 +1959,7 @@
     loadGatewayFleet();
     initTaskGraphWorkbench();
     initMissionOrchestratorUI();
+    initWorldModelUI();
   </script>
 </body>
 </html>
