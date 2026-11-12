@@ -746,12 +746,16 @@ def dev_mission_step():
     force_fail_id = payload.get("force_fail_node_id")
     failure_reason = payload.get("failure_reason", "Hydraulic torque exceeded: valve stuck")
     use_acoustic_comm = bool(payload.get("use_acoustic_comm", False))
+    parallel_dispatch = bool(payload.get("parallel_dispatch", True))
+    check_4d_corridor = bool(payload.get("check_4d_corridor", True))
 
     step_result = orchestrator.step_mission(
         graph=graph,
         force_fail_node_id=force_fail_id,
         failure_reason=failure_reason,
         use_acoustic_comm=use_acoustic_comm,
+        parallel_dispatch=parallel_dispatch,
+        check_4d_corridor=check_4d_corridor,
     )
     summary = orchestrator.get_mission_summary(graph)
 
@@ -797,6 +801,8 @@ def dev_mission_run():
     use_acoustic_comm = bool(payload.get("use_acoustic_comm", False))
     force_fail_id = payload.get("force_fail_node_id")
     failure_reason = payload.get("failure_reason", "Hydraulic torque exceeded: valve stuck")
+    parallel_dispatch = bool(payload.get("parallel_dispatch", True))
+    check_4d_corridor = bool(payload.get("check_4d_corridor", True))
 
     run_result = orchestrator.run_mission_to_completion(
         graph=graph,
@@ -804,6 +810,8 @@ def dev_mission_run():
         use_acoustic_comm=use_acoustic_comm,
         force_fail_node_id=force_fail_id,
         failure_reason=failure_reason,
+        parallel_dispatch=parallel_dispatch,
+        check_4d_corridor=check_4d_corridor,
     )
 
     return jsonify({

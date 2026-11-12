@@ -1,6 +1,7 @@
 """Mission Orchestrator executing end-to-end DAG task batches, gateway dispatch, and replanning."""
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import time
 from typing import Any
@@ -8,7 +9,7 @@ from typing import Any
 from src.observability import trace_span
 from src.replanning import DynamicReplanningEngine, ReplanningTrigger, ReplanningTriggerType
 from src.robot_gateway import RobotGateway
-from src.task_graph import TaskGraph, TaskGraphAllocator, TaskNodeStatus
+from src.task_graph import TaskGraph, TaskGraphAllocator, TaskNode, TaskNodeStatus
 from src.world_model import SubseaWorldModel
 from .decomposer import MissionDecomposer
 from .models import MissionState, MissionSummary, SubtaskExecutionRecord
@@ -123,6 +124,19 @@ class MissionOrchestrator:
             allocator = TaskGraphAllocator(available_robots)
             return allocator.allocate_ready_nodes(graph)
 
+    @staticmethod
+    def _extract_node_waypoints(node: TaskNode) -> list[dict[str, Any]]:
+        """Extract spatial geodetic waypoints from a task node for 4D corridor evaluation."""
+        if "waypoints" in node.parameters and isinstance(node.parameters["waypoints"], list):
+            return node.parameters["waypoints"]
+        coords = node.parameters.get("coordinates") or {}
+        lat = node.parameters.get("lat") or coords.get("lat")
+        lon = node.parameters.get("lon") or coords.get("lon")
+        depth = node.water_depth or node.parameters.get("depth_m") or coords.get("depth_m") or 0.0
+        if lat is not None and lon is not None:
+            return [{"lat": float(lat), "lon": float(lon), "depth_m": float(depth)}]
+        return []
+
     def step_mission(
         self,
         graph: TaskGraph,
@@ -131,25 +145,126 @@ class MissionOrchestrator:
         failure_reason: str = "Subsea execution failure",
         use_acoustic_comm: bool = False,
         acoustic_channel: Any | None = None,
+        parallel_dispatch: bool = True,
+        max_workers: int = 4,
+        check_4d_corridor: bool = True,
     ) -> dict[str, Any]:
         """Execute one topological stage of the mission DAG.
-        Dispatches READY nodes to the Robot Gateway and triggers Dynamic Replanning upon failure."""
+        Dispatches READY nodes to the Robot Gateway in parallel across distinct robots
+        with 4D corridor deconfliction, and triggers Dynamic Replanning upon failure."""
         with trace_span("seagent.mission.step", attributes={"graph_id": graph.graph_id}) as span:
             ready_nodes = graph.get_ready_nodes()
             history = self._execution_history.setdefault(graph.graph_id, [])
 
-            dispatched_nodes = []
-            replanned_events = []
+            if not ready_nodes:
+                is_done = graph.is_completed()
+                has_fail = graph.has_failures()
+                st = MissionState.COMPLETED if is_done else (MissionState.ABORTED if has_fail else MissionState.IN_PROGRESS)
+                return {
+                    "mission_id": graph.graph_id,
+                    "state": st.value,
+                    "dispatched_nodes": [],
+                    "replanned_events": [],
+                    "parallel_executed": False,
+                    "is_completed": is_done,
+                    "has_failures": has_fail,
+                    "execution_batches": graph.get_execution_batches(),
+                    "mermaid": graph.to_mermaid(),
+                }
 
+            # Ensure unassigned ready nodes are assigned
+            unassigned = [n for n in ready_nodes if not n.assigned_robot_id]
+            if unassigned:
+                self.allocate_fleet(graph, available_robots=available_robots)
+
+            # Robot serialization: A single physical robot executes only one task at a time.
+            # Select up to one ready node per distinct robot for concurrent dispatch in this wave.
+            dispatchable_nodes: list[TaskNode] = []
+            seen_robots: set[str] = set()
             for node in ready_nodes:
+                r_id = node.assigned_robot_id or f"UNIT_{node.node_id}"
+                if r_id not in seen_robots:
+                    seen_robots.add(r_id)
+                    dispatchable_nodes.append(node)
+                else:
+                    logger.info(
+                        "[MissionOrchestrator] Robot %s already assigned in current wave; deferring node %s",
+                        r_id, node.node_id,
+                    )
+
+            # 4D Temporal-Spatial Corridor Conflict Detection & Altitude Separation Deconfliction
+            if check_4d_corridor and len(dispatchable_nodes) > 1:
+                from src.world_model.path_planner import _calc_geodetic_dist
+
+                reserved_trajectories: list[tuple[str, list[dict[str, Any]]]] = []
+                final_dispatchable: list[TaskNode] = []
+
+                for node in dispatchable_nodes:
+                    node_wps = self._extract_node_waypoints(node)
+                    target_unit = node.assigned_robot_id or f"UNIT_{node.node_id}"
+                    if not node_wps:
+                        final_dispatchable.append(node)
+                        continue
+
+                    has_conflict = False
+                    for other_unit, other_wps in reserved_trajectories:
+                        if other_unit == target_unit:
+                            continue
+                        for wp1 in node_wps:
+                            for wp2 in other_wps:
+                                dist_m = _calc_geodetic_dist(
+                                    float(wp1["lat"]), float(wp1["lon"]), float(wp1.get("depth_m", 0.0)),
+                                    float(wp2["lat"]), float(wp2["lon"]), float(wp2.get("depth_m", 0.0)),
+                                )
+                                if dist_m < 20.0:  # 2 * R_min (10m) = 20m separation
+                                    has_conflict = True
+                                    break
+                            if has_conflict:
+                                break
+                        if has_conflict:
+                            break
+
+                    if has_conflict:
+                        curr_depth = float(node.water_depth or node.parameters.get("depth_m", 0.0))
+                        alt_offset = -25.0 if curr_depth > 40.0 else 25.0
+                        new_depth = max(5.0, curr_depth + alt_offset)
+                        node.water_depth = new_depth
+                        node.parameters["depth_m"] = new_depth
+                        if "coordinates" in node.parameters and isinstance(node.parameters["coordinates"], dict):
+                            node.parameters["coordinates"]["depth_m"] = new_depth
+                        node_wps = [{"lat": wp["lat"], "lon": wp["lon"], "depth_m": new_depth} for wp in node_wps]
+                        if "waypoints" in node.parameters and isinstance(node.parameters["waypoints"], list):
+                            node.parameters["waypoints"] = node_wps
+
+                        logger.info(
+                            "[MissionOrchestrator] Multi-robot corridor conflict detected for node %s on unit %s. Auto-applied altitude separation offset: %.1fm (new depth: %.1fm)",
+                            node.node_id, target_unit, alt_offset, new_depth,
+                        )
+
+                    reserved_trajectories.append((target_unit, node_wps))
+                    final_dispatchable.append(node)
+
+                dispatchable_nodes = final_dispatchable
+
+            # Reserve corridors in SubseaWorldModel for all active subtasks
+            if check_4d_corridor:
+                for node in dispatchable_nodes:
+                    node_wps = self._extract_node_waypoints(node)
+                    if node_wps and node.assigned_robot_id:
+                        self.world_model.reserve_robot_corridor(
+                            robot_id=node.assigned_robot_id,
+                            waypoints=node_wps,
+                            radius_m=15.0,
+                        )
+
+            # Single node dispatch worker
+            def _dispatch_single_node(node: TaskNode, seq_num: int) -> dict[str, Any]:
                 target_unit = node.assigned_robot_id
                 start_t = time.time()
 
-                # Simulate / test fault injection trigger
                 is_injected_fail = (force_fail_node_id == node.node_id)
                 is_acoustic_dropped = False
                 raw_acoustic_frame: bytes | None = None
-                seq_num = len(history) + 1
 
                 if use_acoustic_comm:
                     try:
@@ -205,13 +320,47 @@ class MissionOrchestrator:
                             "codec": "acoustic_32byte_crc16",
                         }
 
+                return {
+                    "node": node,
+                    "target_unit": target_unit,
+                    "start_t": start_t,
+                    "finish_t": time.time(),
+                    "dispatch_status": dispatch_status,
+                    "err_msg": err_msg,
+                    "telemetry": telemetry,
+                }
+
+            # Concurrent execution across distinct robots
+            if parallel_dispatch and len(dispatchable_nodes) > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(dispatchable_nodes))) as executor:
+                    futures = [
+                        executor.submit(_dispatch_single_node, node, len(history) + idx + 1)
+                        for idx, node in enumerate(dispatchable_nodes)
+                    ]
+                    exec_results = [f.result() for f in futures]
+            else:
+                exec_results = [
+                    _dispatch_single_node(node, len(history) + idx + 1)
+                    for idx, node in enumerate(dispatchable_nodes)
+                ]
+
+            dispatched_nodes = []
+            replanned_events = []
+
+            for item in exec_results:
+                node = item["node"]
+                target_unit = item["target_unit"]
+                dispatch_status = item["dispatch_status"]
+                err_msg = item["err_msg"]
+                telemetry = item["telemetry"]
+
                 rec = SubtaskExecutionRecord(
                     node_id=node.node_id,
                     task_type=node.task_type,
                     robot_id=target_unit,
                     status=dispatch_status,
-                    dispatched_at=start_t,
-                    finished_at=time.time(),
+                    dispatched_at=item["start_t"],
+                    finished_at=item["finish_t"],
                     error=err_msg,
                     telemetry_snapshot=telemetry,
                 )
@@ -223,7 +372,6 @@ class MissionOrchestrator:
                     logger.info("[MissionOrchestrator] Node %s completed successfully on unit %s", node.node_id, target_unit)
                 else:
                     logger.warning("[MissionOrchestrator] Node %s failed: %s. Triggering replanning...", node.node_id, err_msg)
-                    # Trigger Dynamic Replanning
                     trigger = ReplanningTrigger(
                         trigger_type=ReplanningTriggerType.SUBTASK_FAILED,
                         node_id=node.node_id,
@@ -239,6 +387,9 @@ class MissionOrchestrator:
                         logger.info("[MissionOrchestrator] Replanning applied for %s: %s", node.node_id, plan.summary)
                     else:
                         graph.update_node_status(node.node_id, TaskNodeStatus.FAILED, error=err_msg)
+
+            if check_4d_corridor:
+                self.world_model.clear_corridor_reservations()
 
             is_done = graph.is_completed()
             has_fail = graph.has_failures()
@@ -258,6 +409,7 @@ class MissionOrchestrator:
                 "state": mission_state.value,
                 "dispatched_nodes": dispatched_nodes,
                 "replanned_events": replanned_events,
+                "parallel_executed": bool(parallel_dispatch and len(dispatched_nodes) > 1),
                 "is_completed": is_done,
                 "has_failures": has_fail,
                 "execution_batches": graph.get_execution_batches(),
@@ -273,6 +425,9 @@ class MissionOrchestrator:
         acoustic_channel: Any | None = None,
         force_fail_node_id: str | None = None,
         failure_reason: str = "Subsea execution failure",
+        parallel_dispatch: bool = True,
+        max_workers: int = 4,
+        check_4d_corridor: bool = True,
     ) -> dict[str, Any]:
         """Autonomously step through DAG task batches until the mission is either
         COMPLETED, ABORTED, or max_steps limit is reached."""
@@ -305,6 +460,9 @@ class MissionOrchestrator:
                     failure_reason=failure_reason,
                     use_acoustic_comm=use_acoustic_comm,
                     acoustic_channel=acoustic_channel,
+                    parallel_dispatch=parallel_dispatch,
+                    max_workers=max_workers,
+                    check_4d_corridor=check_4d_corridor,
                 )
 
                 if step_fail_id:

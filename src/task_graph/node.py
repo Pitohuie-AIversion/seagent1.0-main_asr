@@ -49,9 +49,17 @@ class TaskNode:
         except (ValueError, TypeError):
             return 0.0
 
+    @water_depth.setter
+    def water_depth(self, value: float) -> None:
+        self.parameters["water_depth"] = float(value)
+
     @property
     def name(self) -> str:
         return str(self.metadata.get("name") or self.parameters.get("name") or self.node_id)
+
+    @name.setter
+    def name(self, value: str) -> None:
+        self.metadata["name"] = str(value)
 
     @property
     def properties(self) -> dict[str, Any]:

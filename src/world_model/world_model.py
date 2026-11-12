@@ -408,6 +408,24 @@ class SubseaWorldModel:
         with self._rw_lock:
             self._path_planner.clear_corridors()
 
+    def check_corridor_conflicts(
+        self,
+        waypoints: list[dict[str, Any]],
+        start_time_s: float = 0.0,
+        cruise_speed_mps: float = 1.0,
+        exclude_robot_id: str | None = None,
+        min_separation_m: float = 20.0,
+    ) -> list[dict[str, Any]]:
+        """Detect any temporal-spatial overlaps with active corridors reserved by other robots."""
+        with self._rw_lock:
+            return self._path_planner.check_corridor_conflicts(
+                waypoints=waypoints,
+                start_time_s=start_time_s,
+                cruise_speed_mps=cruise_speed_mps,
+                exclude_robot_id=exclude_robot_id,
+                min_separation_m=min_separation_m,
+            )
+
     def export_snapshot(self) -> dict[str, Any]:
         """Export serializable snapshot of the subsea digital twin."""
         with self._rw_lock:

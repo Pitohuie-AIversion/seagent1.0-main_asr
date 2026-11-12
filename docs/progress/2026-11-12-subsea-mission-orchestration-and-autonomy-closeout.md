@@ -55,6 +55,10 @@
    - 支持机群 4D 时空走廊（Time-Space Corridor）预约与交叉冲突检测，当多机时空走廊冲突时，自动触发三维高度层分离（Altitude Separation），保证多机协同作业时空安全。
 14. **洋流动力学与水动力阻力能耗估算模型 (`src/world_model/path_planner.py`)**：
    - 基于海水密度、钝体阻力系数与流速矢量，精确积分求解航迹水阻推力功耗与蓄电池能耗（kWh），实现迎流/顺流能耗精细化核算。
+15. **多机器人异构并发并行派发与机群单体串行化安全隔离 (`src/orchestration/orchestrator.py`)**：
+   - 针对同一拓扑代次中分配至不同机器人的独立就绪子任务，采用 `ThreadPoolExecutor` 线程池实现真实并发并行分发与执行推进；
+   - 对分配给同一台物理机器人的多个就绪子任务，强制实施单体串行化安全隔离与递延防抢占保护；
+   - 并行分发前实时执行 4D 时空走廊与多机交叉冲突检测，检测到冲突时自适应执行高度层垂直分离（$\pm 25\text{m}$），保障水下多机作业零干涉。
 
 ---
 
@@ -125,7 +129,7 @@ pytest tests/test_mission_orchestration.py tests/test_replanning.py tests/test_t
 ```
 测试结果：
 ```text
-167 passed, 2 subtests passed in 8.29s (100% pass, 0 failed, 0 errors)
+170 passed, 2 subtests passed in 8.16s (100% pass, 0 failed, 0 errors)
 ```
 
 ### 3.2 治理矩阵 AM-01 ~ AM-23 状态

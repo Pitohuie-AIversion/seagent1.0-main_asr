@@ -366,3 +366,125 @@ def test_mission_preflight_blocks_on_high_current_hazard():
     assert passed is False
     assert "水下急流超限险情" in msg
     assert any(v.get("type") == "high_current_hazard" for v in violations)
+
+
+def test_mission_multi_robot_concurrent_parallel_dispatch():
+    from src.task_graph import TaskGraph, TaskNode, TaskNodeStatus
+
+    gw = RobotGateway.get_instance()
+    gw.register_driver(SimulatedRobotDriver(unit_id="SIM-ROV-001"), is_default=False)
+    gw.register_driver(SimulatedRobotDriver(unit_id="SIM-ROV-002"), is_default=False)
+
+    orchestrator = MissionOrchestrator(gateway=gw)
+    graph = TaskGraph(graph_id="TG_CONCURRENT_DISPATCH")
+    n1 = TaskNode(
+        node_id="concurrent_node_1",
+        task_type="sonar_scan",
+        assigned_robot_id="SIM-ROV-001",
+        status=TaskNodeStatus.READY,
+        parameters={"water_depth": 150.0, "lat": 18.200, "lon": 115.100},
+        metadata={"name": "Sonar Sweep North"},
+    )
+    n2 = TaskNode(
+        node_id="concurrent_node_2",
+        task_type="sonar_scan",
+        assigned_robot_id="SIM-ROV-002",
+        status=TaskNodeStatus.READY,
+        parameters={"water_depth": 150.0, "lat": 18.250, "lon": 115.150},
+        metadata={"name": "Sonar Sweep South"},
+    )
+    graph.add_node(n1)
+    graph.add_node(n2)
+
+    res = orchestrator.step_mission(graph, parallel_dispatch=True, check_4d_corridor=True)
+    assert res["parallel_executed"] is True
+    assert len(res["dispatched_nodes"]) == 2
+    assert "concurrent_node_1" in res["dispatched_nodes"]
+    assert "concurrent_node_2" in res["dispatched_nodes"]
+    assert res["is_completed"] is True
+    assert graph.is_completed() is True
+    assert len(orchestrator._execution_history[graph.graph_id]) == 2
+
+
+def test_mission_multi_robot_corridor_deconfliction_altitude_separation():
+    from src.task_graph import TaskGraph, TaskNode, TaskNodeStatus
+
+    gw = RobotGateway.get_instance()
+    gw.register_driver(SimulatedRobotDriver(unit_id="SIM-ROV-001"), is_default=False)
+    gw.register_driver(SimulatedRobotDriver(unit_id="SIM-ROV-002"), is_default=False)
+
+    orchestrator = MissionOrchestrator(gateway=gw)
+    graph = TaskGraph(graph_id="TG_CORRIDOR_DECONFLICT")
+    # Coordinates in collision range: same lat/lon, only 5m depth difference (< 20m separation threshold)
+    n1 = TaskNode(
+        node_id="conflicting_node_1",
+        task_type="visual_inspection",
+        assigned_robot_id="SIM-ROV-001",
+        status=TaskNodeStatus.READY,
+        parameters={"water_depth": 100.0, "lat": 18.500, "lon": 115.000, "depth_m": 100.0},
+        metadata={"name": "Manifold Close Inspection"},
+    )
+    n2 = TaskNode(
+        node_id="conflicting_node_2",
+        task_type="laser_scan",
+        assigned_robot_id="SIM-ROV-002",
+        status=TaskNodeStatus.READY,
+        parameters={"water_depth": 105.0, "lat": 18.500, "lon": 115.000, "depth_m": 105.0},
+        metadata={"name": "Manifold Laser Scan"},
+    )
+    graph.add_node(n1)
+    graph.add_node(n2)
+
+    res = orchestrator.step_mission(graph, parallel_dispatch=True, check_4d_corridor=True)
+    assert res["parallel_executed"] is True
+    assert res["is_completed"] is True
+    assert graph.is_completed() is True
+
+    # Check that altitude separation offset was automatically applied to deconflict
+    node2_updated = graph.get_node("conflicting_node_2")
+    assert node2_updated.water_depth != 105.0
+    assert abs(node2_updated.water_depth - 100.0) >= 20.0
+
+
+def test_mission_single_robot_serialization_deferral():
+    from src.task_graph import TaskGraph, TaskNode, TaskNodeStatus
+
+    gw = RobotGateway.get_instance()
+    gw.register_driver(SimulatedRobotDriver(unit_id="SIM-ROV-SOLO"), is_default=False)
+
+    orchestrator = MissionOrchestrator(gateway=gw)
+    graph = TaskGraph(graph_id="TG_SERIALIZATION_DEFERRAL")
+    # Two independent ready tasks, but both assigned to SIM-ROV-SOLO
+    n1 = TaskNode(
+        node_id="solo_task_1",
+        task_type="survey",
+        assigned_robot_id="SIM-ROV-SOLO",
+        status=TaskNodeStatus.READY,
+        parameters={"water_depth": 80.0},
+        metadata={"name": "Task 1"},
+    )
+    n2 = TaskNode(
+        node_id="solo_task_2",
+        task_type="survey",
+        assigned_robot_id="SIM-ROV-SOLO",
+        status=TaskNodeStatus.READY,
+        parameters={"water_depth": 80.0},
+        metadata={"name": "Task 2"},
+    )
+    graph.add_node(n1)
+    graph.add_node(n2)
+
+    # First wave: only solo_task_1 should be dispatched because SIM-ROV-SOLO is busy
+    res1 = orchestrator.step_mission(graph, parallel_dispatch=True)
+    assert res1["dispatched_nodes"] == ["solo_task_1"]
+    assert res1["parallel_executed"] is False
+    assert graph.get_node("solo_task_1").status == TaskNodeStatus.COMPLETED
+    assert graph.get_node("solo_task_2").status == TaskNodeStatus.READY
+    assert res1["is_completed"] is False
+
+    # Second wave: now solo_task_2 gets dispatched
+    res2 = orchestrator.step_mission(graph, parallel_dispatch=True)
+    assert res2["dispatched_nodes"] == ["solo_task_2"]
+    assert graph.get_node("solo_task_2").status == TaskNodeStatus.COMPLETED
+    assert res2["is_completed"] is True
+    assert graph.is_completed() is True
