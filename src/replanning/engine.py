@@ -118,6 +118,126 @@ class DynamicReplanningEngine:
                 is_recoverable = False
                 summary = f"关键子任务 {node.node_id} 失败且无备选解，已安全中止下游依赖任务"
 
+        # Case 3: Environmental ocean current exceeded
+        elif trigger.trigger_type == ReplanningTriggerType.ENVIRONMENT_CURRENT_EXCEEDED and trigger.node_id:
+            node = graph.get_node(trigger.node_id)
+            if not node:
+                return ReplanningPlan(plan_id=plan_id, trigger=trigger, is_recoverable=False, summary="Target node not found")
+
+            # Try to reallocate to a heavy work-class robot with higher current limit
+            backup_robot = None
+            for robot in (available_robots or []):
+                if robot.get("unit_id") == node.assigned_robot_id:
+                    continue
+                if robot.get("status") in ("BUSY", "FAULT", "OFFLINE"):
+                    continue
+                if float(robot.get("current_limit_mps", 1.5)) >= 2.0:
+                    backup_robot = robot
+                    break
+
+            if backup_robot:
+                actions.append(
+                    ReplanningAction(
+                        action_type=ReplanningActionType.REALLOCATE_ROBOT,
+                        target_node_id=node.node_id,
+                        new_robot_id=backup_robot["unit_id"],
+                        reason=f"环境海流超限 ({trigger.reason})，重新分配至高抗流重型作业设备 {backup_robot['unit_id']}",
+                    )
+                )
+                summary = f"海流超限，成功重分配任务至高抗流设备 {backup_robot['unit_id']}"
+            else:
+                mitigation_id = f"{node.node_id}_await_current"
+                mitigation_node = TaskNode(
+                    node_id=mitigation_id,
+                    task_type="await_current_window",
+                    parameters={"water_depth": node.water_depth, "parent_task": node.node_id, "hold_duration_s": 300},
+                    assigned_robot_id=node.assigned_robot_id,
+                    metadata={"name": f"{node.name} · 海流窗口观测与定深驻留", "parent_task": node.node_id, "mitigation": True},
+                )
+                actions.append(
+                    ReplanningAction(
+                        action_type=ReplanningActionType.INSERT_MITIGATION_NODE,
+                        target_node_id=node.node_id,
+                        mitigation_node=mitigation_node,
+                        reason=f"海流流速超限 ({trigger.reason})，动态插入定深驻留等待海流平缓窗口子任务",
+                    )
+                )
+                summary = f"海流超限，动态插入定深驻留子任务 {mitigation_id} 并延后执行原任务"
+
+        # Case 4: Geofence proximity or dynamic obstacle encroaching
+        elif trigger.trigger_type == ReplanningTriggerType.GEOFENCE_PROXIMITY_WARNING and trigger.node_id:
+            node = graph.get_node(trigger.node_id)
+            if not node:
+                return ReplanningPlan(plan_id=plan_id, trigger=trigger, is_recoverable=False, summary="Target node not found")
+
+            detour_id = f"{node.node_id}_detour"
+            mitigation_node = TaskNode(
+                node_id=detour_id,
+                task_type="obstacle_avoidance_detour",
+                parameters={"water_depth": node.water_depth, "parent_task": node.node_id, "clearance_m": 25.0},
+                assigned_robot_id=node.assigned_robot_id,
+                metadata={"name": f"{node.name} · 3D 避障旁通航段", "parent_task": node.node_id, "mitigation": True},
+            )
+            actions.append(
+                ReplanningAction(
+                    action_type=ReplanningActionType.INSERT_MITIGATION_NODE,
+                    target_node_id=node.node_id,
+                    mitigation_node=mitigation_node,
+                    reason=f"地理围栏或动态障碍物预警 ({trigger.reason})，动态插入 3D 旁通避障航线节点",
+                )
+            )
+            summary = f"检测到空间障碍物阻挡，动态插入 3D 旁通避障子任务 {detour_id}"
+
+        # Case 5: Execution timeout
+        elif trigger.trigger_type == ReplanningTriggerType.EXECUTION_TIMEOUT and trigger.node_id:
+            node = graph.get_node(trigger.node_id)
+            if not node:
+                return ReplanningPlan(plan_id=plan_id, trigger=trigger, is_recoverable=False, summary="Target node not found")
+
+            retries = getattr(node, "retry_count", 0)
+            max_retries = int(node.properties.get("max_retries", 2))
+
+            if retries < max_retries:
+                actions.append(
+                    ReplanningAction(
+                        action_type=ReplanningActionType.RETRY_NODE,
+                        target_node_id=node.node_id,
+                        reason=f"子任务 {node.node_id} 执行超时 (重试次数: {retries + 1}/{max_retries})",
+                    )
+                )
+                summary = f"子任务 {node.node_id} 超时，触发第 {retries + 1} 次就地重试"
+            else:
+                backup = self._find_backup_robot(node, available_robots or [], exclude_unit_id=node.assigned_robot_id)
+                if backup:
+                    actions.append(
+                        ReplanningAction(
+                            action_type=ReplanningActionType.REALLOCATE_ROBOT,
+                            target_node_id=node.node_id,
+                            new_robot_id=backup["unit_id"],
+                            reason=f"子任务 {node.node_id} 达到最大重试次数，转派至备选设备 {backup['unit_id']}",
+                        )
+                    )
+                    summary = f"子任务 {node.node_id} 超时达到上限，转派至设备 {backup['unit_id']}"
+                elif node.properties.get("optional") is True:
+                    actions.append(
+                        ReplanningAction(
+                            action_type=ReplanningActionType.SKIP_OPTIONAL_NODE,
+                            target_node_id=node.node_id,
+                            reason=f"可选子任务 {node.node_id} 超时且无重试额度，跳过以保护主流程",
+                        )
+                    )
+                    summary = f"可选子任务 {node.node_id} 超时，已自动跳过"
+                else:
+                    actions.append(
+                        ReplanningAction(
+                            action_type=ReplanningActionType.SAFE_ABORT_DOWNSTREAM,
+                            target_node_id=node.node_id,
+                            reason=f"关键子任务 {node.node_id} 超时且耗尽重试配额，安全中止下游",
+                        )
+                    )
+                    is_recoverable = False
+                    summary = f"关键子任务 {node.node_id} 严重超时，安全中止下游"
+
         else:
             is_recoverable = False
             summary = f"未处理的重规划触发类型: {trigger.trigger_type.value}"
@@ -166,6 +286,10 @@ class DynamicReplanningEngine:
                     mit_node.status = TaskNodeStatus.READY
                 else:
                     mit_node.status = TaskNodeStatus.PENDING
+
+            elif action.action_type == ReplanningActionType.RETRY_NODE:
+                target_node.retry_count = getattr(target_node, "retry_count", 0) + 1
+                target_node.status = TaskNodeStatus.READY
 
             elif action.action_type == ReplanningActionType.SKIP_OPTIONAL_NODE:
                 target_node.status = TaskNodeStatus.SKIPPED

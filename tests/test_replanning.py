@@ -259,3 +259,124 @@ def test_api_dev_replanning_evaluate_invalid_trigger_rejected():
     data = resp.get_json()
     assert data["ok"] is False
     assert "trigger_type" in data["msg"]
+
+
+def test_replanning_current_exceeded_with_heavy_backup_robot():
+    graph = TaskGraph("pipeline_survey")
+    node = TaskNode("survey_1", "pipeline_inspection", assigned_robot_id="ROV-LIGHT", status=TaskNodeStatus.READY)
+    graph.add_node(node)
+
+    available_robots = [
+        {"unit_id": "ROV-LIGHT", "current_limit_mps": 1.2, "status": "BUSY"},
+        {"unit_id": "ROV-HEAVY", "current_limit_mps": 2.5, "status": "IDLE"},
+    ]
+
+    engine = DynamicReplanningEngine()
+    trigger = ReplanningTrigger(
+        trigger_type=ReplanningTriggerType.ENVIRONMENT_CURRENT_EXCEEDED,
+        node_id="survey_1",
+        reason="Local current spiked to 1.8 m/s",
+    )
+    plan = engine.evaluate_failure(trigger, graph, available_robots)
+    assert plan.is_recoverable is True
+    assert len(plan.actions) == 1
+    assert plan.actions[0].action_type == ReplanningActionType.REALLOCATE_ROBOT
+    assert plan.actions[0].new_robot_id == "ROV-HEAVY"
+
+    engine.apply_replanning_plan(plan, graph)
+    assert graph.get_node("survey_1").assigned_robot_id == "ROV-HEAVY"
+
+
+def test_replanning_current_exceeded_without_backup_inserts_await_window():
+    graph = TaskGraph("pipeline_survey")
+    node = TaskNode("survey_1", "pipeline_inspection", assigned_robot_id="ROV-LIGHT", status=TaskNodeStatus.READY)
+    graph.add_node(node)
+
+    available_robots = [
+        {"unit_id": "ROV-LIGHT", "current_limit_mps": 1.2, "status": "IDLE"},
+    ]
+
+    engine = DynamicReplanningEngine()
+    trigger = ReplanningTrigger(
+        trigger_type=ReplanningTriggerType.ENVIRONMENT_CURRENT_EXCEEDED,
+        node_id="survey_1",
+        reason="Local current spiked to 2.0 m/s",
+    )
+    plan = engine.evaluate_failure(trigger, graph, available_robots)
+    assert plan.is_recoverable is True
+    assert len(plan.actions) == 1
+    assert plan.actions[0].action_type == ReplanningActionType.INSERT_MITIGATION_NODE
+    assert plan.actions[0].mitigation_node.task_type == "await_current_window"
+
+    engine.apply_replanning_plan(plan, graph)
+    assert "survey_1_await_current" in graph.nodes
+    assert graph.get_prerequisites("survey_1") == ["survey_1_await_current"]
+
+
+def test_replanning_geofence_proximity_inserts_3d_detour():
+    graph = TaskGraph("transit_mission")
+    node = TaskNode("transit_1", "rov_transit", assigned_robot_id="ROV-001", status=TaskNodeStatus.READY)
+    graph.add_node(node)
+
+    engine = DynamicReplanningEngine()
+    trigger = ReplanningTrigger(
+        trigger_type=ReplanningTriggerType.GEOFENCE_PROXIMITY_WARNING,
+        node_id="transit_1",
+        reason="Encroaching forbidden coral reef perimeter",
+    )
+    plan = engine.evaluate_failure(trigger, graph)
+    assert plan.is_recoverable is True
+    assert len(plan.actions) == 1
+    assert plan.actions[0].action_type == ReplanningActionType.INSERT_MITIGATION_NODE
+    assert plan.actions[0].mitigation_node.task_type == "obstacle_avoidance_detour"
+
+    engine.apply_replanning_plan(plan, graph)
+    assert "transit_1_detour" in graph.nodes
+    assert graph.get_prerequisites("transit_1") == ["transit_1_detour"]
+
+
+def test_replanning_execution_timeout_retry_and_escalate():
+    graph = TaskGraph("cleaning_mission")
+    node = TaskNode(
+        "clean_1",
+        "marine_growth_cleaning",
+        assigned_robot_id="ROV-001",
+        status=TaskNodeStatus.READY,
+        metadata={"max_retries": 1},
+    )
+    graph.add_node(node)
+
+    available_robots = [
+        {"unit_id": "ROV-001", "status": "IDLE", "capabilities": ["all"]},
+        {"unit_id": "ROV-BACKUP", "status": "IDLE", "capabilities": ["all"]},
+    ]
+
+    engine = DynamicReplanningEngine()
+
+    # 1. First timeout -> retry
+    trigger1 = ReplanningTrigger(
+        trigger_type=ReplanningTriggerType.EXECUTION_TIMEOUT,
+        node_id="clean_1",
+        reason="Operation timed out after 120s",
+    )
+    plan1 = engine.evaluate_failure(trigger1, graph, available_robots)
+    assert plan1.is_recoverable is True
+    assert plan1.actions[0].action_type == ReplanningActionType.RETRY_NODE
+
+    engine.apply_replanning_plan(plan1, graph)
+    assert graph.get_node("clean_1").retry_count == 1
+    assert graph.get_node("clean_1").status == TaskNodeStatus.READY
+
+    # 2. Second timeout -> max_retries reached, escalate to reallocate
+    trigger2 = ReplanningTrigger(
+        trigger_type=ReplanningTriggerType.EXECUTION_TIMEOUT,
+        node_id="clean_1",
+        reason="Operation timed out again after 120s",
+    )
+    plan2 = engine.evaluate_failure(trigger2, graph, available_robots)
+    assert plan2.is_recoverable is True
+    assert plan2.actions[0].action_type == ReplanningActionType.REALLOCATE_ROBOT
+    assert plan2.actions[0].new_robot_id == "ROV-BACKUP"
+
+    engine.apply_replanning_plan(plan2, graph)
+    assert graph.get_node("clean_1").assigned_robot_id == "ROV-BACKUP"

@@ -33,8 +33,8 @@
    - 针对 200-300 bps 极窄带水声信道设计定长 32 字节紧凑二进制帧协议（压缩比达 ~80x）；
    - 配合 CRC-16-CCITT 帧完整性校验、滑动窗口 ARQ 重传机制与断网离线事务存储转发（Store-and-Forward）差量同步。
 5. **执行反馈驱动的动态重规划容灾自愈 (`src/replanning/`)**：
-   - 闭环感知执行故障（如阀门卡阻、液压超扭、推进器断电故障）；
-   - 自动生成自愈方案：动态剪接注入前置反冲解卡辅助节点（`INSERT_MITIGATION_NODE`）或故障转移至备选设备（`REALLOCATE_ROBOT`），保持 DAG 拓扑无环不变性。
+   - 闭环感知执行故障、海流超限、地理围栏逼近及作业超时五大触发源（`ROBOT_HARDWARE_FAULT`、`SUBTASK_FAILED`、`ENVIRONMENT_CURRENT_EXCEEDED`、`GEOFENCE_PROXIMITY_WARNING`、`EXECUTION_TIMEOUT`）；
+   - 自动生成自愈方案：动态剪接注入前置反冲解卡辅助节点、海流平缓窗口定深驻留节点（`await_current_window`）、3D 避障旁通节点（`obstacle_avoidance_detour`）、就地重试（`RETRY_NODE`）或故障转移至高抗流备选设备（`REALLOCATE_ROBOT`），保持 DAG 拓扑无环不变性。
 6. **水下任务全流程总控编排器 (`src/orchestration/`)**：
    - 实现任务意图自动解耦器 `MissionDecomposer`（采油树阀门作业、管道巡检、海缆冲埋作业模板）；
    - 总控编排器 `MissionOrchestrator` 贯通 4D 空间预检、机群分配、拓扑代次推进与自愈容灾全生命周期。
@@ -125,7 +125,7 @@ pytest tests/test_mission_orchestration.py tests/test_replanning.py tests/test_t
 ```
 测试结果：
 ```text
-163 passed, 2 subtests passed in 8.07s (100% pass, 0 failed, 0 errors)
+167 passed, 2 subtests passed in 8.29s (100% pass, 0 failed, 0 errors)
 ```
 
 ### 3.2 治理矩阵 AM-01 ~ AM-23 状态
