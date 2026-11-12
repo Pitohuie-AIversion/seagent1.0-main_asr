@@ -1,6 +1,7 @@
 """Robot Gateway (Robot Abstraction Layer) managing heterogeneous robot drivers and fleet dispatch."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 from typing import Any
@@ -24,6 +25,7 @@ class RobotGateway:
     def __init__(self):
         self._drivers: dict[str, BaseRobotDriver] = {}
         self._default_driver_id: str | None = None
+        self._dispatch_records: dict[str, dict[str, Any]] = {}
         self._rw_lock = threading.RLock()
 
     @classmethod
@@ -34,6 +36,17 @@ class RobotGateway:
                 if cls._instance is None:
                     cls._instance = cls()
         return cls._instance
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        """Reset the singleton instance for testing or clean restart."""
+        with cls._lock:
+            if cls._instance:
+                try:
+                    cls._instance.emergency_stop_all()
+                except Exception:
+                    pass
+            cls._instance = None
 
     def register_driver(self, driver: BaseRobotDriver, is_default: bool = False) -> None:
         """Register a robot driver instance."""
@@ -126,3 +139,68 @@ class RobotGateway:
             except Exception as exc:
                 logger.error("[RobotGateway] Error polling telemetry for %s: %s", d.unit_id, exc)
         return snapshots
+
+    def is_healthy(self) -> bool:
+        """Check if gateway has at least one connected driver."""
+        with self._rw_lock:
+            if not self._drivers:
+                return False
+            return any(d.is_connected() for d in self._drivers.values())
+
+    def get_dispatch_record(self, task_intent: dict[str, Any]) -> dict[str, Any] | None:
+        """Read send evidence without publishing a command (Bridge Protocol compliance)."""
+        identity = task_intent.get("intent_id") or task_intent.get("task_id")
+        if not identity:
+            import json
+            identity = hashlib.sha256(json.dumps(task_intent, sort_keys=True, default=str).encode()).hexdigest()
+        with self._rw_lock:
+            return self._dispatch_records.get(str(identity))
+
+    def dispatch_intent(
+        self,
+        task_intent: dict[str, Any],
+        task_id: int | None = None,
+        **kwargs: Any,
+    ) -> int:
+        """Send finalized task intent and return numeric task_id (Bridge Protocol compliance)."""
+        if not self.is_healthy():
+            raise RuntimeError("Robot gateway has no connected drivers available.")
+
+        identity = str(
+            task_intent.get("intent_id")
+            or task_intent.get("task_id")
+            or hashlib.sha256(str(task_intent).encode()).hexdigest()
+        )
+
+        with self._rw_lock:
+            existing = self._dispatch_records.get(identity)
+            if existing and existing.get("dispatch_state") == "SENT":
+                return int(existing["task_id"])
+
+        result = self.dispatch_task(task_intent)
+        if result.status != CommandExecutionStatus.SENT:
+            raise RuntimeError(result.error_message or f"Gateway driver execution status: {result.status.value}")
+
+        if task_id is not None:
+            numeric_task_id = task_id
+        elif result.task_id is not None:
+            raw_id = str(result.task_id)
+            try:
+                if raw_id.startswith("0x") or raw_id.startswith("0X"):
+                    numeric_task_id = int(raw_id, 16)
+                else:
+                    numeric_task_id = int(raw_id)
+            except ValueError:
+                numeric_task_id = int(hashlib.md5(raw_id.encode()).hexdigest()[:6], 16)
+        else:
+            numeric_task_id = int(hashlib.md5(identity.encode()).hexdigest()[:6], 16)
+
+        with self._rw_lock:
+            self._dispatch_records[identity] = {
+                "dispatch_state": "SENT",
+                "task_id": numeric_task_id,
+                "command_id": result.command_id,
+                "unit_id": task_intent.get("equipment_unit_id") or task_intent.get("robot_id"),
+            }
+
+        return numeric_task_id

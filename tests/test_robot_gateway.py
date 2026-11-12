@@ -170,3 +170,64 @@ def test_api_dev_gateway_endpoints():
     assert "fleet_telemetry" in data_telem
     assert isinstance(data_telem["fleet_telemetry"], dict)
 
+
+def test_robot_gateway_bridge_compliance_and_dispatch_completed_task(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from datetime import datetime, timedelta, timezone
+    from src.dispatch.task_dispatch import dispatch_completed_task
+    from src.validation.validator import ValidationResult
+
+    now = datetime(2026, 9, 17, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr("src.dispatch.task_dispatch.get_current_datetime", lambda: now)
+
+    gateway = RobotGateway()
+    driver = SimulatedRobotDriver(unit_id="ROV-BRIDGE-001")
+    assert not gateway.is_healthy()
+    gateway.register_driver(driver, is_default=True)
+    driver.connect()
+    assert gateway.is_healthy()
+
+    validation = ValidationResult(
+        overall_status="valid",
+        validated_at=now.isoformat(),
+        task_version=1,
+        validation_version=1,
+        validation_fingerprint="current",
+        state_snapshot=None,
+        violations=[],
+    )
+    intent = {
+        "intent_id": "TI-GATEWAY-001",
+        "task_type": "pipeline_inspection",
+        "time": {"start": now.isoformat(), "end": (now + timedelta(hours=2)).isoformat()},
+        "conditions": {"runtime_validation": {"required": True}},
+        "equipment_unit_id": "ROV-BRIDGE-001",
+    }
+    manager = SimpleNamespace(
+        phase="done",
+        final_result=intent,
+        task_state={"equipment_unit_id": "ROV-BRIDGE-001"},
+        slot_store=SimpleNamespace(version=1),
+        validator=SimpleNamespace(validate_task=Mock(return_value=validation)),
+        _get_valid_acknowledgements=Mock(return_value=[]),
+        ros2_dispatch=None,
+    )
+
+    # Dispatch through RobotGateway as bridge
+    result = dispatch_completed_task(manager, gateway)
+    assert result["state"] == "SENT"
+    assert "task_id" in result
+    task_id = result["task_id"]
+
+    # Verify dispatch record and idempotency
+    record = gateway.get_dispatch_record(intent)
+    assert record is not None
+    assert record["dispatch_state"] == "SENT"
+    assert record["task_id"] == task_id
+
+    # Repeated dispatch returns SENT idempotently without re-execution
+    repeat_res = dispatch_completed_task(manager, gateway)
+    assert repeat_res["state"] == "SENT"
+    assert repeat_res["task_id"] == task_id
+
