@@ -85,6 +85,46 @@ src/
 ├── utils/                     # 通用工具函数集合
 ├── web/                       # Flask 蓝图 (Blueprint) 路由与 SSE 服务端点
 │
+├── task_graph/                # 有向无环图 (DAG) 任务拓扑与多机协同分配域
+│   ├── node.py                # TaskNode 原子子任务节点与状态模型
+│   ├── graph.py               # TaskGraph DAG 拓扑计算与 Kahn 算法分层
+│   └── allocator.py           # TaskGraphAllocator 基于能力与水深的多机分配
+│
+├── world_model/               # 水下 4D 世界模型与空间安全防御域
+│   ├── models.py              # 三维空间点、资产孪生与 3D 地理围栏模型
+│   ├── spatial_safety.py      # SpatialSafetyEngine 空间安全与物理间隙引擎
+│   └── world_model.py         # SubseaWorldModel 单例与设施资产状态管理
+│
+├── robot_gateway/             # 机器人抽象层 (RAL) 与统一驱动网关域
+│   ├── base.py                # BaseRobotDriver 统一硬件抽象接口
+│   ├── simulated_driver.py    # SimulatedRobotDriver 本地高保真仿真驱动
+│   ├── ros2_driver.py         # ROS2RobotDriver 真实 ROS 2 / Bridge MCP 驱动
+│   └── gateway.py             # RobotGateway 异构机群路由与统一遥测聚合
+│
+├── weak_comm/                 # 水下微弱声学通信与容灾传输域
+│   ├── codec.py               # 32 字节定长二进制协议编码与解码器
+│   ├── crc16.py               # CRC-16-CCITT 帧完整性校验
+│   ├── arq.py                 # AcousticARQSession 滑动窗口自适应重传
+│   ├── store_and_forward.py   # 离线事务队列与断网差量重连同步
+│   └── channel_simulator.py   # 水声高丢包率与随机误码信道模拟器
+│
+├── replanning/                # 执行反馈驱动的动态重规划与容灾域
+│   ├── models.py              # 重规划触发器、动作与自愈恢复方案模型
+│   └── engine.py              # DynamicReplanningEngine 故障诊断与 DAG 节点自适应注入
+│
+├── orchestration/             # 水下任务全流程编排与闭环执行域
+│   ├── decomposer.py          # MissionDecomposer 复合任务意图自动解耦
+│   ├── orchestrator.py        # MissionOrchestrator 4D预检、拓扑推进与自愈执行
+│   └── models.py              # MissionState 与 SubtaskExecutionRecord 审计模型
+│
+├── observability/             # 可观测性与分布式链路追踪域
+│   └── tracer.py              # OpenTelemetry 追踪封装、内存缓冲与上下文管理器
+│
+├── llm_backends/              # 多后端大模型推理引擎域 (vLLM / Mock / API)
+├── tools/                     # 水下 ROV 物理作业工具注册表与实现
+│   ├── registry.py            # ToolRegistry 与参数 Schema 生成器
+│   └── builtin_tools.py       # 8 大物理工具（阀门回转、冲洗、巡检等）
+│
 └── 顶层核心门面与基础设施
     ├── dialogue_manager.py    # 对话总协调器门面 (HSM Facade)
     ├── constants.py           # 全局业务字段标签与常量单点真实源 (SSOT)
@@ -95,6 +135,7 @@ src/
     ├── environment_info.py    # 外部海况环境信息入口
     └── state_info.py          # 机器人实时状态信息入口
 ```
+
 
 ---
 

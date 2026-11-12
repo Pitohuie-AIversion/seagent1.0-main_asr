@@ -21,14 +21,19 @@ SEAgent 通过 **WRITE/QUERY 双通道路由**、**SlotStore 统一状态中心*
 当前支持管缆巡检、管缆埋设和采油树控制面板阀门插拔三类模板。拔出任务可归档，但当前 ROS 2 协议不支持拔出指令，执行派发会阻断；详见 [执行下发契约](docs/execution_dispatch_contract.md)。
 
 - **多模态自然语言交互**：支持文本输入与基于 Qwen ASR 的语音转写输入，结合领域词汇+上下文纠错与油田实体 Link 打分匹配。
-- **结构化语义路由（ADR-005）**：以 `InteractionPlan.operation` 组织路由，低置信度写操作和模型协议失败转入澄清；当前仍有候选别名、列表选择和固定任务启动表达触发的局部规则修正，详见 ADR-005 的实现差异说明。
+- **结构化语义路由（ADR-005）**：以 `InteractionPlan.operation` 组织路由，低置信度写操作和模型协议失败转入澄清；当前仍有候选别名、列表选择和固定任务启动表达触发的局部规则修正。
 - **WRITE / QUERY 意图解耦**：精准区分写任务参数 (`WRITE`) 与读知识/状态 (`QUERY`)，确保查询交互绝对不污染任务状态。
 - **SlotStore 状态中心**：提供 Single Source of Truth，支持全局版本自增、只读快照断言与事务回滚。
-- **机器人候选收敛（ADR-008）**：统一候选入口按任务能力、已确认水深和载荷筛选系列与型号，交互收集阶段保留忙闲候选；非交互且任务在未来 60 分钟内开始时过滤不可用单机。用户明确选择的设备仍保留以报告具体约束冲突；海床过滤和软警告排序尚未接入候选入口，发布与执行仍须经过后续业务校验。
-- **设备候选与别名层级解析**：支持系列（Family）、型号（Variant）与单机（Unit）分层别名映射及 `canonical_exact` -> `alias_exact` -> `llm_semantic` 递进解析。
 - **物理与海况强约束校验**：集成水深、海况、载荷及机器人在 `config/state.yaml` 中的实时遥测状态校验；约束失败直接阻断，不退化为追问。
 - **TaskIntent 原子落盘保障**：基于 Staging 暂存区、跨进程排他锁 `TaskPublishLock` 与 `_atomic_commit_noreplace` 硬链接提交，确保任务文件全有或全无落盘。
-- **快照恢复内存原子性（ADR-007）**：`load_snapshot()` 采用隔离候选管理器方案，恢复要么完整生效，要么完全不影响当前会话。
+- **DAG 任务拓扑与分层并行调度 (`src/task_graph/`)**：将顶层意图解耦为原子子任务节点，基于前置依赖自动计算拓扑分层执行批次（Topological Batches），防止死锁与循环依赖，支持 Mermaid 流程图导出与机群初分配。
+- **水下 4D 世界模型与空间安全防御 (`src/world_model/`)**：建立油田设施三维空间数字孪生，内置 `SpatialSafetyEngine`，实现生态禁区三维包络与物理安全间隙校验。
+- **机器人抽象层 (RAL) 与机群驱动网关 (`src/robot_gateway/`)**：统一多型 ROV/AUV 通信标准，提供仿真与真实 ROS 2 / Bridge MCP 驱动，兼容 Bridge 协议下发并聚合标准化遥测快照。
+- **水下微弱声学通信协议 (`src/weak_comm/`)**：定制 32 字节紧凑定长二进制帧（压缩比 ~80x），配合 CRC-16 校验、滑动窗口 ARQ 重传与断网离线存储转发同步。
+- **动态重规划与容灾自愈 (`src/replanning/`)**：感知阀门卡阻、超扭与推进器硬件故障，自动剪接前置解卡辅助节点或故障转移至备机，自愈推进后续任务。
+- **水下任务全流程编排器 (`src/orchestration/`)**：贯通意图解耦、4D 安全预检、异构机群调度与闭环自愈推进，形成深海无人作业端到端自动化能力。
+- **OpenTelemetry 分布式链路追踪 (`src/observability/`)**：实现内存环形缓冲追踪、Span 自动注入与跨组件耗时审计。
+- **Mission Control 控制台 (`frontend/ros2_dashboard.html`)**：五合一驾驶舱（遥测监控、双 GPU 后端、物理工具台、机群网关、DAG 编排与容灾演练工作台）。
 
 ---
 
@@ -43,6 +48,13 @@ graph TD
     SlotStore --> Validator[Validator 物理与海况约束校验]
     Validator --> TaskIntentBuilder[TaskIntentBuilder 安全落盘构建]
     TaskIntentBuilder --> TaskIntentPersistence[(TaskIntent JSON 安全持久化)]
+    TaskIntentPersistence --> MissionOrchestrator[MissionOrchestrator 全流程总控编排]
+    MissionOrchestrator --> TaskGraph[TaskGraph DAG 拓扑分代]
+    MissionOrchestrator --> WorldModel[SubseaWorldModel 4D 空间安全]
+    MissionOrchestrator --> RobotGateway[RobotGateway 机器人抽象网关]
+    RobotGateway --> Drivers[SimulatedDriver / ROS 2 MCP]
+    RobotGateway -.-> Replanning[DynamicReplanningEngine 容灾自愈]
+    Replanning -.-> TaskGraph
 ```
 
 ---
@@ -53,12 +65,8 @@ graph TD
 .
 ├── config/              # 业务与系统配置文件 (ASR, 资产, 物理约束, 地理环境, 机器人舰队, 状态)
 ├── docs/                # 正式项目文档体系 (架构总览, 开发测试指南, ADR 决策记录, 阶段进度报表)
-│   ├── architecture/    # 系统架构设计文档
-│   ├── decisions/       # 架构决策记录 (ADR)
-│   ├── development/     # 开发与测试指南
-│   └── progress/        # 阶段验证与缺陷跟踪报表
 ├── requirements/        # Python 依赖管理 (base.txt, test.txt, gpu.txt)
-├── src/                 # 系统核心 Python 源码模块（已完成 DDD 领域分层与内聚治理）
+├── src/                 # 系统核心 Python 源码模块
 │   ├── asr/             # ASR 语音转写服务与领域专有名词纠偏
 │   ├── temporal/        # 时间语义抽取、相对时间计算与时间范围引擎
 │   ├── slots/           # 槽位存储 (SlotStore)、版本控制、候选仲裁与快照持久化
@@ -68,20 +76,26 @@ graph TD
 │   ├── session/         # 对话会话生命周期、影子跟踪、交互计划与意图路由
 │   ├── handlers/        # DialogueManager 状态机各业务处理子模块
 │   ├── knowledge/       # 油田知识图谱、设备层次图与本体查询引擎
+│   ├── task_graph/      # 有向无环图 (DAG) 任务拓扑与多机协同分配
+│   ├── world_model/     # 水下 4D 世界模型与空间安全防御引擎
+│   ├── robot_gateway/   # 机器人抽象层 (RAL) 与机群驱动网关
+│   ├── weak_comm/       # 水下微弱声学通信、32字节紧凑编码与 ARQ 重传
+│   ├── replanning/      # 执行反馈驱动的动态重规划与容灾自愈引擎
+│   ├── orchestration/   # 水下任务全流程编排与闭环执行引擎
+│   ├── observability/   # OpenTelemetry 链路追踪与指标度量
+│   ├── llm_backends/    # 双卡 vLLM / Mock / API 大模型统一推理后端
+│   ├── tools/           # 水下 ROV 8 大物理作业工具注册表
 │   ├── types/           # 核心数据结构与路由类型定义
 │   ├── utils/           # 跨进程文件锁与通用辅助工具
-│   ├── web/             # Web API 蓝图路由与 SSE 打字机流服务
-│   ├── dialogue_manager.py # 对话总协调器门面 (HSM Facade)
-│   ├── llm_client.py    # 大模型统一接口客户端
-│   ├── knowledge_retriever.py # 知识库门面入口
-│   └── constants.py     # 全局业务字段标签与常量单点真实源 (SSOT)
-├── frontend/            # 前端交互 Web 资源 (index.html, js/, css/)
+│   └── web/             # Web API 蓝图路由与 SSE 服务端点
+├── frontend/            # 前端交互 Web 资源 (ros2_dashboard.html, js/, css/)
 ├── tests/               # 自动化单元测试与回归测试套件
 ├── run.py               # 系统主入口服务
 ├── web_backend.py       # Web 后端 API 服务
 ├── CONTRIBUTING.md      # 团队协作与贡献指南
 └── CHANGELOG.md         # Keep a Changelog 格式演进历史
 ```
+
 
 ---
 
