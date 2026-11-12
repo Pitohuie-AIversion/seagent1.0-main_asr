@@ -41,7 +41,13 @@
 7. **OpenTelemetry 分布式链路追踪 (`src/observability/`)**：
    - 实现轻量化内存环形缓冲导出器与上下文管理器，全链路监控任务派发、编排推进与状态流转。
 8. **Mission Control 五合一控制台 (`frontend/ros2_dashboard.html`)**：
-   - 升级集成全流程编排与自愈容灾试验台，支持一键解耦预检、拓扑批次单步推进与故障注入自愈推演。
+   - 升级集成全流程编排与自愈容灾试验台，支持一键解耦预检、拓扑批次单步推进、一键全自主闭环巡航（Auto Run）与水声微报文通信模拟。
+9. **南海海洋流速垂直剖面与机群抗流能力动态硬约束预检 (`src/world_model/`)**：
+   - 接入物理流速剖面衰减模型与环境流速动态覆盖，结合机群标称抗流阈值实现水下急流险情预警与硬约束阻断。
+10. **动态工程支持船舶与移动障碍物三维实时防碰撞规避 (`src/world_model/`)**：
+   - 支持动态船舶（如“海洋石油681”）与移动漂浮物的三维位置、速度矢量与安全包络跟踪，提供近地表作业的紧急防碰撞硬约束阻断与警戒区软告警。
+11. **ASR 专业术语与油田实体上下文归一化 Dev 端点 (`/api/dev/asr/normalize`)**：
+   - 支持开发者直接针对水下专业同音词、油田实体别名进行上下文归一化分析与纠偏测试。
 
 ---
 
@@ -50,7 +56,7 @@
 ```mermaid
 graph TD
     subgraph UI ["1. 交互与控制台层"]
-        Dashboard["Mission Control 驾驶舱 (ros2_dashboard.html)<br/>• 遥测监控 • 双GPU后端 • 物理工具 • 机群网关 • DAG容灾编排"]
+        Dashboard["Mission Control 驾驶舱 (ros2_dashboard.html)<br/>• 遥测监控 • 双GPU后端 • 物理工具 • 机群网关 • DAG容灾编排 • 自主巡航"]
     end
 
     subgraph Governance ["2. 状态机与安全治理层"]
@@ -65,15 +71,15 @@ graph TD
     end
 
     subgraph Orchestration ["4. 任务编排与执行优化层"]
-        Orchestrator["MissionOrchestrator (全流程闭环推进)"]
+        Orchestrator["MissionOrchestrator (全流程闭环推进与自主巡航)"]
         Decomposer["MissionDecomposer (意图解耦为 DAG)"]
         TaskGraph["TaskGraph (Kahn 算法拓扑分代调度)"]
         Replanning["DynamicReplanningEngine (自愈容灾动态重规划)"]
     end
 
     subgraph DigitalTwin ["5. 水下 4D 世界模型"]
-        WorldModel["SubseaWorldModel (水下设施数字孪生)"]
-        SafetyEngine["SpatialSafetyEngine (三维禁入区与物理间隙校验)"]
+        WorldModel["SubseaWorldModel (水下设施数字孪生 & 动态船舶追踪)"]
+        SafetyEngine["SpatialSafetyEngine (三维禁入区、物理间隙、流速与船舶避碰)"]
     end
 
     subgraph Communication ["6. 水声微通信与异构网关层"]
@@ -107,11 +113,11 @@ graph TD
 
 执行命令：
 ```bash
-/root/miniconda3/envs/seagent/bin/python -m pytest tests/test_mission_orchestration.py tests/test_replanning.py tests/test_task_graph.py tests/test_weak_comm.py tests/test_world_model.py tests/test_robot_gateway.py tests/test_observability.py tests/test_governance_invariants.py -q
+pytest tests/test_mission_orchestration.py tests/test_replanning.py tests/test_task_graph.py tests/test_weak_comm.py tests/test_world_model.py tests/test_robot_gateway.py tests/test_observability.py tests/test_governance_invariants.py tests/test_e2e_real_dialogue_flow.py tests/test_llm_backends_and_tools.py tests/test_issue_31_ui_state_contract.py tests/test_asr_normalizer.py -q
 ```
 测试结果：
 ```text
-76 passed in 4.42s (100% pass, 0 failed, 0 errors)
+157 passed, 2 subtests passed in 7.78s (100% pass, 0 failed, 0 errors)
 ```
 
 ### 3.2 治理矩阵 AM-01 ~ AM-23 状态
