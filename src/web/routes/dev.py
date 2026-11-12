@@ -324,5 +324,57 @@ def dev_poll_fleet_telemetry():
     })
 
 
+@dev_bp.route("/api/dev/world-model/snapshot", methods=["GET"])
+@_require_api_token
+def dev_world_model_snapshot():
+    """获取水下 4D 世界模型数字孪生快照 (设施、地理围栏与遥测)"""
+    from src.world_model import SubseaWorldModel
+
+    wm = SubseaWorldModel.get_instance()
+    snapshot = wm.export_snapshot()
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "world_model": snapshot,
+    })
+
+
+@dev_bp.route("/api/dev/world-model/check-safety", methods=["POST"])
+@_require_api_token
+def dev_world_model_check_safety():
+    """校验单点或作业轨迹的空间地理围栏与水下设施物理包络安全"""
+    from src.world_model import SubseaWorldModel
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "请求体必须为 JSON 对象"}), 400
+
+    wm = SubseaWorldModel.get_instance()
+    min_clearance = float(payload.get("min_clearance_m", 5.0))
+
+    if "waypoints" in payload and isinstance(payload["waypoints"], list):
+        result = wm.check_path_safety(payload["waypoints"], min_clearance_m=min_clearance)
+    elif "lat" in payload and "lon" in payload:
+        result = wm.check_point_safety(
+            lat=float(payload["lat"]),
+            lon=float(payload["lon"]),
+            depth_m=float(payload.get("depth_m", 0.0)),
+            min_clearance_m=min_clearance,
+        )
+    else:
+        return jsonify({
+            "ok": False,
+            "code": 400,
+            "msg": "缺少必要坐标参数，请提供 (lat, lon, depth_m) 或 waypoints 轨迹列表",
+        }), 400
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "safety_assessment": result.to_dict(),
+    })
+
+
+
 
 

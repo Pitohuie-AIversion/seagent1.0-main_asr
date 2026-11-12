@@ -1,0 +1,281 @@
+"""Subsea 4D World Model coordinating infrastructure digital twins, spatial geofences, and safety checks."""
+from __future__ import annotations
+
+import logging
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from .models import (
+    GeodeticPoint,
+    GeofenceSeverity,
+    GeofenceZone,
+    GeofenceZoneType,
+    Point3D,
+    SpatialSafetyCheckResult,
+    SubseaAsset,
+    SubseaAssetType,
+)
+from .spatial_safety import SpatialSafetyEngine
+
+logger = logging.getLogger(__name__)
+
+
+class SubseaWorldModel:
+    """Thread-safe Subsea 4D World Model maintaining subsea physical assets, geofences, and fleet telemetry."""
+
+    _instance: SubseaWorldModel | None = None
+    _lock = threading.Lock()
+
+    def __init__(self, config_path: str | Path | None = None):
+        self._rw_lock = threading.RLock()
+        self._assets: dict[str, SubseaAsset] = {}
+        self._geofences: dict[str, GeofenceZone] = {}
+        self._robot_positions: dict[str, dict[str, Any]] = {}
+        self._safety_engine = SpatialSafetyEngine()
+
+        self._load_config(config_path)
+        self._init_default_assets()
+        self._sync_safety_engine()
+
+    @classmethod
+    def get_instance(cls) -> SubseaWorldModel:
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        with cls._lock:
+            cls._instance = None
+
+    def _load_config(self, config_path: str | Path | None = None) -> None:
+        path = Path(config_path) if config_path else Path(__file__).parent.parent.parent / "config" / "oilfield.yaml"
+        if not path.exists():
+            logger.warning("[WorldModel] Configuration file %s does not exist.", path)
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+
+            # 1. Load forbidden areas (HARD severity)
+            for area in data.get("forbidden_areas", []):
+                zid = area.get("id", f"forbidden_{len(self._geofences)}")
+                self._geofences[zid] = GeofenceZone(
+                    zone_id=zid,
+                    name=area.get("name", zid),
+                    zone_type=GeofenceZoneType.FORBIDDEN,
+                    severity=GeofenceSeverity.HARD,
+                    lat_range=tuple(area.get("lat_range", [0.0, 0.0])),
+                    lon_range=tuple(area.get("lon_range", [0.0, 0.0])),
+                    description=area.get("notes", "生态红线或禁止作业区域"),
+                )
+
+            # 2. Load DVL bottom-lock failure areas (SOFT severity)
+            for area in data.get("dvl_bottom_lock_failure_areas", []):
+                zid = area.get("id", f"dvl_blackout_{len(self._geofences)}")
+                self._geofences[zid] = GeofenceZone(
+                    zone_id=zid,
+                    name=area.get("name", zid),
+                    zone_type=GeofenceZoneType.DVL_BLACKOUT,
+                    severity=GeofenceSeverity.SOFT,
+                    lat_range=tuple(area.get("lat_range", [0.0, 0.0])),
+                    lon_range=tuple(area.get("lon_range", [0.0, 0.0])),
+                    description=area.get("notes", "声学测速底锁定失效风险区"),
+                )
+        except Exception as exc:
+            logger.error("[WorldModel] Failed to load oilfield config: %s", exc)
+
+    def _init_default_assets(self) -> None:
+        """Pre-populate default digital twin assets for key South China Sea oilfields."""
+        default_assets = [
+            SubseaAsset(
+                asset_id="LH11-1-MANIFOLD-01",
+                asset_type=SubseaAssetType.MANIFOLD,
+                name="流花11-1主水下管汇",
+                oilfield_id="liuhua_11_1",
+                point=Point3D(x=100.0, y=150.0, z=-305.0),
+                geodetic=GeodeticPoint(latitude=20.815, longitude=115.735, depth_m=305.0),
+                bounding_radius_m=12.0,
+                properties={"valve_a": "open", "valve_b": "closed", "header_pressure_mpa": 19.5},
+            ),
+            SubseaAsset(
+                asset_id="LH11-1-XTREE-01",
+                asset_type=SubseaAssetType.XMAS_TREE,
+                name="流花11-1 #1水下采油树",
+                oilfield_id="liuhua_11_1",
+                point=Point3D(x=130.0, y=170.0, z=-305.0),
+                geodetic=GeodeticPoint(latitude=20.817, longitude=115.737, depth_m=305.0),
+                bounding_radius_m=6.0,
+                properties={"master_valve": "open", "wing_valve": "closed", "tree_status": "PRODUCING"},
+            ),
+            SubseaAsset(
+                asset_id="LS17-2-MANIFOLD-NORTH",
+                asset_type=SubseaAssetType.MANIFOLD,
+                name="深海一号北区中心水下管汇",
+                oilfield_id="lingshui_17_2",
+                point=Point3D(x=500.0, y=420.0, z=-1500.0),
+                geodetic=GeodeticPoint(latitude=17.525, longitude=110.150, depth_m=1500.0),
+                bounding_radius_m=15.0,
+                properties={"choke_position_pct": 45, "safety_isolation": "intact"},
+            ),
+        ]
+        for a in default_assets:
+            self._assets[a.asset_id] = a
+
+    def _sync_safety_engine(self) -> None:
+        self._safety_engine.set_geofences(list(self._geofences.values()))
+        self._safety_engine.set_assets(list(self._assets.values()))
+
+    # ================= Asset Operations =================
+    def register_asset(self, asset: SubseaAsset) -> None:
+        with self._rw_lock:
+            self._assets[asset.asset_id] = asset
+            self._sync_safety_engine()
+
+    def get_asset(self, asset_id: str) -> SubseaAsset | None:
+        with self._rw_lock:
+            return self._assets.get(asset_id)
+
+    def list_assets(self, oilfield_id: str | None = None) -> list[SubseaAsset]:
+        with self._rw_lock:
+            if oilfield_id:
+                return [a for a in self._assets.values() if a.oilfield_id == oilfield_id]
+            return list(self._assets.values())
+
+    def update_asset_properties(self, asset_id: str, updates: dict[str, Any]) -> int:
+        """Update asset properties and increment state_version atomically."""
+        with self._rw_lock:
+            asset = self._assets.get(asset_id)
+            if not asset:
+                raise KeyError(f"Subsea asset '{asset_id}' not found in world model.")
+            asset.properties.update(updates)
+            asset.state_version += 1
+            return asset.state_version
+
+    # ================= Geofence Operations =================
+    def add_dynamic_geofence(self, zone: GeofenceZone) -> None:
+        with self._rw_lock:
+            self._geofences[zone.zone_id] = zone
+            self._sync_safety_engine()
+
+    def remove_dynamic_geofence(self, zone_id: str) -> bool:
+        with self._rw_lock:
+            removed = bool(self._geofences.pop(zone_id, None))
+            if removed:
+                self._sync_safety_engine()
+            return removed
+
+    def list_geofences(self) -> list[GeofenceZone]:
+        with self._rw_lock:
+            return list(self._geofences.values())
+
+    # ================= Robot Pose Tracking =================
+    def update_robot_pose(
+        self,
+        unit_id: str,
+        x: float,
+        y: float,
+        z: float,
+        lat: float | None = None,
+        lon: float | None = None,
+        health: str = "HEALTHY",
+    ) -> None:
+        with self._rw_lock:
+            self._robot_positions[unit_id] = {
+                "unit_id": unit_id,
+                "x": x,
+                "y": y,
+                "z": z,
+                "depth_m": abs(z),
+                "lat": lat,
+                "lon": lon,
+                "health": health,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+    def get_robot_pose(self, unit_id: str) -> dict[str, Any] | None:
+        with self._rw_lock:
+            return self._robot_positions.get(unit_id)
+
+    # ================= Safety Checks =================
+    def check_point_safety(
+        self,
+        lat: float,
+        lon: float,
+        depth_m: float = 0.0,
+        min_clearance_m: float = 5.0,
+    ) -> SpatialSafetyCheckResult:
+        with self._rw_lock:
+            return self._safety_engine.evaluate_geodetic_point(
+                lat=lat,
+                lon=lon,
+                depth_m=depth_m,
+                min_clearance_m=min_clearance_m,
+            )
+
+    def check_path_safety(
+        self,
+        waypoints: list[dict[str, float]],
+        min_clearance_m: float = 5.0,
+    ) -> SpatialSafetyCheckResult:
+        """Validate a sequence of waypoints [{lat, lon, depth_m}] or [{x, y, z}]."""
+        with self._rw_lock:
+            all_violations: list[dict] = []
+            all_warnings: list[dict] = []
+            min_dist: float | None = None
+            closest_asset: str | None = None
+
+            for i, wp in enumerate(waypoints):
+                if "lat" in wp and "lon" in wp:
+                    res = self._safety_engine.evaluate_geodetic_point(
+                        lat=float(wp["lat"]),
+                        lon=float(wp["lon"]),
+                        depth_m=float(wp.get("depth_m", 0.0)),
+                        min_clearance_m=min_clearance_m,
+                    )
+                elif "x" in wp and "y" in wp and "z" in wp:
+                    pt = Point3D(x=float(wp["x"]), y=float(wp["y"]), z=float(wp["z"]))
+                    res = self._safety_engine.evaluate_cartesian_point(pt, min_clearance_m=min_clearance_m)
+                else:
+                    continue
+
+                for v in res.violations:
+                    v_tagged = dict(v, waypoint_index=i)
+                    if v_tagged not in all_violations:
+                        all_violations.append(v_tagged)
+                for w in res.warnings:
+                    w_tagged = dict(w, waypoint_index=i)
+                    if w_tagged not in all_warnings:
+                        all_warnings.append(w_tagged)
+
+                if res.closest_asset_distance_m is not None:
+                    if min_dist is None or res.closest_asset_distance_m < min_dist:
+                        min_dist = res.closest_asset_distance_m
+                        closest_asset = res.closest_asset_id
+
+            return SpatialSafetyCheckResult(
+                is_safe=(len(all_violations) == 0),
+                violations=all_violations,
+                warnings=all_warnings,
+                closest_asset_distance_m=min_dist,
+                closest_asset_id=closest_asset,
+            )
+
+    def export_snapshot(self) -> dict[str, Any]:
+        """Export serializable snapshot of the subsea digital twin."""
+        with self._rw_lock:
+            return {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "assets_count": len(self._assets),
+                "geofences_count": len(self._geofences),
+                "assets": [a.to_dict() for a in self._assets.values()],
+                "geofences": [g.to_dict() for g in self._geofences.values()],
+                "robots": list(self._robot_positions.values()),
+            }

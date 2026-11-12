@@ -363,6 +363,25 @@ def check_manipulator_payload_envelope(
     }
 
 
+def check_subsea_spatial_safety(
+    lat: float,
+    lon: float,
+    depth_m: float = 0.0,
+    min_clearance_m: float = 5.0,
+) -> dict[str, Any]:
+    """通过水下 4D 世界模型校验目标经纬度与水深是否侵入地理禁入区、DVL声学盲区或采油树/管汇安全包络。"""
+    from src.world_model import SubseaWorldModel
+
+    wm = SubseaWorldModel.get_instance()
+    res = wm.check_point_safety(
+        lat=float(lat),
+        lon=float(lon),
+        depth_m=float(depth_m),
+        min_clearance_m=float(min_clearance_m),
+    )
+    return res.to_dict()
+
+
 def register_builtin_tools(registry: ToolRegistry | None = None) -> None:
     """显式幂等注册内置工具。"""
     reg = registry or ToolRegistry.get_instance()
@@ -554,6 +573,23 @@ def register_builtin_tools(registry: ToolRegistry | None = None) -> None:
             "required": ["manipulator_model", "reach_distance_m", "payload_in_water_kg"],
         },
         roles=("extractor", "auditor", "knowledge_qa"),
+    )
+
+    reg.register(
+        func=check_subsea_spatial_safety,
+        name="check_subsea_spatial_safety",
+        description="通过水下 4D 世界模型校验目标作业坐标与水深，判断是否侵入珊瑚礁生态红线、国家级海洋保护区硬禁入框、DVL声学盲区或采油树/水下管汇安全缓冲包络",
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "lat": {"type": "number", "description": "作业目标纬度(度)，例如 20.815"},
+                "lon": {"type": "number", "description": "作业目标经度(度)，例如 115.735"},
+                "depth_m": {"type": "number", "description": "目标作业水深(米)，例如 305.0"},
+                "min_clearance_m": {"type": "number", "description": "距离水下设施的最小建议安全缓冲距离(米)，默认 5.0"},
+            },
+            "required": ["lat", "lon", "depth_m"],
+        },
+        roles=("extractor", "auditor", "planner", "knowledge_qa"),
     )
 
 
