@@ -451,6 +451,14 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
         ROV 物理工程工具箱
       </button>
+      <button class="tab-btn" id="tabBtnGateway" type="button" data-tab="paneGateway">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        异构机队网关
+      </button>
+      <button class="tab-btn" id="tabBtnTaskGraph" type="button" data-tab="paneTaskGraph">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M10 6.5h4"/><path d="M6.5 10v4"/><path d="M17.5 10v4"/></svg>
+        DAG 任务编排
+      </button>
     </nav>
 
     <!-- 右侧动作按钮 -->
@@ -694,6 +702,94 @@
         </div>
         <div class="tools-list-grid" id="toolsListContainer">
           <div class="empty">正在加载注册工具…</div>
+        </div>
+      </section>
+    <!-- TAB 4: 异构机器人网关与机队监控 (Robot Gateway Fleet) -->
+    <div class="tab-pane" id="paneGateway" hidden>
+      <div class="scope-summary">
+        <h2>机器人抽象层 (RAL) · 异构机队与动态驱动网关</h2>
+        <p>统一驱动协议接入 ROS 2 实体机与仿真器，支持动态路由与全局紧急熔断</p>
+      </div>
+
+      <section class="panel dynamic-panel">
+        <div class="panel-head">
+          <h2>已注册驱动程序与网关路由表 (Registered Drivers)</h2>
+          <span class="counter" id="gatewayDriversCounter">正在拉取驱动…</span>
+        </div>
+        <div class="backend-grid" id="gatewayDriversContainer">
+          <div class="empty">正在获取机器人驱动状态…</div>
+        </div>
+      </section>
+
+      <section class="panel dynamic-panel" style="margin-top:20px;">
+        <div class="panel-head">
+          <h2>机队遥测聚合监控 (Fleet Telemetry Aggregation)</h2>
+          <span class="counter" id="gatewayTelemetryCounter">正在获取遥测…</span>
+        </div>
+        <div class="table-wrap" tabindex="0">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col" style="width:16%">设备编号 (Unit ID)</th>
+                <th scope="col" style="width:14%">水深 (Depth)</th>
+                <th scope="col" style="width:20%">位姿坐标 (X, Y, Z)</th>
+                <th scope="col" style="width:12%">航向角</th>
+                <th scope="col" style="width:12%">剩余电量</th>
+                <th scope="col" style="width:14%">活动任务</th>
+                <th scope="col" style="width:12%">运行健康度</th>
+              </tr>
+            </thead>
+            <tbody id="fleetTelemetryRows"></tbody>
+          </table>
+          <div class="empty" id="emptyFleetTelemetry">暂无活动机队遥测数据</div>
+        </div>
+      </section>
+    </div>
+
+    <!-- TAB 5: 任务图 DAG 编排与多机协同分配 (Task Graph DAG & Allocation) -->
+    <div class="tab-pane" id="paneTaskGraph" hidden>
+      <div class="scope-summary">
+        <h2>有向无环图 (DAG) 任务拓扑编排 · 多机任务协同</h2>
+        <p>基于前置依赖自动计算分层执行批次 (Topological Batches) 与能力适配分配</p>
+      </div>
+
+      <div class="sim-grid">
+        <div class="sim-card">
+          <div class="sim-card-head">
+            <h3>DAG 任务规划与依赖定义</h3>
+            <span class="tool-tag">DAG Validation</span>
+          </div>
+          <form id="formTaskGraph" class="sim-body">
+            <div class="field">
+              <label for="inputDagJson">子任务列表与依赖配置 (JSON 格式)</label>
+              <textarea id="inputDagJson" rows="10" style="font-family:monospace; font-size:12px; width:100%; border:1px solid var(--line); border-radius:6px; background:var(--surface-muted); color:var(--ink); padding:8px;" required></textarea>
+            </div>
+            <button type="submit" class="btn primary">校验 DAG 并生成拓扑分层调度</button>
+          </form>
+        </div>
+
+        <div class="sim-card">
+          <div class="sim-card-head">
+            <h3>拓扑分层与多机协同分配结果</h3>
+            <span class="tool-tag">Multi-Robot Scheduler</span>
+          </div>
+          <div class="sim-body">
+            <div id="resTaskGraph" class="sim-result show" style="max-height:360px; overflow:auto;">
+              点击左侧表单提交以开始拓扑分析与调度分配。
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <section class="panel dynamic-panel" style="margin-top:20px;">
+        <div class="panel-head">
+          <h2>Mermaid 流程图导出预览</h2>
+        </div>
+        <div style="padding:16px;">
+          <pre id="mermaidGraphPreview" style="background:var(--surface-muted); border:1px solid var(--line); border-radius:6px; padding:12px; font-size:12px; overflow:auto; max-height:240px;">graph TD;
+  A[T1: 水下巡检] --> B[T2: 生物附着清理];
+  B --> C[T3: 阀门回转控制];
+  C --> D[T4: 完工摄录复核];</pre>
         </div>
       </section>
     </div>
@@ -1012,6 +1108,8 @@
           pane.classList.add('active');
           pane.hidden = false;
         }
+        if (target === 'paneGateway' && typeof loadGatewayFleet === 'function') loadGatewayFleet();
+        if (target === 'paneTaskGraph' && typeof initTaskGraphWorkbench === 'function') initTaskGraphWorkbench();
       });
     });
 
@@ -1156,15 +1254,157 @@
       }, document.getElementById('resArm'));
     });
 
+    // 异构机器人网关驱动与遥测 (Tab 4)
+    async function loadGatewayFleet() {
+      const driversContainer = document.getElementById('gatewayDriversContainer');
+      const driversCounter = document.getElementById('gatewayDriversCounter');
+      const telemetryRows = document.getElementById('fleetTelemetryRows');
+      const telemetryCounter = document.getElementById('gatewayTelemetryCounter');
+      const emptyTelem = document.getElementById('emptyFleetTelemetry');
+
+      if (driversContainer) {
+        try {
+          const resp = await fetch('/api/dev/gateway/drivers', {cache: 'no-store'});
+          const data = await resp.json();
+          if (resp.ok && data.ok) {
+            const drivers = data.drivers || [];
+            if (driversCounter) driversCounter.textContent = `${drivers.length} drivers registered`;
+            driversContainer.replaceChildren();
+            drivers.forEach(d => {
+              const card = document.createElement('div');
+              card.className = `backend-card ${d.is_default ? 'primary' : ''}`;
+              card.innerHTML = `
+                <div class="backend-card-head">
+                  <div class="backend-title">
+                    <span class="state-dot ${d.is_connected ? 'good' : 'warn'}"></span>
+                    <strong>${d.unit_id}</strong>
+                    ${d.is_default ? '<span class="status active">DEFAULT</span>' : ''}
+                  </div>
+                  <span class="status ${d.is_connected ? 'success' : 'warn'}">${d.status}</span>
+                </div>
+                <dl class="backend-body">
+                  <div class="backend-row"><dt>Driver Type</dt><dd>${d.driver_name}</dd></div>
+                  <div class="backend-row"><dt>Connection</dt><dd>${d.is_connected ? 'ONLINE' : 'OFFLINE'}</dd></div>
+                  <div class="backend-row"><dt>Default Route</dt><dd>${d.is_default ? 'YES' : 'NO'}</dd></div>
+                </dl>
+              `;
+              driversContainer.appendChild(card);
+            });
+          }
+        } catch (err) {
+          if (driversContainer) driversContainer.innerHTML = `<div class="data-notice">加载网关驱动失败: ${err.message}</div>`;
+        }
+      }
+
+      if (telemetryRows) {
+        try {
+          const resp = await fetch('/api/dev/gateway/telemetry', {cache: 'no-store'});
+          const data = await resp.json();
+          if (resp.ok && data.ok) {
+            const telemMap = data.fleet_telemetry || {};
+            const units = Object.keys(telemMap);
+            if (telemetryCounter) telemetryCounter.textContent = `${units.length} active units`;
+            telemetryRows.replaceChildren();
+            if (emptyTelem) emptyTelem.style.display = units.length ? 'none' : 'block';
+
+            units.forEach(uid => {
+              const t = telemMap[uid];
+              const tr = document.createElement('tr');
+              const depthStr = typeof t.water_depth_m === 'number' ? t.water_depth_m.toFixed(1) : '--';
+              const xStr = typeof t.pose_x === 'number' ? t.pose_x.toFixed(1) : '0.0';
+              const yStr = typeof t.pose_y === 'number' ? t.pose_y.toFixed(1) : '0.0';
+              const zStr = typeof t.pose_z === 'number' ? t.pose_z.toFixed(1) : '0.0';
+              const headStr = typeof t.heading_deg === 'number' ? t.heading_deg.toFixed(1) : '0.0';
+              const batStr = typeof t.battery_pct === 'number' ? t.battery_pct.toFixed(0) : '--';
+              tr.innerHTML = `
+                <td class="mono"><strong>${t.unit_id}</strong></td>
+                <td><span style="color:var(--cyan);font-weight:600;">${depthStr} m</span></td>
+                <td class="mono">(${xStr}, ${yStr}, ${zStr})</td>
+                <td>${headStr}°</td>
+                <td>${batStr}%</td>
+                <td class="mono">${t.active_task_id || '--'} (${t.active_task_status || 'IDLE'})</td>
+                <td><span class="status ${t.system_health === 'HEALTHY' ? 'success' : 'warn'}">${t.system_health || 'NORMAL'}</span></td>
+              `;
+              telemetryRows.appendChild(tr);
+            });
+          }
+        } catch (err) {
+          if (telemetryCounter) telemetryCounter.textContent = '遥测拉取异常';
+        }
+      }
+    }
+
+    // 任务图 DAG 编排与多机协同调度 (Tab 5)
+    let isTaskGraphInitialized = false;
+    function initTaskGraphWorkbench() {
+      const inputEl = document.getElementById('inputDagJson');
+      if (inputEl && !inputEl.value) {
+        inputEl.value = JSON.stringify({
+          subtasks: [
+            {node_id: "T1", task_type: "survey", name: "管线声学测深巡检", water_depth: 120.0},
+            {node_id: "T2", task_type: "cleaning", name: "井口生物附着水枪清理", dependencies: ["T1"], water_depth: 120.0},
+            {node_id: "T3", task_type: "valve_operation", name: "采油树水下生产阀门关闭", dependencies: ["T2"], water_depth: 120.0},
+            {node_id: "T4", task_type: "inspection", name: "完工摄录与密封性复核", dependencies: ["T3"], water_depth: 120.0}
+          ],
+          available_robots: [
+            {unit_id: "ROV-OBS-001", capabilities: ["survey", "inspection"], max_depth_m: 600.0},
+            {unit_id: "ROV-WORK-001", capabilities: ["cleaning", "valve_operation", "heavy_work"], max_depth_m: 3000.0}
+          ]
+        }, null, 2);
+      }
+
+      if (isTaskGraphInitialized) return;
+      isTaskGraphInitialized = true;
+
+      document.getElementById('formTaskGraph')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const resEl = document.getElementById('resTaskGraph');
+        const mermaidEl = document.getElementById('mermaidGraphPreview');
+        if (!resEl) return;
+        resEl.textContent = '正在分析 DAG 拓扑并进行多机协同分配…';
+        try {
+          const payload = JSON.parse(document.getElementById('inputDagJson').value);
+          const resp = await fetch('/api/dev/task-graph/validate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data.ok) {
+            resEl.textContent = `❌ 拓扑验证失败: ${data.error || 'HTTP ' + resp.status}`;
+            return;
+          }
+          let formatted = `✅ DAG 拓扑有效，无环依赖！\n\n`;
+          formatted += `【分层执行调度批次】(Topological Batches):\n`;
+          (data.execution_batches || []).forEach((batch, idx) => {
+            formatted += `  Stage ${idx}: [${batch.join(', ')}]\n`;
+          });
+          formatted += `\n【多机能力匹配协同分配】:\n`;
+          for (const [nodeId, unitId] of Object.entries(data.allocations || {})) {
+            formatted += `  子任务 ${nodeId} ➔ 匹配分配设备: ${unitId}\n`;
+          }
+          resEl.textContent = formatted;
+          if (mermaidEl && data.mermaid) {
+            mermaidEl.textContent = data.mermaid;
+          }
+        } catch (err) {
+          resEl.textContent = `❌ 解析或请求异常: ${err.message}`;
+        }
+      });
+    }
+
     // 刷新按钮联动更新后端与工具信息
     document.getElementById('refreshButton')?.addEventListener('click', () => {
       loadBackends();
       loadTools();
+      loadGatewayFleet();
     });
 
     // 初始加载后端拓扑与工具清单
     loadBackends();
     loadTools();
+    loadGatewayFleet();
+    initTaskGraphWorkbench();
   </script>
 </body>
 </html>
