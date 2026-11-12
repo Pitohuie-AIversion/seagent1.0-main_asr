@@ -3,6 +3,7 @@
 import pytest
 from src.world_model import (
     GeodeticPoint,
+    CorridorReservation,
     GeofenceSeverity,
     GeofenceZone,
     GeofenceZoneType,
@@ -327,3 +328,144 @@ def test_api_dev_world_model_plan_path_endpoint():
     assert path_plan["is_feasible"] is True
     assert path_plan["waypoints_count"] == 3
     assert len(path_plan["bypassed_obstacles"]) >= 1
+
+
+def test_path_planner_hydrodynamic_energy_calculation():
+    from src.world_model import OceanCurrentData
+    wm = SubseaWorldModel.get_instance()
+
+    # 1. Calm current baseline
+    wm.set_environmental_current_override(OceanCurrentData(speed_mps=0.0, direction_deg=0.0))
+    plan_calm = wm.plan_safe_path(
+        start_lat=20.830,
+        start_lon=115.750,
+        start_depth_m=280.0,
+        goal_lat=20.835,
+        goal_lon=115.755,
+        goal_depth_m=280.0,
+        cruise_speed_mps=1.0,
+    )
+    assert plan_calm.is_feasible is True
+    assert plan_calm.estimated_energy_kwh > 0.0
+    assert plan_calm.avg_drag_power_kw > 0.0
+
+    # 2. Strong head-on current of 1.2 m/s opposing motion (Southbound current against Northbound heading)
+    wm.set_environmental_current_override(OceanCurrentData(speed_mps=1.2, direction_deg=180.0))
+    plan_curr = wm.plan_safe_path(
+        start_lat=20.830,
+        start_lon=115.750,
+        start_depth_m=280.0,
+        goal_lat=20.835,
+        goal_lon=115.755,
+        goal_depth_m=280.0,
+        cruise_speed_mps=1.0,
+    )
+    assert plan_curr.is_feasible is True
+    assert plan_curr.estimated_energy_kwh > plan_calm.estimated_energy_kwh
+    assert plan_curr.avg_drag_power_kw > plan_calm.avg_drag_power_kw
+
+
+def test_path_planner_multi_robot_corridor_reservation_and_deconfliction():
+    wm = SubseaWorldModel.get_instance()
+    wm.clear_corridor_reservations()
+
+    # Reserve corridor for ROV-ALPHA crossing (20.825, 115.745, 250.0)
+    wps_alpha = [
+        {"lat": 20.820, "lon": 115.745, "depth_m": 250.0},
+        {"lat": 20.825, "lon": 115.745, "depth_m": 250.0},
+        {"lat": 20.830, "lon": 115.745, "depth_m": 250.0},
+    ]
+    res_alpha = wm.reserve_robot_corridor(
+        robot_id="ROV-ALPHA",
+        waypoints=wps_alpha,
+        start_time_s=0.0,
+        cruise_speed_mps=1.0,
+        radius_m=15.0,
+    )
+    assert len(res_alpha) >= 3
+    assert len(wm.list_corridor_reservations()) >= 3
+
+    # ROV-BETA wants to cross the exact same spot at the same time window
+    # 1. Crossing at far future time (start_time_s=5000.0) -> NO conflict
+    plan_future = wm.plan_safe_path(
+        start_lat=20.825,
+        start_lon=115.740,
+        start_depth_m=250.0,
+        goal_lat=20.825,
+        goal_lon=115.750,
+        goal_depth_m=250.0,
+        robot_id="ROV-BETA",
+        start_time_s=5000.0,
+    )
+    assert len(plan_future.corridor_conflicts) == 0
+
+    # 2. Crossing at concurrent time window (start_time_s=0.0) with auto_deconflict=False -> conflict detected
+    plan_conflict_now = wm.plan_safe_path(
+        start_lat=20.825,
+        start_lon=115.740,
+        start_depth_m=250.0,
+        goal_lat=20.825,
+        goal_lon=115.750,
+        goal_depth_m=250.0,
+        robot_id="ROV-BETA",
+        start_time_s=0.0,
+        auto_deconflict=False,
+    )
+    assert len(plan_conflict_now.corridor_conflicts) >= 1
+    assert plan_conflict_now.corridor_conflicts[0]["conflict_robot_id"] == "ROV-ALPHA"
+
+    # 3. With auto_deconflict=True -> automated altitude separation
+    plan_resolved = wm.plan_safe_path(
+        start_lat=20.825,
+        start_lon=115.740,
+        start_depth_m=250.0,
+        goal_lat=20.825,
+        goal_lon=115.750,
+        goal_depth_m=250.0,
+        robot_id="ROV-BETA",
+        start_time_s=0.0,
+        auto_deconflict=True,
+    )
+    assert plan_resolved.is_feasible is True
+    assert len(plan_resolved.corridor_conflicts) == 0
+    assert "高度层分离" in plan_resolved.deconfliction_notes or "Altitude Separation" in plan_resolved.deconfliction_notes
+    assert any(wp.get("altitude_separated") is True for wp in plan_resolved.waypoints)
+
+
+def test_api_dev_corridor_endpoints():
+    from web_backend import app
+    client = app.test_client()
+
+    # 1. Reserve corridor
+    resp = client.post("/api/dev/world-model/corridors/reserve", json={
+        "robot_id": "TEST-ROV-999",
+        "waypoints": [
+            {"lat": 20.800, "lon": 115.700, "depth_m": 200.0},
+            {"lat": 20.810, "lon": 115.700, "depth_m": 200.0},
+        ],
+        "start_time_s": 10.0,
+        "cruise_speed_mps": 1.0,
+        "radius_m": 20.0,
+    })
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert data["robot_id"] == "TEST-ROV-999"
+    assert data["reservations_count"] >= 2
+
+    # 2. List corridors
+    list_resp = client.get("/api/dev/world-model/corridors")
+    assert list_resp.status_code == 200
+    list_data = list_resp.get_json()
+    assert list_data["ok"] is True
+    assert list_data["corridors_count"] >= 2
+    assert any(c["robot_id"] == "TEST-ROV-999" for c in list_data["corridors"])
+
+    # 3. Clear corridors
+    clear_resp = client.post("/api/dev/world-model/corridors/clear")
+    assert clear_resp.status_code == 200
+    assert clear_resp.get_json()["ok"] is True
+
+    # 4. Confirm empty
+    list_empty = client.get("/api/dev/world-model/corridors")
+    assert list_empty.get_json()["corridors_count"] == 0

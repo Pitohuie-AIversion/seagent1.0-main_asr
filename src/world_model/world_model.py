@@ -359,8 +359,11 @@ class SubseaWorldModel:
         goal_depth_m: float,
         min_clearance_m: float = 10.0,
         cruise_speed_mps: float = 1.0,
+        robot_id: str | None = None,
+        start_time_s: float = 0.0,
+        auto_deconflict: bool = True,
     ) -> PathPlanResult:
-        """Compute collision-free waypoint trajectory connecting start and goal."""
+        """Compute collision-free waypoint trajectory connecting start and goal with 4D corridor checks."""
         with self._rw_lock:
             return self._path_planner.plan_path(
                 start_lat=start_lat,
@@ -371,7 +374,39 @@ class SubseaWorldModel:
                 goal_depth_m=goal_depth_m,
                 min_clearance_m=min_clearance_m,
                 cruise_speed_mps=cruise_speed_mps,
+                robot_id=robot_id,
+                start_time_s=start_time_s,
+                auto_deconflict=auto_deconflict,
             )
+
+    def reserve_robot_corridor(
+        self,
+        robot_id: str,
+        waypoints: list[dict[str, Any]],
+        start_time_s: float = 0.0,
+        cruise_speed_mps: float = 1.0,
+        radius_m: float = 15.0,
+    ) -> list[dict[str, Any]]:
+        """Reserve 4D space-time corridor for a robot trajectory."""
+        with self._rw_lock:
+            reservations = self._path_planner.reserve_corridor(
+                robot_id=robot_id,
+                waypoints=waypoints,
+                start_time_s=start_time_s,
+                cruise_speed_mps=cruise_speed_mps,
+                radius_m=radius_m,
+            )
+            return [r.to_dict() for r in reservations]
+
+    def list_corridor_reservations(self) -> list[dict[str, Any]]:
+        """List active 4D space-time corridor reservations."""
+        with self._rw_lock:
+            return [r.to_dict() for r in self._path_planner.get_corridor_reservations()]
+
+    def clear_corridor_reservations(self) -> None:
+        """Clear all active 4D space-time corridor reservations."""
+        with self._rw_lock:
+            self._path_planner.clear_corridors()
 
     def export_snapshot(self) -> dict[str, Any]:
         """Export serializable snapshot of the subsea digital twin."""

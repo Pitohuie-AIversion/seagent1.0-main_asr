@@ -12,11 +12,12 @@ from .models import (
     SubseaAsset,
     SubseaAssetType,
 )
-from .path_planner import PathPlanResult, SubseaPathPlanner
+from .path_planner import CorridorReservation, PathPlanResult, SubseaPathPlanner
 from .spatial_safety import SpatialSafetyEngine
 from .world_model import SubseaWorldModel
 
 __all__ = [
+    "CorridorReservation",
     "DynamicObstacle",
     "GeodeticPoint",
     "GeofenceSeverity",

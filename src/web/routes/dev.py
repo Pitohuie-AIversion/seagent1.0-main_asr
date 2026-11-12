@@ -421,6 +421,9 @@ def dev_world_model_plan_path():
 
     min_clearance = float(payload.get("min_clearance_m", 10.0))
     cruise_speed = float(payload.get("cruise_speed_mps", 1.0))
+    robot_id = payload.get("robot_id")
+    start_time_s = float(payload.get("start_time_s", 0.0))
+    auto_deconflict = bool(payload.get("auto_deconflict", True))
 
     wm = SubseaWorldModel.get_instance()
     plan_res = wm.plan_safe_path(
@@ -432,12 +435,85 @@ def dev_world_model_plan_path():
         goal_depth_m=float(goal.get("depth_m", 0.0)),
         min_clearance_m=min_clearance,
         cruise_speed_mps=cruise_speed,
+        robot_id=robot_id,
+        start_time_s=start_time_s,
+        auto_deconflict=auto_deconflict,
     )
 
     return jsonify({
         "ok": True,
         "code": 200,
         "path_plan": plan_res.to_dict(),
+    })
+
+
+@dev_bp.route("/api/dev/world-model/corridors", methods=["GET"])
+@_require_api_token
+def dev_world_model_list_corridors():
+    """获取水下 4D 时空走廊预约列表"""
+    from src.world_model import SubseaWorldModel
+
+    wm = SubseaWorldModel.get_instance()
+    corridors = wm.list_corridor_reservations()
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "corridors_count": len(corridors),
+        "corridors": corridors,
+    })
+
+
+@dev_bp.route("/api/dev/world-model/corridors/reserve", methods=["POST"])
+@_require_api_token
+def dev_world_model_reserve_corridor():
+    """为指定机器人航线登记 4D 时空走廊预约"""
+    from src.world_model import SubseaWorldModel
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "请求体必须为 JSON 对象"}), 400
+
+    robot_id = str(payload.get("robot_id", "")).strip()
+    if not robot_id:
+        return jsonify({"ok": False, "code": 400, "msg": "缺少 robot_id 字段"}), 400
+
+    waypoints = payload.get("waypoints", [])
+    if not isinstance(waypoints, list) or len(waypoints) < 1:
+        return jsonify({"ok": False, "code": 400, "msg": "waypoints 必须为非空航点列表"}), 400
+
+    start_time_s = float(payload.get("start_time_s", 0.0))
+    speed = float(payload.get("cruise_speed_mps", 1.0))
+    radius = float(payload.get("radius_m", 15.0))
+
+    wm = SubseaWorldModel.get_instance()
+    reservations = wm.reserve_robot_corridor(
+        robot_id=robot_id,
+        waypoints=waypoints,
+        start_time_s=start_time_s,
+        cruise_speed_mps=speed,
+        radius_m=radius,
+    )
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "robot_id": robot_id,
+        "reservations_count": len(reservations),
+        "reservations": reservations,
+    })
+
+
+@dev_bp.route("/api/dev/world-model/corridors/clear", methods=["POST"])
+@_require_api_token
+def dev_world_model_clear_corridors():
+    """清空水下 4D 时空走廊所有预约"""
+    from src.world_model import SubseaWorldModel
+
+    wm = SubseaWorldModel.get_instance()
+    wm.clear_corridor_reservations()
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "msg": "已清空所有 4D 时空走廊预约记录",
     })
 
 
