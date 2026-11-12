@@ -781,6 +781,33 @@
         </div>
       </div>
 
+      <!-- 全流程任务编排与闭环自愈执行工作台 -->
+      <section class="panel dynamic-panel" style="margin-top:20px;">
+        <div class="panel-head">
+          <h2>复合任务全流程编排与闭环自愈执行 (Mission Orchestration)</h2>
+          <span class="tool-tag">Closed-loop Orchestrator</span>
+        </div>
+        <div style="padding:16px;">
+          <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:12px;">
+            <label for="selectMissionTemplate" style="font-weight:600; font-size:13px;">任务类型模板:</label>
+            <select id="selectMissionTemplate" style="padding:6px 10px; border-radius:6px; border:1px solid var(--line); background:var(--surface-muted); color:var(--ink);">
+              <option value="valve_operation">采油树 2 号主阀操作 (valve_operation)</option>
+              <option value="pipeline_inspection">海底干线管道巡检 (pipeline_inspection)</option>
+              <option value="cable_burial">35kV 复合海缆冲埋作业 (cable_burial)</option>
+            </select>
+            <button type="button" id="btnDecomposeMission" class="btn primary">1. 解耦生成 DAG 并 4D 预检</button>
+            <button type="button" id="btnStepMission" class="btn" disabled>2. 推进拓扑批次 (Step)</button>
+            <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="checkSimulateStuckFault"> 注入阀门卡阻故障 (测试自愈重规划)
+            </label>
+          </div>
+          <div id="orchestratorStatusBadge" style="margin-bottom:12px; font-size:13px; font-weight:600; color:var(--ink-muted);">当前状态: 未启动</div>
+          <div id="resMissionOrchestration" class="sim-result show" style="max-height:280px; overflow:auto;">
+            选择任务模板后点击“解耦生成 DAG 并 4D 预检”以开始全流程编排。
+          </div>
+        </div>
+      </section>
+
       <section class="panel dynamic-panel" style="margin-top:20px;">
         <div class="panel-head">
           <h2>Mermaid 流程图导出预览</h2>
@@ -1400,11 +1427,139 @@
       loadGatewayFleet();
     });
 
+    let currentMissionGraph = null;
+
+    function initMissionOrchestratorUI() {
+      const btnDecompose = document.getElementById('btnDecomposeMission');
+      const btnStep = document.getElementById('btnStepMission');
+      const selTemplate = document.getElementById('selectMissionTemplate');
+      const checkFault = document.getElementById('checkSimulateStuckFault');
+      const resEl = document.getElementById('resMissionOrchestration');
+      const badgeEl = document.getElementById('orchestratorStatusBadge');
+      const mermaidEl = document.getElementById('mermaidGraphPreview');
+
+      btnDecompose?.addEventListener('click', async () => {
+        if (!resEl) return;
+        resEl.textContent = '正在解耦复合意图、执行 4D 空间安全预检并计算机群分配…';
+        try {
+          const template = selTemplate.value;
+          const intentMap = {
+            valve_operation: {
+              intent_id: "TI_MISSION_VALVE",
+              task_type: "valve_operation",
+              task_name: "采油树 2 号水下主阀闭合作业",
+              water_depth: 320.0,
+              turns: 6.0,
+              direction: "close"
+            },
+            pipeline_inspection: {
+              intent_id: "TI_MISSION_PIPE",
+              task_type: "pipeline_inspection",
+              task_name: "海底干线管道悬空与 CP 巡检",
+              pipe_id: "PIPE-WEST-01",
+              water_depth: 450.0
+            },
+            cable_burial: {
+              intent_id: "TI_MISSION_CABLE",
+              task_type: "cable_burial",
+              task_name: "35kV 复合海缆高压水冲埋设",
+              cable_id: "CABLE-EAST-88",
+              target_dob_m: 1.8,
+              water_depth: 180.0
+            }
+          };
+          const resp = await fetch('/api/dev/mission/decompose', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({intent: intentMap[template] || {task_type: template}}),
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data.ok) {
+            resEl.textContent = `❌ 解耦预检失败: ${data.msg || 'HTTP ' + resp.status}`;
+            return;
+          }
+          currentMissionGraph = data.graph;
+          if (btnStep) btnStep.disabled = false;
+          if (badgeEl) {
+            badgeEl.textContent = `当前状态: 预检完成 · 包含 ${data.graph.node_count || 4} 个拓扑节点 · 就绪待执行`;
+            badgeEl.style.color = '#10b981';
+          }
+          let out = `✅ 意图解耦成功！4D 空间安全预检: ${data.preflight.passed ? 'PASS (安全通过)' : 'FAILED (违规)'}\n`;
+          out += `【拓扑分层执行调度批次】:\n`;
+          (data.execution_batches || []).forEach((b, i) => { out += `  Stage ${i}: [${b.join(', ')}]\n`; });
+          out += `\n【初始机群能力分配】:\n`;
+          for (const [nid, uid] of Object.entries(data.allocations || {})) {
+            out += `  节点 ${nid} ➔ 分配设备: ${uid}\n`;
+          }
+          resEl.textContent = out;
+          if (mermaidEl && data.mermaid) mermaidEl.textContent = data.mermaid;
+        } catch (err) {
+          resEl.textContent = `❌ 请求异常: ${err.message}`;
+        }
+      });
+
+      btnStep?.addEventListener('click', async () => {
+        if (!currentMissionGraph || !resEl) return;
+        resEl.textContent = '正在推进当前阶段子任务并监控执行遥测回传…';
+        try {
+          const payload = {
+            graph: currentMissionGraph,
+          };
+          if (checkFault && checkFault.checked) {
+            const valveNode = Object.keys(currentMissionGraph.nodes || {}).find(k => k.includes('valve') || k.includes('turn'));
+            if (valveNode) {
+              payload.force_fail_node_id = valveNode;
+              payload.failure_reason = 'Hydraulic torque limit exceeded: valve stuck with marine growth';
+            }
+          }
+          const resp = await fetch('/api/dev/mission/step', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data.ok) {
+            resEl.textContent = `❌ 推进失败: ${data.msg || 'HTTP ' + resp.status}`;
+            return;
+          }
+          currentMissionGraph = data.graph;
+          const step = data.step_result;
+          let out = `【当前阶段执行推进结果】 状态: ${step.state}\n`;
+          out += `  已下发子任务: [${step.dispatched_nodes.join(', ')}]\n`;
+          if (step.replanned_events && step.replanned_events.length > 0) {
+            out += `\n⚠️ 【自动触发自愈动态重规划 (Dynamic Replanning)】:\n`;
+            step.replanned_events.forEach(ev => {
+              out += `  方案摘要: ${ev.summary}\n`;
+              ev.actions.forEach(a => { out += `    - 动作: ${a.action_type} (目标: ${a.target_node_id}, 原因: ${a.reason})\n`; });
+            });
+          }
+          if (step.is_completed) {
+            out += `\n🎉 全流程任务已全部圆满执行完成！`;
+            if (btnStep) btnStep.disabled = true;
+            if (badgeEl) {
+              badgeEl.textContent = '当前状态: COMPLETED · 全流程执行完成';
+              badgeEl.style.color = '#10b981';
+            }
+          } else {
+            if (badgeEl) {
+              badgeEl.textContent = `当前状态: ${step.state} · 继续推进以完成后续拓扑代次`;
+              badgeEl.style.color = '#3b82f6';
+            }
+          }
+          resEl.textContent = out;
+          if (mermaidEl && step.mermaid) mermaidEl.textContent = step.mermaid;
+        } catch (err) {
+          resEl.textContent = `❌ 推进请求异常: ${err.message}`;
+        }
+      });
+    }
+
     // 初始加载后端拓扑与工具清单
     loadBackends();
     loadTools();
     loadGatewayFleet();
     initTaskGraphWorkbench();
+    initMissionOrchestratorUI();
   </script>
 </body>
 </html>
