@@ -51,6 +51,10 @@
 12. **3D/4D 水下碰撞规避与安全旁通路径规划器 (`src/world_model/path_planner.py`)**：
    - 基于测地坐标与空间安全引擎，实现航线直线段安全采样探测、设施碰撞检测、自动切向与垂向旁通避障航点生成（Waypoint Detour）；
    - 暴露 `POST /api/dev/world-model/plan-path` 接口，并在前端仪表盘提供一键式避障路径计算交互。
+13. **4D 多机时空走廊预约与冲突解脱 (`src/world_model/path_planner.py`)**：
+   - 支持机群 4D 时空走廊（Time-Space Corridor）预约与交叉冲突检测，当多机时空走廊冲突时，自动触发三维高度层分离（Altitude Separation），保证多机协同作业时空安全。
+14. **洋流动力学与水动力阻力能耗估算模型 (`src/world_model/path_planner.py`)**：
+   - 基于海水密度、钝体阻力系数与流速矢量，精确积分求解航迹水阻推力功耗与蓄电池能耗（kWh），实现迎流/顺流能耗精细化核算。
 
 ---
 
@@ -121,7 +125,7 @@ pytest tests/test_mission_orchestration.py tests/test_replanning.py tests/test_t
 ```
 测试结果：
 ```text
-160 passed, 2 subtests passed in 7.63s (100% pass, 0 failed, 0 errors)
+163 passed, 2 subtests passed in 8.07s (100% pass, 0 failed, 0 errors)
 ```
 
 ### 3.2 治理矩阵 AM-01 ~ AM-23 状态

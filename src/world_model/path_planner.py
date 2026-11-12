@@ -399,7 +399,7 @@ class SubseaPathPlanner:
             )
 
             if corridor_conflicts and auto_deconflict:
-                alt_offset = -20.0 if start_depth_m > 40.0 else 20.0
+                alt_offset = -25.0 if start_depth_m > 40.0 else 25.0
                 shifted_wps = []
                 for wp in chosen_path:
                     wp_copy = dict(wp)
