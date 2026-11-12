@@ -40,14 +40,17 @@
    - 总控编排器 `MissionOrchestrator` 贯通 4D 空间预检、机群分配、拓扑代次推进与自愈容灾全生命周期。
 7. **OpenTelemetry 分布式链路追踪 (`src/observability/`)**：
    - 实现轻量化内存环形缓冲导出器与上下文管理器，全链路监控任务派发、编排推进与状态流转。
-8. **Mission Control 五合一控制台 (`frontend/ros2_dashboard.html`)**：
-   - 升级集成全流程编排与自愈容灾试验台，支持一键解耦预检、拓扑批次单步推进、一键全自主闭环巡航（Auto Run）与水声微报文通信模拟。
+8. **Mission Control 六合一控制台 (`frontend/ros2_dashboard.html`)**：
+   - 升级集成全流程编排与自愈容灾试验台、4D 数字孪生与 3D/4D 避障路径规划工作台、ASR 语义归一化测试台，支持一键解耦预检、拓扑批次单步推进、一键全自主闭环巡航（Auto Run）与水声微报文通信模拟。
 9. **南海海洋流速垂直剖面与机群抗流能力动态硬约束预检 (`src/world_model/`)**：
    - 接入物理流速剖面衰减模型与环境流速动态覆盖，结合机群标称抗流阈值实现水下急流险情预警与硬约束阻断。
 10. **动态工程支持船舶与移动障碍物三维实时防碰撞规避 (`src/world_model/`)**：
    - 支持动态船舶（如“海洋石油681”）与移动漂浮物的三维位置、速度矢量与安全包络跟踪，提供近地表作业的紧急防碰撞硬约束阻断与警戒区软告警。
 11. **ASR 专业术语与油田实体上下文归一化 Dev 端点 (`/api/dev/asr/normalize`)**：
    - 支持开发者直接针对水下专业同音词、油田实体别名进行上下文归一化分析与纠偏测试。
+12. **3D/4D 水下碰撞规避与安全旁通路径规划器 (`src/world_model/path_planner.py`)**：
+   - 基于测地坐标与空间安全引擎，实现航线直线段安全采样探测、设施碰撞检测、自动切向与垂向旁通避障航点生成（Waypoint Detour）；
+   - 暴露 `POST /api/dev/world-model/plan-path` 接口，并在前端仪表盘提供一键式避障路径计算交互。
 
 ---
 
@@ -56,7 +59,7 @@
 ```mermaid
 graph TD
     subgraph UI ["1. 交互与控制台层"]
-        Dashboard["Mission Control 驾驶舱 (ros2_dashboard.html)<br/>• 遥测监控 • 双GPU后端 • 物理工具 • 机群网关 • DAG容灾编排 • 自主巡航"]
+        Dashboard["Mission Control 驾驶舱 (ros2_dashboard.html)<br/>• 遥测监控 • 双GPU后端 • 物理工具 • 机群网关 • DAG容灾编排 • 4D路径规划"]
     end
 
     subgraph Governance ["2. 状态机与安全治理层"]
@@ -80,6 +83,7 @@ graph TD
     subgraph DigitalTwin ["5. 水下 4D 世界模型"]
         WorldModel["SubseaWorldModel (水下设施数字孪生 & 动态船舶追踪)"]
         SafetyEngine["SpatialSafetyEngine (三维禁入区、物理间隙、流速与船舶避碰)"]
+        PathPlanner["SubseaPathPlanner (3D/4D 碰撞规避旁通航线规划器)"]
     end
 
     subgraph Communication ["6. 水声微通信与异构网关层"]
@@ -117,7 +121,7 @@ pytest tests/test_mission_orchestration.py tests/test_replanning.py tests/test_t
 ```
 测试结果：
 ```text
-157 passed, 2 subtests passed in 7.78s (100% pass, 0 failed, 0 errors)
+160 passed, 2 subtests passed in 7.63s (100% pass, 0 failed, 0 errors)
 ```
 
 ### 3.2 治理矩阵 AM-01 ~ AM-23 状态
