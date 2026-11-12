@@ -444,9 +444,21 @@ class DialogueManager:
             }
 
             try:
-                reply = self._process_internal(user_message, request_id, event_sink=event_sink)
-                self._run_session_state_shadow_check(checkpoint="process", request_id=request_id)
-                return reply
+                from src.observability import trace_span
+
+                with trace_span(
+                    "seagent.dialogue.turn",
+                    attributes={
+                        "session_id": getattr(self, "session_id", "default"),
+                        "request_id": request_id,
+                        "phase_before": self.phase,
+                        "mode": self.mode,
+                    },
+                ) as span:
+                    reply = self._process_internal(user_message, request_id, event_sink=event_sink)
+                    self._run_session_state_shadow_check(checkpoint="process", request_id=request_id)
+                    span.set_attribute("phase_after", self.phase)
+                    return reply
             except (TaskPersistenceError, IntentIdConflict, IdReservationError, ContextBudgetError) as exc:
                 if self.phase == "blocked_soft" and not isinstance(exc, ContextBudgetError):
                     raise

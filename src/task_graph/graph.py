@@ -105,9 +105,17 @@ class TaskGraph:
     def get_execution_batches(self) -> list[list[str]]:
         """Return topological generations (parallel execution stages).
         Nodes in generation N can run simultaneously once generation N-1 completes."""
-        if not nx.is_directed_acyclic_graph(self._graph):
-            raise CyclicDependencyError("Graph has cyclic dependencies, cannot compute execution stages.")
-        return [list(gen) for gen in nx.topological_generations(self._graph)]
+        from src.observability import trace_span
+
+        with trace_span(
+            "seagent.task_graph.schedule",
+            attributes={"node_count": len(self._nodes)},
+        ) as span:
+            if not nx.is_directed_acyclic_graph(self._graph):
+                raise CyclicDependencyError("Graph has cyclic dependencies, cannot compute execution stages.")
+            batches = [list(gen) for gen in nx.topological_generations(self._graph)]
+            span.set_attribute("batch_count", len(batches))
+            return batches
 
     def update_node_status(
         self,

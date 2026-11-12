@@ -94,19 +94,32 @@ class RobotGateway:
 
     def dispatch_task(self, intent: dict[str, Any], unit_id: str | None = None) -> RobotCommandResult:
         """Route and dispatch task intent to target robot driver."""
+        from src.observability import trace_span
+
         target_unit = unit_id or intent.get("robot_id") or intent.get("equipment_unit_id")
-        driver = self.get_driver(target_unit)
-        if not driver:
-            return RobotCommandResult(
-                command_id="cmd_err",
-                status=CommandExecutionStatus.FAILED,
-                error_message=f"No suitable driver found for robot '{target_unit}'.",
-            )
+        with trace_span(
+            "seagent.robot_gateway.dispatch",
+            attributes={"target_unit": str(target_unit)},
+        ) as span:
+            driver = self.get_driver(target_unit)
+            resolved_unit = driver.unit_id if driver else target_unit
+            span.set_attribute("target_unit", str(resolved_unit))
+            if not driver:
+                span.set_attribute("status", "FAILED")
+                return RobotCommandResult(
+                    command_id="cmd_err",
+                    status=CommandExecutionStatus.FAILED,
+                    error_message=f"No suitable driver found for robot '{target_unit}'.",
+                )
 
-        if not driver.is_connected():
-            driver.connect()
+            if not driver.is_connected():
+                driver.connect()
 
-        return driver.submit_task(intent)
+            result = driver.submit_task(intent)
+            span.set_attribute("status", result.status.value)
+            if result.task_id:
+                span.set_attribute("task_id", str(result.task_id))
+            return result
 
     def cancel_task(self, task_id: str, unit_id: str | None = None) -> RobotCommandResult:
         """Cancel a running task on target robot or default robot."""
