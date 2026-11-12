@@ -533,3 +533,89 @@ def dev_replanning_evaluate():
         "execution_batches": graph.get_execution_batches(),
     })
 
+
+@dev_bp.route("/api/dev/mission/decompose", methods=["POST"])
+@_require_api_token
+def dev_mission_decompose():
+    """将复合水下任务意图解耦为 TaskGraph DAG 并执行 4D 空间安全预检与机器人初分配"""
+    from src.orchestration import MissionDecomposer, MissionOrchestrator
+    from src.robot_gateway import RobotGateway, SimulatedRobotDriver
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "请求体必须为 JSON 对象"}), 400
+
+    intent = payload.get("intent", payload)
+    orchestrator = MissionOrchestrator()
+
+    # 确保网关至少有默认仿真机器人驱动
+    gw = RobotGateway.get_instance()
+    if not gw.list_drivers():
+        gw.register_driver(SimulatedRobotDriver(unit_id="SIM-ROV-001"), is_default=True)
+
+    graph = orchestrator.create_mission(intent)
+    passed, msg, violations = orchestrator.run_preflight_safety(graph)
+    allocations = orchestrator.allocate_fleet(graph)
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "graph": graph.to_dict(),
+        "execution_batches": graph.get_execution_batches(),
+        "preflight": {
+            "passed": passed,
+            "message": msg,
+            "violations": violations,
+        },
+        "allocations": allocations,
+        "mermaid": graph.to_mermaid(),
+    })
+
+
+@dev_bp.route("/api/dev/mission/step", methods=["POST"])
+@_require_api_token
+def dev_mission_step():
+    """执行任务图 DAG 当前拓扑代次批次，并在发生故障时执行动态重规划与容灾自适应"""
+    from src.orchestration import MissionOrchestrator
+    from src.robot_gateway import RobotGateway, SimulatedRobotDriver
+    from src.task_graph import CyclicDependencyError, TaskGraph
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "请求体必须为 JSON 对象"}), 400
+
+    graph_data = payload.get("graph")
+    if not graph_data or not isinstance(graph_data, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "缺少 graph 数据对象"}), 400
+
+    try:
+        graph = TaskGraph.from_dict(graph_data)
+    except CyclicDependencyError as exc:
+        return jsonify({"ok": False, "code": 400, "msg": f"任务图中存在循环依赖: {exc}"}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "code": 400, "msg": f"解析任务图失败: {exc}"}), 400
+
+    gw = RobotGateway.get_instance()
+    if not gw.list_drivers():
+        gw.register_driver(SimulatedRobotDriver(unit_id="SIM-ROV-001"), is_default=True)
+
+    orchestrator = MissionOrchestrator(gateway=gw)
+
+    force_fail_id = payload.get("force_fail_node_id")
+    failure_reason = payload.get("failure_reason", "Hydraulic torque exceeded: valve stuck")
+
+    step_result = orchestrator.step_mission(
+        graph=graph,
+        force_fail_node_id=force_fail_id,
+        failure_reason=failure_reason,
+    )
+    summary = orchestrator.get_mission_summary(graph)
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "step_result": step_result,
+        "graph": graph.to_dict(),
+        "summary": summary.to_dict(),
+    })
+
