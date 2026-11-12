@@ -289,4 +289,40 @@ def dev_validate_task_graph():
     })
 
 
+@dev_bp.route("/api/dev/gateway/drivers", methods=["GET"])
+@_require_api_token
+def dev_list_gateway_drivers():
+    """返回当前 Robot Gateway 注册的所有机器人驱动状态"""
+    from src.robot_gateway import RobotGateway, SimulatedRobotDriver
+
+    gw = RobotGateway.get_instance()
+    if not gw.list_drivers():
+        gw.register_driver(SimulatedRobotDriver(unit_id="SIM-ROV-001"), is_default=True)
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "drivers": gw.list_drivers(),
+    })
+
+
+@dev_bp.route("/api/dev/gateway/telemetry", methods=["GET"])
+@_require_api_token
+def dev_poll_fleet_telemetry():
+    """聚合获取所有已注册机器人的标准化遥测快照"""
+    from src.robot_gateway import RobotGateway, SimulatedRobotDriver
+
+    gw = RobotGateway.get_instance()
+    if not gw.list_drivers():
+        gw.register_driver(SimulatedRobotDriver(unit_id="SIM-ROV-001"), is_default=True)
+
+    telemetry_map = {uid: snap.to_dict() for uid, snap in gw.poll_fleet_telemetry().items()}
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "fleet_telemetry": telemetry_map,
+    })
+
+
+
 
