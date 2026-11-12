@@ -819,8 +819,24 @@
   C --> D[T4: 完工摄录复核];</pre>
         </div>
       </section>
+
+      <section class="panel dynamic-panel" style="margin-top:20px;">
+        <div class="panel-head" style="display:flex; justify-content:space-between; align-items:center;">
+          <h2>OpenTelemetry 分布式链路追踪实时审计 (Live Tracing Spans)</h2>
+          <div style="display:flex; gap:8px;">
+            <button type="button" class="btn" id="btnRefreshSpans" style="padding:4px 10px; font-size:12px;">刷新链路</button>
+            <button type="button" class="btn" id="btnClearSpans" style="padding:4px 10px; font-size:12px;">清空追踪</button>
+          </div>
+        </div>
+        <div style="padding:16px;">
+          <div id="otelSpansList" style="font-family:monospace; font-size:12px; background:var(--surface-muted); border:1px solid var(--line); border-radius:6px; padding:12px; max-height:220px; overflow:auto;">
+            暂无记录的追踪链路。执行上方编排任务后点击“刷新链路”。
+          </div>
+        </div>
+      </section>
     </div>
   </main>
+
 
   <!-- 网关设置弹窗 -->
   <dialog id="gatewayDialog">
@@ -1548,11 +1564,52 @@
           }
           resEl.textContent = out;
           if (mermaidEl && step.mermaid) mermaidEl.textContent = step.mermaid;
+          loadOtelSpans();
         } catch (err) {
           resEl.textContent = `❌ 推进请求异常: ${err.message}`;
         }
       });
+
+      async function loadOtelSpans() {
+        const spansEl = document.getElementById('otelSpansList');
+        if (!spansEl) return;
+        try {
+          const resp = await fetch('/api/dev/observability/spans?limit=10');
+          const data = await resp.json();
+          if (!resp.ok || !data.ok) {
+            spansEl.textContent = `❌ 拉取链路失败: ${data.msg || 'HTTP ' + resp.status}`;
+            return;
+          }
+          if (!data.spans || data.spans.length === 0) {
+            spansEl.textContent = '暂无记录的追踪链路。请执行编排任务后再次刷新。';
+            return;
+          }
+          let out = `【最新分布式链路追踪 Span 记录 (共 ${data.spans_count} 条)】:\n`;
+          data.spans.forEach((s, idx) => {
+            out += `[${idx + 1}] ${s.name} (${s.duration_ms || '--'} ms) [Status: ${s.status}]\n`;
+            out += `    TraceID: ${s.trace_id || '--'} | SpanID: ${s.span_id || '--'}\n`;
+            if (s.attributes && Object.keys(s.attributes).length > 0) {
+              out += `    属性: ${JSON.stringify(s.attributes)}\n`;
+            }
+          });
+          spansEl.textContent = out;
+        } catch (err) {
+          spansEl.textContent = `❌ 请求链路异常: ${err.message}`;
+        }
+      }
+
+      document.getElementById('btnRefreshSpans')?.addEventListener('click', loadOtelSpans);
+      document.getElementById('btnClearSpans')?.addEventListener('click', async () => {
+        const spansEl = document.getElementById('otelSpansList');
+        try {
+          await fetch('/api/dev/observability/clear', {method: 'POST'});
+          if (spansEl) spansEl.textContent = '已清空内存中的 OpenTelemetry 追踪链路。';
+        } catch (err) {
+          if (spansEl) spansEl.textContent = `❌ 清空异常: ${err.message}`;
+        }
+      });
     }
+
 
     // 初始加载后端拓扑与工具清单
     loadBackends();
