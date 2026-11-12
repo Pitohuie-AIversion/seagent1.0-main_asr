@@ -21,6 +21,7 @@ from .models import (
     SubseaAsset,
     SubseaAssetType,
 )
+from .path_planner import PathPlanResult, SubseaPathPlanner
 from .spatial_safety import SpatialSafetyEngine
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ class SubseaWorldModel:
         self._robot_positions: dict[str, dict[str, Any]] = {}
         self._current_override: OceanCurrentData | None = None
         self._safety_engine = SpatialSafetyEngine()
+        self._path_planner = SubseaPathPlanner(self._safety_engine, world_model=self)
 
         self._load_config(config_path)
         self._init_default_assets()
@@ -345,6 +347,30 @@ class SubseaWorldModel:
                 warnings=all_warnings,
                 closest_asset_distance_m=min_dist,
                 closest_asset_id=closest_asset,
+            )
+
+    def plan_safe_path(
+        self,
+        start_lat: float,
+        start_lon: float,
+        start_depth_m: float,
+        goal_lat: float,
+        goal_lon: float,
+        goal_depth_m: float,
+        min_clearance_m: float = 10.0,
+        cruise_speed_mps: float = 1.0,
+    ) -> PathPlanResult:
+        """Compute collision-free waypoint trajectory connecting start and goal."""
+        with self._rw_lock:
+            return self._path_planner.plan_path(
+                start_lat=start_lat,
+                start_lon=start_lon,
+                start_depth_m=start_depth_m,
+                goal_lat=goal_lat,
+                goal_lon=goal_lon,
+                goal_depth_m=goal_depth_m,
+                min_clearance_m=min_clearance_m,
+                cruise_speed_mps=cruise_speed_mps,
             )
 
     def export_snapshot(self) -> dict[str, Any]:

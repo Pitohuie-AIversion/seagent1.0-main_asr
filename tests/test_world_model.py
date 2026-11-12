@@ -6,9 +6,11 @@ from src.world_model import (
     GeofenceSeverity,
     GeofenceZone,
     GeofenceZoneType,
+    PathPlanResult,
     Point3D,
     SubseaAsset,
     SubseaAssetType,
+    SubseaPathPlanner,
     SubseaWorldModel,
 )
 
@@ -265,3 +267,63 @@ def test_api_dev_asr_normalize_endpoint():
     assert data["normalization_changed"] is True
     assert "采油树" in data["corrected_text"]
     assert any(r["target"] == "采油树" for r in data["replacements"])
+
+
+def test_path_planner_direct_path_clear():
+    wm = SubseaWorldModel.get_instance()
+    plan = wm.plan_safe_path(
+        start_lat=20.830,
+        start_lon=115.750,
+        start_depth_m=280.0,
+        goal_lat=20.835,
+        goal_lon=115.755,
+        goal_depth_m=290.0,
+        min_clearance_m=10.0,
+        cruise_speed_mps=1.0,
+    )
+    assert plan.is_feasible is True
+    assert len(plan.waypoints) == 2
+    assert plan.total_distance_m > 0
+    assert plan.estimated_duration_s > 0
+    assert len(plan.bypassed_obstacles) == 0
+    assert "直线路径无阻断" in plan.notes
+
+
+def test_path_planner_obstacle_detour_avoidance():
+    wm = SubseaWorldModel.get_instance()
+    plan = wm.plan_safe_path(
+        start_lat=20.814,
+        start_lon=115.735,
+        start_depth_m=305.0,
+        goal_lat=20.816,
+        goal_lon=115.735,
+        goal_depth_m=305.0,
+        min_clearance_m=10.0,
+        cruise_speed_mps=1.0,
+    )
+    assert plan.is_feasible is True
+    assert len(plan.waypoints) == 3
+    assert plan.waypoints[1].get("detour") is True
+    assert len(plan.bypassed_obstacles) >= 1
+    assert any("MANIFOLD" in obs or "manifold" in obs.lower() or "管汇" in obs for obs in plan.bypassed_obstacles)
+    assert "绕避障碍物" in plan.notes
+
+
+def test_api_dev_world_model_plan_path_endpoint():
+    from web_backend import app
+    client = app.test_client()
+
+    resp = client.post("/api/dev/world-model/plan-path", json={
+        "start": {"lat": 20.814, "lon": 115.735, "depth_m": 305.0},
+        "goal": {"lat": 20.816, "lon": 115.735, "depth_m": 305.0},
+        "min_clearance_m": 10.0,
+        "cruise_speed_mps": 1.2,
+    })
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert "path_plan" in data
+    path_plan = data["path_plan"]
+    assert path_plan["is_feasible"] is True
+    assert path_plan["waypoints_count"] == 3
+    assert len(path_plan["bypassed_obstacles"]) >= 1

@@ -401,6 +401,46 @@ def dev_world_model_check_safety():
     })
 
 
+@dev_bp.route("/api/dev/world-model/plan-path", methods=["POST"])
+@_require_api_token
+def dev_world_model_plan_path():
+    """在水下 4D 数字孪生世界模型中规划避障航线 (绕避地理围栏与水下设施物理包络)"""
+    from src.world_model import SubseaWorldModel
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "请求体必须为 JSON 对象"}), 400
+
+    start = payload.get("start")
+    goal = payload.get("goal")
+    if not isinstance(start, dict) or not isinstance(goal, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "start 与 goal 必须为包含经纬度与深度的字典"}), 400
+
+    if "lat" not in start or "lon" not in start or "lat" not in goal or "lon" not in goal:
+        return jsonify({"ok": False, "code": 400, "msg": "start 与 goal 均需提供 lat 与 lon"}), 400
+
+    min_clearance = float(payload.get("min_clearance_m", 10.0))
+    cruise_speed = float(payload.get("cruise_speed_mps", 1.0))
+
+    wm = SubseaWorldModel.get_instance()
+    plan_res = wm.plan_safe_path(
+        start_lat=float(start["lat"]),
+        start_lon=float(start["lon"]),
+        start_depth_m=float(start.get("depth_m", 0.0)),
+        goal_lat=float(goal["lat"]),
+        goal_lon=float(goal["lon"]),
+        goal_depth_m=float(goal.get("depth_m", 0.0)),
+        min_clearance_m=min_clearance,
+        cruise_speed_mps=cruise_speed,
+    )
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "path_plan": plan_res.to_dict(),
+    })
+
+
 @dev_bp.route("/api/dev/weak-comm/encode-task", methods=["POST"])
 @_require_api_token
 def dev_weak_comm_encode_task():
