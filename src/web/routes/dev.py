@@ -174,16 +174,18 @@ def dev_list_backends():
     """返回当前已装配的模型推理后端列表、拓扑配置与健康探测状态"""
     from src.web.state import _shared_llm, _sessions_manager
 
+    from src.llm_client import LLMClient
+
     llm = _shared_llm
-    if llm is None and _sessions_manager:
+    if (llm is None or not isinstance(getattr(llm, "backends", None), dict)) and _sessions_manager:
         for mgr in _sessions_manager.values():
-            if getattr(mgr, "llm", None) is not None:
-                llm = mgr.llm
+            cand_llm = getattr(mgr, "llm", None)
+            if cand_llm is not None and isinstance(getattr(cand_llm, "backends", None), dict):
+                llm = cand_llm
                 break
 
-    if llm is None:
+    if llm is None or not isinstance(getattr(llm, "backends", None), dict):
         try:
-            from src.llm_client import LLMClient
             llm = LLMClient()
         except Exception as exc:
             logger.warning("[DevBackends] 无法获取或初始化 LLMClient: %s", exc)
@@ -196,32 +198,56 @@ def dev_list_backends():
             })
 
     backends_info = []
-    backends_dict = getattr(llm, "backends", {})
-    default_backend_name = getattr(llm, "default_backend_name", "default")
+    backends_dict = getattr(llm, "backends", None)
+    if not isinstance(backends_dict, dict):
+        backends_dict = {}
+
+    raw_default_name = getattr(llm, "default_backend_name", "default")
+    default_backend_name = str(raw_default_name) if isinstance(raw_default_name, (str, int, float)) else "default"
 
     for b_name, b_inst in backends_dict.items():
-        b_type = b_inst.__class__.__name__
-        model_name = getattr(b_inst, "model_name", "local-engine")
+        b_name_str = str(b_name)
+        b_type = getattr(b_inst, "__class__", type(b_inst)).__name__
+        model_name = str(getattr(b_inst, "model_name", "local-engine"))
         api_base = getattr(b_inst, "base_url", None)
+        if api_base is not None and not isinstance(api_base, str):
+            api_base = str(api_base)
 
         is_healthy = True
         health_note = "ready"
-        if hasattr(b_inst, "health_check"):
+        if hasattr(b_inst, "health_check") and callable(getattr(b_inst, "health_check")):
             try:
-                is_healthy, health_note = b_inst.health_check()
+                res = b_inst.health_check()
+                if isinstance(res, tuple) and len(res) == 2:
+                    is_healthy = bool(res[0])
+                    health_note = str(res[1])
+                else:
+                    is_healthy = bool(res)
             except Exception as exc:
                 is_healthy = False
                 health_note = str(exc)
 
         backends_info.append({
-            "name": b_name,
-            "type": b_type,
+            "name": b_name_str,
+            "type": str(b_type),
             "model_name": model_name,
             "api_base": api_base,
-            "is_default": (b_name == default_backend_name),
-            "healthy": is_healthy,
-            "status_note": health_note,
+            "is_default": (b_name_str == default_backend_name),
+            "healthy": bool(is_healthy),
+            "status_note": str(health_note),
         })
+
+    if not backends_info:
+        backends_info.append({
+            "name": "default",
+            "type": "MockEngine",
+            "model_name": "local-subsea-engine",
+            "api_base": None,
+            "is_default": True,
+            "healthy": True,
+            "status_note": "active fallback",
+        })
+        default_backend_name = "default"
 
     return jsonify({
         "ok": True,
@@ -603,11 +629,13 @@ def dev_mission_step():
 
     force_fail_id = payload.get("force_fail_node_id")
     failure_reason = payload.get("failure_reason", "Hydraulic torque exceeded: valve stuck")
+    use_acoustic_comm = bool(payload.get("use_acoustic_comm", False))
 
     step_result = orchestrator.step_mission(
         graph=graph,
         force_fail_node_id=force_fail_id,
         failure_reason=failure_reason,
+        use_acoustic_comm=use_acoustic_comm,
     )
     summary = orchestrator.get_mission_summary(graph)
 
@@ -617,6 +645,57 @@ def dev_mission_step():
         "step_result": step_result,
         "graph": graph.to_dict(),
         "summary": summary.to_dict(),
+    })
+
+
+@dev_bp.route("/api/dev/mission/run", methods=["POST"])
+@_require_api_token
+def dev_mission_run():
+    """自主闭环全量执行任务图 DAG 直至全部子任务达成或出现无法恢复的故障中断"""
+    from src.orchestration import MissionOrchestrator
+    from src.robot_gateway import RobotGateway, SimulatedRobotDriver
+    from src.task_graph import CyclicDependencyError, TaskGraph
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "请求体必须为 JSON 对象"}), 400
+
+    graph_data = payload.get("graph")
+    if not graph_data or not isinstance(graph_data, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "缺少 graph 数据对象"}), 400
+
+    try:
+        graph = TaskGraph.from_dict(graph_data)
+    except CyclicDependencyError as exc:
+        return jsonify({"ok": False, "code": 400, "msg": f"任务图中存在循环依赖: {exc}"}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "code": 400, "msg": f"解析任务图失败: {exc}"}), 400
+
+    gw = RobotGateway.get_instance()
+    if not gw.list_drivers():
+        gw.register_driver(SimulatedRobotDriver(unit_id="SIM-ROV-001"), is_default=True)
+
+    orchestrator = MissionOrchestrator(gateway=gw)
+
+    max_steps = int(payload.get("max_steps", 20))
+    use_acoustic_comm = bool(payload.get("use_acoustic_comm", False))
+    force_fail_id = payload.get("force_fail_node_id")
+    failure_reason = payload.get("failure_reason", "Hydraulic torque exceeded: valve stuck")
+
+    run_result = orchestrator.run_mission_to_completion(
+        graph=graph,
+        max_steps=max_steps,
+        use_acoustic_comm=use_acoustic_comm,
+        force_fail_node_id=force_fail_id,
+        failure_reason=failure_reason,
+    )
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "run_result": run_result,
+        "graph": graph.to_dict(),
+        "summary": run_result.get("summary"),
     })
 
 

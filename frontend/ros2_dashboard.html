@@ -797,6 +797,10 @@
             </select>
             <button type="button" id="btnDecomposeMission" class="btn primary">1. 解耦生成 DAG 并 4D 预检</button>
             <button type="button" id="btnStepMission" class="btn" disabled>2. 推进拓扑批次 (Step)</button>
+            <button type="button" id="btnRunMission" class="btn secondary" disabled>3. 一键自主巡航执行 (Auto Run)</button>
+            <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="checkUseAcousticComm"> 水声微报文通信模拟
+            </label>
             <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
               <input type="checkbox" id="checkSimulateStuckFault"> 注入阀门卡阻故障 (测试自愈重规划)
             </label>
@@ -1448,7 +1452,9 @@
     function initMissionOrchestratorUI() {
       const btnDecompose = document.getElementById('btnDecomposeMission');
       const btnStep = document.getElementById('btnStepMission');
+      const btnRun = document.getElementById('btnRunMission');
       const selTemplate = document.getElementById('selectMissionTemplate');
+      const checkAcoustic = document.getElementById('checkUseAcousticComm');
       const checkFault = document.getElementById('checkSimulateStuckFault');
       const resEl = document.getElementById('resMissionOrchestration');
       const badgeEl = document.getElementById('orchestratorStatusBadge');
@@ -1496,6 +1502,7 @@
           }
           currentMissionGraph = data.graph;
           if (btnStep) btnStep.disabled = false;
+          if (btnRun) btnRun.disabled = false;
           if (badgeEl) {
             badgeEl.textContent = `当前状态: 预检完成 · 包含 ${data.graph.node_count || 4} 个拓扑节点 · 就绪待执行`;
             badgeEl.style.color = '#10b981';
@@ -1520,6 +1527,7 @@
         try {
           const payload = {
             graph: currentMissionGraph,
+            use_acoustic_comm: Boolean(checkAcoustic && checkAcoustic.checked),
           };
           if (checkFault && checkFault.checked) {
             const valveNode = Object.keys(currentMissionGraph.nodes || {}).find(k => k.includes('valve') || k.includes('turn'));
@@ -1552,6 +1560,7 @@
           if (step.is_completed) {
             out += `\n🎉 全流程任务已全部圆满执行完成！`;
             if (btnStep) btnStep.disabled = true;
+            if (btnRun) btnRun.disabled = true;
             if (badgeEl) {
               badgeEl.textContent = '当前状态: COMPLETED · 全流程执行完成';
               badgeEl.style.color = '#10b981';
@@ -1567,6 +1576,71 @@
           loadOtelSpans();
         } catch (err) {
           resEl.textContent = `❌ 推进请求异常: ${err.message}`;
+        }
+      });
+
+      btnRun?.addEventListener('click', async () => {
+        if (!currentMissionGraph || !resEl) return;
+        resEl.textContent = '🚀 正在启动全自主闭环巡航，多代次拓扑调度与自愈重规划执行中…';
+        try {
+          const payload = {
+            graph: currentMissionGraph,
+            max_steps: 20,
+            use_acoustic_comm: Boolean(checkAcoustic && checkAcoustic.checked),
+          };
+          if (checkFault && checkFault.checked) {
+            const valveNode = Object.keys(currentMissionGraph.nodes || {}).find(k => k.includes('valve') || k.includes('turn'));
+            if (valveNode) {
+              payload.force_fail_node_id = valveNode;
+              payload.failure_reason = 'Hydraulic torque limit exceeded: valve stuck with marine growth';
+            }
+          }
+          const resp = await fetch('/api/dev/mission/run', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data.ok) {
+            resEl.textContent = `❌ 全自主巡航失败: ${data.msg || 'HTTP ' + resp.status}`;
+            return;
+          }
+          currentMissionGraph = data.graph;
+          const run = data.run_result;
+          let out = `【全自主闭环巡航执行完成】 最终状态: ${run.state}\n`;
+          out += `  推进代次步数: ${run.steps_count} 轮 | 包含子任务: ${run.summary ? run.summary.total_subtasks : '-'}\n`;
+          out += `  已完成子任务: ${run.summary ? run.summary.completed_subtasks : '-'} | 动态重规划触发: ${run.summary ? run.summary.replanning_count : 0} 次\n`;
+          if (payload.use_acoustic_comm) {
+            out += `  水声通信模式: 已启用 32 字节水声微报文帧编码与 CRC-16 遥控遥测\n`;
+          }
+          if (run.summary && run.summary.execution_history) {
+            out += `\n【全流程审计轨迹】:\n`;
+            run.summary.execution_history.forEach((rec, idx) => {
+              const statusSymbol = rec.status === 'COMPLETED' ? '✓' : '✗';
+              out += `  ${idx + 1}. [${statusSymbol}] ${rec.node_id} (${rec.task_type}) ➔ 设备: ${rec.robot_id || 'DEFAULT'}`;
+              if (rec.error) out += ` [错误: ${rec.error}]`;
+              out += '\n';
+            });
+          }
+          if (run.is_completed) {
+            out += `\n🎉 全流程任务已圆满自主闭环完成！`;
+            if (btnStep) btnStep.disabled = true;
+            if (btnRun) btnRun.disabled = true;
+            if (badgeEl) {
+              badgeEl.textContent = '当前状态: COMPLETED · 全流程自主巡航完成';
+              badgeEl.style.color = '#10b981';
+            }
+          } else {
+            if (badgeEl) {
+              badgeEl.textContent = `当前状态: ${run.state} · 执行中断`;
+              badgeEl.style.color = '#ef4444';
+            }
+          }
+          resEl.textContent = out;
+          if (mermaidEl && run.mermaid) mermaidEl.textContent = run.mermaid;
+          loadOtelSpans();
+        } catch (err) {
+          resEl.textContent = `❌ 自主巡航请求异常: ${err.message}`;
         }
       });
 

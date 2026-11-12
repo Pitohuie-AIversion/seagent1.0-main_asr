@@ -184,6 +184,13 @@ def _chat_result(mgr, sid, request_id, reply, ros2_dispatch):
     persistence_warning = getattr(mgr, "_history_persistence_warning", None)
     if persistence_warning:
         reply = f"{reply}\n⚠️ {persistence_warning}"
+
+    tool_traces = getattr(mgr, '_last_tool_traces', None)
+    if not isinstance(tool_traces, list):
+        llm = getattr(mgr, 'llm', None)
+        llm_traces = getattr(llm, '_last_tool_traces', None) if llm is not None else None
+        tool_traces = llm_traces if isinstance(llm_traces, list) else []
+
     return {
         'code': 200, 'session_id': sid, 'request_id': request_id, 'reply': reply,
         'ui_state': ui_builder(mgr),
@@ -196,7 +203,7 @@ def _chat_result(mgr, sid, request_id, reply, ros2_dispatch):
         'final_json': mgr._last_built_json if mgr.phase == 'done' else None,
         'ros2_dispatch': ros2_dispatch,
         'persistence_warning': persistence_warning,
-        'tool_traces': getattr(mgr, '_last_tool_traces', []) or getattr(mgr.llm, '_last_tool_traces', []),
+        'tool_traces': tool_traces,
     }
 
 

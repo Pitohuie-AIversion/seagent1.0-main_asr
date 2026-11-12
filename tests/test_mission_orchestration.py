@@ -229,3 +229,112 @@ def test_api_dev_mission_endpoints():
     assert step_data["ok"] is True
     assert "step_result" in step_data
     assert "summary" in step_data
+
+    # Run to completion endpoint
+    run_payload = {
+        "graph": data["graph"],
+        "use_acoustic_comm": True,
+    }
+    resp_run = client.post("/api/dev/mission/run", json=run_payload)
+    assert resp_run.status_code == 200
+    run_data = resp_run.get_json()
+    assert run_data["ok"] is True
+    assert run_data["run_result"]["is_completed"] is True
+    assert run_data["run_result"]["state"] == MissionState.COMPLETED.value
+
+
+def test_mission_run_to_completion_autonomous_success():
+    gw = RobotGateway.get_instance()
+    driver = SimulatedRobotDriver(unit_id="TEST-SIM-ROV")
+    gw.register_driver(driver, is_default=True)
+
+    orchestrator = MissionOrchestrator(gateway=gw)
+    intent = {
+        "intent_id": "TI_RUN_COMPLETION",
+        "task_type": "pipeline_inspection",
+        "pipe_id": "PIPE-999",
+        "water_depth": 350.0,
+        "assigned_robot_id": "TEST-SIM-ROV",
+    }
+    graph = orchestrator.create_mission(intent)
+    assert graph.node_count == 4
+
+    run_res = orchestrator.run_mission_to_completion(graph, max_steps=10)
+    assert run_res["is_completed"] is True
+    assert run_res["has_failures"] is False
+    assert run_res["state"] == MissionState.COMPLETED.value
+    assert run_res["steps_count"] == 4
+    assert graph.is_completed() is True
+
+
+def test_mission_run_to_completion_with_self_healing_recovery():
+    gw = RobotGateway.get_instance()
+    driver = SimulatedRobotDriver(unit_id="TEST-SIM-ROV")
+    gw.register_driver(driver, is_default=True)
+
+    orchestrator = MissionOrchestrator(gateway=gw)
+    intent = {
+        "intent_id": "TI_RUN_HEAL",
+        "task_type": "valve_operation",
+        "water_depth": 200.0,
+        "assigned_robot_id": "TEST-SIM-ROV",
+    }
+    graph = orchestrator.create_mission(intent)
+    valve_node_id = "TI_RUN_HEAL_turn_valve"
+
+    # Inject failure on turn_valve
+    run_res = orchestrator.run_mission_to_completion(
+        graph,
+        max_steps=10,
+        force_fail_node_id=valve_node_id,
+        failure_reason="Hydraulic torque exceeded maximum: valve stuck with marine growth",
+    )
+
+    # Autonomous loop should have triggered replanning, inserted assist node, retried, and completed!
+    assert run_res["is_completed"] is True
+    assert run_res["state"] == MissionState.COMPLETED.value
+    summary = run_res["summary"]
+    assert summary["replanning_count"] >= 1
+    assert graph.is_completed() is True
+
+
+def test_mission_execution_with_acoustic_weak_comm():
+    from src.weak_comm.channel_simulator import AcousticChannelSimulator
+
+    gw = RobotGateway.get_instance()
+    driver = SimulatedRobotDriver(unit_id="TEST-SIM-ROV")
+    gw.register_driver(driver, is_default=True)
+
+    orchestrator = MissionOrchestrator(gateway=gw)
+    intent = {
+        "intent_id": "TI_ACOUSTIC_01",
+        "task_type": "cable_burial",
+        "water_depth": 120.0,
+        "assigned_robot_id": "TEST-SIM-ROV",
+    }
+    graph = orchestrator.create_mission(intent)
+
+    # Test successful acoustic run
+    run_res = orchestrator.run_mission_to_completion(graph, use_acoustic_comm=True)
+    assert run_res["is_completed"] is True
+    summary = orchestrator.get_mission_summary(graph)
+    assert len(summary.execution_history) > 0
+    first_rec = summary.execution_history[0]
+    assert "acoustic_comm" in first_rec.telemetry_snapshot
+    assert first_rec.telemetry_snapshot["acoustic_comm"]["delivered"] is True
+
+    # Test acoustic dropout packet loss triggers failure and replanning
+    graph2 = orchestrator.create_mission({
+        "intent_id": "TI_ACOUSTIC_DROP",
+        "task_type": "valve_operation",
+        "water_depth": 150.0,
+        "assigned_robot_id": "TEST-SIM-ROV",
+    })
+    loss_sim = AcousticChannelSimulator(packet_loss_rate=1.0)
+    step_res = orchestrator.step_mission(
+        graph2,
+        use_acoustic_comm=True,
+        acoustic_channel=loss_sim,
+    )
+    assert step_res["has_failures"] is True
+    assert any("水声弱网通信链路中断" in str(rec.error) for rec in orchestrator._execution_history[graph2.graph_id])

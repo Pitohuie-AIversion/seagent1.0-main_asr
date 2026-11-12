@@ -109,6 +109,8 @@ class MissionOrchestrator:
         available_robots: list[dict[str, Any]] | None = None,
         force_fail_node_id: str | None = None,
         failure_reason: str = "Subsea execution failure",
+        use_acoustic_comm: bool = False,
+        acoustic_channel: Any | None = None,
     ) -> dict[str, Any]:
         """Execute one topological stage of the mission DAG.
         Dispatches READY nodes to the Robot Gateway and triggers Dynamic Replanning upon failure."""
@@ -125,11 +127,45 @@ class MissionOrchestrator:
 
                 # Simulate / test fault injection trigger
                 is_injected_fail = (force_fail_node_id == node.node_id)
+                is_acoustic_dropped = False
+                raw_acoustic_frame: bytes | None = None
+                seq_num = len(history) + 1
+
+                if use_acoustic_comm:
+                    try:
+                        from src.weak_comm.codec import encode_task_intent
+                        from src.weak_comm.channel_simulator import AcousticChannelSimulator
+
+                        intent_payload = {
+                            "intent_id": node.node_id,
+                            "task_type": node.task_type,
+                            "equipment_unit_id": target_unit or "ROV-001",
+                            "water_depth": node.water_depth,
+                            "parameters": node.parameters,
+                        }
+                        raw_acoustic_frame = encode_task_intent(intent_payload, seq=seq_num)
+                        sim = acoustic_channel or AcousticChannelSimulator(packet_loss_rate=0.0)
+                        tx_result = sim.transmit(raw_acoustic_frame)
+                        if tx_result is None:
+                            is_acoustic_dropped = True
+                    except Exception as comm_exc:
+                        logger.warning("[MissionOrchestrator] Acoustic encoding failed: %s", comm_exc)
 
                 if is_injected_fail:
                     dispatch_status = TaskNodeStatus.FAILED
                     err_msg = failure_reason
                     telemetry = {"simulated_fault": True}
+                elif use_acoustic_comm and is_acoustic_dropped:
+                    dispatch_status = TaskNodeStatus.FAILED
+                    err_msg = f"水声弱网通信链路中断: 32字节帧(seq={seq_num})在水下信道丢失，ARQ确认超时"
+                    telemetry = {
+                        "acoustic_comm": {
+                            "seq": seq_num,
+                            "frame_size": len(raw_acoustic_frame) if raw_acoustic_frame else 32,
+                            "delivered": False,
+                            "error": "packet_loss",
+                        }
+                    }
                 else:
                     task_payload = {
                         "task_id": node.node_id,
@@ -141,6 +177,13 @@ class MissionOrchestrator:
                     dispatch_status = TaskNodeStatus.COMPLETED if is_ok else TaskNodeStatus.FAILED
                     err_msg = exec_res.error_message or (exec_res.message if not is_ok else None)
                     telemetry = exec_res.raw_response or {}
+                    if use_acoustic_comm and raw_acoustic_frame is not None:
+                        telemetry["acoustic_comm"] = {
+                            "seq": seq_num,
+                            "frame_size": len(raw_acoustic_frame),
+                            "delivered": True,
+                            "codec": "acoustic_32byte_crc16",
+                        }
 
                 rec = SubtaskExecutionRecord(
                     node_id=node.node_id,
@@ -198,6 +241,76 @@ class MissionOrchestrator:
                 "is_completed": is_done,
                 "has_failures": has_fail,
                 "execution_batches": graph.get_execution_batches(),
+                "mermaid": graph.to_mermaid(),
+            }
+
+    def run_mission_to_completion(
+        self,
+        graph: TaskGraph,
+        max_steps: int = 20,
+        available_robots: list[dict[str, Any]] | None = None,
+        use_acoustic_comm: bool = False,
+        acoustic_channel: Any | None = None,
+        force_fail_node_id: str | None = None,
+        failure_reason: str = "Subsea execution failure",
+    ) -> dict[str, Any]:
+        """Autonomously step through DAG task batches until the mission is either
+        COMPLETED, ABORTED, or max_steps limit is reached."""
+        with trace_span("seagent.mission.run_to_completion", attributes={"graph_id": graph.graph_id}) as span:
+            step_records: list[dict[str, Any]] = []
+            active_force_fail = force_fail_node_id
+
+            while len(step_records) < max_steps:
+                # If all nodes are already completed or graph aborted, finish loop
+                if graph.is_completed():
+                    break
+
+                ready_nodes = graph.get_ready_nodes()
+                if not ready_nodes:
+                    # No nodes ready to execute
+                    break
+
+                # Ensure unassigned ready nodes are assigned
+                unassigned = [n for n in ready_nodes if not n.assigned_robot_id]
+                if unassigned:
+                    self.allocate_fleet(graph, available_robots=available_robots)
+
+                # Inject simulated fault only once on target node
+                step_fail_id = active_force_fail if (active_force_fail and any(n.node_id == active_force_fail for n in ready_nodes)) else None
+
+                step_res = self.step_mission(
+                    graph=graph,
+                    available_robots=available_robots,
+                    force_fail_node_id=step_fail_id,
+                    failure_reason=failure_reason,
+                    use_acoustic_comm=use_acoustic_comm,
+                    acoustic_channel=acoustic_channel,
+                )
+
+                if step_fail_id:
+                    active_force_fail = None
+
+                step_records.append(step_res)
+
+                if step_res["is_completed"]:
+                    break
+                if step_res["has_failures"] and not step_res["replanned_events"]:
+                    # Unrecoverable failure occurred without replanning
+                    break
+
+            summary = self.get_mission_summary(graph)
+            span.set_attribute("final_state", summary.state.value)
+            span.set_attribute("total_steps", len(step_records))
+
+            return {
+                "mission_id": graph.graph_id,
+                "state": summary.state.value,
+                "steps_count": len(step_records),
+                "is_completed": graph.is_completed(),
+                "has_failures": graph.has_failures(),
+                "step_records": step_records,
+                "summary": summary.to_dict(),
+                "graph": graph.to_dict(),
                 "mermaid": graph.to_mermaid(),
             }
 
