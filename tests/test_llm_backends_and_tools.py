@@ -263,29 +263,32 @@ class TestBackends:
         assert resp_tool.has_tool_calls
         assert resp_tool.tool_calls[0].name == "query_robot_specs"
 
-    @patch("openai.OpenAI")
-    def test_openai_compatible_backend(self, mock_openai_cls):
+    def test_openai_compatible_backend(self):
         """测试标准 OpenAI 协议后端。"""
-        mock_client = MagicMock()
-        mock_openai_cls.return_value = mock_client
+        pytest.importorskip("openai")
+        from unittest.mock import patch, MagicMock
 
-        # 模拟响应
-        mock_choice = MagicMock()
-        mock_choice.message.content = "这是来自 GPU 1 27B 模型的推理回答"
-        mock_choice.finish_reason = "stop"
-        mock_choice.message.tool_calls = None
-        mock_resp = MagicMock()
-        mock_resp.choices = [mock_choice]
-        mock_client.chat.completions.create.return_value = mock_resp
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
 
-        backend = OpenAICompatibleBackend(
-            base_url="http://127.0.0.1:8001/v1",
-            model_name="qwen27b",
-        )
-        resp = backend.generate([{"role": "user", "content": "测试指令"}])
-        assert resp.text == "这是来自 GPU 1 27B 模型的推理回答"
-        assert resp.tool_calls is None
-        mock_client.chat.completions.create.assert_called_once()
+            # 模拟响应
+            mock_choice = MagicMock()
+            mock_choice.message.content = "这是来自 GPU 1 27B 模型的推理回答"
+            mock_choice.finish_reason = "stop"
+            mock_choice.message.tool_calls = None
+            mock_resp = MagicMock()
+            mock_resp.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_resp
+
+            backend = OpenAICompatibleBackend(
+                base_url="http://127.0.0.1:8001/v1",
+                model_name="qwen27b",
+            )
+            resp = backend.generate([{"role": "user", "content": "测试指令"}])
+            assert resp.text == "这是来自 GPU 1 27B 模型的推理回答"
+            assert resp.tool_calls is None
+            mock_client.chat.completions.create.assert_called_once()
 
     def test_local_vllm_backend_tag_parsing(self):
         """测试 LocalVllmBackend 对 <tool_call> 标签的解析。"""

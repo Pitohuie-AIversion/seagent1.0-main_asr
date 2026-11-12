@@ -34,8 +34,10 @@ class SpatialSafetyEngine:
         lon: float,
         depth_m: float = 0.0,
         min_clearance_m: float = 5.0,
+        current_limit_mps: float | None = None,
+        current_data: Any | None = None,
     ) -> SpatialSafetyCheckResult:
-        """Check geodetic coordinates against spatial geofence boundaries and asset locations."""
+        """Check geodetic coordinates against spatial geofence boundaries, asset locations, and environmental currents."""
         violations: list[dict] = []
         warnings: list[dict] = []
 
@@ -89,13 +91,36 @@ class SpatialSafetyEngine:
                         "message": f"距离水下设施 '{asset.name}' 较近 ({dist_m:.1f}m)，低于建议安全间隙 ({min_clearance_m}m)",
                     })
 
+        # 3. Check ocean current velocity vs robot envelope
+        if current_data is not None and current_limit_mps is not None:
+            spd = getattr(current_data, "speed_mps", 0.0)
+            limit = float(current_limit_mps)
+            if spd > limit * 1.25:
+                violations.append({
+                    "type": "high_current_hazard",
+                    "severity": "hard",
+                    "speed_mps": round(spd, 2),
+                    "limit_mps": round(limit, 2),
+                    "message": f"流速 {spd:.2f} m/s 严重超过机器人抗流上限 {limit:.2f} m/s (超标 25% 以上)，存在动力推进失控及脐带缆缠绕风险",
+                })
+            elif spd > limit:
+                warnings.append({
+                    "type": "high_current_warning",
+                    "severity": "soft",
+                    "speed_mps": round(spd, 2),
+                    "limit_mps": round(limit, 2),
+                    "message": f"流速 {spd:.2f} m/s 略微超过建议流速上限 {limit:.2f} m/s，建议微调下潜时机或启用高推力模式",
+                })
+
         is_safe = len(violations) == 0
+        current_dict = current_data.to_dict() if hasattr(current_data, "to_dict") else None
         return SpatialSafetyCheckResult(
             is_safe=is_safe,
             violations=violations,
             warnings=warnings,
             closest_asset_distance_m=closest_distance,
             closest_asset_id=closest_id,
+            ocean_current=current_dict,
         )
 
     def evaluate_cartesian_point(

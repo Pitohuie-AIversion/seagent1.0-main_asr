@@ -117,6 +117,7 @@ class SpatialSafetyCheckResult:
     warnings: list[dict[str, Any]] = field(default_factory=list)
     closest_asset_distance_m: float | None = None
     closest_asset_id: str | None = None
+    ocean_current: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -125,4 +126,24 @@ class SpatialSafetyCheckResult:
             "warnings": self.warnings,
             "closest_asset_distance_m": self.closest_asset_distance_m,
             "closest_asset_id": self.closest_asset_id,
+            "ocean_current": self.ocean_current,
+        }
+
+
+@dataclass
+class OceanCurrentData:
+    speed_mps: float
+    direction_deg: float = 0.0
+    vertical_speed_mps: float = 0.0
+    shear_per_100m: float = 0.0
+    timestamp_epoch: int | None = None
+    source: str = "empirical_scs_profile"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "speed_mps": round(self.speed_mps, 3),
+            "direction_deg": round(self.direction_deg, 1),
+            "vertical_speed_mps": round(self.vertical_speed_mps, 3),
+            "shear_per_100m": round(self.shear_per_100m, 3),
+            "source": self.source,
         }

@@ -260,7 +260,11 @@ def _process_chat_request(mgr, sid, request_id, msg, step_sink=None, confirmatio
             dispatch = _persist_and_dispatch_done_transition(mgr, phase_before)
             payload = _chat_result(mgr, sid, request_id, reply, dispatch)
             # Freeze and validate while still holding the lock, before a later turn can edit shared slots.
-            packet = json.loads(json.dumps({'payload': payload, 'status': 200, 'events': events}, ensure_ascii=False))
+            packet = json.loads(json.dumps(
+                {'payload': payload, 'status': 200, 'events': events},
+                ensure_ascii=False,
+                default=lambda o: o.to_dict() if hasattr(o, 'to_dict') and callable(o.to_dict) else str(o),
+            ))
         except Exception as exc:
             payload, status, _ = _chat_failure(exc, request_id)
             packet = {'payload': payload, 'status': status, 'events': []}

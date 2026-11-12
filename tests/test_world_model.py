@@ -170,3 +170,50 @@ def test_dev_api_world_model_endpoints():
     # 3. POST /api/dev/world-model/check-safety (Missing args error)
     resp_bad = client.post("/api/dev/world-model/check-safety", json={"unknown": 123})
     assert resp_bad.status_code == 400
+
+
+def test_ocean_current_profile_and_override():
+    from src.world_model import OceanCurrentData
+
+    wm = SubseaWorldModel.get_instance()
+    # 1. Test South China Sea empirical profile at surface vs seabed
+    surf_curr = wm.get_ocean_current(lat=20.0, lon=115.0, depth_m=10.0)
+    deep_curr = wm.get_ocean_current(lat=20.0, lon=115.0, depth_m=1500.0)
+    assert surf_curr.speed_mps > deep_curr.speed_mps
+    assert surf_curr.source == "empirical_scs_profile"
+
+    # 2. Test override
+    mock_curr = OceanCurrentData(speed_mps=2.4, direction_deg=180.0, source="typhoon_sim")
+    wm.set_environmental_current_override(mock_curr)
+    curr_now = wm.get_ocean_current(lat=20.0, lon=115.0, depth_m=500.0)
+    assert curr_now.speed_mps == 2.4
+    assert curr_now.source == "typhoon_sim"
+
+    wm.set_environmental_current_override(None)
+    curr_cleared = wm.get_ocean_current(lat=20.0, lon=115.0, depth_m=500.0)
+    assert curr_cleared.source == "empirical_scs_profile"
+
+
+def test_geodetic_safety_check_high_current_limit_hard_and_soft():
+    from src.world_model import OceanCurrentData
+
+    wm = SubseaWorldModel.get_instance()
+    # Simulate high current of 2.0 m/s
+    wm.set_environmental_current_override(OceanCurrentData(speed_mps=2.0, direction_deg=90.0))
+
+    # 1. Robot limit = 1.5 m/s. 2.0 m/s > 1.5 * 1.25 = 1.875 m/s -> HARD hazard
+    res_hard = wm.check_point_safety(lat=18.0, lon=113.0, depth_m=200.0, current_limit_mps=1.5)
+    assert res_hard.is_safe is False
+    assert any(v.get("type") == "high_current_hazard" for v in res_hard.violations)
+    assert any(v.get("severity") == "hard" for v in res_hard.violations)
+
+    # 2. Robot limit = 1.8 m/s. 1.8 < 2.0 <= 1.8 * 1.25 = 2.25 m/s -> SOFT warning
+    res_soft = wm.check_point_safety(lat=18.0, lon=113.0, depth_m=200.0, current_limit_mps=1.8)
+    assert res_soft.is_safe is True
+    assert any(w.get("type") == "high_current_warning" for w in res_soft.warnings)
+
+    # 3. High-spec heavy work-class ROV limit = 2.5 m/s -> No current hazards or warnings
+    res_safe = wm.check_point_safety(lat=18.0, lon=113.0, depth_m=200.0, current_limit_mps=2.5)
+    assert res_safe.is_safe is True
+    assert not any(v.get("type") == "high_current_hazard" for v in res_safe.violations)
+    assert not any(w.get("type") == "high_current_warning" for w in res_safe.warnings)

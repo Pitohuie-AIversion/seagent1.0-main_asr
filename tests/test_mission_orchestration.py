@@ -338,3 +338,31 @@ def test_mission_execution_with_acoustic_weak_comm():
     )
     assert step_res["has_failures"] is True
     assert any("水声弱网通信链路中断" in str(rec.error) for rec in orchestrator._execution_history[graph2.graph_id])
+
+
+def test_mission_preflight_blocks_on_high_current_hazard():
+    from src.world_model import OceanCurrentData, SubseaWorldModel
+
+    SubseaWorldModel.reset_instance()
+    wm = SubseaWorldModel.get_instance()
+    # Inject storm current 2.5 m/s
+    wm.set_environmental_current_override(OceanCurrentData(speed_mps=2.5, direction_deg=45.0))
+
+    orchestrator = MissionOrchestrator(world_model=wm)
+    intent = {
+        "intent_id": "TI_CURRENT_STORM",
+        "task_type": "pipeline_inspection",
+        "pipe_id": "PIPE-EAST",
+        "water_depth": 100.0,
+        "assigned_robot_id": "WROV-250-001",  # limit = 1.5 m/s, 2.5 > 1.5 * 1.25 -> HARD hazard
+        "parameters": {"lat": 19.500, "lon": 114.500},
+    }
+    graph = orchestrator.create_mission(intent)
+    for node in graph.nodes.values():
+        node.parameters["lat"] = 19.500
+        node.parameters["lon"] = 114.500
+
+    passed, msg, violations = orchestrator.run_preflight_safety(graph)
+    assert passed is False
+    assert "水下急流超限险情" in msg
+    assert any(v.get("type") == "high_current_hazard" for v in violations)

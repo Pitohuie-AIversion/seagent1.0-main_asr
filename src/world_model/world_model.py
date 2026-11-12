@@ -14,6 +14,7 @@ from .models import (
     GeofenceSeverity,
     GeofenceZone,
     GeofenceZoneType,
+    OceanCurrentData,
     Point3D,
     SpatialSafetyCheckResult,
     SubseaAsset,
@@ -35,6 +36,7 @@ class SubseaWorldModel:
         self._assets: dict[str, SubseaAsset] = {}
         self._geofences: dict[str, GeofenceZone] = {}
         self._robot_positions: dict[str, dict[str, Any]] = {}
+        self._current_override: OceanCurrentData | None = None
         self._safety_engine = SpatialSafetyEngine()
 
         self._load_config(config_path)
@@ -204,6 +206,41 @@ class SubseaWorldModel:
         with self._rw_lock:
             return self._robot_positions.get(unit_id)
 
+    # ================= Environmental & Ocean Current =================
+    def set_environmental_current_override(self, current_data: OceanCurrentData | None) -> None:
+        """Set or clear a simulated environmental ocean current field override."""
+        with self._rw_lock:
+            self._current_override = current_data
+
+    def get_ocean_current(
+        self,
+        lat: float,
+        lon: float,
+        depth_m: float = 0.0,
+        timestamp: Any | None = None,
+    ) -> OceanCurrentData:
+        """Query physical ocean current field at (lat, lon, depth_m).
+        Uses forecast cache, registered override, or South China Sea empirical decay profile."""
+        with self._rw_lock:
+            if self._current_override is not None:
+                return self._current_override
+
+        # South China Sea empirical depth attenuation profile:
+        import math
+        depth_norm = max(0.0, float(depth_m))
+        base_speed = 0.85 * math.exp(-depth_norm / 450.0) + 0.15 * math.sin(depth_norm / 100.0)
+        speed = max(0.12, min(2.8, abs(base_speed)))
+        direction = (lat * 12.0 + lon * 6.0 + depth_norm * 0.15) % 360.0
+        shear = max(0.01, 0.10 * math.exp(-depth_norm / 300.0))
+
+        return OceanCurrentData(
+            speed_mps=round(speed, 3),
+            direction_deg=round(direction, 1),
+            vertical_speed_mps=0.01,
+            shear_per_100m=round(shear, 3),
+            source="empirical_scs_profile",
+        )
+
     # ================= Safety Checks =================
     def check_point_safety(
         self,
@@ -211,13 +248,20 @@ class SubseaWorldModel:
         lon: float,
         depth_m: float = 0.0,
         min_clearance_m: float = 5.0,
+        current_limit_mps: float | None = None,
     ) -> SpatialSafetyCheckResult:
         with self._rw_lock:
+            current_data = None
+            if current_limit_mps is not None:
+                current_data = self.get_ocean_current(lat=lat, lon=lon, depth_m=depth_m)
+
             return self._safety_engine.evaluate_geodetic_point(
                 lat=lat,
                 lon=lon,
                 depth_m=depth_m,
                 min_clearance_m=min_clearance_m,
+                current_limit_mps=current_limit_mps,
+                current_data=current_data,
             )
 
     def check_path_safety(

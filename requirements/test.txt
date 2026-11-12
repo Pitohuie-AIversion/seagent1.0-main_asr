@@ -12,3 +12,6 @@ websocket-client>=1.6
 websockets>=14.0
 cn2an>=0.5.22
 dateparser>=1.2
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+openai>=1.0.0

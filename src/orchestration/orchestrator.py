@@ -45,7 +45,7 @@ class MissionOrchestrator:
         graph: TaskGraph,
         min_clearance_m: float = 5.0,
     ) -> tuple[bool, str, list[dict[str, Any]]]:
-        """Perform 4D geofence and subsea asset clearance audit for all nodes in the DAG."""
+        """Perform 4D geofence, subsea asset clearance, and ocean current window audit for all nodes in the DAG."""
         with trace_span("seagent.mission.preflight_safety", attributes={"graph_id": graph.graph_id}) as span:
             violations: list[dict[str, Any]] = []
 
@@ -56,18 +56,34 @@ class MissionOrchestrator:
                 depth = node.water_depth
 
                 if lat is not None and lon is not None:
+                    current_limit = node.parameters.get("max_current_mps") or node.parameters.get("current_limit_mps")
+                    if current_limit is None and node.assigned_robot_id:
+                        try:
+                            from seagent_marine_current.integration import get_deterministic_current_limit
+                            current_limit = get_deterministic_current_limit({
+                                "equipment_unit_id": node.assigned_robot_id,
+                                "task_type": node.task_type,
+                            })
+                        except Exception:
+                            pass
+
                     assessment = self.world_model.check_point_safety(
                         lat=float(lat),
                         lon=float(lon),
                         depth_m=depth,
                         min_clearance_m=min_clearance_m,
+                        current_limit_mps=current_limit,
                     )
                     if not assessment.is_safe:
                         for v in assessment.violations:
                             v_dict = v.to_dict() if hasattr(v, "to_dict") else dict(v)
                             v_dict["node_id"] = node.node_id
                             violations.append(v_dict)
-
+                    if assessment.warnings:
+                        for w in assessment.warnings:
+                            w_dict = w.to_dict() if hasattr(w, "to_dict") else dict(w)
+                            w_dict["node_id"] = node.node_id
+                            violations.append(w_dict)
 
             hard_violations = [v for v in violations if v.get("severity") == "hard"]
             is_passed = len(hard_violations) == 0
@@ -76,7 +92,11 @@ class MissionOrchestrator:
             span.set_attribute("violations_count", len(violations))
 
             if not is_passed:
-                msg = f"任务图包含 {len(hard_violations)} 处硬约束地理围栏阻断违规"
+                has_current = any(v.get("type") == "high_current_hazard" for v in hard_violations)
+                if has_current:
+                    msg = f"任务图包含 {len(hard_violations)} 处硬约束阻断违规（包含水下急流超限险情）"
+                else:
+                    msg = f"任务图包含 {len(hard_violations)} 处硬约束地理围栏阻断违规"
                 logger.warning("[MissionOrchestrator] Preflight failed for %s: %s", graph.graph_id, msg)
                 return False, msg, violations
 

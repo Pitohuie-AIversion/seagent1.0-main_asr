@@ -13,6 +13,8 @@ from src.observability import (
 
 @pytest.fixture(autouse=True)
 def reset_spans():
+    if not is_tracing_available():
+        pytest.skip("OpenTelemetry SDK is not installed or available in this environment")
     clear_recorded_spans()
     yield
     clear_recorded_spans()
