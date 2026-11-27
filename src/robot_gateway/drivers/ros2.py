@@ -34,37 +34,70 @@ class ROS2BridgeDriver(BaseRobotDriver):
 
     def connect(self) -> bool:
         try:
-            from mcp.ros_mcp.core.rosbridge_client import RosbridgeClient
-            from mcp.ros_mcp.core.task_status_tracker import TaskStatusTracker
+            from mcp.core.rosbridge_client import RosbridgeClient
+            from mcp.core.task_status_tracker import TaskStatusTracker
 
-            self._client = RosbridgeClient(host=self.host, port=self.port)
-            connected = self._client.connect()
+            client = RosbridgeClient(host=self.host, port=self.port)
+            self._client = client
+            connect_result = client.connect()
+            if connect_result is False:
+                connected = False
+            elif connect_result is True:
+                connected = True
+            elif connect_result is None:
+                connected = bool(client.is_connected()) if hasattr(client, "is_connected") else True
+            else:
+                connected = bool(connect_result)
+
             if connected:
-                self._tracker = TaskStatusTracker(self._client)
+                self._tracker = TaskStatusTracker(client)
                 self._tracker.start()
                 self._status = RobotConnectionStatus.CONNECTED
                 return True
-            else:
-                self._status = RobotConnectionStatus.ERROR
-                return False
-        except Exception as exc:
-            logger.warning("[ROS2BridgeDriver] Connect failed: %s", exc)
+
+            self._cleanup_failed_connect()
             self._status = RobotConnectionStatus.ERROR
             return False
+        except Exception as exc:
+            logger.warning("[ROS2BridgeDriver] Connect failed: %s", exc)
+            self._cleanup_failed_connect()
+            self._status = RobotConnectionStatus.ERROR
+            return False
+
+    def _cleanup_failed_connect(self) -> None:
+        if self._tracker is not None:
+            try:
+                self._tracker.stop()
+            except Exception as exc:
+                logger.debug("[ROS2BridgeDriver] Tracker stop during cleanup failed: %s", exc)
+            self._tracker = None
+
+        if self._client is not None:
+            try:
+                if hasattr(self._client, "disconnect"):
+                    self._client.disconnect()
+                elif hasattr(self._client, "close"):
+                    self._client.close()
+            except Exception as exc:
+                logger.debug("[ROS2BridgeDriver] Client disconnect during cleanup failed: %s", exc)
+            self._client = None
 
     def disconnect(self) -> None:
         if self._tracker:
             try:
                 self._tracker.stop()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[ROS2BridgeDriver] Tracker stop failed during disconnect: %s", exc)
             self._tracker = None
 
         if self._client:
             try:
-                self._client.disconnect()
-            except Exception:
-                pass
+                if hasattr(self._client, "disconnect"):
+                    self._client.disconnect()
+                elif hasattr(self._client, "close"):
+                    self._client.close()
+            except Exception as exc:
+                logger.debug("[ROS2BridgeDriver] Client disconnect failed during disconnect: %s", exc)
             self._client = None
 
         self._status = RobotConnectionStatus.DISCONNECTED
@@ -116,13 +149,32 @@ class ROS2BridgeDriver(BaseRobotDriver):
             )
 
         try:
-            numeric_id = int(task_id, 16) if task_id.startswith("0x") else int(task_id)
-            cancelled = self._client.cancel_task(numeric_id)
+            raw_id = str(task_id).strip()
+            if not raw_id:
+                raise ValueError("task_id must not be empty.")
+            numeric_id = int(raw_id, 16) if raw_id.lower().startswith("0x") else int(raw_id)
+            if numeric_id < 0:
+                raise ValueError("task_id must be non-negative.")
+
+            if hasattr(self._client, "delete_task"):
+                cancelled = self._client.delete_task(numeric_id)
+            elif hasattr(self._client, "cancel_task"):
+                cancelled = self._client.cancel_task(numeric_id)
+            else:
+                raise AttributeError("ROS 2 client supports neither delete_task nor cancel_task.")
+
+            ok = bool(cancelled)
             return RobotCommandResult(
                 command_id=cmd_id,
-                status=CommandExecutionStatus.ACCEPTED if cancelled else CommandExecutionStatus.FAILED,
-                task_id=task_id,
-                message="Cancel task command sent to ROS 2." if cancelled else "Failed to send cancel.",
+                status=CommandExecutionStatus.ACCEPTED if ok else CommandExecutionStatus.FAILED,
+                task_id=raw_id,
+                task_id_hex=(
+                    f"0x{cancelled:X}"
+                    if isinstance(cancelled, int) and not isinstance(cancelled, bool) and ok
+                    else None
+                ),
+                message="Cancel/delete task command sent to ROS 2." if ok else "Failed to send cancel.",
+                error_message=None if ok else "Cancel/delete task command returned empty/false result.",
             )
         except Exception as exc:
             return RobotCommandResult(
@@ -141,11 +193,28 @@ class ROS2BridgeDriver(BaseRobotDriver):
             )
 
         try:
-            stopped = self._client.emergency_stop()
+            if hasattr(self._client, "suspend_all"):
+                stopped = self._client.suspend_all()
+            elif hasattr(self._client, "emergency_stop"):
+                stopped = self._client.emergency_stop()
+            else:
+                raise AttributeError("ROS 2 client supports neither suspend_all nor emergency_stop.")
+
+            ok = bool(stopped)
             return RobotCommandResult(
                 command_id=cmd_id,
-                status=CommandExecutionStatus.ACCEPTED if stopped else CommandExecutionStatus.FAILED,
-                message="Emergency stop published to ROS 2." if stopped else "Emergency stop publish failed.",
+                status=CommandExecutionStatus.ACCEPTED if ok else CommandExecutionStatus.FAILED,
+                task_id_hex=(
+                    f"0x{stopped:X}"
+                    if isinstance(stopped, int) and not isinstance(stopped, bool) and ok
+                    else None
+                ),
+                message=(
+                    "Suspend-all (emergency stop) command published to ROS 2."
+                    if ok
+                    else "Suspend-all (emergency stop) publish failed."
+                ),
+                error_message=None if ok else "Suspend-all command returned empty/false result.",
             )
         except Exception as exc:
             return RobotCommandResult(
@@ -156,8 +225,9 @@ class ROS2BridgeDriver(BaseRobotDriver):
 
     def poll_telemetry(self) -> StandardTelemetrySnapshot:
         if self._tracker and hasattr(self._tracker, "latest_telemetry"):
-            telemetry = self._tracker.latest_telemetry
-            if telemetry:
+            latest_attr = self._tracker.latest_telemetry
+            telemetry = latest_attr() if callable(latest_attr) else latest_attr
+            if telemetry is not None:
                 return StandardTelemetrySnapshot(
                     unit_id=self.unit_id,
                     timestamp_iso=getattr(telemetry, "received_at", "") or datetime.now(timezone.utc).isoformat(),
@@ -170,7 +240,7 @@ class ROS2BridgeDriver(BaseRobotDriver):
                     altitude_m=getattr(telemetry, "altitude", 0.0),
                     control_mode=getattr(telemetry, "ctr_mode", "AUTO"),
                     health_status=getattr(telemetry, "health", "HEALTHY"),
-                    raw_data=getattr(telemetry, "raw_msg", {}),
+                    raw_data=getattr(telemetry, "raw_msg", {}) or {},
                 )
 
         return StandardTelemetrySnapshot(
