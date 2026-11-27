@@ -273,13 +273,18 @@ class LLMClient:
             from src.llm_backends.openai_http import OpenAICompatibleBackend
             configs = load_backend_configs()
             for b_name, b_info in configs.items():
-                if b_name in self.backends:
+                if not isinstance(b_info, dict) or b_name in self.backends:
                     continue
                 b_type = b_info.get("type")
                 if b_type == "openai_http":
+                    resolved_model = (
+                        b_info.get("model_name")
+                        or b_info.get("model")
+                        or "qwen-27b"
+                    )
                     self.backends[b_name] = OpenAICompatibleBackend(
                         base_url=b_info.get("base_url", "http://127.0.0.1:8001/v1"),
-                        model_name=b_info.get("model", "qwen-27b"),
+                        model_name=resolved_model,
                         api_key=b_info.get("api_key", "EMPTY"),
                         timeout=float(b_info.get("timeout", 60.0)),
                     )
@@ -287,7 +292,7 @@ class LLMClient:
                         "[LLMClient] Auto-registered remote backend '%s' -> %s (%s)",
                         b_name,
                         b_info.get("base_url"),
-                        b_info.get("model"),
+                        resolved_model,
                     )
         except Exception as exc:
             logger.warning("[LLMClient] Auto-registering remote backends skipped: %s", exc)

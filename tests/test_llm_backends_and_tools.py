@@ -290,6 +290,159 @@ class TestBackends:
             assert resp.tool_calls is None
             mock_client.chat.completions.create.assert_called_once()
 
+    def test_openai_compatible_backend_json_schema_and_non_strict(self):
+        """BUG-2b: response_mode='json' 且传 response_schema 时下发 json_schema 且不强加 strict: True。"""
+        pytest.importorskip("openai")
+        import re
+        from src.llm_client import INTERACTION_PLAN_JSON_SCHEMA, SLOT_EXTRACTION_JSON_SCHEMA
+
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
+
+            mock_choice = MagicMock()
+            mock_choice.message.content = '{"ok": true}'
+            mock_choice.finish_reason = "stop"
+            mock_choice.message.tool_calls = None
+            mock_resp = MagicMock()
+            mock_resp.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_resp
+
+            backend = OpenAICompatibleBackend(
+                base_url="http://127.0.0.1:8001/v1",
+                model_name="qwen27b",
+            )
+
+            root_array_schema = {
+                "type": "array",
+                "items": {"type": "string", "enum": ["A", "B"]},
+                "maxItems": 3,
+                "uniqueItems": True,
+            }
+            custom_titled_schema = {
+                "title": "My Custom Schema!! " + ("X" * 80),
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+            }
+            non_ascii_title_schema = {
+                "title": "中文标题",
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+            }
+
+            for schema, expected_name in (
+                (INTERACTION_PLAN_JSON_SCHEMA, "structured_response"),
+                (SLOT_EXTRACTION_JSON_SCHEMA, "structured_response"),
+                (root_array_schema, "structured_response"),
+                (non_ascii_title_schema, "structured_response"),
+                (custom_titled_schema, None),
+            ):
+                mock_client.chat.completions.create.reset_mock()
+                backend.generate(
+                    [{"role": "user", "content": "json"}],
+                    response_mode="json",
+                    response_schema=schema,
+                )
+                _, call_kwargs = mock_client.chat.completions.create.call_args
+                rf = call_kwargs["response_format"]
+                assert rf["type"] == "json_schema"
+                assert rf["json_schema"]["schema"] == schema
+                assert "strict" not in rf["json_schema"]
+                name = rf["json_schema"]["name"]
+                assert re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name)
+                if expected_name is not None:
+                    assert name == expected_name
+
+            # response_mode='json' 且 response_schema=None -> json_object
+            mock_client.chat.completions.create.reset_mock()
+            backend.generate(
+                [{"role": "user", "content": "json"}],
+                response_mode="json",
+                response_schema=None,
+            )
+            _, call_kwargs = mock_client.chat.completions.create.call_args
+            assert call_kwargs["response_format"] == {"type": "json_object"}
+
+            # response_mode='text' 即使传入 response_schema 也不得设置 response_format
+            mock_client.chat.completions.create.reset_mock()
+            backend.generate(
+                [{"role": "user", "content": "text"}],
+                response_mode="text",
+                response_schema=INTERACTION_PLAN_JSON_SCHEMA,
+            )
+            _, call_kwargs = mock_client.chat.completions.create.call_args
+            assert "response_format" not in call_kwargs
+
+    def test_openai_compatible_backend_enable_thinking_and_extra_body_merge(self):
+        """BUG-2b: 正确传播 enable_thinking 并深拷贝合并 extra_body，不污染调用方字典。"""
+        pytest.importorskip("openai")
+
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_client = MagicMock()
+            mock_openai_cls.return_value = mock_client
+
+            mock_choice = MagicMock()
+            mock_choice.message.content = "ok"
+            mock_choice.finish_reason = "stop"
+            mock_choice.message.tool_calls = None
+            mock_resp = MagicMock()
+            mock_resp.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_resp
+
+            backend = OpenAICompatibleBackend(
+                base_url="http://127.0.0.1:8001/v1",
+                model_name="qwen27b",
+            )
+
+            # 1. enable_thinking=True
+            backend.generate([{"role": "user", "content": "hi"}], enable_thinking=True)
+            _, kw1 = mock_client.chat.completions.create.call_args
+            assert kw1["extra_body"] == {"chat_template_kwargs": {"enable_thinking": True}}
+
+            # 2. enable_thinking=False
+            mock_client.chat.completions.create.reset_mock()
+            backend.generate([{"role": "user", "content": "hi"}], enable_thinking=False)
+            _, kw2 = mock_client.chat.completions.create.call_args
+            assert kw2["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+            # 3. enable_thinking=None without extra_body -> no extra_body
+            mock_client.chat.completions.create.reset_mock()
+            backend.generate([{"role": "user", "content": "hi"}], enable_thinking=None)
+            _, kw3 = mock_client.chat.completions.create.call_args
+            assert "extra_body" not in kw3
+
+            # 4. Merge with caller extra_body without mutating caller dicts
+            mock_client.chat.completions.create.reset_mock()
+            caller_extra = {
+                "top_k": 20,
+                "chat_template_kwargs": {"add_generation_prompt": True},
+            }
+            backend.generate(
+                [{"role": "user", "content": "hi"}],
+                enable_thinking=True,
+                extra_body=caller_extra,
+            )
+            _, kw4 = mock_client.chat.completions.create.call_args
+            assert kw4["extra_body"] == {
+                "top_k": 20,
+                "chat_template_kwargs": {
+                    "add_generation_prompt": True,
+                    "enable_thinking": True,
+                },
+            }
+            assert "enable_thinking" not in caller_extra["chat_template_kwargs"]
+
+            # 5. Caller explicit chat_template_kwargs["enable_thinking"] is preserved
+            mock_client.chat.completions.create.reset_mock()
+            explicit_extra = {"chat_template_kwargs": {"enable_thinking": True}}
+            backend.generate(
+                [{"role": "user", "content": "hi"}],
+                enable_thinking=False,
+                extra_body=explicit_extra,
+            )
+            _, kw5 = mock_client.chat.completions.create.call_args
+            assert kw5["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+
     def test_local_vllm_backend_tag_parsing(self):
         """测试 LocalVllmBackend 对 <tool_call> 标签的解析。"""
         text_with_tag = (

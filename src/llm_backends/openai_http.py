@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import logging
+import re
 from typing import Any
 
 from src.llm_backends.base import BaseLLMBackend, LLMResponse, ToolCall
@@ -78,9 +80,24 @@ class OpenAICompatibleBackend(BaseLLMBackend):
 
         if response_mode == "json":
             if response_schema is not None:
-                # 尝试标准 json_schema 约束
+                raw_title = (
+                    response_schema.get("title")
+                    if isinstance(response_schema, dict)
+                    else None
+                )
+                if isinstance(raw_title, str):
+                    sanitized = re.sub(
+                        r"[^a-zA-Z0-9_-]+", "_", raw_title.strip()
+                    ).strip("_")
+                    schema_name = sanitized[:64] if sanitized else "structured_response"
+                else:
+                    schema_name = "structured_response"
                 call_kwargs["response_format"] = {
-                    "type": "json_object"
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema_name,
+                        "schema": response_schema,
+                    },
                 }
             else:
                 call_kwargs["response_format"] = {"type": "json_object"}
@@ -90,11 +107,19 @@ class OpenAICompatibleBackend(BaseLLMBackend):
             call_kwargs["tools"] = tools
 
         # 传递思考链开关（若后端支持特定参数）
-        if "extra_body" in kwargs:
-            call_kwargs["extra_body"] = kwargs["extra_body"]
-        elif enable_thinking is not None:
-            # 部分端点如 vLLM/DeepSeek 支持 extra_body
-            pass
+        has_extra_body = "extra_body" in kwargs and kwargs["extra_body"] is not None
+        if has_extra_body or enable_thinking is not None:
+            raw_extra = kwargs.get("extra_body")
+            extra_body = deepcopy(raw_extra) if isinstance(raw_extra, dict) else {}
+            if enable_thinking is not None:
+                ctk = extra_body.get("chat_template_kwargs")
+                if isinstance(ctk, dict):
+                    ctk.setdefault("enable_thinking", bool(enable_thinking))
+                elif ctk is None:
+                    extra_body["chat_template_kwargs"] = {
+                        "enable_thinking": bool(enable_thinking)
+                    }
+            call_kwargs["extra_body"] = extra_body
 
         try:
             resp = client.chat.completions.create(**call_kwargs)

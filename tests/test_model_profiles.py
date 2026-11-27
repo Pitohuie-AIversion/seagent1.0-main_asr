@@ -671,5 +671,101 @@ class TestKnowledgeQAContextResolution(unittest.TestCase):
         self.assertEqual(dm.slot_store.version, version_before)
 
 
+class TestRemoteBackendAutoRegistration(unittest.TestCase):
+    """BUG-2a & BUG-2b 端到端契约测试：LLMClient 自动装配远端后端与角色路由参数透传。"""
+
+    def setUp(self):
+        ModelProfileRegistry.get_instance().clear_cache()
+
+    def tearDown(self):
+        ModelProfileRegistry.get_instance().clear_cache()
+
+    @patch("src.llm_client.SamplingParams", MagicMock())
+    def test_init_configured_remote_backends_reads_model_name(self):
+        """BUG-2a: 从 config/model_profiles.yaml 读取 model_name='qwen27b' 并装配 gpu1_heavy。"""
+        from src.llm_backends.openai_http import OpenAICompatibleBackend
+
+        client = LLMClient(MagicMock(), MagicMock())
+        self.assertIn("gpu1_heavy", client.backends)
+        heavy = client.backends["gpu1_heavy"]
+        self.assertIsInstance(heavy, OpenAICompatibleBackend)
+        self.assertEqual(heavy.model_name, "qwen27b")
+        self.assertEqual(heavy.base_url, "http://127.0.0.1:8001/v1")
+
+    @patch("src.llm_client.SamplingParams", MagicMock())
+    def test_init_configured_remote_backends_fallback_to_legacy_model_key(self):
+        """BUG-2a: 兼容旧键 'model'，缺失时回退 'qwen-27b'，且忽略非 dict 条目。"""
+        fake_configs = {
+            "bad_entry": "not-a-dict",
+            "legacy_remote": {
+                "type": "openai_http",
+                "base_url": "http://127.0.0.1:9001/v1",
+                "model": "legacy-model",
+            },
+            "minimal_remote": {
+                "type": "openai_http",
+                "base_url": "http://127.0.0.1:9002/v1",
+            },
+        }
+        with patch("src.extraction.model_profile.load_backend_configs", return_value=fake_configs):
+            client = LLMClient(MagicMock(), MagicMock())
+            self.assertNotIn("bad_entry", client.backends)
+            self.assertEqual(client.backends["legacy_remote"].model_name, "legacy-model")
+            self.assertEqual(client.backends["minimal_remote"].model_name, "qwen-27b")
+
+    @patch("src.llm_client.is_model_profiles_v2_enabled", return_value=True)
+    @patch("src.llm_client.SamplingParams", MagicMock())
+    def test_v2_general_reasoning_routes_to_gpu1_heavy_with_thinking_and_qwen27b(self, mock_v2):
+        """BUG-2a + BUG-2b: V2 模式下 GENERAL_REASONING 路由到 gpu1_heavy 并下发 qwen27b 与 enable_thinking=True。"""
+        from src.llm_client import INTERACTION_PLAN_JSON_SCHEMA
+
+        with patch("openai.OpenAI") as mock_openai_cls:
+            mock_openai_client = MagicMock()
+            mock_openai_cls.return_value = mock_openai_client
+
+            mock_choice = MagicMock()
+            mock_choice.message.content = "深度思考推理完成"
+            mock_choice.finish_reason = "stop"
+            mock_choice.message.tool_calls = None
+            mock_resp = MagicMock()
+            mock_resp.choices = [mock_choice]
+            mock_openai_client.chat.completions.create.return_value = mock_resp
+
+            client = LLMClient(MagicMock(), MagicMock())
+            res = client.generate_text(
+                [{"role": "user", "content": "请分析深海作业风险"}],
+                role=ModelRole.GENERAL_REASONING,
+            )
+            self.assertEqual(res, "深度思考推理完成")
+
+            mock_openai_client.chat.completions.create.assert_called_once()
+            _, call_kwargs = mock_openai_client.chat.completions.create.call_args
+            self.assertEqual(call_kwargs["model"], "qwen27b")
+            self.assertEqual(
+                call_kwargs["extra_body"],
+                {"chat_template_kwargs": {"enable_thinking": True}},
+            )
+            self.assertNotIn("response_format", call_kwargs)
+
+            # 再验证将同一远程后端用于 ROUTER 角色且传入 response_schema 时：
+            # enable_thinking=False 且下发 json_schema（无 strict: True）
+            mock_openai_client.chat.completions.create.reset_mock()
+            client.register_backend("gpu0_fast", client.backends["gpu1_heavy"])
+            client.generate_text(
+                [{"role": "user", "content": "分类路由"}],
+                role=ModelRole.ROUTER,
+                response_mode="json",
+                response_schema=INTERACTION_PLAN_JSON_SCHEMA,
+            )
+            _, router_kwargs = mock_openai_client.chat.completions.create.call_args
+            self.assertEqual(router_kwargs["model"], "qwen27b")
+            self.assertEqual(
+                router_kwargs["extra_body"],
+                {"chat_template_kwargs": {"enable_thinking": False}},
+            )
+            self.assertEqual(router_kwargs["response_format"]["type"], "json_schema")
+            self.assertNotIn("strict", router_kwargs["response_format"]["json_schema"])
+
+
 if __name__ == "__main__":
     unittest.main()
