@@ -884,3 +884,89 @@ def dev_normalize_asr_text():
         "warnings": normalization["warnings"],
     })
 
+
+@dev_bp.route("/api/dev/mission/recorder/events", methods=["GET"])
+@_require_api_token
+def dev_get_mission_recorder_events():
+    """获取指定任务的黑匣子飞行记录事件日志并进行 CRC-32 完整性校验"""
+    from src.orchestration import FlightRecorder
+
+    mission_id = request.args.get("mission_id", "").strip()
+    if not mission_id:
+        return jsonify({"ok": False, "code": 400, "msg": "缺少 mission_id 参数"}), 400
+
+    min_seq = int(request.args.get("min_seq", 1))
+    max_seq_str = request.args.get("max_seq")
+    max_seq = int(max_seq_str) if max_seq_str else None
+
+    recorder = FlightRecorder.get_instance()
+    events = recorder.get_mission_events(mission_id=mission_id, min_seq=min_seq, max_seq=max_seq)
+    is_valid, integrity_msg, count = recorder.verify_integrity(mission_id)
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "mission_id": mission_id,
+        "events_count": len(events),
+        "integrity": {
+            "is_valid": is_valid,
+            "message": integrity_msg,
+            "verified_count": count,
+        },
+        "events": [e.to_dict() for e in events],
+    })
+
+
+@dev_bp.route("/api/dev/mission/recorder/replay", methods=["POST"])
+@_require_api_token
+def dev_replay_mission_recorder():
+    """按步骤序列号或目标时间戳对水下任务执行时空回放与 DAG 状态复原"""
+    from src.orchestration import MissionReplayer
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "code": 400, "msg": "请求体必须为 JSON 对象"}), 400
+
+    mission_id = str(payload.get("mission_id", "")).strip()
+    if not mission_id:
+        return jsonify({"ok": False, "code": 400, "msg": "缺少 mission_id 字段"}), 400
+
+    target_seq = payload.get("target_seq")
+    target_timestamp = payload.get("target_timestamp")
+
+    try:
+        if target_seq is not None:
+            snapshot = MissionReplayer.replay_to_seq(mission_id=mission_id, target_seq=int(target_seq))
+        elif target_timestamp is not None:
+            snapshot = MissionReplayer.replay_to_timestamp(mission_id=mission_id, target_timestamp=float(target_timestamp))
+        else:
+            return jsonify({"ok": False, "code": 400, "msg": "必须指定 target_seq 或 target_timestamp"}), 400
+    except ValueError as exc:
+        return jsonify({"ok": False, "code": 404, "msg": str(exc)}), 404
+    except Exception as exc:
+        return jsonify({"ok": False, "code": 500, "msg": f"任务时空回放失败: {exc}"}), 500
+
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "snapshot": snapshot.to_dict(),
+    })
+
+
+@dev_bp.route("/api/dev/mission/recorder/archive", methods=["GET"])
+@_require_api_token
+def dev_get_mission_recorder_archive():
+    """导出包含 CRC-32 校验与全量生命周期日志的飞行黑匣子归档包"""
+    from src.orchestration import FlightRecorder
+
+    mission_id = request.args.get("mission_id", "").strip()
+    if not mission_id:
+        return jsonify({"ok": False, "code": 400, "msg": "缺少 mission_id 参数"}), 400
+
+    recorder = FlightRecorder.get_instance()
+    archive = recorder.export_blackbox_archive(mission_id)
+    return jsonify({
+        "ok": True,
+        "code": 200,
+        "archive": archive,
+    })

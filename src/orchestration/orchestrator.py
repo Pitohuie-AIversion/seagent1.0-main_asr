@@ -12,6 +12,7 @@ from src.robot_gateway import RobotGateway
 from src.task_graph import TaskGraph, TaskGraphAllocator, TaskNode, TaskNodeStatus
 from src.world_model import SubseaWorldModel
 from .decomposer import MissionDecomposer
+from .flight_recorder import FlightRecorder
 from .models import MissionState, MissionSummary, SubtaskExecutionRecord
 
 logger = logging.getLogger(__name__)
@@ -26,10 +27,12 @@ class MissionOrchestrator:
         gateway: RobotGateway | None = None,
         world_model: SubseaWorldModel | None = None,
         replanning_engine: DynamicReplanningEngine | None = None,
+        flight_recorder: FlightRecorder | None = None,
     ):
         self.gateway = gateway or RobotGateway.get_instance()
         self.world_model = world_model or SubseaWorldModel.get_instance()
         self.replanning_engine = replanning_engine or DynamicReplanningEngine()
+        self.flight_recorder = flight_recorder or FlightRecorder.get_instance()
         self._execution_history: dict[str, list[SubtaskExecutionRecord]] = {}
         self._replanning_counts: dict[str, int] = {}
 
@@ -39,6 +42,11 @@ class MissionOrchestrator:
             graph = MissionDecomposer.decompose(intent)
             self._execution_history[graph.graph_id] = []
             self._replanning_counts[graph.graph_id] = 0
+            self.flight_recorder.record_event(
+                mission_id=graph.graph_id,
+                event_type="MISSION_CREATED",
+                payload={"intent": intent, "graph": graph.to_dict(), "batches": graph.get_execution_batches()},
+            )
             return graph
 
     def run_preflight_safety(
@@ -102,6 +110,11 @@ class MissionOrchestrator:
                 return False, msg, violations
 
             msg = "预检通过" if not violations else f"预检通过，包含 {len(violations)} 项软警告"
+            self.flight_recorder.record_event(
+                mission_id=graph.graph_id,
+                event_type="PREFLIGHT_SAFETY",
+                payload={"passed": is_passed, "message": msg, "violations_count": len(violations)},
+            )
             return True, msg, violations
 
     def allocate_fleet(
@@ -122,7 +135,13 @@ class MissionOrchestrator:
                     })
 
             allocator = TaskGraphAllocator(available_robots)
-            return allocator.allocate_ready_nodes(graph)
+            allocations = allocator.allocate_ready_nodes(graph)
+            self.flight_recorder.record_event(
+                mission_id=graph.graph_id,
+                event_type="FLEET_ALLOCATED",
+                payload={"allocations": allocations},
+            )
+            return allocations
 
     @staticmethod
     def _extract_node_waypoints(node: TaskNode) -> list[dict[str, Any]]:
@@ -251,10 +270,17 @@ class MissionOrchestrator:
                 for node in dispatchable_nodes:
                     node_wps = self._extract_node_waypoints(node)
                     if node_wps and node.assigned_robot_id:
-                        self.world_model.reserve_robot_corridor(
+                        resvs = self.world_model.reserve_robot_corridor(
                             robot_id=node.assigned_robot_id,
                             waypoints=node_wps,
                             radius_m=15.0,
+                        )
+                        self.flight_recorder.record_event(
+                            mission_id=graph.graph_id,
+                            event_type="CORRIDOR_RESERVED",
+                            payload={"corridors": resvs, "node_id": node.node_id},
+                            node_id=node.node_id,
+                            robot_id=node.assigned_robot_id,
                         )
 
             # Single node dispatch worker
@@ -370,8 +396,22 @@ class MissionOrchestrator:
                 if dispatch_status == TaskNodeStatus.COMPLETED:
                     graph.update_node_status(node.node_id, TaskNodeStatus.COMPLETED, result={"telemetry": telemetry})
                     logger.info("[MissionOrchestrator] Node %s completed successfully on unit %s", node.node_id, target_unit)
+                    self.flight_recorder.record_event(
+                        mission_id=graph.graph_id,
+                        event_type="SUBTASK_COMPLETED",
+                        payload={"telemetry": telemetry, "execution_time_s": item["finish_t"] - item["start_t"]},
+                        node_id=node.node_id,
+                        robot_id=target_unit,
+                    )
                 else:
                     logger.warning("[MissionOrchestrator] Node %s failed: %s. Triggering replanning...", node.node_id, err_msg)
+                    self.flight_recorder.record_event(
+                        mission_id=graph.graph_id,
+                        event_type="SUBTASK_FAILED",
+                        payload={"error": err_msg, "execution_time_s": item["finish_t"] - item["start_t"]},
+                        node_id=node.node_id,
+                        robot_id=target_unit,
+                    )
                     trigger = ReplanningTrigger(
                         trigger_type=ReplanningTriggerType.SUBTASK_FAILED,
                         node_id=node.node_id,
@@ -385,19 +425,45 @@ class MissionOrchestrator:
                         graph = self.replanning_engine.apply_replanning_plan(plan, graph)
                         replanned_events.append(plan.to_dict())
                         logger.info("[MissionOrchestrator] Replanning applied for %s: %s", node.node_id, plan.summary)
+                        self.flight_recorder.record_event(
+                            mission_id=graph.graph_id,
+                            event_type="REPLANNING_APPLIED",
+                            payload={
+                                "summary": plan.summary,
+                                "actions": [a.to_dict() for a in plan.actions],
+                                "updated_graph": graph.to_dict(),
+                            },
+                            node_id=node.node_id,
+                            robot_id=target_unit,
+                        )
                     else:
                         graph.update_node_status(node.node_id, TaskNodeStatus.FAILED, error=err_msg)
 
             if check_4d_corridor:
                 self.world_model.clear_corridor_reservations()
+                self.flight_recorder.record_event(
+                    mission_id=graph.graph_id,
+                    event_type="CORRIDOR_CLEARED",
+                    payload={},
+                )
 
             is_done = graph.is_completed()
             has_fail = graph.has_failures()
 
             if is_done:
                 mission_state = MissionState.COMPLETED
+                self.flight_recorder.record_event(
+                    mission_id=graph.graph_id,
+                    event_type="MISSION_COMPLETED",
+                    payload={"dispatched_nodes": dispatched_nodes},
+                )
             elif has_fail:
                 mission_state = MissionState.ABORTED
+                self.flight_recorder.record_event(
+                    mission_id=graph.graph_id,
+                    event_type="MISSION_ABORTED",
+                    payload={"dispatched_nodes": dispatched_nodes},
+                )
             else:
                 mission_state = MissionState.IN_PROGRESS
 
