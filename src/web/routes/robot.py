@@ -186,6 +186,7 @@ def set_robot_state_info():
 
 
 @robot_bp.route("/api/telemetry", methods=["GET"])
+@_require_api_token
 def get_telemetry_snapshot():
     """Compatibility view backed by live ROS telemetry, never by protocol YAML."""
     bridge = get_mcp_bridge()
