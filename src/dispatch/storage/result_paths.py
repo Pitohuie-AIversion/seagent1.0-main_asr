@@ -88,3 +88,19 @@ def get_history_dir(create: bool = False) -> Path:
     if create:
         path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def get_quarantine_dir(create: bool = False) -> Path:
+    """获取异常或未决任务文件隔离目录。"""
+    env_quarantine = os.environ.get("SEAGENT_QUARANTINE_DIR")
+    if env_quarantine:
+        path = Path(env_quarantine).expanduser().resolve()
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    base = get_result_dir(create=create)
+    path = base / "quarantine" if base.name != "quarantine" else base
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path

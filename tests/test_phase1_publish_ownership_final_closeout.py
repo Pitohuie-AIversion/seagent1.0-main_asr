@@ -573,7 +573,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
                 self.assertEqual(len(tmps), 0)
 
     def test_18_quarantine_policy_compliance(self):
-        """18. quarantine 保留策略符合设计：认领文件安全保留在隔离区"""
+        """18. 正常发布完成后应安全清理已认领的私有 .claimed_* 文件"""
         intent = self._make_valid_intent("TI2026072101")
         with tempfile.TemporaryDirectory() as tmp_dir:
             task_dir = Path(tmp_dir) / "task"
@@ -583,7 +583,7 @@ class PublishOwnershipAndLockTest(unittest.TestCase):
                 self.builder.publish_staging(st, intent)
 
                 claims = list(task_dir.glob(".claimed_*"))
-                self.assertGreaterEqual(len(claims), 1, "Claim file must be safely retained in quarantine")
+                self.assertEqual(len(claims), 0, "Verified owned claim file must be cleaned up after normal publish")
 
     def test_19_all_failures_raise_task_persistence_error(self):
         """19. 覆盖所有声明的失败路径并验证抛出 TaskPersistenceError 或 IntentIdConflict"""

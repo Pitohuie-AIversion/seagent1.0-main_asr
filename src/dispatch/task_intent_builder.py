@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional
 from src.exceptions import IntentIdConflict, TaskPersistenceError
 from .id_sequence import next_daily_id, validate_intent_id, validate_task_id, validate_task_id_for_task_type
 from src.knowledge_retriever import KnowledgeBase
-from .result_paths import get_task_dir
+from .result_paths import get_quarantine_dir, get_result_dir, get_task_dir
 from src.temporal.simulated_time import get_current_datetime
 from src.utils import (
     validate_uuid4,  # noqa: F401  (re-exported for backwards compat)
@@ -32,6 +32,10 @@ from .atomic_task_storage import (
     TaskPublishLock,
     _write_all,
     _atomic_commit_noreplace,
+    _sync_directory,
+    _verify_fd_ownership,
+    quarantine_artifact,
+    quarantine_file,
 )
 from .task_intent_schema_validator import (
     TASK_ALLOWED_ROBOT_TYPES,
@@ -301,8 +305,9 @@ class TaskIntentBuilder:
                 if not stat.S_ISREG(validated_stat.st_mode):
                     raise TaskPersistenceError("Staging file descriptor is not a regular file")
 
-                with os.fdopen(st_fd, "r", encoding="utf-8", closefd=False) as f:
-                    staging_data = json.load(f)
+                with os.fdopen(st_fd, "rb", closefd=False) as f:
+                    staging_bytes = f.read()
+                staging_data = json.loads(staging_bytes.decode("utf-8"))
             except TaskPersistenceError:
                 raise
             except Exception as e:
@@ -322,6 +327,18 @@ class TaskIntentBuilder:
                 raise TaskPersistenceError("Staging JSON content does not match expected intent data")
 
             # 4. 安全认领 Staging (Claiming) 到专用隔离路径
+            try:
+                pre_claim_stat = staging_path.lstat()
+            except Exception as e:
+                raise TaskPersistenceError(f"Failed to stat staging file before claim: {e}") from e
+
+            if not stat.S_ISREG(pre_claim_stat.st_mode) or (
+                pre_claim_stat.st_dev,
+                pre_claim_stat.st_ino,
+                pre_claim_stat.st_size,
+            ) != (validated_stat.st_dev, validated_stat.st_ino, validated_stat.st_size):
+                raise TaskPersistenceError("Staging file changed before claim; refusing to claim replaced file")
+
             claim_file = task_dir / f".claimed_{intent_id}_{txid}"
             try:
                 os.rename(staging_path, claim_file)
@@ -331,6 +348,7 @@ class TaskIntentBuilder:
             # 5. 从受信任内存 intent 原子创建私有 0600 临时文件并写入
             tmp_file = task_dir / f".tmp_publish_{intent_id}_{txid}"
             tmp_stat = None
+            content_bytes: Optional[bytes] = None
             committed = False
             try:
                 tmp_flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0)
@@ -371,40 +389,156 @@ class TaskIntentBuilder:
                     raise TaskPersistenceError(f"File fsync failed for {final_file.name}: {e}") from e
 
                 try:
-                    d_fd = os.open(task_dir, os.O_RDONLY)
-                    try:
-                        os.fsync(d_fd)
-                    finally:
-                        os.close(d_fd)
+                    _sync_directory(task_dir)
                 except Exception as e:
                     raise TaskPersistenceError(f"Directory fsync failed for {task_dir}: {e}") from e
 
-                # 8. 提交成功后安全解绑定清理
+                # 8. 提交成功后安全解绑定清理已认领的私有 claim 文件
+                self._cleanup_owned_claim_after_commit(claim_file, task_dir, validated_stat, staging_bytes)
                 return final_file.name
 
             except FileExistsError:
+                self._cleanup_failed_publish_artifacts(
+                    task_dir=task_dir,
+                    claim_file=claim_file,
+                    tmp_file=tmp_file,
+                    validated_stat=validated_stat,
+                    staging_bytes=staging_bytes,
+                    tmp_stat=tmp_stat,
+                    tmp_bytes=content_bytes,
+                    committed=committed,
+                )
                 raise IntentIdConflict(f"Intent ID conflict for {intent_id}: target file exists.")
             except IntentIdConflict:
+                self._cleanup_failed_publish_artifacts(
+                    task_dir=task_dir,
+                    claim_file=claim_file,
+                    tmp_file=tmp_file,
+                    validated_stat=validated_stat,
+                    staging_bytes=staging_bytes,
+                    tmp_stat=tmp_stat,
+                    tmp_bytes=content_bytes,
+                    committed=committed,
+                )
                 raise
             except Exception as e:
+                self._cleanup_failed_publish_artifacts(
+                    task_dir=task_dir,
+                    claim_file=claim_file,
+                    tmp_file=tmp_file,
+                    validated_stat=validated_stat,
+                    staging_bytes=staging_bytes,
+                    tmp_stat=tmp_stat,
+                    tmp_bytes=content_bytes,
+                    committed=committed,
+                )
                 if committed:
                     raise TaskCommitUncertainError(
                         f"任务文件已生成，持久化结果待核对: {e}", intent
                     ) from e
-                if tmp_file and tmp_file.exists() and tmp_stat:
+                raise TaskPersistenceError(f"Failed to publish staging file for {intent_id}: {e}") from e
+
+    def _resolve_quarantine_dir(self, task_dir: Path) -> Path:
+        if os.environ.get("SEAGENT_QUARANTINE_DIR") or os.environ.get("SEAGENT_RESULT_DIR"):
+            return get_quarantine_dir(create=True)
+        default_task_dir = (get_result_dir(create=False) / "task").resolve()
+        if task_dir.resolve() != default_task_dir:
+            q_dir = task_dir / "quarantine"
+            q_dir.mkdir(parents=True, exist_ok=True)
+            return q_dir
+        return get_quarantine_dir(create=True)
+
+    def _cleanup_owned_claim_after_commit(
+        self,
+        claim_file: Path,
+        task_dir: Path,
+        expected_stat: os.stat_result,
+        expected_bytes: bytes,
+    ) -> None:
+        try:
+            c_fd = os.open(claim_file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            logger.warning("Refusing to unlink claim file %s after commit: %s", claim_file, exc)
+            return
+
+        unlinked = False
+        try:
+            if _verify_fd_ownership(
+                c_fd,
+                claim_file,
+                expected_stat=expected_stat,
+                expected_bytes=expected_bytes,
+            ):
+                os.unlink(claim_file)
+                unlinked = True
+            else:
+                logger.warning("Claim file %s failed ownership verification at cleanup; preserving file", claim_file)
+        except Exception as exc:
+            logger.warning("Failed to unlink verified claim file %s: %s", claim_file, exc)
+        finally:
+            os.close(c_fd)
+
+        if unlinked:
+            try:
+                _sync_directory(task_dir)
+            except Exception as exc:
+                logger.debug("Directory sync after claim cleanup failed for %s: %s", task_dir, exc)
+
+    def _cleanup_failed_publish_artifacts(
+        self,
+        *,
+        task_dir: Path,
+        claim_file: Path,
+        tmp_file: Path,
+        validated_stat: os.stat_result,
+        staging_bytes: bytes,
+        tmp_stat: Optional[os.stat_result],
+        tmp_bytes: Optional[bytes],
+        committed: bool,
+    ) -> None:
+        if not committed:
+            if tmp_file and tmp_stat is not None:
+                try:
+                    c_fd = os.open(tmp_file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                except OSError as clean_err:
+                    logger.debug("Skipping temp cleanup for %s: %s", tmp_file, clean_err)
+                else:
                     try:
-                        c_fd = os.open(tmp_file, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
-                        try:
-                            c_stat = os.fstat(c_fd)
-                            if (c_stat.st_dev == tmp_stat.st_dev and
-                                c_stat.st_ino == tmp_stat.st_ino and
-                                c_stat.st_size == tmp_stat.st_size):
-                                os.unlink(tmp_file)
-                        finally:
-                            os.close(c_fd)
+                        if _verify_fd_ownership(
+                            c_fd,
+                            tmp_file,
+                            expected_stat=tmp_stat,
+                            expected_bytes=tmp_bytes,
+                        ):
+                            os.unlink(tmp_file)
                     except Exception as clean_err:
                         logger.debug("Failed to safely unlink staging temp file %s: %s", tmp_file, clean_err)
-                raise TaskPersistenceError(f"Failed to publish staging file for {intent_id}: {e}") from e
+                    finally:
+                        os.close(c_fd)
+
+            try:
+                quarantine_artifact(
+                    claim_file,
+                    quarantine_dir=self._resolve_quarantine_dir(task_dir),
+                    reason="pre_commit_failure",
+                    expected_stat=validated_stat,
+                    expected_bytes=staging_bytes,
+                )
+            except Exception as q_err:
+                logger.warning("Failed to quarantine claim file %s after pre-commit failure: %s", claim_file, q_err)
+        else:
+            try:
+                quarantine_artifact(
+                    claim_file,
+                    quarantine_dir=self._resolve_quarantine_dir(task_dir),
+                    reason="commit_uncertain",
+                    expected_stat=validated_stat,
+                    expected_bytes=staging_bytes,
+                )
+            except Exception as q_err:
+                logger.warning("Failed to quarantine claim file %s on uncertain commit: %s", claim_file, q_err)
 
     def recover_committed(self, intent: Dict[str, Any]) -> str:
         """Confirm an uncertain commit without replacing or deleting any file.
