@@ -107,15 +107,37 @@ def query_environmental_telemetry(robot_unit_id: str = "") -> dict[str, Any]:
 
     state_info = RobotStateInfo()
     if robot_unit_id:
-        st = state_info.get_status(robot_unit_id)
+        st = state_info.get_robot_state(robot_unit_id)
         if st:
+            current_speed = next(
+                (
+                    st[key]
+                    for key in ("current_speed", "water_current_velocity", "current_velocity")
+                    if st.get(key) is not None
+                ),
+                None,
+            )
+            water_depth = next(
+                (
+                    st[key]
+                    for key in ("depth", "water_depth")
+                    if st.get(key) is not None
+                ),
+                None,
+            )
+            status = st.get("status") if st.get("status") is not None else st.get("overall_status")
+            updated_at = (
+                st.get("updated_at")
+                if st.get("updated_at") is not None
+                else st.get("update_timestamp")
+            )
             return {
                 "found": True,
                 "unit_id": robot_unit_id,
-                "current_speed_knots": st.get("current_speed"),
-                "water_depth": st.get("depth"),
-                "status": st.get("status"),
-                "updated_at": st.get("updated_at"),
+                "current_speed_knots": current_speed,
+                "water_depth": water_depth,
+                "status": status,
+                "updated_at": updated_at,
             }
     # 返回全局环境基线
     return {

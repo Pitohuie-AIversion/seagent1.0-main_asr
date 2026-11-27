@@ -8,6 +8,9 @@
 """
 
 import json
+import os
+from pathlib import Path
+import shutil
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -124,6 +127,19 @@ class TestToolRegistry:
         assert "未找到指定工具" in res_missing["message"]
 
 
+def _isolate_state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """将当前激活的 state.yaml 复制到每测试独立的 tmp_path，避免跨测试污染共享状态文件。"""
+    active_state = os.environ.get("SEAGENT_STATE_FILE")
+    default_state = Path(__file__).resolve().parents[1] / "config" / "state.yaml"
+    source_state = Path(active_state) if active_state else default_state
+    if not source_state.exists():
+        source_state = default_state
+    isolated_state = tmp_path / "state.yaml"
+    shutil.copy2(source_state, isolated_state)
+    monkeypatch.setenv("SEAGENT_STATE_FILE", str(isolated_state))
+    return isolated_state
+
+
 class TestBuiltinTools:
     """测试核心领域内置工具数据查询准确性。"""
 
@@ -152,12 +168,71 @@ class TestBuiltinTools:
         res_unknown = query_oilfield_position("火星一号油田")
         assert res_unknown["found"] is False
 
-    def test_query_environmental_telemetry(self):
+    def test_query_environmental_telemetry(self, tmp_path, monkeypatch):
         """测试水下环境与海况遥测基线。"""
+        _isolate_state_file(tmp_path, monkeypatch)
         res = query_environmental_telemetry()
         assert res["found"] is True
         assert "current_speed_knots" in res or "surface_current_knots" in res
         assert res["status"] == "safe"
+
+    def test_query_environmental_telemetry_with_unit_id(self, tmp_path, monkeypatch):
+        """BUG-3: 指定存在的 robot_unit_id 或别名时调用 get_robot_state() 并映射字段。"""
+        _isolate_state_file(tmp_path, monkeypatch)
+        res = query_environmental_telemetry("CRAWLER-1600-001")
+        assert res["found"] is True
+        assert res["unit_id"] == "CRAWLER-1600-001"
+        assert res["current_speed_knots"] == 1.0
+        assert res["status"] == "available"
+        assert res["updated_at"]
+
+        res_alias = query_environmental_telemetry("金牛座一号机")
+        assert res_alias["found"] is True
+        assert res_alias["unit_id"] == "金牛座一号机"
+        assert res_alias["current_speed_knots"] == 1.0
+        assert res_alias["status"] == "available"
+
+    def test_query_environmental_telemetry_zero_values_and_fallbacks(self, tmp_path, monkeypatch):
+        """BUG-3: 0.0 流速/水深不被 falsy or 吞掉，且 depth/water_depth、current_speed 优先级正确。"""
+        from src.state_info import RobotStateInfo
+
+        isolated_state = _isolate_state_file(tmp_path, monkeypatch)
+        state_info = RobotStateInfo()
+        assert state_info.state_file == isolated_state
+        state_info.set_status(
+            "CRAWLER-1600-001",
+            {
+                "water_current_velocity": 0.0,
+                "water_depth": 450.0,
+            },
+        )
+        res = query_environmental_telemetry("CRAWLER-1600-001")
+        assert res["found"] is True
+        assert res["current_speed_knots"] == 0.0
+        assert res["water_depth"] == 450.0
+
+        # depth 优先于 water_depth，current_speed 优先于 water_current_velocity
+        state_info.set_status(
+            "CRAWLER-1600-001",
+            {
+                "current_speed": 0.0,
+                "water_current_velocity": 1.8,
+                "depth": 0.0,
+                "water_depth": 450.0,
+            },
+        )
+        res_priority = query_environmental_telemetry("CRAWLER-1600-001")
+        assert res_priority["current_speed_knots"] == 0.0
+        assert res_priority["water_depth"] == 0.0
+
+    def test_query_environmental_telemetry_empty_and_unknown_fallback(self, tmp_path, monkeypatch):
+        """BUG-3: 空串、空白、未知设备或未入 state.yaml 的设备回退全局基线。"""
+        _isolate_state_file(tmp_path, monkeypatch)
+        for selector in ("", "   ", "NON-EXISTENT-999", "TOWED-1500-001"):
+            res = query_environmental_telemetry(selector)
+            assert res["found"] is True
+            assert res["general_sea_state"] == "moderate"
+            assert res["status"] == "safe"
 
     def test_calculate_hydrostatic_pressure(self):
         """测试水深静水压强计算与法兰等级推荐。"""
